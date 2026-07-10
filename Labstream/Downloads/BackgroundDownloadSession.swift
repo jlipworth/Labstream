@@ -1878,20 +1878,26 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                              response: downloadTask.response, location: location)
             return
         }
+        var adoptedOpaque: (ratingKey: String, destination: URL)?
         if entry == nil {
+            // JF-F4: an unmarked opaque task (taskDescription == ratingKey) that finished while
+            // tracked in neither lane is a forward-only transfer that completed while the app was
+            // terminated — adopt it below through the normal opaque finalize instead of dropping
+            // the multi-GB temp body and forcing a from-zero re-transcode.
+            adoptedOpaque = adoptFinishedForwardOnlyTransfer(task: downloadTask)
             // I1: a background task that finished while tracked in NEITHER lane is usually an OS
             // redelivery after relaunch (URLSession may replay a completed background task before, or
             // instead of, reattach re-adopting it). If its taskDescription marks it as one of OUR
             // static-range segments and maps to a live static-range row, synthesize the entry and
             // route it through the SAME finished-body path (C1 validator/alignment checks included)
             // rather than silently dropping an irreplaceable body.
-            if let adopted = adoptFinishedRangeSegment(task: downloadTask) {
+            if adoptedOpaque == nil, let adopted = adoptFinishedRangeSegment(task: downloadTask) {
                 finishRangeRemainder(adopted, taskIdentifier: downloadTask.taskIdentifier,
                                  response: downloadTask.response, location: location)
                 return
             }
         }
-        guard let entry else { return }
+        guard let entry = entry ?? adoptedOpaque else { return }
 
         // Helper: a finished transfer that isn't actually a usable video must NOT be
         // left in place as "complete" (D1). Record a `.failed` row + surface why, and
@@ -1994,6 +2000,35 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                           bytes: bytes,
                                           validationLabel: "local_playback")
         }
+    }
+
+    /// JF-F4: adopt a finished OPAQUE (forward-only) background task that this session is tracking
+    /// in neither lane. On a device, a forward-only encoder stream can finish while the app is
+    /// terminated; on relaunch the background session redelivers `didFinishDownloadingTo` before —
+    /// or instead of — reattach re-adopting the task, so the finished multi-GB temp used to be
+    /// dropped and reconcile parked the row `.failed` (full restart from zero). The opaque `start`
+    /// paths set `taskDescription` to the bare ratingKey (no segment marker), so an unmarked task
+    /// resolving to a live forward-only, non-terminal row is ours: hand back a synthesized entry
+    /// and let the normal opaque finish path run (HTTP/MIME checks, atomic move, then
+    /// `finalizeTransferredFile` — whose tightened forward-only truncation validation is the
+    /// integrity gate for the adopted body). Simulator/foreground sessions never redeliver a
+    /// finish for a dead process (their transfers die with it), so this path simply never fires
+    /// there.
+    private func adoptFinishedForwardOnlyTransfer(
+        task: URLSessionDownloadTask
+    ) -> (ratingKey: String, destination: URL)? {
+        guard StaticRangeSegmentMarker.parse(task.taskDescription) == nil else { return nil }
+        guard let ratingKey = Self.ratingKey(for: task, knownKeys: store.allRatingKeys),
+              let record = store.records.first(where: { $0.ratingKey == ratingKey }),
+              record.metadata?.resolvedResumeMode(ratingKey: ratingKey) == .liveForwardOnly,
+              record.status != .complete, record.status != .failed, record.status != .unverified
+        else { return nil }
+        AppDiagnostics.record(.downloads, "downloads.opaque_dead_finish_adopted", fields: [
+            "download_id": .identifier(ratingKey),
+            "task_id": .int(task.taskIdentifier),
+            "status": .label(record.status.rawValue),
+        ])
+        return (ratingKey, record.localURL)
     }
 
     /// `remainderReason` marking an UNOWNED body: a dead-finished segment task lazily adopted in
