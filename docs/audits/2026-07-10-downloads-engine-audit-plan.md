@@ -677,3 +677,26 @@ path after releasing the old in-flight slot. A process kill between server-sourc
 new static transfer therefore leaves a resumable prep/job record instead of no row. Pre-create reuse
 rows without a job id fail visibly/retryably on relaunch; completed-job rows retain the job id and
 resume source discovery. The start-slot policy test now explicitly covers preparing-row replacement.
+
+### Remaining gates after automated follow-ups
+
+- **Phase 7 is physical-device evidence:** background-session redelivery, sleep/network/token
+  changes, and real disk pressure require the headset and controlled human actions from
+  `TESTING-CHECKLIST.md`.
+- **EMBY-F3 needs a server-correlatable create identity:** a process kill after the Sync-job POST
+  succeeds but before its integer job id is persisted cannot be recovered safely by title/time
+  heuristics. The current Emby request shape exposes no client idempotency key.
+- **EMBY-F4 is an explicit product/UX decision:** compatible-remux currently accepts its documented
+  1080p ceiling; changing the route or adding downgrade confirmation requires user judgment rather
+  than an audit-only silent behavior change.
+- **EMBY-F9 needs live Emby evidence:** whether its forward-only encoder needs Jellyfin-style
+  keepalives depends on real server idle behavior. No Emby credentials are available in this
+  worktree/simulator, so a synthetic keepalive would not establish correctness.
+- **PLEX-F5 needs safe queue-item identity/cancellation evidence:** cancelling a completed Plex type-
+  42 queue item can delete the rendered version itself, while the current metadata cannot prove
+  whether a newly matching Part belongs to this attempt or a concurrent job. Blind cleanup risks
+  destroying the file being downloaded.
+- **B.1 durable held-stash reuse is architectural:** the live relaunch probe proves current
+  sweep/refetch behavior. Closing it requires moving held bodies out of purgeable `tmp`, persisting
+  offset/length/validator/attempt metadata atomically with each stash, restoring that manifest before
+  task reconciliation, and integrating those files into storage accounting and every teardown path.
