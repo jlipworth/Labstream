@@ -84,4 +84,15 @@ public struct StaticRangeRecoveryTracker: Equatable, Sendable {
     public mutating func consumeRestartCounterPreservation(_ key: String) -> Bool {
         preserveRestartCounterKeys.remove(key) != nil
     }
+
+    /// Delete-time cleanup: a removed row must leave NO recovery state behind. A surviving
+    /// `finalizingKeys` entry makes a re-download that relaunches with a byte-complete checkpoint
+    /// return `.alreadyFinalizing` and park forever, and a surviving preservation key hands the
+    /// prior attempt's restart budgets to the fresh download.
+    public mutating func removeAll(forKey key: String) {
+        pendingResumeKeys.remove(key)
+        preserveRestartCounterKeys.remove(key)
+        finalizingKeys.remove(key)
+        manualQueueResumeKeys.remove(key)
+    }
 }

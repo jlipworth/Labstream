@@ -51,4 +51,30 @@ struct StaticRangeRecoveryTrackerTests {
         #expect(!second)
         #expect(!other)
     }
+
+    @Test("Delete-time removeAll clears every recovery set for the key and only that key")
+    func removeAllClearsEveryRecoverySet() {
+        var tracker = StaticRangeRecoveryTracker()
+        for key in ["doomed", "survivor"] {
+            tracker.addPendingResume(key)
+            tracker.markManualQueueResume(key)
+            tracker.markFinalizing(key)
+            tracker.preserveRestartCountersForNextStart(key)
+        }
+
+        tracker.removeAll(forKey: "doomed")
+
+        let doomedPreserved = tracker.consumeRestartCounterPreservation("doomed")
+        let survivorPreserved = tracker.consumeRestartCounterPreservation("survivor")
+
+        #expect(!tracker.hasPendingResume("doomed"))
+        #expect(!tracker.wasManuallyResumedWhileQueuePaused("doomed"))
+        #expect(!tracker.isFinalizing("doomed"))
+        #expect(!doomedPreserved)
+
+        #expect(tracker.hasPendingResume("survivor"))
+        #expect(tracker.wasManuallyResumedWhileQueuePaused("survivor"))
+        #expect(tracker.isFinalizing("survivor"))
+        #expect(survivorPreserved)
+    }
 }

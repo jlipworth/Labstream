@@ -99,6 +99,16 @@ public enum DownloadStatus: String, Codable, Sendable, Equatable {
             return .failed
         }
     }
+
+    /// Reconcile runs off-main in the reattach completion while the main actor keeps seeding new
+    /// rows. A row created AFTER the live-task snapshot was captured is inherently absent from
+    /// that snapshot's live-key set, so judging it against the snapshot demotes a healthy fresh
+    /// `.queued` row to `.failed` (and deletes its destination file). Only rows that already
+    /// existed at snapshot time are eligible for reconciliation.
+    public static func reconcileEligible(ratingKey: String,
+                                         snapshotRatingKeys: Set<String>) -> Bool {
+        snapshotRatingKeys.contains(ratingKey)
+    }
 }
 
 /// A Codable snapshot of the source `MediaItem` (plus the chosen download quality)

@@ -851,11 +851,16 @@ final class DownloadStore: @unchecked Sendable {
     ///
     /// A `.complete` row whose file has since vanished is likewise demoted to `.failed`.
     /// `liveRatingKeys` are the ratingKeys the background session reattached to —
-    /// genuinely still in flight and left untouched.
-    func reconcile(liveRatingKeys: Set<String>) {
+    /// genuinely still in flight and left untouched. `snapshotRatingKeys` are the rows that
+    /// existed when the task snapshot was requested: rows seeded on the main actor after that
+    /// point are skipped entirely, or a brand-new `.queued` row (or a static row mid retry
+    /// rebuild) would be demoted against a snapshot that predates it.
+    func reconcile(liveRatingKeys: Set<String>, snapshotRatingKeys: Set<String>) {
         lock.lock()
         var changed = false
         for (key, var row) in rows {
+            guard DownloadStatus.reconcileEligible(ratingKey: key,
+                                                   snapshotRatingKeys: snapshotRatingKeys) else { continue }
             let hasLiveTask = liveRatingKeys.contains(key)
             let fileURL = baseDirectory.appendingPathComponent(row.relativePath)
             let partialBytes = fileSize(at: fileURL) ?? 0
