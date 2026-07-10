@@ -443,12 +443,22 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     #if DEBUG
     private static func debugDownloadFaultArgument() -> DebugDownloadFaultURLProtocol.Fault? {
         let args = ProcessInfo.processInfo.arguments
+        let configuredDropBytes: Int = {
+            guard let idx = args.firstIndex(of: "--vp-probe-range-drop-after-bytes"),
+                  args.indices.contains(idx + 1),
+                  let bytes = Int(args[idx + 1]), bytes > 0 else { return 2 * 1_024 * 1_024 }
+            return bytes
+        }()
         if let idx = args.firstIndex(of: "--vp-probe-download-fault"),
            args.indices.contains(idx + 1) {
             switch args[idx + 1] {
             case "validator-flip": return .validatorFlip
             case "401-mid-train": return .unauthorizedMidTrain
             case "held-body-pause": return .heldBodyPause
+            case "held-body-delete": return .heldBodyDelete
+            case "write-failure": return .writeFailure
+            case "double-connection-drop":
+                return .repeatedConnectionDrop(afterBytes: configuredDropBytes, count: 2)
             default: break
             }
         }
@@ -3782,6 +3792,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         guard fileManager.fileExists(atPath: destination.path) else {
             throw CocoaError(.fileNoSuchFile)
         }
+        #if DEBUG
+        if DebugDownloadFaultURLProtocol.consumeInjectedWriteFailure() {
+            AppDiagnostics.record(.downloads, "downloads.fault_injected", fields: [
+                "scenario": .label("write-failure"),
+                "stage": .label("append"),
+            ])
+            throw NSError(domain: NSCocoaErrorDomain,
+                          code: CocoaError.fileWriteOutOfSpace.rawValue)
+        }
+        #endif
         let reader = try FileHandle(forReadingFrom: source)
         defer { try? reader.close() }
         let writer = try FileHandle(forWritingTo: destination)
@@ -5050,16 +5070,22 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, @unchecked Sendable {
     enum Fault: Sendable {
         case connectionDrop(afterBytes: Int)
+        case repeatedConnectionDrop(afterBytes: Int, count: Int)
         case validatorFlip
         case unauthorizedMidTrain
         case heldBodyPause
+        case heldBodyDelete
+        case writeFailure
 
         var label: String {
             switch self {
             case .connectionDrop: "connection-drop"
+            case .repeatedConnectionDrop: "double-connection-drop"
             case .validatorFlip: "validator-flip"
             case .unauthorizedMidTrain: "401-mid-train"
             case .heldBodyPause: "held-body-pause"
+            case .heldBodyDelete: "held-body-delete"
+            case .writeFailure: "write-failure"
             }
         }
     }
@@ -5067,9 +5093,10 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
     private static let handledKey = "LabstreamDebugDownloadFaultHandled"
     private static let lock = NSLock()
     nonisolated(unsafe) private static var configuredFault: Fault?
-    nonisolated(unsafe) private static var didDrop = false
+    nonisolated(unsafe) private static var injectedDropCount = 0
     nonisolated(unsafe) private static var didInjectUnauthorized = false
     nonisolated(unsafe) private static var didAssignInitialZeroValidator = false
+    nonisolated(unsafe) private static var didInjectWriteFailure = false
 
     private var upstreamTask: URLSessionDataTask?
     private var session: URLSession?
@@ -5080,9 +5107,10 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
     static func configure(_ fault: Fault) {
         lock.lock()
         configuredFault = fault
-        didDrop = false
+        injectedDropCount = 0
         didInjectUnauthorized = false
         didAssignInitialZeroValidator = false
+        didInjectWriteFailure = false
         lock.unlock()
     }
 
@@ -5091,9 +5119,17 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
               request.value(forHTTPHeaderField: "Range") != nil,
               request.url?.scheme == "http" || request.url?.scheme == "https" else { return false }
         lock.lock()
-        let enabled = configuredFault != nil
+        let fault = configuredFault
         lock.unlock()
-        return enabled
+        guard let fault else { return false }
+        if case .repeatedConnectionDrop = fault {
+            // Repeated-reset coverage is specifically the segment-zero resume chain. Sibling
+            // segments start concurrently; faulting any two of them would prove only parallel
+            // failures, not reset→blob adoption→second reset on the same logical segment.
+            let firstSegmentEnd = 512 * 1_024 * 1_024 - 1
+            return rangeEnd(request.value(forHTTPHeaderField: "Range")).map { $0 <= firstSegmentEnd } ?? false
+        }
+        return true
     }
 
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -5183,12 +5219,19 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         Self.lock.lock()
         let threshold: Int
-        if case .connectionDrop(let afterBytes)? = Self.configuredFault {
+        let dropLimit: Int
+        switch Self.configuredFault {
+        case .connectionDrop(let afterBytes):
             threshold = afterBytes
-        } else {
+            dropLimit = 1
+        case .repeatedConnectionDrop(let afterBytes, let count):
+            threshold = afterBytes
+            dropLimit = count
+        default:
             threshold = 0
+            dropLimit = 0
         }
-        let shouldDropAlready = Self.didDrop
+        let mayInjectDrop = Self.injectedDropCount < dropLimit
         let fault = Self.configuredFault
         Self.lock.unlock()
 
@@ -5202,8 +5245,10 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
         switch fault {
         case .validatorFlip:
             shouldFinishSmallBody = true
-        case .heldBodyPause:
+        case .heldBodyPause, .heldBodyDelete:
             shouldFinishSmallBody = rangeStart > 0
+        case .writeFailure:
+            shouldFinishSmallBody = rangeStart == 0
         default:
             shouldFinishSmallBody = false
         }
@@ -5223,6 +5268,12 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
                         "range_start": .int(rangeStart),
                         "after_bytes": .int(delivered),
                     ])
+                } else if case .heldBodyDelete? = fault {
+                    AppDiagnostics.record(.downloads, "downloads.fault_injected", fields: [
+                        "scenario": .label("held-body-delete"),
+                        "range_start": .int(rangeStart),
+                        "after_bytes": .int(delivered),
+                    ])
                 }
                 dataTask.cancel()
                 client?.urlProtocolDidFinishLoading(self)
@@ -5230,7 +5281,7 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
             return
         }
 
-        guard threshold > 0, !shouldDropAlready else {
+        guard threshold > 0, mayInjectDrop else {
             client?.urlProtocol(self, didLoad: data)
             return
         }
@@ -5253,12 +5304,27 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
 
     private func failOnce(_ dataTask: URLSessionDataTask) {
         Self.lock.lock()
-        let alreadyDropped = Self.didDrop
-        if !alreadyDropped { Self.didDrop = true }
+        let fault = Self.configuredFault
+        let dropLimit: Int
+        switch fault {
+        case .connectionDrop:
+            dropLimit = 1
+        case .repeatedConnectionDrop(_, let count):
+            dropLimit = count
+        default:
+            dropLimit = 0
+        }
+        let shouldInject = Self.injectedDropCount < dropLimit
+        if shouldInject {
+            Self.injectedDropCount += 1
+        }
+        let attempt = Self.injectedDropCount
         Self.lock.unlock()
-        guard !alreadyDropped else { return }
+        guard shouldInject else { return }
+        let scenario = fault?.label ?? "connection-drop"
         AppDiagnostics.record(.downloads, "downloads.fault_injected", fields: [
-            "scenario": .label("connection-drop"),
+            "scenario": .label(scenario),
+            "attempt": .int(attempt),
             "after_bytes": .int(delivered),
         ])
         dataTask.cancel()
@@ -5280,6 +5346,22 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
     private static func rangeStart(_ header: String?) -> Int? {
         guard let header, header.hasPrefix("bytes=") else { return nil }
         return Int(header.dropFirst("bytes=".count).split(separator: "-", maxSplits: 1)[0])
+    }
+
+    private static func rangeEnd(_ header: String?) -> Int? {
+        guard let header, header.hasPrefix("bytes=") else { return nil }
+        let pieces = header.dropFirst("bytes=".count).split(separator: "-", maxSplits: 1,
+                                                               omittingEmptySubsequences: false)
+        guard pieces.count == 2, !pieces[1].isEmpty else { return nil }
+        return Int(pieces[1])
+    }
+
+    static func consumeInjectedWriteFailure() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard case .writeFailure? = configuredFault, !didInjectWriteFailure else { return false }
+        didInjectWriteFailure = true
+        return true
     }
 }
 #endif

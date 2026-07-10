@@ -594,9 +594,10 @@ install UUID match, clean launch/log smoke, and signed-in Home screenshot; simul
 
 ### Highest-value next work
 
-1. Extend the now-live-verified Phase-6 transport harness from validator-flip, mid-train 401, and
-   held-body pause into pause-mid-drain, delete interleavings, reset→blob→reset, and injected
-   filesystem write failure.
+1. Extend the now-live-verified Phase-6 transport harness from validator-flip, mid-train 401,
+   held-body pause/delete, and double resume-blob adoption into pause/delete-mid-drain,
+   concurrent 200/416 handling, and relaunch with on-disk held stashes. Injected append ENOSPC is
+   now live-verified as terminal with whole-train teardown and no transient retry.
 2. Execute the Phase-7 physical-device cells, prioritizing process-kill/background redelivery,
    token/network changes while asleep, and disk pressure.
 3. Close the checklist's evidence gaps (lifecycle cause, blob presence, network path, free-space,
