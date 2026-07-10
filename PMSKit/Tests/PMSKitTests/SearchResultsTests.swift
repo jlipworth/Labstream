@@ -2,9 +2,10 @@ import Testing
 @testable import PMSKit
 
 private func searchItem(_ key: String, _ type: String,
-                        section: String? = nil) -> MediaItem {
+                        section: String? = nil,
+                        playlistType: String? = nil) -> MediaItem {
     MediaItem(ratingKey: key, title: "\(type)-\(key)", type: type,
-              librarySectionKey: section)
+              librarySectionKey: section, playlistType: playlistType)
 }
 
 @Test func searchProjectionKeepsLibrariesAndVideoBeforeMusic() throws {
@@ -63,6 +64,39 @@ private func searchItem(_ key: String, _ type: String,
     #expect(results.presentationGroups.count == 1)
     #expect(results.presentationGroups[0].sections[0].items.count == 1)
     #expect(results.presentationGroups[0].sections.map(\.kind) == [.artists, .songs])
+}
+
+@Test func audioPlaylistsGetMusicBucketVideoPlaylistsGetStandard() throws {
+    // An audio playlist keeps the music `.playlists` treatment; a video playlist and
+    // an explicitly-labeled photo playlist land in the standard/video path so they
+    // route to DetailView instead of the empty audio PlaylistDetailView.
+    let group = try #require(SearchResultGroup.mediaBrowserLibrary(
+        backendID: "plex", libraryID: "3", title: "Mixed",
+        items: [searchItem("audio", "playlist", playlistType: "audio"),
+                searchItem("video", "playlist", playlistType: "video"),
+                searchItem("photo", "playlist", playlistType: "photo")]))
+
+    let sections = SearchResults(groups: [group]).presentationGroups[0].sections
+    // Two homogeneous playlist hubs: the video-flavored bucket (video + photo) renders
+    // through `.standard`, the audio bucket keeps `.playlists`.
+    let byTitle = Dictionary(grouping: sections, by: \.title)
+    let standardPlaylists = try #require(sections.first { $0.kind == .standard })
+    #expect(standardPlaylists.items.map(\.ratingKey) == ["video", "photo"])
+    let musicPlaylists = try #require(sections.first { $0.kind == .playlists })
+    #expect(musicPlaylists.items.map(\.ratingKey) == ["audio"])
+    #expect(byTitle["Playlists"]?.count == 2)
+}
+
+@Test func unlabeledPlaylistDefaultsToMusicBucket() throws {
+    // A playlist with no `playlistType` label is the lenient audio default (matches
+    // `MediaItem.isAudioPlaylist`), so it keeps the music treatment.
+    let group = try #require(SearchResultGroup.mediaBrowserLibrary(
+        backendID: "plex", libraryID: "3", title: "Mixed",
+        items: [searchItem("bare", "playlist")]))
+
+    let sections = SearchResults(groups: [group]).presentationGroups[0].sections
+    #expect(sections.map(\.kind) == [.playlists])
+    #expect(sections[0].items.map(\.ratingKey) == ["bare"])
 }
 
 @Test func plexSearchKeepsDiscoveryOrderAndExplicitIdentity() {
