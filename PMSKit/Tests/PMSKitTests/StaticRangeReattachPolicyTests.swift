@@ -96,4 +96,179 @@ struct StaticRangeReattachPolicyTests {
             disposition: .replaceExisting(existingTaskIdentifier: 29, existingBaseOffset: 512)
         ))
     }
+
+    @Test("Unmarked closed ranges are still dropped as legacy")
+    func unmarkedClosedRangeStillDropped() {
+        let plan = StaticRangeReattachPolicy.plan(
+            taskIdentifier: 40,
+            downloadID: "plex:item",
+            durableBytes: 0,
+            requestedOffset: 0,
+            rangeRequestShape: .closed,
+            bodyBytesWritten: 10,
+            existingTasks: [],
+            taskMarker: nil
+        )
+
+        #expect(plan == StaticRangeReattachPlan(
+            candidateBaseOffset: 0,
+            disposition: .dropLegacyRange(requestedOffset: 0, durableBytes: 0, rangeRequestShape: .closed)
+        ))
+    }
+
+    @Test("A marked closed segment with matching offset is adopted")
+    func markedClosedSegmentAdopted() {
+        let plan = StaticRangeReattachPolicy.plan(
+            taskIdentifier: 41,
+            downloadID: "plex:item",
+            durableBytes: 0,
+            requestedOffset: 0,
+            rangeRequestShape: .closed,
+            bodyBytesWritten: 10,
+            existingTasks: [],
+            taskMarker: StaticRangeSegmentMarker.value(offset: 0)
+        )
+
+        #expect(plan == StaticRangeReattachPlan(candidateBaseOffset: 0, disposition: .adopt))
+    }
+
+    @Test("A marked closed segment ahead of the durable checkpoint but aligned to the segment grid is adopted")
+    func markedClosedSegmentAheadOfDurableGridAligned() {
+        let plan = StaticRangeReattachPolicy.plan(
+            taskIdentifier: 42,
+            downloadID: "plex:item",
+            durableBytes: 0,
+            requestedOffset: 512,
+            rangeRequestShape: .closed,
+            bodyBytesWritten: 10,
+            existingTasks: [],
+            taskMarker: StaticRangeSegmentMarker.value(offset: 512),
+            segmentBytes: 512
+        )
+
+        #expect(plan == StaticRangeReattachPlan(candidateBaseOffset: 512, disposition: .adopt))
+    }
+
+    @Test("A marked segment behind the durable checkpoint is rejected even when grid-aligned")
+    func markedClosedSegmentBehindDurableRejected() {
+        let plan = StaticRangeReattachPolicy.plan(
+            taskIdentifier: 44,
+            downloadID: "plex:item",
+            durableBytes: 600,
+            requestedOffset: 512,
+            rangeRequestShape: .closed,
+            bodyBytesWritten: 10,
+            existingTasks: [],
+            taskMarker: StaticRangeSegmentMarker.value(offset: 512),
+            segmentBytes: 512
+        )
+
+        #expect(plan == StaticRangeReattachPlan(
+            candidateBaseOffset: 512,
+            disposition: .rejectOffsetMismatch(requestedOffset: 512, durableBytes: 600)
+        ))
+    }
+
+    @Test("A marked closed segment not aligned to the segment grid is rejected as an offset mismatch")
+    func markedClosedSegmentNotGridAlignedRejected() {
+        let plan = StaticRangeReattachPolicy.plan(
+            taskIdentifier: 43,
+            downloadID: "plex:item",
+            durableBytes: 0,
+            requestedOffset: 300,
+            rangeRequestShape: .closed,
+            bodyBytesWritten: 10,
+            existingTasks: [],
+            taskMarker: StaticRangeSegmentMarker.value(offset: 300),
+            segmentBytes: 512
+        )
+
+        #expect(plan == StaticRangeReattachPlan(
+            candidateBaseOffset: 300,
+            disposition: .rejectOffsetMismatch(requestedOffset: 300, durableBytes: 0)
+        ))
+    }
+
+    @Test("Two marked segments at different offsets both adopt")
+    func twoMarkedSegmentsDifferentOffsetsBothAdopt() {
+        let existing = [
+            StaticRangeTaskSnapshot(taskIdentifier: 50, downloadID: "plex:item", baseOffset: 0, bodyBytesWritten: 100),
+        ]
+
+        let plan = StaticRangeReattachPolicy.plan(
+            taskIdentifier: 51,
+            downloadID: "plex:item",
+            durableBytes: 0,
+            requestedOffset: 512,
+            rangeRequestShape: .closed,
+            bodyBytesWritten: 10,
+            existingTasks: existing,
+            taskMarker: StaticRangeSegmentMarker.value(offset: 512),
+            segmentBytes: 512
+        )
+
+        #expect(plan == StaticRangeReattachPlan(candidateBaseOffset: 512, disposition: .adopt))
+    }
+
+    @Test("Two marked segments at the same offset supersede: newer adopted, older superseded")
+    func twoMarkedSegmentsSameOffsetSupersede() {
+        let existing = [
+            StaticRangeTaskSnapshot(taskIdentifier: 60, downloadID: "plex:item", baseOffset: 512, bodyBytesWritten: 32),
+        ]
+
+        let plan = StaticRangeReattachPolicy.plan(
+            taskIdentifier: 61,
+            downloadID: "plex:item",
+            durableBytes: 0,
+            requestedOffset: 512,
+            rangeRequestShape: .closed,
+            bodyBytesWritten: 64,
+            existingTasks: existing,
+            taskMarker: StaticRangeSegmentMarker.value(offset: 512),
+            segmentBytes: 512
+        )
+
+        #expect(plan == StaticRangeReattachPlan(
+            candidateBaseOffset: 512,
+            disposition: .replaceExisting(existingTaskIdentifier: 60, existingBaseOffset: 512)
+        ))
+    }
+
+    @Test("A malformed marker is treated as unmarked and legacy-dropped")
+    func malformedMarkerDropsAsLegacy() {
+        let plan = StaticRangeReattachPolicy.plan(
+            taskIdentifier: 70,
+            downloadID: "plex:item",
+            durableBytes: 0,
+            requestedOffset: 0,
+            rangeRequestShape: .closed,
+            bodyBytesWritten: 10,
+            existingTasks: [],
+            taskMarker: "lbs-segment:v1:abc"
+        )
+
+        #expect(plan == StaticRangeReattachPlan(
+            candidateBaseOffset: 0,
+            disposition: .dropLegacyRange(requestedOffset: 0, durableBytes: 0, rangeRequestShape: .closed)
+        ))
+    }
+
+    @Test("A marker whose offset does not match the requested offset is treated as unmarked")
+    func markerOffsetMismatchDropsAsLegacy() {
+        let plan = StaticRangeReattachPolicy.plan(
+            taskIdentifier: 71,
+            downloadID: "plex:item",
+            durableBytes: 0,
+            requestedOffset: 512,
+            rangeRequestShape: .closed,
+            bodyBytesWritten: 10,
+            existingTasks: [],
+            taskMarker: StaticRangeSegmentMarker.value(offset: 0)
+        )
+
+        #expect(plan == StaticRangeReattachPlan(
+            candidateBaseOffset: 512,
+            disposition: .dropLegacyRange(requestedOffset: 512, durableBytes: 0, rangeRequestShape: .closed)
+        ))
+    }
 }
