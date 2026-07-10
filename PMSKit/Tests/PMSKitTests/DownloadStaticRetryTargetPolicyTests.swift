@@ -57,19 +57,19 @@ struct DownloadStaticRetryTargetPolicyTests {
         #expect(target == DownloadStaticRetryTarget(intent: .existingVersion, mediaIndex: 0, partIndex: 0))
     }
 
-    @Test("Missing source part falls back to indices and persisted prepared state")
+    @Test("Missing persisted source part fails closed; legacy rows still use persisted indices")
     func missingSourcePartFallback() {
         #expect(DownloadStaticRetryTargetPolicy.target(metadata: metadata(sourcePartID: 999),
                                                        item: item(),
                                                        fallbackMediaIndex: 3,
                                                        fallbackPartIndex: 4)
-            == DownloadStaticRetryTarget(intent: .original, mediaIndex: 3, partIndex: 4))
+            == DownloadStaticRetryTarget(intent: .unavailable, mediaIndex: 3, partIndex: 4))
         #expect(DownloadStaticRetryTargetPolicy.target(metadata: metadata(sourcePartID: 999,
                                                                           serverPrepared: true),
                                                        item: item(),
                                                        fallbackMediaIndex: 3,
                                                        fallbackPartIndex: 4)
-            == DownloadStaticRetryTarget(intent: .existingVersion, mediaIndex: 3, partIndex: 4))
+            == DownloadStaticRetryTarget(intent: .unavailable, mediaIndex: 3, partIndex: 4))
         #expect(DownloadStaticRetryTargetPolicy.target(metadata: metadata(mediaIndex: 2),
                                                        item: item(),
                                                        fallbackMediaIndex: 3,
