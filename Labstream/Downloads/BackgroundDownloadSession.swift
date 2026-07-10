@@ -879,12 +879,29 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let tmp = fileManager.temporaryDirectory
         guard let entries = try? fileManager.contentsOfDirectory(
             at: tmp, includingPropertiesForKeys: nil) else { return }
+        var sweptCount = 0
+        var sweptBytes = 0
         for url in entries where !heldStashPaths.contains(url.lastPathComponent)
             && BackgroundTempFileCleanupPolicy.shouldDeleteRangeBodyStash(
             fileName: url.lastPathComponent,
             liveTaskIdentifiers: liveTaskIdentifiers
         ) {
-            try? fileManager.removeItem(at: url)
+            let bytes = fileSize(at: url) ?? 0
+            do {
+                try fileManager.removeItem(at: url)
+                sweptCount += 1
+                sweptBytes += bytes
+            } catch {
+                // Best-effort cleanup: a later reattach can retry files that remain.
+            }
+        }
+        if sweptCount > 0 {
+            AppDiagnostics.record(.downloads, "downloads.range_stash_swept", fields: [
+                "swept_count": .int(sweptCount),
+                "swept_bytes": .bytes(sweptBytes),
+                "live_task_count": .int(liveTaskIdentifiers.count),
+                "held_stash_count": .int(heldStashPaths.count),
+            ])
         }
     }
 
