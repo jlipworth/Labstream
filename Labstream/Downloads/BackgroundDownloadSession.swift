@@ -448,6 +448,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             switch args[idx + 1] {
             case "validator-flip": return .validatorFlip
             case "401-mid-train": return .unauthorizedMidTrain
+            case "held-body-pause": return .heldBodyPause
             default: break
             }
         }
@@ -5051,12 +5052,14 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
         case connectionDrop(afterBytes: Int)
         case validatorFlip
         case unauthorizedMidTrain
+        case heldBodyPause
 
         var label: String {
             switch self {
             case .connectionDrop: "connection-drop"
             case .validatorFlip: "validator-flip"
             case .unauthorizedMidTrain: "401-mid-train"
+            case .heldBodyPause: "held-body-pause"
             }
         }
     }
@@ -5072,6 +5075,7 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
     private var session: URLSession?
     private var delivered = 0
     private var responseValidator: String?
+    private var finishedInjectedBody = false
 
     static func configure(_ fault: Fault) {
         lock.lock()
@@ -5185,7 +5189,46 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
             threshold = 0
         }
         let shouldDropAlready = Self.didDrop
+        let fault = Self.configuredFault
         Self.lock.unlock()
+
+        // Validator comparison happens when the download body finishes, not when URLSession
+        // delivers response headers. Letting every real 512 MiB segment complete makes this
+        // deterministic fault take minutes and several gigabytes. End each mutated response after
+        // a small body: the real delegate/stash/apply path still runs, and validator integrity is
+        // deliberately checked before body-length/alignment handling.
+        let rangeStart = Self.rangeStart(request.value(forHTTPHeaderField: "Range")) ?? 0
+        let shouldFinishSmallBody: Bool
+        switch fault {
+        case .validatorFlip:
+            shouldFinishSmallBody = true
+        case .heldBodyPause:
+            shouldFinishSmallBody = rangeStart > 0
+        default:
+            shouldFinishSmallBody = false
+        }
+        if shouldFinishSmallBody {
+            let finishAfterBytes = 64 * 1_024
+            let remaining = max(0, finishAfterBytes - delivered)
+            let emitCount = min(remaining, data.count)
+            if emitCount > 0 {
+                client?.urlProtocol(self, didLoad: data.prefix(emitCount))
+                delivered += emitCount
+            }
+            if delivered >= finishAfterBytes, !finishedInjectedBody {
+                finishedInjectedBody = true
+                if case .heldBodyPause? = fault {
+                    AppDiagnostics.record(.downloads, "downloads.fault_injected", fields: [
+                        "scenario": .label("held-body-pause"),
+                        "range_start": .int(rangeStart),
+                        "after_bytes": .int(delivered),
+                    ])
+                }
+                dataTask.cancel()
+                client?.urlProtocolDidFinishLoading(self)
+            }
+            return
+        }
 
         guard threshold > 0, !shouldDropAlready else {
             client?.urlProtocol(self, didLoad: data)
@@ -5224,6 +5267,7 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if finishedInjectedBody { return }
         if let error {
             let ns = error as NSError
             if ns.domain == NSURLErrorDomain, ns.code == NSURLErrorCancelled { return }

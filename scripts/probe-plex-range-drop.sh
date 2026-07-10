@@ -17,7 +17,8 @@ Required selector (or env):
   LABSTREAM_PROBE_RATING_KEY       Env alternative for --rating-key.
 
 Options:
-  --fault NAME                      connection-drop (default), validator-flip, or 401-mid-train.
+  --fault NAME                      connection-drop (default), validator-flip, 401-mid-train,
+                                    or held-body-pause (requires --pause-resume).
   --drop-after-bytes N              Network-loss threshold for connection-drop (default: 2097152).
   --observe-seconds N               Probe post-start observation window (default: env or 90).
   --pause-after-seconds N           Delay before pause in --pause-resume mode (default: env or 8).
@@ -109,8 +110,13 @@ if [[ -z "$query" && -z "$rating_key" ]]; then
   echo "       The script intentionally has no built-in media id." >&2
   exit 2
 fi
-if [[ "$fault" != "connection-drop" && "$fault" != "validator-flip" && "$fault" != "401-mid-train" ]]; then
-  echo "ERROR: fault must be connection-drop, validator-flip, or 401-mid-train (got '$fault')." >&2
+if [[ "$fault" != "connection-drop" && "$fault" != "validator-flip" \
+      && "$fault" != "401-mid-train" && "$fault" != "held-body-pause" ]]; then
+  echo "ERROR: fault must be connection-drop, validator-flip, 401-mid-train, or held-body-pause (got '$fault')." >&2
+  exit 2
+fi
+if [[ "$fault" == "held-body-pause" && $pause_resume -ne 1 ]]; then
+  echo "ERROR: held-body-pause requires --pause-resume." >&2
   exit 2
 fi
 if [[ "$fault" == "connection-drop" ]] && ! is_positive_int "$drop_after"; then
@@ -280,6 +286,21 @@ if [[ $delete_existing != "1" && $delete_existing != "true" && $delete_existing 
     401-mid-train)
       if ! grep -Eq 'downloads\.range_http_rehydrate' "$log_file"; then
         echo "ERROR: injected 401 did not reach the engine's request-rehydration path; inspect $log_file" >&2
+        probe_status=1
+      fi
+      ;;
+    held-body-pause)
+      held_line=$(grep -n -m1 'downloads\.range_segment_held' "$log_file" | cut -d: -f1 || true)
+      paused_line=$(grep -n -m1 'probe\.plex_download\.paused.*reached=true' "$log_file" | cut -d: -f1 || true)
+      if [[ -z "$held_line" || -z "$paused_line" || $held_line -ge $paused_line ]]; then
+        echo "ERROR: no held body was observed before the row reached paused; inspect $log_file" >&2
+        probe_status=1
+      elif sed -n "${held_line},${paused_line}p" "$log_file" | grep -Eq 'downloads\.range_held_segments_purged'; then
+        echo "ERROR: pause purged a held segment body instead of preserving it; inspect $log_file" >&2
+        probe_status=1
+      fi
+      if ! grep -Eq 'probe\.plex_download\.resume_check' "$log_file"; then
+        echo "ERROR: held-body pause did not continue through the retry/resume path; inspect $log_file" >&2
         probe_status=1
       fi
       ;;

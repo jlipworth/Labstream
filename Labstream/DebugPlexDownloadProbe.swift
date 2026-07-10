@@ -321,7 +321,11 @@ enum DebugPlexDownloadProbe {
         var req = URLRequest(url: OptimizeRequest.downloadURL(server: server, token: token, partKey: partKey))
         req.setValue("bytes=0-1023", forHTTPHeaderField: "Range")
         do {
-            let (_, response) = try await URLSession.shared.data(for: req)
+            // Header-only evidence. `data(for:)` buffers the entire response and a server that
+            // ignores Range turns this 1 KiB check into a multi-gigabyte foreground download,
+            // preventing the actual Phase-6 transfer from ever starting. Dropping AsyncBytes
+            // without iterating cancels the body after URLSession has delivered the response.
+            let (_, response) = try await URLSession.shared.bytes(for: req)
             guard let http = response as? HTTPURLResponse else { return }
             let acceptRanges = http.value(forHTTPHeaderField: "Accept-Ranges") ?? "nil"
             let contentRange = http.value(forHTTPHeaderField: "Content-Range") ?? "nil"

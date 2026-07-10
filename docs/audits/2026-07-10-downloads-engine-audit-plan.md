@@ -594,8 +594,9 @@ install UUID match, clean launch/log smoke, and signed-in Home screenshot; simul
 
 ### Highest-value next work
 
-1. Run the two new Phase-6 transport scenarios against a known original/static Plex item larger
-   than one segment, then add pause/delete interleavings and write-failure injection.
+1. Extend the now-live-verified Phase-6 transport harness from validator-flip, mid-train 401, and
+   held-body pause into pause-mid-drain, delete interleavings, reset→blob→reset, and injected
+   filesystem write failure.
 2. Execute the Phase-7 physical-device cells, prioritizing process-kill/background redelivery,
    token/network changes while asleep, and disk pressure.
 3. Close the checklist's evidence gaps (lifecycle cause, blob presence, network path, free-space,
