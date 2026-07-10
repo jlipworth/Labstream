@@ -130,7 +130,11 @@ public enum LibraryBrowseFilter: String, CaseIterable, Identifiable, Sendable {
         case .unwatched:
             return [URLQueryItem(name: "unwatched", value: "1")]
         case .watched:
-            return [URLQueryItem(name: "unwatched", value: "0")]
+            // `unwatched=0` is not a facet PMS reliably honors for a watched-only listing.
+            // The robust Plex expression is the negated boolean `unwatched!=1`, encoded as a
+            // query item whose NAME carries the `!` operator (PlexURLQueryEncoder percent-
+            // encodes it to `%21`, which PMS decodes back to the `unwatched!=1` negation).
+            return [URLQueryItem(name: "unwatched!", value: "1")]
         case .inProgress:
             return [URLQueryItem(name: "inProgress", value: "1")]
         }
