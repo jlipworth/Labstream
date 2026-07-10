@@ -584,13 +584,37 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     case .replaceExisting, .suppressForExisting, .adopt:
                         break
                     }
+                    // C3: a reattached MARKED closed-range segment must recover its segmentLength, or
+                    // the hold branch (keyed on `segmentLength != nil`) discards out-of-order finishes
+                    // after every relaunch — re-downloading up to a full segment and burning the
+                    // offset-mismatch retry budget. Open-ended remainders stay `nil` (unchanged).
+                    let recoveredSegmentLength: Int? = {
+                        guard rangeRequestShape == .closed,
+                              StaticRangeSegmentMarker.parse(task.taskDescription) == reattachPlan.candidateBaseOffset
+                        else { return nil }
+                        // Prefer the exact end bound off the closed Range header.
+                        let start = requestedOffset ?? reattachPlan.candidateBaseOffset
+                        if let end = RangeTransferHTTPPolicy.rangeRequestEnd(rangeHeader), end >= start {
+                            return end - start + 1
+                        }
+                        // Header lost (only the marker survived): derive from the segment grid with
+                        // tail truncation against the expected total.
+                        guard StaticRangeTransferRegime.current == .segmentTrain else { return nil }
+                        let base = reattachPlan.candidateBaseOffset
+                        let segBytes = StaticRangeTransferRegime.segmentBytes
+                        if let expected = BackgroundDownloadProgressPolicy.derivedExpectedBytes(record),
+                           expected > base {
+                            return min(segBytes, expected - base)
+                        }
+                        return segBytes
+                    }()
                     let reattached = RangeTransfer(
                         ratingKey: ratingKey,
                         request: nil,
                         destination: destination,
                         expectedBytes: BackgroundDownloadProgressPolicy.derivedExpectedBytes(record),
                         baseOffset: reattachPlan.candidateBaseOffset,
-                        segmentLength: nil,
+                        segmentLength: recoveredSegmentLength,
                         responseStatus: nil,
                         bodyBytesWritten: max(0, Int(task.countOfBytesReceived)),
                         remainderReason: "reattached")
@@ -976,8 +1000,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // belt-and-suspenders that short-circuits the cooperating ones.
         let remainderReason = remainderReasonOverride ?? "single_remainder"
         lock.lock()
+        // I3: only CLOSED segments (segmentLength != nil) are real train members. An adopted
+        // open-ended remainder (segmentLength == nil) must NOT count as a live segment offset, or the
+        // planner treats its offset as covered and never fills that range.
         var liveSegmentOffsets = Set(rangeInflight.values
-            .filter { $0.ratingKey == ratingKey }
+            .filter { $0.ratingKey == ratingKey && $0.segmentLength != nil }
             .map { $0.baseOffset })
         for off in heldRangeSegments[ratingKey]?.keys ?? [:].keys { liveSegmentOffsets.insert(off) }
         lock.unlock()
@@ -993,6 +1020,29 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 maxQueuedSegments: StaticRangeTransferRegime.maxQueuedSegments)
         case .openEndedRemainder:
             plans = [StaticRangeSegmentPlan(offset: offset, length: nil)]
+        }
+        // I3: when we are about to enqueue a CLOSED-range train, supersede any live open-ended task
+        // for this key first — an adopted `bytes=N-` remainder would otherwise double-fetch the same
+        // bytes the train covers. Its buffered bytes are non-durable and checkpoint-recoverable, so a
+        // clean train replaces it. Scoped to closed trains so the open-ended regime is untouched and
+        // the expectedBytes==nil open-ended fallback plan does not cancel itself.
+        if plans.contains(where: { $0.length != nil }) {
+            lock.lock()
+            let openEndedIdentifiers = rangeInflight
+                .filter { $0.value.ratingKey == ratingKey && $0.value.segmentLength == nil }
+                .map(\.key)
+            for identifier in openEndedIdentifiers {
+                rangeInflight.removeValue(forKey: identifier)
+                supersededRangeTaskIdentifiers.insert(identifier)
+            }
+            lock.unlock()
+            for identifier in openEndedIdentifiers {
+                cancelURLSessionTask(identifier: identifier)
+                AppDiagnostics.record(.downloads, "downloads.range_open_ended_superseded_by_train", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "task_id": .int(identifier),
+                ])
+            }
         }
         if plans.isEmpty {
             endRangeRequestRebuildGrace(ratingKey: ratingKey, reason: "request_rebuilt")
@@ -1267,6 +1317,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
         lock.unlock()
         endRangeRequestRebuildGrace(ratingKey: ratingKey, reason: "paused")
+        // C2: a pause resets the row to its durable checkpoint and re-plans a fresh train on resume;
+        // held ahead-of-checkpoint stashes (whose tasks are being cancelled) would otherwise leak in
+        // `tmp/` and can never be appended without re-download.
+        purgeHeldRangeSegments(ratingKey: ratingKey)
 
         // #169: opaque and range tasks share one session now — enumerate it once and dispatch each
         // matched task by lane (range entries are removed as `pauseRangeTask` matches them).
@@ -1420,6 +1474,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         haltedRangeKeys.insert(ratingKey)
         lock.unlock()
         endRangeRequestRebuildGrace(ratingKey: ratingKey, reason: "cancelled")
+        // C2: the caller is about to delete/reset this row — held segment stashes must not survive.
+        purgeHeldRangeSegments(ratingKey: ratingKey)
 
         // #169: opaque and range tasks both live on `urlSession` now — cancel by id on one session.
         let all = ids.union(rangeIds)
@@ -1716,6 +1772,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                              response: downloadTask.response, location: location)
             return
         }
+        if entry == nil {
+            // I1: a background task that finished while tracked in NEITHER lane is usually an OS
+            // redelivery after relaunch (URLSession may replay a completed background task before, or
+            // instead of, reattach re-adopting it). If its taskDescription marks it as one of OUR
+            // static-range segments and maps to a live static-range row, synthesize the entry and
+            // route it through the SAME finished-body path (C1 validator/alignment checks included)
+            // rather than silently dropping an irreplaceable body.
+            if let adopted = adoptFinishedRangeSegment(task: downloadTask) {
+                finishRangeRemainder(adopted, taskIdentifier: downloadTask.taskIdentifier,
+                                 response: downloadTask.response, location: location)
+                return
+            }
+        }
         guard let entry else { return }
 
         // Helper: a finished transfer that isn't actually a usable video must NOT be
@@ -1819,6 +1888,78 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                           bytes: bytes,
                                           validationLabel: "local_playback")
         }
+    }
+
+    /// `remainderReason` marking an UNOWNED body: a dead-finished segment task lazily adopted in
+    /// `adoptFinishedRangeSegment` rather than tracked from start/reattach. Such bodies get stricter
+    /// validator handling in `applyFinishedRangeBody` (NEW-1) — no absent-validator tolerance, and a
+    /// mismatch discards the body instead of restarting the owned partial.
+    private static let deadFinishAdoptedReason = "dead_finish_adopted"
+
+    /// I1: build a `RangeTransfer` for a finished background segment task that this session is
+    /// tracking in NEITHER lane, so a relaunch/redelivery finish can be lazily adopted through the
+    /// normal finished-body path instead of being dropped. Returns `nil` (recording a
+    /// `downloads.range_unknown_task_finish` diagnostic) when the task cannot be resolved to a live
+    /// static-range row or is not one of our marked segments.
+    private func adoptFinishedRangeSegment(task: URLSessionDownloadTask) -> RangeTransfer? {
+        let markedOffset = StaticRangeSegmentMarker.parse(task.taskDescription)
+        let knownKeys = store.allRatingKeys
+        let resolvedKey = Self.ratingKey(for: task, knownKeys: knownKeys)
+        func reject(_ reason: String) {
+            AppDiagnostics.record(.downloads, "downloads.range_unknown_task_finish", fields: [
+                "download_id": .identifier(resolvedKey ?? "unknown"),
+                "task_id": .int(task.taskIdentifier),
+                "offset": .int(markedOffset ?? -1),
+                "reason": .label(reason),
+            ])
+        }
+        guard let markedOffset else { reject("unmarked_task"); return nil }
+        guard let ratingKey = resolvedKey else { reject("unknown_row"); return nil }
+        guard let record = store.records.first(where: { $0.ratingKey == ratingKey }) else {
+            reject("no_record"); return nil
+        }
+        guard StaticRangeRecoveryPolicy.isStaticRangeRecord(record) else {
+            reject("not_static_range"); return nil
+        }
+        guard record.status != .complete, record.status != .failed else {
+            reject("terminal_status"); return nil
+        }
+        let http = task.response as? HTTPURLResponse
+        // baseOffset: prefer the response's Content-Range start; fall back to the marker offset.
+        let baseOffset = RangeTransferHTTPPolicy.contentRangeStart(from: http) ?? markedOffset
+        // segmentLength: recover from the closed Range header end bound; fall back to the segment grid.
+        let rangeHeader = (task.originalRequest ?? task.currentRequest)?.value(forHTTPHeaderField: "Range")
+        let segmentLength: Int? = {
+            let start = RangeTransferHTTPPolicy.rangeRequestStart(rangeHeader) ?? baseOffset
+            if let end = RangeTransferHTTPPolicy.rangeRequestEnd(rangeHeader), end >= start {
+                return end - start + 1
+            }
+            guard StaticRangeTransferRegime.current == .segmentTrain else { return nil }
+            let segBytes = StaticRangeTransferRegime.segmentBytes
+            if let expected = BackgroundDownloadProgressPolicy.derivedExpectedBytes(record),
+               expected > baseOffset {
+                return min(segBytes, expected - baseOffset)
+            }
+            return segBytes
+        }()
+        let destination = store.destinationsByRatingKey[ratingKey]
+            ?? store.destinationURL(ratingKey: ratingKey, ext: "mp4")
+        AppDiagnostics.record(.downloads, "downloads.range_dead_finish_adopted", fields: [
+            "download_id": .identifier(ratingKey),
+            "task_id": .int(task.taskIdentifier),
+            "base_offset": .int(baseOffset),
+            "segment_length": .int(segmentLength ?? -1),
+        ])
+        return RangeTransfer(
+            ratingKey: ratingKey,
+            request: nil,
+            destination: destination,
+            expectedBytes: BackgroundDownloadProgressPolicy.derivedExpectedBytes(record),
+            baseOffset: baseOffset,
+            segmentLength: segmentLength,
+            responseStatus: http?.statusCode,
+            bodyBytesWritten: max(0, Int(task.countOfBytesReceived)),
+            remainderReason: Self.deadFinishAdoptedReason)
     }
 
     /// Fold a finished Range response body into the durable partial and either finish or request
@@ -2020,6 +2161,34 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             return
         }
 
+        // NEW-1: an UNOWNED body (lazily adopted dead-finish, `remainderReason ==
+        // "dead_finish_adopted"`) gets NO validator tolerance. `supersededRangeTaskIdentifiers` is
+        // in-memory, so after a relaunch a zombie segment from a CANCELLED prior attempt of the same
+        // key passes every adoption guard. When a validator is pinned, an unowned body whose response
+        // validator is ABSENT or DIFFERENT is discarded and the row reset to the durable checkpoint —
+        // never appended (the absent-validator tolerance owned tasks get would splice bytes from a
+        // different resource version), and never routed to `restartRangeFromChangedResource` (an
+        // unowned body must not destroy owned multi-GB progress; if the resource truly changed, the
+        // next OWNED body triggers the restart legitimately).
+        if entry.remainderReason == Self.deadFinishAdoptedReason,
+           let stored = store.rangeValidator(ratingKey: entry.ratingKey),
+           validator != stored {
+            try? fileManager.removeItem(at: stash)
+            let durableBytes = store.resetStaticRangeProgressToDurableCheckpoint(
+                ratingKey: entry.ratingKey,
+                expectedBytes: entry.expectedBytes
+            )
+            AppDiagnostics.record(.downloads, "downloads.range_unknown_task_finish", fields: [
+                "download_id": .identifier(entry.ratingKey),
+                "offset": .int(entry.baseOffset),
+                "reason": .label(validator == nil
+                    ? "adopted_validator_absent" : "adopted_validator_mismatch"),
+                "durable_bytes": .int(durableBytes),
+            ])
+            onChange?()
+            return
+        }
+
         switch write {
         case .replaceWhole:
             // HTTP 200: the server sent the whole CURRENT resource — replace the partial honestly
@@ -2063,6 +2232,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 return
             }
             if let validator { store.setRangeValidator(ratingKey: entry.ratingKey, validator) }
+            // C2: the HTTP 200 body just replaced the whole partial with the current resource; any
+            // held ranged-segment stashes are now stale and must not be appended onto it.
+            purgeHeldRangeSegments(ratingKey: entry.ratingKey)
             lock.lock()
             retryCounts.removeValue(forKey: entry.ratingKey)
             rangeHTTPRehydrateCounts.removeValue(forKey: entry.ratingKey)
@@ -2089,8 +2261,68 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             let durableBytesBeforeAppend = durableBytesBeforeWrite
             if durableBytesBeforeAppend < entry.baseOffset {
                 if entry.segmentLength != nil {
+                    // C1: an out-of-order held body must clear the SAME validator + Content-Range
+                    // checks an in-order body does BEFORE it is stashed. Otherwise a changed resource
+                    // or a misaligned 206 is stashed now and blindly folded in later at drain time,
+                    // reintroducing exactly the corruption #169 HIGH 1 / the offset guard prevent.
+                    // A held segment always sits at baseOffset > 0 (durable < baseOffset).
+                    // 1. Validator changed underneath us → the changed-resource restart path.
+                    if entry.baseOffset > 0,
+                       let stored = store.rangeValidator(ratingKey: entry.ratingKey),
+                       let current = validator, current != stored {
+                        try? fileManager.removeItem(at: stash)
+                        restartRangeFromChangedResource(entry: entry)
+                        return
+                    }
+                    // 2. Content-Range must begin exactly at this segment's baseOffset; anything else
+                    // takes the existing offset-mismatch handling rather than stashing an unappendable
+                    // body.
+                    if contentRangeStart != entry.baseOffset {
+                        try? fileManager.removeItem(at: stash)
+                        let durableBytes = store.resetStaticRangeProgressToDurableCheckpoint(
+                            ratingKey: entry.ratingKey,
+                            expectedBytes: entry.expectedBytes
+                        )
+                        AppDiagnostics.record(.downloads, "downloads.range_offset_mismatch", fields: [
+                            "download_id": .identifier(entry.ratingKey),
+                            "expected_offset": .bytes(entry.baseOffset),
+                            "expected_offset_exact": .int(entry.baseOffset),
+                            "server_offset": .bytes(contentRangeStart),
+                            "server_offset_exact": .int(contentRangeStart ?? -1),
+                            "bytes": .bytes(durableBytes),
+                            "bytes_exact": .int(durableBytes),
+                            "held": .bool(true),
+                        ])
+                        if retryRangeOffsetMismatch(entry: entry, durableBytes: durableBytes, serverOffset: contentRangeStart) {
+                            return
+                        }
+                        store.setStatus(ratingKey: entry.ratingKey, .failed)
+                        onError?(entry.ratingKey, .transferFailed("Server returned a misaligned byte range."))
+                        onChange?()
+                        return
+                    }
+                    // M1: a zero-length/unreadable stash can never append at its offset (the assembly
+                    // policy classifies it discard forever) — reject it up front so it can't wedge the
+                    // drain or leak a temp. Treat it like a discard and top the train up.
                     let stashLen = fileSize(at: stash) ?? 0
+                    if stashLen <= 0 {
+                        try? fileManager.removeItem(at: stash)
+                        AppDiagnostics.record(.downloads, "downloads.range_segment_held_discarded", fields: [
+                            "download_id": .identifier(entry.ratingKey),
+                            "base_offset": .int(entry.baseOffset),
+                            "reason": .label("empty_stash"),
+                        ])
+                        onChange?()
+                        continueRangeAfterBody(entry: entry, partialSize: durableBytesBeforeAppend)
+                        return
+                    }
                     lock.lock()
+                    // M3: replacing an existing held stash at this offset must delete the previous temp
+                    // (a re-finish uses a new taskIdentifier → a distinct stash path) or it leaks.
+                    if let previous = heldRangeSegments[entry.ratingKey]?[entry.baseOffset],
+                       previous.url != stash {
+                        try? fileManager.removeItem(at: previous.url)
+                    }
                     heldRangeSegments[entry.ratingKey, default: [:]][entry.baseOffset] = (url: stash, length: stashLen)
                     lock.unlock()
                     AppDiagnostics.record(.downloads, "downloads.range_segment_held", fields: [
@@ -2316,7 +2548,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 let appended = try appendFile(at: entry.url, onto: destination)
                 durable = onDisk + appended
             } catch {
-                break
+                // M1: an append failure for one held segment must not wedge the drain forever. Drop the
+                // failing entry (and its stash), record it, and keep draining the rest of the run.
+                try? fileManager.removeItem(at: entry.url)
+                lock.lock(); heldRangeSegments[ratingKey]?.removeValue(forKey: next.offset); lock.unlock()
+                AppDiagnostics.record(.downloads, "downloads.range_segment_assemble_failed", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "base_offset": .int(next.offset),
+                    "durable_bytes": .int(durable),
+                    "error": .error(error),
+                ])
+                continue
             }
             try? fileManager.removeItem(at: entry.url)
             lock.lock(); heldRangeSegments[ratingKey]?.removeValue(forKey: next.offset); lock.unlock()
@@ -2328,8 +2570,28 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             store.updateProgress(ratingKey: ratingKey, bytes: durable,
                                  progress: (expectedBytes ?? 0) > 0 ? min(1, Double(durable) / Double(expectedBytes!)) : 0)
         }
-        if (heldRangeSegments[ratingKey]?.isEmpty ?? false) { lock.lock(); heldRangeSegments.removeValue(forKey: ratingKey); lock.unlock() }
+        // M2: read + mutate the held map under the same lock the rest of the file uses for
+        // cross-queue access, rather than reading it unlocked.
+        lock.lock()
+        if heldRangeSegments[ratingKey]?.isEmpty ?? false { heldRangeSegments.removeValue(forKey: ratingKey) }
+        lock.unlock()
         return durable
+    }
+
+    /// C2: remove every held out-of-order segment stash for a row AND delete its on-disk temp file.
+    /// Called from every path that abandons or resets the transfer (cancel/pause/changed-resource
+    /// restart/whole-file replace/finalize) so a stashed body can neither leak into `tmp/` nor be
+    /// resurrected against a partial it no longer matches.
+    private func purgeHeldRangeSegments(ratingKey: String) {
+        lock.lock()
+        let held = heldRangeSegments.removeValue(forKey: ratingKey)
+        lock.unlock()
+        guard let held, !held.isEmpty else { return }
+        for entry in held.values { try? fileManager.removeItem(at: entry.url) }
+        AppDiagnostics.record(.downloads, "downloads.range_held_segments_purged", fields: [
+            "download_id": .identifier(ratingKey),
+            "purged_count": .int(held.count),
+        ])
     }
 
     private func expectedRangeBodyBytes(entry: RangeTransfer) -> Int? {
@@ -2436,6 +2698,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // Relaunch-adopted range task: the bad temp is gone and the durable partial remains the
             // checkpoint, but this object lacks auth headers. Persist an active continuation intent
             // so DownloadManager rebuilds the backend-owned request and resumes automatically.
+            // #212: hold the background completion handler across the main-actor rebuild (mirrors the
+            // counter-reset rebuild site); `startRangeRemainder` releases it once the task exists.
+            beginRangeRequestRebuildGrace(ratingKey: entry.ratingKey)
             store.setStatus(ratingKey: entry.ratingKey, .queued)
             onRangeRequestNeeded?(entry.ratingKey, reason)
             onChange?()
@@ -2494,6 +2759,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         try? fileManager.removeItem(at: entry.destination)
         store.clearRangeValidator(ratingKey: entry.ratingKey)
         store.updateProgress(ratingKey: entry.ratingKey, bytes: 0, progress: 0)
+        // C2: the durable partial (offset 0..) is being rebuilt against the CURRENT resource; any held
+        // segments belong to the stale resource and must be dropped, not appended after the restart.
+        purgeHeldRangeSegments(ratingKey: entry.ratingKey)
         let disposition = StaticRangeContinuationPolicy.afterValidatorChange(
             isHalted: halted,
             retryAttempt: retryAttempt,
@@ -2521,6 +2789,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // Relaunch-adopted range task: no in-memory request to rebuild auth headers, and the stale
             // partial has already been discarded. Persist active restart intent before the in-memory
             // callback so a second app kill still auto-restarts from byte 0 on the next launch.
+            // #212: hold the background completion handler across the main-actor rebuild (mirrors the
+            // counter-reset rebuild site); `startRangeRemainder` releases it once the task exists.
+            beginRangeRequestRebuildGrace(ratingKey: entry.ratingKey)
             store.setStatus(ratingKey: entry.ratingKey, .queued)
             onRangeRequestNeeded?(entry.ratingKey, reason)
         case .startInSession:
@@ -2651,6 +2922,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// The durable partial now holds the whole file: validate it through the SAME finalize pipeline as
     /// the opaque lane (HEVC `hvc1` fixup, #98 retrying probe, truncation guard, complete/unverified).
     private func finalizeRangeWhole(entry: RangeTransfer) {
+        // C2/M3: the file is complete — no held segment may remain to be picked up by the tmp sweep
+        // or a late drain. (The append path already drains before finalizing; this is the backstop
+        // for the replaceWhole / 416-complete / offset>=expected finalize entrypoints.)
+        purgeHeldRangeSegments(ratingKey: entry.ratingKey)
         beginPendingBackgroundCompletionOperation()
         let bytes = fileSize(at: entry.destination) ?? entry.totalBytes
         publishTransferFinalizing(ratingKey: entry.ratingKey, bytes: bytes)

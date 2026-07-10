@@ -106,9 +106,12 @@ Apple-standard architecture we can make stable:
   to the queue depth.
 - **URLSession resume data is still first-class.** Pause, sleep/off-head interruption, and
   recoverable task failures preserve in-flight bytes by producing or adopting URLSession
-  resume data when the system can provide it, per segment. Persisted blobs are registered
-  back into the static range lane, not the opaque whole-file lane, so completed
-  partial-body temps are appended/replaced safely.
+  resume data when the system can provide it. Resume data is a **per-download-key, single-blob**
+  mechanism, not per-segment: the store keeps one resume-blob slot per row, so under a multi-task
+  pause it is last-writer-wins (only the most recently paused segment's blob survives). Persisted
+  blobs are registered back into the static range lane, not the opaque whole-file lane, so a
+  completed partial-body temp is appended/replaced safely; the durable partial (below) is what
+  makes the other segments recoverable.
 - **The durable partial is the fallback.** If resume data is missing, invalid, stale, or refers to a
   temp file the system has deleted, Labstream clears/discards the blob and re-plans the train
   from the durable partial's current file size.
@@ -123,8 +126,13 @@ Apple-standard architecture we can make stable:
   every un-appended byte transferred off-head, unbounded overnight. With a segment train,
   nsurlsessiond executes pre-queued segments with the process dead — no per-continuation app
   wake is required — and a wake-time bounce can only restart the one segment that was mid-flight
-  (at most `segmentBytes`), while completed-but-undelivered segment temps survive the bounce on
-  disk and are appended the next time the app is serviced.
+  (at most `segmentBytes`). Whether a segment that FINISHED while the app was dead is actually
+  delivered depends on URLSession redelivering that task's completion after relaunch (the #220
+  redelivery caveat); the app now lazily adopts such a dead-finished task's body when its marker
+  maps to a live static-range row (routing it through the same validator/`Content-Range` checks an
+  in-order body gets), but this lazy-adoption path is pending runtime verification on device. When
+  redelivery does not happen, the durable partial remains the checkpoint and the range is simply
+  re-planned and re-fetched — correct, not corrupt, just not free.
 
 Simulator caveat: Labstream intentionally uses a foreground/default `URLSession`
 in simulator builds because the background transfer daemon is unreliable there.

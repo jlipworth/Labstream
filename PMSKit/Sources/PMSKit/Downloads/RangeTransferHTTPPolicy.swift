@@ -122,4 +122,21 @@ public enum RangeTransferHTTPPolicy {
     public static func rangeRequestStart(from request: URLRequest?) -> Int? {
         rangeRequestStart(request?.value(forHTTPHeaderField: "Range"))
     }
+
+    /// The inclusive END bound of a closed `bytes=start-end` Range header, or nil for an
+    /// open-ended (`bytes=start-`), absent, or malformed header. Used at reattach/lazy-adoption to
+    /// recover a marked closed-range segment's byte length as `end - start + 1`.
+    public static func rangeRequestEnd(_ rangeHeader: String?) -> Int? {
+        guard let value = rangeHeader?.trimmingCharacters(in: .whitespaces),
+              value.lowercased().hasPrefix("bytes=") else { return nil }
+        let rangeSpec = value.dropFirst("bytes=".count)
+        let parts = rangeSpec.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+        // Only a fully-bounded `start-end` range yields a length. A suffix range (`bytes=-N`) has an
+        // empty start and is not something we ever emit for a segment, so treat it as no end bound.
+        guard parts.count == 2 else { return nil }
+        let start = parts[0].trimmingCharacters(in: .whitespaces)
+        let end = parts[1].trimmingCharacters(in: .whitespaces)
+        guard !start.isEmpty, !end.isEmpty else { return nil }
+        return Int(end)
+    }
 }
