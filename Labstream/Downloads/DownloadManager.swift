@@ -2417,12 +2417,26 @@ public final class DownloadManager {
         jellyfinDownloadKeepaliveTasks[ratingKey] = Task { [weak self] in
             guard let self else { return }
             var sentPlaying = false
+            // N2/F2c: report an advancing position, not a stationary one. Forward-only rows have
+            // no progress fraction (no Content-Length), so `positionTicks(progress:)` pinned every
+            // ping to 0 and the server saw a frozen session it could idle-kill mid-download — the
+            // very truncation these keepalives exist to prevent. Derive position from received
+            // bytes vs the transcode size estimate, falling back to elapsed wall clock, kept
+            // monotonic across pings.
+            let keepaliveStartedAt = Date()
+            var lastReportedTicks = 0
             while !Task.isCancelled {
                 guard let record = self.records.first(where: { $0.ratingKey == ratingKey }),
                       record.status == .queued || record.status == .downloading else { return }
                 let progress = max(0, min(record.progress, 1))
-                let positionTicks = JellyfinDownloadKeepalivePolicy.positionTicks(progress: progress,
-                                                                                  durationMs: durationMs)
+                let positionTicks = JellyfinDownloadKeepalivePolicy.reportedPositionTicks(
+                    progress: progress,
+                    bytes: record.bytes,
+                    estimatedTotalBytes: DownloadPresetPolicy.estimatedTranscodeBytes(for: record),
+                    elapsedSeconds: Date().timeIntervalSince(keepaliveStartedAt),
+                    durationMs: durationMs,
+                    lastReportedTicks: lastReportedTicks)
+                lastReportedTicks = positionTicks
                 do {
                     if !sentPlaying {
                         let playing = try JellyfinPlayback.playingRequest(
