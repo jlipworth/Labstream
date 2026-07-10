@@ -350,6 +350,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // always have the daemon, so they keep the background session below (which
         // survives app suspension/relaunch — the resume-after-kill path from D5/D8).
             config = URLSessionConfiguration.default
+            // The segment train enqueues more tasks (8) than the per-host connection limit, so the
+            // starved tail tasks receive no data while queued. The foreground default config's 60s
+            // request timeout then kills them with -1001 every minute (observed live: retry churn
+            // resetting in-flight bodies). The device background session has no such idle timeout
+            // (nsurlsessiond paces tasks); give the sim session headroom to match.
+            config.timeoutIntervalForRequest = 3600
             downloadLog.info("using FOREGROUND URLSession (simulator) for downloads")
             #if DEBUG
             // #169: the byte-range lane now runs on THIS session, so the range-drop test harness
@@ -4011,6 +4017,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             ])
             return false
         case .adopt(let baseOffset):
+            // The caller's expectedBytes is often nil on resume-from-pause: the manager derives it
+            // from bytes/progress, which is unknowable at durable 0. The store's static-lane exact
+            // source size (recorded at first train start) is authoritative — without it the refill
+            // below can't plan and the finish validator loses the tail clamp.
+            let expectedBytes = expectedBytes ?? store.sourceExactBytes(ratingKey: ratingKey)
             // A blob persisted from a CLOSED head segment must come back as a segment: recover its
             // length from the blob's own Range header (URLSession keeps the original request). With
             // segmentLength nil the finish validator judges the body against the whole-file
