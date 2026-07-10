@@ -3,6 +3,9 @@ import Foundation
 public enum DownloadStaticRetryIntent: Equatable, Sendable {
     case original
     case existingVersion
+    /// A persisted exact Part id no longer exists in refreshed server metadata. Never fall back to
+    /// the old array index: it may now address the raw source or a different rendered version.
+    case unavailable
 }
 
 public struct DownloadStaticRetryTarget: Equatable, Sendable {
@@ -37,6 +40,9 @@ public enum DownloadStaticRetryTargetPolicy {
                                                      partIndex: partIndex)
                 }
             }
+            return DownloadStaticRetryTarget(intent: .unavailable,
+                                             mediaIndex: fallbackMediaIndex,
+                                             partIndex: fallbackPartIndex)
         }
         let isPrepared = metadata?.isServerPreparedVersion == true || (metadata?.mediaIndex ?? 0) > 0
         return DownloadStaticRetryTarget(intent: isPrepared ? .existingVersion : .original,

@@ -393,8 +393,8 @@ Deferred to user judgment / later phases:
   EMBY-F13 unbounded poll on persistent 5xx (closed in the 2026-07-11 update below); EMBY-F9 no
   Emby keepalive (live-verify).
 - PLEX-F3 vacuous height guard on original-quality reuse (closed in the 2026-07-11 update below);
-  PLEX-F4 vanished-render retry
-  downloads raw source unpreflighted; PLEX-F5 reuse leaves duplicate job rendering;
+  PLEX-F4 vanished-render retry downloads raw source unpreflighted (closed in the 2026-07-11
+  update below); PLEX-F5 reuse leaves duplicate job rendering;
   PLEX-F6c poller has no overall deadline.
 - Phases not yet run: 4 (coverage-matrix test writing), 5 (adversarial lens fan-out),
   6 (fault-injection harness — model skeleton ready), 7 (device checklist delta).
@@ -603,7 +603,7 @@ install UUID match, clean launch/log smoke, and signed-in Home screenshot; simul
    remote-play/download correlation, and Emby server-completion timing) before treating device
    observations as deterministic.
 3. Continue the deferred backend/product findings in sections F–H (Emby F3/F4/F9/F11,
-   Plex F4/F5/F6c, and held-stash persistence). The simulator
+   Plex F5/F6c, and held-stash persistence). The simulator
    relaunch probe now proves the held-stash item is real: eight completed stashes were swept and
    refetched from the durable checkpoint because their metadata is not persisted.
 
@@ -648,3 +648,12 @@ exact selected `sourceMediaHeight` is persisted in `OfflineMetadata` and used as
 failure fallback, so fail-closed validation does not strand a resumed job merely because its
 reconstructed `MediaItem` lacks media arrays. Tests cover a real down-rez, a within-tolerance match,
 missing source height, missing result height, metadata construction, and Codable round-trip.
+
+### Deferred follow-up closed: PLEX-F4 vanished-render retry
+
+Static Plex retries now treat a persisted `sourcePartID` as an exact identity contract. If refreshed
+metadata no longer contains that Part, `DownloadStaticRetryTargetPolicy` returns `.unavailable` and
+the manager keeps the row failed with an actionable "saved server version is no longer available"
+error. It no longer falls back to stale media/part array indices that can now address the raw source
+or a different Plex Version. Legacy rows that never persisted a Part id retain their index-based
+migration fallback.
