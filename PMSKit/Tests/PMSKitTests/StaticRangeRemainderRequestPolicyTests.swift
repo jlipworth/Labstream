@@ -31,6 +31,22 @@ struct StaticRangeRemainderRequestPolicyTests {
         #expect(policy.expectedBodyBytes(offset: 1_200, expectedBytes: 1_000) == 0)
     }
 
+    @Test("Closed segments expect their own length, not the whole-file remainder")
+    func expectedBodyBytesForClosedSegment() {
+        let policy = StaticRangeRemainderRequestPolicy()
+
+        // Mid-file segment: its own length, never the remainder.
+        #expect(policy.expectedBodyBytes(offset: 0, expectedBytes: 10_000, segmentLength: 512) == 512)
+        #expect(policy.expectedBodyBytes(offset: 512, expectedBytes: 10_000, segmentLength: 512) == 512)
+        // Tail segment: clamped to the remainder.
+        #expect(policy.expectedBodyBytes(offset: 9_800, expectedBytes: 10_000, segmentLength: 512) == 200)
+        // Unknown total: the closed segment's length is still exact.
+        #expect(policy.expectedBodyBytes(offset: 512, expectedBytes: nil, segmentLength: 512) == 512)
+        // nil segmentLength keeps open-ended remainder semantics.
+        #expect(policy.expectedBodyBytes(offset: 400, expectedBytes: 1_000, segmentLength: nil) == 600)
+        #expect(policy.expectedBodyBytes(offset: 400, expectedBytes: nil, segmentLength: nil) == nil)
+    }
+
     @Test("206 partial content appends the response body onto the durable partial")
     func write206Appends() {
         let policy = StaticRangeRemainderRequestPolicy()

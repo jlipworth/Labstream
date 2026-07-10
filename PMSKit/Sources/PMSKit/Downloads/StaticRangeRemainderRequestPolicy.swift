@@ -60,6 +60,21 @@ public struct StaticRangeRemainderRequestPolicy: Equatable, Sendable {
         return max(0, expectedBytes - max(0, offset))
     }
 
+    /// Expected body bytes when the transfer is a CLOSED segment (`segmentLength != nil`): the
+    /// segment's own length, clamped to the remainder for the tail segment. A blob-resumed or
+    /// reattached segment judged against the whole-file remainder instead of its own length can
+    /// never satisfy completeness checks (`stashBytes == expectedBodyBytes`), so its finished
+    /// body would be discarded. `segmentLength == nil` keeps open-ended remainder semantics.
+    public func expectedBodyBytes(offset: Int, expectedBytes: Int?, segmentLength: Int?) -> Int? {
+        guard let segmentLength else {
+            return expectedBodyBytes(offset: offset, expectedBytes: expectedBytes)
+        }
+        guard let remainder = expectedBodyBytes(offset: offset, expectedBytes: expectedBytes) else {
+            return max(0, segmentLength)
+        }
+        return min(max(0, segmentLength), remainder)
+    }
+
     /// How to incorporate a finished response given its HTTP status.
     public func writeDecision(httpStatus: Int) -> StaticRangeBodyWrite {
         switch httpStatus {
