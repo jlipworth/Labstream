@@ -9,8 +9,11 @@ public enum BackgroundDownloadTaskIdentity {
     public static func ratingKey(taskDescription: String?,
                                  requestURL: URL?,
                                  knownKeys: Set<String>) -> String? {
-        if let taskDescription, knownKeys.contains(taskDescription) {
-            return taskDescription
+        let normalizedDescription = taskDescription.map {
+            StaticRangeSegmentMarker.ratingKey(fromTaskDescription: $0)
+        }
+        if let normalizedDescription, knownKeys.contains(normalizedDescription) {
+            return normalizedDescription
         }
         guard let url = requestURL,
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }

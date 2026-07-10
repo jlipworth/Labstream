@@ -52,13 +52,19 @@ public enum BackgroundTempFileCleanupPolicy {
     }
 
     public static func rangeBodyStashTaskIdentifier(fileName: String) -> Int? {
-        if fileName.hasPrefix(rangeBodyStashPrefix) {
-            return Int(fileName.dropFirst(rangeBodyStashPrefix.count))
+        func identifier(afterPrefix prefix: String) -> Int? {
+            guard fileName.hasPrefix(prefix) else { return nil }
+            var tail = String(fileName.dropFirst(prefix.count))
+            if let dashO = tail.range(of: "-o") { tail = String(tail[..<dashO.lowerBound]) }
+            return Int(tail)
         }
-        if fileName.hasPrefix(legacyRangeChunkStashPrefix) {
-            return Int(fileName.dropFirst(legacyRangeChunkStashPrefix.count))
-        }
-        return nil
+        return identifier(afterPrefix: rangeBodyStashPrefix)
+            ?? identifier(afterPrefix: legacyRangeChunkStashPrefix)
+    }
+
+    public static func rangeBodyStashOffset(fileName: String) -> Int? {
+        guard let dashO = fileName.range(of: "-o") else { return nil }
+        return Int(fileName[dashO.upperBound...])
     }
 
     public static func shouldDeleteRangeBodyStash(fileName: String,

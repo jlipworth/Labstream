@@ -61,6 +61,18 @@ struct BackgroundTempFileCleanupPolicyTests {
             fileName: "vp-range-chunk-42"
         ) == 42)
         #expect(BackgroundTempFileCleanupPolicy.rangeBodyStashTaskIdentifier(
+            fileName: "vp-range-body-42-o536870912"
+        ) == 42)
+        #expect(BackgroundTempFileCleanupPolicy.rangeBodyStashTaskIdentifier(
+            fileName: "vp-range-chunk-42-o536870912"
+        ) == 42)
+        #expect(BackgroundTempFileCleanupPolicy.rangeBodyStashOffset(
+            fileName: "vp-range-body-42-o536870912"
+        ) == 536870912)
+        #expect(BackgroundTempFileCleanupPolicy.rangeBodyStashOffset(
+            fileName: "vp-range-body-42"
+        ) == nil)
+        #expect(BackgroundTempFileCleanupPolicy.rangeBodyStashTaskIdentifier(
             fileName: "vp-range-body-not-a-number"
         ) == nil)
         #expect(!BackgroundTempFileCleanupPolicy.shouldDeleteRangeBodyStash(
@@ -69,6 +81,14 @@ struct BackgroundTempFileCleanupPolicyTests {
         ))
         #expect(BackgroundTempFileCleanupPolicy.shouldDeleteRangeBodyStash(
             fileName: "vp-range-body-42",
+            liveTaskIdentifiers: [7]
+        ))
+        #expect(!BackgroundTempFileCleanupPolicy.shouldDeleteRangeBodyStash(
+            fileName: "vp-range-body-42-o536870912",
+            liveTaskIdentifiers: [42]
+        ))
+        #expect(BackgroundTempFileCleanupPolicy.shouldDeleteRangeBodyStash(
+            fileName: "vp-range-body-42-o536870912",
             liveTaskIdentifiers: [7]
         ))
         #expect(!BackgroundTempFileCleanupPolicy.shouldDeleteRangeBodyStash(

@@ -70,6 +70,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// background `URLSessionDownloadTask` for the remaining bytes; legacy closed-range tasks may
     /// still be adopted and folded into the durable partial after an app update.
     private var rangeInflight: [Int: RangeTransfer] = [:]
+    /// Finished segment bodies stashed on disk ahead of the durable checkpoint (out-of-order
+    /// arrivals), keyed by ratingKey then segment offset. Kept until the checkpoint reaches them and
+    /// `appendAssembledSegment` folds them in. In-memory only: a lost entry costs at most a re-download
+    /// (the durable partial is always the source of truth). Guarded by `lock`.
+    private var heldRangeSegments: [String: [Int: (url: URL, length: Int)]] = [:]
     /// RatingKeys whose static Range lane must not create replacement work — inserted by
     /// `cancel`/`pause`, checked before each continuation/retry, and cleared on fresh user start/resume.
     /// Without it, a delegate callback racing after `cancel`/`pause` could resurrect a deleted file.
@@ -159,6 +164,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let destination: URL
         let expectedBytes: Int?
         var baseOffset: Int
+        /// Byte length of this closed-range segment, or nil for an open-ended remainder.
+        var segmentLength: Int?
         var responseStatus: Int?
         var bodyBytesWritten: Int
         let remainderReason: String?
@@ -171,6 +178,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                           destination: destination,
                           expectedBytes: expectedBytes,
                           baseOffset: baseOffset,
+                          segmentLength: segmentLength,
                           responseStatus: responseStatus,
                           bodyBytesWritten: bodyBytesWritten,
                           remainderReason: remainderReason)
@@ -209,16 +217,35 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                           shouldReplaceExisting: decision.shouldReplaceExisting)
     }
 
+    /// Same as `duplicateRangeTaskDecision` but, for a closed-range SEGMENT (segmentLength != nil),
+    /// only considers existing tasks at the SAME baseOffset — distinct segments of one download's
+    /// pre-queued train must coexist. Open-ended remainders keep the original cross-offset scope.
+    private func duplicateSegmentDecision(for candidate: RangeTransfer) -> DuplicateRangeTaskDecision? {
+        guard candidate.segmentLength != nil else { return duplicateRangeTaskDecision(for: candidate) }
+        let pool = rangeInflight.filter { $0.value.ratingKey == candidate.ratingKey
+            && $0.value.baseOffset == candidate.baseOffset }
+        guard let decision = StaticRangeTaskSelectionPolicy.duplicateDecision(
+            candidate: rangeTaskSnapshot(taskIdentifier: -1, entry: candidate),
+            existingTasks: pool.map { rangeTaskSnapshot(taskIdentifier: $0.key, entry: $0.value) }),
+              let existing = rangeInflight[decision.existingTaskIdentifier] else { return nil }
+        return DuplicateRangeTaskDecision(existingTaskIdentifier: decision.existingTaskIdentifier,
+                                          existingEntry: existing, shouldReplaceExisting: decision.shouldReplaceExisting)
+    }
+
     private func newerRangeTaskIdentifier(for entry: RangeTransfer,
                                           currentTaskIdentifier: Int,
-                                          currentBodyBytes: Int) -> Int? {
-        StaticRangeTaskSelectionPolicy.newerTaskIdentifier(
+                                          currentBodyBytes: Int,
+                                          segmentScoped: Bool = false) -> Int? {
+        let pool = rangeInflight.filter {
+            !segmentScoped || $0.value.baseOffset == entry.baseOffset
+        }
+        return StaticRangeTaskSelectionPolicy.newerTaskIdentifier(
             than: rangeTaskSnapshot(
                 taskIdentifier: currentTaskIdentifier,
                 entry: entry,
                 bodyBytesWritten: currentBodyBytes
             ),
-            in: rangeInflight.map { rangeTaskSnapshot(taskIdentifier: $0.key, entry: $0.value) }
+            in: pool.map { rangeTaskSnapshot(taskIdentifier: $0.key, entry: $0.value) }
         )
     }
 
@@ -233,6 +260,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             supersededRangeTaskIdentifiers.insert(identifier)
         }
         return identifiers
+    }
+
+    /// Supersede only the tasks for `ratingKey` at exactly `offset` (except `keeping`), leaving
+    /// sibling segments at other offsets untouched.
+    private func supersedeRangeSegmentTasksLocked(ratingKey: String, offset: Int, keeping: Int? = nil) -> [Int] {
+        let ids = rangeInflight.filter { id, e in e.ratingKey == ratingKey && e.baseOffset == offset && id != keeping }.map(\.key)
+        for id in ids { rangeInflight.removeValue(forKey: id); supersededRangeTaskIdentifiers.insert(id) }
+        return ids
     }
 
     private func cancelURLSessionTask(identifier: Int) {
@@ -478,6 +513,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                           uniquingKeysWith: { first, _ in first })
             var rangeTaskIdentifiersToCancel: [Int] = []
             var adoptedRangeKeys: Set<String> = []
+            var adoptedSegmentCounts: [String: Int] = [:]
             var rangeRequestRebuildReasons: [String: BackgroundRangeRequestReason] = [:]
             self.lock.lock()
             for task in tasks {
@@ -507,7 +543,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                         bodyBytesWritten: Int(task.countOfBytesReceived),
                         existingTasks: self.rangeInflight.map {
                             self.rangeTaskSnapshot(taskIdentifier: $0.key, entry: $0.value)
-                        }
+                        },
+                        taskMarker: task.taskDescription,
+                        segmentBytes: StaticRangeTransferRegime.current == .segmentTrain
+                            ? StaticRangeTransferRegime.segmentBytes : nil
                     )
                     switch reattachPlan.disposition {
                     case .dropLegacyRange(let requestedOffset, let durableBytes, let rangeRequestShape):
@@ -551,6 +590,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                         destination: destination,
                         expectedBytes: BackgroundDownloadProgressPolicy.derivedExpectedBytes(record),
                         baseOffset: reattachPlan.candidateBaseOffset,
+                        segmentLength: nil,
                         responseStatus: nil,
                         bodyBytesWritten: max(0, Int(task.countOfBytesReceived)),
                         remainderReason: "reattached")
@@ -559,10 +599,18 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                         // Handled above.
                         continue
                     case .replaceExisting(let existingTaskIdentifier, let existingBaseOffset):
-                        let superseded = self.supersedeRangeTasksLocked(ratingKey: ratingKey)
+                        let isSegment = rangeRequestShape == .closed
+                            && StaticRangeSegmentMarker.parse(task.taskDescription) == reattachPlan.candidateBaseOffset
+                        let superseded = isSegment
+                            ? self.supersedeRangeSegmentTasksLocked(
+                                ratingKey: ratingKey,
+                                offset: reattachPlan.candidateBaseOffset
+                            )
+                            : self.supersedeRangeTasksLocked(ratingKey: ratingKey)
                         self.rangeInflight[task.taskIdentifier] = reattached
                         self.supersededRangeTaskIdentifiers.remove(task.taskIdentifier)
                         rangeTaskIdentifiersToCancel.append(contentsOf: superseded)
+                        adoptedSegmentCounts[ratingKey, default: 0] += 1
                         AppDiagnostics.record(.downloads, "downloads.range_duplicate_remainder_replaced", fields: [
                             "download_id": .identifier(ratingKey),
                             "task_id": .int(task.taskIdentifier),
@@ -572,10 +620,18 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                             "existing_base_offset": .int(existingBaseOffset),
                         ])
                     case .suppressForExisting(let existingTaskIdentifier, let existingBaseOffset):
-                        let superseded = self.supersedeRangeTasksLocked(
-                            ratingKey: ratingKey,
-                            keeping: existingTaskIdentifier
-                        )
+                        let isSegment = rangeRequestShape == .closed
+                            && StaticRangeSegmentMarker.parse(task.taskDescription) == reattachPlan.candidateBaseOffset
+                        let superseded = isSegment
+                            ? self.supersedeRangeSegmentTasksLocked(
+                                ratingKey: ratingKey,
+                                offset: reattachPlan.candidateBaseOffset,
+                                keeping: existingTaskIdentifier
+                            )
+                            : self.supersedeRangeTasksLocked(
+                                ratingKey: ratingKey,
+                                keeping: existingTaskIdentifier
+                            )
                         self.supersededRangeTaskIdentifiers.insert(task.taskIdentifier)
                         rangeTaskIdentifiersToCancel.append(task.taskIdentifier)
                         rangeTaskIdentifiersToCancel.append(contentsOf: superseded)
@@ -591,6 +647,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                         continue
                     case .adopt:
                         self.rangeInflight[task.taskIdentifier] = reattached
+                        adoptedSegmentCounts[ratingKey, default: 0] += 1
                     }
                     adoptedRangeKeys.insert(ratingKey)
                 } else {
@@ -603,7 +660,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             for entry in self.rangeInflight.values { liveKeys.insert(entry.ratingKey) }
             self.lock.unlock()
             for taskIdentifier in rangeTaskIdentifiersToCancel {
-                try? self.fileManager.removeItem(at: self.rangeBodyStashURL(taskIdentifier: taskIdentifier))
+                self.removeRangeBodyStashes(taskIdentifier: taskIdentifier)
                 self.cancelURLSessionTask(identifier: taskIdentifier)
             }
             for (ratingKey, reason) in rangeRequestRebuildReasons {
@@ -621,6 +678,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             for ratingKey in adoptedRangeKeys {
                 self.store.setStatus(ratingKey: ratingKey, .downloading)
             }
+            for (ratingKey, count) in adoptedSegmentCounts {
+                AppDiagnostics.record(.downloads, "downloads.range_segment_train_adopted", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "adopted_segment_count": .int(count),
+                ])
+            }
             // Sweep range-body stashes orphaned by a hard kill between the synchronous stash-rename and
             // `applyFinishedRangeBody` running. Any stash not owned by a still-live task is dead — its
             // body was never appended, so the durable partial re-fetches it on resume. visionOS only
@@ -634,10 +697,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     /// Delete stashed Range response bodies in `tmp/` whose owning task is no longer live.
     private func sweepOrphanedRangeBodyStashes(liveTaskIdentifiers: Set<Int>) {
+        lock.lock()
+        let heldStashPaths = Set(heldRangeSegments.values.flatMap { $0.values.map { $0.url.lastPathComponent } })
+        lock.unlock()
         let tmp = fileManager.temporaryDirectory
         guard let entries = try? fileManager.contentsOfDirectory(
             at: tmp, includingPropertiesForKeys: nil) else { return }
-        for url in entries where BackgroundTempFileCleanupPolicy.shouldDeleteRangeBodyStash(
+        for url in entries where !heldStashPaths.contains(url.lastPathComponent)
+            && BackgroundTempFileCleanupPolicy.shouldDeleteRangeBodyStash(
             fileName: url.lastPathComponent,
             liveTaskIdentifiers: liveTaskIdentifiers
         ) {
@@ -893,6 +960,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 destination: destination,
                 expectedBytes: expectedBytes,
                 baseOffset: offset,
+                segmentLength: nil,
                 responseStatus: nil,
                 bodyBytesWritten: 0,
                 remainderReason: remainderReasonOverride))
@@ -907,21 +975,81 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // `applyFinishedRangeBody`, which restarts from 0 on a mismatch; `If-Range` is the cheap
         // belt-and-suspenders that short-circuits the cooperating ones.
         let remainderReason = remainderReasonOverride ?? "single_remainder"
+        lock.lock()
+        var liveSegmentOffsets = Set(rangeInflight.values
+            .filter { $0.ratingKey == ratingKey }
+            .map { $0.baseOffset })
+        for off in heldRangeSegments[ratingKey]?.keys ?? [:].keys { liveSegmentOffsets.insert(off) }
+        lock.unlock()
+
+        let plans: [StaticRangeSegmentPlan]
+        switch StaticRangeTransferRegime.current {
+        case .segmentTrain:
+            plans = StaticRangeSegmentQueuePolicy.segmentsToEnqueue(
+                durableBytes: offset,
+                expectedBytes: expectedBytes,
+                liveSegmentOffsets: liveSegmentOffsets,
+                segmentBytes: StaticRangeTransferRegime.segmentBytes,
+                maxQueuedSegments: StaticRangeTransferRegime.maxQueuedSegments)
+        case .openEndedRemainder:
+            plans = [StaticRangeSegmentPlan(offset: offset, length: nil)]
+        }
+        if plans.isEmpty {
+            endRangeRequestRebuildGrace(ratingKey: ratingKey, reason: "request_rebuilt")
+            return -1
+        }
+        if offset == 0 {
+            store.clearRangeValidator(ratingKey: ratingKey)
+        }
+        var firstTaskIdentifier: Int?
+        for (index, plan) in plans.enumerated() {
+            let taskIdentifier = try enqueueRangeSegment(
+                ratingKey: ratingKey,
+                baseRequest: request,
+                destination: destination,
+                expectedBytes: expectedBytes,
+                plan: plan,
+                resetsRetryCount: resetsRetryCount && index == 0,
+                remainderReason: remainderReason)
+            if firstTaskIdentifier == nil { firstTaskIdentifier = taskIdentifier }
+        }
+        if offset > 0, let expectedBytes, expectedBytes > 0 {
+            store.updateProgress(ratingKey: ratingKey,
+                                 bytes: offset,
+                                 progress: min(1, Double(offset) / Double(expectedBytes)))
+        }
+        // #212: replacement tasks now exist — release any completion-handler hold that was
+        // protecting the main-actor request rebuild for this row.
+        endRangeRequestRebuildGrace(ratingKey: ratingKey, reason: "request_rebuilt")
+        return firstTaskIdentifier ?? -1
+    }
+
+    @discardableResult
+    private func enqueueRangeSegment(ratingKey: String, baseRequest: URLRequest, destination: URL,
+                                     expectedBytes: Int?, plan: StaticRangeSegmentPlan,
+                                     resetsRetryCount: Bool, remainderReason: String) throws -> Int {
         let candidate = RangeTransfer(
             ratingKey: ratingKey,
-            request: request,
+            request: baseRequest,
             destination: destination,
             expectedBytes: expectedBytes,
-            baseOffset: offset,
+            baseOffset: plan.offset,
+            segmentLength: plan.length,
             responseStatus: nil,
             bodyBytesWritten: 0,
             remainderReason: remainderReason)
         lock.lock()
-        if let duplicate = duplicateRangeTaskDecision(for: candidate), !duplicate.shouldReplaceExisting {
-            let superseded = supersedeRangeTasksLocked(
-                ratingKey: ratingKey,
-                keeping: duplicate.existingTaskIdentifier
-            )
+        if let duplicate = duplicateSegmentDecision(for: candidate), !duplicate.shouldReplaceExisting {
+            let superseded = candidate.segmentLength != nil
+                ? supersedeRangeSegmentTasksLocked(
+                    ratingKey: ratingKey,
+                    offset: candidate.baseOffset,
+                    keeping: duplicate.existingTaskIdentifier
+                )
+                : supersedeRangeTasksLocked(
+                    ratingKey: ratingKey,
+                    keeping: duplicate.existingTaskIdentifier
+                )
             lock.unlock()
             for identifier in superseded {
                 cancelURLSessionTask(identifier: identifier)
@@ -939,19 +1067,18 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             return duplicate.existingTaskIdentifier
         }
         lock.unlock()
-        if offset == 0 {
-            store.clearRangeValidator(ratingKey: ratingKey)
-        }
-        let rangeHeaderValue = rangeRemainderPolicy.rangeHeaderValue(offset: offset)
-        let expectedBodyBytes = rangeRemainderPolicy.expectedBodyBytes(offset: offset,
-                                                                       expectedBytes: expectedBytes)
-        var ranged = request
-        ranged.setValue(rangeHeaderValue, forHTTPHeaderField: "Range")
+
+        let expectedBodyBytes = plan.length
+            ?? rangeRemainderPolicy.expectedBodyBytes(offset: plan.offset, expectedBytes: expectedBytes)
+        var ranged = baseRequest
+        ranged.setValue(plan.rangeHeaderValue, forHTTPHeaderField: "Range")
         if let validator = store.rangeValidator(ratingKey: ratingKey) {
             ranged.setValue(validator, forHTTPHeaderField: "If-Range")
         }
         let task = urlSession.downloadTask(with: ranged)
-        task.taskDescription = ratingKey
+        task.taskDescription = plan.length != nil
+            ? StaticRangeSegmentMarker.taskDescription(ratingKey: ratingKey, offset: plan.offset)
+            : ratingKey
         var existingRangeTasksToCancel: [Int] = []
         lock.lock()
         if haltedRangeKeys.contains(ratingKey) {
@@ -964,14 +1091,25 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             ])
             throw CancellationError()
         }
-        if let duplicate = duplicateRangeTaskDecision(for: candidate) {
+        if let duplicate = duplicateSegmentDecision(for: candidate) {
             if duplicate.shouldReplaceExisting {
-                existingRangeTasksToCancel = supersedeRangeTasksLocked(ratingKey: ratingKey)
+                existingRangeTasksToCancel = candidate.segmentLength != nil
+                    ? supersedeRangeSegmentTasksLocked(
+                        ratingKey: ratingKey,
+                        offset: candidate.baseOffset
+                    )
+                    : supersedeRangeTasksLocked(ratingKey: ratingKey)
             } else {
-                let superseded = supersedeRangeTasksLocked(
-                    ratingKey: ratingKey,
-                    keeping: duplicate.existingTaskIdentifier
-                )
+                let superseded = candidate.segmentLength != nil
+                    ? supersedeRangeSegmentTasksLocked(
+                        ratingKey: ratingKey,
+                        offset: candidate.baseOffset,
+                        keeping: duplicate.existingTaskIdentifier
+                    )
+                    : supersedeRangeTasksLocked(
+                        ratingKey: ratingKey,
+                        keeping: duplicate.existingTaskIdentifier
+                    )
                 lock.unlock()
                 task.cancel()
                 for identifier in superseded {
@@ -999,9 +1137,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lastRangeProgressDiagnostic.removeValue(forKey: task.taskIdentifier)
         rangeInflight[task.taskIdentifier] = candidate
         lock.unlock()
-        // #212: a replacement task now exists — release any completion-handler hold that was
-        // protecting the main-actor request rebuild for this row.
-        endRangeRequestRebuildGrace(ratingKey: ratingKey, reason: "request_rebuilt")
         if !existingRangeTasksToCancel.isEmpty {
             for identifier in existingRangeTasksToCancel {
                 cancelURLSessionTask(identifier: identifier)
@@ -1014,23 +1149,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "base_offset": .int(candidate.baseOffset),
             ])
         }
-        if offset > 0, let expectedBytes, expectedBytes > 0 {
-            store.updateProgress(ratingKey: ratingKey,
-                                 bytes: offset,
-                                 progress: min(1, Double(offset) / Double(expectedBytes)))
-        }
         let urlShape = DiagnosticRedactor.urlShape(ranged.url)
-        downloadLog.info("range-remainder-start ratingKey=\(ratingKey, privacy: .public) offset=\(offset, privacy: .public) url_shape=\(urlShape, privacy: .public)")
+        downloadLog.info("range-remainder-start ratingKey=\(ratingKey, privacy: .public) offset=\(plan.offset, privacy: .public) url_shape=\(urlShape, privacy: .public)")
         AppDiagnostics.record(.downloads, "downloads.range_start", fields: [
             "download_id": .identifier(ratingKey),
             "task_id": .int(task.taskIdentifier),
             "remainder_reason": .label(remainderReason),
-            "offset_bytes": .bytes(offset),
-            "offset_exact": .int(offset),
-            "has_offset": .bool(offset > 0),
+            "offset_bytes": .bytes(plan.offset),
+            "offset_exact": .int(plan.offset),
+            "has_offset": .bool(plan.offset > 0),
             "expected_bytes": .bytes(expectedBytes),
             "expected_exact": .int(expectedBytes ?? -1),
-            "range_request_shape": .label("open_ended"),
+            "range_request_shape": .label(plan.length != nil ? "closed" : "open_ended"),
+            "segment_length": .int(plan.length ?? -1),
             "planned_body_bytes": .bytes(expectedBodyBytes),
             "url_shape": .urlShape(ranged.url),
             "allows_cellular": .bool(ranged.allowsCellularAccess),
@@ -1039,9 +1170,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "download_id": .identifier(ratingKey),
             "task_id": .int(task.taskIdentifier),
             "remainder_reason": .label(remainderReason),
-            "offset_bytes": .bytes(offset),
-            "offset_exact": .int(offset),
+            "offset_bytes": .bytes(plan.offset),
+            "offset_exact": .int(plan.offset),
             "expected_exact": .int(expectedBytes ?? -1),
+            "segment_length": .int(plan.length ?? -1),
             "planned_body_bytes": .bytes(expectedBodyBytes),
         ])
         task.resume()
@@ -1337,7 +1469,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 return
             }
             let durableBytes = fileSize(at: rangeEntry.destination) ?? 0
-            if durableBytes > rangeEntry.baseOffset {
+            if durableBytes > rangeEntry.baseOffset + (rangeEntry.segmentLength ?? 0) {
                 lock.lock()
                 rangeInflight.removeValue(forKey: downloadTask.taskIdentifier)
                 supersededRangeTaskIdentifiers.insert(downloadTask.taskIdentifier)
@@ -1400,7 +1532,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             lock.lock()
             if let newerTaskIdentifier = newerRangeTaskIdentifier(for: rangeEntry,
                                                                    currentTaskIdentifier: downloadTask.taskIdentifier,
-                                                                   currentBodyBytes: bodyBytesWritten) {
+                                                                   currentBodyBytes: bodyBytesWritten,
+                                                                   segmentScoped: rangeEntry.segmentLength != nil
+                                                                    || StaticRangeSegmentMarker.parse(
+                                                                        downloadTask.taskDescription) != nil) {
                 rangeInflight.removeValue(forKey: downloadTask.taskIdentifier)
                 supersededRangeTaskIdentifiers.insert(downloadTask.taskIdentifier)
                 loggedProgressMilestones.removeValue(forKey: downloadTask.taskIdentifier)
@@ -1527,7 +1662,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let newerTaskIdentifier = rangeEntry.flatMap {
             newerRangeTaskIdentifier(for: $0,
                                      currentTaskIdentifier: downloadTask.taskIdentifier,
-                                     currentBodyBytes: max(0, Int(downloadTask.countOfBytesReceived)))
+                                     currentBodyBytes: max(0, Int(downloadTask.countOfBytesReceived)),
+                                     segmentScoped: $0.segmentLength != nil
+                                        || StaticRangeSegmentMarker.parse(downloadTask.taskDescription) != nil)
         }
         if newerTaskIdentifier != nil {
             rangeInflight.removeValue(forKey: downloadTask.taskIdentifier)
@@ -1697,7 +1834,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // #220: stash the OS temp FIRST — `location` is only guaranteed valid until this delegate
         // returns, and the payload is irreplaceable. Classification, diagnostics, and the write
         // decision all run off the stash; branches that don't want the body delete the stash.
-        let stash = rangeBodyStashURL(taskIdentifier: taskIdentifier)
+        let stash = rangeBodyStashURL(taskIdentifier: taskIdentifier, offset: entry.baseOffset)
         do {
             try? fileManager.removeItem(at: stash)
             try fileManager.moveItem(at: location, to: stash)
@@ -1932,6 +2069,22 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         case .append:
             let durableBytesBeforeAppend = durableBytesBeforeWrite
             if durableBytesBeforeAppend < entry.baseOffset {
+                if entry.segmentLength != nil {
+                    let stashLen = fileSize(at: stash) ?? 0
+                    lock.lock()
+                    heldRangeSegments[entry.ratingKey, default: [:]][entry.baseOffset] = (url: stash, length: stashLen)
+                    lock.unlock()
+                    AppDiagnostics.record(.downloads, "downloads.range_segment_held", fields: [
+                        "download_id": .identifier(entry.ratingKey),
+                        "base_offset": .int(entry.baseOffset),
+                        "durable_bytes": .int(durableBytesBeforeAppend),
+                        "body_bytes": .int(stashLen),
+                    ])
+                    onChange?()
+                    // A task slot freed — top the train up (reuses continuation's halt/grace logic).
+                    continueRangeAfterBody(entry: entry, partialSize: durableBytesBeforeAppend)
+                    return
+                }
                 try? fileManager.removeItem(at: stash)
                 AppDiagnostics.record(.downloads, "downloads.range_durable_offset_gap", fields: [
                     "download_id": .identifier(entry.ratingKey),
@@ -2046,6 +2199,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                  bytes: partialSize,
                                  progress: (entry.expectedBytes ?? 0) > 0
                                     ? min(1, Double(partialSize) / Double(entry.expectedBytes!)) : 0)
+            let drainedPartial = drainHeldRangeSegments(
+                ratingKey: entry.ratingKey,
+                destination: entry.destination,
+                expectedBytes: entry.expectedBytes)
+            let partialSizeAfterDrain = max(partialSize, drainedPartial)
             AppDiagnostics.record(.downloads, "downloads.range_remainder_appended", fields: [
                 "download_id": .identifier(entry.ratingKey),
                 "base_offset": .int(entry.baseOffset),
@@ -2070,7 +2228,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 return
             }
 
-            switch rangeRemainderPolicy.nextStep(partialSize: partialSize,
+            switch rangeRemainderPolicy.nextStep(partialSize: partialSizeAfterDrain,
                                                   expectedBytes: entry.expectedBytes,
                                                   bodyBytes: bodyBytes) {
             case .complete:
@@ -2085,7 +2243,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 onError?(entry.ratingKey, .transferFailed("Download stalled with no progress."))
                 onChange?()
             case .continueFrom:
-                continueRangeAfterBody(entry: entry, partialSize: partialSize)
+                continueRangeAfterBody(entry: entry, partialSize: partialSizeAfterDrain)
             }
 
         case .failServer, .alreadyComplete:
@@ -2097,11 +2255,62 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         store.status(for: ratingKey) == .paused
     }
 
-    private func rangeBodyStashURL(taskIdentifier: Int) -> URL {
+    private func rangeBodyStashURL(taskIdentifier: Int, offset: Int) -> URL {
         // The OS background temp and our temporaryDirectory share the app-container volume, so the
         // stash move is an O(1) rename. Unique per task id (unique within a session) and deleted
         // after the append/replace consumes it.
-        fileManager.temporaryDirectory.appendingPathComponent("vp-range-body-\(taskIdentifier)")
+        fileManager.temporaryDirectory.appendingPathComponent("vp-range-body-\(taskIdentifier)-o\(offset)")
+    }
+
+    private func removeRangeBodyStashes(taskIdentifier: Int) {
+        let tmp = fileManager.temporaryDirectory
+        let prefix = "vp-range-body-\(taskIdentifier)"
+        if let entries = try? fileManager.contentsOfDirectory(at: tmp, includingPropertiesForKeys: nil) {
+            for url in entries where url.lastPathComponent == prefix || url.lastPathComponent.hasPrefix(prefix + "-o") {
+                try? fileManager.removeItem(at: url)
+            }
+        }
+    }
+
+    /// Fold any held out-of-order segments that are now contiguous with the durable checkpoint.
+    /// Returns the new durable size. Bodies are trusted (they are our own tagged 206 segment bodies);
+    /// no validator/Content-Range re-check is possible (headers are long gone) — the assembly policy's
+    /// exact-offset contiguity guarantee is the alignment defense.
+    @discardableResult
+    private func drainHeldRangeSegments(ratingKey: String, destination: URL, expectedBytes: Int?) -> Int {
+        var durable = fileSize(at: destination) ?? 0
+        while true {
+            lock.lock()
+            let held = heldRangeSegments[ratingKey] ?? [:]
+            lock.unlock()
+            let stashed = held.map { (offset: $0.key, length: $0.value.length) }
+            let run = StaticRangeSegmentAssemblyPolicy.appendableRun(durableBytes: durable, stashedSegments: stashed)
+            for seg in run.discard {
+                if let entry = held[seg.offset] { try? fileManager.removeItem(at: entry.url) }
+                lock.lock(); heldRangeSegments[ratingKey]?.removeValue(forKey: seg.offset); lock.unlock()
+            }
+            guard let next = run.append.first, let entry = held[next.offset] else { break }
+            // Re-verify on-disk alignment before appending.
+            let onDisk = fileSize(at: destination) ?? 0
+            guard onDisk == next.offset else { break }
+            do {
+                let appended = try appendFile(at: entry.url, onto: destination)
+                durable = onDisk + appended
+            } catch {
+                break
+            }
+            try? fileManager.removeItem(at: entry.url)
+            lock.lock(); heldRangeSegments[ratingKey]?.removeValue(forKey: next.offset); lock.unlock()
+            AppDiagnostics.record(.downloads, "downloads.range_segment_assembled", fields: [
+                "download_id": .identifier(ratingKey),
+                "base_offset": .int(next.offset),
+                "partial_bytes": .int(durable),
+            ])
+            store.updateProgress(ratingKey: ratingKey, bytes: durable,
+                                 progress: (expectedBytes ?? 0) > 0 ? min(1, Double(durable) / Double(expectedBytes!)) : 0)
+        }
+        if (heldRangeSegments[ratingKey]?.isEmpty ?? false) { lock.lock(); heldRangeSegments.removeValue(forKey: ratingKey); lock.unlock() }
+        return durable
     }
 
     private func expectedRangeBodyBytes(entry: RangeTransfer) -> Int? {
@@ -3420,6 +3629,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 destination: destination,
                 expectedBytes: expectedBytes,
                 baseOffset: baseOffset,
+                segmentLength: nil,
                 responseStatus: nil,
                 bodyBytesWritten: 0,
                 remainderReason: remainderReason)

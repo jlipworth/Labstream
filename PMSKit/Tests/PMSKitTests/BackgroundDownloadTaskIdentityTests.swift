@@ -82,4 +82,18 @@ struct BackgroundDownloadTaskIdentityTests {
         #expect(withoutDescription == nil)
         #expect(withDescription == "movie-123")
     }
+
+    @Test("Combined segment description resolves Plex part URL to its row")
+    func combinedSegmentDescriptionResolvesPlexPartURL() {
+        let resolved = BackgroundDownloadTaskIdentity.ratingKey(
+            taskDescription: StaticRangeSegmentMarker.taskDescription(
+                ratingKey: "movie-123",
+                offset: 536870912
+            ),
+            requestURL: URL(string: "https://plex.example/library/parts/9876/file.mp4"),
+            knownKeys: ["movie-123"]
+        )
+
+        #expect(resolved == "movie-123")
+    }
 }
