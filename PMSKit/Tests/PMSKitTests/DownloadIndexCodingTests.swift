@@ -81,6 +81,17 @@ struct DownloadIndexCodingTests {
         #expect(result.skippedRowCount == 0)
     }
 
+    @Test func forwardVersionEnvelopePreservesHealthyRowsAndSkipsCorruption() {
+        let json = #"{"schemaVersion":99,"rows":[{"key":"a","bytes":1},{"key":"bad","bytes":"oops"},{"key":"b","bytes":2}]}"#
+        let result = DownloadIndexCoding.decode(StubRow.self, from: data(json))
+        #expect(result.schemaVersion == 99)
+        #expect(result.rows == [
+            StubRow(key: "a", bytes: 1, note: nil),
+            StubRow(key: "b", bytes: 2, note: nil),
+        ])
+        #expect(result.skippedRowCount == 1)
+    }
+
     @Test func emptyArrayLoadsEmpty() {
         let result = DownloadIndexCoding.decode(StubRow.self, from: data("[]"))
         #expect(result.rows.isEmpty)
