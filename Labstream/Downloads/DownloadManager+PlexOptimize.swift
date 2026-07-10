@@ -63,6 +63,13 @@ extension DownloadManager {
         var optimizeMetadata = metadata
         optimizeMetadata.optimizeTargetName = targetName
         optimizeMetadata.optimizeQueueTitle = queueTitle
+        // The original→optimize fallback chains hand in metadata built for the `.original` lane
+        // (`.staticByteRange`). Until the post-fetch rebuild below lands, that stale seed would
+        // let a delete-time cancel miss the server-prep job and a crash/relaunch Retry re-download
+        // the raw original (sourcePartID is the SOURCE part) that just failed preflight. Stamp the
+        // optimize lane/resume class before the first upsert so the whole window is server-prep.
+        optimizeMetadata.downloadLane = .optimize
+        optimizeMetadata.resumeMode = .serverPrepThenStatic
         recordDownloadDiagnostic("downloads.optimize_start", fields: [
             "download_id": .identifier(ratingKey),
             "target": .label(targetName),
@@ -242,6 +249,15 @@ extension DownloadManager {
         // final Part id as the static retry target.
         downloadMetadata.sourcePartID = part.id
         downloadMetadata.resumeMode = .staticByteRange
+        // From here on the transfer is the RENDERED part, so byte-completeness must be judged
+        // against ITS size — the enqueue metadata still carries the SOURCE part size, and a
+        // transfer that completes via an adopted whole-file 200 never gets a Content-Range total
+        // to heal it, which made `demoteIncompleteCompletedStaticRows` fail genuinely complete
+        // optimize downloads. (Merge-from-previous restores a nil, so only overwrite with a real
+        // size.)
+        if let renderedSize = part.size, renderedSize > 0 {
+            downloadMetadata.sourcePartSize = renderedSize
+        }
         downloadMetadata.serverPreparedVersion = true
         // If the #88 chapter-image cache landed while the Plex optimize job was rendering, preserve
         // it across this final "start the rendered Part" upsert instead of racing it back to nil.
