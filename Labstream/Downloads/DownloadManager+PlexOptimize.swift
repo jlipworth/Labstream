@@ -33,7 +33,26 @@ extension DownloadManager {
                                             session: BackendSession) async {
         let ratingKey = item.ratingKey
         guard let pollerID = beginServerPrepPoller(ratingKey: ratingKey, source: "start") else { return }
-        defer { endServerPrepPoller(ratingKey: ratingKey, id: pollerID) }
+        // Audit B.9: run the chain inside a Task registered in `serverPrepPollerTasks` (exactly
+        // like the resume path) so a delete's `releaseInFlight` can CANCEL the fresh-start poll
+        // loop too. Previously only the resume path stored a handle; a fresh start ran inline
+        // with nothing to cancel, so after delete it kept polling the server every ~5s.
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.runOptimizeAndDownload(item: item, targetName: targetName,
+                                              metadata: metadata, session: session,
+                                              ratingKey: ratingKey, pollerID: pollerID)
+        }
+        registerServerPrepPollerTask(task, ratingKey: ratingKey)
+        await task.value
+        endServerPrepPoller(ratingKey: ratingKey, id: pollerID)
+    }
+
+    private func runOptimizeAndDownload(item: MediaItem, targetName: String,
+                                        metadata: OfflineMetadata,
+                                        session: BackendSession,
+                                        ratingKey: String,
+                                        pollerID: UUID) async {
         // #84: the whole optimize/poll/download chain runs off the captured Plex session — the
         // server/token come from it, not from any `appModel.active*` re-read.
         let server = session.baseURL
@@ -163,6 +182,8 @@ extension DownloadManager {
                 "target": .label(targetName),
             ])
         } catch let error as DownloadError {
+            guard resumeOptimizePollerIsCurrent(ratingKey: ratingKey, pollerID: pollerID,
+                                                phase: "start_error") else { return }
             recordDownloadDiagnostic("downloads.optimize_failed", fields: [
                 "download_id": .identifier(ratingKey),
                 "target": .label(targetName),
@@ -173,10 +194,17 @@ extension DownloadManager {
             clearOptimizeProgress(ratingKey: ratingKey)
             refreshRecords()
         } catch is CancellationError {
+            // Same stale-poller race as the resume chain: pause/delete already released this
+            // attempt, and a quick re-download may own a NEW attempt on this key by now —
+            // never strip the new attempt's slot from a superseded chain's handler.
+            guard resumeOptimizePollerIsCurrent(ratingKey: ratingKey, pollerID: pollerID,
+                                                phase: "start_cancelled") else { return }
             releaseInFlight(ratingKey: ratingKey)
             clearOptimizeProgress(ratingKey: ratingKey)
             refreshRecords()
         } catch {
+            guard resumeOptimizePollerIsCurrent(ratingKey: ratingKey, pollerID: pollerID,
+                                                phase: "start_error") else { return }
             recordDownloadDiagnostic("downloads.optimize_failed", fields: [
                 "download_id": .identifier(ratingKey),
                 "target": .label(targetName),
@@ -502,6 +530,49 @@ extension DownloadManager {
             "stale_found": .int(stale.count),
             "removed": .int(removed),
         ])
+    }
+
+    /// Delete-time (audit B.9): best-effort removal of ONE optimize job — the type-42 item whose
+    /// title is the deleted row's persisted queue title. Unlike `cleanStaleOptimizeJobs` (a broad
+    /// sweep that runs only on the NEXT optimize kickoff), this fires immediately when the user
+    /// deletes a row still in server prep, so the server stops transcoding work nobody wants.
+    /// Same completed-state safety as the sweep: `cancellableItemID` returns nil for a completed
+    /// item because deleting it would destroy the rendered server-side version. NEVER throws or
+    /// blocks the delete; every outcome is recorded via `downloads.optimize_cancel`.
+    func removePlexOptimizeQueueItem(ratingKey: String, queueTitle: String,
+                                     server: URL, token: String,
+                                     identity: ClientIdentity) async {
+        func record(_ removed: Bool, _ reason: String) {
+            recordDownloadDiagnostic("downloads.optimize_cancel", fields: [
+                "download_id": .identifier(ratingKey),
+                "removed": .bool(removed),
+                "reason": .label(reason),
+            ])
+        }
+        guard let bgKey = await bgKeyForPolling(server: server, token: token, identity: identity) else {
+            record(false, "bg_key_unavailable")
+            return
+        }
+        let trimmed = bgKey.hasPrefix("/") ? String(bgKey.dropFirst()) : bgKey
+        let listReq = PlexRequest(url: server.appendingPathComponent(trimmed), method: "GET",
+                                  queryItems: [],
+                                  headers: PlexHeaders.standard(identity: identity, token: token))
+        guard let queue = try? await appModel.client.send(listReq, as: BackgroundProcessingItems.self) else {
+            record(false, "queue_fetch_failed")
+            return
+        }
+        guard let itemID = queue.cancellableItemID(queueTitle: queueTitle) else {
+            // Not found (already reaped / server dropped the title) or completed (rendered
+            // version present — deliberately preserved).
+            record(false, "no_cancellable_item")
+            return
+        }
+        let del = OptimizeRequest.removeBackgroundItem(server: server, token: token,
+                                                       identity: identity,
+                                                       backgroundProcessingKey: bgKey,
+                                                       itemID: itemID)
+        let ok = (try? await appModel.client.send(del)) != nil
+        record(ok, ok ? "removed" : "delete_failed")
     }
 
     /// If the server's background conversion queue is idle-paused, clear it so queued optimize

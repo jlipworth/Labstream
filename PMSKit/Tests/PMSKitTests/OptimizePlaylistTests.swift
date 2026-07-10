@@ -199,6 +199,32 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream",
     #expect(Set(stale) == ["1", "3"])
 }
 
+// MARK: - Delete-time targeted cancel (`cancellableItemID`)
+
+@Test func cancellableItemIDMatchesExactTitleOnly() throws {
+    let json = """
+    {"MediaContainer":{"Item":[
+      {"id":"1","title":"Movie A [Labstream aaaa1111]","Status":{"state":"pending"}},
+      {"id":"2","title":"Movie B [Labstream bbbb2222]","Status":{"state":"processing"}}
+    ]}}
+    """.data(using: .utf8)!
+    let q = try JSONDecoder().decode(BackgroundProcessingItems.self, from: json)
+    #expect(q.cancellableItemID(queueTitle: "Movie B [Labstream bbbb2222]") == "2")
+    #expect(q.cancellableItemID(queueTitle: "Movie C [Labstream dddd4444]") == nil)
+}
+
+@Test func cancellableItemIDRefusesCompletedRenders() throws {
+    // A completed type-42 item IS the rendered server-side version; delete-time cancel must
+    // never remove it even when the queue title matches the deleted row exactly.
+    let json = """
+    {"MediaContainer":{"Item":[
+      {"id":"9","title":"Done Movie [Labstream eeee5555]","Status":{"state":"complete"}}
+    ]}}
+    """.data(using: .utf8)!
+    let q = try JSONDecoder().decode(BackgroundProcessingItems.self, from: json)
+    #expect(q.cancellableItemID(queueTitle: "Done Movie [Labstream eeee5555]") == nil)
+}
+
 // MARK: - Safe cleanup (`removableItemIDs`): completed server renders are preserved
 
 @Test func removableItemIDsPreservesCompletedServerRenders() throws {
