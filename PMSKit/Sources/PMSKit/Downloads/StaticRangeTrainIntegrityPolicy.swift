@@ -81,6 +81,33 @@ public enum StaticRangeTrainIntegrityPolicy {
         return .proceed
     }
 
+    public enum PreAppendDecision: Equatable {
+        case append
+        /// The train was torn down after the entry check (epoch advanced): the restart owns the
+        /// row and has planned its own continuation — discard the body and do nothing else.
+        case discardStaleTrain
+        /// Same train generation but the durable file no longer sits exactly at this body's
+        /// offset: appending would land the body at the wrong file position — discard it and
+        /// hand the row back to the planner from the durable checkpoint.
+        case discardOffsetDrift
+    }
+
+    /// Last-instant re-check IMMEDIATELY before the append syscall. The entry epoch check runs at
+    /// the top of the apply, but a changed-resource restart (416 path) executes on the DELEGATE
+    /// queue and can tear the train down — advance the epoch and delete/truncate the durable
+    /// file — while the apply is between its entry check and the append. Appending then would
+    /// write a mid-file segment at offset 0 of the recreated file (silent corruption). An append
+    /// is only allowed when the epoch is unchanged AND the on-disk size still equals the body's
+    /// base offset (durable bytes are monotonic within a train generation).
+    public static func preAppendDecision(bodyTrainEpoch: Int,
+                                         currentTrainEpoch: Int,
+                                         durableBytes: Int,
+                                         baseOffset: Int) -> PreAppendDecision {
+        guard bodyTrainEpoch == currentTrainEpoch else { return .discardStaleTrain }
+        guard durableBytes == baseOffset else { return .discardOffsetDrift }
+        return .append
+    }
+
     public enum HeldSpliceDecision: Equatable {
         case splice
         /// The stash was recorded against a different resource version than the one now pinned —
