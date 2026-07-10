@@ -74,21 +74,57 @@ fundamentally constrained by the platform, not by the server or the app:
 Labstream's static byte-range lane is shaped around these limits and follows the simplest
 Apple-standard architecture we can make stable:
 
-- **One system-owned task for the remaining bytes.** Static Plex/Jellyfin/Emby file transfers use
-  one background `URLSessionDownloadTask` with an open-ended `Range: bytes=<durableOffset>-`
-  request from the durable partial file size. This same shape is used in foreground and background.
-- **URLSession resume data is first-class.** Pause, sleep/off-head interruption, and recoverable
-  task failures preserve in-flight bytes by producing or adopting URLSession resume data when the
-  system can provide it. Persisted blobs are registered back into the static range lane, not the
-  opaque whole-file lane, so completed partial-body temps are appended/replaced safely.
+- **A pre-queued train of closed-range segment tasks, not one open-ended task.** Static
+  Plex/Jellyfin/Emby file transfers enqueue up to `maxQueuedSegments` (8) background
+  `URLSessionDownloadTask`s ahead of the durable checkpoint, each a closed
+  `Range: bytes=<offset>-<offset+segmentBytes-1>` request of `segmentBytes` (512 MiB) —
+  roughly 4 GiB of unattended runway per file. `StaticRangeSegmentQueuePolicy` is the pure
+  planner: given the durable offset, the expected total size, and the segment offsets
+  already live in the session, it emits the closed ranges still needed, up to the queue
+  depth. When the expected total size is unknown, the planner falls back to a single
+  open-ended `Range: bytes=<durableOffset>-` plan — the same shape used before segmentation,
+  so that fallback is a zero-regression path rather than a special case.
+  `StaticRangeTransferRegime` (`Labstream/Downloads/StaticRangeTransferRegime.swift`) is a
+  compile-time switch between `.segmentTrain` (default, all platforms) and
+  `.openEndedRemainder` (the prior single-task shipping behavior); flipping a platform back
+  is a one-line change, and both regimes recover from the same durable-partial checkpoint,
+  so switching regimes across launches is safe.
+- **Segments are marked and stashed, then assembled in order.** Each segment task's
+  `taskDescription` carries `lbs-segment:v1:<offset>` combined with the download's
+  ratingKey via a U+001F separator, so a relaunch or reattach can identify which live
+  tasks belong to which download and at what offset without any other bookkeeping.
+  `StaticRangeReattachPolicy` adopts closed-range tasks bearing a valid, offset-matching
+  marker; a closed-range task with no marker (or a stale/mismatched one) is still dropped
+  as legacy, the same #231 safety behavior as before segmentation. When a segment task
+  finishes, its body is stashed by offset; `StaticRangeSegmentAssemblyPolicy` — a pure
+  assembler — decides, given the durable offset and the set of stashed finished bodies,
+  which stashes form the maximal contiguous run starting exactly at the durable offset
+  (appended now), which are held (a later segment finished out of order, waiting on a gap),
+  and which are discarded (fully behind the checkpoint, or overlapping but not
+  offset-aligned — the same non-negotiable append-alignment invariant as the pre-segment
+  design). Appending a run advances the durable checkpoint and refills the train back up
+  to the queue depth.
+- **URLSession resume data is still first-class.** Pause, sleep/off-head interruption, and
+  recoverable task failures preserve in-flight bytes by producing or adopting URLSession
+  resume data when the system can provide it, per segment. Persisted blobs are registered
+  back into the static range lane, not the opaque whole-file lane, so completed
+  partial-body temps are appended/replaced safely.
 - **The durable partial is the fallback.** If resume data is missing, invalid, stale, or refers to a
-  temp file the system has deleted, Labstream clears/discards the blob and starts a new open-ended
-  Range request from the durable partial's current file size.
+  temp file the system has deleted, Labstream clears/discards the blob and re-plans the train
+  from the durable partial's current file size.
 - **HTTP safety checks still guard the append.** Completed bodies are validated for
   `Content-Range` start alignment, pinned validator mismatches, HTTP `200` full-body
   replacement/restart behavior, `416` total validation, temp disappearance fallback, and safe
   resume-blob adoption/clearing. A strangely-resumed transfer should waste bandwidth or fall back
   to the durable partial, never corrupt the file.
+- **Why segments, not one task:** a visionOS wake bounce can silently restart the body of an
+  in-flight custom-`Range` request with no error and no resume-data callback (see the verified
+  platform finding in `docs/DEVELOPMENT.md`). With one open-ended task, that restart forfeits
+  every un-appended byte transferred off-head, unbounded overnight. With a segment train,
+  nsurlsessiond executes pre-queued segments with the process dead — no per-continuation app
+  wake is required — and a wake-time bounce can only restart the one segment that was mid-flight
+  (at most `segmentBytes`), while completed-but-undelivered segment temps survive the bounce on
+  disk and are appended the next time the app is serviced.
 
 Simulator caveat: Labstream intentionally uses a foreground/default `URLSession`
 in simulator builds because the background transfer daemon is unreliable there.
@@ -118,9 +154,9 @@ User-facing expectations worth setting (the "downloads disclaimer"):
 | --- | --- |
 | `DownloadManager` | Main-actor queue coordination and user-visible state. |
 | Backend-specific manager extensions | Plex/Jellyfin/Emby route setup and server-prep polling. |
-| `BackgroundDownloadSession` | URLSession tasks, open-ended byte-range remainders, transfer callbacks, finalization. |
+| `BackgroundDownloadSession` | URLSession tasks, segment-train enqueue/refill, transfer callbacks, finalization. |
 | `DownloadStore` | Offline index persistence and file-side effects. |
-| PMSKit download policies | Pure route, retry, row-display, and recovery decisions. |
+| PMSKit download policies | Pure route, retry, row-display, and recovery decisions, including the segment-train planner and assembler. |
 
 ## Offline metadata
 

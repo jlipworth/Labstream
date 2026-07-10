@@ -133,6 +133,25 @@ xcrun simctl spawn "$SIMID" log show --last 10m --info --debug \
 
 Some compatibility subsystems still log under `com.jlipworth.VisionPlay`; new diagnostics use `com.jlipworth.Labstream`.
 
+## Verified platform findings
+
+- **visionOS wake silently restarts custom-`Range` request bodies, and resume data cannot
+  see it.** When a headset is re-worn, the network path re-evaluates and `nsurlsessiond`
+  transparently retries the in-flight background task; because Labstream's static-range
+  downloads carry a custom `Range` header, the retried body restarts from the range start
+  with no error and no resume-data callback — the failure is invisible to the resume-data
+  recovery path entirely. Observed signature: an app-diagnostics `reset_body_bytes` on the
+  order of ~1 KB (i.e. the retried body barely got going again) even though gigabytes had
+  already been buffered un-appended for that task. Contrast with an app-alive network switch
+  on iPad, which surfaces as a normal task error WITH resume data and is recoverable through
+  the existing resume-data path. Consequence: off-head durability for static-range downloads
+  cannot rely on resume data alone, and per-chunk background wakes to checkpoint more often
+  are not viable either — the OS background-relaunch rate limiter (exponential backoff, #212)
+  stops granting wakes once a design needs one wake per bounded transfer, stalling overnight.
+  The fix is a pre-queued train of closed-range segment tasks that `nsurlsessiond` executes
+  without app involvement, bounding what a silent wake-time retry can destroy to one segment;
+  see `docs/DOWNLOADS-OFFLINE.md` for the design.
+
 ## Documentation workflow
 
 ```sh
