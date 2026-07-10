@@ -321,6 +321,16 @@ extension DownloadManager {
                 let (data, response) = try await URLSession.shared.data(for: req)
                 if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                     if Self.isTerminalEmbyConvertPollStatus(http.statusCode) {
+                        // Lens 6 F4: the status GET above is an await — the row can have been
+                        // deleted/retried during it. Mirror the didSucceed guard: a STALE chain
+                        // must never `failEmbyConvert` (that bricks a fresh re-download with the
+                        // old job's error and strips its in-flight slot).
+                        guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
+                                                          targetName: targetName, jobId: jobId) else {
+                            recordStaleEmbyConvertAttempt(ratingKey: ratingKey,
+                                                          phase: "poll_http_stale", jobId: jobId)
+                            return
+                        }
                         recordDownloadDiagnostic("downloads.convert_failed", fields: [
                             "download_id": .identifier(ratingKey),
                             "job_id": .int(jobId),
@@ -344,6 +354,17 @@ extension DownloadManager {
                 ])
                 try? await Task.sleep(nanoseconds: UInt64(optimizePollInterval * 1_000_000_000))
                 continue
+            }
+
+            // Lens 6 F4/F6: the status fetch above is an await. Re-check attempt currency BEFORE
+            // publishing progress or acting on a terminal status, so one poll-cycle of latency
+            // cannot re-plant stale prep progress after a delete, and a stale chain never reaches
+            // the Failed/Cancelled `failEmbyConvert` below (its success sibling was already
+            // guarded; the failure branch was not).
+            guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
+                                              targetName: targetName, jobId: jobId) else {
+                recordStaleEmbyConvertAttempt(ratingKey: ratingKey, phase: "post_status", jobId: jobId)
+                return
             }
 
             // Surface progress through the shared optimize plumbing the UI already renders. Emby does
@@ -512,6 +533,15 @@ extension DownloadManager {
         }
 
         guard let newSourceId = newSource?.id, !newSourceId.isEmpty else {
+            // Lens 6 F4: the source polling above awaited repeatedly; the last iteration's fetch
+            // has no guard between it and this failure branch. Mirror the didSucceed guard —
+            // stale → record + return, never `failEmbyConvert`.
+            guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
+                                              targetName: targetName, jobId: jobId) else {
+                recordStaleEmbyConvertAttempt(ratingKey: ratingKey,
+                                              phase: "no_converted_source_stale", jobId: jobId)
+                return
+            }
             recordDownloadDiagnostic("downloads.convert_failed", fields: [
                 "download_id": .identifier(ratingKey),
                 "job_id": .int(jobId),
