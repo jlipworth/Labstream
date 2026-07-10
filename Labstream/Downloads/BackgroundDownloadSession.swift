@@ -473,6 +473,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
           _ outcome: RevalidationRequestOutcome) -> Void)?
     var onBackgroundCompletionGateDrained: ((_ deferredKeys: Set<DownloadAttemptKey>) -> Void)?
 
+    /// Invoked when a static-Range remainder exhausts its retry/rehydration budget on an auth HTTP
+    /// status (401/403). Logout revokes the JF/Emby token server-side, so an in-flight remainder can
+    /// 401 purely because the user signed out — a post-hoc casualty, not a real error. The manager
+    /// (on the main actor) confirms whether the backend session is actually gone and either parks the
+    /// row in the deferred "waiting for a valid session" state or, if still signed in, fails it. Lands
+    /// off the main actor; when unset the delegate falls back to its normal `.failed` path.
+    var onRangeAuthHTTPFailure: ((_ ratingKey: String, _ httpStatus: Int) -> Void)?
+
     /// True when this process currently owns an opaque or Range URLSession task for the row.
     /// `DownloadManager.activeJobs` is intentionally broader app-level bookkeeping and can survive
     /// a relaunch-adopted task; stale active slots must not make a queued static partial
@@ -3521,6 +3529,23 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             if requestRangeRehydrationAfterHTTPFailure(statusCode: code,
                                                        entry: entry,
                                                        durableBytes: durableBytes) {
+                return
+            }
+            // Post-logout casualty: once transient retry + rehydration are exhausted on a 401/403, the
+            // remainder may simply be holding a token the user just revoked by signing out. Hand the
+            // terminal decision to the manager, which (on the main actor) parks the row in the deferred
+            // "waiting for a valid session" state when the backend session is actually gone, or fails
+            // it when still signed in (a genuine auth error). Reset the exhausted retry/rehydrate
+            // counters so a clean rehydration path is available once the account is signed back in.
+            if PostLogoutDownloadFailurePolicy.isDeferrableAuthStatus(code), let onRangeAuthHTTPFailure {
+                clearRetryCount(ratingKey: entry.ratingKey)
+                AppDiagnostics.record(.downloads, "downloads.range_auth_failure_handoff", fields: [
+                    "download_id": .identifier(entry.ratingKey),
+                    "status_code": .int(code),
+                    "bytes": .bytes(durableBytes),
+                ])
+                onRangeAuthHTTPFailure(entry.ratingKey, code)
+                onChange?()
                 return
             }
             AppDiagnostics.record(.downloads, "downloads.range_failed", fields: [
