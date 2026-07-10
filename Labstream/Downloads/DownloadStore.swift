@@ -660,6 +660,24 @@ final class DownloadStore: @unchecked Sendable {
         updateMetadata(ratingKey: ratingKey) { $0.rangeValidator = nil }
     }
 
+    /// The row's current download-attempt token (see `OfflineMetadata.downloadAttemptID`).
+    func downloadAttemptID(ratingKey: String) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        return rows[ratingKey]?.metadata?.downloadAttemptID
+    }
+
+    /// First writer wins: concurrent task-creation paths for one attempt must all end up
+    /// stamping the same token.
+    func mintDownloadAttemptIDIfMissing(ratingKey: String, _ attemptID: String) {
+        updateMetadata(ratingKey: ratingKey) {
+            if $0.downloadAttemptID == nil { $0.downloadAttemptID = attemptID }
+        }
+    }
+
+    func clearDownloadAttemptID(ratingKey: String) {
+        updateMetadata(ratingKey: ratingKey) { $0.downloadAttemptID = nil }
+    }
+
     /// #169: reset persisted static byte-range progress to the bytes that are actually durable in
     /// the partial file. The current in-flight static Range task body lives in an OS temp
     /// until `didFinishDownloadingTo`; progress callbacks may have published those optimistic bytes
