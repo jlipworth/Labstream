@@ -7,6 +7,12 @@ Audit baseline: app/PMSKit code through `edf2d27`; documentation baseline `5d106
 Scope: correctness, concurrency, reliability, performance, Swift idioms, testability,
 backend sharing, platform sharing, conditional compilation, and build cost.
 
+Companion document: `docs/audits/2026-07-10-downloads-engine-audit-plan.md` is the detailed
+downloads-engine audit that feeds `COR-01`/`COR-02`/`COR-03`/`COR-07`; this plan owns the
+remediation queue for those findings — do not treat the two documents as independent work
+lists. Line references in both documents are as of the audit baseline and may drift a few
+lines past it.
+
 This plan turns the July 2026 whole-repository audit into independently reviewable work.
 It is intentionally staged: correctness and test seams come before broad deduplication,
 and package/target restructuring happens only after measurements show that it is useful.
@@ -165,8 +171,12 @@ Add a serial, revisioned persistence executor:
    submitted/committed revision;
 4. keep slow encoding and filesystem I/O outside `NSLock`;
 5. expose redacted write/encode failures;
-6. provide explicit terminal/delete/session durability or a bounded `flush()` for lifecycle
-   transitions that promise disk persistence.
+6. provide a bounded `flush()` (required, not optional) plus explicit terminal/delete/session
+   durability for lifecycle transitions that promise disk persistence. The background-session
+   completion-handler path depends on `flush()`: because I/O stays outside the lock and
+   snapshots coalesce, awaiting a bounded flush is the only way that path can honor the
+   "no durable-completion signal before the required revision commits or fails observably"
+   rule below.
 
 A failed newest revision remains dirty and retries on a later mutation/flush; it is never marked
 committed or abandoned merely because no newer mutation exists. The last valid index must remain
@@ -184,6 +194,12 @@ This phase does not change the index schema.
 
 Add `DownloadAttemptID: Codable, Hashable, Sendable` and make it the ownership key for a
 single download attempt.
+
+Prior art: `DownloadManager+EmbyConvert` already tracks per-Convert attempt UUIDs. That
+tracking must be absorbed by (or explicitly keyed to) `DownloadAttemptID` in this phase —
+do not leave two parallel attempt-identity mechanisms on the same row. If Convert keeps an
+inner job identity, document its relationship to the row's attempt ID and cover the pairing
+in the migration tests.
 
 - Persist it on every newly created row through terminal cleanup; only migrated legacy completed
   rows with provably no asynchronous work may remain without one.
@@ -234,6 +250,12 @@ encoder ID, or leave an unowned asset.
 Create one ephemeral authority generation/`AuthAttemptID` model and guarded commit path for Plex
 PIN, Jellyfin credentials/Quick Connect, Emby credentials/Connect, saved-session restore, and
 post-auth discovery.
+
+Prior art: `AuthManager` already guards the Jellyfin/Emby credential and Connect flows with
+per-flow `active*AttemptID` UUID checks after awaits. This phase replaces those ad-hoc fields
+with the unified model rather than adding a second layer; the audit gaps are the flows those
+fields do not cover (Plex PIN, saved-session restore, post-auth discovery) and the
+commit-atomicity/Keychain-failure semantics.
 
 - Begin/cancel one current attempt per visible auth operation.
 - Check identity and cancellation after every await and before Keychain, AppModel, selected
@@ -476,6 +498,10 @@ Start only after Phases 0–5 reduce and stabilize public seams.
    generic unless API simplicity or measured compile results improve.
 2. Produce a dependency graph and public API inventory classifying models, policies, wire
    builders/decoders, runtime networking/proxy, filesystem/storage, diagnostics, and security.
+   Pin the public-surface metric first: the "roughly 360 public declarations" figure counts
+   top-level public types/functions (a raw `public`-keyword line count is ~2,400 including
+   members). Record the exact measurement command in the Phase 0A script so before/after
+   comparisons for the split's "reduces the reviewed public surface" gate are reproducible.
    Explicitly classify `MediaBrowserRequestExecutor`, `MediaSessionProxy`, HEVC/file helpers,
    credential storage, and UserDefaults-backed library visibility.
 3. Use API-digester output to decide whether the split is an intentional breaking change or
@@ -524,6 +550,12 @@ required for `canImport(Network)`/MediaSession behavior excluded on Linux.
 
 Simulator success cannot waive physical gates for background transfer, lock/off-head behavior,
 Control Center/media keys, PiP/AirPlay, HDR/DV rendering, or Custom Cinema.
+
+Physical gates depend on user-performed device installs (signing and headset/iPad access are
+the user's half), so Phase 1 must not serialize on hardware availability. While a device gate
+is pending: the slice may land only behind a guarded/disabled path with the gate recorded as
+an open blocker on its tracking entry, or the next slice may be stacked unmerged on top of it.
+Enabling the guarded path, or merging an unguarded slice, still requires the completed gate.
 
 Before Phase 5/6 completion and before any release milestone, require unsigned Release/archive-
 equivalent builds for `Labstream`, `LabstreamMobile`, and `LabstreamMac`, plus PMSKit release build.
