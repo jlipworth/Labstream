@@ -1509,12 +1509,22 @@ struct CustomPlayerChrome: View {
         } set: { fraction in
             revealChrome(keepVisible: true)
             if !scrubState.isDragging {
-                // SwiftUI's Slider can deliver one more value-set AFTER onEditingChanged(false).
-                // If that stray set re-opened the drag here, there would be no editing session
-                // left to close it, so isDragging would stick true and the trickplay preview
-                // stay pinned on screen. Only honor the defensive begin inside a live editing
-                // session; ignore a stray trailing set.
+                // This is the PRIMARY drag-begin path: handleScrubEditingChanged(true)
+                // deliberately does not beginDrag (the Slider keeps a session open across
+                // touches — see the comment there), so a drag opens on the first value-set
+                // that moves the value. A stray set outside any session is still ignored,
+                // or it would re-open a drag with no session left to close it.
                 guard scrubEditingSessionActive else { return }
+                // The Slider echoes the committed position back through the binding right
+                // after a release (inside the freshly re-opened session). Honoring it would
+                // re-pin the drag forever, so a drag begins only when the incoming value
+                // has genuinely moved away from what is displayed. 250ms of media time is
+                // far below one point of thumb travel on any real timeline, so the first
+                // actual finger movement always clears it.
+                guard scrubState.durationMs > 0 else { return }
+                let clamped = min(max(fraction, 0), 1)
+                let targetMs = Int((Double(scrubState.durationMs) * clamped).rounded())
+                guard abs(targetMs - scrubState.displayedPositionMs) > 250 else { return }
                 scrubState.beginDrag(livePositionMs: controller.currentResumeMs)
             }
             scrubState.updateDrag(fraction: fraction)
@@ -1526,13 +1536,24 @@ struct CustomPlayerChrome: View {
         scrubEditingSessionActive = editing
         if editing {
             revealChrome(keepVisible: true)
-            scrubState.beginDrag(livePositionMs: controller.currentResumeMs)
-            updateTrickPlayPreview()
-        } else if let target = scrubState.commit() {
+            // Do NOT beginDrag here. SwiftUI's Slider closes and immediately re-opens the
+            // editing session on every release (observed live on iPadOS: editing(false) →
+            // editing(true) within 1ms, echoing one value-set at the committed position),
+            // and keeps that session open across touches — the user's NEXT drag reuses it,
+            // and if the user walks away it simply never closes. Opening the drag eagerly
+            // here let that dangling session pin isDragging true forever (trickplay preview
+            // + displayed position frozen) and — because beginDrag samples the mid-rebuild
+            // player clock — even commit a bogus seek to 0ms. The drag instead begins in
+            // scrubberBinding on the first value-set that actually MOVES the value (the
+            // post-release echo repeats the committed position exactly; a real finger
+            // diverges immediately).
+        } else if scrubState.isDragging, let target = scrubState.commit() {
             controller.performUserSeek(toMs: target)
             clearTrickPlayPreview()
             revealChrome()
         } else {
+            // No drag ever began in this editing session (thumb touched without movement,
+            // or the Slider's post-release session closing) — nothing to seek.
             clearTrickPlayPreview()
             revealChrome()
         }
