@@ -389,7 +389,8 @@ Deferred to user judgment / later phases:
 - JF-F5: persisted-psid branch never issues `.stop` (non-terminal rows post-relaunch).
 - EMBY-F3: POST-create crash orphans untaggable Sync job; EMBY-F4: `.optimizeCompatible`
   silent 1080p downgrade (UX disclosure decision); EMBY-F6 existing-version silent source
-  swap (closed in the 2026-07-11 update below); EMBY-F11 handoff remove→re-download crash window;
+  swap (closed in the 2026-07-11 update below); EMBY-F11 handoff remove→re-download crash window
+  (closed in the 2026-07-11 update below);
   EMBY-F13 unbounded poll on persistent 5xx (closed in the 2026-07-11 update below); EMBY-F9 no
   Emby keepalive (live-verify).
 - PLEX-F3 vacuous height guard on original-quality reuse (closed in the 2026-07-11 update below);
@@ -602,7 +603,7 @@ install UUID match, clean launch/log smoke, and signed-in Home screenshot; simul
 2. Close the checklist's evidence gaps (lifecycle cause, blob presence, network path, free-space,
    remote-play/download correlation, and Emby server-completion timing) before treating device
    observations as deterministic.
-3. Continue the deferred backend/product findings in sections F–H (Emby F3/F4/F9/F11,
+3. Continue the deferred backend/product findings in sections F–H (Emby F3/F4/F9,
    Plex F5 and held-stash persistence). The simulator
    relaunch probe now proves the held-stash item is real: eight completed stashes were swept and
    refetched from the durable checkpoint because their metadata is not persisted.
@@ -667,3 +668,12 @@ cannot poll forever. Expiry emits `downloads.optimize_poll_timed_out` and uses t
 `optimizeTimedOut` retryable failure; token/auth/unreachable health budgets remain independent.
 Policy tests cover the exact boundary, relaunch-style repeated checks, future clock correction, and
 invalid timestamps, while Codable round-trip covers persistence.
+
+### Deferred follow-up closed: EMBY-F11 convert handoff crash window
+
+All four Emby convert→existing-version handoffs now retain the durable `.preparing` row until
+`downloadEmby` replaces it, using the existing explicit `allowReplacingExistingActiveRow` admission
+path after releasing the old in-flight slot. A process kill between server-source selection and the
+new static transfer therefore leaves a resumable prep/job record instead of no row. Pre-create reuse
+rows without a job id fail visibly/retryably on relaunch; completed-job rows retain the job id and
+resume source discovery. The start-slot policy test now explicitly covers preparing-row replacement.

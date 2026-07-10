@@ -21,6 +21,9 @@ struct DownloadStartSlotPolicyTests {
         #expect(DownloadStartSlotPolicy.decision(existingRecordStatus: .downloading,
                                                  hasActiveSlot: false,
                                                  allowReplacingExistingActiveRow: true) == .accept)
+        #expect(DownloadStartSlotPolicy.decision(existingRecordStatus: .preparing,
+                                                 hasActiveSlot: false,
+                                                 allowReplacingExistingActiveRow: true) == .accept)
         #expect(DownloadStartSlotPolicy.decision(existingRecordStatus: .queued,
                                                  hasActiveSlot: true,
                                                  allowReplacingExistingActiveRow: true)

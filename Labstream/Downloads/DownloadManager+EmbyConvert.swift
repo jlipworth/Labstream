@@ -127,15 +127,15 @@ extension DownloadManager {
             }
             // We hold the in-flight slot from `downloadEmby`; release it so the `.existingVersion`
             // handoff re-acquires cleanly (mirrors `finishEmbyConvert`'s post-convert handoff). The
-            // temporary `.preparing` row was only preflight feedback; remove it before the static lane
-            // seeds its own row for the reusable file.
+            // Keep the `.preparing` row until the static lane replaces it. Removing first left a
+            // process-kill window with no durable row and no way to resume this accepted download.
             clearOptimizeProgress(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
-            store.remove(ratingKey: ratingKey)
             await downloadEmby(item, choice: .existingVersion, audioStreamIndex: audioStreamIndex,
                                mediaSourceIDOverride: reuseId,
                                deferStaticStartWhenQueuePaused: true,
-                               requestedProfileLabelOverride: metadata.requestedProfileLabel ?? targetName)
+                               requestedProfileLabelOverride: metadata.requestedProfileLabel ?? targetName,
+                               allowReplacingExistingActiveRow: true)
             return
         }
 
@@ -164,11 +164,11 @@ extension DownloadManager {
             }
             clearOptimizeProgress(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
-            store.remove(ratingKey: ratingKey)
             await downloadEmby(item, choice: .existingVersion, audioStreamIndex: audioStreamIndex,
                                mediaSourceIDOverride: reuseId,
                                deferStaticStartWhenQueuePaused: true,
-                               requestedProfileLabelOverride: metadata.requestedProfileLabel ?? targetName)
+                               requestedProfileLabelOverride: metadata.requestedProfileLabel ?? targetName,
+                               allowReplacingExistingActiveRow: true)
             return
         }
 
@@ -299,9 +299,8 @@ extension DownloadManager {
                 "target": .label(targetName),
                 "phase": .label("resume_pre_poll"),
             ])
-            // `store.remove` below deletes the row that holds the only `embyConvertJobID` handle,
-            // so if THIS attempt's job is still Converting nothing would ever cancel it — the
-            // orphan renders to completion server-side as a duplicate version. Cancel it first:
+            // If THIS attempt's job is still Converting it would otherwise render to completion
+            // server-side as a duplicate version. Cancel it first:
             // DELETE /Sync/Jobs/{id} never deletes an already-converted file, so this is safe
             // even when the reused source IS this job's own finished output.
             cancelEmbyConvertJob(jobId: jobId, ratingKey: ratingKey,
@@ -310,11 +309,11 @@ extension DownloadManager {
             releaseInFlight(ratingKey: ratingKey)
             let requestedProfileLabel = records.first { $0.ratingKey == ratingKey }?
                 .metadata?.requestedProfileLabel ?? targetName
-            store.remove(ratingKey: ratingKey)
             await downloadEmby(item, choice: .existingVersion, audioStreamIndex: audioStreamIndex,
                                mediaSourceIDOverride: reuseId,
                                deferStaticStartWhenQueuePaused: true,
-                               requestedProfileLabelOverride: requestedProfileLabel)
+                               requestedProfileLabelOverride: requestedProfileLabel,
+                               allowReplacingExistingActiveRow: true)
             return
         }
 
@@ -620,9 +619,8 @@ extension DownloadManager {
         releaseInFlight(ratingKey: ratingKey)
         let requestedProfileLabel = records.first { $0.ratingKey == ratingKey }?
             .metadata?.requestedProfileLabel ?? targetName
-        // Remove the seeded `.preparing` row so the handoff re-seeds a fresh download row at the
-        // converted source (its own size, route, container).
-        store.remove(ratingKey: ratingKey)
+        // Keep the seeded `.preparing` row until the static handoff atomically replaces it. A crash
+        // here can then resume the completed job/source lookup instead of losing the download.
         // Hand off to the existing resumable `.original` static lane. `.existingVersion` addresses a
         // specific converted MediaSource id (the #126 byte-for-byte reuse path) — it negotiates the
         // mp4/h264 converted source to `.original` and never re-enters the convert lane (only
@@ -630,7 +628,8 @@ extension DownloadManager {
         await downloadEmby(item, choice: .existingVersion, audioStreamIndex: audioStreamIndex,
                            mediaSourceIDOverride: newSourceId,
                            deferStaticStartWhenQueuePaused: true,
-                           requestedProfileLabelOverride: requestedProfileLabel)
+                           requestedProfileLabelOverride: requestedProfileLabel,
+                           allowReplacingExistingActiveRow: true)
     }
 
     /// Enumerate the current `File` MediaSources for an Emby item (unfiltered PlaybackInfo). Used to
