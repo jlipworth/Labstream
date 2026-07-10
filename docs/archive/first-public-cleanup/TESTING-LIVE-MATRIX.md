@@ -15,7 +15,7 @@ the checklist is the human headset/sim pass and issue trail; this matrix is the 
 automated + live-probe coverage is built against. Where a row is currently a manual-only check,
 that is called out so the gap is explicit rather than silent. The strategy framing
 (what may/may not become a required CI assertion, device-only gates) lives in
-[`TESTING-STRATEGY.md`](TESTING-STRATEGY.md); this doc is the row-by-row coverage map.
+[`TESTING-STRATEGY.md`](../../TESTING-STRATEGY.md); this doc is the row-by-row coverage map.
 
 ## Test layers (vocabulary used in the matrix)
 

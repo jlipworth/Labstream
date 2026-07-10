@@ -4,7 +4,7 @@ What a live CI media server (and its test account) must provide for the opt-in `
 which env vars / secrets gate them, and how to wire them into CI without breaking the hermetic
 default. This is the companion to the coverage map in
 [`TESTING-LIVE-MATRIX.md`](TESTING-LIVE-MATRIX.md) and the strategy in
-[`TESTING-STRATEGY.md`](TESTING-STRATEGY.md).
+[`TESTING-STRATEGY.md`](../../TESTING-STRATEGY.md).
 
 ## Design invariant: hermetic by default, live by opt-in
 

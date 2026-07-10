@@ -1,5 +1,10 @@
 # Static-Range Segment Checkpointing Contingency Plan
 
+> **Archived:** completed implementation plan. The segment-train design landed on `main`; current
+> behavior and invariants live in [`docs/DOWNLOADS-OFFLINE.md`](../../DOWNLOADS-OFFLINE.md).
+> Unchecked task boxes below preserve the original execution-plan snapshot and do not indicate
+> outstanding current work.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Bound the bytes a visionOS wake-time network bounce can destroy to one segment (~512 MB) instead of the whole file, without per-segment background wakeups.

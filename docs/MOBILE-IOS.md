@@ -1,11 +1,16 @@
 # iOS and iPadOS target
 
-Labstream has two native Apple app targets:
+Labstream's primary platform source paths include the visionOS target and one universal mobile
+target:
 
 | Target / scheme | Platforms | Product name | Bundle identifier |
 | --- | --- | --- | --- |
 | `Labstream` | visionOS / visionOS Simulator | `Labstream` | `com.jlipworth.Labstream` |
 | `LabstreamMobile` | iOS, iPadOS, and iOS Simulator | `Labstream` | `com.jlipworth.Labstream` |
+
+The repository also contains `LabstreamMac` as a local-build development preview. It is documented
+separately in [macOS development preview](MACOS.md) and is not part of the supported mobile product
+path.
 
 `LabstreamMobile` is the universal iPhone/iPad target. It shares the app source tree and
 `PMSKit` package with the visionOS target, but uses the mobile app entry point and an
@@ -52,17 +57,21 @@ visionOS golden simulator:
 ```sh
 # One-time per linked worktree, or pass LABSTREAM_SIM_PLATFORM=iphone for one command.
 printf 'iphone\n' > .simplatform
+scripts/worktree-sim.sh setup
 SIMID=$(scripts/worktree-sim.sh id)   # resolves to .simid-iphone in this worktree
 xcrun simctl boot "$SIMID" 2>/dev/null || true
+DD="$PWD/build/DerivedData-ios"
+rm -rf "$DD/Build/Products/Debug-iphonesimulator/Labstream.app"
 
 scripts/xcodebuild-versioned.sh \
   -project Labstream.xcodeproj \
   -scheme LabstreamMobile \
   -destination "platform=iOS Simulator,id=$SIMID" \
   -configuration Debug \
+  -derivedDataPath "$DD" \
   build CODE_SIGNING_ALLOWED=NO
 
-APP=$(/bin/ls -td "$HOME"/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-iphonesimulator/Labstream.app | head -1)
+APP="$DD/Build/Products/Debug-iphonesimulator/Labstream.app"
 xcrun simctl install "$SIMID" "$APP"
 xcrun simctl terminate "$SIMID" com.jlipworth.Labstream 2>/dev/null || true
 xcrun simctl launch "$SIMID" com.jlipworth.Labstream
@@ -73,17 +82,21 @@ xcrun simctl launch "$SIMID" com.jlipworth.Labstream
 ```sh
 # One-time per linked worktree, or pass LABSTREAM_SIM_PLATFORM=ipad for one command.
 printf 'ipad\n' > .simplatform
+scripts/worktree-sim.sh setup
 SIMID=$(scripts/worktree-sim.sh id)   # resolves to .simid-ipad in this worktree
 xcrun simctl boot "$SIMID" 2>/dev/null || true
+DD="$PWD/build/DerivedData-ios"
+rm -rf "$DD/Build/Products/Debug-iphonesimulator/Labstream.app"
 
 scripts/xcodebuild-versioned.sh \
   -project Labstream.xcodeproj \
   -scheme LabstreamMobile \
   -destination "platform=iOS Simulator,id=$SIMID" \
   -configuration Debug \
+  -derivedDataPath "$DD" \
   build CODE_SIGNING_ALLOWED=NO
 
-APP=$(/bin/ls -td "$HOME"/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-iphonesimulator/Labstream.app | head -1)
+APP="$DD/Build/Products/Debug-iphonesimulator/Labstream.app"
 xcrun simctl install "$SIMID" "$APP"
 xcrun simctl terminate "$SIMID" com.jlipworth.Labstream 2>/dev/null || true
 xcrun simctl launch "$SIMID" com.jlipworth.Labstream
@@ -121,4 +134,6 @@ First-time hardware deploy still requires the one-time Apple steps outside the s
   an iOS simulator.
 - Continued iPhone compact-width QA across signed-in Plex/Jellyfin/Emby libraries, music,
   offline rows, and long metadata titles.
-- If App Store distribution is pursued, metadata/release work for the intended unified universal-purchase product.
+- If App Store distribution is pursued, metadata/release work for the intended
+  visionOS/iPhone/iPad universal-purchase product. The Mac preview has separate unresolved release
+  and licensing decisions.

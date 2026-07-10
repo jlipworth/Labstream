@@ -6,6 +6,7 @@ This page is the shortest path from a clean checkout to a running Labstream buil
 
 - macOS with Xcode and the visionOS SDK installed for the `Labstream` target.
 - The iOS/iPadOS 26.1+ SDK/runtime for the `LabstreamMobile` target.
+- macOS 26 on an Apple-silicon host when testing the optional `LabstreamMac` development preview.
 - An Apple Vision Pro simulator runtime compatible with the project deployment target.
 - Swift Package Manager for `PMSKit` tests.
 - `uv` for the repo's Python tooling checks.
@@ -14,18 +15,27 @@ This page is the shortest path from a clean checkout to a running Labstream buil
 
 Each worktree owns simulator IDs through `scripts/worktree-sim.sh`; use a concrete ID instead of `booted`. The visionOS path remains the default and uses a linked-worktree clone of the main worktree's golden simulator.
 
+Provision the worktree's simulator once before resolving its ID. The command is idempotent:
+
+```sh
+scripts/worktree-sim.sh setup
+```
+
 ```sh
 SIMID=$(scripts/worktree-sim.sh --platform visionos id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
+DD="$PWD/build/DerivedData-visionos"
+rm -rf "$DD/Build/Products/Debug-xrsimulator/Labstream.app"
 
 scripts/xcodebuild-versioned.sh \
   -project Labstream.xcodeproj \
   -scheme Labstream \
   -destination "platform=visionOS Simulator,id=$SIMID" \
   -configuration Debug \
+  -derivedDataPath "$DD" \
   build CODE_SIGNING_ALLOWED=NO
 
-APP=$(/bin/ls -td "$HOME"/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-xrsimulator/Labstream.app | head -1)
+APP="$DD/Build/Products/Debug-xrsimulator/Labstream.app"
 xcrun simctl install "$SIMID" "$APP"
 xcrun simctl terminate "$SIMID" com.jlipworth.Labstream 2>/dev/null || true
 xcrun simctl launch "$SIMID" com.jlipworth.Labstream
@@ -37,17 +47,21 @@ The mobile target is named/schemed `LabstreamMobile` and builds a universal iPho
 
 ```sh
 printf 'iphone\n' > .simplatform
+scripts/worktree-sim.sh setup
 SIMID=$(scripts/worktree-sim.sh id)   # reads .simid-iphone for this worktree
 xcrun simctl boot "$SIMID" 2>/dev/null || true
+DD="$PWD/build/DerivedData-ios"
+rm -rf "$DD/Build/Products/Debug-iphonesimulator/Labstream.app"
 
 scripts/xcodebuild-versioned.sh \
   -project Labstream.xcodeproj \
   -scheme LabstreamMobile \
   -destination "platform=iOS Simulator,id=$SIMID" \
   -configuration Debug \
+  -derivedDataPath "$DD" \
   build CODE_SIGNING_ALLOWED=NO
 
-APP=$(/bin/ls -td "$HOME"/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-iphonesimulator/Labstream.app | head -1)
+APP="$DD/Build/Products/Debug-iphonesimulator/Labstream.app"
 xcrun simctl install "$SIMID" "$APP"
 xcrun simctl terminate "$SIMID" com.jlipworth.Labstream 2>/dev/null || true
 xcrun simctl launch "$SIMID" com.jlipworth.Labstream
@@ -62,7 +76,22 @@ SIMID=$(scripts/worktree-sim.sh id)   # reads .simid-ipad for this worktree
 
 If Xcode says the iOS platform/runtime is missing or warns that the mobile deployment target is newer than the installed SDK, install the matching iOS Simulator runtime/platform in Xcode Settings. A newer beta simulator runtime may not be usable with an older installed iOS SDK.
 
-Both app targets use `com.jlipworth.Labstream` for the intended unified product identity. Local installs with that bundle identifier can replace an existing install and its app state.
+The visionOS and mobile targets use `com.jlipworth.Labstream` for the intended unified product
+identity. Local installs with that bundle identifier can replace an existing install and its app
+state.
+
+## Build and run the macOS development preview
+
+The `LabstreamMac` target runs directly on the Apple-silicon host; there is no Mac simulator lane.
+Use the host helper so builds are staged under a per-worktree development identity:
+
+```sh
+scripts/deploy-macos-to-host.sh --launch
+```
+
+The Mac target is a local-build development preview, not a released or supported App Store
+product. See [macOS development preview](MACOS.md) for identity isolation, cleanup, validation,
+and deferred licensing/release decisions.
 
 ## Core validation commands
 
@@ -90,12 +119,28 @@ scripts/deploy-to-device.sh --no-build # reinstall the last build
 
 The development build uses the same bundle identifier as the intended App Store identity, so installing a local build can replace another installed build and its app state. If App Store/TestFlight distribution is used later, installing a development build over that build can clear the app container as a normal same-bundle-id replacement.
 
+## Physical iPhone or iPad install
+
+Use the mobile wrapper for a signed `iphoneos` build:
+
+```sh
+scripts/deploy-mobile-to-device.sh
+scripts/deploy-mobile-to-device.sh --launch
+scripts/deploy-mobile-to-device.sh --no-build
+```
+
+If more than one phone or tablet is paired, set `IOS_DEVICE_ID=<device-uuid>` explicitly. First
+use still requires pairing/trust, Developer Mode, and the matching Apple ID in Xcode Settings.
+
 ## Credentials and iCloud Keychain sync
 
 The app persists its long-lived secrets in the Keychain (`Labstream/Auth/KeychainStore.swift`).
 Exactly one item is stored as an iCloud-synchronizable Keychain item: the **Plex account token**.
-Because all three variants (visionOS, iPhone, iPad) share the `com.jlipworth.Labstream` bundle id and
-Keychain service string, a Plex sign-in on any one device signs the others in on their next launch.
+Because the supported visionOS, iPhone, and iPad variants share the
+`com.jlipworth.Labstream` bundle id and Keychain service string, a Plex sign-in on any one device
+signs the others in on their next launch. A canonical production-style Mac build uses that same
+policy, but the normal per-worktree Mac development preview deliberately uses isolated,
+backup-excluded credential storage instead; see [macOS development preview](MACOS.md).
 
 Everything else is deliberately device-local:
 

@@ -3,10 +3,10 @@
 Apple-platform Plex/Jellyfin/Emby client. App code in `Labstream/`, networking/model
 layer in `PMSKit/` (local Swift package with its own tests). The primary shipping path is
 still visionOS, and the repo also contains the `LabstreamMobile` universal iOS/iPadOS
-target. `docs/DEVELOPMENT.md` covers build/run setup only; the design rationale and
-hard-won AVKit findings (stall watchdogs, startup deadlines, live-ish HLS, DV matrix,
-proxy post-mortem) live in `docs/archive/first-public-cleanup/DEVELOPMENT.md` — read
-that before re-deriving anything about the player.
+target and a native `LabstreamMac` development preview. `docs/DEVELOPMENT.md` covers
+build/run setup; current player ownership and the load-bearing startup, stall,
+seek/restart, cleanup, HDR/DV, and Cinema invariants live in
+`docs/PLAYBACK-ARCHITECTURE.md`. Archived development notes are historical context only.
 
 ## Build / install / test loop
 

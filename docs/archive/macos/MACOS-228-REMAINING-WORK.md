@@ -1,5 +1,8 @@
 # macOS #228 remaining work plan
 
+> **Archived:** issue-era implementation plan. It is not the current Mac status or operating
+> guide; see [`docs/MACOS.md`](../../MACOS.md).
+
 This document captures the agreed scope and sequence for finishing the first native macOS Labstream implementation in GitHub issue #228.
 
 ## Current branch state

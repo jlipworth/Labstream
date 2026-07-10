@@ -1,6 +1,9 @@
 # System integration
 
-Labstream integrates with Apple system surfaces through one routing layer so external entry points behave like normal in-app navigation. The implementation is shared by the visionOS and mobile targets, while end-to-end validation remains platform-specific.
+Labstream integrates with Apple system surfaces through one routing layer so external entry points
+behave like normal in-app navigation. The implementation is shared by the visionOS and mobile
+targets and reused by the Mac development preview where the platform surface is available;
+end-to-end validation remains platform-specific.
 
 ```mermaid
 flowchart TD
@@ -38,3 +41,11 @@ a separate migration plan.
 ## User activities
 
 User activities follow the same routing path as App Intents and Spotlight. Add new external-entry behavior to the router first, then connect the system surface to that route.
+
+## Mac development preview
+
+The Mac preview routes external entries through the same `SystemEntryRouter` and adds native Mac
+window/menu navigation and separate video/music system-media coordination. Those hooks are present
+for local source testing, but Shortcuts, Spotlight, media-key ownership, and real backend restore
+remain preview validation items rather than released-platform guarantees. See
+[macOS development preview](MACOS.md).

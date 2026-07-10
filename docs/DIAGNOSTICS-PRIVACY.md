@@ -50,6 +50,10 @@ A report may include:
 - passive redacted MetricKit crash/hang/CPU/disk-write diagnostic summaries;
 - recent redacted event summaries.
 
+The Mac development preview uses the same typed/redacted report pipeline and may add safe platform,
+effective bundle-identity, sandbox-storage, download, and playback facts. Per-worktree bundle IDs
+and container paths must not be emitted as raw identifiers or filesystem paths.
+
 ## Public issue reminder
 
 GitHub issues are public. The app and docs ask users to review diagnostic reports, screenshots, videos, and logs before submitting because automated redaction cannot understand every personal detail in free-form prose or images.

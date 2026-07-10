@@ -14,4 +14,8 @@ Historical or superseded research belongs in `docs/archive/research/`. Do not pu
 
 ## Active notes
 
-Active research notes in this audit scope should be listed here once they are current enough for other contributors to rely on. If a note is superseded, move it under `docs/archive/` instead of leaving it in this index as active guidance.
+- [`offline-playback-compatibility.md`](offline-playback-compatibility.md) — unresolved
+  cross-backend/device compatibility evidence for offline artifacts. Implemented routing
+  and transfer behavior is canonical in
+  [`DOWNLOADS-OFFLINE.md`](../DOWNLOADS-OFFLINE.md); retain this note only for the
+  compatibility questions that still require real-device proof.

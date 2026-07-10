@@ -1,5 +1,8 @@
 # macOS #228 validation plan
 
+> **Archived:** issue-era validation split. Current preview validation guidance lives in
+> [`docs/MACOS.md`](../../MACOS.md) and [`docs/TESTING-STRATEGY.md`](../../TESTING-STRATEGY.md).
+
 This document splits the #228 validation matrix into checks an agent can run without user interaction and checks that require a real signed-in Mac session, subjective UI review, or real media-server/download behavior.
 
 ## Agent-runnable validation
