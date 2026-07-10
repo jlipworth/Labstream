@@ -376,8 +376,8 @@ Phase results (full reports in session transcript):
   extension derived from existing original-lane relativePath across all retry funnels),
   `47b9035` (JF-F3 stall-restart budget re-seeded after releaseInFlight; cap binds).
   Plus `95fb6fc` (IC-2 debug assert, size-read-before-epoch ordering). Suite at 1293.
-  Noted follow-up: audioStreamIndex not persisted in OfflineMetadata, so the
-  relaunch-resume reuse probe can't audio-match (future persistence item).
+  Noted follow-up (closed in the 2026-07-11 update below): audioStreamIndex was not persisted in
+  OfflineMetadata, so the relaunch-resume reuse probe could not audio-match.
 
 Deferred to user judgment / later phases:
 - JF-F2 (HIGH class, policy decision): truncated forward-only stream ≥80% duration (or
@@ -519,7 +519,8 @@ A successor agent should pick up exactly here.
   F3/F4/F5/F6c; lens-7 gaps 3/4/6; B.1 held-stash persistence; CFNetwork temp reaper
   caller if Wave C didn't take it).
 - Live verification carry-over: `range_internal_resume_adopted` on the user's paused
-  big-movie download; headset device pass; audioStreamIndex persistence follow-up.
+  big-movie download; headset device pass; audioStreamIndex persistence follow-up (now closed in
+  the 2026-07-11 update below).
 
 ## I. SESSION CLOSE-OUT UPDATE (supersedes section H's "at stop" state)
 
@@ -600,7 +601,7 @@ install UUID match, clean launch/log smoke, and signed-in Home screenshot; simul
    remote-play/download correlation, and Emby server-completion timing) before treating device
    observations as deterministic.
 3. Continue the deferred backend/product findings in sections F–H (Emby F3/F4/F6/F9/F11/F13,
-   Plex F3/F4/F5/F6c, held-stash persistence, and audio-stream-index persistence). The simulator
+   Plex F3/F4/F5/F6c, and held-stash persistence). The simulator
    relaunch probe now proves the held-stash item is real: eight completed stashes were swept and
    refetched from the durable checkpoint because their metadata is not persisted.
 
@@ -608,3 +609,11 @@ Phase 6's simulator/foreground harness is complete: validator/auth/reset/write-f
 pause/delete (including both operations during held drain), concurrent 200/416, and relaunch stash
 behavior all have real-session evidence. Pause-mid-drain also produced and closed two production
 races: drain ignored the halt, and pending backend recovery could resume a user-paused row.
+
+### Deferred follow-up closed: audio-stream intent persistence
+
+`OfflineMetadata` now persists the selected Jellyfin/Emby `audioStreamIndex`. The metadata builder,
+backend retry intent, Jellyfin/Emby retry funnels, and every Emby convert reuse/resume/static-handoff
+path carry it forward, so a relaunch no longer loses the selected language when matching or
+downloading a server-prepared source. Legacy rows decode the new field as `nil`; PMSKit round-trip,
+builder, and retry-intent tests cover the new optional contract.

@@ -13,17 +13,20 @@ public struct DownloadBackendRetryIntent: Sendable {
     public let mediaIndex: Int
     public let partIndex: Int
     public let mediaSourceIDOverride: String?
+    public let audioStreamIndex: Int?
 
     public init(item: MediaItem,
                 choice: DownloadIntentChoice,
                 mediaIndex: Int,
                 partIndex: Int,
-                mediaSourceIDOverride: String?) {
+                mediaSourceIDOverride: String?,
+                audioStreamIndex: Int? = nil) {
         self.item = item
         self.choice = choice
         self.mediaIndex = mediaIndex
         self.partIndex = partIndex
         self.mediaSourceIDOverride = mediaSourceIDOverride
+        self.audioStreamIndex = audioStreamIndex
     }
 }
 
@@ -57,7 +60,8 @@ public enum DownloadBackendRetryIntentPolicy {
                                           choice: choice,
                                           mediaIndex: metadata?.mediaIndex ?? 0,
                                           partIndex: metadata?.partIndex ?? 0,
-                                          mediaSourceIDOverride: metadata?.mediaSourceID)
+                                          mediaSourceIDOverride: metadata?.mediaSourceID,
+                                          audioStreamIndex: metadata?.audioStreamIndex)
     }
 
     public static func embyIntent(for record: DownloadRecord,
@@ -85,6 +89,7 @@ public enum DownloadBackendRetryIntentPolicy {
                                           choice: choice,
                                           mediaIndex: metadata?.mediaIndex ?? 0,
                                           partIndex: metadata?.partIndex ?? 0,
-                                          mediaSourceIDOverride: metadata?.mediaSourceID)
+                                          mediaSourceIDOverride: metadata?.mediaSourceID,
+                                          audioStreamIndex: metadata?.audioStreamIndex)
     }
 }

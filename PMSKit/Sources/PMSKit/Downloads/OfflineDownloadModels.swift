@@ -427,6 +427,9 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// Jellyfin/Emby media source id chosen for this download (needed to re-issue the
     /// transcode/original request on retry without re-deriving from a re-fetched item).
     public var mediaSourceID: String?
+    /// User-selected Jellyfin/Emby audio stream. Persisted so retry, relaunch recovery, and an
+    /// Emby convert→static handoff keep selecting/reusing the same language track.
+    public var audioStreamIndex: Int?
     /// Server play-session id for a transcoded JF/Emby (or Plex optimize) job, persisted
     /// so the encoder can be torn down after a hard app kill (was in-memory only).
     public var playSessionID: String?
@@ -530,6 +533,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 backendServerID: String? = nil,
                 backendUserID: String? = nil,
                 mediaSourceID: String? = nil,
+                audioStreamIndex: Int? = nil,
                 playSessionID: String? = nil,
                 downloadLane: DownloadLane? = nil,
                 resumeMode: DownloadResumeMode? = nil,
@@ -587,6 +591,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.backendServerID = backendServerID
         self.backendUserID = backendUserID
         self.mediaSourceID = mediaSourceID
+        self.audioStreamIndex = audioStreamIndex
         self.playSessionID = playSessionID
         self.downloadLane = downloadLane
         self.resumeMode = resumeMode
@@ -648,6 +653,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         backendServerID = try c.decodeIfPresent(String.self, forKey: .backendServerID)
         backendUserID = try c.decodeIfPresent(String.self, forKey: .backendUserID)
         mediaSourceID = try c.decodeIfPresent(String.self, forKey: .mediaSourceID)
+        audioStreamIndex = try c.decodeIfPresent(Int.self, forKey: .audioStreamIndex)
         playSessionID = try c.decodeIfPresent(String.self, forKey: .playSessionID)
         downloadLane = try c.decodeIfPresent(DownloadLane.self, forKey: .downloadLane)
         resumeMode = try c.decodeIfPresent(DownloadResumeMode.self, forKey: .resumeMode)

@@ -213,6 +213,7 @@ struct OfflineDownloadModelsTests {
             backendServerID: "server-123",
             backendUserID: "user-456",
             mediaSourceID: "media-source-789",
+            audioStreamIndex: 7,
             playSessionID: "labstream-download-abc",
             downloadLane: .compatibleRemux)
         let data = try JSONEncoder().encode(original)

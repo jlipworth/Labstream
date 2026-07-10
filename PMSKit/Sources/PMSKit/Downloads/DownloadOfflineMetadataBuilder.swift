@@ -16,6 +16,7 @@ public enum DownloadOfflineMetadataBuilder {
                                 optimizeQueueTitle: String? = nil,
                                 session: BackendSession,
                                 mediaSourceID: String? = nil,
+                                audioStreamIndex: Int? = nil,
                                 downloadLane: DownloadLane? = nil,
                                 serverPreparedVersion: Bool = false) -> OfflineMetadata {
         let media = item.media
@@ -68,6 +69,7 @@ public enum DownloadOfflineMetadataBuilder {
                                backendServerID: session.serverID,
                                backendUserID: session.userID,
                                mediaSourceID: mediaSourceID,
+                               audioStreamIndex: audioStreamIndex,
                                playSessionID: nil,
                                downloadLane: downloadLane,
                                resumeMode: resumeMode,
