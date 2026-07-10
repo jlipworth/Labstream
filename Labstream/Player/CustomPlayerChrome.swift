@@ -958,6 +958,12 @@ struct CustomPlayerChrome: View {
     #if os(iOS)
     private var phoneLandscapeControls: some View {
         VStack(alignment: .leading, spacing: 4) {
+            if scrubState.isDragging, trickPlayProvider != nil {
+                trickPlayPreview
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
             // Match the hierarchy people expect from iPhone media players: seeking is
             // the primary full-width row, while transport and playback options sit
             // below it. Never make the timeline compete horizontally with our richer
