@@ -63,6 +63,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     #endif
 
     private let store: DownloadStore
+    /// Non-nil only in deterministic transport tests. Custom URL protocols are supported by an
+    /// in-process foreground session, not by the device background-transfer daemon, so supplying
+    /// this seam deliberately selects the same foreground path used by simulator downloads.
+    private let injectedProtocolClasses: [AnyClass]?
     private let fileManager = FileManager.default
     /// taskIdentifier -> (ratingKey, destination)
     private var inflight: [Int: (ratingKey: String, destination: URL)] = [:]
@@ -362,6 +366,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     private func makeURLSession() -> URLSession {
         let config: URLSessionConfiguration
+        if let injectedProtocolClasses {
+            config = URLSessionConfiguration.default
+            config.timeoutIntervalForRequest = 3600
+            config.protocolClasses = injectedProtocolClasses + (config.protocolClasses ?? [])
+            downloadLog.info("using injected FOREGROUND URLSession for download transport tests")
+        } else {
         #if targetEnvironment(simulator)
         if ProcessInfo.processInfo.arguments.contains("--vp-probe-background-download-session") {
             config = URLSessionConfiguration.background(withIdentifier: Self.identifier)
@@ -387,13 +397,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             config.timeoutIntervalForRequest = 3600
             downloadLog.info("using FOREGROUND URLSession (simulator) for downloads")
             #if DEBUG
-            // #169: the byte-range lane now runs on THIS session, so the range-drop test harness
+            // #169: the byte-range lane now runs on THIS session, so the fault-injection harness
             // attaches here (a URLProtocol can only live on a foreground/default config — never on
             // the device background session). Sim-only dev tooling.
-            if let dropAfter = Self.debugRangeDropAfterBytesArgument() {
-                DebugRangeDropURLProtocol.configure(dropAfterBytes: dropAfter)
-                config.protocolClasses = [DebugRangeDropURLProtocol.self] + (config.protocolClasses ?? [])
-                downloadLog.info("using DEBUG range-drop URLProtocol after bytes=\(dropAfter, privacy: .public)")
+            if let fault = Self.debugDownloadFaultArgument() {
+                DebugDownloadFaultURLProtocol.configure(fault)
+                config.protocolClasses = [DebugDownloadFaultURLProtocol.self] + (config.protocolClasses ?? [])
+                downloadLog.info("using DEBUG download fault URLProtocol scenario=\(fault.label, privacy: .public)")
             }
             #endif
         }
@@ -404,6 +414,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // `handleEventsForBackgroundURLSession` is delivered to the app delegate.
         config.sessionSendsLaunchEvents = true
         #endif
+        }
         // Keep the background session itself permissive and stamp the cellular policy onto
         // each freshly-created URLRequest. That lets new tasks observe the Settings toggle
         // (defaulting off/Wi-Fi-only) without invalidating/recreating a background session
@@ -430,18 +441,28 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
 
     #if DEBUG
-    private static func debugRangeDropAfterBytesArgument() -> Int? {
+    private static func debugDownloadFaultArgument() -> DebugDownloadFaultURLProtocol.Fault? {
         let args = ProcessInfo.processInfo.arguments
-        guard let idx = args.firstIndex(of: "--vp-probe-range-drop-after-bytes"),
-              args.indices.contains(idx + 1),
-              let bytes = Int(args[idx + 1]),
-              bytes > 0 else { return nil }
-        return bytes
+        if let idx = args.firstIndex(of: "--vp-probe-download-fault"),
+           args.indices.contains(idx + 1) {
+            switch args[idx + 1] {
+            case "validator-flip": return .validatorFlip
+            case "401-mid-train": return .unauthorizedMidTrain
+            default: break
+            }
+        }
+        if let idx = args.firstIndex(of: "--vp-probe-range-drop-after-bytes"),
+           args.indices.contains(idx + 1),
+           let bytes = Int(args[idx + 1]), bytes > 0 {
+            return .connectionDrop(afterBytes: bytes)
+        }
+        return nil
     }
     #endif
 
-    init(store: DownloadStore) {
+    init(store: DownloadStore, protocolClasses: [AnyClass]? = nil) {
         self.store = store
+        self.injectedProtocolClasses = protocolClasses
         super.init()
         // Register so the app delegate can hand us the system completion handler when
         // the app is relaunched to process finished background events.
@@ -5021,32 +5042,52 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
 
 #if DEBUG
-/// Test-only URLProtocol used by the download probe to simulate a real mid-body network loss
-/// without mutating host networking. It proxies the original request with a URLSession whose
-/// protocol list excludes this class, streams bytes through to the client, then fails once with
-/// `NSURLErrorNetworkConnectionLost` after the configured threshold.
-private final class DebugRangeDropURLProtocol: URLProtocol, URLSessionDataDelegate, @unchecked Sendable {
-    private static let handledKey = "LabstreamDebugRangeDropHandled"
+/// Test-only URLProtocol used by the download probe to inject faults into real static-range tasks
+/// without mutating host networking. Healthy requests are proxied through a URLSession whose
+/// protocol list excludes this class; scenarios can alter validators, synthesize one 401, or fail
+/// one streamed body with `NSURLErrorNetworkConnectionLost`.
+final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, @unchecked Sendable {
+    enum Fault: Sendable {
+        case connectionDrop(afterBytes: Int)
+        case validatorFlip
+        case unauthorizedMidTrain
+
+        var label: String {
+            switch self {
+            case .connectionDrop: "connection-drop"
+            case .validatorFlip: "validator-flip"
+            case .unauthorizedMidTrain: "401-mid-train"
+            }
+        }
+    }
+
+    private static let handledKey = "LabstreamDebugDownloadFaultHandled"
     private static let lock = NSLock()
-    nonisolated(unsafe) private static var configuredDropAfterBytes: Int = 0
+    nonisolated(unsafe) private static var configuredFault: Fault?
     nonisolated(unsafe) private static var didDrop = false
+    nonisolated(unsafe) private static var didInjectUnauthorized = false
+    nonisolated(unsafe) private static var didAssignInitialZeroValidator = false
 
     private var upstreamTask: URLSessionDataTask?
     private var session: URLSession?
     private var delivered = 0
+    private var responseValidator: String?
 
-    static func configure(dropAfterBytes: Int) {
+    static func configure(_ fault: Fault) {
         lock.lock()
-        configuredDropAfterBytes = dropAfterBytes
+        configuredFault = fault
         didDrop = false
+        didInjectUnauthorized = false
+        didAssignInitialZeroValidator = false
         lock.unlock()
     }
 
     override class func canInit(with request: URLRequest) -> Bool {
         guard URLProtocol.property(forKey: handledKey, in: request) == nil,
+              request.value(forHTTPHeaderField: "Range") != nil,
               request.url?.scheme == "http" || request.url?.scheme == "https" else { return false }
         lock.lock()
-        let enabled = configuredDropAfterBytes > 0 && !didDrop
+        let enabled = configuredFault != nil
         lock.unlock()
         return enabled
     }
@@ -5054,6 +5095,41 @@ private final class DebugRangeDropURLProtocol: URLProtocol, URLSessionDataDelega
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
+        let rangeStart = Self.rangeStart(request.value(forHTTPHeaderField: "Range")) ?? 0
+        Self.lock.lock()
+        let fault = Self.configuredFault
+        var injectUnauthorized = false
+        switch fault {
+        case .validatorFlip:
+            if rangeStart == 0, !Self.didAssignInitialZeroValidator {
+                Self.didAssignInitialZeroValidator = true
+                responseValidator = "\"labstream-fault-validator-v1\""
+            } else {
+                responseValidator = "\"labstream-fault-validator-v2\""
+            }
+        case .unauthorizedMidTrain:
+            if rangeStart > 0, !Self.didInjectUnauthorized {
+                Self.didInjectUnauthorized = true
+                injectUnauthorized = true
+            }
+        default:
+            break
+        }
+        Self.lock.unlock()
+
+        if injectUnauthorized {
+            let response = HTTPURLResponse(url: request.url!, statusCode: 401,
+                                           httpVersion: "HTTP/1.1",
+                                           headerFields: ["Content-Length": "0"])!
+            AppDiagnostics.record(.downloads, "downloads.fault_injected", fields: [
+                "scenario": .label("401-mid-train"),
+                "range_start": .int(rangeStart),
+            ])
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
+
         let mutable = (request as NSURLRequest).mutableCopy() as! NSMutableURLRequest
         URLProtocol.setProperty(true, forKey: Self.handledKey, in: mutable)
         let config = URLSessionConfiguration.ephemeral
@@ -5075,13 +5151,39 @@ private final class DebugRangeDropURLProtocol: URLProtocol, URLSessionDataDelega
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
                     didReceive response: URLResponse,
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        let deliveredResponse: URLResponse
+        if let responseValidator, let http = response as? HTTPURLResponse {
+            var headers = http.allHeaderFields.reduce(into: [String: String]()) { result, pair in
+                let key = String(describing: pair.key)
+                if key.caseInsensitiveCompare("ETag") != .orderedSame {
+                    result[key] = String(describing: pair.value)
+                }
+            }
+            headers["ETag"] = responseValidator
+            deliveredResponse = HTTPURLResponse(url: http.url ?? request.url!,
+                                                statusCode: http.statusCode,
+                                                httpVersion: "HTTP/1.1",
+                                                headerFields: headers) ?? response
+            AppDiagnostics.record(.downloads, "downloads.fault_injected", fields: [
+                "scenario": .label("validator-flip"),
+                "range_start": .int(Self.rangeStart(request.value(forHTTPHeaderField: "Range")) ?? 0),
+                "validator_generation": .label(responseValidator.hasSuffix("v1\"") ? "v1" : "v2"),
+            ])
+        } else {
+            deliveredResponse = response
+        }
+        client?.urlProtocol(self, didReceive: deliveredResponse, cacheStoragePolicy: .notAllowed)
         completionHandler(.allow)
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         Self.lock.lock()
-        let threshold = Self.configuredDropAfterBytes
+        let threshold: Int
+        if case .connectionDrop(let afterBytes)? = Self.configuredFault {
+            threshold = afterBytes
+        } else {
+            threshold = 0
+        }
         let shouldDropAlready = Self.didDrop
         Self.lock.unlock()
 
@@ -5112,6 +5214,10 @@ private final class DebugRangeDropURLProtocol: URLProtocol, URLSessionDataDelega
         if !alreadyDropped { Self.didDrop = true }
         Self.lock.unlock()
         guard !alreadyDropped else { return }
+        AppDiagnostics.record(.downloads, "downloads.fault_injected", fields: [
+            "scenario": .label("connection-drop"),
+            "after_bytes": .int(delivered),
+        ])
         dataTask.cancel()
         let error = NSError(domain: NSURLErrorDomain, code: NSURLErrorNetworkConnectionLost, userInfo: nil)
         client?.urlProtocol(self, didFailWithError: error)
@@ -5125,6 +5231,11 @@ private final class DebugRangeDropURLProtocol: URLProtocol, URLSessionDataDelega
         } else {
             client?.urlProtocolDidFinishLoading(self)
         }
+    }
+
+    private static func rangeStart(_ header: String?) -> Int? {
+        guard let header, header.hasPrefix("bytes=") else { return nil }
+        return Int(header.dropFirst("bytes=".count).split(separator: "-", maxSplits: 1)[0])
     }
 }
 #endif
