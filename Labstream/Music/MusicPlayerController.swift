@@ -59,6 +59,33 @@ final class MusicPlayerController {
         return queue[currentIndex]
     }
 
+    /// The track the listener will actually hear when the current one ends — the single
+    /// source of truth for any "up next" surface, mirroring `advance(auto:)` and
+    /// `handleTrackEnded` exactly so a label can't drift from real playback:
+    ///   • repeat-one → the current track (it replays in place; callers should present
+    ///     this as "repeating", not "up next")
+    ///   • end of `playOrder` + repeat-all → wraps to the first track in play order
+    ///   • end of `playOrder` + repeat-off → `nil` (playback stops at the queue end)
+    ///   • otherwise → the next entry in `playOrder` (so shuffle names its real traversal)
+    /// Touches `shuffleEnabled` so SwiftUI re-derives when a reshuffle rewrites the
+    /// observation-ignored `playOrder` without moving `currentIndex`.
+    var upNextTrack: MediaItem? {
+        _ = shuffleEnabled
+        guard let currentIndex, queue.indices.contains(currentIndex) else { return nil }
+        if repeatMode == .one { return queue[currentIndex] }
+        guard let pos = playOrder.firstIndex(of: currentIndex) else { return nil }
+        let nextPos = pos + 1
+        let nextIndex: Int
+        if nextPos < playOrder.count {
+            nextIndex = playOrder[nextPos]
+        } else if repeatMode == .all, let firstIdx = playOrder.first {
+            nextIndex = firstIdx
+        } else {
+            return nil
+        }
+        return queue.indices.contains(nextIndex) ? queue[nextIndex] : nil
+    }
+
     /// Whether playback is actively running (mirrors the player's `timeControlStatus`).
     private(set) var isPlaying = false
 

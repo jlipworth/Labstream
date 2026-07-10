@@ -223,16 +223,19 @@ struct MiniPlayerBar: View {
         return [artist, album].compactMap { $0 }.joined(separator: " · ")
     }
 
-    /// Never claim a specific next track while shuffle is enabled: display order
-    /// intentionally differs from the controller's private shuffled traversal.
+    /// Derived from the controller's authoritative `upNextTrack`, so the label honors
+    /// repeat and shuffle instead of naïvely reading the next display-order row.
     private var queueContext: String? {
         guard player.queue.count > 1 else { return nil }
-        if player.shuffleEnabled { return "Shuffle · \(player.queue.count) tracks" }
-        guard let currentIndex = player.currentIndex,
-              player.queue.indices.contains(currentIndex + 1) else {
-            return "\(player.queue.count) tracks"
+        // Repeat-one replays in place — name it honestly rather than a false "Up next".
+        if player.repeatMode == .one {
+            return player.current.map { "Repeating: \($0.title)" }
         }
-        return "Up next: \(player.queue[currentIndex + 1].title)"
+        if let next = player.upNextTrack {
+            return "Up next: \(next.title)"
+        }
+        // Nothing follows (queue end, repeat off): fall back to the count summary.
+        return "\(player.queue.count) tracks"
     }
 
     private var previousButton: some View {
