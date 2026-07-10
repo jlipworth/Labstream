@@ -393,6 +393,19 @@ public struct BackgroundProcessingItems: Decodable, Sendable, Equatable {
         }
     }
 
+    /// The single queue item that a delete-time cancel may remove: the item whose title exactly
+    /// matches the deleted row's persisted queue title AND whose state is NOT completed.
+    ///
+    /// Returns `nil` when no item matches or when the matching item already finished — deleting a
+    /// COMPLETED type-42 item deletes the rendered optimized version on the server, which other
+    /// rows (or a relaunched client) may still need, so a completed match must be left alone.
+    public func cancellableItemID(queueTitle: String) -> String? {
+        guard let item = items.first(where: { $0.title == queueTitle }),
+              let id = item.id, !id.isEmpty else { return nil }
+        if let s = item.state?.lowercased(), Self.completedStates.contains(s) { return nil }
+        return id
+    }
+
     /// Back-compat alias for the conservative stale cleanup policy. This used to include
     /// completed items, but live Plex evidence showed that deleting a completed type-42 item
     /// removes the optimized version before a relaunched client can download it. Keep the symbol

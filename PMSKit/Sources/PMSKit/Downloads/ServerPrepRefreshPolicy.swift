@@ -49,6 +49,15 @@ public enum ServerPrepRefreshPolicy {
         }
     }
 
+    /// Continuation gate for the Plex optimize part poller. Task cancellation is the primary
+    /// exit, but a delete can race the fresh-start chain before its Task handle is registered
+    /// (and a concurrent reap can drop the queue row) — so every poll iteration must also verify
+    /// the download it serves still exists AND still owns an in-flight slot. Either one going
+    /// away means the poll loop is orphaned and must stop instead of hitting the server forever.
+    public static func plexPrepPollerShouldContinue(rowExists: Bool, slotActive: Bool) -> Bool {
+        rowExists && slotActive
+    }
+
     public static func isUnattachedServerPrepRow(_ record: DownloadRecord,
                                                  hasPlexPoller: Bool,
                                                  isActiveJob: Bool) -> Bool {
