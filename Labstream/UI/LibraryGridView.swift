@@ -5,6 +5,7 @@ import PMSKit
 /// one pushes a `LibraryGridView` of its items.
 struct LibrariesView: View {
     @Environment(AppModel.self) private var appModel
+    @Environment(\.labstreamCompactWidth) private var compactWidth
 
     @State private var rootItems: [LibraryRootItem] = []
     @State private var loadState: BrowseLoadState = .idle
@@ -91,12 +92,18 @@ struct LibrariesView: View {
                         .cardLink(cornerRadius: DS.Radius.card)
                     }
                 }
-                .padding(DS.Space.xl)
+                .padding(DS.pagePadding(compact: compactWidth))
             }
         }
     }
 
     private var librarySectionColumns: [GridItem] {
+        if compactWidth {
+            // Compact phones: one full-width flexible column — the card stretches to
+            // the screen (`LibrarySectionCard` drops its rigid width on compact), so
+            // the #124 sub-card-track hazard below cannot arise here.
+            return [GridItem(.flexible())]
+        }
         // The cards are a rigid 300pt (`LibrarySectionCard.frame(width: 300)`). With an
         // adaptive minimum below the card width, a transiently-narrow first-pass container
         // could compute a track narrower than the card, laying the 300pt cards edge-to-edge
@@ -104,7 +111,7 @@ struct LibrariesView: View {
         // never compute a sub-card track, so even a degenerate first pass yields one correctly
         // gapped column instead of bunched cards. The spacing-collapse invariant this preserves
         // is asserted by `LibraryGridLayout` / `LibraryGridLayoutTests` in PMSKit.
-        [GridItem(.adaptive(minimum: 300, maximum: 340), spacing: DS.Space.xl)]
+        return [GridItem(.adaptive(minimum: 300, maximum: 340), spacing: DS.Space.xl)]
     }
 
     private var librariesEmptyState: some View {
@@ -411,7 +418,7 @@ struct LibraryGridView: View {
     }
 
     private var capabilityIdentity: String {
-        "\(appModel.activeBrowseSessionKey):capabilities:\(source.capabilityIdentity)"
+        "\(appModel.browseSessionKey(for: source.backend)):capabilities:\(source.capabilityIdentity)"
     }
 
     private var preferenceIdentity: String {
@@ -501,7 +508,13 @@ struct LibraryGridView: View {
         .task(id: capabilityIdentity) { await loadBrowseCapabilities() }
         .task(id: loadIdentity) { await load() }
         .onChange(of: browseQuery) { _, query in savePreferences(query) }
-        .refreshable { await load(force: true) }
+        .refreshable {
+            // Capability discovery can fail independently of the library request. Retry it
+            // on an explicit refresh instead of leaving a transient outage sticky for the
+            // lifetime of this navigation destination.
+            await loadBrowseCapabilities(force: true)
+            await load(force: true)
+        }
     }
 
     private func compactGridMetrics(availableWidth: CGFloat) -> MobileLibraryGridLayout.Metrics? {
@@ -639,7 +652,10 @@ struct LibraryGridView: View {
             case .loaded(let capabilities):
                 enforceCapabilities(capabilities)
             case .unavailable:
-                enforceCapabilities(.defaultOnly)
+                // A discovery failure does not prove that a previously saved query is no
+                // longer supported. Preserve it rather than destructively overwriting the
+                // per-library preference because of a transient network/server error.
+                break
             case .loading:
                 break
             }
@@ -654,21 +670,20 @@ struct LibraryGridView: View {
         LibraryBrowsePreferenceStore().save(query, for: preferenceIdentity)
     }
 
-    private func loadBrowseCapabilities() async {
+    private func loadBrowseCapabilities(force: Bool = false) async {
         // Non-Plex capabilities are static (`availableCapabilities` is the source of truth);
         // only Plex discovers them from the server.
         guard case .plex(let section) = source else { return }
         // `.task` re-fires on pop-back from an item (see load()); refetching then would
         // flash the menus and — worse — enforcing defaults below would reset the user's
         // chosen sort/filter and force a full grid reload. Load once per identity.
-        guard loadedCapabilityIdentity != capabilityIdentity else { return }
+        guard force || loadedCapabilityIdentity != capabilityIdentity else { return }
         let activeIdentity = capabilityIdentity
         capabilityState = .loading
         guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
             guard capabilityIdentity == activeIdentity, !Task.isCancelled else { return }
             loadedCapabilityIdentity = activeIdentity
             capabilityState = .unavailable("Server filters unavailable.")
-            enforceCapabilities(.defaultOnly)
             return
         }
         do {
@@ -694,7 +709,6 @@ struct LibraryGridView: View {
             guard capabilityIdentity == activeIdentity, !Task.isCancelled else { return }
             loadedCapabilityIdentity = activeIdentity
             capabilityState = .unavailable("Server filters unavailable.")
-            enforceCapabilities(.defaultOnly)
         }
     }
 
