@@ -54,10 +54,10 @@ private enum HostPlatformIdentity {
         var size: size_t = 0
         sysctlbyname("hw.model", nil, &size, nil, 0)
         guard size > 0 else { return "Mac" }
-        var buffer = [CChar](repeating: 0, count: size)
+        var buffer = [UInt8](repeating: 0, count: size)
         let result = sysctlbyname("hw.model", &buffer, &size, nil, 0)
         guard result == 0 else { return "Mac" }
-        let model = String(cString: buffer)
+        let model = String(decoding: buffer.prefix { $0 != 0 }, as: UTF8.self)
         return model.isEmpty ? "Mac" : model
     }
 }
