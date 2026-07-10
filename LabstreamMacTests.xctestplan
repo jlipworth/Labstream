@@ -1,0 +1,28 @@
+{
+  "configurations" : [
+    {
+      "id" : "566E1C75-287A-48FE-8DF7-A4AD27C936F8",
+      "name" : "Default",
+      "options" : {
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "environmentVariableEntries" : [
+      {
+        "key" : "LABSTREAM_UNIT_TEST_HOST",
+        "value" : "1"
+      }
+    ]
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:Labstream.xcodeproj",
+        "identifier" : "AA0000000000000000000050",
+        "name" : "LabstreamMacTests"
+      }
+    }
+  ],
+  "version" : 1
+}

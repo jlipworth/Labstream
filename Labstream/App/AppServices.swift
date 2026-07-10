@@ -47,6 +47,16 @@ private enum AppKeychainService {
     }
 }
 
+enum AppLaunchMode {
+    static var isUnitTestHost: Bool {
+        #if DEBUG
+        ProcessInfo.processInfo.environment["LABSTREAM_UNIT_TEST_HOST"] == "1"
+        #else
+        false
+        #endif
+    }
+}
+
 @MainActor
 enum AppStartup {
     /// One process-start hook shared by the app entrypoints. Registration is safe to call
