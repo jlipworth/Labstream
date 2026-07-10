@@ -158,7 +158,12 @@ public struct SearchPresentationSection: Identifiable, Sendable {
         case .artist: kind = .artists
         case .album: kind = .albums
         case .track: kind = .songs
-        case .playlist: kind = .playlists
+        // Only AUDIO playlists get the music treatment (SearchMusicRail →
+        // PlaylistDetailView's track loader). Video/photo playlists route through the
+        // standard hub to DetailView's video flow. Buckets are homogeneous per
+        // `MediaTypeBucket`, so the first item's flavor speaks for the hub.
+        case .playlist:
+            kind = (hub.metadata.first?.isAudioPlaylist ?? true) ? .playlists : .standard
         default: kind = .standard
         }
     }
@@ -185,11 +190,13 @@ public enum SearchResultGrouping {
 }
 
 private enum MediaTypeBucket: String, Hashable {
-    case movies, shows, seasons, episodes, videos, collections, trailersAndExtras
+    case movies, shows, seasons, episodes, videos, videoPlaylists
+    case collections, trailersAndExtras
     case artists, albums, songs, playlists, other
 
     static let displayOrder: [MediaTypeBucket] = [
-        .movies, .shows, .seasons, .episodes, .videos, .collections, .trailersAndExtras,
+        .movies, .shows, .seasons, .episodes, .videos, .videoPlaylists,
+        .collections, .trailersAndExtras,
         .artists, .albums, .songs, .playlists, .other,
     ]
 
@@ -202,7 +209,10 @@ private enum MediaTypeBucket: String, Hashable {
         case .artist: self = .artists
         case .album: self = .albums
         case .track: self = .songs
-        case .playlist: self = .playlists
+        // Split playlist flavors into separate buckets so each hub is homogeneous:
+        // audio playlists join the music `.playlists` bucket; video/photo playlists
+        // get their own bucket that presents through the standard/video path.
+        case .playlist: self = item.isAudioPlaylist ? .playlists : .videoPlaylists
         case .collection: self = .collections
         case .trailer, .extra: self = .trailersAndExtras
         case .other(let raw) where raw == "video": self = .videos
@@ -213,7 +223,8 @@ private enum MediaTypeBucket: String, Hashable {
     var title: String {
         switch self {
         case .movies: "Movies"; case .shows: "Shows"; case .seasons: "Seasons"
-        case .episodes: "Episodes"; case .videos: "Videos"; case .collections: "Collections"
+        case .episodes: "Episodes"; case .videos: "Videos"
+        case .videoPlaylists: "Playlists"; case .collections: "Collections"
         case .trailersAndExtras: "Trailers & Extras"; case .artists: "Artists"
         case .albums: "Albums"; case .songs: "Songs"; case .playlists: "Playlists"
         case .other: "Other Results"
@@ -223,7 +234,8 @@ private enum MediaTypeBucket: String, Hashable {
     var hubType: String {
         switch self {
         case .movies: "movie"; case .shows: "show"; case .seasons: "season"
-        case .episodes: "episode"; case .videos: "video"; case .collections: "collection"
+        case .episodes: "episode"; case .videos: "video"
+        case .videoPlaylists: "playlist"; case .collections: "collection"
         case .trailersAndExtras: "extra"; case .artists: "artist"
         case .albums: "album"; case .songs: "track"; case .playlists: "playlist"
         case .other: "search"
