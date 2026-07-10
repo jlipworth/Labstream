@@ -46,6 +46,13 @@ public struct StaticRangeRemainderRequestPolicy: Equatable, Sendable {
         "bytes=\(max(0, offset))-"
     }
 
+    /// Build a closed `Range` header for a bounded segment: `[offset, offset + length - 1]`.
+    public func rangeHeaderValue(offset: Int, length: Int) -> String {
+        let safeOffset = max(0, offset)
+        let upper = safeOffset + max(0, length) - 1
+        return "bytes=\(safeOffset)-\(upper)"
+    }
+
     /// Expected body bytes for this open-ended remainder, when the total object size is known.
     /// Nil means "not knowable from the plan" and callers must not use it to accept a gapped append.
     public func expectedBodyBytes(offset: Int, expectedBytes: Int?) -> Int? {

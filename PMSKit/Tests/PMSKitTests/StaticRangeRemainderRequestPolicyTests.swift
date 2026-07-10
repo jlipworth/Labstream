@@ -13,6 +13,15 @@ struct StaticRangeRemainderRequestPolicyTests {
         #expect(policy.rangeHeaderValue(offset: -10) == "bytes=0-")
     }
 
+    @Test("Closed-range requests cover exactly [offset, offset + length - 1]")
+    func closedRange() {
+        let policy = StaticRangeRemainderRequestPolicy()
+
+        #expect(policy.rangeHeaderValue(offset: 0, length: 100) == "bytes=0-99")
+        #expect(policy.rangeHeaderValue(offset: 500, length: 250) == "bytes=500-749")
+        #expect(policy.rangeHeaderValue(offset: -10, length: 100) == "bytes=0-99")
+    }
+
     @Test("Remainder expected body bytes are known only with a total size")
     func expectedBodyBytes() {
         let policy = StaticRangeRemainderRequestPolicy()
