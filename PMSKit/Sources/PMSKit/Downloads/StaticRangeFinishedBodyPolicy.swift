@@ -3,6 +3,19 @@
 /// The transfer engine may receive a finished body after the row was paused or cancelled. User
 /// pauses should preserve a body that had already finished; hard cancels should discard the temp so
 /// deleted rows do not resurrect bytes.
+
+/// Why the halt was inserted. The engine records this at the halt site itself, because the
+/// persisted row status is written asynchronously at the END of the pause chain — a body finishing
+/// inside that window would otherwise be discarded despite the writeThenPause machinery (a pause
+/// halt that still read `.downloading` from the store looked identical to a cancel).
+public enum StaticRangeHaltKind: Sendable, Equatable {
+    /// User/system pause: finished bodies are folded into the durable partial, then stay paused.
+    case pause
+    /// Cancel/delete/terminal failure: finished bodies are discarded — the caller may be deleting
+    /// the partial, and resurrecting bytes onto it corrupts the replacement attempt.
+    case cancel
+}
+
 public enum StaticRangeFinishedBodyDisposition: Sendable, Equatable {
     /// Drop the temp without writing it into the durable partial.
     case discardTemp
@@ -13,19 +26,18 @@ public enum StaticRangeFinishedBodyDisposition: Sendable, Equatable {
 }
 
 public enum StaticRangeFinishedBodyPolicy {
-    public static func shouldDiscardBeforeStash(isHalted: Bool,
-                                                persistedStatusPaused: Bool) -> Bool {
-        isHalted && !persistedStatusPaused
+    public static func shouldDiscardBeforeStash(haltKind: StaticRangeHaltKind?) -> Bool {
+        haltKind == .cancel
     }
 
-    public static func disposition(isHalted: Bool,
-                                   persistedStatusPaused: Bool) -> StaticRangeFinishedBodyDisposition {
-        if shouldDiscardBeforeStash(isHalted: isHalted, persistedStatusPaused: persistedStatusPaused) {
+    public static func disposition(haltKind: StaticRangeHaltKind?) -> StaticRangeFinishedBodyDisposition {
+        switch haltKind {
+        case .cancel:
             return .discardTemp
-        }
-        if isHalted && persistedStatusPaused {
+        case .pause:
             return .writeThenPause
+        case nil:
+            return .writeThenContinue
         }
-        return .writeThenContinue
     }
 }

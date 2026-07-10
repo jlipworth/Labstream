@@ -56,6 +56,28 @@ struct RangeTransferHTTPPolicyTests {
             expectedBodyBytes: 64))
     }
 
+    @Test("A blob-resumed segment finishing out of order still passes the internal-resume escape")
+    func blobResumedOutOfOrderSegmentAccepted() {
+        // Lens 2 F1 composition: a CLOSED tail segment [2_048, 2_048 + 512) is blob-resumed after
+        // a network blip — URLSession re-requests mid-segment, so the response Content-Range
+        // starts past the segment's base offset while the assembled temp holds the FULL segment
+        // body. When it finishes OUT OF ORDER (durable < baseOffset, the held branch), the same
+        // escape the in-order path uses must accept it at the segment's base offset with the
+        // stash's actual length; rejecting it burns offset-mismatch budget on a healthy train.
+        let segmentLength = 512
+        #expect(RangeTransferHTTPPolicy.isCompleteInternallyResumedRangeBody(
+            baseOffset: 2_048,
+            contentRangeStart: 2_048 + 128,     // resumed mid-segment
+            stashBytes: segmentLength,          // temp holds the whole segment body
+            expectedBodyBytes: segmentLength))
+        // An out-of-order resumed body that is NOT the whole segment stays rejected.
+        #expect(!RangeTransferHTTPPolicy.isCompleteInternallyResumedRangeBody(
+            baseOffset: 2_048,
+            contentRangeStart: 2_048 + 128,
+            stashBytes: segmentLength - 128,
+            expectedBodyBytes: segmentLength))
+    }
+
     @Test("Range request start parses normal and open-ended byte ranges")
     func rangeRequestStart() {
         #expect(RangeTransferHTTPPolicy.rangeRequestStart("bytes=0-67108863") == 0)
