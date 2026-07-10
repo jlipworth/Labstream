@@ -71,16 +71,49 @@ Items without a number shipped without a dedicated issue. Build/install/launch c
       `SIMID=$(scripts/worktree-sim.sh id); xcrun simctl spawn "$SIMID" log show --last 10m --info --debug --predicate 'subsystem == "com.jlipworth.Labstream"'`
 - [ ] **Background static Range continuation (GH #169, DEVICE-ONLY)** — start a large
       static/original/existing-version download while the app is active, wait for
-      `downloads.range_start segment_kind=boundedCheckpoint`, then background/lock the device
-      while plugged in for 2–5 minutes. Expected diagnostics: `app.scene_phase` → inactive/background,
-      `downloads.range_strategy strategy=continuous_remainder`, then either
-      `downloads.range_remainder_promote` (active bounded task cancelled back to durable checkpoint)
-      or a direct `downloads.range_remainder_start`. While backgrounded, look for
-      `downloads.range_progress segment_kind=continuousRemainder` / `downloads.range_remainder_finished`
-      followed by `downloads.range_chunk_appended` and finalization. If the remainder fails, the row
-      may pause/retry from `bytes` equal to the durable partial checkpoint, not the optimistic temp
-      bytes; it must not restart from 0 when a durable partial existed, and must not append a
-      misaligned/gapped Range response.
+      `downloads.range_start` to show the segment train queuing closed-range tasks, then
+      background/lock the device while plugged in for 2–5 minutes. Expected diagnostics:
+      `app.scene_phase` → inactive/background, then segment finishes appended in order
+      (`downloads.range_segment_assembled`) advancing the durable checkpoint and refilling the
+      train. If a segment fails, the row may pause/retry from `bytes` equal to the durable
+      partial checkpoint, not the optimistic temp bytes; it must not restart from 0 when a
+      durable partial existed, and must not append a misaligned/gapped Range response.
+- [ ] **Segment train: kill/relaunch mid-train (DEVICE-ONLY)** — start a large static download,
+      let several closed-range segments queue and start, then force-quit the app while segments
+      are still in flight and relaunch. `StaticRangeReattachPolicy` should adopt the live
+      marker-bearing segment tasks (`downloads.range_segment_train_adopted`) rather than dropping
+      them; the row must not burst-restart every offset from the durable checkpoint (no
+      `downloads.range_durable_offset_gap` storm), and progress should pick back up close to
+      where it left off.
+- [ ] **Segment train: off-head completion, process-dead (DEVICE-ONLY)** — start a large static
+      download, wait for at least 2 segments to be queued, then let the headset go off-head (or
+      lock the device) long enough for ≥2 segments to finish while the app process is not running.
+      Re-wear/unlock and confirm the finished bodies are appended (not re-downloaded from their
+      offsets) via `downloads.range_segment_assembled`, watching for
+      `downloads.range_unknown_task_finish` (a segment whose marker could not be matched to a live
+      row) or `downloads.range_dead_finish_adopted` (lazy adoption of a segment that finished while
+      the app was dead) in the diagnostics.
+- [ ] **Segment train: overnight off-head soak (DEVICE-ONLY)** — start a large static download and
+      leave the device off-head/locked overnight, plugged in. A wake-time network bounce should
+      cost at most one in-flight segment (≤512 MiB re-fetched), never the whole accumulated
+      progress; the durable checkpoint should show a rising trend across the soak rather than
+      resetting to 0.
+- [ ] **Segment train: Pause All / Resume All mid-train** — with a segment train in flight (several
+      closed-range tasks queued), trigger Pause All, confirm every in-flight segment produces or
+      adopts resume data (or falls back to the durable partial) and the row shows Paused with no
+      spurious progress; Resume All should re-plan and refill the train from the durable checkpoint,
+      not restart from 0.
+- [ ] **Segment train: cancel → re-download → relaunch (zombie rejection)** — start a static
+      download, cancel it after a segment or two has completed, start a fresh download of the same
+      item, then force-quit/relaunch while the new download is mid-train. Bodies belonging to the
+      cancelled prior attempt must be rejected by the strict validator match (not appended into the
+      new attempt's partial) — no corrupted/mismatched file on completion.
+- [ ] **Segment train: upgrade-in-place from an open-ended build (DEVICE-ONLY)** — install an
+      older open-ended-remainder build, start a static download, background it mid-flight so a
+      single open-ended task and/or its durable partial exist, then install the current
+      segment-train build over it (same bundle id, container preserved) and relaunch. The download
+      should reconcile onto the segment-train planner from the existing durable partial (no data
+      loss, no duplicate file), confirming both regimes share one durable-partial checkpoint.
 - [ ] **Download dual path — DIRECT (offline-download redesign)** — open the download sheet on a
       known-compatible title (the player would direct-play it): the sheet shows a single
       "Download original — <size> · <res>" action (no quality picker). Downloading fetches the
