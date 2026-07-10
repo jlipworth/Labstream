@@ -54,4 +54,21 @@ public enum DownloadMediaSelectionPolicy {
         let raw = selection.part?.container ?? selection.media?.container ?? fallback
         return raw.isEmpty ? fallback : raw
     }
+
+    /// Container extension for a STATIC original download that may be resuming an existing row.
+    ///
+    /// Retry/rebuild paths reconstruct the `MediaItem` from persisted metadata WITHOUT media/part
+    /// arrays, so `containerExtension(selection:)` collapses to the "mp4" fallback there — switching
+    /// the destination of an in-progress `<key>.mkv` to `<key>.mp4`, zeroing the byte checkpoint and
+    /// orphaning the partial. The on-disk name of the existing row is the source of truth for the
+    /// container the transfer actually started with; prefer its extension whenever present.
+    public static func containerExtension(selection: Selection,
+                                          existingRelativePath: String?,
+                                          fallback: String = "mp4") -> String {
+        if let existingRelativePath {
+            let ext = (existingRelativePath as NSString).pathExtension
+            if !ext.isEmpty { return ext }
+        }
+        return containerExtension(selection: selection, fallback: fallback)
+    }
 }
