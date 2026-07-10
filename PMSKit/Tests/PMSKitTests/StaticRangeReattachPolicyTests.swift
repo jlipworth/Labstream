@@ -133,8 +133,8 @@ struct StaticRangeReattachPolicyTests {
         #expect(plan == StaticRangeReattachPlan(candidateBaseOffset: 0, disposition: .adopt))
     }
 
-    @Test("A marked closed segment ahead of the durable checkpoint but aligned to the segment grid is adopted")
-    func markedClosedSegmentAheadOfDurableGridAligned() {
+    @Test("A marked closed segment ahead of the durable checkpoint is adopted")
+    func markedClosedSegmentAheadOfDurable() {
         let plan = StaticRangeReattachPolicy.plan(
             taskIdentifier: 42,
             downloadID: "plex:item",
@@ -144,14 +144,13 @@ struct StaticRangeReattachPolicyTests {
             bodyBytesWritten: 10,
             existingTasks: [],
             taskMarker: StaticRangeSegmentMarker.value(offset: 512, attemptID: "attempt-A"),
-            segmentBytes: 512,
             rowAttemptID: "attempt-A"
         )
 
         #expect(plan == StaticRangeReattachPlan(candidateBaseOffset: 512, disposition: .adopt))
     }
 
-    @Test("A marked segment behind the durable checkpoint is rejected even when grid-aligned")
+    @Test("A marked segment behind the durable checkpoint is rejected")
     func markedClosedSegmentBehindDurableRejected() {
         let plan = StaticRangeReattachPolicy.plan(
             taskIdentifier: 44,
@@ -162,7 +161,6 @@ struct StaticRangeReattachPolicyTests {
             bodyBytesWritten: 10,
             existingTasks: [],
             taskMarker: StaticRangeSegmentMarker.value(offset: 512, attemptID: "attempt-A"),
-            segmentBytes: 512,
             rowAttemptID: "attempt-A"
         )
 
@@ -172,25 +170,43 @@ struct StaticRangeReattachPolicyTests {
         ))
     }
 
-    @Test("A marked closed segment not aligned to the segment grid is rejected as an offset mismatch")
-    func markedClosedSegmentNotGridAlignedRejected() {
+    @Test("A marked segment from a train anchored at a mid-file checkpoint is adopted")
+    func markedClosedSegmentMidFileAnchorAdopted() {
+        // The planner anchors its grid at the durable bytes of plan time — a legacy open-ended
+        // partial (durable 300) plans segments at 300, 812, 1324... None of those are aligned to
+        // an absolute grid; the attempt token proves ownership, so they must still reattach.
         let plan = StaticRangeReattachPolicy.plan(
             taskIdentifier: 43,
             downloadID: "plex:item",
-            durableBytes: 0,
-            requestedOffset: 300,
+            durableBytes: 300,
+            requestedOffset: 812,
             rangeRequestShape: .closed,
             bodyBytesWritten: 10,
             existingTasks: [],
-            taskMarker: StaticRangeSegmentMarker.value(offset: 300, attemptID: "attempt-A"),
-            segmentBytes: 512,
+            taskMarker: StaticRangeSegmentMarker.value(offset: 812, attemptID: "attempt-A"),
             rowAttemptID: "attempt-A"
         )
 
-        #expect(plan == StaticRangeReattachPlan(
-            candidateBaseOffset: 300,
-            disposition: .rejectOffsetMismatch(requestedOffset: 300, durableBytes: 0)
-        ))
+        #expect(plan == StaticRangeReattachPlan(candidateBaseOffset: 812, disposition: .adopt))
+    }
+
+    @Test("A marked segment ahead of a crash-mid-append durable checkpoint is adopted")
+    func markedClosedSegmentAheadOfMidAppendCheckpointAdopted() {
+        // A crash mid-append leaves durable bytes off the train's own grid (e.g. 350 of a head
+        // segment [300, 812)). The surviving off-head segments are owned and ahead — adopt.
+        let plan = StaticRangeReattachPolicy.plan(
+            taskIdentifier: 45,
+            downloadID: "plex:item",
+            durableBytes: 350,
+            requestedOffset: 812,
+            rangeRequestShape: .closed,
+            bodyBytesWritten: 10,
+            existingTasks: [],
+            taskMarker: StaticRangeSegmentMarker.value(offset: 812, attemptID: "attempt-A"),
+            rowAttemptID: "attempt-A"
+        )
+
+        #expect(plan == StaticRangeReattachPlan(candidateBaseOffset: 812, disposition: .adopt))
     }
 
     @Test("Two marked segments at different offsets both adopt")
@@ -208,7 +224,6 @@ struct StaticRangeReattachPolicyTests {
             bodyBytesWritten: 10,
             existingTasks: existing,
             taskMarker: StaticRangeSegmentMarker.value(offset: 512, attemptID: "attempt-A"),
-            segmentBytes: 512,
             rowAttemptID: "attempt-A"
         )
 
@@ -230,7 +245,6 @@ struct StaticRangeReattachPolicyTests {
             bodyBytesWritten: 64,
             existingTasks: existing,
             taskMarker: StaticRangeSegmentMarker.value(offset: 512, attemptID: "attempt-A"),
-            segmentBytes: 512,
             rowAttemptID: "attempt-A"
         )
 

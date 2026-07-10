@@ -36,10 +36,6 @@ public enum StaticRangeReattachPolicy {
     ///     shape — is `.rejectAttemptMismatch` (a prior attempt/life of the same key).
     ///   - rowAttemptID: the row's current persisted download-attempt token. `nil` (legacy row)
     ///     means no marked segment can be adopted.
-    ///   - segmentBytes: the closed-range segment grid size, when known. Lets a marked segment's
-    ///     `requestedOffset` legitimately sit ahead of `durableBytes` (earlier segments still in
-    ///     flight) without tripping the offset-mismatch guard, as long as the offset is aligned to
-    ///     the segment grid. `nil` disables this exemption.
     public static func plan(taskIdentifier: Int,
                             downloadID: String,
                             durableBytes: Int,
@@ -48,7 +44,6 @@ public enum StaticRangeReattachPolicy {
                             bodyBytesWritten: Int,
                             existingTasks: [StaticRangeTaskSnapshot],
                             taskMarker: String? = nil,
-                            segmentBytes: Int? = nil,
                             rowAttemptID: String? = nil) -> StaticRangeReattachPlan {
         let markedOffset = StaticRangeSegmentMarker.parse(taskMarker)
         let taskAttemptID = BackgroundDownloadTaskIdentity.attemptID(taskDescription: taskMarker)
@@ -77,10 +72,16 @@ public enum StaticRangeReattachPolicy {
         }
 
         if let requestedOffset, requestedOffset != durableBytes {
-            let isGridAlignedAheadOfDurable = isAdoptableMarkedSegment
+            // A marked segment ahead of the durable checkpoint is adoptable regardless of grid
+            // alignment: the attempt token above already proves this attempt planned it, and the
+            // planner anchors its grid at the durable bytes of the moment it planned — a train
+            // planned from a mid-file checkpoint (legacy open-ended partial, crash-mid-append) is
+            // legitimately off any absolute grid. Requiring `requestedOffset % segmentBytes == 0`
+            // (anchored at 0) dropped every off-head background segment of such trains on each
+            // relaunch. Behind-durable segments stay rejected: their bytes are already durable.
+            let isOwnedSegmentAheadOfDurable = isAdoptableMarkedSegment
                 && requestedOffset >= durableBytes
-                && segmentBytes.map { $0 > 0 && requestedOffset % $0 == 0 } ?? false
-            if !isGridAlignedAheadOfDurable {
+            if !isOwnedSegmentAheadOfDurable {
                 return StaticRangeReattachPlan(
                     candidateBaseOffset: requestedOffset,
                     disposition: .rejectOffsetMismatch(
