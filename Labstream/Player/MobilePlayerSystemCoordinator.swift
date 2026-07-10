@@ -13,7 +13,11 @@ import UIKit
 /// `VideoNowPlayingCore`; this coordinator adds the iOS-only surfaces (PiP, external playback).
 @MainActor
 final class MobilePlayerSystemCoordinator: NSObject, @preconcurrency AVPictureInPictureControllerDelegate {
-    private let core = VideoNowPlayingCore(defaultSkipIntervalSeconds: 10)
+    private let core: VideoNowPlayingCore
+
+    init(mediaSession: SystemMediaSessionCoordinator) {
+        core = VideoNowPlayingCore(defaultSkipIntervalSeconds: 10, mediaSession: mediaSession)
+    }
     private weak var controller: PlaybackController?
     private weak var playerLayer: AVPlayerLayer?
     private var pictureInPictureController: AVPictureInPictureController?
