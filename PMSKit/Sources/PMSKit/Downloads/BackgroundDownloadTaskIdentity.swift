@@ -10,7 +10,8 @@ public enum BackgroundDownloadTaskIdentity {
                                  requestURL: URL?,
                                  knownKeys: Set<String>) -> String? {
         let normalizedDescription = taskDescription.map {
-            StaticRangeSegmentMarker.ratingKey(fromTaskDescription: $0)
+            DownloadAttemptMarker.ratingKey(
+                fromTaskDescription: StaticRangeSegmentMarker.ratingKey(fromTaskDescription: $0))
         }
         if let normalizedDescription, knownKeys.contains(normalizedDescription) {
             return normalizedDescription
@@ -34,5 +35,13 @@ public enum BackgroundDownloadTaskIdentity {
 
         let expanded = candidates.flatMap { [$0, "jellyfin:\($0)"] }
         return expanded.first { knownKeys.contains($0) }
+    }
+
+    /// The download-attempt token stamped into `taskDescription`, from either lane's format
+    /// (v2 segment marker, or the opaque/open-ended attempt stamp). `nil` means a legacy task
+    /// created before attempt tokens existed — never adoptable where identity matters.
+    public static func attemptID(taskDescription: String?) -> String? {
+        StaticRangeSegmentMarker.attemptID(taskDescription)
+            ?? DownloadAttemptMarker.attemptID(fromTaskDescription: taskDescription)
     }
 }

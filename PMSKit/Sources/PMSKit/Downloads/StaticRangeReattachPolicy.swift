@@ -6,6 +6,10 @@
 public enum StaticRangeReattachDisposition: Sendable, Equatable {
     case dropLegacyRange(requestedOffset: Int?, durableBytes: Int, rangeRequestShape: StaticRangeRequestShape)
     case rejectOffsetMismatch(requestedOffset: Int, durableBytes: Int)
+    /// The task carries a download-attempt token that does not match the row's current attempt:
+    /// it belongs to a prior attempt/life of the same ratingKey (cancelled, failed, or replaced
+    /// at a different quality) and must be cancelled + superseded, never adopted.
+    case rejectAttemptMismatch(taskAttemptID: String, rowAttemptID: String?)
     case adopt
     case replaceExisting(existingTaskIdentifier: Int, existingBaseOffset: Int)
     case suppressForExisting(existingTaskIdentifier: Int, existingBaseOffset: Int)
@@ -25,10 +29,13 @@ public enum StaticRangeReattachPolicy {
     /// - Parameters:
     ///   - taskMarker: the task's `taskDescription`. When it decodes (via
     ///     `StaticRangeSegmentMarker.parse`) to an offset matching `requestedOffset` on a
-    ///     `.closed` shape, the task is one WE deliberately pre-queued (range-segments) and flows
-    ///     through the normal adopt/suppress/replace machinery instead of `.dropLegacyRange`. Any
-    ///     other closed-range task (nil/malformed marker, or a marker offset that does not match
-    ///     the header) is treated as a pre-#231 legacy task and dropped, unchanged from before.
+    ///     `.closed` shape AND carries a v2 attempt token equal to `rowAttemptID`, the task is one
+    ///     WE pre-queued for the CURRENT attempt and flows through the normal
+    ///     adopt/suppress/replace machinery instead of `.dropLegacyRange`. A v1 marker (no token)
+    ///     is legacy and dropped; any token that mismatches the row's attempt — on any request
+    ///     shape — is `.rejectAttemptMismatch` (a prior attempt/life of the same key).
+    ///   - rowAttemptID: the row's current persisted download-attempt token. `nil` (legacy row)
+    ///     means no marked segment can be adopted.
     ///   - segmentBytes: the closed-range segment grid size, when known. Lets a marked segment's
     ///     `requestedOffset` legitimately sit ahead of `durableBytes` (earlier segments still in
     ///     flight) without tripping the offset-mismatch guard, as long as the offset is aligned to
@@ -41,11 +48,22 @@ public enum StaticRangeReattachPolicy {
                             bodyBytesWritten: Int,
                             existingTasks: [StaticRangeTaskSnapshot],
                             taskMarker: String? = nil,
-                            segmentBytes: Int? = nil) -> StaticRangeReattachPlan {
+                            segmentBytes: Int? = nil,
+                            rowAttemptID: String? = nil) -> StaticRangeReattachPlan {
         let markedOffset = StaticRangeSegmentMarker.parse(taskMarker)
+        let taskAttemptID = BackgroundDownloadTaskIdentity.attemptID(taskDescription: taskMarker)
+        if let taskAttemptID, taskAttemptID != rowAttemptID {
+            return StaticRangeReattachPlan(
+                candidateBaseOffset: requestedOffset ?? durableBytes,
+                disposition: .rejectAttemptMismatch(taskAttemptID: taskAttemptID,
+                                                    rowAttemptID: rowAttemptID)
+            )
+        }
         let isAdoptableMarkedSegment = rangeRequestShape == .closed
             && markedOffset != nil
             && markedOffset == requestedOffset
+            && taskAttemptID != nil
+            && taskAttemptID == rowAttemptID
 
         guard rangeRequestShape == .openEnded || isAdoptableMarkedSegment else {
             return StaticRangeReattachPlan(

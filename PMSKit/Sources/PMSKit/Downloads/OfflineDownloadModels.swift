@@ -476,6 +476,12 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// prefix and silently corrupt the file. `nil` until the first body completes / for
     /// non-byte-range rows.
     public var rangeValidator: String?
+    /// Per-download-attempt identity token, minted when an attempt starts and cleared on
+    /// cancel/delete and terminal failure. Stamped into every URLSession `taskDescription` this
+    /// attempt creates (segment marker v2, opaque/open-ended attempt stamp) so adoption/reattach
+    /// can reject a redelivered task from a PRIOR attempt or app life of the same ratingKey —
+    /// ratingKey-only identity let old-rendition bytes splice into a re-download.
+    public var downloadAttemptID: String?
 
     public init(ratingKey: String,
                 key: String? = nil,
@@ -532,7 +538,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 embyConvertJobID: Int? = nil,
                 embyConvertSnapshotIDs: [String]? = nil,
                 serverPreparedVersion: Bool? = nil,
-                rangeValidator: String? = nil) {
+                rangeValidator: String? = nil,
+                downloadAttemptID: String? = nil) {
         self.ratingKey = ratingKey
         self.key = key
         self.title = title
@@ -589,6 +596,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.embyConvertSnapshotIDs = embyConvertSnapshotIDs
         self.serverPreparedVersion = serverPreparedVersion
         self.rangeValidator = rangeValidator
+        self.downloadAttemptID = downloadAttemptID
     }
 
     public init(from decoder: Decoder) throws {
@@ -649,6 +657,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         embyConvertSnapshotIDs = try c.decodeIfPresent([String].self, forKey: .embyConvertSnapshotIDs)
         serverPreparedVersion = try c.decodeIfPresent(Bool.self, forKey: .serverPreparedVersion)
         rangeValidator = try c.decodeIfPresent(String.self, forKey: .rangeValidator)
+        downloadAttemptID = try c.decodeIfPresent(String.self, forKey: .downloadAttemptID)
     }
 
     /// Preserve local side/durable assets that may have been cached or checkpointed asynchronously
@@ -683,6 +692,12 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         }
         if rangeValidator == nil {
             rangeValidator = previous.rangeValidator
+        }
+        // Mid-attempt metadata upserts (handoff/retry re-snapshots) must not wipe the live
+        // attempt token; cancel/terminal-failure clear it explicitly, so a stale token can never
+        // survive into a genuinely new attempt through this merge.
+        if downloadAttemptID == nil {
+            downloadAttemptID = previous.downloadAttemptID
         }
         if sourcePartSize == nil {
             sourcePartSize = previous.sourcePartSize

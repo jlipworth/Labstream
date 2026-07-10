@@ -126,7 +126,8 @@ struct StaticRangeReattachPolicyTests {
             rangeRequestShape: .closed,
             bodyBytesWritten: 10,
             existingTasks: [],
-            taskMarker: StaticRangeSegmentMarker.value(offset: 0)
+            taskMarker: StaticRangeSegmentMarker.value(offset: 0, attemptID: "attempt-A"),
+            rowAttemptID: "attempt-A"
         )
 
         #expect(plan == StaticRangeReattachPlan(candidateBaseOffset: 0, disposition: .adopt))
@@ -142,8 +143,9 @@ struct StaticRangeReattachPolicyTests {
             rangeRequestShape: .closed,
             bodyBytesWritten: 10,
             existingTasks: [],
-            taskMarker: StaticRangeSegmentMarker.value(offset: 512),
-            segmentBytes: 512
+            taskMarker: StaticRangeSegmentMarker.value(offset: 512, attemptID: "attempt-A"),
+            segmentBytes: 512,
+            rowAttemptID: "attempt-A"
         )
 
         #expect(plan == StaticRangeReattachPlan(candidateBaseOffset: 512, disposition: .adopt))
@@ -159,8 +161,9 @@ struct StaticRangeReattachPolicyTests {
             rangeRequestShape: .closed,
             bodyBytesWritten: 10,
             existingTasks: [],
-            taskMarker: StaticRangeSegmentMarker.value(offset: 512),
-            segmentBytes: 512
+            taskMarker: StaticRangeSegmentMarker.value(offset: 512, attemptID: "attempt-A"),
+            segmentBytes: 512,
+            rowAttemptID: "attempt-A"
         )
 
         #expect(plan == StaticRangeReattachPlan(
@@ -179,8 +182,9 @@ struct StaticRangeReattachPolicyTests {
             rangeRequestShape: .closed,
             bodyBytesWritten: 10,
             existingTasks: [],
-            taskMarker: StaticRangeSegmentMarker.value(offset: 300),
-            segmentBytes: 512
+            taskMarker: StaticRangeSegmentMarker.value(offset: 300, attemptID: "attempt-A"),
+            segmentBytes: 512,
+            rowAttemptID: "attempt-A"
         )
 
         #expect(plan == StaticRangeReattachPlan(
@@ -203,8 +207,9 @@ struct StaticRangeReattachPolicyTests {
             rangeRequestShape: .closed,
             bodyBytesWritten: 10,
             existingTasks: existing,
-            taskMarker: StaticRangeSegmentMarker.value(offset: 512),
-            segmentBytes: 512
+            taskMarker: StaticRangeSegmentMarker.value(offset: 512, attemptID: "attempt-A"),
+            segmentBytes: 512,
+            rowAttemptID: "attempt-A"
         )
 
         #expect(plan == StaticRangeReattachPlan(candidateBaseOffset: 512, disposition: .adopt))
@@ -224,14 +229,112 @@ struct StaticRangeReattachPolicyTests {
             rangeRequestShape: .closed,
             bodyBytesWritten: 64,
             existingTasks: existing,
-            taskMarker: StaticRangeSegmentMarker.value(offset: 512),
-            segmentBytes: 512
+            taskMarker: StaticRangeSegmentMarker.value(offset: 512, attemptID: "attempt-A"),
+            segmentBytes: 512,
+            rowAttemptID: "attempt-A"
         )
 
         #expect(plan == StaticRangeReattachPlan(
             candidateBaseOffset: 512,
             disposition: .replaceExisting(existingTaskIdentifier: 60, existingBaseOffset: 512)
         ))
+    }
+
+    @Test("A v1 marker (no attempt token) is legacy — dropped even at a matching offset")
+    func v1MarkerDropsAsLegacy() {
+        let plan = StaticRangeReattachPolicy.plan(
+            taskIdentifier: 45,
+            downloadID: "plex:item",
+            durableBytes: 0,
+            requestedOffset: 0,
+            rangeRequestShape: .closed,
+            bodyBytesWritten: 10,
+            existingTasks: [],
+            taskMarker: StaticRangeSegmentMarker.value(offset: 0),
+            rowAttemptID: "attempt-A"
+        )
+
+        #expect(plan == StaticRangeReattachPlan(
+            candidateBaseOffset: 0,
+            disposition: .dropLegacyRange(requestedOffset: 0, durableBytes: 0, rangeRequestShape: .closed)
+        ))
+    }
+
+    @Test("A marked segment from a prior attempt is rejected as an attempt mismatch")
+    func attemptMismatchRejected() {
+        let plan = StaticRangeReattachPolicy.plan(
+            taskIdentifier: 46,
+            downloadID: "plex:item",
+            durableBytes: 0,
+            requestedOffset: 0,
+            rangeRequestShape: .closed,
+            bodyBytesWritten: 10,
+            existingTasks: [],
+            taskMarker: StaticRangeSegmentMarker.value(offset: 0, attemptID: "attempt-OLD"),
+            rowAttemptID: "attempt-NEW"
+        )
+
+        #expect(plan == StaticRangeReattachPlan(
+            candidateBaseOffset: 0,
+            disposition: .rejectAttemptMismatch(taskAttemptID: "attempt-OLD", rowAttemptID: "attempt-NEW")
+        ))
+    }
+
+    @Test("A tokened task against a row with no attempt is rejected, not adopted")
+    func tokenedTaskAgainstTokenlessRowRejected() {
+        let plan = StaticRangeReattachPolicy.plan(
+            taskIdentifier: 47,
+            downloadID: "plex:item",
+            durableBytes: 0,
+            requestedOffset: 0,
+            rangeRequestShape: .closed,
+            bodyBytesWritten: 10,
+            existingTasks: [],
+            taskMarker: StaticRangeSegmentMarker.value(offset: 0, attemptID: "attempt-OLD"),
+            rowAttemptID: nil
+        )
+
+        #expect(plan == StaticRangeReattachPlan(
+            candidateBaseOffset: 0,
+            disposition: .rejectAttemptMismatch(taskAttemptID: "attempt-OLD", rowAttemptID: nil)
+        ))
+    }
+
+    @Test("An attempt-stamped open-ended remainder from a prior attempt is rejected")
+    func openEndedAttemptMismatchRejected() {
+        let plan = StaticRangeReattachPolicy.plan(
+            taskIdentifier: 48,
+            downloadID: "plex:item",
+            durableBytes: 512,
+            requestedOffset: 512,
+            rangeRequestShape: .openEnded,
+            bodyBytesWritten: 0,
+            existingTasks: [],
+            taskMarker: DownloadAttemptMarker.taskDescription(ratingKey: "plex:item", attemptID: "attempt-OLD"),
+            rowAttemptID: "attempt-NEW"
+        )
+
+        #expect(plan == StaticRangeReattachPlan(
+            candidateBaseOffset: 512,
+            disposition: .rejectAttemptMismatch(taskAttemptID: "attempt-OLD", rowAttemptID: "attempt-NEW")
+        ))
+    }
+
+    @Test("An attempt-stamped open-ended remainder matching the row's attempt is adopted")
+    func openEndedMatchingAttemptAdopted() {
+        let plan = StaticRangeReattachPolicy.plan(
+            taskIdentifier: 49,
+            downloadID: "plex:item",
+            durableBytes: 512,
+            requestedOffset: 512,
+            rangeRequestShape: .openEnded,
+            bodyBytesWritten: 0,
+            existingTasks: [],
+            taskMarker: DownloadAttemptMarker.taskDescription(ratingKey: "plex:item", attemptID: "attempt-A"),
+            rowAttemptID: "attempt-A"
+        )
+
+        #expect(plan == StaticRangeReattachPlan(candidateBaseOffset: 512, disposition: .adopt))
     }
 
     @Test("A malformed marker is treated as unmarked and legacy-dropped")
@@ -263,7 +366,8 @@ struct StaticRangeReattachPolicyTests {
             rangeRequestShape: .closed,
             bodyBytesWritten: 10,
             existingTasks: [],
-            taskMarker: StaticRangeSegmentMarker.value(offset: 0)
+            taskMarker: StaticRangeSegmentMarker.value(offset: 0, attemptID: "attempt-A"),
+            rowAttemptID: "attempt-A"
         )
 
         #expect(plan == StaticRangeReattachPlan(
