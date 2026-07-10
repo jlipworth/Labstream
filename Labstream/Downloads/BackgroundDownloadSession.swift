@@ -2661,7 +2661,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     private func expectedRangeBodyBytes(entry: RangeTransfer) -> Int? {
         rangeRemainderPolicy.expectedBodyBytes(offset: entry.baseOffset,
-                                               expectedBytes: entry.expectedBytes)
+                                               expectedBytes: entry.expectedBytes,
+                                               segmentLength: entry.segmentLength)
     }
 
     /// Start a fresh open-ended Range remainder if we still hold the request (same launch);
@@ -4010,6 +4011,20 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             ])
             return false
         case .adopt(let baseOffset):
+            // A blob persisted from a CLOSED head segment must come back as a segment: recover its
+            // length from the blob's own Range header (URLSession keeps the original request). With
+            // segmentLength nil the finish validator judges the body against the whole-file
+            // remainder — and a resumed task's Content-Range starts at the blob's byte position, so
+            // the completed segment would trip the offset-mismatch path and be discarded. A legacy
+            // open-ended blob (`bytes=N-`) has no end bound and stays nil (unchanged semantics).
+            let blobRangeHeader = (task.originalRequest ?? task.currentRequest)?
+                .value(forHTTPHeaderField: "Range")
+            let blobSegmentLength: Int? = {
+                let start = RangeTransferHTTPPolicy.rangeRequestStart(blobRangeHeader) ?? baseOffset
+                guard let end = RangeTransferHTTPPolicy.rangeRequestEnd(blobRangeHeader),
+                      end >= start else { return nil }
+                return end - start + 1
+            }()
             // Keep the authenticated base request when the caller still holds it so a short
             // resumed body can start the next open-ended remainder in-session; the blob's own original
             // request is the fallback (it carries the auth headers URLSession persisted).
@@ -4019,7 +4034,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 destination: destination,
                 expectedBytes: expectedBytes,
                 baseOffset: baseOffset,
-                segmentLength: nil,
+                segmentLength: blobSegmentLength,
                 responseStatus: nil,
                 bodyBytesWritten: 0,
                 remainderReason: remainderReason)
@@ -4038,11 +4053,36 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "download_id": .identifier(ratingKey),
                 "task_id": .int(task.taskIdentifier),
                 "base_offset": .int(baseOffset),
+                "segment_length": .int(blobSegmentLength ?? -1),
                 "resume_blob_bytes": .bytes(resumeData.count),
                 "attempt": .int(attempt ?? 0),
                 "reason": .label(remainderReason),
             ])
             task.resume()
+            // The blob resumes ONLY the head segment; without a refill the row runs at
+            // single-segment depth until that head finishes. Top the train back up behind it —
+            // the head's offset is already registered as a live segment, so the planner enqueues
+            // only the trailing segments. Closed blobs with a known total only: an unknown total
+            // plans an open-ended remainder that would double-cover (and supersede) the head.
+            if StaticRangeTransferRegime.current == .segmentTrain,
+               blobSegmentLength != nil,
+               expectedBytes != nil,
+               let baseRequest = entry.request {
+                do {
+                    try startRangeRemainder(ratingKey: ratingKey,
+                                            with: baseRequest,
+                                            to: destination,
+                                            expectedBytes: expectedBytes,
+                                            resetsRetryCount: false,
+                                            remainderReasonOverride: "blob_resume_train_refill")
+                } catch {
+                    // Non-fatal: the resumed head is running; the train refills on its finish.
+                    AppDiagnostics.record(.downloads, "downloads.range_blob_resume_train_refill_failed", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "error": .error(error),
+                    ])
+                }
+            }
             onChange?()
             return true
         }
