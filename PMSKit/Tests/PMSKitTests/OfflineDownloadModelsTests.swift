@@ -197,6 +197,7 @@ struct OfflineDownloadModelsTests {
             librarySectionKey: "/library/sections/3",
             mediaIndex: 0,
             partIndex: 1,
+            sourceMediaHeight: 1080,
             sourcePartID: 42,
             sourcePartSize: 1_234_567_890,
             optimizeTargetName: "Original video quality",

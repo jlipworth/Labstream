@@ -392,7 +392,8 @@ Deferred to user judgment / later phases:
   swap (closed in the 2026-07-11 update below); EMBY-F11 handoff remove→re-download crash window;
   EMBY-F13 unbounded poll on persistent 5xx (closed in the 2026-07-11 update below); EMBY-F9 no
   Emby keepalive (live-verify).
-- PLEX-F3 vacuous height guard on original-quality reuse; PLEX-F4 vanished-render retry
+- PLEX-F3 vacuous height guard on original-quality reuse (closed in the 2026-07-11 update below);
+  PLEX-F4 vanished-render retry
   downloads raw source unpreflighted; PLEX-F5 reuse leaves duplicate job rendering;
   PLEX-F6c poller has no overall deadline.
 - Phases not yet run: 4 (coverage-matrix test writing), 5 (adversarial lens fan-out),
@@ -602,7 +603,7 @@ install UUID match, clean launch/log smoke, and signed-in Home screenshot; simul
    remote-play/download correlation, and Emby server-completion timing) before treating device
    observations as deterministic.
 3. Continue the deferred backend/product findings in sections F–H (Emby F3/F4/F9/F11,
-   Plex F3/F4/F5/F6c, and held-stash persistence). The simulator
+   Plex F4/F5/F6c, and held-stash persistence). The simulator
    relaunch probe now proves the held-stash item is real: eight completed stashes were swept and
    refetched from the durable checkpoint because their metadata is not persisted.
 
@@ -637,3 +638,13 @@ back to another source, the app tears down any minted server session and returns
 rendition and overwriting the persisted source id. Ordinary negotiation without an explicit
 override still accepts the server-selected source. The pure identity policy covers exact match,
 mismatch, empty decisions, and the no-override path.
+
+### Deferred follow-up closed: PLEX-F3 original-quality height guard
+
+`OptimizedVersionMatch` now requires both the source height and rendered media height before an
+Original-quality Plex Version can match. Missing either value fails closed instead of bypassing the
+comparison, while the existing ±16 px tolerance still accepts dimension-preserving renders. The
+exact selected `sourceMediaHeight` is persisted in `OfflineMetadata` and used as the relaunch/fetch-
+failure fallback, so fail-closed validation does not strand a resumed job merely because its
+reconstructed `MediaItem` lacks media arrays. Tests cover a real down-rez, a within-tolerance match,
+missing source height, missing result height, metadata construction, and Codable round-trip.

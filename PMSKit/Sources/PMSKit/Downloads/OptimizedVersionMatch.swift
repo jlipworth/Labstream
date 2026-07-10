@@ -35,9 +35,12 @@ public enum OptimizedVersionMatch {
                                sourceHeight: Int?) -> Bool {
         // Original-quality target: the render must land at (≈) the source height, else it's a
         // down-rezzed reuse masquerading as original.
-        if isOriginalQuality, let sourceHeight, let actualHeight = media.height,
-           abs(actualHeight - sourceHeight) > 16 {
-            return false
+        if isOriginalQuality {
+            // Fail closed when either side is unknown. Treating the optional comparison as a
+            // no-op made the guard vacuous and allowed a 720p/1080p sibling to satisfy an
+            // Original-quality request whose source/result metadata omitted height.
+            guard let sourceHeight, let actualHeight = media.height else { return false }
+            if abs(actualHeight - sourceHeight) > 16 { return false }
         }
         // Treat the target resolution as a bounding box, not an exact output height. Wide
         // CinemaScope-ish sources rendered by a 1080p profile can legitimately come back as e.g.

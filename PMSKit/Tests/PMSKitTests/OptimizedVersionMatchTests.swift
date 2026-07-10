@@ -68,6 +68,10 @@ struct OptimizedVersionMatchTests {
                 targetDimensions: nil, targetVideoKbps: nil, isOriginalQuality: true, sourceHeight: 2160))
         #expect(OptimizedVersionMatch.matches(media: media(height: 2156),
                 targetDimensions: nil, targetVideoKbps: nil, isOriginalQuality: true, sourceHeight: 2160))
+        #expect(!OptimizedVersionMatch.matches(media: media(height: 2160),
+                targetDimensions: nil, targetVideoKbps: nil, isOriginalQuality: true, sourceHeight: nil))
+        #expect(!OptimizedVersionMatch.matches(media: media(height: nil),
+                targetDimensions: nil, targetVideoKbps: nil, isOriginalQuality: true, sourceHeight: 2160))
     }
 
     // MARK: matches — bitrate allowance (×1.10 + 768)

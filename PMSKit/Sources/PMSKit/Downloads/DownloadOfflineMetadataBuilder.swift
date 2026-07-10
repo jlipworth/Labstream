@@ -59,6 +59,7 @@ public enum DownloadOfflineMetadataBuilder {
                                librarySectionKey: item.librarySectionKey,
                                mediaIndex: mediaIndex,
                                partIndex: partIndex,
+                               sourceMediaHeight: sourceMedia?.height,
                                sourcePartID: sourcePart?.id,
                                sourcePartSize: sourcePart?.size,
                                optimizeTargetName: optimizeTargetName,

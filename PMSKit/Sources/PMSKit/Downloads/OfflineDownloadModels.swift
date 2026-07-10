@@ -375,6 +375,10 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     public var librarySectionKey: String?
     public var mediaIndex: Int?
     public var partIndex: Int?
+    /// Exact height of the selected source media at enqueue time. Unlike the display-tier
+    /// `resolutionLabel`, this lets a relaunched Plex Original-quality optimize attempt prove that
+    /// its rendered version preserved source resolution.
+    public var sourceMediaHeight: Int?
     /// The source part id selected when the download was enqueued. Used to distinguish original
     /// source parts from later server-rendered optimized parts after an app relaunch.
     public var sourcePartID: Int?
@@ -517,6 +521,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 librarySectionKey: String? = nil,
                 mediaIndex: Int? = nil,
                 partIndex: Int? = nil,
+                sourceMediaHeight: Int? = nil,
                 sourcePartID: Int? = nil,
                 sourcePartSize: Int? = nil,
                 optimizeTargetName: String? = nil,
@@ -575,6 +580,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.librarySectionKey = librarySectionKey
         self.mediaIndex = mediaIndex
         self.partIndex = partIndex
+        self.sourceMediaHeight = sourceMediaHeight
         self.sourcePartID = sourcePartID
         self.sourcePartSize = sourcePartSize
         self.optimizeTargetName = optimizeTargetName
@@ -637,6 +643,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         librarySectionKey = try c.decodeIfPresent(String.self, forKey: .librarySectionKey)
         mediaIndex = try c.decodeIfPresent(Int.self, forKey: .mediaIndex)
         partIndex = try c.decodeIfPresent(Int.self, forKey: .partIndex)
+        sourceMediaHeight = try c.decodeIfPresent(Int.self, forKey: .sourceMediaHeight)
         sourcePartID = try c.decodeIfPresent(Int.self, forKey: .sourcePartID)
         sourcePartSize = try c.decodeIfPresent(Int.self, forKey: .sourcePartSize)
         optimizeTargetName = try c.decodeIfPresent(String.self, forKey: .optimizeTargetName)
