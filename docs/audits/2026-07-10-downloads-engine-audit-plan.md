@@ -564,3 +564,42 @@ Phase 5 remediation is therefore COMPLETE (Waves A, B, C, D all merged + verifie
 3. Deferred findings list — see section H.
 4. Push today's commits when the user asks; decide whether to commit `docs/audits/`.
 5. Live verification carry-overs — see section H.
+
+## J. RESUME UPDATE (2026-07-11)
+
+The audit documents were committed on main (`23b0bac`) and the three remaining phases were
+resumed in parallel from that checkpoint.
+
+- **Phase 4 complete — `a6c964f`.** Added
+  `2026-07-11-downloads-phase4-coverage-matrix.md` and five targeted PMSKit composition tests:
+  backend/lane/resume-mode resolution; retry budget + v2 marker + reattach + segment-local blob
+  adoption; head/mid/tail response classes; expected-byte/completion gating; and forward-schema
+  corrupt-row isolation. Combined suite: 1365 Swift Testing + 89 XCTest, zero failures.
+- **Phase 6 transport harness landed — `8414a59`.** The real foreground
+  `BackgroundDownloadSession` now has a DEBUG-only injectable `URLProtocol` seam. The existing
+  Plex range-drop probe also drives deterministic validator-flip and one-shot mid-train 401
+  scenarios and requires both injection and engine-reaction diagnostics. See
+  `2026-07-11-downloads-fault-injection-harness.md`. A live fault-path pass is still outstanding:
+  the available probe records entered Plex optimize instead of an immediate static train.
+  Pause-mid-drain, reset→blob→reset, relaunch-with-stashes, and filesystem-write injection remain
+  open Phase-6 cells.
+- **Phase 7 checklist complete — `3e817f9`.** Added all eight physical-device cells to
+  `TESTING-CHECKLIST.md`, with verified JSONL event sequences, hashed `download_id` correlation,
+  and explicit instrumentation gaps rather than invented evidence.
+- **Deferred stash diagnostic complete — `a885e91`.**
+  `downloads.range_stash_swept` reports successful cleanup count and a redacted byte bucket.
+
+Combined main verification after integration: full PMSKit suite green, clean visionOS build,
+install UUID match, clean launch/log smoke, and signed-in Home screenshot; simulator shut down.
+
+### Highest-value next work
+
+1. Run the two new Phase-6 transport scenarios against a known original/static Plex item larger
+   than one segment, then add pause/delete interleavings and write-failure injection.
+2. Execute the Phase-7 physical-device cells, prioritizing process-kill/background redelivery,
+   token/network changes while asleep, and disk pressure.
+3. Close the checklist's evidence gaps (lifecycle cause, blob presence, network path, free-space,
+   remote-play/download correlation, and Emby server-completion timing) before treating device
+   observations as deterministic.
+4. Continue the deferred backend/product findings in sections F–H (Emby F3/F4/F6/F9/F11/F13,
+   Plex F3/F4/F5/F6c, held-stash persistence, and audio-stream-index persistence).
