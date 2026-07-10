@@ -525,11 +525,15 @@ struct LibraryGridView: View {
             // Plex collections belong to movie/show sections rather than a standalone
             // library, so the regular section grid carries the entry point.
             if case .plex(let section) = source, section.type == "movie" || section.type == "show" {
-                ToolbarItem(placement: .topBarTrailing) {
-                    NavigationLink(value: LibraryGridSource.plexCollections(section)) {
-                        Label("Collections", systemImage: "square.stack.3d.up")
-                    }
+                #if os(macOS)
+                ToolbarItem {
+                    collectionsToolbarLink(section)
                 }
+                #else
+                ToolbarItem(placement: .topBarTrailing) {
+                    collectionsToolbarLink(section)
+                }
+                #endif
             }
         }
         .task(id: preferenceIdentity) { loadPreferences() }
@@ -683,6 +687,12 @@ struct LibraryGridView: View {
                                       systemImage: filter == .all ? "rectangle.stack" : "line.3.horizontal.decrease.circle",
                                       description: Text(description))
             .frame(maxWidth: .infinity, minHeight: 360)
+    }
+
+    private func collectionsToolbarLink(_ section: PlexSection) -> some View {
+        NavigationLink(value: LibraryGridSource.plexCollections(section)) {
+            Label("Collections", systemImage: "square.stack.3d.up")
+        }
     }
 
     private var navigationTitle: String {
