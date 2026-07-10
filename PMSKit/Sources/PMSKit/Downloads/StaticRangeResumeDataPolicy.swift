@@ -110,4 +110,18 @@ public enum StaticRangeResumeDataPolicy {
                                                resumeDataWasRejected: Bool = false) -> Bool {
         hasResumeData && !resumeDataWasRejected
     }
+
+    /// When pausing a pre-queued SEGMENT TRAIN, only ONE of the (up to 8) live segments can ever be
+    /// resumed from its URLSession blob: the segment whose byte offset equals the durable partial
+    /// size. `adoptionDecision` rejects every other offset as stale on Resume, so producing/persisting
+    /// blobs for the off-head segments just thrashes the single per-key blob slot (last writer wins)
+    /// and can only ever surface as `range_blob_resume_stale`. Persist the head segment's blob and
+    /// plain-cancel the rest (their temp bodies are unrecoverable once the process dies anyway).
+    ///
+    /// Open-ended remainders (`segmentBaseOffset == durableBytes` by construction, single task) satisfy
+    /// this trivially, so the pre-segment lane keeps persisting its one blob unchanged.
+    public static func shouldPersistSegmentBlobOnPause(segmentBaseOffset: Int,
+                                                       durableBytes: Int) -> Bool {
+        segmentBaseOffset == durableBytes
+    }
 }

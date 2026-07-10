@@ -9,9 +9,11 @@ struct DownloadRowDisplayPolicyTests {
         #expect(DownloadRowDisplayPolicy.activeHead(lane: .original,
                                                     backend: .plex,
                                                     isServerPreparedVersion: false) == "Downloading original")
+        // B4: a server-prepared version rides the STATIC `.original` byte-range lane — it must read as
+        // "optimized", never "transcode" (which is reserved for the live encoder-gated lanes).
         #expect(DownloadRowDisplayPolicy.activeHead(lane: .original,
                                                     backend: .emby,
-                                                    isServerPreparedVersion: true) == "Downloading transcode")
+                                                    isServerPreparedVersion: true) == "Downloading optimized")
         #expect(DownloadRowDisplayPolicy.activeHead(lane: .compatibleRemux,
                                                     backend: .jellyfin,
                                                     isServerPreparedVersion: false) == "Remuxing + downloading")

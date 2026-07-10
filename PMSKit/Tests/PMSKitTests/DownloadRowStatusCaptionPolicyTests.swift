@@ -84,9 +84,10 @@ struct DownloadRowStatusCaptionPolicyTests {
         #expect(DownloadRowStatusCaptionPolicy.compactActiveCaption(lane: .original,
                                                                    backend: .plex,
                                                                    isServerPreparedVersion: false) == "Downloading…")
+        // B4: server-prepared static byte-range version reads as "optimized", never "transcode".
         #expect(DownloadRowStatusCaptionPolicy.compactActiveCaption(lane: .original,
                                                                    backend: .plex,
-                                                                   isServerPreparedVersion: true) == "Downloading transcode…")
+                                                                   isServerPreparedVersion: true) == "Downloading optimized…")
         #expect(DownloadRowStatusCaptionPolicy.compactActiveCaption(lane: .compatibleRemux,
                                                                    backend: .emby,
                                                                    isServerPreparedVersion: false) == "Remuxing + downloading…")
@@ -259,6 +260,10 @@ struct DownloadRowStatusCaptionPolicyTests {
         #expect(caption.contains("37%"))
         #expect(caption.contains("5.5 GB"))
         #expect(!caption.contains("256 MB"))
+        // B4: this row is a server-prepared version on the STATIC `.original` byte-range lane, so its
+        // caption must read as "optimized" and never mislabel it a live "transcode".
+        #expect(caption.contains("Downloading optimized"))
+        #expect(!caption.lowercased().contains("transcode"))
     }
 
     @Test("Transfer finalizing caption uses local verification wording")

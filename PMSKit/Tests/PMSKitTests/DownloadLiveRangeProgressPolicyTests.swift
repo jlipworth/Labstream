@@ -81,6 +81,30 @@ struct DownloadLiveRangeProgressPolicyTests {
             liveSegmentBodyBytes: [-10, 50]) == 50)
     }
 
+    @Test("Train pause display is durable + Σ bodies, never the highest segment file position")
+    func trainPauseDisplayUsesAggregateNotMaxPosition() {
+        // B1 regression: reproduce the 8-segment train from the field report (15.67 GB original,
+        // durable = 0, 512 MiB segments at offsets 0, 512Mi, 1Gi, … 3.5Gi). Each segment temp holds
+        // ~126 MB of body. The OLD pause watermark took the HIGHEST segment's `baseOffset + body`
+        // (3_758_096_384 + 126 MB ≈ 3.88 GB → a bogus 24% on a ~1 GB-transferred row). The fix must
+        // instead publish durable + Σ(all live segment bodies) — the bytes actually downloaded.
+        let seg = 512 * 1_024 * 1_024
+        let body = 126 * 1_024 * 1_024
+        let durable = 0
+        let baseOffsets = (0..<8).map { $0 * seg }
+        let bodies = Array(repeating: body, count: 8)
+
+        let aggregate = DownloadLiveRangeProgressPolicy.aggregatedLiveBytes(
+            durableBytes: durable, liveSegmentBodyBytes: bodies)
+        #expect(aggregate == durable + body * 8)
+
+        // The discredited max-position watermark, for contrast — the fix must NOT equal this.
+        let highestSegmentPosition = (baseOffsets.max() ?? 0) + body
+        #expect(highestSegmentPosition == 3_758_096_384 + body)
+        #expect(aggregate != highestSegmentPosition)
+        #expect(aggregate < highestSegmentPosition, "aggregate transferred bytes stay well below the top file position")
+    }
+
     @Test("Segment completion transition never dips the published live sample")
     func segmentCompletionTransitionMonotonic() {
         let now = Date(timeIntervalSince1970: 3_000)

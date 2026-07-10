@@ -166,7 +166,8 @@ public enum DownloadRowStatusCaptionPolicy {
                                             isServerPreparedVersion: Bool) -> String {
         switch lane {
         case .original where isServerPreparedVersion:
-            return "Downloading transcode…"
+            // Static byte-range prepared version — see `DownloadRowDisplayPolicy.activeHead`.
+            return "Downloading optimized…"
         case .original:
             return "Downloading…"
         case .compatibleRemux:

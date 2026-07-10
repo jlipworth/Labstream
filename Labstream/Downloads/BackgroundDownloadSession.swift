@@ -1309,6 +1309,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lock.lock()
         let ids = Set(inflight.filter { $0.value.ratingKey == ratingKey }.map(\.key))
         let rangeIds = Set(rangeInflight.filter { $0.value.ratingKey == ratingKey }.map(\.key))
+        let rangeEntriesForKey = rangeInflight.values.filter { $0.ratingKey == ratingKey }
         inflight = inflight.filter { $0.value.ratingKey != ratingKey }
         if rangeIds.isEmpty {
             // No live Range task to cancel; halt the lane so a between-continuations retry/rebuild
@@ -1316,6 +1317,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             haltedRangeKeys.insert(ratingKey)
         }
         lock.unlock()
+        // B1/B2: compute the row-level pause context ONCE (durable checkpoint + the aggregate display
+        // total across the whole segment train), so every per-task cancel below shares one honest
+        // watermark instead of each racing the single per-key blob slot with its own file position.
+        let pauseContext = makeRangePauseContext(ratingKey: ratingKey,
+                                                 entries: Array(rangeEntriesForKey))
         endRangeRequestRebuildGrace(ratingKey: ratingKey, reason: "paused")
         // C2: a pause resets the row to its durable checkpoint and re-plans a fresh train on resume;
         // held ahead-of-checkpoint stashes (whose tasks are being cancelled) would otherwise leak in
@@ -1329,7 +1335,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             for task in tasks {
                 if rangeIds.contains(task.taskIdentifier) {
                     matched = true
-                    self.pauseRangeTask(task, ratingKey: ratingKey)
+                    self.pauseRangeTask(task, ratingKey: ratingKey, context: pauseContext)
                 } else if ids.contains(task.taskIdentifier) {
                     matched = true
                     if let downloadTask = task as? URLSessionDownloadTask {
@@ -1379,7 +1385,31 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
     }
 
-    private func pauseRangeTask(_ task: URLSessionTask, ratingKey: String) {
+    /// Row-level facts captured ONCE at the start of a pause, before any per-task cancel mutates the
+    /// live set. `isTrain` distinguishes the pre-queued segment train (B1/B2 semantics) from the
+    /// single open-ended remainder (unchanged pre-segment behavior).
+    private struct RangePauseContext {
+        let isTrain: Bool
+        let durableBytes: Int
+        /// durable checkpoint + Σ(live segment bodies) — the bytes actually downloaded across the
+        /// whole train, matching what `didWriteData` publishes live (A5). Used as the paused-row
+        /// watermark for the train instead of the highest segment's file POSITION (the B1 bug).
+        let aggregateDisplayBytes: Int
+    }
+
+    private func makeRangePauseContext(ratingKey: String, entries: [RangeTransfer]) -> RangePauseContext {
+        let isTrain = entries.contains { $0.segmentLength != nil }
+        let durableBytes = entries.first.flatMap { fileSize(at: $0.destination) }
+            ?? store.durableStaticRangeCheckpointSize(ratingKey: ratingKey)
+        let aggregate = DownloadLiveRangeProgressPolicy.aggregatedLiveBytes(
+            durableBytes: durableBytes,
+            liveSegmentBodyBytes: entries.map(\.bodyBytesWritten))
+        return RangePauseContext(isTrain: isTrain,
+                                 durableBytes: durableBytes,
+                                 aggregateDisplayBytes: aggregate)
+    }
+
+    private func pauseRangeTask(_ task: URLSessionTask, ratingKey: String, context: RangePauseContext) {
         lock.lock()
         let entry = rangeInflight.removeValue(forKey: task.taskIdentifier)
         if entry != nil {
@@ -1387,18 +1417,40 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
         haltedRangeKeys.insert(ratingKey)
         lock.unlock()
+
+        // B2: under a segment train only ONE live segment — the one whose offset equals the durable
+        // partial — can ever survive `adoptionDecision` on Resume; the other 7 offsets are guaranteed
+        // stale, so producing/persisting their blobs only thrashes the single per-key blob slot (last
+        // writer wins) and leaks a false watermark. Persist the head segment's blob; plain-cancel the
+        // rest. Open-ended remainders (single task at baseOffset == durable) satisfy this trivially, so
+        // the pre-segment lane keeps persisting its one blob unchanged.
+        let isSegment = entry?.segmentLength != nil
+        let shouldPersistBlob: Bool
         // #227/#231: a continuous remainder can hold many GB of non-durable temp; pause it by
         // producing resume data so a later Resume continues that temp instead of re-fetching it.
-        let rangeResumeDisplayBytes = entry.map { rangeEntry in
-            let taskBytes = rangeEntry.baseOffset
-                + max(rangeEntry.bodyBytesWritten, Int(max(task.countOfBytesReceived, 0)))
-            return DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
-                taskBytes: taskBytes,
-                baseOffset: rangeEntry.baseOffset,
-                resumeDisplayBytes: store.resumeDisplayBytes(ratingKey: ratingKey)
-            )
+        let rangeResumeDisplayBytes: Int?
+        if context.isTrain, isSegment, let entry {
+            shouldPersistBlob = StaticRangeResumeDataPolicy.shouldPersistSegmentBlobOnPause(
+                segmentBaseOffset: entry.baseOffset,
+                durableBytes: context.durableBytes)
+            // B1: the paused-row watermark is the WHOLE train's downloaded total, not this one
+            // segment's file position — computed once in `makeRangePauseContext`.
+            rangeResumeDisplayBytes = context.aggregateDisplayBytes
+        } else {
+            shouldPersistBlob = true
+            rangeResumeDisplayBytes = entry.map { rangeEntry in
+                let taskBytes = rangeEntry.baseOffset
+                    + max(rangeEntry.bodyBytesWritten, Int(max(task.countOfBytesReceived, 0)))
+                return DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
+                    taskBytes: taskBytes,
+                    baseOffset: rangeEntry.baseOffset,
+                    resumeDisplayBytes: store.resumeDisplayBytes(ratingKey: ratingKey)
+                )
+            }
         }
-        if StaticRangeResumeDataPolicy.pauseDisposition()
+
+        if shouldPersistBlob,
+           StaticRangeResumeDataPolicy.pauseDisposition()
             == .cancelProducingResumeData,
            let downloadTask = task as? URLSessionDownloadTask {
             downloadTask.cancel { [weak self] resumeData in
@@ -1412,11 +1464,23 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     "download_id": .identifier(ratingKey),
                     "resume_data_present": .bool(hasBlob),
                     "resume_blob_bytes": .bytes(resumeData?.count ?? 0),
-                    "task_type": .label("rangeDownloadTask"),
+                    "base_offset": .int(entry?.baseOffset ?? -1),
+                    "task_type": .label(isSegment ? "rangeSegmentHead" : "rangeDownloadTask"),
                 ])
                 self.finishRangePause(ratingKey: ratingKey, entry: entry)
             }
             return
+        }
+        // Plain cancel: either the open-ended lane's non-resume-data disposition, or (B2) an off-head
+        // train segment whose blob would be guaranteed stale. No resume data produced/persisted — its
+        // temp body is unrecoverable once the process dies anyway.
+        if context.isTrain, isSegment {
+            AppDiagnostics.record(.downloads, "downloads.range_segment_pause_dropped", fields: [
+                "download_id": .identifier(ratingKey),
+                "base_offset": .int(entry?.baseOffset ?? -1),
+                "durable_bytes": .int(context.durableBytes),
+                "body_bytes": .int(entry?.bodyBytesWritten ?? -1),
+            ])
         }
         task.cancel()
         finishRangePause(ratingKey: ratingKey, entry: entry)
@@ -1681,6 +1745,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                         entry: rangeEntry,
                                         bodyBytes: Int(totalBytesWritten),
                                         totalBytes: total,
+                                        aggregateBytes: displayTotal,
                                         expectedBytes: effectiveExpectedBytes,
                                         progress: progress,
                                         firstCallback: firstCallback)
@@ -3497,7 +3562,25 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 hasResumeData: rangeResumeData?.isEmpty == false,
                 resumeDataWasRejected: blobResumeAttempt == .rejectedResumeData
             ), let rangeResumeData {
-                let displayBytes = rangeEntry.baseOffset + max(rangeEntry.bodyBytesWritten, Int(max(task.countOfBytesReceived, 0)))
+                let displayBytes: Int
+                if rangeEntry.segmentLength != nil {
+                    // B1 (failure-driven park): under a segment train the paused-row watermark must be
+                    // the honest downloaded aggregate (durable + Σ live segment bodies, including this
+                    // failing segment's temp that the blob carries) — NOT this segment's file position
+                    // `baseOffset + body`. An off-head blob whose offset != durable is discarded on
+                    // Resume, which clears this watermark (B2 rejectStale).
+                    let durable = store.durableStaticRangeCheckpointSize(ratingKey: rangeEntry.ratingKey)
+                    lock.lock()
+                    var bodies = rangeInflight.values
+                        .filter { $0.ratingKey == rangeEntry.ratingKey }
+                        .map(\.bodyBytesWritten)
+                    lock.unlock()
+                    bodies.append(max(rangeEntry.bodyBytesWritten, Int(max(task.countOfBytesReceived, 0))))
+                    displayBytes = DownloadLiveRangeProgressPolicy.aggregatedLiveBytes(
+                        durableBytes: durable, liveSegmentBodyBytes: bodies)
+                } else {
+                    displayBytes = rangeEntry.baseOffset + max(rangeEntry.bodyBytesWritten, Int(max(task.countOfBytesReceived, 0)))
+                }
                 store.setResumeData(ratingKey: rangeEntry.ratingKey, rangeResumeData, displayBytes: displayBytes)
             }
             // A non-transient interruption (commonly a long headset-off that outlived the OS's own
@@ -3613,6 +3696,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                              entry: RangeTransfer,
                                              bodyBytes: Int,
                                              totalBytes: Int,
+                                             aggregateBytes: Int,
                                              expectedBytes: Int?,
                                              progress: Double,
                                              firstCallback: Bool) {
@@ -3637,9 +3721,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         AppDiagnostics.record(.downloads, "downloads.range_progress", fields: [
             "download_id": .identifier(entry.ratingKey),
             "task_id": .int(taskIdentifier),
+            // Per-TASK facts: `base_offset` is this segment's file position, `body_bytes` its own temp
+            // body, and `total_bytes` == base_offset + body_bytes (this task's file position, NOT the
+            // row's downloaded total — for a segment train it can be far ahead of what's transferred).
             "base_offset": .int(entry.baseOffset),
             "body_bytes": .int(bodyBytes),
             "total_bytes": .int(totalBytes),
+            // ROW-level display total = durable checkpoint + Σ(live segment bodies), the same value the
+            // UI shows. For the single open-ended remainder `aggregate_bytes == total_bytes`; for a
+            // segment train it is the honest downloaded aggregate across all live segments.
+            "aggregate_bytes": .int(aggregateBytes),
             "expected_exact": .int(expectedBytes ?? -1),
             "progress_percent": .int(Int((progress * 100).rounded(.down))),
         ])
@@ -3906,6 +3997,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                                             durableBytes: durableBytes) {
         case .rejectStale(let blobOffset, let durableBytes):
             task.cancel()
+            // B2: the persisted blob no longer matches the durable partial, so it can never resume
+            // (the transfer will fall back to a fresh Range from `durableBytes`). Drop the stale blob
+            // AND its display watermark in the same breath, or the paused/queued row keeps claiming a
+            // byte position the transfer no longer holds (the "resuming from another point" leak).
+            store.clearResumeData(ratingKey: ratingKey)
             AppDiagnostics.record(.downloads, "downloads.range_blob_resume_stale", fields: [
                 "download_id": .identifier(ratingKey),
                 "blob_offset": .int(blobOffset ?? -1),
