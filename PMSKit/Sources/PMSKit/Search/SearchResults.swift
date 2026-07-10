@@ -22,15 +22,19 @@ public struct SearchResults: Sendable {
     }
 
     /// Plex `/hubs/search` is the native matcher. Re-bucket its hits by source
-    /// library while retaining the first-match library order returned by Plex.
+    /// library while retaining the discovery order from `/library/sections`.
     public static func plexNativeHubs(_ hubs: [Hub], sections: [Section]) -> SearchResults {
         var sectionTitles: [String: String] = [:]
         var sectionIDs: [Int: String] = [:]
+        var discoveredLibraryOrder: [String] = []
         for section in sections {
             let normalizedKey = normalizedPlexSectionKey(section.key) ?? section.key
             sectionTitles[section.key] = section.title
             sectionTitles[normalizedKey] = section.title
             if let id = Int(normalizedKey) { sectionIDs[id] = normalizedKey }
+            if !discoveredLibraryOrder.contains(normalizedKey) {
+                discoveredLibraryOrder.append(normalizedKey)
+            }
         }
 
         var itemsByLibrary: [String: [MediaItem]] = [:]
@@ -50,7 +54,13 @@ public struct SearchResults: Sendable {
             itemsByLibrary[sectionKey, default: []].append(item)
         }
 
-        var groups = libraryOrder.compactMap { sectionKey in
+        // Known libraries follow server discovery order, not search relevance. Keep
+        // attributed results from an unknown/new section visible afterward in their
+        // first-encounter order rather than dropping them.
+        let knownLibraryKeys = Set(discoveredLibraryOrder)
+        let orderedLibraryKeys = discoveredLibraryOrder.filter { itemsByLibrary[$0] != nil }
+            + libraryOrder.filter { !knownLibraryKeys.contains($0) }
+        var groups = orderedLibraryKeys.compactMap { sectionKey in
             SearchResultGroup.mediaBrowserLibrary(
                 backendID: .plex, libraryID: sectionKey,
                 title: sectionTitles[sectionKey] ?? "Library \(sectionKey)",
@@ -78,7 +88,7 @@ public struct SearchResults: Sendable {
     }
 
     /// Pure, deterministic UI projection. It deliberately preserves group and
-    /// hub order: Plex keeps native first-match order, while MediaBrowser callers
+    /// hub order: Plex callers supply discovery order, while MediaBrowser callers
     /// supply stable user-view order. Music stays inside its source library.
     public var presentationGroups: [SearchPresentationGroup] {
         groups.map { group in
