@@ -76,6 +76,28 @@ struct StaticRangeResumeDataPolicyTests {
         ) == .rejectStale(blobOffset: 2_000, durableBytes: 1_000))
     }
 
+    @Test("Retrying a live train segment adopts the blob at the segment's own base offset")
+    func segmentRetryAdoptsAtSegmentBase() {
+        // Mid-train segment: durable belongs to the head (0 here), the blob to the segment.
+        #expect(StaticRangeResumeDataPolicy.adoptionDecision(
+            blobRangeOffset: 1_536, durableBytes: 0, segmentBaseOffset: 1_536
+        ) == .adopt(baseOffset: 1_536))
+        // A blob from some other lifecycle/offset is still stale.
+        #expect(StaticRangeResumeDataPolicy.adoptionDecision(
+            blobRangeOffset: 512, durableBytes: 0, segmentBaseOffset: 1_536
+        ) == .rejectStale(blobOffset: 512, durableBytes: 0))
+        #expect(StaticRangeResumeDataPolicy.adoptionDecision(
+            blobRangeOffset: nil, durableBytes: 0, segmentBaseOffset: 1_536
+        ) == .rejectStale(blobOffset: nil, durableBytes: 0))
+        // nil segmentBaseOffset keeps the durable-offset rule (persisted-blob adoption path).
+        #expect(StaticRangeResumeDataPolicy.adoptionDecision(
+            blobRangeOffset: 1_000, durableBytes: 1_000, segmentBaseOffset: nil
+        ) == .adopt(baseOffset: 1_000))
+        #expect(StaticRangeResumeDataPolicy.adoptionDecision(
+            blobRangeOffset: 1_536, durableBytes: 0, segmentBaseOffset: nil
+        ) == .rejectStale(blobOffset: 1_536, durableBytes: 0))
+    }
+
     @Test("Blob without a parseable Range offset is stale")
     func missingOffsetRejects() {
         #expect(StaticRangeResumeDataPolicy.adoptionDecision(

@@ -354,7 +354,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // starved tail tasks receive no data while queued. The foreground default config's 60s
             // request timeout then kills them with -1001 every minute (observed live: retry churn
             // resetting in-flight bodies). The device background session has no such idle timeout
-            // (nsurlsessiond paces tasks); give the sim session headroom to match.
+            // (nsurlsessiond paces tasks); give the sim session headroom to match. NOTE: this
+            // config value alone is NOT enough — URLRequest's own 60s default overrides it, so
+            // `enqueueRangeSegment` also stamps `timeoutInterval` on each range request.
             config.timeoutIntervalForRequest = 3600
             downloadLog.info("using FOREGROUND URLSession (simulator) for downloads")
             #if DEBUG
@@ -1128,6 +1130,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             ?? rangeRemainderPolicy.expectedBodyBytes(offset: plan.offset, expectedBytes: expectedBytes)
         var ranged = baseRequest
         ranged.setValue(plan.rangeHeaderValue, forHTTPHeaderField: "Range")
+        #if targetEnvironment(simulator)
+        // The sim's foreground session starves tail segments behind the per-host connection
+        // limit, and URLRequest's own 60s default timeout overrides the session-level
+        // `timeoutIntervalForRequest` headroom (observed live: -1001 churn survived the config
+        // fix). The headroom must be stamped on each range request itself.
+        ranged.timeoutInterval = 3600
+        #endif
         if let validator = store.rangeValidator(ratingKey: ratingKey) {
             ranged.setValue(validator, forHTTPHeaderField: "If-Range")
         }
@@ -3915,7 +3924,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                          destination: entry.destination,
                                          expectedBytes: entry.expectedBytes,
                                          remainderReason: "blob_resume",
-                                         attempt: nextAttempt)
+                                         attempt: nextAttempt,
+                                         // Only a CLOSED train segment retries in place; an
+                                         // open-ended remainder keeps the durable-offset rule.
+                                         retryingSegment: entry.segmentLength != nil ? entry : nil)
             ? .resumed
             : .rejectedResumeData
     }
@@ -3988,20 +4000,26 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// Create and register a Range-lane task from a URLSession resume blob. The blob's original
     /// Range offset must equal the durable partial size, or the blob is stale (the partial
     /// advanced, or the blob is from another lifecycle) and must not become authoritative.
+    /// `retryingSegment` marks the in-process failure retry of a LIVE train segment: the blob is
+    /// then judged against that segment's own base offset (not durable, which belongs to the
+    /// head), and adoption replaces only that segment — the rest of the train stays running, so
+    /// no supersede sweep and no refill.
     private func adoptBlobResumedRangeTask(ratingKey: String,
                                            resumeData: Data,
                                            request: URLRequest?,
                                            destination: URL,
                                            expectedBytes: Int?,
                                            remainderReason: String,
-                                           attempt: Int?) -> Bool {
+                                           attempt: Int?,
+                                           retryingSegment failedSegment: RangeTransfer? = nil) -> Bool {
         let task = urlSession.downloadTask(withResumeData: resumeData)
         task.taskDescription = ratingKey
         let blobOffset = RangeTransferHTTPPolicy.rangeRequestStart(from: task.originalRequest)
             ?? RangeTransferHTTPPolicy.rangeRequestStart(from: task.currentRequest)
         let durableBytes = fileSize(at: destination) ?? 0
         switch StaticRangeResumeDataPolicy.adoptionDecision(blobRangeOffset: blobOffset,
-                                                            durableBytes: durableBytes) {
+                                                            durableBytes: durableBytes,
+                                                            segmentBaseOffset: failedSegment?.baseOffset) {
         case .rejectStale(let blobOffset, let durableBytes):
             task.cancel()
             // B2: the persisted blob no longer matches the durable partial, so it can never resume
@@ -4049,8 +4067,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 responseStatus: nil,
                 bodyBytesWritten: 0,
                 remainderReason: remainderReason)
+            if failedSegment != nil, blobSegmentLength != nil {
+                task.taskDescription = StaticRangeSegmentMarker.taskDescription(
+                    ratingKey: ratingKey, offset: baseOffset)
+            }
             lock.lock()
-            let superseded = supersedeRangeTasksLocked(ratingKey: ratingKey, keeping: task.taskIdentifier)
+            // Retrying one live train segment must not tear down its siblings: sweep only
+            // same-offset leftovers. The head-adoption paths (manual Resume / relaunch) keep the
+            // full supersede — there the blob IS the sole survivor and the train is rebuilt below.
+            let superseded = failedSegment != nil
+                ? supersedeRangeSegmentTasksLocked(ratingKey: ratingKey,
+                                                   offset: baseOffset,
+                                                   keeping: task.taskIdentifier)
+                : supersedeRangeTasksLocked(ratingKey: ratingKey, keeping: task.taskIdentifier)
             loggedProgressMilestones[task.taskIdentifier] = []
             lastRangeProgressDiagnostic.removeValue(forKey: task.taskIdentifier)
             rangeInflight[task.taskIdentifier] = entry
@@ -4076,6 +4105,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // only the trailing segments. Closed blobs with a known total only: an unknown total
             // plans an open-ended remainder that would double-cover (and supersede) the head.
             if StaticRangeTransferRegime.current == .segmentTrain,
+               failedSegment == nil, // in-process segment retry: train is intact, nothing to refill
                blobSegmentLength != nil,
                expectedBytes != nil,
                let baseRequest = entry.request {
