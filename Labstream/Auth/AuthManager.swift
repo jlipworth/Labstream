@@ -40,6 +40,12 @@ final class AuthManager {
 
     private let appModel: AppModel
     private let keychain: KeychainStore
+    private let authDataLoader: (URLRequest) async throws -> (Data, URLResponse)
+    private let plexSessionDiscoverer: ((String) async throws -> PlexSessionDiscovery)?
+    private let plexConnectionResolver: (([PlexConnection], String, String?) async -> (url: URL, isLocal: Bool)?)?
+    private let plexProfileLoader: ((String) async -> PlexAccountProfile?)?
+    private let authNow: () -> ContinuousClock.Instant
+    private let authSleep: (Duration) async throws -> Void
 
     /// Poll cadence and ceiling for the PIN flow.
     private let pollInterval: Duration = .seconds(1)
@@ -57,31 +63,49 @@ final class AuthManager {
     /// PIN (its long code backs the on-device web-auth URL). Whichever the
     /// user completes authorizes first; both clear when the attempt ends.
     private var activePinIDs: Set<Int> = []
-    private var activeJellyfinQuickConnectAttemptID: UUID?
-    private var activeJellyfinCredentialAttemptID: UUID?
+    private var activeAuthAttempt: AuthAttempt?
+    private var plexSessionGeneration = UUID()
     /// Current Emby Connect attempt and the cloud session it produced. `pendingEmbyConnect`
     /// holds the Connect user id + linked-server list (incl. per-server access keys) while the
     /// user picks a server; it is in-memory only and cleared when the attempt ends.
-    private var activeEmbyConnectAttemptID: UUID?
-    private var activeEmbyCredentialAttemptID: UUID?
-    private var activeEmbyConnectServerSelectionID: String?
+    private var embyConnectServerSelections = EmbyConnectServerSelectionTracker()
     private var pendingEmbyConnect: PendingEmbyConnect?
 
-    init(appModel: AppModel, keychain: KeychainStore = KeychainStore()) {
+    init(appModel: AppModel,
+         keychain: KeychainStore = KeychainStore(),
+         authDataLoader: ((URLRequest) async throws -> (Data, URLResponse))? = nil,
+         plexSessionDiscoverer: ((String) async throws -> PlexSessionDiscovery)? = nil,
+         plexConnectionResolver: (([PlexConnection], String, String?) async -> (url: URL, isLocal: Bool)?)? = nil,
+         plexProfileLoader: ((String) async -> PlexAccountProfile?)? = nil,
+         authNow: @escaping () -> ContinuousClock.Instant = { ContinuousClock.now },
+         authSleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
         self.appModel = appModel
         self.keychain = keychain
+        self.authDataLoader = authDataLoader ?? { request in
+            try await AuthManager.mediaBrowserAuthSession.data(for: request)
+        }
+        self.plexSessionDiscoverer = plexSessionDiscoverer
+        self.plexConnectionResolver = plexConnectionResolver
+        self.plexProfileLoader = plexProfileLoader
+        self.authNow = authNow
+        self.authSleep = authSleep
     }
 
-    func selectBackend(_ backend: MediaBackendKind) {
+    @discardableResult
+    func selectBackend(_ backend: MediaBackendKind) -> Bool {
         cancelPendingLogin()
+        guard keychain.saveSelectedBackend(backend) else {
+            state = .failed("Couldn’t securely save the selected backend.")
+            return false
+        }
         appModel.activeBackend = backend
-        keychain.selectedBackend = backend
         state = .idle
         // The Spotlight domain is shared across backends and system-entry routing only
         // resolves against the ACTIVE backend, so entries indexed under the previous
         // backend would surface as dead taps. Drop them; the new backend re-indexes as
         // the user browses.
         SpotlightIndexer.deleteAll()
+        return true
     }
 
     func switchBackend(_ backend: MediaBackendKind) async {
@@ -91,8 +115,11 @@ final class AuthManager {
         guard resolution != .alreadyActive else { return }
 
         cancelPendingLogin()
+        guard keychain.saveSelectedBackend(backend) else {
+            state = .failed("Couldn’t securely save the selected backend.")
+            return
+        }
         appModel.activeBackend = backend
-        keychain.selectedBackend = backend
         // Same stale-entry sweep as `selectBackend` — routing rejects the old backend's
         // Spotlight results the moment the active backend changes.
         SpotlightIndexer.deleteAll()
@@ -123,28 +150,36 @@ final class AuthManager {
     /// selected backend.
     @discardableResult
     func restoreSession() async -> Bool {
+        cancelPendingLogin()
+        let attemptID = beginAuthAttempt(.sessionRestore)
+        defer { cleanupCancelledAuthAttempt(attemptID) }
         let selected = keychain.selectedBackend
         appModel.activeBackend = selected
 
         let selectedRestored: Bool
         switch selected {
         case .plex:
-            selectedRestored = await restorePlexSession(updateState: true)
+            selectedRestored = await restorePlexSession(updateState: true, attemptID: attemptID)
         case .jellyfin:
-            selectedRestored = await restoreJellyfinSession(validateReachability: true, updateState: true)
+            selectedRestored = await restoreJellyfinSession(validateReachability: true, updateState: true, attemptID: attemptID)
         case .emby:
-            selectedRestored = await restoreEmbySession(validateReachability: true, updateState: true)
+            selectedRestored = await restoreEmbySession(validateReachability: true, updateState: true, attemptID: attemptID)
         }
 
-        await restoreInactiveBackendSessions(excluding: selected)
+        guard isCurrentAuthAttempt(attemptID) else { return false }
+        await restoreInactiveBackendSessions(excluding: selected, attemptID: attemptID)
+        guard isCurrentAuthAttempt(attemptID) else { return false }
+        finishAuthAttempt(attemptID)
         return selectedRestored
     }
 
     /// Hydrate non-selected backend lanes for downloads without taking over the UI state. Jellyfin
     /// and Emby can restore directly from their saved base URL + token + user id; Plex still needs
     /// discovery to recover the current PMS connection and server-scoped token.
-    private func restoreInactiveBackendSessions(excluding selected: MediaBackendKind) async {
+    private func restoreInactiveBackendSessions(excluding selected: MediaBackendKind,
+                                                attemptID: AuthAttemptID) async {
         for backend in MediaBackendKind.allCases where backend != selected {
+            guard isCurrentAuthAttempt(attemptID) else { return }
             switch backend {
             case .plex:
                 // Plex hydration is expensive (resource enumeration + per-connection probing).
@@ -152,17 +187,17 @@ final class AuthManager {
                 // the user toggles Jellyfin↔Emby is wasted work. The Plex lane stays live for the
                 // app's lifetime once hydrated, so only discover when it isn't already connected.
                 if appModel.selectedServer == nil || appModel.serverBaseURL == nil {
-                    _ = await restorePlexSession(updateState: false)
+                    _ = await restorePlexSession(updateState: false, attemptID: attemptID)
                 }
             case .jellyfin:
-                _ = await restoreJellyfinSession(validateReachability: false, updateState: false)
+                _ = await restoreJellyfinSession(validateReachability: false, updateState: false, attemptID: attemptID)
             case .emby:
-                _ = await restoreEmbySession(validateReachability: false, updateState: false)
+                _ = await restoreEmbySession(validateReachability: false, updateState: false, attemptID: attemptID)
             }
         }
     }
 
-    private func restorePlexSession(updateState: Bool = true) async -> Bool {
+    private func restorePlexSession(updateState: Bool = true, attemptID: AuthAttemptID) async -> Bool {
         let restoreFields: [String: DiagnosticFieldValue] = [
             "update_state": .bool(updateState)
         ]
@@ -171,14 +206,20 @@ final class AuthManager {
             return false
         }
         recordAuthDiagnostic("auth.plex.restore.start", fields: restoreFields)
-        appModel.token = saved
         do {
-            await refreshPlexAccountProfile()
-            try await refreshServers()
+            let discovery = try await loadPlexSessionDiscovery(token: saved, attemptID: attemptID)
+            guard isCurrentAuthAttempt(attemptID) else { return false }
+            guard keychain.savePlexSession(token: saved,
+                                           selectedServerID: discovery.selectedServer.clientIdentifier) else {
+                if updateState { state = .failed("Couldn’t securely save the Plex session.") }
+                return false
+            }
+            applyPlexSession(discovery, token: saved)
             if updateState { state = .authenticated }
             recordAuthDiagnostic("auth.plex.restore.success", fields: restoreFields)
             return true
         } catch PlexError.unauthorized {
+            guard isCurrentAuthAttempt(attemptID) else { return false }
             // Only wipe the Plex lane when it is the ACTIVE, user-facing backend. On the inactive
             // hydration path (a JF/Emby session warming Plex for cross-backend downloads), a transient
             // discovery 401 must NOT silently sign the user out of Plex — leave the saved token in
@@ -192,6 +233,7 @@ final class AuthManager {
             state = .idle
             return false
         } catch {
+            guard isCurrentAuthAttempt(attemptID) else { return false }
             var fields = restoreFields
             fields.merge(authErrorFields(error)) { _, new in new }
             recordAuthDiagnostic("auth.plex.restore.discovery_failed", fields: fields)
@@ -201,7 +243,8 @@ final class AuthManager {
     }
 
     private func restoreJellyfinSession(validateReachability: Bool = true,
-                                        updateState: Bool = true) async -> Bool {
+                                        updateState: Bool = true,
+                                        attemptID: AuthAttemptID) async -> Bool {
         guard let snapshot = readJellyfinSessionSnapshot() else { return false }
         guard validateReachability else {
             applyJellyfinSessionSnapshot(snapshot)
@@ -211,16 +254,19 @@ final class AuthManager {
             try await probeJellyfinReachability(server: snapshot.server,
                                                 token: snapshot.token,
                                                 userID: snapshot.userID)
+            guard isCurrentAuthAttempt(attemptID) else { return false }
             applyJellyfinSessionSnapshot(snapshot)
             if updateState { state = .authenticated }
             return true
         } catch JellyfinAuthError.unauthorized {
+            guard isCurrentAuthAttempt(attemptID) else { return false }
             NSLog("[#93] restoreJellyfinSession wiping creds: probe returned unauthorized (updateState=%@)",
                   updateState ? "true" : "false")
             signOutJellyfin()
             if updateState { state = .idle }
             return false
         } catch {
+            guard isCurrentAuthAttempt(attemptID) else { return false }
             // Preserve the keychain snapshot for a later retry, but do not leave the runtime lane
             // looking browse-ready when the live probe did not prove the session. Otherwise
             // ContentView/download/browse paths can act on a half-restored Jellyfin lane while the
@@ -266,7 +312,7 @@ final class AuthManager {
                                                        token: token,
                                                        identity: jellyfinIdentity,
                                                        userId: userID)
-        let (_, response) = try await Self.mediaBrowserAuthSession.data(for: req)
+        let (_, response) = try await authDataLoader(req)
         guard let http = response as? HTTPURLResponse else { return 200 }
         return http.statusCode
     }
@@ -296,7 +342,8 @@ final class AuthManager {
     }
 
     private func restoreEmbySession(validateReachability: Bool = true,
-                                    updateState: Bool = true) async -> Bool {
+                                    updateState: Bool = true,
+                                    attemptID: AuthAttemptID) async -> Bool {
         let restoreFields: [String: DiagnosticFieldValue] = [
             "validate_reachability": .bool(validateReachability),
             "update_state": .bool(updateState)
@@ -316,7 +363,7 @@ final class AuthManager {
                                                        token: snapshot.token,
                                                        identity: embyIdentity,
                                                        userId: snapshot.userID)
-            let (_, response) = try await Self.mediaBrowserAuthSession.data(for: req)
+            let (_, response) = try await authDataLoader(req)
             if let http = response as? HTTPURLResponse {
                 switch http.statusCode {
                 case 200..<300: break
@@ -324,17 +371,20 @@ final class AuthManager {
                 default: throw EmbyAuthError.http(http.statusCode)
                 }
             }
+            guard isCurrentAuthAttempt(attemptID) else { return false }
             applyEmbySessionSnapshot(snapshot)
             if updateState { state = .authenticated }
             recordAuthDiagnostic("auth.emby.restore.success", fields: restoreFields)
             return true
         } catch EmbyAuthError.unauthorized {
+            guard isCurrentAuthAttempt(attemptID) else { return false }
             // Invalid/expired creds — drop the saved session and require re-login.
             signOutEmby()
             if updateState { state = .idle }
             recordAuthDiagnostic("auth.emby.restore.unauthorized", fields: restoreFields)
             return false
         } catch {
+            guard isCurrentAuthAttempt(attemptID) else { return false }
             // Unreachable host (or other transient error) — keep the saved session so a
             // later launch with connectivity restores cleanly, but clear the runtime lane so
             // `isBrowseReady`/`backendSession(for:)` do not expose an unproven Emby session.
@@ -383,15 +433,24 @@ final class AuthManager {
     /// Both are polled; whichever the user completes wins.
     /// Returns the URL the UI should present for the on-device browser path.
     func createPin() async throws -> URL {
-        selectBackend(.plex)
+        guard selectBackend(.plex) else { throw AuthCoordinationError.secureStorageFailed }
         cancelPendingLogin()
+        let attemptID = beginAuthAttempt(.plexPIN)
+        defer { cleanupCancelledAuthAttempt(attemptID) }
         async let linkReq = appModel.client.send(
             PinAuth.createPinRequest(identity: appModel.identity, strong: false),
             as: PinResponse.self)
         async let strongReq = appModel.client.send(
             PinAuth.createPinRequest(identity: appModel.identity, strong: true),
             as: PinResponse.self)
-        let (linkPin, strongPin) = try await (linkReq, strongReq)
+        let (linkPin, strongPin): (PinResponse, PinResponse)
+        do {
+            (linkPin, strongPin) = try await (linkReq, strongReq)
+        } catch {
+            finishAuthAttempt(attemptID)
+            throw error
+        }
+        guard isCurrentAuthAttempt(attemptID) else { throw CancellationError() }
 
         let authURL = PinAuth.authAppURL(code: strongPin.code, identity: appModel.identity)
         activePinIDs = [linkPin.id, strongPin.id]
@@ -399,71 +458,86 @@ final class AuthManager {
 
         // Kick off polling in the background; UI observes `state`.
         let ids = activePinIDs
-        pollTask = Task { await pollForToken(pinIDs: ids) }
+        pollTask = Task { await pollForToken(pinIDs: ids, attemptID: attemptID) }
         return authURL
     }
 
     /// Poll the attempt's PINs until one carries an `authToken` or we time out.
-    private func pollForToken(pinIDs: Set<Int>) async {
-        let deadline = ContinuousClock.now.advanced(by: pollTimeout)
-        while ContinuousClock.now < deadline {
-            try? await Task.sleep(for: pollInterval)
+    private func pollForToken(pinIDs: Set<Int>, attemptID: AuthAttemptID) async {
+        let deadline = authNow().advanced(by: pollTimeout)
+        while authNow() < deadline {
+            try? await authSleep(pollInterval)
             if Task.isCancelled { return }
-            guard activePinIDs == pinIDs else { return }
+            guard activePinIDs == pinIDs, isCurrentAuthAttempt(attemptID) else { return }
 
             for pinID in pinIDs {
                 let pollReq = PinAuth.pollPinRequest(pinID: pinID, identity: appModel.identity)
                 do {
                     let poll = try await appModel.client.send(pollReq, as: PinPollResponse.self)
+                    guard isCurrentAuthAttempt(attemptID) else { return }
                     if let token = poll.authToken, !token.isEmpty {
-                        await finishLogin(token: token)
+                        await finishLogin(token: token, attemptID: attemptID)
                         return
                     }
                 } catch {
+                    guard isCurrentAuthAttempt(attemptID) else { return }
                     // Transient errors are expected while the user is still authorizing;
                     // keep polling until the deadline.
                     continue
                 }
             }
         }
-        guard activePinIDs == pinIDs else { return }
+        guard activePinIDs == pinIDs, isCurrentAuthAttempt(attemptID) else { return }
         activePinIDs = []
         pollTask = nil
+        finishAuthAttempt(attemptID)
         state = .failed("Authorization timed out.")
     }
 
     /// Persist the token, update the model, and discover servers.
-    private func finishLogin(token: String) async {
-        keychain.selectedBackend = .plex
-        guard keychain.saveToken(token) else {
-            state = .failed("Couldn’t securely save the Plex token.")
-            return
-        }
-        appModel.token = token
+    private func finishLogin(token: String, attemptID: AuthAttemptID) async {
+        guard isCurrentAuthAttempt(attemptID) else { return }
         do {
-            await refreshPlexAccountProfile()
-            try await refreshServers()
+            let discovery = try await loadPlexSessionDiscovery(token: token, attemptID: attemptID)
+            guard isCurrentAuthAttempt(attemptID) else { return }
+            guard keychain.savePlexSession(token: token,
+                                           selectedServerID: discovery.selectedServer.clientIdentifier) else {
+                activePinIDs = []
+                pollTask = nil
+                finishAuthAttempt(attemptID)
+                state = .failed("Couldn’t securely save the Plex session.")
+                return
+            }
+            applyPlexSession(discovery, token: token)
             activePinIDs = []
             pollTask = nil
+            finishAuthAttempt(attemptID)
             state = .authenticated
         } catch {
+            guard isCurrentAuthAttempt(attemptID) else { return }
+            activePinIDs = []
+            pollTask = nil
+            finishAuthAttempt(attemptID)
             state = .failed("Signed in, but server discovery failed.")
         }
     }
 
     func loginToJellyfin(server: URL, username: String, password: String) async {
         cancelPendingLogin()
-        let attemptID = UUID()
-        activeJellyfinCredentialAttemptID = attemptID
+        guard keychain.saveSelectedBackend(.jellyfin) else {
+            state = .failed("Couldn’t securely save the selected backend.")
+            return
+        }
+        let attemptID = beginAuthAttempt(.jellyfinCredentials)
+        defer { cleanupCancelledAuthAttempt(attemptID) }
         appModel.activeBackend = .jellyfin
-        keychain.selectedBackend = .jellyfin
         state = .idle
         do {
             let request = try JellyfinAuth.authenticateByNameRequest(server: server,
                                                                     username: username,
                                                                     password: password,
                                                                     identity: jellyfinIdentity)
-            let (data, response) = try await Self.mediaBrowserAuthSession.data(for: request)
+            let (data, response) = try await authDataLoader(request)
             if let http = response as? HTTPURLResponse {
                 switch http.statusCode {
                 case 200..<300:
@@ -475,84 +549,87 @@ final class AuthManager {
                 }
             }
             let result = try JSONDecoder().decode(JellyfinAuthenticationResult.self, from: data)
-            guard activeJellyfinCredentialAttemptID == attemptID else { return }
+            guard isCurrentAuthAttempt(attemptID) else { return }
             try persistJellyfinAuthentication(result, server: server)
-            activeJellyfinCredentialAttemptID = nil
+            finishAuthAttempt(attemptID)
             state = .authenticated
         } catch JellyfinAuthError.unauthorized {
-            guard activeJellyfinCredentialAttemptID == attemptID else { return }
-            activeJellyfinCredentialAttemptID = nil
+            guard isCurrentAuthAttempt(attemptID) else { return }
+            finishAuthAttempt(attemptID)
             state = .failed("Invalid Jellyfin username or password.")
         } catch JellyfinAuthError.http(let status) {
-            guard activeJellyfinCredentialAttemptID == attemptID else { return }
-            activeJellyfinCredentialAttemptID = nil
+            guard isCurrentAuthAttempt(attemptID) else { return }
+            finishAuthAttempt(attemptID)
             state = .failed("Jellyfin sign-in failed (HTTP \(status)).")
         } catch JellyfinAuthError.missingCredentials {
-            guard activeJellyfinCredentialAttemptID == attemptID else { return }
-            activeJellyfinCredentialAttemptID = nil
+            guard isCurrentAuthAttempt(attemptID) else { return }
+            finishAuthAttempt(attemptID)
             state = .failed("Jellyfin did not return a usable session.")
         } catch JellyfinAuthError.secureStorageFailed {
-            guard activeJellyfinCredentialAttemptID == attemptID else { return }
-            activeJellyfinCredentialAttemptID = nil
+            guard isCurrentAuthAttempt(attemptID) else { return }
+            finishAuthAttempt(attemptID)
             state = .failed("Couldn’t securely save the Jellyfin session.")
         } catch {
-            guard activeJellyfinCredentialAttemptID == attemptID else { return }
-            activeJellyfinCredentialAttemptID = nil
+            guard isCurrentAuthAttempt(attemptID) else { return }
+            finishAuthAttempt(attemptID)
             state = .failed("Couldn’t reach Jellyfin server.")
         }
     }
 
     func startJellyfinQuickConnect(server: URL) async {
         cancelPendingLogin()
-        let attemptID = UUID()
-        activeJellyfinQuickConnectAttemptID = attemptID
+        guard keychain.saveSelectedBackend(.jellyfin) else {
+            state = .failed("Couldn’t securely save the selected backend.")
+            return
+        }
+        let attemptID = beginAuthAttempt(.jellyfinQuickConnect)
+        defer { cleanupCancelledAuthAttempt(attemptID) }
         appModel.activeBackend = .jellyfin
-        keychain.selectedBackend = .jellyfin
         state = .idle
 
         do {
             if let enabled = try await jellyfinQuickConnectEnabled(server: server), enabled == false {
-                guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
-                activeJellyfinQuickConnectAttemptID = nil
+                guard isCurrentAuthAttempt(attemptID) else { return }
+                finishAuthAttempt(attemptID)
                 state = .failed("Jellyfin Quick Connect is disabled on this server. Use username and password instead.")
                 return
             }
-            guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
+            guard isCurrentAuthAttempt(attemptID) else { return }
 
             let request = JellyfinAuth.initiateQuickConnectRequest(server: server,
                                                                    identity: jellyfinIdentity)
             let data = try await jellyfinData(for: request, disabledMeansUnauthorized: true)
-            guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
+            guard isCurrentAuthAttempt(attemptID) else { return }
             let result = try JSONDecoder().decode(JellyfinQuickConnectResult.self, from: data)
             guard let code = result.code, !code.isEmpty,
                   let secret = result.secret, !secret.isEmpty else {
                 throw JellyfinAuthError.missingCredentials
             }
 
-            guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
+            guard isCurrentAuthAttempt(attemptID) else { return }
             state = .awaitingJellyfinQuickConnect(code: code)
             pollTask = Task { await pollJellyfinQuickConnect(server: server,
                                                              secret: secret,
                                                              attemptID: attemptID) }
         } catch JellyfinAuthError.quickConnectDisabled {
-            guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
-            activeJellyfinQuickConnectAttemptID = nil
+            guard isCurrentAuthAttempt(attemptID) else { return }
+            finishAuthAttempt(attemptID)
             state = .failed("Jellyfin Quick Connect is disabled on this server. Use username and password instead.")
         } catch JellyfinAuthError.unauthorized {
-            guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
-            activeJellyfinQuickConnectAttemptID = nil
+            guard isCurrentAuthAttempt(attemptID) else { return }
+            finishAuthAttempt(attemptID)
             state = .failed("Jellyfin Quick Connect is disabled on this server. Use username and password instead.")
         } catch JellyfinAuthError.http(let status) {
-            guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
-            activeJellyfinQuickConnectAttemptID = nil
+            guard isCurrentAuthAttempt(attemptID) else { return }
+            finishAuthAttempt(attemptID)
             state = .failed("Jellyfin Quick Connect failed (HTTP \(status)).")
         } catch JellyfinAuthError.missingCredentials {
-            guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
-            activeJellyfinQuickConnectAttemptID = nil
+            guard isCurrentAuthAttempt(attemptID) else { return }
+            finishAuthAttempt(attemptID)
             state = .failed("Jellyfin did not return a Quick Connect code. Use username and password instead.")
         } catch {
-            guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
-            activeJellyfinQuickConnectAttemptID = nil
+            guard isCurrentAuthAttempt(attemptID) else { return }
+            finishAuthAttempt(attemptID)
             state = .failed("Couldn’t reach Jellyfin server.")
         }
     }
@@ -570,46 +647,47 @@ final class AuthManager {
     }
 
     private func pollJellyfinQuickConnect(server: URL, secret: String, attemptID: UUID) async {
-        let deadline = ContinuousClock.now.advanced(by: jellyfinQuickConnectPollTimeout)
-        while ContinuousClock.now < deadline {
-            try? await Task.sleep(for: jellyfinQuickConnectPollInterval)
+        let deadline = authNow().advanced(by: jellyfinQuickConnectPollTimeout)
+        while authNow() < deadline {
+            try? await authSleep(jellyfinQuickConnectPollInterval)
             if Task.isCancelled { return }
-            guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
+            guard isCurrentAuthAttempt(attemptID) else { return }
 
             do {
                 let request = try JellyfinAuth.quickConnectStateRequest(server: server,
                                                                         secret: secret,
                                                                         identity: jellyfinIdentity)
                 let data = try await jellyfinData(for: request, disabledMeansUnauthorized: false)
+                guard isCurrentAuthAttempt(attemptID) else { return }
                 let result = try JSONDecoder().decode(JellyfinQuickConnectResult.self, from: data)
                 guard result.authenticated else { continue }
                 do {
                     try await finishJellyfinQuickConnect(server: server, secret: secret, attemptID: attemptID)
                 } catch JellyfinAuthError.http(let status) {
-                    guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
-                    activeJellyfinQuickConnectAttemptID = nil
+                    guard isCurrentAuthAttempt(attemptID) else { return }
+                    finishAuthAttempt(attemptID)
                     pollTask = nil
                     state = .failed("Jellyfin Quick Connect sign-in failed (HTTP \(status)). Use username and password instead.")
                 } catch JellyfinAuthError.missingCredentials {
-                    guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
-                    activeJellyfinQuickConnectAttemptID = nil
+                    guard isCurrentAuthAttempt(attemptID) else { return }
+                    finishAuthAttempt(attemptID)
                     pollTask = nil
                     state = .failed("Jellyfin did not return a usable session. Use username and password instead.")
                 } catch JellyfinAuthError.secureStorageFailed {
-                    guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
-                    activeJellyfinQuickConnectAttemptID = nil
+                    guard isCurrentAuthAttempt(attemptID) else { return }
+                    finishAuthAttempt(attemptID)
                     pollTask = nil
                     state = .failed("Couldn’t securely save the Jellyfin session.")
                 } catch {
-                    guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
-                    activeJellyfinQuickConnectAttemptID = nil
+                    guard isCurrentAuthAttempt(attemptID) else { return }
+                    finishAuthAttempt(attemptID)
                     pollTask = nil
                     state = .failed("Jellyfin Quick Connect sign-in failed. Use username and password instead.")
                 }
                 return
             } catch JellyfinAuthError.http(404) {
-                guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
-                activeJellyfinQuickConnectAttemptID = nil
+                guard isCurrentAuthAttempt(attemptID) else { return }
+                finishAuthAttempt(attemptID)
                 pollTask = nil
                 state = .failed("Jellyfin Quick Connect code expired or was cancelled. Try again or use username and password.")
                 return
@@ -620,21 +698,22 @@ final class AuthManager {
             }
         }
 
-        guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
-        activeJellyfinQuickConnectAttemptID = nil
+        guard isCurrentAuthAttempt(attemptID) else { return }
+        finishAuthAttempt(attemptID)
         pollTask = nil
         state = .failed("Jellyfin Quick Connect timed out. Try again or use username and password.")
     }
 
     private func finishJellyfinQuickConnect(server: URL, secret: String, attemptID: UUID) async throws {
-        guard activeJellyfinQuickConnectAttemptID == attemptID else { return }
+        guard isCurrentAuthAttempt(attemptID) else { return }
         let request = try JellyfinAuth.authenticateWithQuickConnectRequest(server: server,
                                                                           secret: secret,
                                                                           identity: jellyfinIdentity)
         let data = try await jellyfinData(for: request, disabledMeansUnauthorized: false)
         let result = try JSONDecoder().decode(JellyfinAuthenticationResult.self, from: data)
+        guard isCurrentAuthAttempt(attemptID) else { return }
         try persistJellyfinAuthentication(result, server: server)
-        activeJellyfinQuickConnectAttemptID = nil
+        finishAuthAttempt(attemptID)
         pollTask = nil
         state = .authenticated
     }
@@ -660,10 +739,13 @@ final class AuthManager {
     /// Mirrors `loginToJellyfin` but uses the Emby-specific auth/header lane.
     func loginToEmby(server: URL, username: String, password: String) async {
         cancelPendingLogin()
-        let attemptID = UUID()
-        activeEmbyCredentialAttemptID = attemptID
+        guard keychain.saveSelectedBackend(.emby) else {
+            state = .failed("Couldn’t securely save the selected backend.")
+            return
+        }
+        let attemptID = beginAuthAttempt(.embyCredentials)
+        defer { cleanupCancelledAuthAttempt(attemptID) }
         appModel.activeBackend = .emby
-        keychain.selectedBackend = .emby
         state = .idle
         recordAuthDiagnostic("auth.emby.login.start")
         do {
@@ -671,7 +753,7 @@ final class AuthManager {
                                                                  username: username,
                                                                  password: password,
                                                                  identity: embyIdentity)
-            let (data, response) = try await Self.mediaBrowserAuthSession.data(for: request)
+            let (data, response) = try await authDataLoader(request)
             if let http = response as? HTTPURLResponse {
                 switch http.statusCode {
                 case 200..<300:
@@ -683,34 +765,34 @@ final class AuthManager {
                 }
             }
             let result = try JSONDecoder().decode(EmbyAuthenticationResult.self, from: data)
-            guard activeEmbyCredentialAttemptID == attemptID else { return }
+            guard isCurrentAuthAttempt(attemptID) else { return }
             try persistEmbyAuthentication(result, server: server)
-            activeEmbyCredentialAttemptID = nil
+            finishAuthAttempt(attemptID)
             state = .authenticated
             recordAuthDiagnostic("auth.emby.login.success")
         } catch EmbyAuthError.unauthorized {
-            guard activeEmbyCredentialAttemptID == attemptID else { return }
-            activeEmbyCredentialAttemptID = nil
+            guard isCurrentAuthAttempt(attemptID) else { return }
+            finishAuthAttempt(attemptID)
             recordAuthDiagnostic("auth.emby.login.unauthorized")
             state = .failed("Invalid Emby username or password.")
         } catch EmbyAuthError.http(let status) {
-            guard activeEmbyCredentialAttemptID == attemptID else { return }
-            activeEmbyCredentialAttemptID = nil
+            guard isCurrentAuthAttempt(attemptID) else { return }
+            finishAuthAttempt(attemptID)
             recordAuthDiagnostic("auth.emby.login.http", fields: ["status": .int(status)])
             state = .failed("Emby sign-in failed (HTTP \(status)).")
         } catch EmbyAuthError.missingCredentials {
-            guard activeEmbyCredentialAttemptID == attemptID else { return }
-            activeEmbyCredentialAttemptID = nil
+            guard isCurrentAuthAttempt(attemptID) else { return }
+            finishAuthAttempt(attemptID)
             recordAuthDiagnostic("auth.emby.login.failed", fields: ["reason": .string("missing_credentials")])
             state = .failed("Emby did not return a usable session.")
         } catch EmbyAuthError.secureStorageFailed {
-            guard activeEmbyCredentialAttemptID == attemptID else { return }
-            activeEmbyCredentialAttemptID = nil
+            guard isCurrentAuthAttempt(attemptID) else { return }
+            finishAuthAttempt(attemptID)
             recordAuthDiagnostic("auth.emby.login.failed", fields: ["reason": .string("secure_storage")])
             state = .failed("Couldn’t securely save the Emby session.")
         } catch {
-            guard activeEmbyCredentialAttemptID == attemptID else { return }
-            activeEmbyCredentialAttemptID = nil
+            guard isCurrentAuthAttempt(attemptID) else { return }
+            finishAuthAttempt(attemptID)
             recordAuthDiagnostic("auth.emby.login.transport", fields: authErrorFields(error))
             state = .failed("Couldn’t reach Emby server.")
         }
@@ -748,36 +830,39 @@ final class AuthManager {
     /// servers itself. Mirrors `startJellyfinQuickConnect` but against Emby's cloud host.
     func startEmbyConnect() async {
         cancelPendingLogin()
-        let attemptID = UUID()
-        activeEmbyConnectAttemptID = attemptID
+        guard keychain.saveSelectedBackend(.emby) else {
+            state = .failed("Couldn’t securely save the selected backend.")
+            return
+        }
+        let attemptID = beginAuthAttempt(.embyConnect)
+        defer { cleanupCancelledAuthAttempt(attemptID) }
         appModel.activeBackend = .emby
-        keychain.selectedBackend = .emby
         state = .idle
         recordAuthDiagnostic("auth.emby_connect.start")
 
         do {
             let data = try await embyConnectData(for: EmbyConnect.createPinRequest(identity: embyIdentity))
-            guard activeEmbyConnectAttemptID == attemptID else { return }
+            guard isCurrentAuthAttempt(attemptID) else { return }
             let pin = try JSONDecoder().decode(EmbyConnectPin.self, from: data)
             guard let code = pin.pin, !code.isEmpty else { throw EmbyAuthError.missingCredentials }
 
-            guard activeEmbyConnectAttemptID == attemptID else { return }
+            guard isCurrentAuthAttempt(attemptID) else { return }
             recordAuthDiagnostic("auth.emby_connect.pin_created")
             state = .awaitingEmbyConnectPin(code: code)
             pollTask = Task { await pollEmbyConnectPin(pin: code, attemptID: attemptID) }
         } catch EmbyAuthError.http(let status) {
-            guard activeEmbyConnectAttemptID == attemptID else { return }
-            activeEmbyConnectAttemptID = nil
+            guard isCurrentAuthAttempt(attemptID) else { return }
+            finishAuthAttempt(attemptID)
             recordAuthDiagnostic("auth.emby_connect.start_http", fields: ["status": .int(status)])
             state = .failed("Emby Connect sign-in failed (HTTP \(status)).")
         } catch EmbyAuthError.missingCredentials {
-            guard activeEmbyConnectAttemptID == attemptID else { return }
-            activeEmbyConnectAttemptID = nil
+            guard isCurrentAuthAttempt(attemptID) else { return }
+            finishAuthAttempt(attemptID)
             recordAuthDiagnostic("auth.emby_connect.start_failed", fields: ["reason": .string("missing_pin")])
             state = .failed("Emby Connect did not return a code. Use a server URL instead.")
         } catch {
-            guard activeEmbyConnectAttemptID == attemptID else { return }
-            activeEmbyConnectAttemptID = nil
+            guard isCurrentAuthAttempt(attemptID) else { return }
+            finishAuthAttempt(attemptID)
             recordAuthDiagnostic("auth.emby_connect.start_transport", fields: authErrorFields(error))
             state = .failed("Couldn’t reach Emby Connect.")
         }
@@ -785,7 +870,7 @@ final class AuthManager {
 
     /// Resume the flow after the user picks one of several linked servers.
     func selectEmbyConnectServer(id: String) async {
-        guard let attemptID = activeEmbyConnectAttemptID,
+        guard let attemptID = currentAuthAttemptID(for: .embyConnect),
               let pending = pendingEmbyConnect,
               let server = pending.servers.first(where: { serverChoiceID($0) == id }) else {
             // The attempt ended out from under the picker (cancel / backend switch / expiry).
@@ -794,18 +879,16 @@ final class AuthManager {
             if case .awaitingEmbyServerSelection = state { state = .idle }
             return
         }
-        guard activeEmbyConnectServerSelectionID == nil else {
+        guard let selectionWork = embyConnectServerSelections.begin(attemptID: attemptID,
+                                                                     serverID: id) else {
             recordAuthDiagnostic("auth.emby_connect.server_selection_ignored",
                                  fields: ["reason": .string("selection_in_progress")])
             return
         }
-        activeEmbyConnectServerSelectionID = id
         recordAuthDiagnostic("auth.emby_connect.server_selected",
                              fields: ["server_count": .string(serverCountBucket(pending.servers.count))])
         defer {
-            if activeEmbyConnectServerSelectionID == id {
-                activeEmbyConnectServerSelectionID = nil
-            }
+            embyConnectServerSelections.finish(selectionWork)
         }
         await exchangeAndPersistEmbyConnect(server: server,
                                             connectUserId: pending.connectUserId,
@@ -813,15 +896,16 @@ final class AuthManager {
     }
 
     private func pollEmbyConnectPin(pin: String, attemptID: UUID) async {
-        let deadline = ContinuousClock.now.advanced(by: embyConnectPollTimeout)
+        let deadline = authNow().advanced(by: embyConnectPollTimeout)
         var recordedTransientPollFailure = false
-        while ContinuousClock.now < deadline {
-            try? await Task.sleep(for: embyConnectPollInterval)
+        while authNow() < deadline {
+            try? await authSleep(embyConnectPollInterval)
             if Task.isCancelled { return }
-            guard activeEmbyConnectAttemptID == attemptID else { return }
+            guard isCurrentAuthAttempt(attemptID) else { return }
 
             do {
                 let data = try await embyConnectData(for: EmbyConnect.pollPinRequest(pin: pin, identity: embyIdentity))
+                guard isCurrentAuthAttempt(attemptID) else { return }
                 let status = try JSONDecoder().decode(EmbyConnectPin.self, from: data)
                 if status.isExpired {
                     failEmbyConnect(attemptID,
@@ -870,9 +954,11 @@ final class AuthManager {
     /// PIN confirmed → exchange it for a Connect token, list linked servers, then either
     /// auto-exchange (one server) or ask the user to choose (more than one).
     private func completeEmbyConnectAfterConfirmation(pin: String, attemptID: UUID) async {
+        guard isCurrentAuthAttempt(attemptID) else { return }
         recordAuthDiagnostic("auth.emby_connect.confirm_start")
         do {
             let authData = try await embyConnectData(for: EmbyConnect.authenticatePinRequest(pin: pin, identity: embyIdentity))
+            guard isCurrentAuthAttempt(attemptID) else { return }
             let authResult = try JSONDecoder().decode(EmbyConnectExchangePinResult.self, from: authData)
             guard let connectUserId = authResult.userId, !connectUserId.isEmpty,
                   let connectToken = authResult.accessToken, !connectToken.isEmpty else {
@@ -882,8 +968,8 @@ final class AuthManager {
 
             let serversData = try await embyConnectData(for: EmbyConnect.serversRequest(
                 connectUserId: connectUserId, connectToken: connectToken, identity: embyIdentity))
+            guard isCurrentAuthAttempt(attemptID) else { return }
             let servers = try JSONDecoder().decode([EmbyConnectServer].self, from: serversData)
-            guard activeEmbyConnectAttemptID == attemptID else { return }
             recordAuthDiagnostic("auth.emby_connect.servers_listed",
                                  fields: ["server_count": .string(serverCountBucket(servers.count))])
             guard !servers.isEmpty else {
@@ -944,6 +1030,7 @@ final class AuthManager {
                                 reason: "resolve_failed")
                 return
             }
+            guard isCurrentAuthAttempt(attemptID) else { return }
             let request = try EmbyConnect.exchangeRequest(server: base,
                                                           accessKey: accessKey,
                                                           connectUserId: connectUserId,
@@ -954,9 +1041,9 @@ final class AuthManager {
                   let userID = result.localUserId, !userID.isEmpty else {
                 throw EmbyAuthError.missingCredentials
             }
-            guard activeEmbyConnectAttemptID == attemptID else { return }
+            guard isCurrentAuthAttempt(attemptID) else { return }
             try persistEmbySession(server: base, token: token, userID: userID, serverID: expectedSystemID)
-            activeEmbyConnectAttemptID = nil
+            finishAuthAttempt(attemptID)
             pendingEmbyConnect = nil
             pollTask = nil
             state = .authenticated
@@ -1113,12 +1200,12 @@ final class AuthManager {
                                  _ message: String,
                                  reason: String,
                                  fields: [String: DiagnosticFieldValue] = [:]) {
-        guard activeEmbyConnectAttemptID == attemptID else { return }
+        guard isCurrentAuthAttempt(attemptID) else { return }
         var diagnosticFields = fields
         diagnosticFields["reason"] = .string(reason)
         recordAuthDiagnostic("auth.emby_connect.failed", fields: diagnosticFields)
-        activeEmbyConnectAttemptID = nil
-        activeEmbyConnectServerSelectionID = nil
+        finishAuthAttempt(attemptID)
+        embyConnectServerSelections.cancel()
         pendingEmbyConnect = nil
         pollTask = nil
         state = .failed(message)
@@ -1135,7 +1222,7 @@ final class AuthManager {
     }
 
     private func embyConnectData(for request: URLRequest) async throws -> Data {
-        let (data, response) = try await Self.mediaBrowserAuthSession.data(for: request)
+        let (data, response) = try await authDataLoader(request)
         if let http = response as? HTTPURLResponse {
             switch http.statusCode {
             case 200..<300: break
@@ -1147,7 +1234,7 @@ final class AuthManager {
     }
 
     private func jellyfinData(for request: URLRequest, disabledMeansUnauthorized: Bool) async throws -> Data {
-        let (data, response) = try await Self.mediaBrowserAuthSession.data(for: request)
+        let (data, response) = try await authDataLoader(request)
         if let http = response as? HTTPURLResponse {
             switch http.statusCode {
             case 200..<300:
@@ -1167,8 +1254,32 @@ final class AuthManager {
     /// Run resource discovery and select the best server/connection.
     func refreshServers() async throws {
         guard let accountToken = appModel.token else { throw PlexError.unauthorized }
+        let generation = plexSessionGeneration
+        let discovery: PlexSessionDiscovery
+        if let plexSessionDiscoverer {
+            discovery = try await plexSessionDiscoverer(accountToken)
+        } else {
+            discovery = try await discoverPlexSession(token: accountToken,
+                                                       sessionGeneration: generation)
+        }
+        guard isCurrentPlexSession(token: accountToken, generation: generation) else {
+            throw CancellationError()
+        }
+        guard keychain.saveSelectedPlexServerID(discovery.selectedServer.clientIdentifier) else {
+            throw AuthCoordinationError.secureStorageFailed
+        }
+        applyPlexSession(discovery, token: accountToken)
+    }
+
+    /// Performs all suspension-prone Plex work without touching runtime or secure state.
+    /// Callers can generation-check the result and then commit synchronously on MainActor.
+    private func discoverPlexSession(token accountToken: String,
+                                     attemptID: AuthAttemptID? = nil,
+                                     sessionGeneration: UUID? = nil) async throws -> PlexSessionDiscovery {
         let req = ResourceDiscovery.resourcesRequest(token: accountToken, identity: appModel.identity)
         let resources = try await appModel.client.send(req, as: ResourcesResponse.self)
+        guard isPlexAuthorityCurrent(attemptID: attemptID, token: accountToken,
+                                     sessionGeneration: sessionGeneration) else { throw CancellationError() }
 
         // Only devices that act as a media server.
         let servers = resources.devices.filter {
@@ -1176,13 +1287,6 @@ final class AuthManager {
         }
         let preferredID = keychain.selectedPlexServerID
             ?? appModel.selectedServer?.clientIdentifier
-        appModel.plexServers = servers
-        // Do NOT clear selectedServer/serverToken/serverBaseURL up front. Nulling them here
-        // dropped `isBrowseReady` to false for the entire discovery window, so switching TO Plex
-        // made ContentView swap RootView for the "Connecting…" splash and rebuild at Home —
-        // unlike a Jellyfin↔Emby switch, whose already-hydrated lane keeps `isBrowseReady` true.
-        // Keep the existing connection live until a new one is resolved (applyPlexServerSelection
-        // overwrites on success); only clear below if discovery finds nothing reachable.
 
         let candidates: [PlexDevice]
         if let preferredID, let preferred = servers.first(where: { $0.clientIdentifier == preferredID }) {
@@ -1192,20 +1296,48 @@ final class AuthManager {
         }
 
         for server in candidates {
-            do {
-                try await applyPlexServerSelection(server, persist: preferredID == nil || preferredID != server.clientIdentifier)
-                return
-            } catch PlexError.serverUnreachable {
-                continue
+            guard isPlexAuthorityCurrent(attemptID: attemptID, token: accountToken,
+                                         sessionGeneration: sessionGeneration) else { throw CancellationError() }
+            let serverToken = server.accessToken ?? accountToken
+            let ranked = ResourceDiscovery.rankedConnections(server.connections)
+            if let connection = await resolvePlexConnection(ranked,
+                                                             token: serverToken,
+                                                             expectedMachineIdentifier: server.clientIdentifier) {
+                guard isPlexAuthorityCurrent(attemptID: attemptID, token: accountToken,
+                                             sessionGeneration: sessionGeneration) else { throw CancellationError() }
+                let profile = await fetchPlexAccountProfile(token: accountToken)
+                guard isPlexAuthorityCurrent(attemptID: attemptID, token: accountToken,
+                                             sessionGeneration: sessionGeneration) else { throw CancellationError() }
+                return PlexSessionDiscovery(servers: servers,
+                                            selectedServer: server,
+                                            serverToken: serverToken,
+                                            baseURL: connection.url,
+                                            isLocal: connection.isLocal,
+                                            accountProfile: profile)
             }
         }
-        // No reachable server — now clear the stale selection so `isBrowseReady` honestly reports
-        // not-ready (the caller surfaces a discovery-failed/sign-out state).
-        appModel.selectedServer = nil
-        appModel.serverToken = nil
-        appModel.serverBaseURL = nil
-        appModel.selectedServerConnectionIsLocal = false
         throw PlexError.serverUnreachable
+    }
+
+    private func loadPlexSessionDiscovery(token: String,
+                                          attemptID: AuthAttemptID) async throws -> PlexSessionDiscovery {
+        if let plexSessionDiscoverer {
+            let result = try await plexSessionDiscoverer(token)
+            guard isCurrentAuthAttempt(attemptID) else { throw CancellationError() }
+            return result
+        }
+        return try await discoverPlexSession(token: token, attemptID: attemptID)
+    }
+
+    private func applyPlexSession(_ discovery: PlexSessionDiscovery, token: String) {
+        appModel.token = token
+        appModel.plexServers = discovery.servers
+        appModel.selectedServer = discovery.selectedServer
+        appModel.serverToken = discovery.serverToken
+        appModel.serverBaseURL = discovery.baseURL
+        appModel.selectedServerConnectionIsLocal = discovery.isLocal
+        appModel.plexAccountProfile = discovery.accountProfile
+        plexSessionGeneration = UUID()
     }
 
     /// Select a Plex server from Settings and persist that server identity for future launches.
@@ -1213,7 +1345,26 @@ final class AuthManager {
         guard let server = appModel.plexServers.first(where: { $0.clientIdentifier == serverID }) else {
             throw PlexError.serverUnreachable
         }
-        try await applyPlexServerSelection(server, persist: true)
+        guard let accountToken = appModel.token else { throw PlexError.unauthorized }
+        let generation = plexSessionGeneration
+        let serverToken = server.accessToken ?? accountToken
+        let ranked = ResourceDiscovery.rankedConnections(server.connections)
+        guard let connection = await resolvePlexConnection(ranked,
+                                                           token: serverToken,
+                                                           expectedMachineIdentifier: server.clientIdentifier) else {
+            throw PlexError.serverUnreachable
+        }
+        guard isCurrentPlexSession(token: accountToken, generation: generation) else {
+            throw CancellationError()
+        }
+        guard keychain.saveSelectedPlexServerID(server.clientIdentifier) else {
+            throw AuthCoordinationError.secureStorageFailed
+        }
+        appModel.selectedServer = server
+        appModel.serverToken = serverToken
+        appModel.serverBaseURL = connection.url
+        appModel.selectedServerConnectionIsLocal = connection.isLocal
+        plexSessionGeneration = UUID()
     }
 
     /// Fetch non-secret Plex account display metadata for Settings. Failure is non-fatal:
@@ -1223,36 +1374,19 @@ final class AuthManager {
             appModel.plexAccountProfile = nil
             return
         }
-        do {
-            let req = PlexAccount.profileRequest(token: token, identity: appModel.identity)
-            appModel.plexAccountProfile = try await appModel.client.send(req, as: PlexAccountProfile.self)
-        } catch {
-            appModel.plexAccountProfile = nil
-        }
+        let generation = plexSessionGeneration
+        let profile = await fetchPlexAccountProfile(token: token)
+        guard isCurrentPlexSession(token: token, generation: generation) else { return }
+        appModel.plexAccountProfile = profile
     }
 
-    private func applyPlexServerSelection(_ server: PlexDevice, persist: Bool) async throws {
-        guard let accountToken = appModel.token else { throw PlexError.unauthorized }
-        let serverToken = server.accessToken ?? accountToken
-
-        // A server advertises every interface as a "local" connection, including
-        // unreachable container/VPN ones (e.g. a Docker 10.42.x.x bridge) and, in
-        // some setups, stale/reverse-proxy URLs that can answer as a different
-        // Plex server. Probe candidates in priority order and require `/identity`
-        // to return this server's machine identifier before accepting a URL.
-        let ranked = ResourceDiscovery.rankedConnections(server.connections)
-        guard let selectedConnection = await firstReachable(ranked,
-                                                            token: serverToken,
-                                                            expectedMachineIdentifier: server.clientIdentifier) else {
-            throw PlexError.serverUnreachable
-        }
-
-        appModel.selectedServer = server
-        appModel.serverToken = serverToken
-        appModel.serverBaseURL = selectedConnection.url
-        appModel.selectedServerConnectionIsLocal = selectedConnection.isLocal
-        if persist {
-            keychain.selectedPlexServerID = server.clientIdentifier
+    private func fetchPlexAccountProfile(token: String) async -> PlexAccountProfile? {
+        if let plexProfileLoader { return await plexProfileLoader(token) }
+        do {
+            let req = PlexAccount.profileRequest(token: token, identity: appModel.identity)
+            return try await appModel.client.send(req, as: PlexAccountProfile.self)
+        } catch {
+            return nil
         }
     }
 
@@ -1304,6 +1438,16 @@ final class AuthManager {
             guard let best else { return nil }
             return (best.1, best.2)
         }
+    }
+
+    private func resolvePlexConnection(_ ranked: [PlexConnection],
+                                       token: String,
+                                       expectedMachineIdentifier: String?) async -> (url: URL, isLocal: Bool)? {
+        if let plexConnectionResolver {
+            return await plexConnectionResolver(ranked, token, expectedMachineIdentifier)
+        }
+        return await firstReachable(ranked, token: token,
+                                    expectedMachineIdentifier: expectedMachineIdentifier)
     }
 
     nonisolated private static func plexMachineIdentifier(in data: Data) -> String? {
@@ -1378,6 +1522,7 @@ final class AuthManager {
     }
 
     private func signOutPlex() {
+        plexSessionGeneration = UUID()
         keychain.token = nil
         keychain.selectedPlexServerID = nil
         clearRuntimeState(for: .plex)
@@ -1425,15 +1570,61 @@ final class AuthManager {
         }
     }
 
+    /// Starts the single authority generation used by the auth and legacy-session
+    /// restore flows coordinated in this type. Saved-profile restoration adopts the
+    /// same authority when that feature lands.
+    /// Attempt identities are deliberately ephemeral and never enter Keychain state.
+    private func beginAuthAttempt(_ operation: AuthOperation) -> AuthAttemptID {
+        let attempt = AuthAttempt(id: UUID(), operation: operation)
+        activeAuthAttempt = attempt
+        return attempt.id
+    }
+
+    private func isCurrentAuthAttempt(_ id: AuthAttemptID) -> Bool {
+        activeAuthAttempt?.id == id && !Task.isCancelled
+    }
+
+    private func currentAuthAttemptID(for operation: AuthOperation) -> AuthAttemptID? {
+        guard activeAuthAttempt?.operation == operation else { return nil }
+        return activeAuthAttempt?.id
+    }
+
+    private func finishAuthAttempt(_ id: AuthAttemptID) {
+        guard activeAuthAttempt?.id == id else { return }
+        activeAuthAttempt = nil
+    }
+
+    private func isCurrentPlexSession(token: String, generation: UUID) -> Bool {
+        !Task.isCancelled && plexSessionGeneration == generation && appModel.token == token
+    }
+
+    private func isPlexAuthorityCurrent(attemptID: AuthAttemptID?,
+                                        token: String,
+                                        sessionGeneration: UUID?) -> Bool {
+        if let attemptID { return isCurrentAuthAttempt(attemptID) }
+        if let sessionGeneration {
+            return isCurrentPlexSession(token: token, generation: sessionGeneration)
+        }
+        return true
+    }
+
+    private func cleanupCancelledAuthAttempt(_ id: AuthAttemptID) {
+        guard Task.isCancelled, activeAuthAttempt?.id == id else { return }
+        activeAuthAttempt = nil
+        activePinIDs = []
+        pollTask?.cancel()
+        pollTask = nil
+        pendingEmbyConnect = nil
+        embyConnectServerSelections.cancel()
+        state = .idle
+    }
+
     func cancelPendingLogin() {
         pollTask?.cancel()
         pollTask = nil
         activePinIDs = []
-        activeJellyfinQuickConnectAttemptID = nil
-        activeJellyfinCredentialAttemptID = nil
-        activeEmbyConnectAttemptID = nil
-        activeEmbyCredentialAttemptID = nil
-        activeEmbyConnectServerSelectionID = nil
+        activeAuthAttempt = nil
+        embyConnectServerSelections.cancel()
         pendingEmbyConnect = nil
     }
 
@@ -1454,11 +1645,54 @@ final class AuthManager {
     }()
 }
 
+private typealias AuthAttemptID = UUID
+
+private struct AuthAttempt: Equatable {
+    let id: AuthAttemptID
+    let operation: AuthOperation
+}
+
+private enum AuthOperation: Equatable {
+    case plexPIN
+    case jellyfinCredentials
+    case jellyfinQuickConnect
+    case embyCredentials
+    case embyConnect
+    case sessionRestore
+}
+
+private enum AuthCoordinationError: Error {
+    case secureStorageFailed
+}
+
 /// In-flight Emby Connect state held while the user picks among multiple linked servers.
 /// In-memory only; carries per-server access keys, so it is never logged or persisted.
 private struct PendingEmbyConnect {
     let connectUserId: String
     let servers: [EmbyConnectServer]
+}
+
+struct EmbyConnectServerSelectionWork: Equatable {
+    let attemptID: UUID
+    let serverID: String
+}
+
+struct EmbyConnectServerSelectionTracker {
+    private(set) var active: EmbyConnectServerSelectionWork?
+
+    mutating func begin(attemptID: UUID, serverID: String) -> EmbyConnectServerSelectionWork? {
+        guard active == nil else { return nil }
+        let work = EmbyConnectServerSelectionWork(attemptID: attemptID, serverID: serverID)
+        active = work
+        return work
+    }
+
+    mutating func finish(_ work: EmbyConnectServerSelectionWork) {
+        guard active == work else { return }
+        active = nil
+    }
+
+    mutating func cancel() { active = nil }
 }
 
 private struct JellyfinSessionSnapshot {
@@ -1473,6 +1707,15 @@ private struct EmbySessionSnapshot {
     let token: String
     let userID: String
     let serverID: String?
+}
+
+struct PlexSessionDiscovery {
+    let servers: [PlexDevice]
+    let selectedServer: PlexDevice
+    let serverToken: String
+    let baseURL: URL
+    let isLocal: Bool
+    let accountProfile: PlexAccountProfile?
 }
 
 private enum JellyfinAuthError: Error {

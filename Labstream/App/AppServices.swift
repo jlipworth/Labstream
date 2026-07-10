@@ -13,9 +13,12 @@ struct AppServices {
     let downloadManager: DownloadManager
     let musicPlayer: MusicPlayerController
 
-    static func make(keychain providedKeychain: KeychainStore? = nil) -> AppServices {
+    static func make(keychain providedKeychain: KeychainStore? = nil) -> AppServices? {
         let keychain = providedKeychain ?? AppKeychainService.makeStore()
-        let identity = PlatformClientIdentity.make(clientIdentifier: keychain.clientIdentifier())
+        guard let clientIdentifier = keychain.clientIdentifier() else {
+            return nil
+        }
+        let identity = PlatformClientIdentity.make(clientIdentifier: clientIdentifier)
         let model = AppModel(identity: identity, activeBackend: keychain.selectedBackend)
         return AppServices(
             appModel: model,
@@ -23,6 +26,14 @@ struct AppServices {
             downloadManager: DownloadManager(appModel: model),
             musicPlayer: MusicPlayerController(appModel: model)
         )
+    }
+}
+
+struct SecureStorageUnavailableView: View {
+    var body: some View {
+        ContentUnavailableView("Secure Storage Unavailable",
+                               systemImage: "lock.trianglebadge.exclamationmark",
+                               description: Text("Labstream couldn’t access secure storage. Quit and reopen the app, then try again."))
     }
 }
 

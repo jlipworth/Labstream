@@ -27,7 +27,7 @@ struct LabstreamMobile: App {
         }
         AppStartup.prepareForLaunch()
 
-        let services = AppServices.make()
+        guard let services = AppServices.make() else { return }
         _appModel = State(initialValue: services.appModel)
         _authManager = State(initialValue: services.authManager)
         _downloadManager = State(initialValue: services.downloadManager)
@@ -49,7 +49,7 @@ struct LabstreamMobile: App {
                         recordScenePhase(newPhase)
                     }
             } else {
-                EmptyView()
+                SecureStorageUnavailableView()
             }
         }
     }
