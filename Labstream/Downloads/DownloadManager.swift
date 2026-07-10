@@ -1511,10 +1511,19 @@ public final class DownloadManager {
                                                           metadata: metadata,
                                                           targetName: targetName,
                                                           server: server,
-                                                          token: token)
+                                                          token: token,
+                                                          pollerID: pollerID)
             }
             serverPrepPollerTasks[ratingKey] = task
         }
+    }
+
+    /// Register a server-prep chain's Task handle so `releaseInFlight` can cancel it on
+    /// delete/terminal transitions. The resume path registers its detached Task directly; the
+    /// FRESH-start optimize chain (audit B.9) wraps its body in a Task and registers it here —
+    /// without a stored handle, delete had no way to cancel a fresh start's poll loop.
+    func registerServerPrepPollerTask(_ task: Task<Void, Never>, ratingKey: String) {
+        serverPrepPollerTasks[ratingKey] = task
     }
 
     func beginServerPrepPoller(ratingKey: String, source: String) -> UUID? {
@@ -1557,7 +1566,8 @@ public final class DownloadManager {
                                                metadata: OfflineMetadata,
                                                targetName: String,
                                                server: URL,
-                                               token: String) async {
+                                               token: String,
+                                               pollerID: UUID) async {
         let ratingKey = record.ratingKey
         let identity = appModel.identity
         do {
@@ -1646,6 +1656,8 @@ public final class DownloadManager {
                 scheduleServerPrepResumeRetries()
             }
         } catch let error as DownloadError {
+            guard resumeOptimizePollerIsCurrent(ratingKey: ratingKey, pollerID: pollerID,
+                                                phase: "resume_error") else { return }
             recordDownloadDiagnostic("downloads.optimize_resume_failed", fields: [
                 "download_id": .identifier(ratingKey),
                 "target": .label(targetName),
@@ -1657,10 +1669,18 @@ public final class DownloadManager {
             releaseInFlight(ratingKey: ratingKey)
             refreshRecords()
         } catch is CancellationError {
+            // A poller cancelled by pause/delete can reach here AFTER a quick resume already
+            // began a NEW attempt on the same key (same optimizeQueueTitle). Releasing
+            // unconditionally would strip the new attempt's slot/queue-title and cancel its
+            // poller — only the still-current poller may tear down.
+            guard resumeOptimizePollerIsCurrent(ratingKey: ratingKey, pollerID: pollerID,
+                                                phase: "resume_cancelled") else { return }
             clearOptimizeProgress(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
             refreshRecords()
         } catch {
+            guard resumeOptimizePollerIsCurrent(ratingKey: ratingKey, pollerID: pollerID,
+                                                phase: "resume_error") else { return }
             recordDownloadDiagnostic("downloads.optimize_resume_failed", fields: [
                 "download_id": .identifier(ratingKey),
                 "target": .label(targetName),
@@ -1673,6 +1693,21 @@ public final class DownloadManager {
             releaseInFlight(ratingKey: ratingKey)
             refreshRecords()
         }
+    }
+
+    /// Attempt-currency gate for a Plex prep chain's terminal error/cancellation handlers.
+    /// `pollerID` was minted by `beginPlexPoller` when this chain attached; once pause/delete
+    /// ran `releaseAll` (or a newer attempt attached its own poller), this returns false and the
+    /// superseded chain must not run terminal cleanup against the newer attempt's state.
+    func resumeOptimizePollerIsCurrent(ratingKey: String, pollerID: UUID, phase: String) -> Bool {
+        guard serverPrepAttempts.isCurrentPlexPoller(forRecordKey: ratingKey, id: pollerID) else {
+            recordDownloadDiagnostic("downloads.optimize_release_skipped_stale_poller", fields: [
+                "download_id": .identifier(ratingKey),
+                "phase": .label(phase),
+            ])
+            return false
+        }
+        return true
     }
 
     public var totalDownloadedBytes: Int {
@@ -1787,14 +1822,54 @@ public final class DownloadManager {
                 "reason": .label(reason),
             ])
         }
+        // Plex parity: deleting a row still in server prep (optimize job triggered, no rendered
+        // Part handed off yet) must also remove its type-42 background-processing item, or the
+        // server keeps transcoding — and later stores a rendered version — for a download the
+        // user abandoned. Targeted at THIS row's queue title only; the completed-state guard in
+        // `cancellableItemID` keeps finished renders (which other rows may reuse) untouched.
+        let plexSession = appModel.backendSession(for: .plex)
+        let plexSessionMatchesDeletedRow = rowToDelete?.metadata.map { metadata in
+            plexSession?.matchesPersistedServer(metadata) == true
+        } ?? false
+        switch DownloadDeletePolicy.plexOptimizeCancelDecision(
+            for: rowToDelete,
+            plexSessionMatchesPersistedServer: plexSessionMatchesDeletedRow
+        ) {
+        case .none:
+            break
+        case .cancel(let queueTitle):
+            guard let plexSession else { break }
+            let server = plexSession.baseURL
+            let token = plexSession.token
+            let identity = appModel.identity
+            Task { [weak self] in
+                await self?.removePlexOptimizeQueueItem(ratingKey: ratingKey,
+                                                        queueTitle: queueTitle,
+                                                        server: server, token: token,
+                                                        identity: identity)
+            }
+        case .skip(_, let reason):
+            recordDownloadDiagnostic("downloads.optimize_cancel_skip", fields: [
+                "download_id": .identifier(ratingKey),
+                "reason": .label(reason),
+            ])
+        }
         session.cancel(ratingKey: ratingKey)
         store.remove(ratingKey: ratingKey)
         lastError[ratingKey] = nil
+        // Drop server-prep progress state too, or re-downloading the same item resurfaces the
+        // deleted row's stale "Preparing on server… N%" caption and seeds the ETA estimator with
+        // dead samples. (`releaseInFlight` below also clears it — kept explicit here because the
+        // leak was delete-shaped.)
+        clearOptimizeProgress(ratingKey: ratingKey)
         // Releasing the in-flight protection here matters because the row is now GONE, so the
         // terminal-status sweep in `refreshRecords` (which keys off `.complete`/`.failed` rows)
         // can no longer find it to release — without this, a cancelled/deleted job would leak
         // its `activeJobs` slot (blocking re-download) and keep its queue title protected forever.
-        releaseInFlight(ratingKey: ratingKey)
+        // Pass the pre-removal snapshot: the store row no longer exists, so without it the
+        // Jellyfin/Emby encoder-teardown server-match guard would see nil metadata and silently
+        // dead-end the persisted-psid branch during this teardown.
+        releaseInFlight(ratingKey: ratingKey, rowSnapshot: rowToDelete)
         refreshRecords()
     }
 
@@ -2391,11 +2466,19 @@ public final class DownloadManager {
     /// ratingKey once its download is no longer in flight (completed, failed, cancelled, or
     /// deleted). Idempotent. Keeping the queue title protected past this point would block the
     /// clean-slate cleanup from ever removing the now-abandoned completed optimize item.
-    func releaseInFlight(ratingKey: String) {
+    ///
+    /// `rowSnapshot` is the caller's pre-removal copy of the row for the delete path, where the
+    /// store row is already gone by the time this runs: without it the encoder-teardown
+    /// server-match guards below would read nil metadata and skip the persisted-psid branch.
+    func releaseInFlight(ratingKey: String, rowSnapshot: DownloadRecord? = nil) {
         retryState.removeRetrying(ratingKey)
         clearRetryHandoff(ratingKey: ratingKey)
         activeJobs.remove(ratingKey)
         transcodeSourcedDownloads.remove(ratingKey)
+        // Defense-in-depth: no terminal transition should leave optimize progress/ETA samples
+        // behind for a key that is no longer in flight — a later re-download of the same item
+        // would display and extrapolate from them.
+        clearOptimizeProgress(ratingKey: ratingKey)
         _ = serverPrepAttempts.releaseAll(forRecordKey: ratingKey)
         serverPrepPollerTasks.removeValue(forKey: ratingKey)?.cancel()
         jellyfinDownloadKeepaliveTasks.removeValue(forKey: ratingKey)?.cancel()
@@ -2410,6 +2493,7 @@ public final class DownloadManager {
         // configured (signed out), skip now — the persisted `playSessionID` stays put and the launch
         // sweep retries once the lane returns.
         let releaseMetadata = store.records.first(where: { $0.ratingKey == ratingKey })?.metadata
+            ?? rowSnapshot?.metadata
         let embySession = appModel.backendSession(for: .emby)
         let embySessionMatchesMetadata = releaseMetadata.map { metadata in
             embySession?.matchesPersistedServer(metadata) == true
@@ -2613,6 +2697,21 @@ public final class DownloadManager {
                                       token: String,
                                       identity: ClientIdentity) async throws -> Part {
         while !Task.isCancelled {
+            // Orphan guard (audit B.9): Task cancellation alone is not enough — a delete can
+            // race this loop before/without a registered Task handle, and a concurrent reap can
+            // remove the queue row entirely. Re-check LIVE app state every iteration and stop
+            // polling the server the moment this download no longer exists or lost its slot.
+            let rowExists = store.records.contains { $0.ratingKey == ratingKey }
+            guard ServerPrepRefreshPolicy.plexPrepPollerShouldContinue(
+                rowExists: rowExists,
+                slotActive: activeJobs.contains(ratingKey)
+            ) else {
+                recordDownloadDiagnostic("downloads.optimize_poll_orphan_exit", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "row_exists": .bool(rowExists),
+                ])
+                throw CancellationError()
+            }
             if let metadata = await fetchCurrentMediaItem(ratingKey: ratingKey, server: server,
                                                           token: token, identity: identity) {
                 if let newPart = Self.optimizedDownloadCandidate(from: metadata.media ?? [],

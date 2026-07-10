@@ -54,6 +54,14 @@ public struct ServerPrepAttemptTracker: Sendable, Equatable {
         return id
     }
 
+    /// True while `id` is still the ATTACHED Plex poller for this record key. Cancelled pollers
+    /// (pause/delete run `releaseAll`, a quick resume then begins a NEW poller id) must check
+    /// this before running terminal cleanup: an unconditional release from a superseded poller's
+    /// catch handler would strip the new attempt's slot/queue-title and cancel its poller.
+    public func isCurrentPlexPoller(forRecordKey recordKey: String, id: UUID) -> Bool {
+        plexPollerByRecordKey[recordKey] == id
+    }
+
     @discardableResult
     public mutating func endPlexPoller(forRecordKey recordKey: String, id: UUID) -> Bool {
         guard plexPollerByRecordKey[recordKey] == id else { return false }
