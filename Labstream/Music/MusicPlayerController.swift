@@ -98,6 +98,10 @@ final class MusicPlayerController {
     @ObservationIgnored private let player = AVPlayer()
 
     @ObservationIgnored private let appModel: AppModel
+    @ObservationIgnored private let lifecycle = MusicPlaybackLifecycle()
+    @ObservationIgnored private lazy var lifecycleCallbacks = PlaybackLifecycleCallbackSink<MusicPlaybackLifecycle.Generation> { [weak self] generation in
+        self?.lifecycle.isCurrent(generation) == true
+    }
 
     /// Shared process-wide authority used by both this controller and the video player.
     @ObservationIgnored let systemMediaSessionCoordinator: SystemMediaSessionCoordinator
@@ -127,11 +131,11 @@ final class MusicPlayerController {
     // Per-track observers, torn down and reinstalled on each track swap.
     @ObservationIgnored private lazy var trackObservers = PlayerObserverBag(player: player)
 
-    // Player-level observers, installed once on first play and removed in `stop()`.
+    // Player-level observers, rebound for each item so every closure captures its generation.
     @ObservationIgnored private lazy var playerObservers = PlayerObserverBag(player: player)
 
-    /// True once the audio session is active and the player-level observers + remote
-    /// commands are registered. Reset by `stop()` so a later play re-prepares.
+    /// True once the audio session is active and remote commands are registered. Reset by
+    /// `stop()` so a later play re-prepares; item/player observers are rebound per track.
     @ObservationIgnored private var sessionPrepared = false
 
     /// True after the queue finished with repeat off. The player item is parked at its
@@ -170,6 +174,7 @@ final class MusicPlayerController {
     /// plays first and the rest follow in a fresh random order.
     func play(tracks: [MediaItem], startingAt index: Int) {
         guard tracks.indices.contains(index) else { return }
+        lifecycle.advance()
         queueBrowseSessionKey = appModel.activeBrowseSessionKey
         queue = tracks
         rebuildPlayOrder(currentFirst: index)
@@ -211,6 +216,10 @@ final class MusicPlayerController {
     func pauseForVideo() {
         guard ensureCurrentQueueSession() else { return }
         guard sessionPrepared, player.currentItem != nil else { return }
+        lifecycle.advance()
+        removeTrackObservers()
+        removePlayerObservers()
+        audioSession.removeObservers()
         if isPlaying {
             player.pause()
             isPlaying = false
@@ -222,9 +231,19 @@ final class MusicPlayerController {
     /// Undo `pauseForVideo()`: reactivate the music audio session (idempotent),
     /// re-enable our remote commands, and rebuild the system Now Playing card the
     /// video path may have cleared.
-    private func reclaimFromVideo() {
+    private func reclaimFromVideo(rebindObservers: Bool = true) {
         suspendedForVideo = false
         audioSession.activate()
+        if rebindObservers {
+            let generation = lifecycle.advance()
+            audioSession.installObservers(isCurrent: { [weak self] in
+                self?.lifecycleCallbacks.accepts(.musicAudioSession, generation: generation) == true
+            })
+            installPlayerObservers(generation: generation)
+            if let playerItem = player.currentItem {
+                installTrackObservers(for: playerItem, generation: generation)
+            }
+        }
         if mediaLease?.isCurrent != true {
             mediaLease?.release()
             mediaLease = systemMediaSessionCoordinator.acquire(owner: .music,
@@ -398,9 +417,12 @@ final class MusicPlayerController {
     /// stays visible so the user can tap another row (which goes through
     /// `jump(to:)`/`startTrack` and re-stands everything up).
     private func haltPlaybackKeepingQueue() {
+        lifecycle.advance()
         reporter?.report(state: .stopped, force: true)
         reporter = nil
         removeTrackObservers()
+        removePlayerObservers()
+        audioSession.removeObservers()
         player.pause()
         player.replaceCurrentItem(with: nil)
         isPlaying = false
@@ -434,6 +456,7 @@ final class MusicPlayerController {
     /// command targets removed, the player emptied, the audio session released (notifying
     /// other audio apps), and the queue cleared.
     func stop() {
+        lifecycle.advance()
         reporter?.report(state: .stopped, force: true)
         reporter = nil
         removeTrackObservers()
@@ -502,7 +525,11 @@ final class MusicPlayerController {
     /// End of queue with repeat off: stop playing but keep the queue (and the last track
     /// as `current`) visible so the user can replay or pick another row.
     private func finishQueue() {
+        lifecycle.advance()
         reporter?.report(state: .stopped, force: true)
+        removeTrackObservers()
+        removePlayerObservers()
+        audioSession.removeObservers()
         player.pause()
         isPlaying = false
         atQueueEnd = true
@@ -538,11 +565,18 @@ final class MusicPlayerController {
             return
         }
 
+        if suspendedForVideo { reclaimFromVideo(rebindObservers: false) }
+
+        // Item replacement is a new callback authority. Advance before teardown so work
+        // already queued by the outgoing item cannot mutate the incoming one.
+        let generation = lifecycle.advance()
+
         // Final flush for the outgoing track before its reporter is replaced.
         reporter?.report(state: .stopped, force: true)
         removeTrackObservers()
+        removePlayerObservers()
+        audioSession.removeObservers()
 
-        if suspendedForVideo { reclaimFromVideo() }
         atQueueEnd = false
         currentIndex = index
         elapsedSeconds = 0
@@ -558,13 +592,19 @@ final class MusicPlayerController {
         reporter = makeReporter(for: track)
 
         prepareSessionIfNeeded()
-        installTrackObservers(for: playerItem)
+        audioSession.installObservers(isCurrent: { [weak self] in
+            self?.lifecycleCallbacks.accepts(.musicAudioSession, generation: generation) == true
+        })
+        installTrackObservers(for: playerItem, generation: generation)
         player.replaceCurrentItem(with: playerItem)
+        // Install player-level observation only after replacement; otherwise the outgoing
+        // player's final paused transition can be mistaken for state of the incoming reporter.
+        installPlayerObservers(generation: generation)
         player.play()
         isPlaying = true
 
         updateNowPlayingInfo(for: track)
-        fetchArtwork(for: track)
+        fetchArtwork(for: track, generation: generation)
     }
 
     /// Timeline/scrobble reporting uses the Plex PMS `/:/timeline` + scrobble endpoints,
@@ -581,15 +621,12 @@ final class MusicPlayerController {
                                 player: player)
     }
 
-    /// One-time (per controller life) session prep: activate the music-mode audio
-    /// session, register interruption/route-change observers, install the player-level
-    /// time/rate observers, and hook up the system remote commands.
+    /// One-time (per controller life) session prep: activate the music-mode audio session and
+    /// hook up system remote commands. Generation-bound observers are installed per track.
     private func prepareSessionIfNeeded() {
         guard !sessionPrepared else { return }
         sessionPrepared = true
         audioSession.activate()
-        audioSession.installObservers()
-        installPlayerObservers()
         mediaLease = systemMediaSessionCoordinator.acquire(owner: .music,
                                                             commands: remoteCommandConfiguration())
     }
@@ -597,7 +634,8 @@ final class MusicPlayerController {
     // MARK: - Observers
 
     /// Per-track observers: item status (readiness gate / failure) and play-to-end.
-    private func installTrackObservers(for playerItem: AVPlayerItem) {
+    private func installTrackObservers(for playerItem: AVPlayerItem,
+                                       generation: MusicPlaybackLifecycle.Generation) {
         // Item status, observed for the item's whole lifetime (mirrors PlaybackController
         // P4 #8): `.readyToPlay` opens the timeline readiness gate and clears any stale
         // error; `.failed` surfaces a message and auto-advances past the bad track.
@@ -605,7 +643,8 @@ final class MusicPlayerController {
             guard let self else { return }
             Task { @MainActor in
                 // Ignore stale callbacks from an item we've already swapped out.
-                guard pItem === self.player.currentItem else { return }
+                guard self.lifecycle.isCurrent(generation),
+                      pItem === self.player.currentItem else { return }
                 switch pItem.status {
                 case .readyToPlay:
                     // Gate timeline/scrobble heartbeats until a real duration exists
@@ -635,6 +674,7 @@ final class MusicPlayerController {
         ) { [weak self, weak playerItem] _ in
             Task { @MainActor in
                 guard let self,
+                      self.lifecycle.isCurrent(generation),
                       let endedItem = playerItem,
                       endedItem === self.player.currentItem else { return }
                 self.handleTrackEnded()
@@ -642,15 +682,16 @@ final class MusicPlayerController {
         })
     }
 
-    /// Player-level observers (installed once): the 0.5s elapsed-time tick, the 10s
-    /// timeline heartbeat + near-end scrobble, and the play/pause state mirror.
-    private func installPlayerObservers() {
+    /// Generation-bound player observers: the 0.5s elapsed-time tick, the 10s timeline
+    /// heartbeat + near-end scrobble, and the play/pause state mirror.
+    private func installPlayerObservers(generation: MusicPlaybackLifecycle.Generation) {
         let elapsedInterval = CMTime(seconds: elapsedIntervalSeconds, preferredTimescale: 600)
         playerObservers.storeTimeObserver(player.addPeriodicTimeObserver(forInterval: elapsedInterval,
                                                                          queue: .main) { [weak self] time in
             let seconds = time.seconds
             Task { @MainActor in
-                guard let self, seconds.isFinite else { return }
+                guard let self, self.lifecycleCallbacks.accepts(.musicTick, generation: generation),
+                      seconds.isFinite else { return }
                 self.elapsedSeconds = seconds
             }
         })
@@ -659,7 +700,7 @@ final class MusicPlayerController {
         playerObservers.storeTimeObserver(player.addPeriodicTimeObserver(forInterval: heartbeatInterval,
                                                                          queue: .main) { [weak self] _ in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.lifecycleCallbacks.accepts(.musicTick, generation: generation) else { return }
                 guard self.ensureCurrentQueueSession() else { return }
                 let state: TimelineRequest.State =
                     self.player.timeControlStatus == .paused ? .paused : .playing
@@ -676,6 +717,7 @@ final class MusicPlayerController {
             guard let self else { return }
             let status = avPlayer.timeControlStatus
             Task { @MainActor in
+                guard self.lifecycleCallbacks.accepts(.musicStatus, generation: generation) else { return }
                 let playing = status != .paused
                 guard playing != self.isPlaying else { return }
                 self.isPlaying = playing
@@ -757,13 +799,14 @@ final class MusicPlayerController {
     /// shared `MediaArtwork` helper (Plex `/photo` transcode, or the authenticated
     /// Jellyfin/Emby image endpoint). Guards that the track is still current before
     /// assigning, so a quick skip can't attach stale art.
-    private func fetchArtwork(for track: MediaItem) {
+    private func fetchArtwork(for track: MediaItem,
+                              generation: MusicPlaybackLifecycle.Generation) {
+        artworkTask?.cancel()
         guard let request = MediaArtwork.imageRequest(path: track.musicArtPath,
                                                       appModel: appModel,
                                                       pixelWidth: 600,
                                                       pixelHeight: 600) else { return }
         let ratingKey = track.ratingKey
-        artworkTask?.cancel()
         let lease = mediaLease
         artworkTask = Task { [weak self] in
             guard let data = await Self.fetchArtworkData(request: request),
@@ -771,6 +814,7 @@ final class MusicPlayerController {
             let artwork = Self.makeArtwork(image)
             await MainActor.run {
                 guard let self, self.current?.ratingKey == ratingKey,
+                      self.lifecycleCallbacks.accepts(.musicArtwork, generation: generation),
                       self.mediaLease === lease, lease?.isCurrent == true else { return }
                 self.currentArtwork = artwork
                 if let track = self.current {

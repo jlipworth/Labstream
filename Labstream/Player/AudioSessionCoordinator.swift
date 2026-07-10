@@ -19,7 +19,7 @@ final class AudioSessionCoordinator {
 
     func activate() {}
     func deactivate() {}
-    func installObservers() {}
+    func installObservers(isCurrent: @escaping @MainActor () -> Bool = { true }) {}
     func removeObservers() {}
 }
 #else
@@ -116,7 +116,7 @@ final class AudioSessionCoordinator {
     /// for this coordinator's lifetime. Idempotent: a second call is a no-op, so we never
     /// double-register. All closures hop to the `@MainActor` before touching player state,
     /// satisfying Swift 6 strict concurrency.
-    func installObservers() {
+    func installObservers(isCurrent: @escaping @MainActor () -> Bool = { true }) {
         guard interruptionObserver == nil else { return }
         let center = NotificationCenter.default
 
@@ -130,6 +130,7 @@ final class AudioSessionCoordinator {
             let typeRaw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
             let optionsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt
             Task { @MainActor in
+                guard isCurrent() else { return }
                 self?.handleInterruption(typeRaw: typeRaw, optionsRaw: optionsRaw)
             }
         }
@@ -141,6 +142,7 @@ final class AudioSessionCoordinator {
         ) { [weak self] note in
             let reasonRaw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
             Task { @MainActor in
+                guard isCurrent() else { return }
                 self?.handleRouteChange(reasonRaw: reasonRaw)
             }
         }
@@ -157,6 +159,7 @@ final class AudioSessionCoordinator {
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor in
+                    guard isCurrent() else { return }
                     self?.pauseForBackground()
                 }
             }
@@ -167,6 +170,7 @@ final class AudioSessionCoordinator {
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor in
+                    guard isCurrent() else { return }
                     self?.pauseForBackground()
                 }
             }
@@ -176,6 +180,7 @@ final class AudioSessionCoordinator {
     /// Tear down the session/lifecycle observers. Called from the controller's `stop()`
     /// (and is safe to call more than once).
     func removeObservers() {
+        wasPlayingBeforeInterruption = false
         let center = NotificationCenter.default
         if let interruptionObserver {
             center.removeObserver(interruptionObserver)
