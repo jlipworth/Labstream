@@ -60,6 +60,42 @@ final class MediaSessionProxyTests: XCTestCase {
         await proxy.stop(generation: handle.generation)
     }
 
+    func testInjectedClockControlsUpstreamRestartCooldown() async throws {
+        let clock = TestClock(now: 100)
+        let attempts = URLAttemptCounter()
+        let fetch: @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse) = { request in
+            if attempts.increment(for: request.url!) == 1 {
+                throw URLError(.timedOut)
+            }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200,
+                                           httpVersion: "HTTP/1.1",
+                                           headerFields: ["Content-Type": "application/vnd.apple.mpegurl"])!
+            return (Data("#EXTM3U\n".utf8), response)
+        }
+        let proxy = MediaSessionProxy(upstreamFetch: fetch, now: { clock.value })
+        let handle = try await proxy.standUpLoopback(
+            forStream: URL(string: "http://example.com/start.m3u8")!)
+
+        let first = try await responseStatus(for: handle.localURL, requestID: "first")
+        XCTAssertEqual(first, 200)
+        var status = await proxy.status()
+        XCTAssertEqual(status.rotateCount, 1)
+
+        // With no synthetic time elapsed, the second wedge is inside the five-second
+        // cooldown and must surface instead of rotating the upstream again.
+        let deferred = try await responseStatus(for: handle.localURL, requestID: "deferred")
+        XCTAssertEqual(deferred, 502)
+        status = await proxy.status()
+        XCTAssertEqual(status.rotateCount, 1)
+
+        clock.advance(by: 5)
+        let afterCooldown = try await responseStatus(for: handle.localURL, requestID: "after-cooldown")
+        XCTAssertEqual(afterCooldown, 200)
+        status = await proxy.status()
+        XCTAssertEqual(status.rotateCount, 2)
+        await proxy.stop(generation: handle.generation)
+    }
+
     func testStaleStopIsIgnored() async throws {
         let origin = try await StubOrigin.start { _ in (200, "text/plain", Data()) }
         defer { origin.stop() }
@@ -112,6 +148,15 @@ final class MediaSessionProxyTests: XCTestCase {
 
 }
 
+private func responseStatus(for baseURL: URL, requestID: String) async throws -> Int? {
+    var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
+    components.queryItems = [URLQueryItem(name: "request", value: requestID)]
+    var request = URLRequest(url: components.url!)
+    request.cachePolicy = .reloadIgnoringLocalCacheData
+    let (_, response) = try await loopbackTestSession().data(for: request)
+    return (response as? HTTPURLResponse)?.statusCode
+}
+
 /// In-test PMS stand-in: an NWListener that answers each request via a closure.
 final class StubOrigin: @unchecked Sendable {
     private let origin = LoopbackOrigin()
@@ -147,5 +192,38 @@ private final class Counter: @unchecked Sendable {
     private var count = 0
     @discardableResult func increment() -> Int { lock.lock(); count += 1; let n = count; lock.unlock(); return n }
     var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+}
+
+private final class URLAttemptCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var counts: [URL: Int] = [:]
+
+    func increment(for url: URL) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        counts[url, default: 0] += 1
+        return counts[url]!
+    }
+}
+
+private final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var now: TimeInterval
+
+    init(now: TimeInterval) {
+        self.now = now
+    }
+
+    var value: TimeInterval {
+        lock.lock()
+        defer { lock.unlock() }
+        return now
+    }
+
+    func advance(by interval: TimeInterval) {
+        lock.lock()
+        now += interval
+        lock.unlock()
+    }
 }
 #endif
