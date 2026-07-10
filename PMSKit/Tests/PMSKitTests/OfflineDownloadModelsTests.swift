@@ -419,6 +419,21 @@ struct OfflineDownloadModelsTests {
         }
     }
 
+    @Test("rows created after the task snapshot are not eligible for reconciliation")
+    func reconcileEligibilityFollowsSnapshotMembership() {
+        let snapshot: Set<String> = ["plex:1", "jellyfin:2"]
+        #expect(DownloadStatus.reconcileEligible(ratingKey: "plex:1",
+                                                 snapshotRatingKeys: snapshot))
+        #expect(DownloadStatus.reconcileEligible(ratingKey: "jellyfin:2",
+                                                 snapshotRatingKeys: snapshot))
+        // Seeded on the main actor while getAllTasks was in flight: must be skipped, or a
+        // healthy fresh .queued row is demoted .failed and its destination file deleted.
+        #expect(!DownloadStatus.reconcileEligible(ratingKey: "plex:3",
+                                                  snapshotRatingKeys: snapshot))
+        #expect(!DownloadStatus.reconcileEligible(ratingKey: "plex:1",
+                                                  snapshotRatingKeys: []))
+    }
+
     @Test("unverified rows stay playable while their file exists")
     func unverifiedRowsStayPlayableWhileFileExists() {
         #expect(DownloadStatus.reconciledStatus(

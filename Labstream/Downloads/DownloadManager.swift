@@ -282,8 +282,11 @@ public final class DownloadManager {
         // BEFORE `reconcile` parks them `.paused`, so we can auto-resume an interrupted download
         // after a hard kill without overriding a row the user deliberately paused.
         let interruptedStaticKeys = store.interruptedStaticByteRangeKeys()
+        // B.13: capture which rows exist BEFORE the task snapshot is requested — rows the main
+        // actor seeds while `getAllTasks` is in flight must not be reconciled against it.
+        let snapshotRatingKeys = Set(store.records.map(\.ratingKey))
         self.session.reattach { [weak self, store] liveKeys in
-            store.reconcile(liveRatingKeys: liveKeys)
+            store.reconcile(liveRatingKeys: liveKeys, snapshotRatingKeys: snapshotRatingKeys)
             Task { @MainActor in
                 self?.refreshRecords()
                 self?.finalizeCompletedStaticRangeDownloads(reason: "launch_recovered")
@@ -655,8 +658,10 @@ public final class DownloadManager {
             downloadETA.removeValue(forKey: record.ratingKey)
         }
 
+        // B.13: same snapshot rule as launch — rows created while `getAllTasks` runs are skipped.
+        let snapshotRatingKeys = Set(store.records.map(\.ratingKey))
         session.reattach { [weak self, store] liveKeys in
-            store.reconcile(liveRatingKeys: liveKeys)
+            store.reconcile(liveRatingKeys: liveKeys, snapshotRatingKeys: snapshotRatingKeys)
             Task { @MainActor in
                 guard let self else { return }
                 self.foregroundStaticRangeRecoveryInFlight = false
@@ -1782,8 +1787,10 @@ public final class DownloadManager {
         recordDownloadDiagnostic("downloads.cancel_or_delete", fields: [
             "download_id": .identifier(ratingKey),
         ])
-        staticRangeRecovery.removePendingResume(ratingKey)
-        staticRangeRecovery.removeManualQueueResume(ratingKey)
+        // B.14: clear ALL recovery state, not just the resume markers — a stale `finalizingKeys`
+        // entry parks a re-download's byte-complete relaunch as `.alreadyFinalizing` forever, and
+        // a stale preservation key leaks the deleted attempt's restart budgets into the next one.
+        staticRangeRecovery.removeAll(forKey: ratingKey)
         retryState.removeRetrying(ratingKey)
         // Emby convert parity (#126 + Plex): deleting a `.preparing` row must ALSO cancel the
         // server-side "Convert Media" Sync job, or it keeps rendering after the user abandoned it.
