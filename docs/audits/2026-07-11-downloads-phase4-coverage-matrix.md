@@ -82,9 +82,11 @@ still exact-byte gated.
 
 ## Remaining dark cells
 
-1. **D6 delegate ordering:** out-of-order finish→hold→pause/delete, validator flip concurrent with
-   append, 200 replacement concurrent with tail completion, 416 restart concurrent with queued IO,
-   reset→blob adoption→second reset, and write-failure injection. Pure-policy composition cannot
+1. **D6 delegate ordering:** validator flip, held-body pause preservation, and
+   reset→blob adoption→second reset are now live-covered by the Phase-6 harness. Still dark:
+   pause/delete specifically during held-body drain, 200 replacement concurrent with tail
+   completion, and 416 restart concurrent with queued IO. Injected ENOSPC is now live-covered:
+   it terminally tears down the train without transient retry. Pure-policy composition cannot
    establish lock/queue correctness.
 2. **DEV background lifecycle:** process death with held stashes, OS background completion
    redelivery, token rotation or LAN↔WAN change while suspended, and device disk pressure.

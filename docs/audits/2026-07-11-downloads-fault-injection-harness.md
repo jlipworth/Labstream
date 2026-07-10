@@ -40,6 +40,11 @@ scripts/probe-plex-range-drop.sh --rating-key KEY --fault validator-flip --delet
 scripts/probe-plex-range-drop.sh --rating-key KEY --fault 401-mid-train --delete-after
 scripts/probe-plex-range-drop.sh --rating-key KEY --fault held-body-pause \
   --pause-resume --pause-after-seconds 2 --delete-after
+scripts/probe-plex-range-drop.sh --rating-key KEY --fault double-connection-drop \
+  --drop-after-bytes 2097152 --delete-after
+scripts/probe-plex-range-drop.sh --rating-key KEY --fault held-body-delete \
+  --delete-during-transfer
+scripts/probe-plex-range-drop.sh --rating-key KEY --fault write-failure --delete-after
 ```
 
 The script builds/installs the DEBUG app, launches the existing Plex download probe, captures
@@ -91,17 +96,49 @@ resumes the row. It fails unless a held body precedes a confirmed paused state, 
 occurs between those events, and the probe reaches the retry/resume path. Final deletion may purge
 the test stashes and is intentionally outside that preservation assertion.
 
-## Scope still open
+### `double-connection-drop`
 
-Pause-mid-drain (as distinct from pause-with-held-bodies), repeated counter-reset/blob adoption,
-relaunch with on-disk stashes, and injected filesystem write failure remain later Phase 6 cells.
-They need lifecycle/filesystem control beyond the transport seam and should not be simulated by
-bypassing the real session.
+Only the logical head segment is eligible for this fault (bounded by the original segment-end
+offset), preventing concurrent sibling failures from producing a false positive. The protocol
+drops that segment twice at the configured body threshold. The driver requires strict diagnostic
+ordering: first injected fault → persisted blob resume → second injected fault → second persisted
+blob resume. This exercises composed resume-data adoption and its retry budget through the real
+URLSession delegate path.
+
+### `held-body-delete`
+
+This uses the same bounded positive-offset finishes as `held-body-pause`, but deletes the row while
+the head segment is still live. The driver requires held-body creation → cancel-time held-stash
+purge → confirmed row removal ordering, distinguishing destructive cancellation from
+pause-preservation behavior.
+
+### `write-failure`
+
+The head response finishes after 64 KiB and the DEBUG seam throws the real Cocoa
+`fileWriteOutOfSpace` error at `appendFile`. The body still travels through URLSession,
+delegate delivery, stash move, and the range IO queue. The driver requires terminal
+`downloads.move_failed reason=storage_full stage=append` and rejects any transient
+`downloads.range_move_retry`.
+
+## Phase 6 coverage status
+
+- [x] Validator flip during a live segment train.
+- [x] 401 on a positive-offset segment with authenticated request rehydration.
+- [x] Pause with multiple held out-of-order bodies; held stashes survive the pause.
+- [x] Delete with multiple held bodies; cancel purges stashes before row removal.
+- [x] Reset → persisted resume-blob adoption → second reset → second blob adoption.
+- [ ] Pause/delete specifically while `drainHeldRangeSegments` is appending.
+- [ ] Concurrent 200 replacement or 416 restart with queued append work.
+- [ ] Relaunch with on-disk held stashes.
+- [x] Injected append failure / ENOSPC classification and terminal train teardown.
+
+The unchecked lifecycle/filesystem cells need control beyond a simple response mutation and should
+not be simulated by bypassing the real session.
 
 ## Live execution evidence (2026-07-11)
 
 The candidate probe found 19 eligible original/static parts larger than 600 MiB. A 1–10 GB
-H.264/AAC MP4 alternate was used without recording its title or file path. All three bounded
+H.264/AAC MP4 alternate was used without recording its title or file path. All six bounded
 scenarios passed against the real foreground `BackgroundDownloadSession`:
 
 - `validator-flip`: synthetic v1/v2 responses produced
@@ -112,6 +149,16 @@ scenarios passed against the real foreground `BackgroundDownloadSession`:
 - `held-body-pause`: nine positive-offset bodies reached `downloads.range_segment_held` before
   `probe.plex_download.paused reached=true`; no held-stash purge occurred across the pause, the
   retry/resume path ran, and final probe deletion then purged the test stashes.
+- `double-connection-drop`: the head segment produced strict
+  fault attempt 1 → `downloads.range_blob_resume attempt=1` → fault attempt 2 →
+  `downloads.range_blob_resume attempt=2` ordering, proving two composed resume-data adoptions on
+  the same logical segment rather than two concurrent sibling failures.
+- `held-body-delete`: eight held bodies were present before delete; cancellation emitted
+  `downloads.range_held_segments_purged purged_count=8` before
+  `probe.plex_download.deleted_during_transfer row_missing=true`.
+- `write-failure`: injected Cocoa code 640 at append produced
+  `downloads.move_failed reason=storage_full stage=append`, terminally superseded seven sibling
+  tasks, transitioned the row to failed, and emitted no transient range-move retry.
 
 The first live attempt also exposed a harness bug: `probeRange` used `data(for:)`, so a server that
 ignored or delayed a bounded Range could buffer a multi-gigabyte response before the actual test

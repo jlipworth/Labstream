@@ -18,11 +18,13 @@ Required selector (or env):
 
 Options:
   --fault NAME                      connection-drop (default), validator-flip, 401-mid-train,
-                                    or held-body-pause (requires --pause-resume).
+                                    held-body-pause (requires --pause-resume), or
+                                    double-connection-drop, held-body-delete, or write-failure.
   --drop-after-bytes N              Network-loss threshold for connection-drop (default: 2097152).
   --observe-seconds N               Probe post-start observation window (default: env or 90).
   --pause-after-seconds N           Delay before pause in --pause-resume mode (default: env or 8).
   --pause-resume                    Also exercise pause -> retry/resume after starting.
+  --delete-during-transfer          Delete two seconds after transfer start (held-body-delete only).
   --existing-version                Download an existing server-generated Plex Version.
   --media-index N                   Media/version index to probe (default: env or 0).
   --part-index N                    Part index to probe (default: env or 0).
@@ -53,6 +55,7 @@ preset=${LABSTREAM_PROBE_PRESET:-}
 media_index=${LABSTREAM_PROBE_MEDIA_INDEX:-0}
 part_index=${LABSTREAM_PROBE_PART_INDEX:-0}
 pause_resume=0
+delete_during_transfer=0
 existing_version=${LABSTREAM_PROBE_EXISTING_VERSION:-0}
 list_versions=${LABSTREAM_PROBE_LIST_VERSIONS:-0}
 delete_existing=${LABSTREAM_PROBE_DELETE_EXISTING:-0}
@@ -91,6 +94,7 @@ while [[ $# -gt 0 ]]; do
       [[ $# -ge 2 ]] || { echo "ERROR: --part-index needs a value" >&2; exit 2; }
       part_index=$2; shift 2 ;;
     --pause-resume) pause_resume=1; shift ;;
+    --delete-during-transfer) delete_during_transfer=1; shift ;;
     --existing-version) existing_version=1; shift ;;
     --list-versions) list_versions=1; shift ;;
     --delete-existing) delete_existing=1; shift ;;
@@ -111,15 +115,22 @@ if [[ -z "$query" && -z "$rating_key" ]]; then
   exit 2
 fi
 if [[ "$fault" != "connection-drop" && "$fault" != "validator-flip" \
-      && "$fault" != "401-mid-train" && "$fault" != "held-body-pause" ]]; then
-  echo "ERROR: fault must be connection-drop, validator-flip, 401-mid-train, or held-body-pause (got '$fault')." >&2
+      && "$fault" != "401-mid-train" && "$fault" != "held-body-pause" \
+      && "$fault" != "held-body-delete" && "$fault" != "double-connection-drop" \
+      && "$fault" != "write-failure" ]]; then
+  echo "ERROR: unsupported download fault '$fault'." >&2
   exit 2
 fi
 if [[ "$fault" == "held-body-pause" && $pause_resume -ne 1 ]]; then
   echo "ERROR: held-body-pause requires --pause-resume." >&2
   exit 2
 fi
-if [[ "$fault" == "connection-drop" ]] && ! is_positive_int "$drop_after"; then
+if [[ "$fault" == "held-body-delete" && $delete_during_transfer -ne 1 ]]; then
+  echo "ERROR: held-body-delete requires --delete-during-transfer." >&2
+  exit 2
+fi
+if [[ "$fault" == "connection-drop" || "$fault" == "double-connection-drop" ]] \
+   && ! is_positive_int "$drop_after"; then
   echo "ERROR: drop-after-bytes must be a positive integer (got '$drop_after')." >&2
   exit 2
 fi
@@ -156,6 +167,7 @@ drop_after_bytes: $drop_after
 fault: $fault
 observe_seconds: $observe_seconds
 pause_resume: $pause_resume
+delete_during_transfer: $delete_during_transfer
 pause_after_seconds: $pause_after_seconds
 existing_version: $existing_version
 media_index: $media_index
@@ -210,6 +222,9 @@ if [[ "$fault" == "connection-drop" ]]; then
   probe_args+=(--vp-probe-range-drop-after-bytes "$drop_after")
 else
   probe_args+=(--vp-probe-download-fault "$fault")
+  if [[ "$fault" == "double-connection-drop" ]]; then
+    probe_args+=(--vp-probe-range-drop-after-bytes "$drop_after")
+  fi
 fi
 [[ -n "$rating_key" ]] && probe_args+=(--vp-probe-rating-key "$rating_key")
 [[ -n "$query" ]] && probe_args+=(--vp-probe-query "$query")
@@ -225,6 +240,9 @@ if [[ $delete_existing == "1" || $delete_existing == "true" || $delete_existing 
 fi
 if [[ $pause_resume -eq 1 ]]; then
   probe_args+=(--vp-probe-pause-resume --vp-probe-pause-after-seconds "$pause_after_seconds")
+fi
+if [[ $delete_during_transfer -eq 1 ]]; then
+  probe_args+=(--vp-probe-delete-during-transfer --vp-probe-delete-after-seconds 2)
 fi
 if [[ $delete_after == "1" || $delete_after == "true" || $delete_after == "yes" ]]; then
   probe_args+=(--vp-probe-delete-after-observe)
@@ -301,6 +319,43 @@ if [[ $delete_existing != "1" && $delete_existing != "true" && $delete_existing 
       fi
       if ! grep -Eq 'probe\.plex_download\.resume_check' "$log_file"; then
         echo "ERROR: held-body pause did not continue through the retry/resume path; inspect $log_file" >&2
+        probe_status=1
+      fi
+      ;;
+    double-connection-drop)
+      first_fault_line=$(grep -n 'downloads\.fault_injected.*scenario=double-connection-drop' "$log_file" \
+        | sed -n '1s/:.*//p')
+      second_fault_line=$(grep -n 'downloads\.fault_injected.*scenario=double-connection-drop' "$log_file" \
+        | sed -n '2s/:.*//p')
+      first_blob_line=$(grep -n 'downloads\.range_blob_resume' "$log_file" | sed -n '1s/:.*//p')
+      second_blob_line=$(grep -n 'downloads\.range_blob_resume' "$log_file" | sed -n '2s/:.*//p')
+      if [[ -z "$first_fault_line" || -z "$second_fault_line" \
+            || -z "$first_blob_line" || -z "$second_blob_line" \
+            || $first_fault_line -ge $first_blob_line \
+            || $first_blob_line -ge $second_fault_line \
+            || $second_fault_line -ge $second_blob_line ]]; then
+        echo "ERROR: expected fault→blob resume→second fault→second blob resume ordering; inspect $log_file" >&2
+        probe_status=1
+      fi
+      ;;
+    held-body-delete)
+      held_line=$(grep -n -m1 'downloads\.range_segment_held' "$log_file" | cut -d: -f1 || true)
+      deleted_line=$(grep -n -m1 'probe\.plex_download\.deleted_during_transfer.*row_missing=true' "$log_file" \
+        | cut -d: -f1 || true)
+      purged_line=$(grep -n -m1 'downloads\.range_held_segments_purged' "$log_file" | cut -d: -f1 || true)
+      if [[ -z "$held_line" || -z "$deleted_line" || -z "$purged_line" \
+            || $held_line -ge $purged_line || $purged_line -ge $deleted_line ]]; then
+        echo "ERROR: expected held body→cancel purge→row deletion ordering; inspect $log_file" >&2
+        probe_status=1
+      fi
+      ;;
+    write-failure)
+      if ! grep -Eq 'downloads\.move_failed.*reason=storage_full.*stage=append|downloads\.move_failed.*stage=append.*reason=storage_full' "$log_file"; then
+        echo "ERROR: injected append failure was not classified terminally as storage_full; inspect $log_file" >&2
+        probe_status=1
+      fi
+      if grep -Eq 'downloads\.range_move_retry' "$log_file"; then
+        echo "ERROR: storage-full append incorrectly entered transient move retry; inspect $log_file" >&2
         probe_status=1
       fi
       ;;

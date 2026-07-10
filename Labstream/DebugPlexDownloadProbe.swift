@@ -34,6 +34,7 @@ enum DebugPlexDownloadProbe {
         let dumpSearch = arguments.contains("--vp-probe-dump-search")
         let pauseResume = arguments.contains("--vp-probe-pause-resume")
         let pauseOnly = arguments.contains("--vp-probe-pause-only")
+        let deleteDuringTransfer = arguments.contains("--vp-probe-delete-during-transfer")
         let observeOnly = arguments.contains("--vp-probe-observe-record")
         let resumeObserved = arguments.contains("--vp-probe-resume-observed")
         let deleteExisting = arguments.contains("--vp-probe-delete-existing")
@@ -41,6 +42,8 @@ enum DebugPlexDownloadProbe {
         let preset = DebugDownloadProbeSupport.value(after: "--vp-probe-download-preset", in: arguments)
             ?? PlaybackPreferences.defaultDownloadQuality
         let pauseAfterSeconds = DebugDownloadProbeSupport.intValue(after: "--vp-probe-pause-after-seconds", in: arguments) ?? 8
+        let deleteAfterSeconds = DebugDownloadProbeSupport.intValue(
+            after: "--vp-probe-delete-after-seconds", in: arguments) ?? 2
         let observeSeconds = DebugDownloadProbeSupport.intValue(after: "--vp-probe-observe-seconds", in: arguments) ?? (startDownload ? 90 : 5)
 
         log.notice("probe.start backend=\(appModel.activeBackend.rawValue, privacy: .public) ratingKey=\(ratingKey, privacy: .public) start=\(startDownload, privacy: .public) existing=\(useExistingVersion, privacy: .public) pauseResume=\(pauseResume, privacy: .public) observeOnly=\(observeOnly, privacy: .public)")
@@ -174,6 +177,19 @@ enum DebugPlexDownloadProbe {
             }
 
             await downloadManager.download(item, choice: choice, mediaIndex: selectedMediaIndex, partIndex: partIndex)
+            if deleteDuringTransfer {
+                try? await Task.sleep(for: .seconds(deleteAfterSeconds))
+                downloadManager.delete(ratingKey: ratingKey)
+                let rowMissing = await waitForMissingRecord(ratingKey: ratingKey,
+                                                            manager: downloadManager,
+                                                            seconds: 10)
+                log.notice("probe.deleted_during_transfer rowMissing=\(rowMissing, privacy: .public)")
+                AppDiagnostics.record(.downloads, "probe.plex_download.deleted_during_transfer", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "row_missing": .bool(rowMissing),
+                ])
+                return
+            }
             if pauseResume || pauseOnly {
                 let beforePause = await observe(ratingKey: ratingKey, manager: downloadManager,
                                                 seconds: pauseAfterSeconds, label: "pre_pause")
@@ -400,6 +416,16 @@ enum DebugPlexDownloadProbe {
             try? await Task.sleep(for: .seconds(1))
         }
         return DebugDownloadProbeSupport.observation(forRecordKey: ratingKey, in: manager).status == statusText
+    }
+
+    private static func waitForMissingRecord(ratingKey: String, manager: DownloadManager,
+                                             seconds: Int) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(seconds))
+        while ContinuousClock.now < deadline {
+            if !manager.records.contains(where: { $0.ratingKey == ratingKey }) { return true }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        return !manager.records.contains(where: { $0.ratingKey == ratingKey })
     }
 
     private static func explicitInt(after flag: String, in arguments: [String]) -> Int? {
