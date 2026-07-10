@@ -2583,10 +2583,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // 416-triggered changed-resource restart runs on the DELEGATE queue and can tear the
             // train down (epoch++, file deleted) between this apply's entry epoch check and here;
             // appending after that writes this mid-file segment at offset 0 of the recreated file.
+            // Size FIRST, epoch SECOND: a restart landing between the two reads then trips the
+            // epoch check, so a SAME-epoch size drift is a true invariant violation (durable
+            // bytes are monotonic within a train generation) — assertable below.
+            let durableBytesAtAppend = fileSize(at: entry.destination) ?? 0
             lock.lock()
             let epochAtAppend = rangeTrainEpochs[entry.ratingKey] ?? 0
             lock.unlock()
-            let durableBytesAtAppend = fileSize(at: entry.destination) ?? 0
             switch StaticRangeTrainIntegrityPolicy.preAppendDecision(
                 bodyTrainEpoch: bodyTrainEpoch,
                 currentTrainEpoch: epochAtAppend,
@@ -2606,6 +2609,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 ])
                 return
             case .discardOffsetDrift:
+                assertionFailure(
+                    "range pre-append drift: durable=\(durableBytesAtAppend) "
+                    + "baseOffset=\(entry.baseOffset) — durable bytes moved within a train generation")
                 try? fileManager.removeItem(at: stash)
                 AppDiagnostics.record(.downloads, "downloads.range_pre_append_drift", fields: [
                     "download_id": .identifier(entry.ratingKey),
