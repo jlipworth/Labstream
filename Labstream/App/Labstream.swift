@@ -14,10 +14,10 @@ struct Labstream: App {
     // (leaving Cinema) re-ran Plex server discovery/probing — the slow "Connecting…" splash. Owning
     // them on the `App` keeps the session alive across window teardown. Browse content stays fresh
     // because the browse views are still recreated with the window and re-fetch on appear.
-    @State private var appModel: AppModel
-    @State private var authManager: AuthManager
-    @State private var downloadManager: DownloadManager
-    @State private var musicPlayer: MusicPlayerController
+    @State private var appModel: AppModel?
+    @State private var authManager: AuthManager?
+    @State private var downloadManager: DownloadManager?
+    @State private var musicPlayer: MusicPlayerController?
     @State private var bootstrap = SessionBootstrap()
     @State private var customCinemaSession = CustomCinemaSessionStore()
     @State private var realityTheaterSession = RealityTheaterSessionStore()
@@ -25,7 +25,7 @@ struct Labstream: App {
     init() {
         AppStartup.prepareForLaunch()
 
-        let services = AppServices.make()
+        guard let services = AppServices.make() else { return }
         _appModel = State(initialValue: services.appModel)
         _authManager = State(initialValue: services.authManager)
         _downloadManager = State(initialValue: services.downloadManager)
@@ -34,17 +34,21 @@ struct Labstream: App {
 
     var body: some Scene {
         WindowGroup(id: CustomCinemaMode.mainWindowID) {
-            ContentView(appModel: appModel,
-                        authManager: authManager,
-                        downloadManager: downloadManager,
-                        musicPlayer: musicPlayer,
-                        bootstrap: bootstrap)
-                .environment(customCinemaSession)
-                .environment(realityTheaterSession)
-                .task { recordScenePhase(scenePhase) }
-                .onChange(of: scenePhase) { _, newPhase in
-                    recordScenePhase(newPhase)
-                }
+            if let appModel, let authManager, let downloadManager, let musicPlayer {
+                ContentView(appModel: appModel,
+                            authManager: authManager,
+                            downloadManager: downloadManager,
+                            musicPlayer: musicPlayer,
+                            bootstrap: bootstrap)
+                    .environment(customCinemaSession)
+                    .environment(realityTheaterSession)
+                    .task { recordScenePhase(scenePhase) }
+                    .onChange(of: scenePhase) { _, newPhase in
+                        recordScenePhase(newPhase)
+                    }
+            } else {
+                SecureStorageUnavailableView()
+            }
         }
         .windowStyle(.plain)
 
@@ -80,6 +84,7 @@ struct Labstream: App {
     }
 
     private func recordScenePhase(_ phase: ScenePhase) {
+        guard let downloadManager else { return }
         AppStartup.recordScenePhase(phase, downloadManager: downloadManager)
     }
 }

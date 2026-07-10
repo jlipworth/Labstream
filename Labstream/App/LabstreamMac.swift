@@ -23,7 +23,7 @@ struct LabstreamMac: App {
             return
         }
         AppStartup.prepareForLaunch()
-        let services = AppServices.make()
+        guard let services = AppServices.make() else { return }
         _appModel = State(initialValue: services.appModel)
         _authManager = State(initialValue: services.authManager)
         _downloadManager = State(initialValue: services.downloadManager)
@@ -46,7 +46,7 @@ struct LabstreamMac: App {
                         recordScenePhase(newPhase)
                     }
             } else {
-                EmptyView()
+                SecureStorageUnavailableView()
             }
         }
         .defaultSize(width: 1180, height: 760)
