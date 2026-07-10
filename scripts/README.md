@@ -56,7 +56,8 @@ identifier. Read their `--help` output and the platform documentation before use
 These launch the Debug app using the selected worktree simulator's already signed-in state. They do
 not read a token environment file:
 
-- `probe-plex-range-drop.sh` — Plex static-range recoverability and injected connection-loss path.
+- `probe-plex-range-drop.sh` — Plex static-range recoverability with connection-loss (default),
+  validator-flip, and one-shot mid-train 401 transport faults.
 - `probe-jellyfin-download.sh` — Jellyfin original/static and optimize/transcode download lanes.
 - `probe-emby-download.sh` — Emby route negotiation, converted-source reuse, and optimize/download
   lanes.

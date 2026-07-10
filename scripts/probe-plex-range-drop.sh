@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Simulator-only Plex download recoverability probe.
+# Simulator-only Plex download transport fault probe.
 #
 # Launches the DEBUG app in this worktree's simulator with the in-process
 # range-drop URLProtocol enabled. It uses the simulator's signed-in app state;
@@ -17,7 +17,8 @@ Required selector (or env):
   LABSTREAM_PROBE_RATING_KEY       Env alternative for --rating-key.
 
 Options:
-  --drop-after-bytes N              Simulated network-loss threshold (default: env or 2097152).
+  --fault NAME                      connection-drop (default), validator-flip, or 401-mid-train.
+  --drop-after-bytes N              Network-loss threshold for connection-drop (default: 2097152).
   --observe-seconds N               Probe post-start observation window (default: env or 90).
   --pause-after-seconds N           Delay before pause in --pause-resume mode (default: env or 8).
   --pause-resume                    Also exercise pause -> retry/resume after starting.
@@ -43,6 +44,7 @@ cd "$repo_root"
 
 query=${LABSTREAM_PROBE_QUERY:-}
 rating_key=${LABSTREAM_PROBE_RATING_KEY:-}
+fault=${LABSTREAM_PROBE_DOWNLOAD_FAULT:-connection-drop}
 drop_after=${LABSTREAM_PROBE_DROP_AFTER_BYTES:-2097152}
 observe_seconds=${LABSTREAM_PROBE_OBSERVE_SECONDS:-90}
 pause_after_seconds=${LABSTREAM_PROBE_PAUSE_AFTER_SECONDS:-8}
@@ -69,6 +71,9 @@ while [[ $# -gt 0 ]]; do
     --drop-after-bytes)
       [[ $# -ge 2 ]] || { echo "ERROR: --drop-after-bytes needs a value" >&2; exit 2; }
       drop_after=$2; shift 2 ;;
+    --fault)
+      [[ $# -ge 2 ]] || { echo "ERROR: --fault needs a value" >&2; exit 2; }
+      fault=$2; shift 2 ;;
     --observe-seconds)
       [[ $# -ge 2 ]] || { echo "ERROR: --observe-seconds needs a value" >&2; exit 2; }
       observe_seconds=$2; shift 2 ;;
@@ -104,7 +109,11 @@ if [[ -z "$query" && -z "$rating_key" ]]; then
   echo "       The script intentionally has no built-in media id." >&2
   exit 2
 fi
-if ! is_positive_int "$drop_after"; then
+if [[ "$fault" != "connection-drop" && "$fault" != "validator-flip" && "$fault" != "401-mid-train" ]]; then
+  echo "ERROR: fault must be connection-drop, validator-flip, or 401-mid-train (got '$fault')." >&2
+  exit 2
+fi
+if [[ "$fault" == "connection-drop" ]] && ! is_positive_int "$drop_after"; then
   echo "ERROR: drop-after-bytes must be a positive integer (got '$drop_after')." >&2
   exit 2
 fi
@@ -138,6 +147,7 @@ simulator: $simid
 query_set: $([[ -n "$query" ]] && echo yes || echo no)
 rating_key_set: $([[ -n "$rating_key" ]] && echo yes || echo no)
 drop_after_bytes: $drop_after
+fault: $fault
 observe_seconds: $observe_seconds
 pause_resume: $pause_resume
 pause_after_seconds: $pause_after_seconds
@@ -186,11 +196,15 @@ probe_args=(
   --vp-probe-plex-download
   --vp-probe-start-download
   --vp-probe-range-check
-  --vp-probe-range-drop-after-bytes "$drop_after"
   --vp-probe-observe-seconds "$observe_seconds"
   --vp-probe-media-index "$media_index"
   --vp-probe-part-index "$part_index"
 )
+if [[ "$fault" == "connection-drop" ]]; then
+  probe_args+=(--vp-probe-range-drop-after-bytes "$drop_after")
+else
+  probe_args+=(--vp-probe-download-fault "$fault")
+fi
 [[ -n "$rating_key" ]] && probe_args+=(--vp-probe-rating-key "$rating_key")
 [[ -n "$query" ]] && probe_args+=(--vp-probe-query "$query")
 [[ -n "$preset" ]] && probe_args+=(--vp-probe-download-preset "$preset")
@@ -251,9 +265,29 @@ if [[ $delete_existing != "1" && $delete_existing != "true" && $delete_existing 
     probe_status=1
   fi
 fi
+if [[ $delete_existing != "1" && $delete_existing != "true" && $delete_existing != "yes" ]]; then
+  if ! grep -Eq "downloads\.fault_injected.*scenario.*$fault|scenario.*$fault.*downloads\.fault_injected" "$log_file"; then
+    echo "ERROR: requested fault '$fault' was not observed; inspect $log_file" >&2
+    probe_status=1
+  fi
+  case "$fault" in
+    validator-flip)
+      if ! grep -Eq 'downloads\.range_validator_changed' "$log_file"; then
+        echo "ERROR: validator flip did not reach the engine's changed-resource path; inspect $log_file" >&2
+        probe_status=1
+      fi
+      ;;
+    401-mid-train)
+      if ! grep -Eq 'downloads\.range_http_rehydrate' "$log_file"; then
+        echo "ERROR: injected 401 did not reach the engine's request-rehydration path; inspect $log_file" >&2
+        probe_status=1
+      fi
+      ;;
+  esac
+fi
 
 printf '==> Probe complete. Key outputs:\n'
 printf '    %s\n' "$summary_file" "$build_log" "$log_file" "$stdout_file" "$stderr_file"
 printf '\n==> Recent probe lines:\n'
-grep -E 'probe\.|range-drop|Range|retry|failed|complete|downloads\.(enqueue|start|range_)' "$log_file" | tail -80 || true
+grep -E 'probe\.|range-drop|fault_injected|Range|retry|failed|complete|downloads\.(enqueue|start|range_)' "$log_file" | tail -80 || true
 exit "$probe_status"
