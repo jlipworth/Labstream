@@ -1,3 +1,5 @@
+import Foundation
+
 /// Which static-range transfer regime this platform runs. `.segmentTrain` is the
 /// pre-queued closed-segment design; `.openEndedRemainder` is the pre-segment shipping
 /// behavior (single `Range: bytes=N-` task). Flip a platform back with a one-line edit —
@@ -16,7 +18,17 @@ enum StaticRangeTransferRegime {
     }
 
     /// Size of each closed-range segment in the pre-queued train.
-    static let segmentBytes = 512 * 1024 * 1024
+    static var segmentBytes: Int {
+        #if DEBUG
+        let args = ProcessInfo.processInfo.arguments
+        if let index = args.firstIndex(of: "--vp-probe-range-segment-bytes"),
+           args.indices.contains(index + 1),
+           let bytes = Int(args[index + 1]), bytes > 0 {
+            return bytes
+        }
+        #endif
+        return 512 * 1024 * 1024
+    }
     /// Cap on live + newly-planned segment depth per download.
     static let maxQueuedSegments = 8
 }

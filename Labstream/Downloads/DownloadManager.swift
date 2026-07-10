@@ -651,6 +651,10 @@ public final class DownloadManager {
             "download_id": .identifier(ratingKey),
         ])
         retryState.removeRetrying(ratingKey)
+        // A stale-queued/system-recovery pass may have marked this row for automatic backend-ready
+        // resume while range IO was still draining. User pause supersedes that intent; otherwise a
+        // later backend refresh silently retries the row a few seconds after it reached `.paused`.
+        staticRangeRecovery.removePendingResume(ratingKey)
         staticRangeRecovery.removeManualQueueResume(ratingKey)
         lastError[ratingKey] = .interruptedResumable
 
