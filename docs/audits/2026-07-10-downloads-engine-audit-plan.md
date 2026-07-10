@@ -394,8 +394,8 @@ Deferred to user judgment / later phases:
   Emby keepalive (live-verify).
 - PLEX-F3 vacuous height guard on original-quality reuse (closed in the 2026-07-11 update below);
   PLEX-F4 vanished-render retry downloads raw source unpreflighted (closed in the 2026-07-11
-  update below); PLEX-F5 reuse leaves duplicate job rendering;
-  PLEX-F6c poller has no overall deadline.
+  update below); PLEX-F5 reuse leaves duplicate job rendering; PLEX-F6c poller has no overall
+  deadline (closed in the 2026-07-11 update below).
 - Phases not yet run: 4 (coverage-matrix test writing), 5 (adversarial lens fan-out),
   6 (fault-injection harness — model skeleton ready), 7 (device checklist delta).
 
@@ -603,7 +603,7 @@ install UUID match, clean launch/log smoke, and signed-in Home screenshot; simul
    remote-play/download correlation, and Emby server-completion timing) before treating device
    observations as deterministic.
 3. Continue the deferred backend/product findings in sections F–H (Emby F3/F4/F9/F11,
-   Plex F5/F6c, and held-stash persistence). The simulator
+   Plex F5 and held-stash persistence). The simulator
    relaunch probe now proves the held-stash item is real: eight completed stashes were swept and
    refetched from the durable checkpoint because their metadata is not persisted.
 
@@ -657,3 +657,13 @@ the manager keeps the row failed with an actionable "saved server version is no 
 error. It no longer falls back to stale media/part array indices that can now address the raw source
 or a different Plex Version. Legacy rows that never persisted a Part id retain their index-based
 migration fallback.
+
+### Deferred follow-up closed: PLEX-F6c optimize deadline
+
+Plex optimize attempts now persist `plexOptimizeStartedAtEpochSeconds` in `OfflineMetadata` and
+enforce a 24-hour wall-clock deadline in `pollForOptimizedPart`. Relaunch/resume preserves the same
+start instant rather than resetting an in-memory timer, so a healthy-but-never-producing queue item
+cannot poll forever. Expiry emits `downloads.optimize_poll_timed_out` and uses the existing
+`optimizeTimedOut` retryable failure; token/auth/unreachable health budgets remain independent.
+Policy tests cover the exact boundary, relaunch-style repeated checks, future clock correction, and
+invalid timestamps, while Codable round-trip covers persistence.

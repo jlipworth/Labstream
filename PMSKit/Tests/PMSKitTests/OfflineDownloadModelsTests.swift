@@ -203,6 +203,7 @@ struct OfflineDownloadModelsTests {
             optimizeTargetName: "Original video quality",
             optimizeQueueTitle: "Round Trip [Labstream 12345678]",
             optimizeBaselinePartIDs: [42, 43, 44],
+            plexOptimizeStartedAtEpochSeconds: 1_700_000_000,
             posterRelativePath: "555.poster.jpg",
             plexBIFRelativePath: "555.plex-sd.bif",
             jellyfinTrickPlayPlaylistRelativePath: "555.jf-trickplay.m3u8",

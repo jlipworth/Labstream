@@ -395,6 +395,9 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// Part ids present on the source item immediately before the optimize job was created.
     /// Any later part not in this set is a candidate optimized output.
     public var optimizeBaselinePartIDs: [Int]?
+    /// Wall-clock start of the current Plex optimize attempt. Persisted so relaunch/resume cannot
+    /// reset the server-prep deadline and poll a stalled queue item forever.
+    public var plexOptimizeStartedAtEpochSeconds: Double?
     /// Locally-cached poster path, relative to the Downloads base directory.
     public var posterRelativePath: String?
     /// Locally-cached Plex BIF index path, relative to the Downloads base directory.
@@ -527,6 +530,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 optimizeTargetName: String? = nil,
                 optimizeQueueTitle: String? = nil,
                 optimizeBaselinePartIDs: [Int]? = nil,
+                plexOptimizeStartedAtEpochSeconds: Double? = nil,
                 posterRelativePath: String? = nil,
                 plexBIFRelativePath: String? = nil,
                 jellyfinTrickPlayPlaylistRelativePath: String? = nil,
@@ -586,6 +590,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.optimizeTargetName = optimizeTargetName
         self.optimizeQueueTitle = optimizeQueueTitle
         self.optimizeBaselinePartIDs = optimizeBaselinePartIDs
+        self.plexOptimizeStartedAtEpochSeconds = plexOptimizeStartedAtEpochSeconds
         self.posterRelativePath = posterRelativePath
         self.plexBIFRelativePath = plexBIFRelativePath
         self.jellyfinTrickPlayPlaylistRelativePath = jellyfinTrickPlayPlaylistRelativePath
@@ -649,6 +654,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         optimizeTargetName = try c.decodeIfPresent(String.self, forKey: .optimizeTargetName)
         optimizeQueueTitle = try c.decodeIfPresent(String.self, forKey: .optimizeQueueTitle)
         optimizeBaselinePartIDs = try c.decodeIfPresent([Int].self, forKey: .optimizeBaselinePartIDs)
+        plexOptimizeStartedAtEpochSeconds = try c.decodeIfPresent(
+            Double.self, forKey: .plexOptimizeStartedAtEpochSeconds)
         posterRelativePath = try c.decodeIfPresent(String.self, forKey: .posterRelativePath)
         plexBIFRelativePath = try c.decodeIfPresent(String.self, forKey: .plexBIFRelativePath)
         jellyfinTrickPlayPlaylistRelativePath = try c.decodeIfPresent(String.self, forKey: .jellyfinTrickPlayPlaylistRelativePath)
