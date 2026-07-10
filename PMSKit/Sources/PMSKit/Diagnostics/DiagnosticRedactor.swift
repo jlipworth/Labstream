@@ -67,8 +67,14 @@ public enum DiagnosticRedactor {
         output = replace(output,
                          pattern: #"\b[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}\b"#,
                          template: "[id]")
+        // Bare-token rule of last resort. Requires at least one DIGIT: real credentials
+        // (hex ids, base64/JWT segments, Plex/JF/Emby tokens) virtually always carry digits,
+        // while long snake_case diagnostic labels ("validator_mismatch_at_drain",
+        // "plex_session_mismatch_or_unavailable", AVFoundation error summaries) never do — the
+        // digitless form was blanking ~25 downloads labels into useless "[token]" lines. The
+        // URL / key=value / Authorization rules above remain the primary secret scrubbers.
         output = replace(output,
-                         pattern: #"\b[A-Za-z0-9_=-]{24,}\b"#,
+                         pattern: #"\b(?=[A-Za-z0-9_=-]*\d)[A-Za-z0-9_=-]{24,}\b"#,
                          template: "[token]")
 
         return output
@@ -190,12 +196,15 @@ public enum DiagnosticRedactor {
     /// failing URLs, request paths, server messages, and filenames. It keeps only structural facts
     /// useful for triage: Swift class name, broad URLSession/error kind, domain family, and code.
     public static func safeErrorSummary(_ error: Error?) -> String {
-        guard let error else { return "class=none kind=none domain_family=none code=0" }
+        // "family=", not "domain_family=": "domain_family=avfoundation" is a 27-char digitless
+        // bare token that the redactor's rule of last resort used to blank wholesale, destroying
+        // every AVFoundation error summary in the jsonl (audit lens 8, B-1).
+        guard let error else { return "class=none kind=none family=none code=0" }
         let nsError = error as NSError
         return [
             "class=\(safeErrorTypeName(error))",
             "kind=\(errorClass(for: nsError))",
-            "domain_family=\(errorDomainFamily(nsError.domain))",
+            "family=\(errorDomainFamily(nsError.domain))",
             "code=\(nsError.code)"
         ].joined(separator: " ")
     }

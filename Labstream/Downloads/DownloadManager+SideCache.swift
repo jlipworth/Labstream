@@ -11,6 +11,17 @@ import os
 
 extension DownloadManager {
 
+    /// Lens 4 F2: side assets (posters, text subtitles, chapter images, Plex BIF, JF trickplay)
+    /// are DATA-PLANE payloads — multi-MB in aggregate — and must honor the same Wi-Fi-only
+    /// download setting as the media transfer itself. Mirrors the transfer engine's
+    /// `requestApplyingCellularPolicy` (replicated here; that helper is private to
+    /// `BackgroundDownloadSession`). Control-plane requests (keepalive/poll/teardown) stay exempt.
+    nonisolated static func sideAssetRequest(applyingCellularPolicy request: URLRequest) -> URLRequest {
+        var policyRequest = request
+        policyRequest.allowsCellularAccess = PlaybackPreferences.allowsCellularDownloads()
+        return policyRequest
+    }
+
     /// Download + cache the item's poster locally so the offline library shows artwork
     /// without the server (D5). Best-effort: any failure leaves the row poster-less and
     /// never fails the download. Fetches via the same `/photo/:/transcode` path the
@@ -51,7 +62,8 @@ extension DownloadManager {
     /// `Authorization` header (Emby also `userId`) that `*.authenticatedRequest(...)` attaches.
     private nonisolated static func fetchAndWritePoster(request: URLRequest, to destination: URL) async -> Bool {
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(
+                for: sideAssetRequest(applyingCellularPolicy: request))
             if let http = response as? HTTPURLResponse,
                !(200...299).contains(http.statusCode) { return false }
             guard !data.isEmpty else { return false }
@@ -225,7 +237,8 @@ extension DownloadManager {
 
     private nonisolated static func fetchAndWriteTextSubtitle(request: URLRequest, to destination: URL) async -> Bool {
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await URLSession.shared.data(
+                for: sideAssetRequest(applyingCellularPolicy: request))
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { return false }
             guard let text = String(data: data, encoding: .utf8),
                   !OfflineTextSubtitleParser.parse(text).isEmpty else { return false }
@@ -249,11 +262,15 @@ extension DownloadManager {
                                                     identity: appModel.identity,
                                                     partID: part.id,
                                                     quality: "sd")
-        let client = appModel.client
+        // Data-plane side asset (a BIF can be tens of MB): fetch through a URLRequest so the
+        // Wi-Fi-only download policy can be stamped, instead of the shared PlexClient.
+        let bifRequest = Self.sideAssetRequest(applyingCellularPolicy: request.urlRequest())
         let store = self.store
         Task { [weak self] in
             do {
-                let data = try await client.send(request)
+                let (data, response) = try await URLSession.shared.data(for: bifRequest)
+                if let http = response as? HTTPURLResponse,
+                   !(200..<300).contains(http.statusCode) { return }
                 guard !data.isEmpty, (try? BIFParser.parse(data)) != nil else { return }
                 try data.write(to: destination, options: .atomic)
                 await MainActor.run {
@@ -337,7 +354,8 @@ extension DownloadManager {
                 let fetched: [(index: Int, data: Data)] = await withTaskGroup(of: (Int, Data)?.self) { group in
                     for entry in batch {
                         group.addTask {
-                            guard let (data, response) = try? await URLSession.shared.data(for: entry.request),
+                            guard let (data, response) = try? await URLSession.shared.data(
+                                    for: Self.sideAssetRequest(applyingCellularPolicy: entry.request)),
                                   let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
                                   !data.isEmpty else { return nil }
                             return (entry.index, data)
