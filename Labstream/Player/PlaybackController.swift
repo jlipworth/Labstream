@@ -281,6 +281,9 @@ final class PlaybackController {
     private var playbackTask: Task<Void, Never>?
     private var upNextTask: Task<Void, Never>?
     private var playbackGeneration = 0
+    private lazy var lifecycleCallbacks = PlaybackLifecycleCallbackSink<Int> { [weak self] generation in
+        self?.isCurrentPlaybackLifecycle(generation) == true
+    }
     private var remoteHLSProxy: MediaSessionProxy?
     private var remoteHLSProxyGeneration: Int?
     /// User transport intent, independent of AVPlayer's transient loading state.
@@ -1134,6 +1137,7 @@ final class PlaybackController {
     /// Begin playback. Safe to call once; subsequent calls are ignored.
     func start() {
         guard !started else { return }
+        playbackGeneration += 1
         started = true
         let pathMode = localFile != nil ? "local_file" : (remoteStreamURL != nil ? "remote_stream" : "plex_stream")
         playbackStartupSpan = PerformanceInstrumentation.begin(.playbackStartup,
@@ -1163,15 +1167,14 @@ final class PlaybackController {
             beginStreaming(resumeOffsetMsOverride: initialResumeMsOverride,
                            stoppingPreviousTranscode: false)
         }
-        // Resolve the next episode in the background (#15). Network-bound and entirely
-        // best-effort: if it fails or there is no next item, the Up Next card simply never
-        // appears. Only meaningful for episodes; the resolver returns early otherwise.
-        upNextTask = Task { await self.resolveNextItem() }
     }
 
     /// Tear down observers and report a final `stopped` timeline. Call from the
     /// view's `dismantle`.
     func stop() {
+        // Invalidate callbacks before doing any final reporting. Observer removal cannot retract
+        // a KVO/notification/time callback that has already queued its MainActor continuation.
+        playbackGeneration += 1
         maybeRecordDiagnosticSnapshot(force: true)
         recordPlaybackDiagnostic("playback.session_stop", fields: [
             "resume": .millisecondsBucket(currentResumeMs),
@@ -1188,7 +1191,6 @@ final class PlaybackController {
         endItemPreparation()
         upNextTask?.cancel()
         upNextTask = nil
-        playbackGeneration += 1
         if let proxy = remoteHLSProxy, let generation = remoteHLSProxyGeneration {
             Task { await proxy.stop(generation: generation) }
             remoteHLSProxy = nil
@@ -1611,7 +1613,9 @@ final class PlaybackController {
     ///
     /// Invoked on `.readyToPlay`; stays on the @MainActor since it reads the non-`Sendable`
     /// `AVMediaSelectionOption`s.
-    private func applySavedSubtitlePreferenceIfNeeded() async {
+    private func applySavedSubtitlePreferenceIfNeeded(playerItem: AVPlayerItem,
+                                                       itemGeneration: Int,
+                                                       observedPlaybackGeneration: Int) async {
         guard !didApplySavedSubtitle else { return }
         let defaults = UserDefaults.standard
         let wantsOff = defaults.bool(forKey: SubtitlePrefKey.off)
@@ -1621,9 +1625,11 @@ final class PlaybackController {
 
         // Load the legible group once. If the HLS carries no legible renditions, there's
         // nothing to apply on this item — mark applied so we don't re-probe each readyToPlay.
-        guard let playerItem = player.currentItem,
-              let group = try? await playerItem.asset.loadMediaSelectionGroup(for: .legible),
-              !group.options.isEmpty else {
+        let loadedGroup = try? await playerItem.asset.loadMediaSelectionGroup(for: .legible)
+        guard isCurrentObservedItem(playerItem,
+                                    itemGeneration: itemGeneration,
+                                    observedPlaybackGeneration: observedPlaybackGeneration) else { return }
+        guard let group = loadedGroup, !group.options.isEmpty else {
             didApplySavedSubtitle = true
             return
         }
@@ -1866,7 +1872,9 @@ final class PlaybackController {
     /// language matches the saved code; no-op when nothing is saved or no match exists (the HLS
     /// default soundtrack stands). Invoked on `.readyToPlay`; stays on the @MainActor since it
     /// reads the non-`Sendable` `AVMediaSelectionOption`s.
-    private func applySavedAudioPreferenceIfNeeded() async {
+    private func applySavedAudioPreferenceIfNeeded(playerItem: AVPlayerItem,
+                                                    itemGeneration: Int,
+                                                    observedPlaybackGeneration: Int) async {
         guard !didApplyAudioPreference else { return }
         let savedLang = UserDefaults.standard.string(forKey: AudioPrefKey.language)
         // No preference saved: leave the HLS default and don't burn the one-shot gate yet, so a
@@ -1875,9 +1883,11 @@ final class PlaybackController {
 
         // Load the audible group once. If the HLS carries no audible renditions there's nothing
         // to apply on this item — mark applied so we don't re-probe each readyToPlay.
-        guard let playerItem = player.currentItem,
-              let group = try? await playerItem.asset.loadMediaSelectionGroup(for: .audible),
-              !group.options.isEmpty else {
+        let loadedGroup = try? await playerItem.asset.loadMediaSelectionGroup(for: .audible)
+        guard isCurrentObservedItem(playerItem,
+                                    itemGeneration: itemGeneration,
+                                    observedPlaybackGeneration: observedPlaybackGeneration) else { return }
+        guard let group = loadedGroup, !group.options.isEmpty else {
             didApplyAudioPreference = true
             return
         }
@@ -3094,7 +3104,8 @@ final class PlaybackController {
     ///
     /// Artwork is only fetched for streaming sessions (where we have the server + token to hit
     /// `/photo/:/transcode`); local-file playback gets the text items only.
-    private func attachExternalMetadata(to playerItem: AVPlayerItem) {
+    private func attachExternalMetadata(to playerItem: AVPlayerItem,
+                                        observedPlaybackGeneration: Int) {
         #if os(macOS)
         // `externalMetadata` is unavailable on native macOS AVPlayerItem; keep playback
         // functional and let the Mac playback slice design Now Playing/player metadata.
@@ -3115,6 +3126,7 @@ final class PlaybackController {
             guard let data = await Self.fetchArtworkData(url: url) else { return }
             await MainActor.run {
                 guard let self, let playerItem else { return }
+                guard self.isCurrentPlaybackLifecycle(observedPlaybackGeneration) else { return }
                 // Only attach if this is still the player's current item (a Quality reload may
                 // have swapped it out from under the in-flight fetch).
                 guard self.player.currentItem === playerItem else { return }
@@ -3225,6 +3237,10 @@ final class PlaybackController {
     // MARK: - Shared load + observers
 
     private func load(_ playerItem: AVPlayerItem, resumeOffsetMs: Int?) {
+        // A replacement item is a new callback authority even when it belongs to the same
+        // control-plane start/reopen operation.
+        playbackGeneration += 1
+        let observedPlaybackGeneration = playbackGeneration
         // Reset per-item state for the new player item: a fresh load is a fresh resume
         // (didSeek), a fresh readiness gate, and a clean error surface (P2/P3/P8).
         didSeek = false
@@ -3263,7 +3279,12 @@ final class PlaybackController {
         // idempotent across a Quality reload (which re-enters here): the session is already
         // active and `installObservers()` no-ops on its second call.
         audioSession.activate()
-        audioSession.installObservers()
+        // Reinstall for every item so the observer closures capture this item's authority.
+        // Removal alone cannot retract a notification whose MainActor continuation is queued.
+        audioSession.removeObservers()
+        audioSession.installObservers { [weak self] in
+            self?.isCurrentPlaybackLifecycle(observedPlaybackGeneration) == true
+        }
         // Forward-buffer tuning (#21 / #43 / #175). Normal remote-HLS VOD playback should keep
         // an airplane-safe cushion. The short buffer is reserved for actual out-of-buffer seek
         // reopens, where Jellyfin may only mint segments around realtime and a deep target can
@@ -3288,13 +3309,19 @@ final class PlaybackController {
         player.automaticallyWaitsToMinimizeStalling = bufferingConfig.automaticallyWaitsToMinimizeStalling
         // Populate Now Playing / cinema-chrome metadata (title + summary now, artwork async).
         // Done for both streaming and local-file paths so the player shows the real title.
-        attachExternalMetadata(to: playerItem)
+        attachExternalMetadata(to: playerItem,
+                               observedPlaybackGeneration: observedPlaybackGeneration)
         nextPlayerItemGeneration += 1
         currentPlayerItemGeneration = nextPlayerItemGeneration
         ignoredRecoverableFailedToEndCount = 0
         let itemGeneration = currentPlayerItemGeneration
-        let observedPlaybackGeneration = playbackGeneration
         player.replaceCurrentItem(with: playerItem)
+        // Resolve Up Next under the replacement item's lifecycle. A response released after
+        // stop/reload must not repopulate the card for a dead item.
+        upNextTask?.cancel()
+        upNextTask = Task { [weak self] in
+            await self?.resolveNextItem(observedPlaybackGeneration: observedPlaybackGeneration)
+        }
         playbackItemLoadSpan?.end(result: "superseded", fields: ["path_mode": performancePathMode])
         playbackItemLoadSpan = PerformanceInstrumentation.begin(.playbackItemLoad,
                                                                 backend: performanceBackendLabel,
@@ -3314,7 +3341,9 @@ final class PlaybackController {
                          resumeOffsetMs: resumeOffsetMs,
                          itemGeneration: itemGeneration,
                          observedPlaybackGeneration: observedPlaybackGeneration)
-        startDiagnosticsSampling()
+        startDiagnosticsSampling(playerItem: playerItem,
+                                 itemGeneration: itemGeneration,
+                                 observedPlaybackGeneration: observedPlaybackGeneration)
         if userWantsPaused {
             player.pause()
             transport.set(paused: true)
@@ -3334,11 +3363,16 @@ final class PlaybackController {
     /// Poll the player's access/error logs ~1s for the Stats overlay. A repeating
     /// `Timer` is used (rather than the timeline observer) so the numbers tick even
     /// while paused and at a finer cadence than the 10s heartbeat.
-    private func startDiagnosticsSampling() {
+    private func startDiagnosticsSampling(playerItem: AVPlayerItem,
+                                          itemGeneration: Int,
+                                          observedPlaybackGeneration: Int) {
         diagnosticsObservers.reset()
         let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
+                guard self.isCurrentObservedItem(playerItem,
+                                                 itemGeneration: itemGeneration,
+                                                 observedPlaybackGeneration: observedPlaybackGeneration) else { return }
                 self.diagnostics.sample(player: self.player)
                 self.runHDRProbeIfNeeded()
                 self.maintainForwardBufferTarget()
@@ -3356,9 +3390,11 @@ final class PlaybackController {
     private func runHDRProbeIfNeeded() {
         guard !hdrProbeConclusive, let item = player.currentItem else { return }
         let eligible = AVPlayer.eligibleForHDRPlayback
+        let observedPlaybackGeneration = playbackGeneration
         Task { @MainActor [weak self] in
             let result = await PlaybackHDRProbe.probe(playerItem: item, eligibleForHDRPlayback: eligible)
-            guard let self, self.player.currentItem === item else { return }
+            guard let self, self.player.currentItem === item,
+                  self.isCurrentPlaybackLifecycle(observedPlaybackGeneration) else { return }
             self.diagnostics.applyRuntimeHDRProbe(result)
             self.hdrProbeConclusive = result.sawVideoFormatDescriptions
         }
@@ -3392,6 +3428,7 @@ final class PlaybackController {
         observers.store(player.observe(\.currentItem, options: [.new]) { [weak self] avPlayer, _ in
             guard let self else { return }
             Task { @MainActor in
+                guard self.isCurrentPlaybackLifecycle(observedPlaybackGeneration) else { return }
                 let current = avPlayer.currentItem
                 let matchesExpectedItem = current === playerItem
                 let liveMs = self.livePlaybackClockMs
@@ -3411,7 +3448,7 @@ final class PlaybackController {
                 ])
 
                 guard self.currentPlayerItemGeneration == itemGeneration,
-                      self.playbackGeneration == observedPlaybackGeneration,
+                      self.isCurrentPlaybackLifecycle(observedPlaybackGeneration),
                       !matchesExpectedItem else { return }
 
                 if let liveMs, !suppressLiveResumeUpdate {
@@ -3471,10 +3508,22 @@ final class PlaybackController {
                     // Reapply the user's saved subtitle-language preference to this item's
                     // legible group (once per item; gated inside). Runs on each fresh item —
                     // including after a Quality reload swaps the AVPlayerItem.
-                    await self.applySavedSubtitlePreferenceIfNeeded()
+                    await self.applySavedSubtitlePreferenceIfNeeded(
+                        playerItem: pItem,
+                        itemGeneration: itemGeneration,
+                        observedPlaybackGeneration: observedPlaybackGeneration)
+                    guard self.isCurrentObservedItem(pItem,
+                                                     itemGeneration: itemGeneration,
+                                                     observedPlaybackGeneration: observedPlaybackGeneration) else { return }
                     // Likewise reapply the saved audio-language preference to this item's
                     // audible group (#3; once per item, gated inside).
-                    await self.applySavedAudioPreferenceIfNeeded()
+                    await self.applySavedAudioPreferenceIfNeeded(
+                        playerItem: pItem,
+                        itemGeneration: itemGeneration,
+                        observedPlaybackGeneration: observedPlaybackGeneration)
+                    guard self.isCurrentObservedItem(pItem,
+                                                     itemGeneration: itemGeneration,
+                                                     observedPlaybackGeneration: observedPlaybackGeneration) else { return }
                     // Reapply the persisted playback speed (R5). A fresh item / Quality reload
                     // resets the player's rate to 1.0, so re-push the user's choice now that the
                     // item is ready — without this a reload would silently drop back to 1.0×.
@@ -3506,7 +3555,11 @@ final class PlaybackController {
                                              completionHandler: { [weak self] finished in
                                                  guard finished else { return }
                                                  Task { @MainActor [weak self] in
-                                                     guard let self, !self.userWantsPaused else { return }
+                                                     guard let self,
+                                                           self.isCurrentObservedItem(pItem,
+                                                                                      itemGeneration: itemGeneration,
+                                                                                      observedPlaybackGeneration: observedPlaybackGeneration),
+                                                           !self.userWantsPaused else { return }
                                                      self.applyPlaybackSpeed()
                                                  }
                                              })
@@ -3567,6 +3620,9 @@ final class PlaybackController {
         ) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
+                guard self.isCurrentObservedItem(playerItem,
+                                                 itemGeneration: itemGeneration,
+                                                 observedPlaybackGeneration: observedPlaybackGeneration) else { return }
                 guard let event = playerItem.errorLog()?.events.last else { return }
                 self.recordPlaybackDiagnostic("playback.error_log_event", fields: [
                     "error_log_status_code": .int(event.errorStatusCode),
@@ -3618,6 +3674,10 @@ final class PlaybackController {
         observers.storeTimeObserver(player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
+                guard self.lifecycleCallbacks.accepts(.videoHeartbeat, generation: observedPlaybackGeneration),
+                      self.isCurrentObservedItem(playerItem,
+                                                 itemGeneration: itemGeneration,
+                                                 observedPlaybackGeneration: observedPlaybackGeneration) else { return }
                 let state: TimelineRequest.State = self.player.timeControlStatus == .paused ? .paused : .playing
                 self.timeline.report(state: state, force: false)
                 self.recordLocalPlaybackPosition()
@@ -3635,6 +3695,10 @@ final class PlaybackController {
         observers.storeTimeObserver(player.addPeriodicTimeObserver(forInterval: markerInterval, queue: .main) { [weak self] time in
             Task { @MainActor in
                 guard let self else { return }
+                guard self.lifecycleCallbacks.accepts(.videoMarker, generation: observedPlaybackGeneration),
+                      self.isCurrentObservedItem(playerItem,
+                                                 itemGeneration: itemGeneration,
+                                                 observedPlaybackGeneration: observedPlaybackGeneration) else { return }
                 if time.seconds.isFinite {
                     self.rememberTrustworthyPlaybackPosition(Int((max(0, time.seconds) * 1000).rounded()),
                                                              source: "periodic_live",
@@ -3658,6 +3722,10 @@ final class PlaybackController {
             guard let self else { return }
             let status = avPlayer.timeControlStatus
             Task { @MainActor in
+                guard self.lifecycleCallbacks.accepts(.videoPlaying, generation: observedPlaybackGeneration),
+                      self.isCurrentObservedItem(playerItem,
+                                                 itemGeneration: itemGeneration,
+                                                 observedPlaybackGeneration: observedPlaybackGeneration) else { return }
                 self.handleTimeControlTransport(status: status)
                 self.handleTimeControlBuffering(status: status)
             }
@@ -3824,9 +3892,12 @@ final class PlaybackController {
 
     private func armReconnectWatchdog() {
         reconnectWatchdogTask?.cancel()
+        let observedPlaybackGeneration = playbackGeneration
         reconnectWatchdogTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(20))
-            guard let self, !Task.isCancelled, self.reconnectInProgress else { return }
+            guard let self,
+                  self.isCurrentPlaybackLifecycle(observedPlaybackGeneration),
+                  self.reconnectInProgress else { return }
             self.surfaceReconnectTimeout()
         }
     }
@@ -3862,9 +3933,10 @@ final class PlaybackController {
     private func armItemPreparationWatchdog() {
         itemPreparationWatchdogTask?.cancel()
         itemPreparationProgressBaseline = currentStallProgressSignature()
+        let observedPlaybackGeneration = playbackGeneration
         itemPreparationWatchdogTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(20))
-            guard let self, !Task.isCancelled else { return }
+            guard let self, self.isCurrentPlaybackLifecycle(observedPlaybackGeneration) else { return }
             self.handleItemPreparationTimeout()
         }
     }
@@ -4023,7 +4095,7 @@ final class PlaybackController {
     /// so we don't need grandparent/index fields that `MediaItem` doesn't expose). The
     /// resolved item is a Sendable Codable model, so it crosses back to the main actor
     /// cleanly. Best-effort: any failure leaves `upNext.nextItem` nil and the card hidden.
-    private func resolveNextItem() async {
+    private func resolveNextItem(observedPlaybackGeneration: Int) async {
         guard item.type == "episode" else { return }
         guard let server, let token, let machineIdentifier else { return }
 
@@ -4035,6 +4107,7 @@ final class PlaybackController {
                                           type: "video",
                                           continuous: true)
         guard let resp = try? await client.send(req, as: PlayQueueResponse.self) else { return }
+        guard isCurrentPlaybackLifecycle(observedPlaybackGeneration) else { return }
 
         let queue = resp.mediaContainer.metadata
         guard !queue.isEmpty else { return }
@@ -4058,6 +4131,7 @@ final class PlaybackController {
         // Only auto-advance within the same kind (episode → episode); skip any trailing
         // non-episode queue entry just in case.
         guard next.type == "episode" else { return }
+        guard isCurrentPlaybackLifecycle(observedPlaybackGeneration) else { return }
         upNext.setNextItem(next)
     }
 
@@ -4144,7 +4218,14 @@ final class PlaybackController {
                                        observedPlaybackGeneration: Int) -> Bool {
         player.currentItem === observedItem &&
             currentPlayerItemGeneration == itemGeneration &&
-            playbackGeneration == observedPlaybackGeneration
+            isCurrentPlaybackLifecycle(observedPlaybackGeneration)
+    }
+
+    private func isCurrentPlaybackLifecycle(_ observedPlaybackGeneration: Int) -> Bool {
+        VideoPlaybackLifecyclePolicy.accepts(
+            capturedGeneration: observedPlaybackGeneration,
+            currentGeneration: playbackGeneration,
+            isCancelled: Task.isCancelled)
     }
 
     private func recordIgnoredPlayerItemEvent(_ event: String,
@@ -4467,9 +4548,12 @@ final class PlaybackController {
                                            Int64(Int.max)))),
             "baseline_loaded_end_ms": .int(stallProgressBaseline?.loadedEndMs ?? 0),
         ])
+        let observedPlaybackGeneration = playbackGeneration
         let timer = Timer(timeInterval: activeStallTimeoutSeconds, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.handleStallTimeout()
+                guard let self,
+                      self.isCurrentPlaybackLifecycle(observedPlaybackGeneration) else { return }
+                self.handleStallTimeout()
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -4488,10 +4572,13 @@ final class PlaybackController {
         recordPlaybackDiagnostic("playback.dv_guard_watchdog_armed", fields: [
             "timeout_seconds": .int(Int(DolbyVisionGuard.firstFrameTimeoutSeconds)),
         ])
+        let observedPlaybackGeneration = playbackGeneration
         let timer = Timer(timeInterval: DolbyVisionGuard.firstFrameTimeoutSeconds,
                           repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.handleDVGuardTimeout()
+                guard let self,
+                      self.isCurrentPlaybackLifecycle(observedPlaybackGeneration) else { return }
+                self.handleDVGuardTimeout()
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -4879,13 +4966,14 @@ final class PlaybackController {
                                             allowsNearZero: true)
         finalTargetRebuildPolicy.recordFinalTarget(offsetMs: targetMs)
         finalTargetSettleTask?.cancel()
+        let observedPlaybackGeneration = playbackGeneration
         finalTargetSettleTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: Self.finalTargetSettleNanos)
             guard let self else { return }
             // Any early-out here means the rebuild won't actually run, so release the hold to
             // avoid freezing the label. Cancellation = superseded by a newer seek (which set its
             // own hold) or stop(); leave the hold to the new owner / stop's reset.
-            guard !Task.isCancelled else { return }
+            guard self.isCurrentPlaybackLifecycle(observedPlaybackGeneration) else { return }
             guard self.supportsSeekReprime, !self.playbackError.isFailed else {
                 self.setSeeking(false); return
             }
@@ -5117,9 +5205,11 @@ final class PlaybackController {
                 "target": .millisecondsBucket(targetMs),
             ])
             finalTargetSettleTask?.cancel()
+            let observedPlaybackGeneration = playbackGeneration
             finalTargetSettleTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .seconds(remaining))
-                guard let self, !Task.isCancelled else { return }
+                guard let self,
+                      self.isCurrentPlaybackLifecycle(observedPlaybackGeneration) else { return }
                 guard let target = self.finalTargetRebuildPolicy.consumePendingTarget() else {
                     // Cooldown elapsed but nothing left to rebuild — release the hold so the
                     // label doesn't freeze (GH #110).
