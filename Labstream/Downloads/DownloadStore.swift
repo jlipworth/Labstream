@@ -167,6 +167,85 @@ final class DownloadStore: @unchecked Sendable {
         baseDirectory.appendingPathComponent("\(Self.safeFilenameComponent(ratingKey)).resume")
     }
 
+    /// Durable home for an out-of-order static Range body. A UUID prevents a replacement body
+    /// from aliasing the manifest/file still visible to a concurrent drain.
+    func heldRangeSegmentDestinationURL(ratingKey: String, offset: Int) -> URL {
+        baseDirectory.appendingPathComponent(
+            "\(Self.safeFilenameComponent(ratingKey)).range-held-\(max(0, offset))-\(UUID().uuidString)"
+        )
+    }
+
+    func heldRangeSegmentURL(relativePath: String) -> URL? {
+        guard Self.isSafeOneLevelRelativePath(relativePath) else { return nil }
+        return baseDirectory.appendingPathComponent(relativePath)
+    }
+
+    /// Atomically replace the manifest entry at an offset. The caller installs the new entry in
+    /// its in-memory assembly map before deleting the returned previous file.
+    @discardableResult
+    func persistHeldRangeSegment(ratingKey: String,
+                                 segment: OfflineHeldRangeSegment)
+        -> (persisted: Bool, previous: OfflineHeldRangeSegment?) {
+        guard Self.isSafeOneLevelRelativePath(segment.relativePath),
+              segment.offset >= 0, segment.length > 0 else { return (false, nil) }
+        lock.lock()
+        guard var row = rows[ratingKey], var metadata = row.metadata else {
+            lock.unlock()
+            return (false, nil)
+        }
+        var segments = metadata.heldRangeSegments ?? []
+        let previous = segments.first { $0.offset == segment.offset }
+        segments.removeAll { $0.offset == segment.offset }
+        segments.append(segment)
+        metadata.heldRangeSegments = segments.sorted { $0.offset < $1.offset }
+        row.metadata = metadata
+        rows[ratingKey] = row
+        lock.unlock()
+        persist()
+        return (true, previous)
+    }
+
+    @discardableResult
+    func removeHeldRangeSegment(ratingKey: String, offset: Int) -> OfflineHeldRangeSegment? {
+        lock.lock()
+        guard var row = rows[ratingKey], var metadata = row.metadata,
+              let previous = metadata.heldRangeSegments?.first(where: { $0.offset == offset }) else {
+            lock.unlock()
+            return nil
+        }
+        let remaining = metadata.heldRangeSegments?.filter { $0.offset != offset } ?? []
+        metadata.heldRangeSegments = remaining.isEmpty ? nil : remaining
+        row.metadata = metadata
+        rows[ratingKey] = row
+        lock.unlock()
+        persist()
+        return previous
+    }
+
+    @discardableResult
+    func takeHeldRangeSegments(ratingKey: String) -> [OfflineHeldRangeSegment] {
+        lock.lock()
+        guard var row = rows[ratingKey], var metadata = row.metadata else {
+            lock.unlock()
+            return []
+        }
+        let segments = metadata.heldRangeSegments ?? []
+        guard !segments.isEmpty else { lock.unlock(); return [] }
+        metadata.heldRangeSegments = nil
+        row.metadata = metadata
+        rows[ratingKey] = row
+        lock.unlock()
+        persist()
+        return segments
+    }
+
+    var referencedHeldRangeSegmentRelativePaths: Set<String> {
+        lock.lock(); defer { lock.unlock() }
+        return Set(rows.values.flatMap { row in
+            row.metadata?.heldRangeSegments?.map(\.relativePath) ?? []
+        }.filter(Self.isSafeOneLevelRelativePath))
+    }
+
     /// Re-resolve a stored relative cache path to an absolute URL that exists on disk.
     private func resolvedDownloadAssetURL(_ relative: String?) -> URL? {
         guard let relative, Self.isSafeOneLevelRelativePath(relative) else { return nil }
@@ -1006,6 +1085,7 @@ final class DownloadStore: @unchecked Sendable {
             assets.append(contentsOf: row.metadata?.jellyfinTrickPlayTileRelativePaths ?? [])
             assets.append(contentsOf: Array(row.metadata?.chapterImageRelativePaths?.values ?? Dictionary<Int, String>().values))
             assets.append(contentsOf: row.metadata?.offlineTextSubtitles?.map(\.relativePath) ?? [])
+            assets.append(contentsOf: row.metadata?.heldRangeSegments?.map(\.relativePath) ?? [])
             for asset in assets where Self.isSafeOneLevelRelativePath(asset) {
                 try? fileManager.removeItem(at: baseDirectory.appendingPathComponent(asset))
             }

@@ -76,8 +76,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private var rangeInflight: [Int: RangeTransfer] = [:]
     /// Finished segment bodies stashed on disk ahead of the durable checkpoint (out-of-order
     /// arrivals), keyed by ratingKey then segment offset. Kept until the checkpoint reaches them and
-    /// `appendAssembledSegment` folds them in. In-memory only: a lost entry costs at most a re-download
-    /// (the durable partial is always the source of truth). Each entry records the response's
+    /// `appendAssembledSegment` folds them in. Each entry is also manifested in `DownloadStore` and
+    /// stored beside the media file so a process death does not waste already-completed bodies.
+    /// The durable partial remains the source of truth. Each entry records the response's
     /// resource validator so the drain can re-verify version consistency at splice time (B.2).
     /// Guarded by `lock`.
     private var heldRangeSegments: [String: [Int: (url: URL, length: Int, validator: String?)]] = [:]
@@ -642,6 +643,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             let destinations = self.store.destinationsByRatingKey
             let recordsByKey = Dictionary(self.store.records.map { ($0.ratingKey, $0) },
                                           uniquingKeysWith: { first, _ in first })
+            self.restoreHeldRangeSegments(recordsByKey: recordsByKey)
             var rangeTaskIdentifiersToCancel: [Int] = []
             var adoptedRangeKeys: Set<String> = []
             var adoptedSegmentCounts: [String: Int] = [:]
@@ -902,6 +904,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // body was never appended, so the durable partial re-fetches it on resume. visionOS only
             // clears `tmp/` under pressure, so reclaim them here (cheap, alongside reattach).
             self.sweepOrphanedRangeBodyStashes(liveTaskIdentifiers: Set(tasks.map(\.taskIdentifier)))
+            self.sweepOrphanedDurableHeldRangeSegments()
             self.sweepOrphanedNetworkTemps(liveTaskCount: tasks.count, context: .reattach)
             onReattached?(liveKeys)
             self.onChange?()
@@ -938,6 +941,89 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "swept_bytes": .bytes(sweptBytes),
                 "live_task_count": .int(liveTaskIdentifiers.count),
                 "held_stash_count": .int(heldStashPaths.count),
+            ])
+        }
+    }
+
+    /// Rehydrate durable out-of-order bodies before reattached tasks or the launch reconciler plan
+    /// any replacement ranges. Invalid manifests fail closed: the media checkpoint is authoritative,
+    /// so a stale/missing/mismatched held body is simply deleted and fetched again.
+    private func restoreHeldRangeSegments(recordsByKey: [String: DownloadRecord]) {
+        var restoredCount = 0
+        var restoredBytes = 0
+        for (ratingKey, record) in recordsByKey {
+            guard let manifests = record.metadata?.heldRangeSegments, !manifests.isEmpty else { continue }
+            let isActiveStatic = StaticRangeRecoveryPolicy.isStaticRangeRecord(record)
+                && (record.status == .queued || record.status == .downloading || record.status == .paused)
+            let durableBytes = fileSize(at: record.localURL) ?? 0
+            let rowAttemptID = record.metadata?.downloadAttemptID
+            let storedValidator = record.metadata?.rangeValidator
+            var seenOffsets = Set<Int>()
+            for manifest in manifests {
+                let url = store.heldRangeSegmentURL(relativePath: manifest.relativePath)
+                let actualLength = url.flatMap(fileSize(at:))
+                let valid = isActiveStatic
+                    && manifest.offset >= durableBytes
+                    && manifest.length > 0
+                    && actualLength == manifest.length
+                    && rowAttemptID != nil
+                    && manifest.attemptID == rowAttemptID
+                    && seenOffsets.insert(manifest.offset).inserted
+                    && StaticRangeTrainIntegrityPolicy.heldSpliceDecision(
+                        storedValidator: storedValidator,
+                        heldValidator: manifest.validator
+                    ) != .discardChangedResource
+                guard valid, let url else {
+                    _ = store.removeHeldRangeSegment(ratingKey: ratingKey, offset: manifest.offset)
+                    if let url { try? fileManager.removeItem(at: url) }
+                    AppDiagnostics.record(.downloads, "downloads.range_held_manifest_discarded", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "base_offset": .int(manifest.offset),
+                        "manifest_length": .int(manifest.length),
+                        "actual_length": .int(actualLength ?? -1),
+                    ])
+                    continue
+                }
+                lock.lock()
+                let alreadyRestored = heldRangeSegments[ratingKey]?[manifest.offset]?.url == url
+                heldRangeSegments[ratingKey, default: [:]][manifest.offset] =
+                    (url: url, length: manifest.length, validator: manifest.validator)
+                lock.unlock()
+                if !alreadyRestored {
+                    restoredCount += 1
+                    restoredBytes += manifest.length
+                }
+            }
+        }
+        if restoredCount > 0 {
+            AppDiagnostics.record(.downloads, "downloads.range_held_segments_restored", fields: [
+                "restored_count": .int(restoredCount),
+                "restored_bytes": .bytes(restoredBytes),
+            ])
+        }
+    }
+
+    /// Crash window backstop: a durable body may have been renamed into Downloads just before its
+    /// index manifest was committed. Only Labstream's private held-body filename class is swept.
+    private func sweepOrphanedDurableHeldRangeSegments() {
+        let referenced = store.referencedHeldRangeSegmentRelativePaths
+        guard let entries = try? fileManager.contentsOfDirectory(
+            at: store.directory, includingPropertiesForKeys: nil) else { return }
+        var sweptCount = 0
+        var sweptBytes = 0
+        for url in entries where url.lastPathComponent.contains(".range-held-")
+            && !referenced.contains(url.lastPathComponent) {
+            let bytes = fileSize(at: url) ?? 0
+            do {
+                try fileManager.removeItem(at: url)
+                sweptCount += 1
+                sweptBytes += bytes
+            } catch {}
+        }
+        if sweptCount > 0 {
+            AppDiagnostics.record(.downloads, "downloads.range_held_orphan_swept", fields: [
+                "swept_count": .int(sweptCount),
+                "swept_bytes": .bytes(sweptBytes),
             ])
         }
     }
@@ -1193,6 +1279,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             }
         } else {
             fileManager.createFile(atPath: destination.path, contents: nil)
+        }
+        lock.lock()
+        let hasHeldSegments = !(heldRangeSegments[ratingKey]?.isEmpty ?? true)
+        lock.unlock()
+        if hasHeldSegments {
+            offset = drainHeldRangeSegments(ratingKey: ratingKey, destination: destination,
+                                            expectedBytes: expectedBytes)
         }
         store.setSourcePartSizeIfMissing(ratingKey: ratingKey, expectedBytes)
         // Lens 2 F5: an `expectedBytes == 0` source used to satisfy neither the finalize gate
@@ -2868,16 +2961,56 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                         continueRangeAfterBody(entry: entry, partialSize: durableBytesBeforeAppend)
                         return
                     }
-                    lock.lock()
-                    // M3: replacing an existing held stash at this offset must delete the previous temp
-                    // (a re-finish uses a new taskIdentifier → a distinct stash path) or it leaks.
-                    if let previous = heldRangeSegments[entry.ratingKey]?[entry.baseOffset],
-                       previous.url != stash {
-                        try? fileManager.removeItem(at: previous.url)
+                    let durableStash = store.heldRangeSegmentDestinationURL(
+                        ratingKey: entry.ratingKey, offset: entry.baseOffset)
+                    do {
+                        try fileManager.moveItem(at: stash, to: durableStash)
+                    } catch {
+                        try? fileManager.removeItem(at: stash)
+                        AppDiagnostics.record(.downloads, "downloads.range_held_persist_failed", fields: [
+                            "download_id": .identifier(entry.ratingKey),
+                            "base_offset": .int(entry.baseOffset),
+                            "stage": .label("durable_move"),
+                            "error": .error(error),
+                        ])
+                        continueRangeAfterBody(entry: entry, partialSize: durableBytesBeforeAppend)
+                        return
                     }
+                    let manifest = OfflineHeldRangeSegment(
+                        offset: entry.baseOffset,
+                        length: stashLen,
+                        validator: validator,
+                        relativePath: durableStash.lastPathComponent,
+                        attemptID: store.downloadAttemptID(ratingKey: entry.ratingKey)
+                    )
+                    let persistence = store.persistHeldRangeSegment(
+                        ratingKey: entry.ratingKey, segment: manifest)
+                    guard persistence.persisted else {
+                        try? fileManager.removeItem(at: durableStash)
+                        AppDiagnostics.record(.downloads, "downloads.range_held_persist_failed", fields: [
+                            "download_id": .identifier(entry.ratingKey),
+                            "base_offset": .int(entry.baseOffset),
+                            "stage": .label("manifest"),
+                        ])
+                        continueRangeAfterBody(entry: entry, partialSize: durableBytesBeforeAppend)
+                        return
+                    }
+                    lock.lock()
+                    let previousInMemory = heldRangeSegments[entry.ratingKey]?[entry.baseOffset]
                     heldRangeSegments[entry.ratingKey, default: [:]][entry.baseOffset] =
-                        (url: stash, length: stashLen, validator: validator)
+                        (url: durableStash, length: stashLen, validator: validator)
                     lock.unlock()
+                    // M3: a replacement uses a new filename. Delete both the prior live-map and
+                    // prior persisted-manifest file only after the new manifest/map are installed.
+                    var replacedURLs = Set<URL>()
+                    if let previousInMemory { replacedURLs.insert(previousInMemory.url) }
+                    if let previous = persistence.previous,
+                       let url = store.heldRangeSegmentURL(relativePath: previous.relativePath) {
+                        replacedURLs.insert(url)
+                    }
+                    for url in replacedURLs where url != durableStash {
+                        try? fileManager.removeItem(at: url)
+                    }
                     AppDiagnostics.record(.downloads, "downloads.range_segment_held", fields: [
                         "download_id": .identifier(entry.ratingKey),
                         "base_offset": .int(entry.baseOffset),
@@ -3142,6 +3275,21 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
     }
 
+    private func removeHeldRangeSegment(ratingKey: String, offset: Int, fallbackURL: URL? = nil) {
+        let persisted = store.removeHeldRangeSegment(ratingKey: ratingKey, offset: offset)
+        lock.lock()
+        let mapped = heldRangeSegments[ratingKey]?.removeValue(forKey: offset)
+        lock.unlock()
+        var urls = Set<URL>()
+        if let fallbackURL { urls.insert(fallbackURL) }
+        if let mapped { urls.insert(mapped.url) }
+        if let persisted,
+           let url = store.heldRangeSegmentURL(relativePath: persisted.relativePath) {
+            urls.insert(url)
+        }
+        for url in urls { try? fileManager.removeItem(at: url) }
+    }
+
     /// Fold any held out-of-order segments that are now contiguous with the durable checkpoint.
     /// Returns the new durable size. Alignment is the assembly policy's exact-offset contiguity
     /// guarantee (Content-Range was verified at hold time); version consistency is re-checked here
@@ -3165,16 +3313,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             let stashed = held.map { (offset: $0.key, length: $0.value.length) }
             let run = StaticRangeSegmentAssemblyPolicy.appendableRun(durableBytes: durable, stashedSegments: stashed)
             for seg in run.discard {
-                if let entry = held[seg.offset] { try? fileManager.removeItem(at: entry.url) }
-                lock.lock(); heldRangeSegments[ratingKey]?.removeValue(forKey: seg.offset); lock.unlock()
+                removeHeldRangeSegment(ratingKey: ratingKey, offset: seg.offset,
+                                       fallbackURL: held[seg.offset]?.url)
             }
             guard let next = run.append.first, let entry = held[next.offset] else { break }
             if StaticRangeTrainIntegrityPolicy.heldSpliceDecision(
                 storedValidator: storedValidator,
                 heldValidator: entry.validator
             ) == .discardChangedResource {
-                try? fileManager.removeItem(at: entry.url)
-                lock.lock(); heldRangeSegments[ratingKey]?.removeValue(forKey: next.offset); lock.unlock()
+                removeHeldRangeSegment(ratingKey: ratingKey, offset: next.offset,
+                                       fallbackURL: entry.url)
                 AppDiagnostics.record(.downloads, "downloads.range_segment_held_discarded", fields: [
                     "download_id": .identifier(ratingKey),
                     "base_offset": .int(next.offset),
@@ -3211,8 +3359,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             } catch {
                 // M1: an append failure for one held segment must not wedge the drain forever. Drop the
                 // failing entry (and its stash), record it, and keep draining the rest of the run.
-                try? fileManager.removeItem(at: entry.url)
-                lock.lock(); heldRangeSegments[ratingKey]?.removeValue(forKey: next.offset); lock.unlock()
+                removeHeldRangeSegment(ratingKey: ratingKey, offset: next.offset,
+                                       fallbackURL: entry.url)
                 AppDiagnostics.record(.downloads, "downloads.range_segment_assemble_failed", fields: [
                     "download_id": .identifier(ratingKey),
                     "base_offset": .int(next.offset),
@@ -3221,8 +3369,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 ])
                 continue
             }
-            try? fileManager.removeItem(at: entry.url)
-            lock.lock(); heldRangeSegments[ratingKey]?.removeValue(forKey: next.offset); lock.unlock()
+            removeHeldRangeSegment(ratingKey: ratingKey, offset: next.offset,
+                                   fallbackURL: entry.url)
             AppDiagnostics.record(.downloads, "downloads.range_segment_assembled", fields: [
                 "download_id": .identifier(ratingKey),
                 "base_offset": .int(next.offset),
@@ -3307,18 +3455,29 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
 
     /// C2: remove every held out-of-order segment stash for a row AND delete its on-disk temp file.
-    /// Called from every path that abandons or resets the transfer (cancel/pause/changed-resource
-    /// restart/whole-file replace/finalize) so a stashed body can neither leak into `tmp/` nor be
+    /// Called from every path that abandons or resets the transfer (cancel/changed-resource
+    /// restart/whole-file replace/finalize). Pause deliberately preserves durable held bodies so a
+    /// later Resume can reuse them. A purged body can neither leak on disk nor be
     /// resurrected against a partial it no longer matches.
     private func purgeHeldRangeSegments(ratingKey: String) {
         lock.lock()
         let held = heldRangeSegments.removeValue(forKey: ratingKey)
         lock.unlock()
-        guard let held, !held.isEmpty else { return }
-        for entry in held.values { try? fileManager.removeItem(at: entry.url) }
+        let persisted = store.takeHeldRangeSegments(ratingKey: ratingKey)
+        var urls = Set<URL>()
+        if let held {
+            for entry in held.values { urls.insert(entry.url) }
+        }
+        for manifest in persisted {
+            if let url = store.heldRangeSegmentURL(relativePath: manifest.relativePath) {
+                urls.insert(url)
+            }
+        }
+        guard !urls.isEmpty || !persisted.isEmpty else { return }
+        for url in urls { try? fileManager.removeItem(at: url) }
         AppDiagnostics.record(.downloads, "downloads.range_held_segments_purged", fields: [
             "download_id": .identifier(ratingKey),
-            "purged_count": .int(held.count),
+            "purged_count": .int(max(held?.count ?? 0, persisted.count)),
         ])
     }
 

@@ -217,7 +217,14 @@ struct OfflineDownloadModelsTests {
             mediaSourceID: "media-source-789",
             audioStreamIndex: 7,
             playSessionID: "labstream-download-abc",
-            downloadLane: .compatibleRemux)
+            downloadLane: .compatibleRemux,
+            downloadAttemptID: "attempt-123",
+            heldRangeSegments: [
+                OfflineHeldRangeSegment(offset: 8_388_608, length: 1_048_576,
+                                        validator: "\"etag-1\"",
+                                        relativePath: "555.range-held-8388608-ABC",
+                                        attemptID: "attempt-123")
+            ])
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(OfflineMetadata.self, from: data)
         #expect(decoded == original)
@@ -242,7 +249,12 @@ struct OfflineDownloadModelsTests {
             ],
             mediaSourceID: "mediasource_63117",
             resumeDataRelativePath: "emby_63117.resume",
-            rangeValidator: "\"old-etag\"")
+            rangeValidator: "\"old-etag\"",
+            heldRangeSegments: [
+                OfflineHeldRangeSegment(offset: 1_024, length: 512,
+                                        relativePath: "emby_63117.range-held-1024-ABC",
+                                        attemptID: "attempt-old")
+            ])
         var incoming = OfflineMetadata(
             ratingKey: "emby:63117",
             title: "Persona Non Grata",
@@ -261,6 +273,7 @@ struct OfflineDownloadModelsTests {
         #expect(incoming.sourcePartSize == 9_876_543_210)
         #expect(incoming.resumeDataRelativePath == "emby_63117.resume")
         #expect(incoming.rangeValidator == "\"old-etag\"")
+        #expect(incoming.heldRangeSegments == previous.heldRangeSegments)
     }
 
     @Test("chapterImageRelativePaths (index-keyed dict) round-trips through encode/decode")
