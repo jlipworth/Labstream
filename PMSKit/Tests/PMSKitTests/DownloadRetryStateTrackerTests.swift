@@ -56,4 +56,20 @@ struct DownloadRetryStateTrackerTests {
         #expect(!tracker.isPresentingRetry("row"))
         #expect(!tracker.isRetryHandoff("row"))
     }
+
+    @Test("Retry attempts are token-scoped: a re-begin supersedes the older chain")
+    func retryAttemptTokenScoping() {
+        var tracker = DownloadRetryStateTracker()
+        let first = tracker.begin("row")
+        #expect(tracker.isCurrentRetryAttempt("row", id: first))
+
+        // Pause→resume: pause removes the retrying marker, resume begins a NEW attempt. The old
+        // chain's token must stay stale even though the key is retrying again.
+        tracker.removeRetrying("row")
+        #expect(!tracker.isCurrentRetryAttempt("row", id: first))
+        let second = tracker.begin("row")
+        #expect(tracker.isRetrying("row"))
+        #expect(!tracker.isCurrentRetryAttempt("row", id: first))
+        #expect(tracker.isCurrentRetryAttempt("row", id: second))
+    }
 }
