@@ -64,6 +64,18 @@ struct RangeTransferHTTPPolicyTests {
         #expect(RangeTransferHTTPPolicy.rangeRequestStart("items=0-") == nil)
     }
 
+    @Test("Range request end parses only closed ranges so segment length can be recovered")
+    func rangeRequestEnd() {
+        // Closed range: inclusive end bound → length is (end - start + 1).
+        #expect(RangeTransferHTTPPolicy.rangeRequestEnd("bytes=0-67108863") == 67_108_863)
+        #expect(RangeTransferHTTPPolicy.rangeRequestEnd(" bytes=1048576-2097151 ") == 2_097_151)
+        // Open-ended, absent, prefix-only, or malformed → no end bound.
+        #expect(RangeTransferHTTPPolicy.rangeRequestEnd("bytes=1048576-") == nil)
+        #expect(RangeTransferHTTPPolicy.rangeRequestEnd(nil) == nil)
+        #expect(RangeTransferHTTPPolicy.rangeRequestEnd("bytes=-500") == nil)
+        #expect(RangeTransferHTTPPolicy.rangeRequestEnd("items=0-100") == nil)
+    }
+
     // #220: an HTTP 200 body replaces the whole partial only when it is plausibly the whole
     // resource. On an UNCHANGED resource (validator equal, or unknowable) a size mismatch means
     // a truncated body and must be rejected rather than overwrite a good partial checkpoint.

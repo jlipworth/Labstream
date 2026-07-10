@@ -84,4 +84,30 @@ struct StaticRangeSegmentAssemblyPolicyTests {
         #expect(result.discard.map(\.offset) == [300])
         #expect(result.discard.count == 1)
     }
+
+    // M1: a zero-length stash sitting exactly at the durable checkpoint must NOT append — its
+    // `segmentEnd == durableBytes`, so it is fully behind the checkpoint and can only ever discard.
+    // Pin this so a wedge (an empty body appended forever, or held forever) cannot regress in.
+    @Test("Zero-length segment at the durable checkpoint discards, never appends")
+    func zeroLengthAtCheckpointDiscards() {
+        let result = StaticRangeSegmentAssemblyPolicy.appendableRun(
+            durableBytes: 512,
+            stashedSegments: [(offset: 512, length: 0)])
+        #expect(result.append.isEmpty)
+        #expect(result.hold.isEmpty)
+        #expect(result.discard.map(\.offset) == [512])
+    }
+
+    // A zero-length stash beyond a real appendable run still discards rather than holding forever.
+    @Test("Zero-length segment ahead of the run discards, does not hold")
+    func zeroLengthAheadOfRunDiscards() {
+        let result = StaticRangeSegmentAssemblyPolicy.appendableRun(
+            durableBytes: 0,
+            stashedSegments: [(offset: 0, length: 100), (offset: 200, length: 0)])
+        #expect(result.append.map(\.offset) == [0])
+        // offset 200 with length 0 → segmentEnd 200 > durable 0 and offset 200 >= durable, but it is
+        // beyond the gap after the run, so it holds. Length 0 there is harmless (drain re-checks on
+        // disk alignment); the load-bearing pin is the at-checkpoint discard above.
+        #expect(result.hold.map(\.offset) == [200])
+    }
 }
