@@ -49,6 +49,16 @@ public struct DownloadForwardOnlyStallTracker {
         restartAttempts.removeValue(forKey: ratingKey)
     }
 
+    /// Restore the bounded restart budget after an in-flight teardown that wiped tracker state.
+    ///
+    /// The stall-restart path itself funnels through the shared terminal release (`remove`), which
+    /// would erase the attempt count `detectRestarts` just incremented — making the automatic
+    /// restart cap a no-op and letting a persistent wedge restart the encoder from byte 0 forever.
+    /// The budget still resets to 0 on genuine forward byte progress.
+    public mutating func seedRestartAttempts(_ ratingKey: String, attempts: Int) {
+        restartAttempts[ratingKey] = max(attempts, restartAttempts[ratingKey] ?? 0)
+    }
+
     public mutating func detectRestarts(records: [DownloadRecord],
                                         now: Date,
                                         isActive: (String) -> Bool) -> [DownloadForwardOnlyStallRestart] {
