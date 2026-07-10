@@ -99,4 +99,50 @@ struct StaticRangeTrainIntegrityPolicyTests {
         #expect(StaticRangeTrainIntegrityPolicy.heldSpliceDecision(
             storedValidator: nil, heldValidator: nil) == .splice)
     }
+
+    // MARK: Dead-finish-adopted (unowned) restrictions
+
+    @Test("Only the dead-finish-adopted reason restricts outcomes to discard/reset")
+    func adoptedFinishRestriction() {
+        #expect(StaticRangeTrainIntegrityPolicy.adoptedFinishRestriction(
+            remainderReason: StaticRangeTrainIntegrityPolicy.deadFinishAdoptedReason)
+            == .discardAndResetOnly)
+        #expect(StaticRangeTrainIntegrityPolicy.adoptedFinishRestriction(
+            remainderReason: "single_remainder") == .unrestricted)
+        #expect(StaticRangeTrainIntegrityPolicy.adoptedFinishRestriction(
+            remainderReason: "reattached") == .unrestricted)
+        #expect(StaticRangeTrainIntegrityPolicy.adoptedFinishRestriction(
+            remainderReason: nil) == .unrestricted)
+    }
+
+    @Test("An unowned body may apply only onto an existing, exactly-matching validator pin")
+    func unownedBodyValidatorDecision() {
+        #expect(StaticRangeTrainIntegrityPolicy.unownedBodyValidatorDecision(
+            storedValidator: "\"v1\"", responseValidator: "\"v1\"") == .apply)
+        // Never pins: an unowned body arriving before the first owned pin must be discarded,
+        // or a prior attempt's validator poisons the fresh attempt.
+        #expect(StaticRangeTrainIntegrityPolicy.unownedBodyValidatorDecision(
+            storedValidator: nil, responseValidator: "\"v1\"")
+            == .discard(reason: "adopted_no_pinned_validator"))
+        // No absent-validator tolerance.
+        #expect(StaticRangeTrainIntegrityPolicy.unownedBodyValidatorDecision(
+            storedValidator: "\"v1\"", responseValidator: nil)
+            == .discard(reason: "adopted_validator_absent"))
+        #expect(StaticRangeTrainIntegrityPolicy.unownedBodyValidatorDecision(
+            storedValidator: "\"v1\"", responseValidator: "\"v2\"")
+            == .discard(reason: "adopted_validator_mismatch"))
+        #expect(StaticRangeTrainIntegrityPolicy.unownedBodyValidatorDecision(
+            storedValidator: nil, responseValidator: nil)
+            == .discard(reason: "adopted_no_pinned_validator"))
+    }
+
+    // MARK: Terminal-failure teardown
+
+    @Test("A terminal failure always halts, supersedes, and advances the train epoch")
+    func terminalFailureTeardown() {
+        let teardown = StaticRangeTrainIntegrityPolicy.terminalFailureTeardown()
+        #expect(teardown.insertHalt)
+        #expect(teardown.supersedeLiveTasks)
+        #expect(teardown.advanceTrainEpoch)
+    }
 }

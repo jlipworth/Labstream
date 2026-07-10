@@ -96,4 +96,23 @@ struct BackgroundDownloadTaskIdentityTests {
 
         #expect(resolved == "movie-123")
     }
+
+    @Test("v2 segment and attempt-stamped descriptions resolve their row")
+    func attemptStampedDescriptionsResolve() {
+        let segment = BackgroundDownloadTaskIdentity.ratingKey(
+            taskDescription: StaticRangeSegmentMarker.taskDescription(
+                ratingKey: "movie-123", offset: 536870912, attemptID: "attempt-A"),
+            requestURL: URL(string: "https://plex.example/library/parts/9876/file.mp4"),
+            knownKeys: ["movie-123"]
+        )
+        let opaque = BackgroundDownloadTaskIdentity.ratingKey(
+            taskDescription: DownloadAttemptMarker.taskDescription(
+                ratingKey: "jellyfin:abcd", attemptID: "attempt-B"),
+            requestURL: nil,
+            knownKeys: ["jellyfin:abcd"]
+        )
+
+        #expect(segment == "movie-123")
+        #expect(opaque == "jellyfin:abcd")
+    }
 }

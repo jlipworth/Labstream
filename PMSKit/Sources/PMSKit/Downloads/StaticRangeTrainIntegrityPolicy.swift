@@ -108,6 +108,72 @@ public enum StaticRangeTrainIntegrityPolicy {
         return .append
     }
 
+    /// `remainderReason` marking an UNOWNED body: a dead-finished task lazily adopted at
+    /// delegate-finish time rather than tracked from start/reattach. `supersededRangeTaskIdentifiers`
+    /// is in-memory, so after a relaunch a zombie from a prior attempt of the same key can pass
+    /// the adoption guards — its outcomes must never be able to destroy owned progress.
+    public static let deadFinishAdoptedReason = "dead_finish_adopted"
+
+    public enum AdoptedFinishRestriction: Equatable {
+        /// A task this session owns (started/reattached): full outcome set.
+        case unrestricted
+        /// A dead-finish-adopted (unowned) task: the ONLY allowed outcomes are discarding its
+        /// temp or resetting published progress to the durable checkpoint. Never a
+        /// changed-resource restart, never a terminal `.failed`, and never overwriting the
+        /// stored source size from its response — an unowned zombie's 416/404/Content-Range
+        /// must not destroy or terminally fail a healthy owned train.
+        case discardAndResetOnly
+    }
+
+    public static func adoptedFinishRestriction(remainderReason: String?) -> AdoptedFinishRestriction {
+        remainderReason == deadFinishAdoptedReason ? .discardAndResetOnly : .unrestricted
+    }
+
+    public enum UnownedBodyValidatorDecision: Equatable {
+        /// The body's validator equals the pinned one — it may be applied like an owned body.
+        case apply
+        /// Discard the body and reset to the durable checkpoint. `reason` is a diagnostics label.
+        case discard(reason: String)
+    }
+
+    /// Validator gate for an UNOWNED (dead-finish-adopted) body. Stricter than
+    /// `arrivingBodyDecision` in both directions: an unowned body must never PIN a validator
+    /// (a fresh attempt at durable 0 — or right after a restart cleared the pin — would adopt
+    /// the OLD attempt's validator and then trust its siblings), and gets no absent-validator
+    /// tolerance (an absent header on an unowned body could splice another resource version).
+    public static func unownedBodyValidatorDecision(storedValidator: String?,
+                                                    responseValidator: String?) -> UnownedBodyValidatorDecision {
+        guard let storedValidator else {
+            return .discard(reason: "adopted_no_pinned_validator")
+        }
+        guard let responseValidator else {
+            return .discard(reason: "adopted_validator_absent")
+        }
+        return responseValidator == storedValidator
+            ? .apply
+            : .discard(reason: "adopted_validator_mismatch")
+    }
+
+    public struct TerminalFailureTeardown: Equatable {
+        /// Halt the key so no continuation/retry path creates replacement work behind the fail.
+        public let insertHalt: Bool
+        /// Remove + cancel every live sibling task — they would otherwise keep transferring and
+        /// auto-promote the failed row back to `.downloading` via progress writes.
+        public let supersedeLiveTasks: Bool
+        /// Advance the train generation so bodies already past their delegate finish (in the
+        /// delegate→IO hop) are discarded instead of applied onto a failed row.
+        public let advanceTrainEpoch: Bool
+    }
+
+    /// Every terminal `.failed` transition requires the full teardown, unconditionally: even
+    /// with zero tracked tasks a finished body can be mid-hop, and a halt/epoch on a key with no
+    /// range work is a harmless no-op.
+    public static func terminalFailureTeardown() -> TerminalFailureTeardown {
+        TerminalFailureTeardown(insertHalt: true,
+                                supersedeLiveTasks: true,
+                                advanceTrainEpoch: true)
+    }
+
     public enum HeldSpliceDecision: Equatable {
         case splice
         /// The stash was recorded against a different resource version than the one now pinned —
