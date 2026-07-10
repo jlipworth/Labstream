@@ -54,7 +54,10 @@ final class DiagnosticLoggingTests: XCTestCase {
             XCTAssertFalse(value.contains("https://"))
         }
         XCTAssertTrue(summary.contains("kind=timeout"))
-        XCTAssertTrue(summary.contains("domain_family=nsurl"))
+        // B-1: "family=", not "domain_family=" — the longer digitless form tripped the
+        // bare-token redaction rule for e.g. "domain_family=avfoundation".
+        XCTAssertTrue(summary.contains("family=nsurl"))
+        XCTAssertFalse(summary.contains("domain_family="))
         XCTAssertTrue(summary.contains("code=\(NSURLErrorTimedOut)"))
         XCTAssertEqual(userMessage, "Download timed out.")
     }

@@ -54,11 +54,13 @@ struct BackgroundFinalizationResultPolicyTests {
 
     @Test("Unverified transfers preserve bytes and stay playable")
     func unverifiedResult() {
+        // B-1: the result LABEL is bounded below the redactor's 24-char bare-token threshold;
+        // the untruncated reason still travels in `validationFailureReason`.
         #expect(BackgroundFinalizationResultPolicy.result(
             for: .unverified(reason: "timeout_not_ready")
         ) == BackgroundFinalizationResult(
             status: .unverified,
-            resultLabel: "unverified_timeout_not_ready",
+            resultLabel: "unverified_timeout_not",
             shouldDeleteFile: false,
             validationFailureReason: "timeout_not_ready",
             userFacingErrorMessage: nil
