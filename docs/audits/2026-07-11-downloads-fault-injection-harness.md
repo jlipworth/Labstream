@@ -45,6 +45,13 @@ scripts/probe-plex-range-drop.sh --rating-key KEY --fault double-connection-drop
 scripts/probe-plex-range-drop.sh --rating-key KEY --fault held-body-delete \
   --delete-during-transfer
 scripts/probe-plex-range-drop.sh --rating-key KEY --fault write-failure --delete-after
+scripts/probe-plex-range-drop.sh --rating-key KEY --fault 416-restart --delete-after
+scripts/probe-plex-range-drop.sh --rating-key KEY --fault 200-replace --delete-after
+scripts/probe-plex-range-drop.sh --rating-key KEY --fault held-body-relaunch --relaunch-held
+scripts/probe-plex-range-drop.sh --rating-key KEY --fault drain-pause \
+  --pause-only --pause-after-seconds 4
+scripts/probe-plex-range-drop.sh --rating-key KEY --fault drain-delete \
+  --delete-during-transfer
 ```
 
 The script builds/installs the DEBUG app, launches the existing Plex download probe, captures
@@ -120,6 +127,50 @@ delegate delivery, stash move, and the range IO queue. The driver requires termi
 `downloads.move_failed reason=storage_full stage=append` and rejects any transient
 `downloads.range_move_retry`.
 
+### `416-restart`
+
+All proxied segment bodies finish after 64 KiB while one positive-offset request returns a delayed
+`416 Content-Range: bytes */1`. The delay lets the head append and sibling held work land first.
+The driver requires head append + held segment → injected 416 → `range_416_mismatch` →
+whole-train supersede ordering, exercising the range-IO-queue serialization around destructive
+restart rather than a policy-only 416 classification.
+
+### `200-replace`
+
+The v1 head and sibling responses finish after 64 KiB while one positive-offset request returns a
+delayed one-byte HTTP 200 with validator v2. The production changed-validator rule admits that body
+to `replaceWhole`; the driver requires head append + held work → adopted 200 → held-stash purge →
+sibling supersede ordering. This exercises the replacement race without downloading a whole file.
+
+### `held-body-relaunch`
+
+Positive-offset bodies finish into real held stashes while the head remains live. The driver then
+terminates the app without pausing/deleting, relaunches without fault injection, observes the same
+row, and finally deletes it. It requires held-body creation → post-relaunch
+`downloads.range_stash_swept` → observe-only second probe ordering. This captures current
+device-style process-death behavior and distinguishes coverage from the still-open durable-stash
+remediation.
+
+### `drain-pause`
+
+The DEBUG-only segment-size override reduces the train grid to 1 MiB for this probe, allowing real
+head and sibling segments to finish quickly. A 500 ms range-IO delay at each held append widens the
+otherwise sub-millisecond drain window. The driver pauses without retry and requires held-body
+creation → delayed drain step → assembled segment → pause request →
+`downloads.range_held_drain_halted` → confirmed paused row ordering, with no new range start after
+the pause request. The first live run exposed two real races: the drain ignored a newly inserted
+halt, and a pending backend-ready recovery intent could silently resume the paused row. The engine
+now stops before the next held append, preserves the remaining stashes, parks the row, and clears
+pending automatic recovery when the user pauses.
+
+### `drain-delete`
+
+Uses the same 1 MiB segment grid and 500 ms held-drain delay, but deletes the row four seconds
+after start. The driver requires held-body creation → at least one real drain append → cancel →
+held-stash purge → missing row, and rejects any `range_start` after cancel. The delayed drain
+re-checks the cancel halt before touching the next stash; late already-queued bodies are rejected by
+the train epoch/attempt guards, and the deleted row is not recreated.
+
 ## Phase 6 coverage status
 
 - [x] Validator flip during a live segment train.
@@ -127,18 +178,22 @@ delegate delivery, stash move, and the range IO queue. The driver requires termi
 - [x] Pause with multiple held out-of-order bodies; held stashes survive the pause.
 - [x] Delete with multiple held bodies; cancel purges stashes before row removal.
 - [x] Reset → persisted resume-blob adoption → second reset → second blob adoption.
-- [ ] Pause/delete specifically while `drainHeldRangeSegments` is appending.
-- [ ] Concurrent 200 replacement or 416 restart with queued append work.
-- [ ] Relaunch with on-disk held stashes.
+- [x] Pause specifically while `drainHeldRangeSegments` is appending.
+- [x] Delete specifically while `drainHeldRangeSegments` is appending.
+- [x] Delayed 416 restart with a durable prefix and held/queued sibling work.
+- [x] Delayed adopted 200 replacement with a durable prefix and held/queued sibling work.
+- [x] Relaunch with on-disk held stashes (current sweep/refetch behavior captured; durable reuse
+  remains a remediation item).
 - [x] Injected append failure / ENOSPC classification and terminal train teardown.
 
-The unchecked lifecycle/filesystem cells need control beyond a simple response mutation and should
-not be simulated by bypassing the real session.
+All simulator/foreground Phase 6 cells above are now covered. Physical background-session
+lifecycle and real disk-pressure cells remain Phase 7 device work and
+should not be simulated by bypassing the real session.
 
 ## Live execution evidence (2026-07-11)
 
 The candidate probe found 19 eligible original/static parts larger than 600 MiB. A 1–10 GB
-H.264/AAC MP4 alternate was used without recording its title or file path. All six bounded
+H.264/AAC MP4 alternate was used without recording its title or file path. All eleven bounded
 scenarios passed against the real foreground `BackgroundDownloadSession`:
 
 - `validator-flip`: synthetic v1/v2 responses produced
@@ -159,6 +214,24 @@ scenarios passed against the real foreground `BackgroundDownloadSession`:
 - `write-failure`: injected Cocoa code 640 at append produced
   `downloads.move_failed reason=storage_full stage=append`, terminally superseded seven sibling
   tasks, transitioned the row to failed, and emitted no transient range-move retry.
+- `416-restart`: a 64 KiB durable prefix and six held siblings preceded the delayed 416; the engine
+  emitted `range_416_mismatch`, superseded the train on the range IO queue, and purged all six held
+  bodies before restarting.
+- `200-replace`: a 64 KiB durable prefix and six held siblings preceded the delayed one-byte v2
+  200; replaceWhole purged all six held bodies, superseded two newly queued siblings, and final
+  validation rejected the intentionally incomplete replacement.
+- `held-body-relaunch`: eight positive-offset stashes existed before process termination. The next
+  launch swept all eight, observed the same persisted row, and restarted from the durable zero-byte
+  checkpoint. This closes the lifecycle coverage cell while confirming the B.1 bandwidth-loss
+  finding: held metadata is still in-memory-only, so relaunch cannot reuse those completed bodies.
+- `drain-pause`: multiple 1 MiB held bodies assembled before pause; the pause landed inside the
+  delayed fourth drain step, emitted `range_held_drain_halted`, preserved the unconsumed stash, and
+  reached a stable paused row with no post-request `range_start`. A preceding failing run is the
+  evidence that drove the halt check and pending-auto-resume fix rather than a harness-only change.
+- `drain-delete`: several 1 MiB held bodies assembled before delete; cancel purged the remaining
+  held stash, advanced the train epoch, removed the row, and emitted no post-cancel `range_start`.
+  The delayed drain returned without appending its selected stash after observing the cancel halt;
+  late queued bodies were ignored as stale-train work.
 
 The first live attempt also exposed a harness bug: `probeRange` used `data(for:)`, so a server that
 ignored or delayed a bounded Range could buffer a multi-gigabyte response before the actual test

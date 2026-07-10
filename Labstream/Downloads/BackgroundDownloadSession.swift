@@ -457,6 +457,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             case "held-body-pause": return .heldBodyPause
             case "held-body-delete": return .heldBodyDelete
             case "write-failure": return .writeFailure
+            case "416-restart": return .range416Restart
+            case "200-replace": return .range200Replace
+            case "held-body-relaunch": return .heldBodyRelaunch
+            case "drain-pause": return .drainPause
+            case "drain-delete": return .drainDelete
             case "double-connection-drop":
                 return .repeatedConnectionDrop(afterBytes: configuredDropBytes, count: 2)
             default: break
@@ -3149,8 +3154,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let storedValidator = store.rangeValidator(ratingKey: ratingKey)
         while true {
             lock.lock()
+            let haltKind = rangeHaltKinds[ratingKey]
             let held = heldRangeSegments[ratingKey] ?? [:]
             lock.unlock()
+            guard haltKind == nil else {
+                settleHeldRangeDrainHalt(ratingKey: ratingKey, haltKind: haltKind!, durableBytes: durable,
+                                         expectedBytes: expectedBytes, publishProgress: false)
+                break
+            }
             let stashed = held.map { (offset: $0.key, length: $0.value.length) }
             let run = StaticRangeSegmentAssemblyPolicy.appendableRun(durableBytes: durable, stashedSegments: stashed)
             for seg in run.discard {
@@ -3174,6 +3185,26 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // Re-verify on-disk alignment before appending.
             let onDisk = fileSize(at: destination) ?? 0
             guard onDisk == next.offset else { break }
+            #if DEBUG
+            if let delayed = DebugDownloadFaultURLProtocol.delayHeldDrainIfConfigured() {
+                AppDiagnostics.record(.downloads, "downloads.fault_injected", fields: [
+                    "scenario": .label(delayed.scenario),
+                    "stage": .label("held_drain"),
+                    "step": .int(delayed.step),
+                    "base_offset": .int(next.offset),
+                ])
+            }
+            #endif
+            // Pause/delete may land while an expensive append is queued behind other range IO.
+            // Re-check immediately before touching the durable file: a pause keeps the stash for
+            // Resume, while cancel/delete owns disposal of both the stash map and destination.
+            lock.lock(); let haltBeforeAppend = rangeHaltKinds[ratingKey]; lock.unlock()
+            guard haltBeforeAppend == nil else {
+                settleHeldRangeDrainHalt(ratingKey: ratingKey, haltKind: haltBeforeAppend!,
+                                         durableBytes: durable, expectedBytes: expectedBytes,
+                                         publishProgress: false)
+                break
+            }
             do {
                 let appended = try appendFile(at: entry.url, onto: destination)
                 durable = onDisk + appended
@@ -3197,6 +3228,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "base_offset": .int(next.offset),
                 "partial_bytes": .int(durable),
             ])
+            // If pause raced the append itself, the append is now a valid durable checkpoint and
+            // must be published, but it must not promote the row back to Downloading or allow the
+            // rest of the held run to drain. Cancel/delete must not resurrect a removed row.
+            lock.lock(); let haltAfterAppend = rangeHaltKinds[ratingKey]; lock.unlock()
+            if let haltAfterAppend {
+                settleHeldRangeDrainHalt(ratingKey: ratingKey, haltKind: haltAfterAppend,
+                                         durableBytes: durable, expectedBytes: expectedBytes,
+                                         publishProgress: haltAfterAppend == .pause)
+                break
+            }
             store.updateProgress(ratingKey: ratingKey, bytes: durable,
                                  progress: (expectedBytes ?? 0) > 0 ? min(1, Double(durable) / Double(expectedBytes!)) : 0)
         }
@@ -3206,6 +3247,27 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         if heldRangeSegments[ratingKey]?.isEmpty ?? false { heldRangeSegments.removeValue(forKey: ratingKey) }
         lock.unlock()
         return durable
+    }
+
+    /// Stop an in-progress held-body drain at a pause/cancel boundary. A pause leaves the
+    /// unconsumed held stashes mapped for Resume and parks the row after publishing any append that
+    /// won the race. Cancel/delete owns teardown and must never recreate or mutate its removed row.
+    private func settleHeldRangeDrainHalt(ratingKey: String, haltKind: StaticRangeHaltKind,
+                                          durableBytes: Int, expectedBytes: Int?,
+                                          publishProgress: Bool) {
+        guard haltKind == .pause else { return }
+        if publishProgress {
+            store.updateProgress(ratingKey: ratingKey, bytes: durableBytes,
+                                 progress: (expectedBytes ?? 0) > 0
+                                    ? min(1, Double(durableBytes) / Double(expectedBytes!)) : 0)
+        }
+        store.setStatus(ratingKey: ratingKey, .paused)
+        AppDiagnostics.record(.downloads, "downloads.range_held_drain_halted", fields: [
+            "download_id": .identifier(ratingKey),
+            "partial_bytes": .int(durableBytes),
+            "published_append": .bool(publishProgress),
+        ])
+        onChange?()
     }
 
     /// C2: a terminal `.failed` transition has no automatic continuation — the only way forward is
@@ -5076,6 +5138,11 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
         case heldBodyPause
         case heldBodyDelete
         case writeFailure
+        case range416Restart
+        case range200Replace
+        case heldBodyRelaunch
+        case drainPause
+        case drainDelete
 
         var label: String {
             switch self {
@@ -5086,6 +5153,11 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
             case .heldBodyPause: "held-body-pause"
             case .heldBodyDelete: "held-body-delete"
             case .writeFailure: "write-failure"
+            case .range416Restart: "416-restart"
+            case .range200Replace: "200-replace"
+            case .heldBodyRelaunch: "held-body-relaunch"
+            case .drainPause: "drain-pause"
+            case .drainDelete: "drain-delete"
             }
         }
     }
@@ -5097,6 +5169,9 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
     nonisolated(unsafe) private static var didInjectUnauthorized = false
     nonisolated(unsafe) private static var didAssignInitialZeroValidator = false
     nonisolated(unsafe) private static var didInjectWriteFailure = false
+    nonisolated(unsafe) private static var didInject416 = false
+    nonisolated(unsafe) private static var didInject200 = false
+    nonisolated(unsafe) private static var drainDelayCount = 0
 
     private var upstreamTask: URLSessionDataTask?
     private var session: URLSession?
@@ -5111,6 +5186,9 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
         didInjectUnauthorized = false
         didAssignInitialZeroValidator = false
         didInjectWriteFailure = false
+        didInject416 = false
+        didInject200 = false
+        drainDelayCount = 0
         lock.unlock()
     }
 
@@ -5139,6 +5217,8 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
         Self.lock.lock()
         let fault = Self.configuredFault
         var injectUnauthorized = false
+        var inject416 = false
+        var inject200 = false
         switch fault {
         case .validatorFlip:
             if rangeStart == 0, !Self.didAssignInitialZeroValidator {
@@ -5151,6 +5231,18 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
             if rangeStart > 0, !Self.didInjectUnauthorized {
                 Self.didInjectUnauthorized = true
                 injectUnauthorized = true
+            }
+        case .range416Restart:
+            if rangeStart > 0, !Self.didInject416 {
+                Self.didInject416 = true
+                inject416 = true
+            }
+        case .range200Replace:
+            if rangeStart > 0, !Self.didInject200 {
+                Self.didInject200 = true
+                inject200 = true
+            } else {
+                responseValidator = "\"labstream-fault-200-v1\""
             }
         default:
             break
@@ -5167,6 +5259,54 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
             ])
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocolDidFinishLoading(self)
+            return
+        }
+
+        if inject416 {
+            // Give the bounded head response and at least one sibling apply enough time to land so
+            // the 416 observes durableBytes > its synthetic total while stale train work exists.
+            DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard let self else { return }
+                let response = HTTPURLResponse(url: self.request.url!, statusCode: 416,
+                                               httpVersion: "HTTP/1.1",
+                                               headerFields: [
+                                                "Content-Length": "0",
+                                                "Content-Range": "bytes */1",
+                                               ])!
+                self.finishedInjectedBody = true
+                AppDiagnostics.record(.downloads, "downloads.fault_injected", fields: [
+                    "scenario": .label("416-restart"),
+                    "range_start": .int(rangeStart),
+                    "server_total": .int(1),
+                ])
+                self.client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                self.client?.urlProtocolDidFinishLoading(self)
+            }
+            return
+        }
+
+        if inject200 {
+            // Let the v1 head append and v1 sibling bodies enter held/apply state first. The tiny
+            // v2 200 is nevertheless adoptable through the production changed-validator rule,
+            // driving the real replaceWhole + sibling teardown path without a multi-GB body.
+            DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard let self else { return }
+                let response = HTTPURLResponse(url: self.request.url!, statusCode: 200,
+                                               httpVersion: "HTTP/1.1",
+                                               headerFields: [
+                                                "Content-Length": "1",
+                                                "ETag": "\"labstream-fault-200-v2\"",
+                                               ])!
+                self.finishedInjectedBody = true
+                AppDiagnostics.record(.downloads, "downloads.fault_injected", fields: [
+                    "scenario": .label("200-replace"),
+                    "range_start": .int(rangeStart),
+                    "body_bytes": .int(1),
+                ])
+                self.client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+                self.client?.urlProtocol(self, didLoad: Data([0]))
+                self.client?.urlProtocolDidFinishLoading(self)
+            }
             return
         }
 
@@ -5204,8 +5344,16 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
                                                 statusCode: http.statusCode,
                                                 httpVersion: "HTTP/1.1",
                                                 headerFields: headers) ?? response
+            Self.lock.lock()
+            let supportingScenario: String
+            if case .range200Replace? = Self.configuredFault {
+                supportingScenario = "200-replace-support"
+            } else {
+                supportingScenario = "validator-flip"
+            }
+            Self.lock.unlock()
             AppDiagnostics.record(.downloads, "downloads.fault_injected", fields: [
-                "scenario": .label("validator-flip"),
+                "scenario": .label(supportingScenario),
                 "range_start": .int(Self.rangeStart(request.value(forHTTPHeaderField: "Range")) ?? 0),
                 "validator_generation": .label(responseValidator.hasSuffix("v1\"") ? "v1" : "v2"),
             ])
@@ -5245,10 +5393,14 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
         switch fault {
         case .validatorFlip:
             shouldFinishSmallBody = true
-        case .heldBodyPause, .heldBodyDelete:
+        case .heldBodyPause, .heldBodyDelete, .heldBodyRelaunch:
             shouldFinishSmallBody = rangeStart > 0
         case .writeFailure:
             shouldFinishSmallBody = rangeStart == 0
+        case .range416Restart:
+            shouldFinishSmallBody = true
+        case .range200Replace:
+            shouldFinishSmallBody = true
         default:
             shouldFinishSmallBody = false
         }
@@ -5271,6 +5423,12 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
                 } else if case .heldBodyDelete? = fault {
                     AppDiagnostics.record(.downloads, "downloads.fault_injected", fields: [
                         "scenario": .label("held-body-delete"),
+                        "range_start": .int(rangeStart),
+                        "after_bytes": .int(delivered),
+                    ])
+                } else if case .heldBodyRelaunch? = fault {
+                    AppDiagnostics.record(.downloads, "downloads.fault_injected", fields: [
+                        "scenario": .label("held-body-relaunch"),
                         "range_start": .int(rangeStart),
                         "after_bytes": .int(delivered),
                     ])
@@ -5362,6 +5520,23 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
         guard case .writeFailure? = configuredFault, !didInjectWriteFailure else { return false }
         didInjectWriteFailure = true
         return true
+    }
+
+    static func delayHeldDrainIfConfigured() -> (scenario: String, step: Int)? {
+        lock.lock()
+        let scenario: String
+        switch configuredFault {
+        case .drainPause?: scenario = "drain-pause"
+        case .drainDelete?: scenario = "drain-delete"
+        default:
+            lock.unlock()
+            return nil
+        }
+        drainDelayCount += 1
+        let step = drainDelayCount
+        lock.unlock()
+        Thread.sleep(forTimeInterval: 0.5)
+        return (scenario, step)
     }
 }
 #endif

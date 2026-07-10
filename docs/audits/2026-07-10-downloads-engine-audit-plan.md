@@ -594,14 +594,17 @@ install UUID match, clean launch/log smoke, and signed-in Home screenshot; simul
 
 ### Highest-value next work
 
-1. Extend the now-live-verified Phase-6 transport harness from validator-flip, mid-train 401,
-   held-body pause/delete, and double resume-blob adoption into pause/delete-mid-drain,
-   concurrent 200/416 handling, and relaunch with on-disk held stashes. Injected append ENOSPC is
-   now live-verified as terminal with whole-train teardown and no transient retry.
-2. Execute the Phase-7 physical-device cells, prioritizing process-kill/background redelivery,
+1. Execute the Phase-7 physical-device cells, prioritizing process-kill/background redelivery,
    token/network changes while asleep, and disk pressure.
-3. Close the checklist's evidence gaps (lifecycle cause, blob presence, network path, free-space,
+2. Close the checklist's evidence gaps (lifecycle cause, blob presence, network path, free-space,
    remote-play/download correlation, and Emby server-completion timing) before treating device
    observations as deterministic.
-4. Continue the deferred backend/product findings in sections F–H (Emby F3/F4/F6/F9/F11/F13,
-   Plex F3/F4/F5/F6c, held-stash persistence, and audio-stream-index persistence).
+3. Continue the deferred backend/product findings in sections F–H (Emby F3/F4/F6/F9/F11/F13,
+   Plex F3/F4/F5/F6c, held-stash persistence, and audio-stream-index persistence). The simulator
+   relaunch probe now proves the held-stash item is real: eight completed stashes were swept and
+   refetched from the durable checkpoint because their metadata is not persisted.
+
+Phase 6's simulator/foreground harness is complete: validator/auth/reset/write-failure,
+pause/delete (including both operations during held drain), concurrent 200/416, and relaunch stash
+behavior all have real-session evidence. Pause-mid-drain also produced and closed two production
+races: drain ignored the halt, and pending backend recovery could resume a user-paused row.

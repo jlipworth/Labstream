@@ -191,8 +191,18 @@ enum DebugPlexDownloadProbe {
                 return
             }
             if pauseResume || pauseOnly {
-                let beforePause = await observe(ratingKey: ratingKey, manager: downloadManager,
+                let beforePause: DebugDownloadProbeSupport.Observation
+                if pauseOnly {
+                    // The drain-race probe needs a true sub-five-second pause. `observe` samples on
+                    // a five-second cadence, which otherwise widens `--pause-after-seconds 1` to
+                    // five seconds and misses the deliberately slowed held-drain window.
+                    try? await Task.sleep(for: .seconds(pauseAfterSeconds))
+                    beforePause = DebugDownloadProbeSupport.observation(
+                        forRecordKey: ratingKey, in: downloadManager)
+                } else {
+                    beforePause = await observe(ratingKey: ratingKey, manager: downloadManager,
                                                 seconds: pauseAfterSeconds, label: "pre_pause")
+                }
                 downloadManager.pause(ratingKey: ratingKey)
                 let paused = await waitForStatus(ratingKey: ratingKey, manager: downloadManager,
                                                  statusText: "paused", seconds: 15)

@@ -82,14 +82,17 @@ still exact-byte gated.
 
 ## Remaining dark cells
 
-1. **D6 delegate ordering:** validator flip, held-body pause preservation, and
-   reset→blob adoption→second reset are now live-covered by the Phase-6 harness. Still dark:
-   pause/delete specifically during held-body drain, 200 replacement concurrent with tail
-   completion, and 416 restart concurrent with queued IO. Injected ENOSPC is now live-covered:
-   it terminally tears down the train without transient retry. Pure-policy composition cannot
-   establish lock/queue correctness.
-2. **DEV background lifecycle:** process death with held stashes, OS background completion
-   redelivery, token rotation or LAN↔WAN change while suspended, and device disk pressure.
+1. **D6 delegate ordering:** validator flip, held-body pause preservation, pause and delete
+   specifically during held-body drain, and reset→blob adoption→second reset are now live-covered
+   by the Phase-6 harness. Delayed 200 replacement and 416 restart are
+   now live-covered with a durable prefix plus held/queued sibling work; injected ENOSPC is also
+   live-covered and terminally tears down the train without transient retry. The previously dark
+   simulator delegate-ordering cells are therefore closed by real session evidence rather than
+   pure-policy composition.
+2. **DEV background lifecycle:** simulator process death with held stashes is now covered and
+   confirms launch sweep/refetch rather than durable reuse. Still dark on a physical background
+   session: OS completion redelivery, token rotation or LAN↔WAN change while suspended, and device
+   disk pressure.
 3. **Queue-pause keepalive scheduling:** the PMSKit keepalive policy has no queue-pause input; the
    manager task lifetime needs an orchestration harness or app-target test.
 4. **Environment:** cellular/Wi-Fi transition, constrained network, and actual CFNetwork slow-start
