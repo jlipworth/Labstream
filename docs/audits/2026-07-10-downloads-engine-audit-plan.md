@@ -389,7 +389,7 @@ Deferred to user judgment / later phases:
 - JF-F5: persisted-psid branch never issues `.stop` (non-terminal rows post-relaunch).
 - EMBY-F3: POST-create crash orphans untaggable Sync job; EMBY-F4: `.optimizeCompatible`
   silent 1080p downgrade (UX disclosure decision); EMBY-F6 existing-version silent source
-  swap (add override-vs-decision guard); EMBY-F11 handoff remove→re-download crash window;
+  swap (closed in the 2026-07-11 update below); EMBY-F11 handoff remove→re-download crash window;
   EMBY-F13 unbounded poll on persistent 5xx (closed in the 2026-07-11 update below); EMBY-F9 no
   Emby keepalive (live-verify).
 - PLEX-F3 vacuous height guard on original-quality reuse; PLEX-F4 vanished-render retry
@@ -601,7 +601,7 @@ install UUID match, clean launch/log smoke, and signed-in Home screenshot; simul
 2. Close the checklist's evidence gaps (lifecycle cause, blob presence, network path, free-space,
    remote-play/download correlation, and Emby server-completion timing) before treating device
    observations as deterministic.
-3. Continue the deferred backend/product findings in sections F–H (Emby F3/F4/F6/F9/F11,
+3. Continue the deferred backend/product findings in sections F–H (Emby F3/F4/F9/F11,
    Plex F3/F4/F5/F6c, and held-stash persistence). The simulator
    relaunch probe now proves the held-stash item is real: eight completed stashes were swept and
    refetched from the durable checkpoint because their metadata is not persisted.
@@ -627,3 +627,13 @@ longer retries an unreachable/5xx/undecodable status endpoint forever. A pure
 production cadence), resets on any successfully decoded status, and then parks the current attempt
 as a retryable failed row with `downloads.convert_failed phase=poll_unreachable`. Attempt currency
 is re-checked before the terminal write so a stale poller cannot fail a replacement download.
+
+### Deferred follow-up closed: EMBY-F6 existing-version source swap
+
+An explicit `mediaSourceIDOverride` now forms a fail-closed identity contract with the authoritative
+Emby PlaybackInfo decision. If the requested converted/existing source disappeared and Emby falls
+back to another source, the app tears down any minted server session and returns a retryable
+"requested server version is no longer available" failure instead of downloading a different
+rendition and overwriting the persisted source id. Ordinary negotiation without an explicit
+override still accepts the server-selected source. The pure identity policy covers exact match,
+mismatch, empty decisions, and the no-override path.
