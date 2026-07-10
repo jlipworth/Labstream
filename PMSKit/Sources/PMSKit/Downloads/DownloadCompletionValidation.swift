@@ -52,15 +52,27 @@ public enum DownloadCompletionValidation {
     /// truncated rather than a legitimately short clip.
     public static let truncationThreshold = 0.80
 
+    /// Tightened threshold for live forward-only encoder streams (JF-F2). A transcode's output
+    /// duration tracks the source closely — the only legitimate shortfall is container/metadata
+    /// slop (edit lists, a rounded final GOP, source metadata that overstates by a second or two),
+    /// which is a fraction of a percent on real media, not tens of percent. 5% keeps generous
+    /// headroom for that slop while catching the actual failure mode: a server-side encoder killed
+    /// cleanly at 80–95% of runtime, whose stream ends with a valid container that plays fine and
+    /// used to finalize `.complete` with the tail missing. Other lanes keep the looser 0.80 —
+    /// static byte lanes are already gated by the exact-byte completeness check, so their duration
+    /// guard is only a backstop and tightening it would add false-failure risk for no coverage.
+    public static let forwardOnlyTruncationThreshold = 0.95
+
     /// Whether a played-but-short file is TRUNCATED versus the expected source duration. A transcode
     /// that aborts early (or a static download the server cut short while still returning 2xx) can
     /// open and play its first second and otherwise pass the probe; a decoded duration far under the
     /// source's means it's incomplete. Decides only when BOTH durations are known and positive — a
     /// legitimate short clip compares against its own short duration and is not truncated.
-    public static func isTruncated(expectedDurationMs: Int?, actualDurationMs: Int?) -> Bool {
+    public static func isTruncated(expectedDurationMs: Int?, actualDurationMs: Int?,
+                                   threshold: Double = truncationThreshold) -> Bool {
         guard let expectedDurationMs, expectedDurationMs > 0,
               let actualDurationMs else { return false }
-        return Double(actualDurationMs) < Double(expectedDurationMs) * truncationThreshold
+        return Double(actualDurationMs) < Double(expectedDurationMs) * threshold
     }
 
     /// The terminal outcome for a finished transfer, derived from the playability-probe result plus
@@ -97,13 +109,19 @@ public enum DownloadCompletionValidation {
     /// playability probe (after the #98 retries); the durations come from the source metadata and
     /// the probe's decoded duration. `expectedExactBytes` is the source's exact byte size when the
     /// lane knows it (static byte-range downloads), nil for transcode lanes whose expected size is
-    /// only an estimate.
+    /// only an estimate. `forwardOnly` marks a live forward-only encoder stream (JF-F2): the
+    /// duration guard is that lane's ONLY completeness signal (no exact byte size exists), so it
+    /// uses the tightened threshold, and a row whose durations cannot both be confirmed finalizes
+    /// `.unverified` instead of `.complete` — the file stays playable, and revalidation re-derives
+    /// the same outcome from the same inputs, so the unverified state is sticky rather than being
+    /// silently promoted through the nil-duration hole.
     public static func outcome(played: Bool,
                                probeReason: String,
                                expectedDurationMs: Int?,
                                actualDurationMs: Int?,
                                downloadedBytes: Int? = nil,
-                               expectedExactBytes: Int? = nil) -> CompletionOutcome {
+                               expectedExactBytes: Int? = nil,
+                               forwardOnly: Bool = false) -> CompletionOutcome {
         if let downloadedBytes, downloadedBytes <= 0 {
             return .emptyFile
         }
@@ -112,9 +130,17 @@ public enum DownloadCompletionValidation {
             return .incompleteBytes(actualBytes: downloadedBytes, expectedBytes: expectedExactBytes)
         }
         guard played else { return .unverified(reason: probeReason) }
-        if isTruncated(expectedDurationMs: expectedDurationMs, actualDurationMs: actualDurationMs),
+        let threshold = forwardOnly ? forwardOnlyTruncationThreshold : truncationThreshold
+        if isTruncated(expectedDurationMs: expectedDurationMs, actualDurationMs: actualDurationMs,
+                       threshold: threshold),
            let expectedDurationMs, let actualDurationMs {
             return .truncated(actualDurationMs: actualDurationMs, expectedDurationMs: expectedDurationMs)
+        }
+        if forwardOnly,
+           expectedDurationMs == nil || expectedDurationMs! <= 0 || actualDurationMs == nil {
+            // A cleanly killed encoder stream is indistinguishable from a complete one when either
+            // duration is missing — never bless it `.complete` on faith.
+            return .unverified(reason: "duration_unconfirmed")
         }
         return .complete
     }

@@ -95,6 +95,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private var loggedExpectation: Set<Int> = []
     /// Retry count by ratingKey for transient URLSession drops that provide resume data.
     private var retryCounts: [String: Int] = [:]
+    /// JF-F2 loop guard: consecutive `.truncated` finalize outcomes per row. Deliberately NOT
+    /// reset by `start`/`clearRetryCount` (a retry that truncates again must keep counting toward
+    /// the parking budget); reset only on a `.complete` finalize. Only touched inside
+    /// `finalizeTransferredFile`, guarded by `finalizationStateQueue` (async context — no NSLock).
+    private var truncationFailureCounts: [String: Int] = [:]
     /// Bounded per-row backend/request rehydrations after auth/forbidden HTTP responses on static
     /// Range tasks. This is intentionally separate from transient retry counts: 403 should not blindly
     /// replay the same URL, but one fresh backend negotiation may mint a usable request.
@@ -3434,14 +3439,36 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // early — or a static download the server cut short while still returning 2xx — can play its
         // first fraction of a second and pass the probe. A decoded duration far under the source's is
         // truncated, not complete. Legitimate short clips compare against their own short duration.
-        let expectedDurationMs = store.records.first { $0.ratingKey == ratingKey }?.metadata?.duration
+        let finalizeRecord = store.records.first { $0.ratingKey == ratingKey }
+        let expectedDurationMs = finalizeRecord?.metadata?.duration
+        // JF-F2: a live forward-only encoder stream has no exact byte size, so its duration guard
+        // is the only completeness signal — tightened threshold, and no `.complete` on faith when
+        // either duration is unknown.
+        let forwardOnly = finalizeRecord?.metadata?
+            .resolvedResumeMode(ratingKey: ratingKey) == .liveForwardOnly
         let outcome = DownloadCompletionValidation.outcome(played: validation.played,
                                                            probeReason: validation.reason,
                                                            expectedDurationMs: expectedDurationMs,
                                                            actualDurationMs: validation.durationMs,
                                                            downloadedBytes: bytes,
-                                                           expectedExactBytes: expectedExactBytes)
-        let finalizationResult = BackgroundFinalizationResultPolicy.result(for: outcome)
+                                                           expectedExactBytes: expectedExactBytes,
+                                                           forwardOnly: forwardOnly)
+        let truncationFailures: Int = finalizationStateQueue.sync {
+            switch outcome {
+            case .truncated:
+                let next = truncationFailureCounts[ratingKey, default: 0] + 1
+                truncationFailureCounts[ratingKey] = next
+                return next
+            case .complete:
+                truncationFailureCounts.removeValue(forKey: ratingKey)
+                return 0
+            default:
+                return truncationFailureCounts[ratingKey] ?? 0
+            }
+        }
+        let finalizationResult = BackgroundFinalizationResultPolicy.result(
+            for: outcome,
+            consecutiveTruncationFailures: truncationFailures)
         let finalizationDurationMs = max(0, Int(Date().timeIntervalSince(finalizeStarted) * 1000))
         switch outcome {
         case .emptyFile:
@@ -3486,12 +3513,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                    durationMs: finalizationDurationMs,
                                    bytes: bytes)
         case .truncated(let actualDurationMs, let expectedMs):
-            downloadLog.error("truncated-download ratingKey=\(ratingKey, privacy: .public) expectedMs=\(expectedMs, privacy: .public) actualMs=\(actualDurationMs, privacy: .public)")
+            downloadLog.error("truncated-download ratingKey=\(ratingKey, privacy: .public) expectedMs=\(expectedMs, privacy: .public) actualMs=\(actualDurationMs, privacy: .public) attempt=\(truncationFailures, privacy: .public)")
             AppDiagnostics.record(.downloads, "downloads.validation_failed", fields: [
                 "download_id": .identifier(ratingKey),
                 "reason": .label(finalizationResult.validationFailureReason ?? "truncated_duration"),
                 "expected_duration_ms": .int(expectedMs),
                 "actual_duration_ms": .int(actualDurationMs),
+                "consecutive_failures": .int(truncationFailures),
+                "preserved": .bool(!finalizationResult.shouldDeleteFile),
             ])
             if finalizationResult.shouldDeleteFile {
                 try? fileManager.removeItem(at: destination)
