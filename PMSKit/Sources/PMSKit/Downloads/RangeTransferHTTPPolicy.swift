@@ -18,11 +18,18 @@ public enum RangeTransferHTTPPolicy {
     /// different — the body is the whole NEW resource, whatever its size), or no expected total is
     /// known so there is no basis to reject. A size mismatch on an unchanged or unknowable
     /// resource is a truncated body → reject so the caller discards and retries from the durable
-    /// checkpoint.
+    /// checkpoint. Independently of the expected total, a body smaller than the response's own
+    /// declared `Content-Length` is truncated by definition — the validator-diff branch must not
+    /// adopt it just because the resource changed (audit B.3 residual weakness).
     public static func shouldAdoptReplaceWholeBody(stashBytes: Int?,
                                                    expectedBytes: Int?,
                                                    storedValidator: String?,
-                                                   responseValidator: String?) -> Bool {
+                                                   responseValidator: String?,
+                                                   responseContentLength: Int? = nil) -> Bool {
+        if let responseContentLength, responseContentLength > 0,
+           let stashBytes, stashBytes != responseContentLength {
+            return false
+        }
         guard let expectedBytes, expectedBytes > 0 else { return true }
         guard let stashBytes else { return false }
         if stashBytes == expectedBytes { return true }

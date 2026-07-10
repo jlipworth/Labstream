@@ -73,8 +73,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// Finished segment bodies stashed on disk ahead of the durable checkpoint (out-of-order
     /// arrivals), keyed by ratingKey then segment offset. Kept until the checkpoint reaches them and
     /// `appendAssembledSegment` folds them in. In-memory only: a lost entry costs at most a re-download
-    /// (the durable partial is always the source of truth). Guarded by `lock`.
-    private var heldRangeSegments: [String: [Int: (url: URL, length: Int)]] = [:]
+    /// (the durable partial is always the source of truth). Each entry records the response's
+    /// resource validator so the drain can re-verify version consistency at splice time (B.2).
+    /// Guarded by `lock`.
+    private var heldRangeSegments: [String: [Int: (url: URL, length: Int, validator: String?)]] = [:]
+    /// Train generation per ratingKey (B.2/B.3(b)): bumped whenever the whole segment train is torn
+    /// down (changed-resource restart, adopted whole-file 200). A finished body carries the epoch
+    /// captured at its delegate finish; the off-queue apply discards the body when the train moved
+    /// on — a stale sibling must neither splice old-resource bytes nor trigger another destructive
+    /// restart against the replacement file. Guarded by `lock`.
+    private var rangeTrainEpochs: [String: Int] = [:]
     /// RatingKeys whose static Range lane must not create replacement work — inserted by
     /// `cancel`/`pause`, checked before each continuation/retry, and cleared on fresh user start/resume.
     /// Without it, a delegate callback racing after `cancel`/`pause` could resurrect a deleted file.
@@ -2054,6 +2062,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         loggedProgressMilestones.removeValue(forKey: taskIdentifier)
         lastRangeProgressDiagnostic.removeValue(forKey: taskIdentifier)
         let halted = haltedRangeKeys.contains(entry.ratingKey)
+        let bodyTrainEpoch = rangeTrainEpochs[entry.ratingKey] ?? 0
         lock.unlock()
 
         // The row was cancelled or paused while this remainder was finishing. A hard cancel/delete must
@@ -2188,12 +2197,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             let validator = RangeTransferHTTPPolicy.rangeValidator(from: http)
             let contentRangeStart = RangeTransferHTTPPolicy.contentRangeStart(from: http)
             let contentRangeTotal = RangeTransferHTTPPolicy.contentRangeTotal(from: http)
+            let contentLength = (http?.expectedContentLength).flatMap { $0 > 0 ? Int($0) : nil }
             beginPendingBackgroundCompletionOperation()
             rangeIOQueue.async { [self] in
                 defer { endPendingBackgroundCompletionOperation() }
                 applyFinishedRangeBody(entry: entry, write: write, stash: stash,
                                    validator: validator, contentRangeStart: contentRangeStart,
-                                   contentRangeTotal: contentRangeTotal)
+                                   contentRangeTotal: contentRangeTotal,
+                                   responseContentLength: contentLength,
+                                   bodyTrainEpoch: bodyTrainEpoch)
             }
         }
     }
@@ -2203,7 +2215,27 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// shifted under us before appending (#169 HIGH 1).
     private func applyFinishedRangeBody(entry: RangeTransfer, write: StaticRangeBodyWrite, stash: URL,
                                     validator: String?, contentRangeStart: Int?,
-                                    contentRangeTotal: Int?) {
+                                    contentRangeTotal: Int?, responseContentLength: Int?,
+                                    bodyTrainEpoch: Int) {
+        // B.2/B.3(b): the train may have been torn down (changed-resource restart, adopted
+        // whole-file 200) between this body's delegate finish and this off-queue apply. A stale
+        // body must be discarded outright: appending would splice bytes from the previous resource
+        // version, and re-running the validator checks against the new pin would destructively
+        // restart over the replacement file.
+        lock.lock()
+        let currentTrainEpoch = rangeTrainEpochs[entry.ratingKey] ?? 0
+        lock.unlock()
+        if !StaticRangeTrainIntegrityPolicy.shouldProcessFinishedBody(
+            bodyTrainEpoch: bodyTrainEpoch, currentTrainEpoch: currentTrainEpoch) {
+            try? fileManager.removeItem(at: stash)
+            AppDiagnostics.record(.downloads, "downloads.range_stale_train_body_ignored", fields: [
+                "download_id": .identifier(entry.ratingKey),
+                "base_offset": .int(entry.baseOffset),
+                "body_epoch": .int(bodyTrainEpoch),
+                "train_epoch": .int(currentTrainEpoch),
+            ])
+            return
+        }
         if let contentRangeTotal {
             store.setSourcePartSize(ratingKey: entry.ratingKey, contentRangeTotal)
         }
@@ -2279,7 +2311,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 stashBytes: stashBytes,
                 expectedBytes: entry.expectedBytes,
                 storedValidator: store.rangeValidator(ratingKey: entry.ratingKey),
-                responseValidator: validator
+                responseValidator: validator,
+                responseContentLength: responseContentLength
             ) else {
                 try? fileManager.removeItem(at: stash)
                 let durableBytes = store.resetStaticRangeProgressToDurableCheckpoint(
@@ -2314,11 +2347,27 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             if let validator { store.setRangeValidator(ratingKey: entry.ratingKey, validator) }
             // C2: the HTTP 200 body just replaced the whole partial with the current resource; any
             // held ranged-segment stashes are now stale and must not be appended onto it.
+            // B.3(b): the same goes for every in-flight sibling segment — supersede and cancel the
+            // whole train and advance its epoch, or a late tail segment (baseOffset beyond the new
+            // file's size) would hit the held path, mismatch the freshly pinned 200 validator, and
+            // destructively restart over the file the finalize below is completing.
             purgeHeldRangeSegments(ratingKey: entry.ratingKey)
             lock.lock()
+            let supersededSiblings = supersedeRangeTasksLocked(ratingKey: entry.ratingKey)
+            rangeTrainEpochs[entry.ratingKey] = (rangeTrainEpochs[entry.ratingKey] ?? 0) + 1
             retryCounts.removeValue(forKey: entry.ratingKey)
             rangeHTTPRehydrateCounts.removeValue(forKey: entry.ratingKey)
             lock.unlock()
+            for identifier in supersededSiblings {
+                cancelURLSessionTask(identifier: identifier)
+            }
+            if !supersededSiblings.isEmpty {
+                AppDiagnostics.record(.downloads, "downloads.range_train_superseded", fields: [
+                    "download_id": .identifier(entry.ratingKey),
+                    "superseded_task_count": .int(supersededSiblings.count),
+                    "reason": .label("replace_whole_adopted"),
+                ])
+            }
             if finishedBodyDisposition == .writeThenPause {
                 let bytes = fileSize(at: entry.destination) ?? 0
                 store.updateProgress(ratingKey: entry.ratingKey,
@@ -2347,12 +2396,21 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     // reintroducing exactly the corruption #169 HIGH 1 / the offset guard prevent.
                     // A held segment always sits at baseOffset > 0 (durable < baseOffset).
                     // 1. Validator changed underneath us → the changed-resource restart path.
-                    if entry.baseOffset > 0,
-                       let stored = store.rangeValidator(ratingKey: entry.ratingKey),
-                       let current = validator, current != stored {
+                    // B.2: when nothing is pinned yet (initial train start, or the restart cleared
+                    // it), the FIRST arriving body pins the validator — head or held — so a held
+                    // body can never be stashed version-unchecked in that window.
+                    switch StaticRangeTrainIntegrityPolicy.arrivingBodyDecision(
+                        storedValidator: store.rangeValidator(ratingKey: entry.ratingKey),
+                        responseValidator: validator
+                    ) {
+                    case .restartChangedResource:
                         try? fileManager.removeItem(at: stash)
                         restartRangeFromChangedResource(entry: entry)
                         return
+                    case .pinAndProceed(let pinned):
+                        store.setRangeValidator(ratingKey: entry.ratingKey, pinned)
+                    case .proceed:
+                        break
                     }
                     // 2. Content-Range must begin exactly at this segment's baseOffset; anything else
                     // takes the existing offset-mismatch handling rather than stashing an unappendable
@@ -2403,7 +2461,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                        previous.url != stash {
                         try? fileManager.removeItem(at: previous.url)
                     }
-                    heldRangeSegments[entry.ratingKey, default: [:]][entry.baseOffset] = (url: stash, length: stashLen)
+                    heldRangeSegments[entry.ratingKey, default: [:]][entry.baseOffset] =
+                        (url: stash, length: stashLen, validator: validator)
                     lock.unlock()
                     AppDiagnostics.record(.downloads, "downloads.range_segment_held", fields: [
                         "download_id": .identifier(entry.ratingKey),
@@ -2442,12 +2501,20 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // corruption HIGH 1 targets) nor `replaceWhole` — we discard the stale partial and restart
             // from 0. Only act on a present-and-different validator: a nil/absent one (transient header
             // omission) must not trigger a restart loop. Emby/JF still also get the `If-Range` 200 path.
-            if entry.baseOffset > 0,
-               let stored = store.rangeValidator(ratingKey: entry.ratingKey),
-               let current = validator, current != stored {
+            // B.2: like the held path, the first arriving body pins the validator when none is
+            // stored yet, so every sibling — regardless of arrival order — is verified against it.
+            switch StaticRangeTrainIntegrityPolicy.arrivingBodyDecision(
+                storedValidator: store.rangeValidator(ratingKey: entry.ratingKey),
+                responseValidator: validator
+            ) {
+            case .restartChangedResource:
                 restartRangeFromChangedResource(entry: entry)
                 try? fileManager.removeItem(at: stash)
                 return
+            case .pinAndProceed(let pinned):
+                store.setRangeValidator(ratingKey: entry.ratingKey, pinned)
+            case .proceed:
+                break
             }
             // HTTP 206 must start exactly at our durable offset. A changed resource returns 200
             // (handled above, via the `If-Range` we send); a 206 whose `Content-Range` start differs
@@ -2514,10 +2581,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             rangeHTTPRehydrateCounts.removeValue(forKey: entry.ratingKey)
             rangeBlobResumeCounts.removeValue(forKey: entry.ratingKey)
             lock.unlock()
-            // Pin the resource on the FIRST successful range body so later requests send `If-Range`.
-            if let validator, store.rangeValidator(ratingKey: entry.ratingKey) == nil {
-                store.setRangeValidator(ratingKey: entry.ratingKey, validator)
-            } else if validator == nil, entry.baseOffset == 0 {
+            // The FIRST body carrying a validator already pinned it above (arrivingBodyDecision),
+            // so later requests send `If-Range`. Only the never-pinned case is left to record.
+            if validator == nil, entry.baseOffset == 0,
+               store.rangeValidator(ratingKey: entry.ratingKey) == nil {
                 // No usable strong validator: subsequent requests can't send `If-Range`, so a resource
                 // that changes mid-download would be appended unprotected. Record it so the
                 // unprotected case is observable rather than silent (#169 MEDIUM 1).
@@ -2604,12 +2671,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
 
     /// Fold any held out-of-order segments that are now contiguous with the durable checkpoint.
-    /// Returns the new durable size. Bodies are trusted (they are our own tagged 206 segment bodies);
-    /// no validator/Content-Range re-check is possible (headers are long gone) — the assembly policy's
-    /// exact-offset contiguity guarantee is the alignment defense.
+    /// Returns the new durable size. Alignment is the assembly policy's exact-offset contiguity
+    /// guarantee (Content-Range was verified at hold time); version consistency is re-checked here
+    /// against the pinned validator recorded with each stash (B.2) — the pin can move between hold
+    /// and drain (restart, replaceWhole), and a stale-version body must be dropped so the planner
+    /// re-fetches the hole instead of splicing bytes from two file versions.
     @discardableResult
     private func drainHeldRangeSegments(ratingKey: String, destination: URL, expectedBytes: Int?) -> Int {
         var durable = fileSize(at: destination) ?? 0
+        let storedValidator = store.rangeValidator(ratingKey: ratingKey)
         while true {
             lock.lock()
             let held = heldRangeSegments[ratingKey] ?? [:]
@@ -2621,6 +2691,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 lock.lock(); heldRangeSegments[ratingKey]?.removeValue(forKey: seg.offset); lock.unlock()
             }
             guard let next = run.append.first, let entry = held[next.offset] else { break }
+            if StaticRangeTrainIntegrityPolicy.heldSpliceDecision(
+                storedValidator: storedValidator,
+                heldValidator: entry.validator
+            ) == .discardChangedResource {
+                try? fileManager.removeItem(at: entry.url)
+                lock.lock(); heldRangeSegments[ratingKey]?.removeValue(forKey: next.offset); lock.unlock()
+                AppDiagnostics.record(.downloads, "downloads.range_segment_held_discarded", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "base_offset": .int(next.offset),
+                    "reason": .label("validator_mismatch_at_drain"),
+                ])
+                continue
+            }
             // Re-verify on-disk alignment before appending.
             let onDisk = fileSize(at: destination) ?? 0
             guard onDisk == next.offset else { break }
@@ -2831,7 +2914,24 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lock.lock()
         let halted = haltedRangeKeys.contains(entry.ratingKey)
         let retryAttempt = staticRangeRetryBudget.recordValidatorChange(downloadID: entry.ratingKey)
+        // B.2: tear the whole segment train down BEFORE re-planning. Stale old-resource siblings
+        // left in flight would (a) be counted by the re-plan's liveSegmentOffsets as covering
+        // their offsets in the NEW train, and (b) each trigger another delete-and-restart (or a
+        // version-unchecked held stash) as they finish. Advancing the epoch also invalidates
+        // sibling bodies already past the delegate finish.
+        let supersededSiblings = supersedeRangeTasksLocked(ratingKey: entry.ratingKey)
+        rangeTrainEpochs[entry.ratingKey] = (rangeTrainEpochs[entry.ratingKey] ?? 0) + 1
         lock.unlock()
+        for identifier in supersededSiblings {
+            cancelURLSessionTask(identifier: identifier)
+        }
+        if !supersededSiblings.isEmpty {
+            AppDiagnostics.record(.downloads, "downloads.range_train_superseded", fields: [
+                "download_id": .identifier(entry.ratingKey),
+                "superseded_task_count": .int(supersededSiblings.count),
+                "reason": .label("changed_resource_restart"),
+            ])
+        }
         AppDiagnostics.record(.downloads, "downloads.range_validator_changed", fields: [
             "download_id": .identifier(entry.ratingKey),
             "bytes": .bytes(entry.baseOffset),
