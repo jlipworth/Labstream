@@ -14,11 +14,20 @@ public enum DownloadEncoderTeardownPolicy {
 
     public static let serverMismatchReason = "server_mismatch"
 
+    /// `rowRemoved` marks the delete path: the store row is already gone and the caller is holding
+    /// the last snapshot of it, so the persisted `playSessionID` is about to be destroyed with no
+    /// later launch sweep able to retry — that is the one context where the persisted-psid branch
+    /// must itself issue the `.stop` (JF-F5: after a relaunch the transient map is empty, so
+    /// deleting a non-terminal row used to drop the only encoder handle without any teardown).
+    /// Rows still in the store stay `.none` here on purpose: terminal rows are the launch sweep's
+    /// job (a once-per-launch retry loop), and firing from every `releaseInFlight` would re-send
+    /// the DELETE on every refresh tick while a server is unreachable.
     public static func decision(backend: DownloadBackendKind,
                                 transientPlaySessionID: String?,
                                 metadata: OfflineMetadata?,
                                 sessionAvailable: Bool,
-                                sessionMatchesPersistedServer: Bool?) -> Decision {
+                                sessionMatchesPersistedServer: Bool?,
+                                rowRemoved: Bool = false) -> Decision {
         if let transientPlaySessionID, !transientPlaySessionID.isEmpty {
             guard sessionAvailable else { return .none }
             if let sessionMatchesPersistedServer, !sessionMatchesPersistedServer { return .none }
@@ -26,12 +35,16 @@ public enum DownloadEncoderTeardownPolicy {
         }
 
         guard let metadata,
-              metadata.playSessionID?.isEmpty == false,
+              let persistedPlaySessionID = metadata.playSessionID,
+              !persistedPlaySessionID.isEmpty,
               metadata.resolvedBackendKind(ratingKey: metadata.ratingKey) == backend,
-              sessionAvailable,
-              sessionMatchesPersistedServer == false else {
+              sessionAvailable else {
             return .none
         }
-        return .skip(reason: serverMismatchReason)
+        if sessionMatchesPersistedServer == false {
+            return .skip(reason: serverMismatchReason)
+        }
+        guard rowRemoved, sessionMatchesPersistedServer == true else { return .none }
+        return .stop(playSessionID: persistedPlaySessionID)
     }
 }

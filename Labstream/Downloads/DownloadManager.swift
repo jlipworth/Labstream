@@ -2517,8 +2517,12 @@ public final class DownloadManager {
         // the DELETE must hit the server the encoder actually runs on. If that lane is no longer
         // configured (signed out), skip now — the persisted `playSessionID` stays put and the launch
         // sweep retries once the lane returns.
-        let releaseMetadata = store.records.first(where: { $0.ratingKey == ratingKey })?.metadata
-            ?? rowSnapshot?.metadata
+        let storeRow = store.records.first(where: { $0.ratingKey == ratingKey })
+        let releaseMetadata = storeRow?.metadata ?? rowSnapshot?.metadata
+        // JF-F5: the delete path (row already removed, snapshot in hand) is the last chance to
+        // tear down a persisted-psid encoder — after this the handle is gone and no launch sweep
+        // can retry. The policy fires the persisted-psid `.stop` only in this context.
+        let rowRemoved = storeRow == nil && rowSnapshot != nil
         let embySession = appModel.backendSession(for: .emby)
         let embySessionMatchesMetadata = releaseMetadata.map { metadata in
             embySession?.matchesPersistedServer(metadata) == true
@@ -2529,7 +2533,8 @@ public final class DownloadManager {
             transientPlaySessionID: embyPlaySessionId,
             metadata: releaseMetadata,
             sessionAvailable: embySession != nil,
-            sessionMatchesPersistedServer: embySessionMatchesMetadata
+            sessionMatchesPersistedServer: embySessionMatchesMetadata,
+            rowRemoved: rowRemoved
         ) {
         case .none:
             break
@@ -2562,7 +2567,8 @@ public final class DownloadManager {
             transientPlaySessionID: jellyfinPlaySessionId,
             metadata: releaseMetadata,
             sessionAvailable: jellyfinSession != nil,
-            sessionMatchesPersistedServer: jellyfinSessionMatchesMetadata
+            sessionMatchesPersistedServer: jellyfinSessionMatchesMetadata,
+            rowRemoved: rowRemoved
         ) {
         case .none:
             break
