@@ -25,10 +25,26 @@ struct LibraryBrowseQueryTests {
         #expect(query["X-Plex-Container-Size"] == "20")
     }
 
+    @Test func plexWatchedFilterEmitsNegatedUnwatchedOperator() throws {
+        let request = PlexLibraryBrowseRequest.sectionItems(
+            server: server,
+            token: "tok",
+            identity: identity,
+            sectionKey: "7",
+            containerStart: 0,
+            containerSize: 20,
+            browseQuery: LibraryBrowseQuery(sort: .titleAscending, filter: .watched))
+        // The `!` operator is percent-encoded on the wire (`unwatched%21=1`); PMS decodes it
+        // back to the `unwatched!=1` negation, so the decoded query name carries the operator.
+        let query = try queryMap(request.urlRequest())
+        #expect(query["unwatched!"] == "1")
+        #expect(query["unwatched"] == nil)
+    }
+
     @Test func plexFilterMappingsUseBooleanMediaQueryFields() {
         #expect(LibraryBrowseQuery(sort: .titleAscending, filter: .all).plexQueryItems.map(\.name) == ["sort"])
         #expect(LibraryBrowseFilter.unwatched.plexQueryItems == [URLQueryItem(name: "unwatched", value: "1")])
-        #expect(LibraryBrowseFilter.watched.plexQueryItems == [URLQueryItem(name: "unwatched", value: "0")])
+        #expect(LibraryBrowseFilter.watched.plexQueryItems == [URLQueryItem(name: "unwatched!", value: "1")])
         #expect(LibraryBrowseFilter.inProgress.plexQueryItems == [URLQueryItem(name: "inProgress", value: "1")])
     }
 
