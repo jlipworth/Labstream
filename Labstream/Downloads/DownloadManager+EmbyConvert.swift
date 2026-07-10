@@ -318,8 +318,10 @@ extension DownloadManager {
             return
         }
 
-        // 2. Poll (reuse `optimizePollInterval`; no wall-clock timeout — the conversion is
-        //    server-side and may legitimately take a long time for large media).
+        // 2. Poll (reuse `optimizePollInterval`). A healthy conversion may legitimately take
+        // hours, so render duration is unbounded; only a consecutive run of unreachable/5xx/
+        // undecodable status responses is budgeted by `EmbyConvertPollHealthPolicy`.
+        var pollHealth = EmbyConvertPollHealthPolicy.State()
         while true {
             // Bail if the row was deleted/cancelled out from under us (delete() also fires the
             // server-side DELETE /Sync/Jobs).
@@ -360,16 +362,36 @@ extension DownloadManager {
                 }
                 job = try EmbyConvertRequest.decodeJob(from: data)
             } catch {
-                // A transient poll error shouldn't fail the whole job; keep polling. (The job runs
-                // server-side regardless of our connectivity.)
+                let healthAction = EmbyConvertPollHealthPolicy.registerFailure(state: &pollHealth)
+                // A transient poll error shouldn't fail the whole job; keep polling while the
+                // consecutive budget remains. The job runs server-side regardless of connectivity.
                 recordDownloadDiagnostic("downloads.convert_poll_error", fields: [
                     "download_id": .identifier(ratingKey),
                     "job_id": .int(jobId),
+                    "consecutive_failures": .int(pollHealth.consecutiveFailures),
                     "error": .error(error),
                 ])
+                if healthAction == .failPersistent {
+                    guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
+                                                      targetName: targetName, jobId: jobId) else {
+                        recordStaleEmbyConvertAttempt(ratingKey: ratingKey,
+                                                      phase: "poll_unreachable_stale", jobId: jobId)
+                        return
+                    }
+                    recordDownloadDiagnostic("downloads.convert_failed", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "job_id": .int(jobId),
+                        "phase": .label("poll_unreachable"),
+                        "consecutive_failures": .int(pollHealth.consecutiveFailures),
+                    ])
+                    failEmbyConvert(ratingKey: ratingKey,
+                                    .transferFailed("Server conversion status stayed unreachable. Retry to continue."))
+                    return
+                }
                 try? await Task.sleep(nanoseconds: UInt64(optimizePollInterval * 1_000_000_000))
                 continue
             }
+            EmbyConvertPollHealthPolicy.registerSuccess(state: &pollHealth)
 
             // Lens 6 F4/F6: the status fetch above is an await. Re-check attempt currency BEFORE
             // publishing progress or acting on a terminal status, so one poll-cycle of latency

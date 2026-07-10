@@ -390,7 +390,8 @@ Deferred to user judgment / later phases:
 - EMBY-F3: POST-create crash orphans untaggable Sync job; EMBY-F4: `.optimizeCompatible`
   silent 1080p downgrade (UX disclosure decision); EMBY-F6 existing-version silent source
   swap (add override-vs-decision guard); EMBY-F11 handoff remove→re-download crash window;
-  EMBY-F13 unbounded poll on persistent 5xx; EMBY-F9 no Emby keepalive (live-verify).
+  EMBY-F13 unbounded poll on persistent 5xx (closed in the 2026-07-11 update below); EMBY-F9 no
+  Emby keepalive (live-verify).
 - PLEX-F3 vacuous height guard on original-quality reuse; PLEX-F4 vanished-render retry
   downloads raw source unpreflighted; PLEX-F5 reuse leaves duplicate job rendering;
   PLEX-F6c poller has no overall deadline.
@@ -600,7 +601,7 @@ install UUID match, clean launch/log smoke, and signed-in Home screenshot; simul
 2. Close the checklist's evidence gaps (lifecycle cause, blob presence, network path, free-space,
    remote-play/download correlation, and Emby server-completion timing) before treating device
    observations as deterministic.
-3. Continue the deferred backend/product findings in sections F–H (Emby F3/F4/F6/F9/F11/F13,
+3. Continue the deferred backend/product findings in sections F–H (Emby F3/F4/F6/F9/F11,
    Plex F3/F4/F5/F6c, and held-stash persistence). The simulator
    relaunch probe now proves the held-stash item is real: eight completed stashes were swept and
    refetched from the durable checkpoint because their metadata is not persisted.
@@ -617,3 +618,12 @@ backend retry intent, Jellyfin/Emby retry funnels, and every Emby convert reuse/
 path carry it forward, so a relaunch no longer loses the selected language when matching or
 downloading a server-prepared source. Legacy rows decode the new field as `nil`; PMSKit round-trip,
 builder, and retry-intent tests cover the new optional contract.
+
+### Deferred follow-up closed: EMBY-F13 persistent poll failure
+
+The Emby convert status loop still permits a healthy server-side render to run for hours, but it no
+longer retries an unreachable/5xx/undecodable status endpoint forever. A pure
+`EmbyConvertPollHealthPolicy` now allows 60 consecutive failures (roughly five minutes at the
+production cadence), resets on any successfully decoded status, and then parks the current attempt
+as a retryable failed row with `downloads.convert_failed phase=poll_unreachable`. Attempt currency
+is re-checked before the terminal write so a stale poller cannot fail a replacement download.
