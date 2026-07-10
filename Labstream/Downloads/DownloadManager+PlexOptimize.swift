@@ -77,6 +77,9 @@ extension DownloadManager {
         var optimizeMetadata = metadata
         optimizeMetadata.optimizeTargetName = targetName
         optimizeMetadata.optimizeQueueTitle = queueTitle
+        if optimizeMetadata.plexOptimizeStartedAtEpochSeconds == nil {
+            optimizeMetadata.plexOptimizeStartedAtEpochSeconds = Date().timeIntervalSince1970
+        }
         // The original→optimize fallback chains hand in metadata built for the `.original` lane
         // (`.staticByteRange`). Until the post-fetch rebuild below lands, that stale seed would
         // let a delete-time cancel miss the server-prep job and a crash/relaunch Retry re-download
@@ -131,6 +134,10 @@ extension DownloadManager {
             optimizeMetadata.chapterImageRelativePaths = existingMetadata?.chapterImageRelativePaths
             optimizeMetadata.sourceMediaHeight = sourceItem.media?[safe: sourceMediaIndex]?.height
                 ?? metadata.sourceMediaHeight
+            optimizeMetadata.plexOptimizeStartedAtEpochSeconds =
+                existingMetadata?.plexOptimizeStartedAtEpochSeconds
+                ?? metadata.plexOptimizeStartedAtEpochSeconds
+                ?? Date().timeIntervalSince1970
             optimizeMetadata.optimizeBaselinePartIDs = DownloadOptimizeSourcePolicy.sourcePartIDs(
                 item: sourceItem,
                 fallbackItem: item,
@@ -188,6 +195,7 @@ extension DownloadManager {
                                                       sourceHeight: sourceHeight,
                                                       backgroundProcessingKey: backgroundProcessingKey,
                                                       queueTitle: queueTitle,
+                                                      startedAtEpochSeconds: optimizeMetadata.plexOptimizeStartedAtEpochSeconds!,
                                                       mediaTitle: item.title,
                                                       server: server, token: token,
                                                       identity: identity)

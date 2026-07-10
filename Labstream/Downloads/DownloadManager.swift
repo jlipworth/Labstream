@@ -1755,6 +1755,17 @@ public final class DownloadManager {
                                                pollerID: UUID) async {
         let ratingKey = record.ratingKey
         let identity = appModel.identity
+        // Legacy prep rows predate the persisted deadline. Seed it once before polling and write it
+        // back to the row so another relaunch continues the same clock instead of resetting it.
+        var metadata = metadata
+        let optimizeStartedAt = metadata.plexOptimizeStartedAtEpochSeconds
+            ?? Date().timeIntervalSince1970
+        if metadata.plexOptimizeStartedAtEpochSeconds == nil {
+            metadata.plexOptimizeStartedAtEpochSeconds = optimizeStartedAt
+            var updatedRecord = record
+            updatedRecord.metadata = metadata
+            store.upsert(updatedRecord)
+        }
         do {
             try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
                                              metadata: metadata,
@@ -1803,12 +1814,14 @@ public final class DownloadManager {
                                                  targetName: targetName)
             }
             let sourceHeight = currentItem.media?[safe: metadata.mediaIndex ?? 0]?.height
+                ?? metadata.sourceMediaHeight
             let part = try await pollForOptimizedPart(ratingKey: ratingKey,
                                                       originalPartIDs: originalPartIDs,
                                                       targetName: targetName,
                                                       sourceHeight: sourceHeight,
                                                       backgroundProcessingKey: backgroundProcessingKey,
                                                       queueTitle: metadata.optimizeQueueTitle,
+                                                      startedAtEpochSeconds: optimizeStartedAt,
                                                       mediaTitle: record.title,
                                                       server: server,
                                                       token: token,
@@ -2969,12 +2982,24 @@ public final class DownloadManager {
                                       sourceHeight: Int?,
                                       backgroundProcessingKey: String?,
                                       queueTitle: String?,
+                                      startedAtEpochSeconds: TimeInterval,
                                       mediaTitle: String,
                                       server: URL,
                                       token: String,
                                       identity: ClientIdentity) async throws -> Part {
         var pollHealth = PlexOptimizePollHealthPolicy.State()
         while !Task.isCancelled {
+            if PlexOptimizeDeadlinePolicy.isExpired(
+                startedAtEpochSeconds: startedAtEpochSeconds,
+                nowEpochSeconds: Date().timeIntervalSince1970
+            ) {
+                recordDownloadDiagnostic("downloads.optimize_poll_timed_out", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "target": .label(targetName),
+                    "deadline_hours": .int(24),
+                ])
+                throw DownloadError.optimizeTimedOut
+            }
             // Orphan guard (audit B.9): Task cancellation alone is not enough — a delete can
             // race this loop before/without a registered Task handle, and a concurrent reap can
             // remove the queue row entirely. Re-check LIVE app state every iteration and stop
