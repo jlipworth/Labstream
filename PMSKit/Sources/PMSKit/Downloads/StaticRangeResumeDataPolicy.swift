@@ -79,6 +79,24 @@ public enum StaticRangeResumeDataPolicy {
         return .adopt(baseOffset: blobRangeOffset)
     }
 
+    /// In-process failure retry of a LIVE train segment: the failed entry is known, so the blob is
+    /// authoritative iff it resumes that segment's own closed request — its Range offset must equal
+    /// the SEGMENT's base offset. Judging it against the durable partial (which belongs to the head)
+    /// wrongly rejects every non-head retry blob and discards its temp bytes (observed live: tens to
+    /// hundreds of MB per starved-tail failure). `segmentBaseOffset == nil` (open-ended remainder or
+    /// persisted-blob adoption, where no live entry exists) keeps the durable-offset rule.
+    public static func adoptionDecision(blobRangeOffset: Int?,
+                                        durableBytes: Int,
+                                        segmentBaseOffset: Int?) -> AdoptionDecision {
+        guard let segmentBaseOffset else {
+            return adoptionDecision(blobRangeOffset: blobRangeOffset, durableBytes: durableBytes)
+        }
+        guard let blobRangeOffset, blobRangeOffset == segmentBaseOffset else {
+            return .rejectStale(blobOffset: blobRangeOffset, durableBytes: durableBytes)
+        }
+        return .adopt(baseOffset: blobRangeOffset)
+    }
+
     /// URLSession resume data is the first recovery path for continuous remainders, but if the OS
     /// says the blob cannot be resumed (commonly because its temp file vanished) the safe fallback is
     /// to discard the blob and restart from the durable partial with a fresh open-ended Range.
