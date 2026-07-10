@@ -129,6 +129,8 @@ extension DownloadManager {
             // #88: carry forward already-cached chapter images so an optimize re-fetch doesn't drop
             // the offline Chapters rail thumbnails.
             optimizeMetadata.chapterImageRelativePaths = existingMetadata?.chapterImageRelativePaths
+            optimizeMetadata.sourceMediaHeight = sourceItem.media?[safe: sourceMediaIndex]?.height
+                ?? metadata.sourceMediaHeight
             optimizeMetadata.optimizeBaselinePartIDs = DownloadOptimizeSourcePolicy.sourcePartIDs(
                 item: sourceItem,
                 fallbackItem: item,
@@ -179,6 +181,7 @@ extension DownloadManager {
                                              metadata: optimizeMetadata,
                                              targetName: targetName)
             let sourceHeight = sourceItem.media?[safe: sourceMediaIndex]?.height
+                ?? optimizeMetadata.sourceMediaHeight
             let part = try await pollForOptimizedPart(ratingKey: ratingKey,
                                                       originalPartIDs: originalPartIDs,
                                                       targetName: targetName,

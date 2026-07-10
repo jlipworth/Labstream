@@ -65,6 +65,7 @@ struct DownloadOfflineMetadataBuilderTests {
         #expect(metadata.downloadBitrateKbps == 12_000)
         #expect(metadata.mediaIndex == 1)
         #expect(metadata.partIndex == 0)
+        #expect(metadata.sourceMediaHeight == 1080)
         #expect(metadata.sourcePartID == 20)
         #expect(metadata.sourcePartSize == 2_000)
         #expect(metadata.optimizeQueueTitle == "queue-title")
