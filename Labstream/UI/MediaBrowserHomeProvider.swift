@@ -5,14 +5,14 @@ import PMSKit
 ///
 /// Plex Home still uses native `/hubs`; MediaBrowser Home is library-scoped and can share the
 /// visibility filtering, "Continue Watching" / "Next Up", and per-library latest-item rails.
-struct MediaBrowserHomeLibraryLink: Identifiable, Hashable {
+struct MediaBrowserHomeLibraryLink: Identifiable, Hashable, Sendable {
     let id: String
     let title: String
     let collectionType: String?
 }
 
 /// Backend-neutral rail descriptor for Jellyfin/Emby Home.
-struct MediaBrowserHomeRail: Identifiable, Hashable {
+struct MediaBrowserHomeRail: Identifiable, Hashable, Sendable {
     let id: String
     let title: String
     let items: [MediaItem]
@@ -86,12 +86,24 @@ struct MediaBrowserHomeProvider {
                                               destination: RailViewAllDestination(title: "Next Up", backend: backend, sessionIdentity: sessionIdentity, query: .mediaBrowserNextUp(parentID: nil))))
         }
 
-        for library in libraries.prefix(8) {
-            let items = await tracker.attempt {
-                try await browser.homeLatestItems(parentId: library.id,
-                                                  includeItemTypes: MediaBrowserHomeProvider.latestItemTypes(for: library),
-                                                  limit: 20)
-            } ?? []
+        // A server may expose eight eligible libraries. Keep their requests concurrent without
+        // allowing Home to create an unbounded burst against the server or URLSession.
+        let latestLibraries = Array(libraries.prefix(8))
+        let latestResults = try await BoundedAsyncMap.results(
+            latestLibraries,
+            maximumConcurrentTasks: 4
+        ) { [browser] library in
+            try await browser.homeLatestItems(
+                parentId: library.id,
+                includeItemTypes: MediaBrowserHomeProvider.latestItemTypes(for: library),
+                limit: 20
+            )
+        }
+
+        // Completion order is intentionally irrelevant: preserve the server's library order in
+        // the rendered rails while retaining successful rails when a sibling request fails.
+        for (library, result) in zip(latestLibraries, latestResults) {
+            let items = tracker.record(result) ?? []
             if !items.isEmpty {
                 rails.append(MediaBrowserHomeRail(id: "latest-\(library.id)",
                                                   title: "Recently Added \(library.title)",
