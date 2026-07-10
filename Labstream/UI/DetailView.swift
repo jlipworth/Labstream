@@ -703,6 +703,29 @@ struct DetailView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
+        case .selectionRequired:
+            if stateApplies {
+                Label("Choose the matching item in the SharePlay sheet.", systemImage: "questionmark.video")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+            }
+        case .ready:
+            if stateApplies {
+                VStack(alignment: .leading, spacing: DS.Space.sm) {
+                    Label("\(watchTogetherCoordinator.readyParticipantCount) ready · \(watchTogetherCoordinator.resolvingParticipantCount) resolving",
+                          systemImage: "checkmark.circle")
+                        .font(.callout)
+                        .foregroundStyle(.green)
+                    if watchTogetherCoordinator.isLocalInitiator {
+                        Button(watchTogetherCoordinator.requiresStartAcknowledgement
+                               ? "Start with ready participants" : "Start Watching") {
+                            watchTogetherCoordinator.startWithReadyParticipants(
+                                acknowledgeUnresolved: watchTogetherCoordinator.requiresStartAcknowledgement)
+                        }
+                        .buttonStyle(.borderedProminent)
+                    }
+                }
+            }
         case .active:
             if stateApplies {
                 Label("Watch Together active", systemImage: "shareplay")

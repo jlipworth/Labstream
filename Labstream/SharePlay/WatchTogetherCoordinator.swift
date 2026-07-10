@@ -4,274 +4,315 @@ import GroupActivities
 import Observation
 import PMSKit
 
-/// App-lifetime coordinator for the conservative first SharePlay / Watch Together slice.
-///
-/// This owns the GroupActivities session lifecycle and exposes a tiny state machine to SwiftUI.
-/// Actual transport synchronization is intentionally delegated to AVPlayerPlaybackCoordinator;
-/// this type never sends custom play/pause/seek messages.
 @MainActor
 @Observable
 final class WatchTogetherCoordinator {
     struct PresentationContext: Equatable, Sendable {
         let title: String
         let coordinatorIdentifier: String?
-
-        static func available(title: String, coordinatorIdentifier: String) -> PresentationContext {
-            PresentationContext(title: title, coordinatorIdentifier: coordinatorIdentifier)
-        }
-
-        static func unavailable(title: String) -> PresentationContext {
-            PresentationContext(title: title, coordinatorIdentifier: nil)
-        }
+        static func available(title: String, coordinatorIdentifier: String) -> Self { .init(title: title, coordinatorIdentifier: coordinatorIdentifier) }
+        static func unavailable(title: String) -> Self { .init(title: title, coordinatorIdentifier: nil) }
     }
 
     enum State: Equatable, Sendable {
         case inactive
         case resolving(PresentationContext)
-        case unavailable(PresentationContext, reason: UnavailableReason)
+        case selectionRequired(PresentationContext)
+        case ready(PresentationContext)
         case active(PresentationContext)
-
-        var title: String? {
+        case unavailable(PresentationContext, reason: UnavailableReason)
+        var context: PresentationContext? {
             switch self {
-            case .inactive: return nil
-            case .resolving(let context), .unavailable(let context, _), .active(let context): return context.title
-            }
-        }
-
-        var coordinatorIdentifier: String? {
-            switch self {
-            case .inactive: return nil
-            case .resolving(let context), .unavailable(let context, _), .active(let context):
-                return context.coordinatorIdentifier
+            case .inactive: nil
+            case .resolving(let value), .selectionRequired(let value), .ready(let value),
+                 .active(let value), .unavailable(let value, _): value
             }
         }
     }
 
     enum UnavailableReason: String, Equatable, Sendable {
-        case unsupportedItem
-        case activationDisabled
-        case activationCancelled
-        case activationFailed
-        case currentLibraryResolutionUnavailable
-        case coordinatorIdentifierUnavailable
-        case noActiveSession
+        case unsupportedItem, activationDisabled, activationCancelled, activationFailed
+        case currentLibraryResolutionUnavailable, coordinatorIdentifierUnavailable, noActiveSession
     }
 
-    struct PendingLocalShare: Sendable, Equatable {
-        let activityID: UUID
+    struct JoinPrompt: Identifiable, Equatable {
+        let id: UUID
         let title: String
-        let coordinatorIdentifier: String
+        let subtitle: String?
+        let identity: SharePlayMediaIdentity
+        var candidates: [MediaItem]
+        var isSearching: Bool
+        var isReady: Bool
+        var searchQuery: String
+    }
+
+    private struct PendingLocalShare: Sendable, Equatable {
+        let activityID: UUID
+        let item: MediaItem
+    }
+
+    private struct ReadinessMessage: Codable {
+        let activityID: UUID
+        let status: SharePlayParticipantReadiness
     }
 
     private(set) var state: State = .inactive
-
+    private(set) var joinPrompt: JoinPrompt?
+    private(set) var readyParticipantCount = 0
+    private(set) var resolvingParticipantCount = 0
+    private(set) var sessionStarted = false
+    private(set) var isLocalInitiator = false
     var hasActiveSession: Bool { activeSession != nil }
+    var requiresStartAcknowledgement: Bool { resolvingParticipantCount > 0 }
 
     @ObservationIgnored private var observationTask: Task<Void, Never>?
     @ObservationIgnored private var activeSessionStateTask: Task<Void, Never>?
+    @ObservationIgnored private var participantTask: Task<Void, Never>?
+    @ObservationIgnored private var messageTask: Task<Void, Never>?
+    @ObservationIgnored private var lookupTask: Task<Void, Never>?
     @ObservationIgnored private var activeSession: GroupSession<WatchTogetherActivity>?
-    @ObservationIgnored private var activeCoordinatorIdentifier: String?
+    @ObservationIgnored private var messenger: GroupSessionMessenger?
+    @ObservationIgnored private var activePayload: SharePlayMediaActivityPayload?
+    @ObservationIgnored private var resolvedItem: MediaItem?
     @ObservationIgnored private var pendingLocalShare: PendingLocalShare?
+    @ObservationIgnored private var participantStatuses: [UUID: SharePlayParticipantReadiness] = [:]
     @ObservationIgnored private var playbackCoordinatorDelegate: WatchTogetherPlaybackCoordinatorDelegate?
+    @ObservationIgnored private var candidateLookup: (@MainActor (String) async -> [MediaItem])?
+
+    func configure(appModel: AppModel) {
+        let lookup = WatchTogetherMediaLookup(appModel: appModel)
+        candidateLookup = { query in await lookup.candidates(matching: query) }
+    }
 
     func startObservingSessionsIfNeeded() {
         guard observationTask == nil else { return }
         observationTask = Task { [weak self] in
-            for await session in WatchTogetherActivity.sessions() {
-                self?.handle(session)
-            }
+            for await session in WatchTogetherActivity.sessions() { self?.handle(session) }
         }
     }
 
-    /// User-facing entry point from an item detail page. It activates a minimal activity whose
-    /// payload contains the exact sanitized title only. The richer identity remains local, and the
-    /// resulting opaque coordinator id is stored only for later AVPlayerPlaybackCoordinator setup.
     func requestWatchTogether(for item: MediaItem) async {
-        guard let payload = SharePlayMediaActivityPayload(mediaItem: item) else {
+        guard let payload = SharePlayMediaActivityPayload(mediaItem: item),
+              payload.identity.coordinatorIdentifier != nil else {
             state = .unavailable(.unavailable(title: item.title), reason: .unsupportedItem)
             return
         }
-        guard let identity = item.sharePlayMediaIdentity,
-              let coordinatorIdentifier = identity.coordinatorIdentifier else {
-            state = .unavailable(.unavailable(title: payload.displayTitle), reason: .coordinatorIdentifierUnavailable)
-            return
-        }
-        let context = PresentationContext.available(title: payload.displayTitle,
-                                                    coordinatorIdentifier: coordinatorIdentifier)
-        // Remember the pre-activation state: a declined/failed activation for a second item
-        // must restore the still-running session's `.active` status instead of clobbering it
-        // while that session keeps coordinating the other item's player.
+        let context = context(for: payload)
         let previousState = state
-
-        let activity = WatchTogetherActivity(payload: payload)
         state = .resolving(context)
+        let activity = WatchTogetherActivity(payload: payload)
         do {
             switch await activity.prepareForActivation() {
             case .activationPreferred:
-                pendingLocalShare = PendingLocalShare(activityID: payload.activityID,
-                                                      title: payload.displayTitle,
-                                                      coordinatorIdentifier: coordinatorIdentifier)
-                // activate() returns false without throwing when the user declines the system
-                // SharePlay sheet — that must not strand the state machine in .resolving.
+                pendingLocalShare = PendingLocalShare(activityID: payload.activityID, item: item)
                 if try await activity.activate() == false {
                     failActivation(context, reason: .activationCancelled, restoring: previousState)
                 }
-            case .activationDisabled:
-                failActivation(context, reason: .activationDisabled, restoring: previousState)
-            case .cancelled:
-                failActivation(context, reason: .activationCancelled, restoring: previousState)
-            @unknown default:
-                failActivation(context, reason: .activationFailed, restoring: previousState)
+            case .activationDisabled: failActivation(context, reason: .activationDisabled, restoring: previousState)
+            case .cancelled: failActivation(context, reason: .activationCancelled, restoring: previousState)
+            @unknown default: failActivation(context, reason: .activationFailed, restoring: previousState)
             }
-        } catch {
-            failActivation(context, reason: .activationFailed, restoring: previousState)
-        }
+        } catch { failActivation(context, reason: .activationFailed, restoring: previousState) }
     }
 
-    private func failActivation(_ context: PresentationContext,
-                                reason: UnavailableReason,
-                                restoring previousState: State) {
+    private func failActivation(_ context: PresentationContext, reason: UnavailableReason, restoring previousState: State) {
         pendingLocalShare = nil
-        if activeSession != nil, case .active = previousState {
-            state = previousState
+        state = activeSession != nil ? previousState : .unavailable(context, reason: reason)
+    }
+
+    private func handle(_ session: GroupSession<WatchTogetherActivity>) {
+        clearActiveSession(leaving: false)
+        let payload = session.activity.payload
+        activeSession = session
+        isLocalInitiator = session.isLocallyInitiated
+        activePayload = payload
+        messenger = GroupSessionMessenger(session: session)
+        session.join()
+        observe(session)
+
+        if let pending = pendingLocalShare, pending.activityID == payload.activityID {
+            pendingLocalShare = nil
+            acceptResolvedItem(pending.item)
         } else {
-            state = .unavailable(context, reason: reason)
+            joinPrompt = JoinPrompt(id: payload.activityID, title: payload.displayTitle,
+                                    subtitle: payload.displaySubtitle, identity: payload.identity,
+                                    candidates: [], isSearching: true, isReady: false,
+                                    searchQuery: payload.displayTitle)
+            state = .resolving(context(for: payload))
+            sendStatus(.resolving)
+            searchCandidates(query: payload.displayTitle)
         }
     }
 
-    /// Boundary for the incoming-session current-library resolver. The first scaffolding milestone
-    /// deliberately fails closed because no current-library snapshot is wired into this coordinator
-    /// yet. The next implementation should pass the currently displayed library items here and use
-    /// `SharePlayMediaResolver` to require one exact, timeline-safe match before joining.
-    func resolveIncomingAgainstCurrentLibrary(_ activity: WatchTogetherActivity,
-                                              currentLibraryItems: [MediaItem]) -> MediaItem? {
-        _ = currentLibraryItems
-        state = .unavailable(.unavailable(title: activity.payload.displayTitle),
-                             reason: .currentLibraryResolutionUnavailable)
-        return nil
+    func searchCandidates(query: String) {
+        guard var prompt = joinPrompt, prompt.id == activePayload?.activityID else { return }
+        prompt.searchQuery = query
+        prompt.isSearching = true
+        joinPrompt = prompt
+        lookupTask?.cancel()
+        lookupTask = Task { [weak self] in
+            guard let self, let candidateLookup else { return }
+            let candidates = await candidateLookup(query)
+            guard !Task.isCancelled else { return }
+            self.applyCandidates(candidates)
+        }
     }
 
-    /// Attach the active SharePlay session to a local AVPlayer after local resolution succeeded.
-    /// Returns false rather than joining/syncing when the item cannot produce the same opaque
-    /// coordinator id that was accepted for the session. The AVPlayerPlaybackCoordinator delegate
-    /// is installed before coordination so AVFoundation never falls back to URL/asset-derived item
-    /// identifiers, which may contain tokens or backend-local stream URLs.
+    private func applyCandidates(_ candidates: [MediaItem]) {
+        guard let payload = activePayload, var prompt = joinPrompt else { return }
+        let resolver = SharePlayMediaResolver()
+        switch resolver.resolve(payload.identity, in: candidates) {
+        case .resolved(let item):
+            acceptResolvedItem(item)
+        case .selectionRequired(let matches):
+            prompt.candidates = matches
+            prompt.isSearching = false
+            joinPrompt = prompt
+            state = .selectionRequired(context(for: payload))
+        case .failed:
+            prompt.candidates = resolver.selectableCandidates(for: payload.identity, in: candidates)
+            prompt.isSearching = false
+            joinPrompt = prompt
+            state = .selectionRequired(context(for: payload))
+        }
+    }
+
+    func selectCandidate(_ item: MediaItem) {
+        guard let payload = activePayload,
+              SharePlayMediaResolver().selectableCandidates(for: payload.identity, in: [item]).count == 1 else {
+            if let payload = activePayload {
+                state = .unavailable(context(for: payload), reason: .coordinatorIdentifierUnavailable)
+            }
+            return
+        }
+        acceptResolvedItem(item)
+    }
+
+    private func acceptResolvedItem(_ item: MediaItem) {
+        guard let payload = activePayload else { return }
+        resolvedItem = item
+        if var prompt = joinPrompt { prompt.isReady = true; prompt.isSearching = false; joinPrompt = prompt }
+        state = .ready(context(for: payload))
+        setLocalStatus(.ready)
+        sendStatus(.ready)
+        if sessionStarted { launchResolvedItem() }
+    }
+
+    func startWithReadyParticipants(acknowledgeUnresolved: Bool) {
+        guard resolvedItem != nil, let payload = activePayload else { return }
+        guard acknowledgeUnresolved || !requiresStartAcknowledgement else { return }
+        sessionStarted = true
+        state = .active(context(for: payload))
+        sendStatus(.started)
+        launchResolvedItem()
+    }
+
+    private func launchResolvedItem() {
+        guard let item = resolvedItem else { return }
+        joinPrompt = nil
+        SystemEntryRouter.shared.open(item: item, autoPlay: true)
+    }
+
+    func declineIncoming() {
+        sendStatus(.unable)
+        clearActiveSession(leaving: true)
+    }
+
     @discardableResult
     func attachPlaybackCoordinatorIfReady(player: AVPlayer, item: MediaItem) -> Bool {
-        guard let session = activeSession else {
-            return false
-        }
-        let itemIdentifier = item.sharePlayMediaIdentity?.coordinatorIdentifier
-        guard let coordinatorIdentifier = itemIdentifier,
-              coordinatorIdentifier == activeCoordinatorIdentifier else {
-            // Carry the item's own identifier when it has one so stateApplies(to:) lets this
-            // failure render on that item's detail page instead of being silently invisible.
-            let context = itemIdentifier.map { PresentationContext.available(title: item.title,
-                                                                             coordinatorIdentifier: $0) }
-                ?? .unavailable(title: item.title)
-            state = .unavailable(context, reason: .coordinatorIdentifierUnavailable)
-            detachPlaybackCoordinatorDelegate(from: player)
-            return false
-        }
-        guard let currentItem = player.currentItem else {
-            state = .unavailable(.available(title: item.title, coordinatorIdentifier: coordinatorIdentifier),
-                                 reason: .coordinatorIdentifierUnavailable)
-            detachPlaybackCoordinatorDelegate(from: player)
-            return false
-        }
-
-        let delegate = WatchTogetherPlaybackCoordinatorDelegate(playerItem: currentItem,
-                                                               coordinatorIdentifier: coordinatorIdentifier)
+        guard let session = activeSession, let payload = activePayload,
+              SharePlayMediaResolver().selectableCandidates(for: payload.identity, in: [item]).count == 1,
+              let identifier = payload.identity.coordinatorIdentifier,
+              let currentItem = player.currentItem else { return false }
+        let delegate = WatchTogetherPlaybackCoordinatorDelegate(playerItem: currentItem, coordinatorIdentifier: identifier)
         playbackCoordinatorDelegate = delegate
         player.playbackCoordinator.delegate = delegate
         player.playbackCoordinator.coordinateWithSession(session)
         return true
     }
 
-    /// Whether the current status belongs to this detail item. Prefer the opaque accepted
-    /// AVPlayerPlaybackCoordinator id over display title so sanitized/truncated titles and
-    /// same-title media do not show misleading status.
     func stateApplies(to item: MediaItem) -> Bool {
-        let itemIdentifier = item.sharePlayMediaIdentity?.coordinatorIdentifier
-        if let stateIdentifier = state.coordinatorIdentifier {
-            return stateIdentifier == itemIdentifier
+        guard let context = state.context else { return false }
+        if let active = activePayload?.identity {
+            return SharePlayMediaResolver().selectableCandidates(for: active, in: [item]).count == 1
         }
-        // Fail-closed states are built without an identifier (unsupported items, incoming
-        // shares that never resolved locally). Fall back to an exact-title match for those so
-        // the error is not silently invisible — worst case the message also shows on a
-        // same-titled item, which is harmless for an error banner.
-        guard case .unavailable = state else { return false }
-        return state.title == item.title
+        return context.title == item.title
     }
 
-    func leave() {
-        pendingLocalShare = nil
-        activeSession?.leave()
-        clearActiveSession()
+    func leave() { clearActiveSession(leaving: true) }
+
+    private func context(for payload: SharePlayMediaActivityPayload) -> PresentationContext {
+        if let identifier = payload.identity.coordinatorIdentifier {
+            return .available(title: payload.displayTitle, coordinatorIdentifier: identifier)
+        }
+        return .unavailable(title: payload.displayTitle)
     }
 
-    private func handle(_ session: GroupSession<WatchTogetherActivity>) {
-        let activity = session.activity
-        state = .resolving(.unavailable(title: activity.payload.displayTitle))
-
-        if let pending = pendingLocalShare,
-           pending.activityID == activity.payload.activityID {
-            activeSession = session
-            activeCoordinatorIdentifier = pending.coordinatorIdentifier
-            pendingLocalShare = nil
-            observeInvalidation(of: session)
-            session.join()
-            state = .active(.available(title: pending.title,
-                                       coordinatorIdentifier: pending.coordinatorIdentifier))
-            return
-        }
-
-        // Incoming shares need current-library resolution before joining. Until the current
-        // library snapshot is wired in, fail closed and do not attach AVPlayer coordination —
-        // and leave the session rather than abandoning it in .waiting, which would pin this
-        // participant as a permanent ghost member of the FaceTime activity.
-        _ = resolveIncomingAgainstCurrentLibrary(activity, currentLibraryItems: [])
-        session.leave()
-    }
-
-    private func observeInvalidation(of session: GroupSession<WatchTogetherActivity>) {
-        activeSessionStateTask?.cancel()
-        if case .invalidated = session.state {
-            clearActiveSession()
-            return
-        }
+    private func observe(_ session: GroupSession<WatchTogetherActivity>) {
         activeSessionStateTask = Task { [weak self, weak session] in
             guard let session else { return }
-            for await sessionState in session.$state.values {
-                guard case .invalidated = sessionState else { continue }
-                await MainActor.run {
-                    guard self?.activeSession?.id == session.id else { return }
-                    self?.clearActiveSession()
+            for await value in session.$state.values {
+                if case .invalidated = value { self?.clearActiveSession(leaving: false); return }
+            }
+        }
+        participantTask = Task { [weak self, weak session] in
+            guard let session else { return }
+            for await participants in session.$activeParticipants.values {
+                self?.pruneStatuses(to: participants.map(\.id), localID: session.localParticipant.id)
+            }
+        }
+        if let messenger {
+            messageTask = Task { [weak self] in
+                for await (message, context) in messenger.messages(of: ReadinessMessage.self) {
+                    self?.receive(message, from: context.source.id)
                 }
-                return
             }
         }
     }
 
-    /// Only clears the shared strong delegate reference when it actually belongs to this
-    /// player. Nil'ing it unconditionally would deallocate the (weakly held) delegate of a
-    /// previously attached, still-coordinating player, whose coordinator would then fall back
-    /// to AVFoundation's URL/asset-derived item identifiers — which may carry tokenized
-    /// stream URLs — while still connected to the group session.
-    private func detachPlaybackCoordinatorDelegate(from player: AVPlayer) {
-        if player.playbackCoordinator.delegate === playbackCoordinatorDelegate {
-            playbackCoordinatorDelegate = nil
+    private func receive(_ message: ReadinessMessage, from participantID: UUID) {
+        guard message.activityID == activePayload?.activityID else { return }
+        participantStatuses[participantID] = message.status
+        if message.status == .started {
+            sessionStarted = true
+            if let payload = activePayload { state = resolvedItem == nil ? .resolving(context(for: payload)) : .active(context(for: payload)) }
+            launchResolvedItem()
         }
-        player.playbackCoordinator.delegate = nil
+        refreshCounts()
     }
 
-    private func clearActiveSession() {
-        activeSessionStateTask?.cancel()
-        activeSessionStateTask = nil
-        activeSession = nil
-        activeCoordinatorIdentifier = nil
-        // pendingLocalShare deliberately survives: it belongs to an in-flight activation for a
-        // NEW share, which must not be killed by the teardown of the session it is replacing.
+    private func sendStatus(_ status: SharePlayParticipantReadiness) {
+        guard let payload = activePayload, let messenger else { return }
+        setLocalStatus(status)
+        let message = ReadinessMessage(activityID: payload.activityID, status: status)
+        Task { try? await messenger.send(message) }
+    }
+
+    private func setLocalStatus(_ status: SharePlayParticipantReadiness) {
+        guard let id = activeSession?.localParticipant.id else { return }
+        participantStatuses[id] = status
+        refreshCounts()
+    }
+
+    private func pruneStatuses(to activeIDs: [UUID], localID: UUID) {
+        let allowed = Set(activeIDs).union([localID])
+        participantStatuses = participantStatuses.filter { allowed.contains($0.key) }
+        refreshCounts()
+    }
+
+    private func refreshCounts() {
+        let summary = SharePlayReadinessSummary(statuses: Array(participantStatuses.values))
+        readyParticipantCount = summary.readyCount
+        resolvingParticipantCount = summary.resolvingCount
+    }
+
+    private func clearActiveSession(leaving: Bool) {
+        if leaving { activeSession?.leave() }
+        activeSessionStateTask?.cancel(); participantTask?.cancel(); messageTask?.cancel(); lookupTask?.cancel()
+        activeSessionStateTask = nil; participantTask = nil; messageTask = nil; lookupTask = nil
+        activeSession = nil; messenger = nil; activePayload = nil; resolvedItem = nil; joinPrompt = nil
+        participantStatuses = [:]; readyParticipantCount = 0; resolvingParticipantCount = 0
+        sessionStarted = false; isLocalInitiator = false
         playbackCoordinatorDelegate = nil
         state = .inactive
     }
@@ -281,38 +322,24 @@ private final class WatchTogetherPlaybackCoordinatorDelegate: NSObject, AVPlayer
     private let playerItemIdentity: ObjectIdentifier
     private let coordinatorIdentifier: String
     private let unmatchedItemIdentifier = "visionplay:coordinator:v1:unmatched:\(UUID().uuidString)"
-
     init(playerItem: AVPlayerItem, coordinatorIdentifier: String) {
-        self.playerItemIdentity = ObjectIdentifier(playerItem)
-        self.coordinatorIdentifier = coordinatorIdentifier
+        playerItemIdentity = ObjectIdentifier(playerItem); self.coordinatorIdentifier = coordinatorIdentifier
     }
-
-    func playbackCoordinator(_ coordinator: AVPlayerPlaybackCoordinator,
-                             identifierFor playerItem: AVPlayerItem) -> String {
-        guard ObjectIdentifier(playerItem) == playerItemIdentity else {
-            return unmatchedItemIdentifier
-        }
-        return coordinatorIdentifier
+    func playbackCoordinator(_ coordinator: AVPlayerPlaybackCoordinator, identifierFor playerItem: AVPlayerItem) -> String {
+        ObjectIdentifier(playerItem) == playerItemIdentity ? coordinatorIdentifier : unmatchedItemIdentifier
     }
 }
 
 extension WatchTogetherCoordinator.UnavailableReason {
     var userMessage: String {
         switch self {
-        case .unsupportedItem:
-            return "Watch Together supports movies and episodes only."
-        case .activationDisabled:
-            return "SharePlay isn’t available for this session."
-        case .activationCancelled:
-            return "Watch Together was cancelled."
-        case .activationFailed:
-            return "Couldn’t start Watch Together."
-        case .currentLibraryResolutionUnavailable:
-            return "This shared title isn’t available from the current library yet."
-        case .coordinatorIdentifierUnavailable:
-            return "This item can’t be matched safely for Watch Together."
-        case .noActiveSession:
-            return "No active Watch Together session is ready."
+        case .unsupportedItem: "Watch Together supports online movies and episodes only."
+        case .activationDisabled: "SharePlay isn’t available for this session."
+        case .activationCancelled: "Watch Together was cancelled."
+        case .activationFailed: "Couldn’t start Watch Together."
+        case .currentLibraryResolutionUnavailable: "Choose the matching title from this server."
+        case .coordinatorIdentifierUnavailable: "This item can’t be matched safely for Watch Together."
+        case .noActiveSession: "No active Watch Together session is ready."
         }
     }
 }

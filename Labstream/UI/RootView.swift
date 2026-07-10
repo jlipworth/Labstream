@@ -216,6 +216,14 @@ struct RootView: View {
                 handleOfflineReturn(route)
             }
         }
+        #if os(visionOS)
+        .sheet(isPresented: Binding(
+            get: { watchTogetherCoordinator.joinPrompt != nil },
+            set: { if !$0, watchTogetherCoordinator.joinPrompt != nil { watchTogetherCoordinator.declineIncoming() } }
+        )) {
+            WatchTogetherJoinView()
+        }
+        #endif
         .environment(appModel)
         .environment(downloadManager)
         .environment(musicPlayer)
