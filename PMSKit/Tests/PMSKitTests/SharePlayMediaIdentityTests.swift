@@ -31,27 +31,28 @@ struct SharePlayMediaIdentityTests {
                   providerIds: providerIds)
     }
 
-    @Test func activityPayloadContainsOnlySanitizedDisplayFields() throws {
+    @Test func activityPayloadContainsOnlyAllowlistedCatalogIdentity() throws {
         let item = movie("server-rating-key-123", title: "Dune", providerIds: ["Tmdb": "438631", "Imdb": "tt1160419"])
         let payload = try #require(SharePlayMediaActivityPayload(mediaItem: item, activityID: UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!))
         let json = String(decoding: try JSONEncoder().encode(payload), as: UTF8.self)
 
         #expect(payload.displayTitle == "Dune")
+        #expect(payload.identity.kind == .movie)
+        #expect(payload.identity.providerIDs.count == 2)
+        #expect(payload.identity.durationMilliseconds == 9_300_000)
         #expect(json.contains("activityID"))
         #expect(json.contains("displayTitle"))
         #expect(!json.contains("server-rating-key-123"))
         #expect(!json.localizedCaseInsensitiveContains("ratingKey"))
-        #expect(!json.localizedCaseInsensitiveContains("provider"))
-        #expect(!json.localizedCaseInsensitiveContains("tmdb"))
-        #expect(!json.localizedCaseInsensitiveContains("duration"))
+        #expect(json.localizedCaseInsensitiveContains("tmdb"))
+        #expect(json.localizedCaseInsensitiveContains("duration"))
         #expect(!json.localizedCaseInsensitiveContains("token"))
         #expect(!json.localizedCaseInsensitiveContains("http"))
     }
 
     @Test func activityPayloadRedactsDangerousDisplayText() throws {
         let item = movie("1", title: "https://plex.example.internal/library/metadata/1?X-Plex-Token=secret")
-        let payload = try #require(SharePlayMediaActivityPayload(mediaItem: item))
-        #expect(payload.displayTitle == "Video")
+        #expect(SharePlayMediaActivityPayload(mediaItem: item) == nil)
     }
 
     @Test func activityPayloadRedactsHostnamesPathsFilenamesAndBackendLabels() throws {
@@ -73,8 +74,8 @@ struct SharePlayMediaIdentityTests {
         ]
 
         for title in suspiciousTitles {
-            let payload = try #require(SharePlayMediaActivityPayload(mediaItem: movie("1", title: title)))
-            #expect(payload.displayTitle == "Video", "expected fallback for suspicious title: \(title)")
+            #expect(SharePlayMediaActivityPayload(mediaItem: movie("1", title: title)) == nil,
+                    "expected rejection for suspicious title: \(title)")
         }
     }
 
@@ -192,11 +193,18 @@ struct SharePlayMediaIdentityTests {
         let a = movie("local-a", providerIds: ["Tmdb": "438631"])
         let b = movie("local-b", providerIds: ["Tmdb": "438631"])
 
-        guard case let .failed(reason) = resolver.resolve(requested, in: [a, b]) else {
+        guard case let .selectionRequired(candidates) = resolver.resolve(requested, in: [a, b]) else {
             Issue.record("expected ambiguity")
             return
         }
-        #expect(reason == .ambiguousCandidateCount(2))
+        #expect(candidates.map(\.ratingKey) == ["local-a", "local-b"])
+    }
+
+    @Test func durationIdentityRoundsToFiveSecondBuckets() throws {
+        let a = try #require(movie("a", duration: 9_301_000).sharePlayMediaIdentity)
+        let b = try #require(movie("b", duration: 9_302_000).sharePlayMediaIdentity)
+        #expect(a.durationMilliseconds == 9_300_000)
+        #expect(a.coordinatorIdentifier == b.coordinatorIdentifier)
     }
 
     @Test func conflictingProviderNamespaceRejectsEvenWhenAnotherProviderMatches() throws {
@@ -208,6 +216,17 @@ struct SharePlayMediaIdentityTests {
             return
         }
         #expect(reason == .notFound)
+    }
+
+    @Test func manualSelectionOffersOnlySameKindAndRoundedTimeline() throws {
+        let requested = try #require(movie("remote", duration: 9_301_000).sharePlayMediaIdentity)
+        let sameTimeline = movie("candidate", title: "Localized", duration: 9_302_000,
+                                 providerIds: ["Tmdb": "different"])
+        let otherCut = movie("other-cut", duration: 9_360_000)
+        let wrongKind = episode("episode", duration: 9_302_000)
+        let candidates = resolver.selectableCandidates(for: requested,
+                                                        in: [sameTimeline, otherCut, wrongKind])
+        #expect(candidates.map(\.ratingKey) == ["candidate"])
     }
 
     @Test func matchingProviderNamespaceCanResolveWhenOtherNamespaceAbsent() throws {
@@ -285,5 +304,20 @@ struct SharePlayMediaIdentityTests {
             return
         }
         #expect(reason == .missingTimeline)
+    }
+
+    @Test func readinessRequiresAcknowledgementOnlyForResolvingParticipants() {
+        let waiting = SharePlayReadinessSummary(statuses: [.ready, .resolving, .unable])
+        #expect(!waiting.canStart(acknowledgingUnresolved: false))
+        #expect(waiting.canStart(acknowledgingUnresolved: true))
+
+        let settled = SharePlayReadinessSummary(statuses: [.ready, .unable])
+        #expect(settled.canStart(acknowledgingUnresolved: false))
+    }
+
+    @Test func lateJoinerLaunchesOnlyAfterLocalResolution() {
+        #expect(!SharePlayReadinessSummary.shouldLaunchLocally(sessionStarted: true, localResolved: false))
+        #expect(SharePlayReadinessSummary.shouldLaunchLocally(sessionStarted: true, localResolved: true))
+        #expect(!SharePlayReadinessSummary.shouldLaunchLocally(sessionStarted: false, localResolved: true))
     }
 }

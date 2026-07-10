@@ -5,9 +5,8 @@ import Foundation
 //
 // These PMSKit models are deliberately backend-agnostic and contain no server URLs,
 // tokens, library ids, media-source ids, play-session ids, or raw backend item ids. The
-// initial GroupActivity payload should use `SharePlayMediaActivityPayload`; the richer
-// `SharePlayMediaIdentity` is a local matching hint/AVPlayerPlaybackCoordinator identity
-// candidate after each participant resolves against their own library.
+// GroupActivity payload uses `SharePlayMediaActivityPayload`, which contains only the
+// explicitly allowlisted public-catalog subset needed for local resolution.
 
 /// Media kinds that are eligible for the first Watch Together milestone.
 public enum SharePlayMediaKind: String, Codable, Sendable, Equatable, Hashable, Comparable {
@@ -113,7 +112,7 @@ public struct SharePlayMediaIdentity: Codable, Sendable, Equatable, Hashable {
     /// matching. The raw logical components stay local to this process and are never exposed in
     /// the returned value.
     ///
-    /// The exact duration is part of the private hash seed because AVPlayerPlaybackCoordinator
+    /// The rounded duration is part of the private hash seed because AVPlayerPlaybackCoordinator
     /// treats matching identifiers as the same timeline. This deliberately prefers false
     /// negatives (participants fail to sync until we can prove equivalence) over coordinating
     /// different cuts/editions that share provider IDs.
@@ -195,7 +194,10 @@ public struct SharePlayMediaIdentity: Codable, Sendable, Equatable, Hashable {
 
     private static func validDuration(_ milliseconds: Int?) -> Int? {
         guard let milliseconds, milliseconds > 0 else { return nil }
-        return milliseconds
+        // Public catalog identity deliberately carries only a coarse timeline value.
+        // This absorbs harmless backend rounding without disclosing exact server data.
+        let bucket = 5_000
+        return Int((Double(milliseconds) / Double(bucket)).rounded()) * bucket
     }
 
     private static func validNonNegative(_ value: Int?) -> Int? {
@@ -224,27 +226,53 @@ extension SharePlayMediaKind {
     }
 }
 
-/// Minimal, sanitized payload for a future `GroupActivity`. Keep matching hints out of the
-/// activity itself; use local resolution before attaching AVPlayerPlaybackCoordinator.
+/// Sanitized GroupActivity payload containing only disclosed public-catalog matching fields.
 public struct SharePlayMediaActivityPayload: Codable, Sendable, Equatable, Hashable {
     public let activityID: UUID
-    public let kind: SharePlayMediaKind
+    public let identity: SharePlayMediaIdentity
     public let displayTitle: String
     public let displaySubtitle: String?
 
-    public init(activityID: UUID = UUID(), kind: SharePlayMediaKind, displayTitle: String, displaySubtitle: String? = nil) {
+    public init(activityID: UUID = UUID(), identity: SharePlayMediaIdentity,
+                displayTitle: String, displaySubtitle: String? = nil) {
         self.activityID = activityID
-        self.kind = kind
+        self.identity = identity
         self.displayTitle = SharePlayPrivacyGuard.sanitizedDisplayText(displayTitle, fallback: "Video")
         self.displaySubtitle = displaySubtitle.map { SharePlayPrivacyGuard.sanitizedDisplayText($0, fallback: "") }
             .flatMap { $0.isEmpty ? nil : $0 }
     }
 
     public init?(mediaItem item: MediaItem, activityID: UUID = UUID()) {
-        guard let kind = SharePlayMediaKind(mediaItemType: item.type), item.isPlayableLeaf else { return nil }
-        // Keep initial SharePlay activity data minimal. Exact year, duration, season/episode,
-        // and provider IDs are local matching hints after join, not activity payload fields.
-        self.init(activityID: activityID, kind: kind, displayTitle: item.title, displaySubtitle: nil)
+        // A joiner must see the real shared title. If it resembles a private URL,
+        // path, filename, credential, or backend identifier, fail closed rather
+        // than replacing it with a misleading generic label.
+        guard !SharePlayPrivacyGuard.containsProhibitedContent(item.title) else { return nil }
+        guard let localIdentity = SharePlayMediaIdentity(mediaItem: item) else { return nil }
+        // The richer local identity tolerates title-shaped false positives because it
+        // was originally hash-only. Activity identity crosses devices, so comparable
+        // text is separately gated by the strict display privacy policy.
+        let identity = SharePlayMediaIdentity(
+            kind: localIdentity.kind,
+            providerIDs: localIdentity.providerIDs,
+            normalizedTitle: SharePlayPrivacyGuard.shareableComparableText(item.title),
+            year: localIdentity.year,
+            durationMilliseconds: localIdentity.durationMilliseconds,
+            normalizedSeriesTitle: SharePlayPrivacyGuard.shareableComparableText(item.grandparentTitle),
+            seasonNumber: localIdentity.seasonNumber,
+            episodeNumber: localIdentity.episodeNumber)
+        let subtitle: String?
+        switch identity.kind {
+        case .movie:
+            subtitle = identity.year.map(String.init)
+        case .episode:
+            let numbers = [identity.seasonNumber.map { "S\($0)" },
+                           identity.episodeNumber.map { "E\($0)" }]
+                .compactMap { $0 }.joined()
+            subtitle = [item.grandparentTitle, numbers.isEmpty ? nil : numbers]
+                .compactMap { $0 }.joined(separator: " · ")
+        }
+        self.init(activityID: activityID, identity: identity,
+                  displayTitle: item.title, displaySubtitle: subtitle)
     }
 }
 
@@ -258,6 +286,7 @@ public enum SharePlayResolutionFailure: Sendable, Equatable, Hashable {
 
 public enum SharePlayMediaResolution: Sendable {
     case resolved(MediaItem)
+    case selectionRequired([MediaItem])
     case failed(SharePlayResolutionFailure)
 }
 
@@ -265,7 +294,7 @@ public struct SharePlayMediaResolver: Sendable {
     public let durationToleranceMilliseconds: Int
 
     /// Resolve against the caller's current library candidate set. The default timeline policy
-    /// requires exact duration equality so any future AVPlayerPlaybackCoordinator item identifier
+    /// requires equality of the rounded duration bucket so any AVPlayerPlaybackCoordinator identifier
     /// produced from the resolved item is consistent with resolver semantics. A non-zero tolerance
     /// should only be used after backend-specific duration rounding has been validated.
     public init(durationToleranceMilliseconds: Int = 0) {
@@ -292,8 +321,21 @@ public struct SharePlayMediaResolver: Sendable {
             timelinesMatch(identity.durationMilliseconds, candidateIdentity.durationMilliseconds)
         }
         guard !timelineMatched.isEmpty else { return .failed(.timelineMismatch) }
-        guard timelineMatched.count == 1 else { return .failed(.ambiguousCandidateCount(timelineMatched.count)) }
+        guard timelineMatched.count == 1 else {
+            return .selectionRequired(timelineMatched.map(\.0))
+        }
         return .resolved(timelineMatched[0].0)
+    }
+
+    /// Candidates safe enough to offer for explicit local confirmation. Logical
+    /// identity may be incomplete, but kind and rounded timeline must agree.
+    public func selectableCandidates(for identity: SharePlayMediaIdentity,
+                                     in candidates: [MediaItem]) -> [MediaItem] {
+        candidates.filter { item in
+            guard let candidate = SharePlayMediaIdentity(mediaItem: item),
+                  candidate.kind == identity.kind else { return false }
+            return timelinesMatch(identity.durationMilliseconds, candidate.durationMilliseconds)
+        }
     }
 
     private func isLogicalMatch(_ requested: SharePlayMediaIdentity, _ candidate: SharePlayMediaIdentity) -> Bool {
@@ -336,7 +378,39 @@ extension MediaItem {
     }
 }
 
+public enum SharePlayParticipantReadiness: String, Codable, Sendable {
+    case resolving, ready, unable, started
+}
+
+/// Pure policy for the readiness gate. An unresolved capable participant requires
+/// explicit acknowledgement, while unable participants never block forever. A late
+/// participant launches locally once it resolves after the group has started.
+public struct SharePlayReadinessSummary: Sendable, Equatable {
+    public let readyCount: Int
+    public let resolvingCount: Int
+    public let unableCount: Int
+
+    public init(statuses: [SharePlayParticipantReadiness]) {
+        readyCount = statuses.filter { $0 == .ready || $0 == .started }.count
+        resolvingCount = statuses.filter { $0 == .resolving }.count
+        unableCount = statuses.filter { $0 == .unable }.count
+    }
+
+    public func canStart(acknowledgingUnresolved: Bool) -> Bool {
+        readyCount > 0 && (resolvingCount == 0 || acknowledgingUnresolved)
+    }
+
+    public static func shouldLaunchLocally(sessionStarted: Bool, localResolved: Bool) -> Bool {
+        sessionStarted && localResolved
+    }
+}
+
 private enum SharePlayPrivacyGuard {
+    static func shareableComparableText(_ raw: String?) -> String? {
+        guard let raw, !containsProhibitedContent(raw) else { return nil }
+        return raw
+    }
+
     static func sanitizedDisplayText(_ raw: String, fallback: String, maxLength: Int = 120) -> String {
         let collapsed = raw
             .trimmingCharacters(in: .whitespacesAndNewlines)

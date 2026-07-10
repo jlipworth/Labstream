@@ -45,7 +45,10 @@ struct Labstream: App {
                     .environment(customCinemaSession)
                     .environment(realityTheaterSession)
                     .environment(watchTogetherCoordinator)
-                    .task { watchTogetherCoordinator.startObservingSessionsIfNeeded() }
+                    .task {
+                        watchTogetherCoordinator.configure(appModel: appModel)
+                        watchTogetherCoordinator.startObservingSessionsIfNeeded()
+                    }
                     .task { recordScenePhase(scenePhase) }
                     .onChange(of: scenePhase) { _, newPhase in
                         recordScenePhase(newPhase)
