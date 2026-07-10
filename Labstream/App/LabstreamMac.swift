@@ -10,6 +10,9 @@ struct LabstreamMac: App {
     @State private var authManager: AuthManager?
     @State private var downloadManager: DownloadManager?
     @State private var musicPlayer: MusicPlayerController?
+    // Watch Together is visionOS-only. Shared app/root initializers still carry the
+    // coordinator, so macOS owns an inert instance and never observes group sessions.
+    @State private var watchTogetherCoordinator = WatchTogetherCoordinator()
     @State private var bootstrap = SessionBootstrap()
     @State private var customCinemaSession = CustomCinemaSessionStore()
     @State private var realityTheaterSession = RealityTheaterSessionStore()
@@ -37,6 +40,7 @@ struct LabstreamMac: App {
                             authManager: authManager,
                             downloadManager: downloadManager,
                             musicPlayer: musicPlayer,
+                            watchTogetherCoordinator: watchTogetherCoordinator,
                             bootstrap: bootstrap)
                     .environment(customCinemaSession)
                     .environment(realityTheaterSession)
