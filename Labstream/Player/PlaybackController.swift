@@ -240,6 +240,11 @@ final class PlaybackController {
     private var currentPlayerItemGeneration = 0
     private var nextPlayerItemGeneration = 0
     private var ignoredRecoverableFailedToEndCount = 0
+    #if os(visionOS)
+    /// visionOS has no platform coordinator around the player layer, so its system Now
+    /// Playing session is owned directly by the playback controller (#197).
+    private var videoNowPlayingCoordinator: VideoNowPlayingCoordinator?
+    #endif
     /// Watchdog for a stalled stream (#8 hardening). HLS network loss frequently manifests as a
     /// PERMANENT stall — the player sits in `.waitingToPlayAtSpecifiedRate` with an empty buffer
     /// and never flips `AVPlayerItem.status` to `.failed` (AVKit paints its own placeholder glyph
@@ -1211,6 +1216,7 @@ final class PlaybackController {
             self.activeFinalTargetRebuildGeneration = nil
         }
         finalTargetRebuildPolicy.reset()
+        stopVideoNowPlayingSession()
         player.pause()
         removeObservers()
         // Tear down the session/lifecycle observers (kept separate from the per-item
@@ -2145,6 +2151,7 @@ final class PlaybackController {
         playbackSpeed = speed
         speedState.speed = speed
         applyPlaybackSpeed()
+        refreshVideoNowPlayingMetadata()
     }
 
     /// Push the persisted/chosen speed onto the live `AVPlayer`. Always sets `defaultRate`
@@ -2185,6 +2192,7 @@ final class PlaybackController {
             "status": .label(Self.timeControlStatusLabel(player.timeControlStatus)),
             "item_ready": .bool(player.currentItem?.status == .readyToPlay),
         ])
+        refreshVideoNowPlayingMetadata(playbackRateOverride: 0)
     }
 
     func requestPlay() {
@@ -2197,6 +2205,7 @@ final class PlaybackController {
         player.play()
         applyPlaybackSpeed()
         updateTransportStatus()
+        refreshVideoNowPlayingMetadata()
     }
 
     // MARK: - Quality / bitrate reload
@@ -2308,6 +2317,7 @@ final class PlaybackController {
             // Native seek (no reprime support, or already failed). Hold the scrubber on the target
             // until AVPlayer reports completion (GH #110).
             setSeeking(true, targetMs: clamped)
+            refreshVideoNowPlayingMetadata(elapsedMillisecondsOverride: clamped)
             let gen = seekGeneration
             player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero,
                         completionHandler: { [weak self] _ in
@@ -2324,6 +2334,7 @@ final class PlaybackController {
         // Out-of-buffer: hold the scrubber across the debounced rebuild/reopen. The hold is
         // released by the post-rebuild `.readyToPlay` (clearSeekHoldIfLanded) or any failure.
         setSeeking(true, targetMs: clamped)
+        refreshVideoNowPlayingMetadata(elapsedMillisecondsOverride: clamped)
         scheduleFinalTargetRebuild(toMs: clamped)
     }
 
@@ -3037,6 +3048,53 @@ final class PlaybackController {
         return host == "127.0.0.1" || host == "localhost" || host == "::1"
     }
 
+    // MARK: - visionOS Video Now Playing / remote commands (#197)
+
+    private func activateVideoNowPlayingSessionIfNeeded() {
+        #if os(visionOS)
+        if videoNowPlayingCoordinator == nil {
+            videoNowPlayingCoordinator = VideoNowPlayingCoordinator(controller: self)
+        }
+        #endif
+    }
+
+    private func stopVideoNowPlayingSession() {
+        #if os(visionOS)
+        videoNowPlayingCoordinator?.stop()
+        videoNowPlayingCoordinator = nil
+        #endif
+    }
+
+    func refreshVideoNowPlayingMetadata(elapsedMillisecondsOverride: Int? = nil,
+                                        playbackRateOverride: Double? = nil) {
+        #if os(visionOS)
+        guard let videoNowPlayingCoordinator else { return }
+        videoNowPlayingCoordinator.refreshDynamicMetadata(
+            mediaItem: item,
+            durationMilliseconds: knownDurationMs,
+            elapsedMilliseconds: elapsedMillisecondsOverride ?? currentResumeMs,
+            playbackRate: playbackRateOverride ?? currentNowPlayingPlaybackRate,
+            defaultPlaybackRate: Double(playbackSpeed))
+        #endif
+    }
+
+    func performRemotePlaybackPositionChange(toSeconds seconds: Double) {
+        let target = VideoNowPlayingCommandPolicy.clampedPositionMilliseconds(
+            positionTime: seconds,
+            durationMilliseconds: knownDurationMs)
+        // `performUserSeek` applies all buffer/rebuild policy and refreshes Now Playing
+        // metadata with the clamped target.
+        performUserSeek(toMs: target)
+    }
+
+    #if os(visionOS)
+    private var currentNowPlayingPlaybackRate: Double {
+        guard !userWantsPaused, player.timeControlStatus == .playing else { return 0 }
+        let rate = Double(player.rate)
+        return rate > 0 ? rate : Double(playbackSpeed)
+    }
+    #endif
+
     // MARK: - Now Playing / cinema chrome metadata (R5)
 
     /// Build the textual `externalMetadata` items for the player chrome (Now Playing /
@@ -3119,6 +3177,14 @@ final class PlaybackController {
         #else
         let textItems = textExternalMetadata()
         playerItem.externalMetadata = textItems
+        #if os(visionOS)
+        videoNowPlayingCoordinator?.applyInitialMetadata(to: playerItem,
+                                                         mediaItem: item,
+                                                         durationMilliseconds: knownDurationMs,
+                                                         elapsedMilliseconds: currentResumeMs,
+                                                         playbackRate: currentNowPlayingPlaybackRate,
+                                                         defaultPlaybackRate: Double(playbackSpeed))
+        #endif
 
         guard let server, let token else { return }
         let imagePath = item.thumb ?? item.art
@@ -3137,6 +3203,16 @@ final class PlaybackController {
                 // have swapped it out from under the in-flight fetch).
                 guard self.player.currentItem === playerItem else { return }
                 playerItem.externalMetadata = textItems + [Self.artworkMetadataItem(data: data)]
+                #if os(visionOS)
+                self.videoNowPlayingCoordinator?.applyInitialMetadata(
+                    to: playerItem,
+                    mediaItem: self.item,
+                    durationMilliseconds: self.knownDurationMs,
+                    elapsedMilliseconds: self.currentResumeMs,
+                    playbackRate: self.currentNowPlayingPlaybackRate,
+                    defaultPlaybackRate: Double(self.playbackSpeed),
+                    artworkData: data)
+                #endif
             }
         }
         #endif
@@ -3312,6 +3388,7 @@ final class PlaybackController {
         playerItem.canUseNetworkResourcesForLiveStreamingWhilePaused =
             bufferingConfig.canUseNetworkResourcesForLiveStreamingWhilePaused
         player.automaticallyWaitsToMinimizeStalling = bufferingConfig.automaticallyWaitsToMinimizeStalling
+        activateVideoNowPlayingSessionIfNeeded()
         // Populate Now Playing / cinema-chrome metadata (title + summary now, artwork async).
         // Done for both streaming and local-file paths so the player shows the real title.
         attachExternalMetadata(to: playerItem,
@@ -3772,6 +3849,7 @@ final class PlaybackController {
                     self.advanceToNextItem()
                 } else {
                     self.player.pause()
+                    self.stopVideoNowPlayingSession()
                     self.onPlaybackEnded?()
                 }
             }
@@ -3807,6 +3885,7 @@ final class PlaybackController {
         if paused || status == .playing {
             self.transport.setPauseRequested(false)
         }
+        refreshVideoNowPlayingMetadata(playbackRateOverride: paused ? 0 : nil)
         if self.lastDiagnosticTimeControlStatus != status {
             self.lastDiagnosticTimeControlStatus = status
             self.recordPlaybackDiagnostic("playback.time_control_status", fields: [
@@ -4491,6 +4570,7 @@ final class PlaybackController {
             "resume": .millisecondsBucket(currentResumeMs),
         ])
         player.pause()
+        stopVideoNowPlayingSession()
         playbackError.set(error)
         endReconnectStatus()
         endItemPreparation()
