@@ -99,6 +99,10 @@ final class MusicPlayerController {
 
     @ObservationIgnored private let appModel: AppModel
 
+    /// Shared process-wide authority used by both this controller and the video player.
+    @ObservationIgnored let systemMediaSessionCoordinator: SystemMediaSessionCoordinator
+    @ObservationIgnored private var mediaLease: SystemMediaSessionCoordinator.Lease?
+
     /// Audio-session config + interruption / route-change handling, shared with the
     /// video path but configured for music: `.default` mode, and NO pause-on-background
     /// (audio keeps playing when the app loses the foreground).
@@ -143,6 +147,7 @@ final class MusicPlayerController {
     /// Artwork for the current track, cached so play/pause/seek nowPlayingInfo refreshes
     /// don't drop the image while keeping the (async-fetched) artwork best-effort.
     @ObservationIgnored private var currentArtwork: MPMediaItemArtwork?
+    @ObservationIgnored private var artworkTask: Task<Void, Never>?
 
     /// How often (seconds) the elapsed-time observer fires.
     @ObservationIgnored private let elapsedIntervalSeconds: Double = 0.5
@@ -152,8 +157,10 @@ final class MusicPlayerController {
 
     // MARK: - Init
 
-    init(appModel: AppModel) {
+    init(appModel: AppModel,
+         systemMediaSessionCoordinator: SystemMediaSessionCoordinator = .init()) {
         self.appModel = appModel
+        self.systemMediaSessionCoordinator = systemMediaSessionCoordinator
     }
 
     // MARK: - Public API
@@ -208,7 +215,6 @@ final class MusicPlayerController {
             player.pause()
             isPlaying = false
         }
-        setRemoteCommands(enabled: false)
         suspendedForVideo = true
         updateNowPlayingPlaybackState()
     }
@@ -219,7 +225,11 @@ final class MusicPlayerController {
     private func reclaimFromVideo() {
         suspendedForVideo = false
         audioSession.activate()
-        setRemoteCommands(enabled: true)
+        if mediaLease?.isCurrent != true {
+            mediaLease?.release()
+            mediaLease = systemMediaSessionCoordinator.acquire(owner: .music,
+                                                                commands: remoteCommandConfiguration())
+        }
         if let track = current { updateNowPlayingInfo(for: track) }
     }
 
@@ -397,7 +407,7 @@ final class MusicPlayerController {
         elapsedSeconds = 0
         currentArtwork = nil
         atQueueEnd = false
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        mediaLease?.clearNowPlaying()
     }
 
     /// Clear playback when the active browse session no longer matches the session that produced
@@ -433,14 +443,14 @@ final class MusicPlayerController {
         // never-started controller shouldn't deactivate an audio session it never owned.
         if sessionPrepared {
             removePlayerObservers()
-            removeRemoteCommandTargets()
-            // Leave the shared command center enabled for whoever uses it next; a
-            // disabled-while-suspended state must not outlive this controller's session.
-            setRemoteCommands(enabled: true)
             audioSession.removeObservers()
             audioSession.deactivate()
         }
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        artworkTask?.cancel()
+        artworkTask = nil
+        mediaLease?.clearNowPlaying()
+        mediaLease?.release()
+        mediaLease = nil
         currentArtwork = nil
         queueBrowseSessionKey = nil
         queue = []
@@ -580,11 +590,8 @@ final class MusicPlayerController {
         audioSession.activate()
         audioSession.installObservers()
         installPlayerObservers()
-        registerRemoteCommands()
-        // A just-dismissed video PiP/Now Playing session may have restored global
-        // MPRemoteCommand availability to a disabled pre-video state. Music is now the
-        // foreground media owner, so explicitly re-enable the commands it registered.
-        setRemoteCommands(enabled: true)
+        mediaLease = systemMediaSessionCoordinator.acquire(owner: .music,
+                                                            commands: remoteCommandConfiguration())
     }
 
     // MARK: - Observers
@@ -735,41 +742,15 @@ final class MusicPlayerController {
     /// artist (`grandparentTitle`), album (`parentTitle`), duration, playhead, rate, and
     /// any already-fetched artwork. Called on every track change and on play/pause/seek.
     private func updateNowPlayingInfo(for track: MediaItem) {
-        var info: [String: Any] = [
-            MPMediaItemPropertyTitle: track.title,
-            MPMediaItemPropertyMediaType: MPMediaType.music.rawValue,
-            MPMediaItemPropertyPlaybackDuration: durationSeconds,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: elapsedSeconds,
-            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0,
-        ]
-        if let artist = track.grandparentTitle {
-            info[MPMediaItemPropertyArtist] = artist
-        }
-        if let album = track.parentTitle {
-            info[MPMediaItemPropertyAlbumTitle] = album
-        }
-        if let currentArtwork {
-            info[MPMediaItemPropertyArtwork] = currentArtwork
-        }
-        let center = MPNowPlayingInfoCenter.default()
-        center.nowPlayingInfo = info
-        center.playbackState = isPlaying ? .playing : .paused
+        guard let mediaLease else { return }
+        publishNowPlayingInfo(for: track, through: mediaLease)
     }
 
     /// Lightweight refresh of the time-varying Now Playing fields (playhead + rate)
     /// without rebuilding the whole dictionary.
     private func updateNowPlayingPlaybackState() {
-        let center = MPNowPlayingInfoCenter.default()
-        guard var info = center.nowPlayingInfo else {
-            // Another player (the video path) cleared the center; rebuild from scratch
-            // so music doesn't silently vanish from the system surface.
-            if let track = current { updateNowPlayingInfo(for: track) }
-            return
-        }
-        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsedSeconds
-        info[MPNowPlayingInfoPropertyPlaybackRate] = isPlaying ? 1.0 : 0.0
-        center.nowPlayingInfo = info
-        center.playbackState = isPlaying ? .playing : .paused
+        guard let track = current else { return }
+        updateNowPlayingInfo(for: track)
     }
 
     /// Best-effort 600×600 artwork fetch for the system Now Playing card, resolved by the
@@ -782,12 +763,15 @@ final class MusicPlayerController {
                                                       pixelWidth: 600,
                                                       pixelHeight: 600) else { return }
         let ratingKey = track.ratingKey
-        Task { [weak self] in
+        artworkTask?.cancel()
+        let lease = mediaLease
+        artworkTask = Task { [weak self] in
             guard let data = await Self.fetchArtworkData(request: request),
                   let image = UIImage(data: data) else { return }
             let artwork = Self.makeArtwork(image)
             await MainActor.run {
-                guard let self, self.current?.ratingKey == ratingKey else { return }
+                guard let self, self.current?.ratingKey == ratingKey,
+                      self.mediaLease === lease, lease?.isCurrent == true else { return }
                 self.currentArtwork = artwork
                 if let track = self.current {
                     self.updateNowPlayingInfo(for: track)
@@ -817,143 +801,68 @@ final class MusicPlayerController {
 
     // MARK: - Remote commands (MPRemoteCommandCenter)
 
-    /// Hook up the system transport controls (registered once, on first play; targets
-    /// removed in `stop()`). MediaPlayer normally calls these on the main thread, where
-    /// we can return the precise status synchronously. If the system ever delivers a
-    /// command off-main, schedule the mutation onto the main actor instead of trapping.
-    private func registerRemoteCommands() {
-        let center = MPRemoteCommandCenter.shared()
-
-        center.playCommand.addTarget { [weak self] _ in
-            if Thread.isMainThread {
-                return MainActor.assumeIsolated { () -> MPRemoteCommandHandlerStatus in
-                    guard let self, self.player.currentItem != nil, !self.suspendedForVideo else {
-                        return .noActionableNowPlayingItem
-                    }
-                    if !self.isPlaying { self.togglePlayPause() }
-                    return .success
+    private func remoteCommandConfiguration()
+        -> SystemMediaSessionCoordinator.CommandConfiguration {
+        .init(handlers: [
+            .play: { [weak self] _ in
+                guard let self, self.player.currentItem != nil, !self.suspendedForVideo else {
+                    return .noActionableItem
                 }
-            }
-            Task { @MainActor [weak self] in
-                guard let self, self.player.currentItem != nil, !self.suspendedForVideo else { return }
                 if !self.isPlaying { self.togglePlayPause() }
-            }
-            return .success
-        }
-        center.pauseCommand.addTarget { [weak self] _ in
-            if Thread.isMainThread {
-                return MainActor.assumeIsolated { () -> MPRemoteCommandHandlerStatus in
-                    guard let self, self.player.currentItem != nil, !self.suspendedForVideo else {
-                        return .noActionableNowPlayingItem
-                    }
-                    if self.isPlaying { self.togglePlayPause() }
-                    return .success
+                return .success
+            },
+            .pause: { [weak self] _ in
+                guard let self, self.player.currentItem != nil, !self.suspendedForVideo else {
+                    return .noActionableItem
                 }
-            }
-            Task { @MainActor [weak self] in
-                guard let self, self.player.currentItem != nil, !self.suspendedForVideo else { return }
                 if self.isPlaying { self.togglePlayPause() }
-            }
-            return .success
-        }
-        center.togglePlayPauseCommand.addTarget { [weak self] _ in
-            if Thread.isMainThread {
-                return MainActor.assumeIsolated { () -> MPRemoteCommandHandlerStatus in
-                    guard let self, self.player.currentItem != nil, !self.suspendedForVideo else {
-                        return .noActionableNowPlayingItem
-                    }
-                    self.togglePlayPause()
-                    return .success
+                return .success
+            },
+            .togglePlayPause: { [weak self] _ in
+                guard let self, self.player.currentItem != nil, !self.suspendedForVideo else {
+                    return .noActionableItem
                 }
-            }
-            Task { @MainActor [weak self] in
-                guard let self, self.player.currentItem != nil, !self.suspendedForVideo else { return }
                 self.togglePlayPause()
-            }
-            return .success
-        }
-        center.nextTrackCommand.addTarget { [weak self] _ in
-            if Thread.isMainThread {
-                return MainActor.assumeIsolated { () -> MPRemoteCommandHandlerStatus in
-                    guard let self, self.current != nil, !self.suspendedForVideo else {
-                        return .noActionableNowPlayingItem
-                    }
-                    self.next()
-                    return .success
+                return .success
+            },
+            .nextTrack: { [weak self] _ in
+                guard let self, self.current != nil, !self.suspendedForVideo else {
+                    return .noActionableItem
                 }
-            }
-            Task { @MainActor [weak self] in
-                guard let self, self.current != nil, !self.suspendedForVideo else { return }
                 self.next()
-            }
-            return .success
-        }
-        center.previousTrackCommand.addTarget { [weak self] _ in
-            if Thread.isMainThread {
-                return MainActor.assumeIsolated { () -> MPRemoteCommandHandlerStatus in
-                    guard let self, self.current != nil, !self.suspendedForVideo else {
-                        return .noActionableNowPlayingItem
-                    }
-                    self.previous()
-                    return .success
+                return .success
+            },
+            .previousTrack: { [weak self] _ in
+                guard let self, self.current != nil, !self.suspendedForVideo else {
+                    return .noActionableItem
                 }
-            }
-            Task { @MainActor [weak self] in
-                guard let self, self.current != nil, !self.suspendedForVideo else { return }
                 self.previous()
-            }
-            return .success
-        }
-        center.changePlaybackPositionCommand.addTarget { [weak self] event in
-            if Thread.isMainThread {
-                return MainActor.assumeIsolated { () -> MPRemoteCommandHandlerStatus in
-                    guard let self, self.player.currentItem != nil, !self.suspendedForVideo else {
-                        return .noActionableNowPlayingItem
-                    }
-                    guard let positionEvent = event as? MPChangePlaybackPositionCommandEvent else {
-                        return .commandFailed
-                    }
-                    self.seek(to: positionEvent.positionTime)
-                    return .success
-                }
-            }
-            guard let positionEvent = event as? MPChangePlaybackPositionCommandEvent else {
-                return .commandFailed
-            }
-            let positionTime = positionEvent.positionTime
-            Task { @MainActor [weak self] in
-                guard let self, self.player.currentItem != nil,
-                      !self.suspendedForVideo,
-                      !Task.isCancelled else { return }
+                return .success
+            },
+            .changePlaybackPosition: { [weak self] event in
+                guard let self, self.player.currentItem != nil, !self.suspendedForVideo,
+                      let positionTime = event.positionTime else { return .noActionableItem }
                 self.seek(to: positionTime)
-            }
-            return .success
-        }
+                return .success
+            },
+        ], didBecomeCurrent: { [weak self] lease in
+            guard let self, let track = self.current else { return }
+            self.publishNowPlayingInfo(for: track, through: lease)
+        })
     }
 
-    /// Remove all music-command targets at music session teardown. Video owns its command
-    /// targets only while its full-screen player is presented; during that overlap the
-    /// handlers above no-op while `suspendedForVideo` is true.
-    private func removeRemoteCommandTargets() {
-        let center = MPRemoteCommandCenter.shared()
-        center.playCommand.removeTarget(nil)
-        center.pauseCommand.removeTarget(nil)
-        center.togglePlayPauseCommand.removeTarget(nil)
-        center.nextTrackCommand.removeTarget(nil)
-        center.previousTrackCommand.removeTarget(nil)
-        center.changePlaybackPositionCommand.removeTarget(nil)
-    }
-
-    /// Flip `isEnabled` on every command we registered — used to mute the music
-    /// transport while a video presentation owns the system controls (targets stay
-    /// registered; disabled commands simply don't fire).
-    private func setRemoteCommands(enabled: Bool) {
-        let center = MPRemoteCommandCenter.shared()
-        center.playCommand.isEnabled = enabled
-        center.pauseCommand.isEnabled = enabled
-        center.togglePlayPauseCommand.isEnabled = enabled
-        center.nextTrackCommand.isEnabled = enabled
-        center.previousTrackCommand.isEnabled = enabled
-        center.changePlaybackPositionCommand.isEnabled = enabled
+    private func publishNowPlayingInfo(for track: MediaItem,
+                                       through lease: SystemMediaSessionCoordinator.Lease) {
+        var info: [String: Any] = [
+            MPMediaItemPropertyTitle: track.title,
+            MPMediaItemPropertyMediaType: MPMediaType.music.rawValue,
+            MPMediaItemPropertyPlaybackDuration: durationSeconds,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: elapsedSeconds,
+            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0,
+        ]
+        if let artist = track.grandparentTitle { info[MPMediaItemPropertyArtist] = artist }
+        if let album = track.parentTitle { info[MPMediaItemPropertyAlbumTitle] = album }
+        if let currentArtwork { info[MPMediaItemPropertyArtwork] = currentArtwork }
+        lease.publish(nowPlayingInfo: info, playbackState: isPlaying ? .playing : .paused)
     }
 }
