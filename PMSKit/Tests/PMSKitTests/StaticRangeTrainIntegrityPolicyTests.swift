@@ -30,6 +30,30 @@ struct StaticRangeTrainIntegrityPolicyTests {
         #expect(StaticRangeTrainIntegrityPolicy.shouldProcessFinishedBody(bodyTrainEpoch: 3, currentTrainEpoch: 3))
     }
 
+    @Test("Pre-append re-check: append only with a current epoch and durable bytes at the body's offset")
+    func preAppendRecheckGuardsEpochAndOffset() {
+        // Happy path: epoch current, file exactly at the segment's base offset.
+        #expect(StaticRangeTrainIntegrityPolicy.preAppendDecision(
+            bodyTrainEpoch: 2, currentTrainEpoch: 2,
+            durableBytes: 1_000, baseOffset: 1_000) == .append)
+        // A delegate-queue restart advanced the epoch mid-apply: discard, restart owns the row.
+        #expect(StaticRangeTrainIntegrityPolicy.preAppendDecision(
+            bodyTrainEpoch: 2, currentTrainEpoch: 3,
+            durableBytes: 0, baseOffset: 1_000) == .discardStaleTrain)
+        // The epoch takes precedence even when the sizes happen to line up (fresh file, offset 0).
+        #expect(StaticRangeTrainIntegrityPolicy.preAppendDecision(
+            bodyTrainEpoch: 0, currentTrainEpoch: 1,
+            durableBytes: 0, baseOffset: 0) == .discardStaleTrain)
+        // Same generation but the file drifted off the body's offset: appending would land the
+        // bytes at the wrong file position — discard and re-plan.
+        #expect(StaticRangeTrainIntegrityPolicy.preAppendDecision(
+            bodyTrainEpoch: 2, currentTrainEpoch: 2,
+            durableBytes: 0, baseOffset: 1_000) == .discardOffsetDrift)
+        #expect(StaticRangeTrainIntegrityPolicy.preAppendDecision(
+            bodyTrainEpoch: 2, currentTrainEpoch: 2,
+            durableBytes: 1_500, baseOffset: 1_000) == .discardOffsetDrift)
+    }
+
     // MARK: Arriving-body validator decisions (hold time and in-order append)
 
     @Test("Empty-validator window: the first body carrying a validator pins it, head or held")

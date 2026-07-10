@@ -1351,10 +1351,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let pauseContext = makeRangePauseContext(ratingKey: ratingKey,
                                                  entries: Array(rangeEntriesForKey))
         endRangeRequestRebuildGrace(ratingKey: ratingKey, reason: "paused")
-        // C2: a pause resets the row to its durable checkpoint and re-plans a fresh train on resume;
-        // held ahead-of-checkpoint stashes (whose tasks are being cancelled) would otherwise leak in
-        // `tmp/` and can never be appended without re-download.
-        purgeHeldRangeSegments(ratingKey: ratingKey)
+        // M-6: held ahead-of-checkpoint stashes are deliberately KEPT across a user pause. The
+        // resume planner counts held offsets as covered (no re-fetch) and the post-append drain
+        // splices them validator-checked, so purging here destroyed up to a full train of
+        // completed bodies that Resume would have reused. They are still purged on cancel/delete,
+        // terminal failure, changed-resource restart, adopted-200, and completion — and a relaunch
+        // sweeps them regardless (the held map is in-memory).
 
         // #169: opaque and range tasks share one session now — enumerate it once and dispatch each
         // matched task by lane (range entries are removed as `pauseRangeTask` matches them).
@@ -1564,6 +1566,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // Halt the static Range lane so a delegate callback racing after this snapshot cannot
         // append/resurrect the file the caller is about to delete or start replacement work.
         haltedRangeKeys.insert(ratingKey)
+        // M-7: the row is being cancelled/deleted — its restart budgets die with it, so a
+        // re-download of the same key starts clean even if it skips `start()`'s reset.
+        retryCounts.removeValue(forKey: ratingKey)
+        staticRangeRetryBudget.reset(downloadID: ratingKey)
+        rangeHTTPRehydrateCounts.removeValue(forKey: ratingKey)
+        rangeBlobResumeCounts.removeValue(forKey: ratingKey)
         lock.unlock()
         endRangeRequestRebuildGrace(ratingKey: ratingKey, reason: "cancelled")
         // C2: the caller is about to delete/reset this row — held segment stashes must not survive.
@@ -2082,6 +2090,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "download_id": .identifier(entry.ratingKey),
                 "offset_bytes": .bytes(entry.baseOffset),
             ])
+            markPausedIfHaltStrandedRow(ratingKey: entry.ratingKey)
             return
         }
 
@@ -2261,6 +2270,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "base_offset": .int(entry.baseOffset),
                 "body_bytes": .int(stashBytes ?? -1),
             ])
+            markPausedIfHaltStrandedRow(ratingKey: entry.ratingKey)
             return
         }
         let durableBytesBeforeWrite = fileSize(at: entry.destination) ?? 0
@@ -2569,6 +2579,42 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 onChange?()
                 return
             }
+            // IC-2: re-check the train epoch AND the on-disk size at the last instant. A
+            // 416-triggered changed-resource restart runs on the DELEGATE queue and can tear the
+            // train down (epoch++, file deleted) between this apply's entry epoch check and here;
+            // appending after that writes this mid-file segment at offset 0 of the recreated file.
+            lock.lock()
+            let epochAtAppend = rangeTrainEpochs[entry.ratingKey] ?? 0
+            lock.unlock()
+            let durableBytesAtAppend = fileSize(at: entry.destination) ?? 0
+            switch StaticRangeTrainIntegrityPolicy.preAppendDecision(
+                bodyTrainEpoch: bodyTrainEpoch,
+                currentTrainEpoch: epochAtAppend,
+                durableBytes: durableBytesAtAppend,
+                baseOffset: entry.baseOffset
+            ) {
+            case .append:
+                break
+            case .discardStaleTrain:
+                try? fileManager.removeItem(at: stash)
+                AppDiagnostics.record(.downloads, "downloads.range_stale_train_body_ignored", fields: [
+                    "download_id": .identifier(entry.ratingKey),
+                    "base_offset": .int(entry.baseOffset),
+                    "body_epoch": .int(bodyTrainEpoch),
+                    "train_epoch": .int(epochAtAppend),
+                    "stage": .label("pre_append"),
+                ])
+                return
+            case .discardOffsetDrift:
+                try? fileManager.removeItem(at: stash)
+                AppDiagnostics.record(.downloads, "downloads.range_pre_append_drift", fields: [
+                    "download_id": .identifier(entry.ratingKey),
+                    "base_offset": .int(entry.baseOffset),
+                    "durable_bytes": .int(durableBytesAtAppend),
+                ])
+                continueRangeAfterBody(entry: entry, partialSize: durableBytesAtAppend)
+                return
+            }
             let bodyBytes: Int
             do {
                 bodyBytes = try appendFile(at: stash, onto: entry.destination)
@@ -2656,6 +2702,26 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     private func shouldPreserveHaltedFinishedRangeBody(ratingKey: String) -> Bool {
         store.status(for: ratingKey) == .paused
+    }
+
+    /// IC-1: a finished body discarded behind a halt writes no status itself, and the pause's
+    /// `getAllTasks` sweep can miss the whole exchange — the finished task is no longer live, and
+    /// a continuation task started inside the snapshot window is a "replacement" that makes
+    /// `pauseStillApplies` skip the paused write. The row then strands as `.downloading` with
+    /// zero live tasks and a halted lane. Settle it here: when the lane is halted, no task is
+    /// tracked for the row, and it still claims live work, park it `.paused` (the durable partial
+    /// stays the checkpoint). A cancel/delete halt has no row left, so this no-ops there.
+    private func markPausedIfHaltStrandedRow(ratingKey: String) {
+        lock.lock()
+        let halted = haltedRangeKeys.contains(ratingKey)
+        let hasLiveTask = inflight.values.contains { $0.ratingKey == ratingKey }
+            || rangeInflight.values.contains { $0.ratingKey == ratingKey }
+        lock.unlock()
+        guard halted, !hasLiveTask else { return }
+        let status = store.status(for: ratingKey)
+        guard status == .downloading || status == .queued else { return }
+        store.setStatus(ratingKey: ratingKey, .paused)
+        onChange?()
     }
 
     private func rangeBodyStashURL(taskIdentifier: Int, offset: Int) -> URL {
