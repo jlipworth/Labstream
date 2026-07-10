@@ -27,6 +27,10 @@ That's it. The form will also ask for your Labstream version and build
 (**Settings ▸ About**), your OS version, and which backend you use
 (Plex / Jellyfin / Emby).
 
+If you are testing the local-build Mac development preview, say so explicitly and include macOS as
+the platform. The preview is not a released support target, but reproducible source-build reports
+are still useful.
+
 ## What's in the diagnostic report — and what isn't
 
 The diagnostic report is built to be safe to share publicly. It **includes** safe

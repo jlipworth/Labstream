@@ -6,6 +6,8 @@ Thanks for helping improve Labstream. This project touches private media servers
 
 - Read [Development setup](DEVELOPMENT.md).
 - Skim the [Architecture overview](ARCHITECTURE.md) and [Code map](CODE-MAP.md).
+- For host-Mac work, read [macOS development preview](MACOS.md); it is a local-build preview,
+  not a released support target.
 - Check open issues to avoid duplicating work.
 
 ## Local workflow
@@ -25,6 +27,7 @@ A good PR includes:
 - a focused description of the user-visible change;
 - tests for pure policies or request builders when applicable;
 - notes about simulator, device, or live-server validation when relevant;
+- Mac host build/smoke notes when a change touches the `LabstreamMac` preview;
 - screenshots only when they do not reveal private server or media details.
 
 Run the basic checks before opening or updating a PR:

@@ -2,6 +2,11 @@
 
 Labstream is a native Apple-platform client for **your own Plex Media Server, Jellyfin server, or Emby server**.
 
+The supported product paths documented here are Apple Vision Pro, iPhone, and iPad. The source
+repository also contains a native Mac target as a local-build development preview; it is not yet a
+released or supported App Store product. Contributors testing that preview should use the
+[Mac development documentation](https://github.com/jlipworth/Labstream/blob/main/docs/MACOS.md).
+
 ## Requirements
 
 - Apple Vision Pro running **visionOS 26.0** or later, or an iPhone/iPad running **iOS/iPadOS 26.1** or later.
@@ -39,7 +44,8 @@ The fastest path is the [bug report form](https://github.com/jlipworth/Labstream
 See the [bug reporting guide](https://github.com/jlipworth/Labstream/blob/main/docs/REPORTING-BUGS.md)
 for the step-by-step flow, including what the diagnostic report does and does not include.
 
-Open an issue with steps to reproduce, your device type (Apple Vision Pro, iPhone, or iPad), OS version, and the app version from **Settings ▸ About**:
+Open an issue with steps to reproduce, your device type (Apple Vision Pro, iPhone, iPad, or Mac
+development preview), OS version, and the app version from **Settings ▸ About**:
 
 <https://github.com/jlipworth/Labstream/issues>
 

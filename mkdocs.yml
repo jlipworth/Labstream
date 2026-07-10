@@ -51,6 +51,7 @@ nav:
       - Development setup: DEVELOPMENT.md
       - Testing strategy: TESTING-STRATEGY.md
       - iOS and iPadOS target: MOBILE-IOS.md
+      - macOS development preview: MACOS.md
       - Scripts catalog: SCRIPTS.md
   - Architecture:
       - Overview: ARCHITECTURE.md

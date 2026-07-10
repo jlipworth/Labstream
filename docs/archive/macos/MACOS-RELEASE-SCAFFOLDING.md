@@ -1,5 +1,8 @@
 # macOS release/versioning scaffolding
 
+> **Archived:** issue-era release planning. The Mac target remains a local-build development
+> preview; current status and deferred decisions live in [`docs/MACOS.md`](../../MACOS.md).
+
 This is the minimal release/distribution note for #228. It deliberately does not decide the final App Store Connect strategy.
 
 ## Current #228 decision

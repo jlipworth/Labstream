@@ -9,9 +9,14 @@
 
 Labstream does not provide, host, sell, or bundle movies, TV, music, or other media. It connects only to servers you choose, and offline downloads are for media you are authorized to access and download under the applicable server/service terms.
 
-It brings server-aware streaming, an Apple Vision Pro cinema playback surface, a native iPhone/iPad shell, music browsing, privacy-preserving diagnostics, and offline downloads to a source-first SwiftUI app.
+It brings server-aware streaming, an Apple Vision Pro cinema playback surface, a native
+iPhone/iPad shell, music browsing, privacy-preserving diagnostics, and offline downloads to a
+source-first SwiftUI app. A native Mac target is also present on `main` as a local-build
+development preview; it is not yet a released or supported App Store product.
 
-> **Distribution status:** Labstream is currently distributed as source for local builds. There is no App Store or TestFlight build today.
+> **Distribution status:** Labstream is currently distributed as source for local builds. There
+> is no App Store or TestFlight build today. Mac distribution remains deferred pending licensing
+> and release review.
 
 ## Contents
 
@@ -29,7 +34,7 @@ It brings server-aware streaming, an Apple Vision Pro cinema playback surface, a
 
 ### Playback
 
-- Custom AVFoundation player surface shared by the visionOS and iOS/iPadOS targets.
+- Custom AVFoundation player surface shared across the visionOS, iOS/iPadOS, and Mac-preview targets.
 - Direct Play / Maximum attempts copy or direct-stream paths where viable.
 - Explicit quality rungs request capped server streams when needed.
 - Resume, seek, retry, subtitles, chapters, playback speed, buffering state, and Stats for Nerds.
@@ -67,10 +72,11 @@ Labstream is unofficial and independent. It is not affiliated with, endorsed by,
 
 ## Tech stack
 
-- SwiftUI app shells targeting visionOS 26 and iOS/iPadOS 26.1+.
+- SwiftUI app shells targeting visionOS 26 and iOS/iPadOS 26.1+, plus a macOS 26 development-preview target.
 - Swift 6 with strict concurrency.
 - Custom AVFoundation playback and offline playback paths.
-- `PMSKit`, a local Swift package for Plex/Jellyfin/Emby request builders, models, diagnostics primitives, and pure policy state machines.
+- `PMSKit`, a local Swift package for Plex/Jellyfin/Emby request builders, models,
+  diagnostics primitives, policy state machines, and narrow reusable networking/storage infrastructure.
 - MkDocs Material documentation published at <https://jlipworth.github.io/Labstream/>.
 
 ## Quick start
@@ -80,6 +86,9 @@ Labstream is unofficial and independent. It is not affiliated with, endorsed by,
 - macOS with Xcode 26 plus the visionOS 26 SDK and an iOS/iPadOS 26.1+ SDK/runtime for mobile builds.
 - A compatible Apple Vision Pro simulator runtime for visionOS builds, a compatible iPhone/iPad simulator runtime for mobile builds, or paired Apple Vision Pro / iPhone / iPad hardware for device installs.
 - A Plex, Jellyfin, or Emby server you control or have permission to access.
+
+The optional `LabstreamMac` development preview builds directly for an Apple-silicon Mac running
+macOS 26; it has no simulator lane.
 
 ### Build for the visionOS simulator
 
@@ -137,14 +146,22 @@ scripts/deploy-mobile-to-device.sh            # build + install
 scripts/deploy-mobile-to-device.sh --launch   # also launch after install
 ```
 
-Both app targets use the bundle identifier `com.jlipworth.Labstream` for the intended unified product identity.
+### Build and launch the macOS development preview
+
+```sh
+scripts/deploy-macos-to-host.sh --launch
+```
+
+The visionOS and mobile app targets use `com.jlipworth.Labstream` for the intended unified
+product identity. The Mac helper defaults to a per-worktree development bundle identifier so
+local host builds do not collide; see [macOS development preview](docs/MACOS.md).
 
 ## Project structure
 
 ```text
 Labstream/
-├── Labstream/             # shared app source for Labstream (visionOS) and LabstreamMobile (iOS/iPadOS)
-│   ├── App/               # app entry, object graph, restore state
+├── Labstream/             # shared app source for visionOS, iOS/iPadOS, and the Mac preview
+│   ├── App/               # visionOS, mobile, and Mac-preview entry points; object graph; restore state
 │   ├── Auth/              # Plex/Jellyfin/Emby auth and Keychain persistence
 │   ├── Backend/           # backend service lanes, paging, search
 │   ├── Diagnostics/       # local diagnostics/reporting helpers
@@ -155,7 +172,7 @@ Labstream/
 │   ├── SystemIntegration/ # App Intents, Spotlight, system-entry routing
 │   ├── Theater/           # immersive playback surface support
 │   └── UI/                # login, home, libraries, search, detail, settings
-├── PMSKit/                # pure Swift package: requests, models, policies, tests
+├── PMSKit/                # reusable requests, models, policies, infrastructure, and tests
 ├── docs/                  # published docs plus archived research outside the nav
 ├── scripts/               # local validation, simulator, deploy, and probe helpers
 └── .woodpecker/           # portable CI definitions
@@ -166,6 +183,7 @@ Labstream/
 - Published docs: <https://jlipworth.github.io/Labstream/>
 - Development setup: [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)
 - iOS/iPadOS target: [`docs/MOBILE-IOS.md`](docs/MOBILE-IOS.md)
+- macOS development preview: [`docs/MACOS.md`](docs/MACOS.md)
 - Architecture overview: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - Backend model: [`docs/BACKENDS.md`](docs/BACKENDS.md)
 - Playback: [`docs/PLAYBACK-ARCHITECTURE.md`](docs/PLAYBACK-ARCHITECTURE.md)

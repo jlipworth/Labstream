@@ -1,8 +1,8 @@
 # Labstream — Privacy Policy
 
-_Last updated: 2026-07-05_
+_Last updated: 2026-07-10_
 
-Labstream is a personal media client for Apple Vision Pro, iPhone, and iPad that connects to a Plex Media Server, Jellyfin server, or Emby server **that you choose and control**. It is designed to collect as little as possible.
+Labstream is a personal media client for Apple Vision Pro, iPhone, and iPad that connects to a Plex Media Server, Jellyfin server, or Emby server **that you choose and control**. The source repository also contains a native Mac local-build development preview. Labstream is designed to collect as little as possible.
 
 ## What Labstream does not do
 
@@ -17,17 +17,22 @@ Labstream is a personal media client for Apple Vision Pro, iPhone, and iPad that
 
 ## What stays on your device
 
-- **Your media-server credentials/tokens** are stored in the Apple **Keychain** on your device. Plex tokens are sent only to Plex and the selected
+- **Your media-server credentials/tokens** are stored in the Apple **Keychain** on visionOS and
+  mobile builds, as well as canonical production-style Mac builds. Plex tokens are sent only to Plex and the selected
   Plex server; Jellyfin access tokens are sent only to your Jellyfin server;
   Emby access tokens are sent only to Emby Connect during sign-in and to your
   selected Emby server. They are never transmitted to the developer.
+- **Noncanonical Mac development-preview builds** created by the host deploy helper use an
+  isolated, backup-excluded credential file inside that development app's sandbox instead of the
+  production Keychain path. This avoids repeated Keychain prompts while an ad-hoc local build is
+  replaced. Deleting/resetting that development identity's container deletes those credentials.
 - **Playback preferences and resume positions** are stored locally
   (UserDefaults) and, where applicable, reported to your selected media server as
   that backend's normal playback-state/progress feature.
 - **Offline downloads** you choose to make are stored in Labstream's private app
   container on your device and can be deleted from within the app or by removing
   the app.
-- **Local Network access** may be requested by iOS/iPadOS/visionOS when your
+- **Local Network access** may be requested by iOS/iPadOS/visionOS or macOS when your
   selected server is on your local network, uses a `.local` name, or resolves to
   a LAN address. Labstream uses that access only to connect to the media server
   you choose for browsing, playback, and downloads; it does not scan the network
@@ -41,7 +46,7 @@ Labstream is a personal media client for Apple Vision Pro, iPhone, and iPad that
   in Settings, Labstream keeps recent app events in bounded local storage so you
   can copy, export, or share a bug-report summary after reproducing a problem.
   This diagnostic report is user-initiated only and is not uploaded automatically.
-- **Passive MetricKit diagnostic summaries** — crash, hang, CPU exception, or disk-write exception — may be delivered by iOS or visionOS after a problematic run and stored locally in a small bounded list. Labstream keeps only redacted summary fields for inclusion in a report you explicitly preview/copy/export; these summaries are not uploaded automatically and are separate from opt-in event logging.
+- **Passive MetricKit diagnostic summaries** — crash, hang, CPU exception, or disk-write exception — may be delivered by an Apple operating system after a problematic run and stored locally in a small bounded list. Labstream keeps only redacted summary fields for inclusion in a report you explicitly preview/copy/export; these summaries are not uploaded automatically and are separate from opt-in event logging.
 
 ## Diagnostic reports
 

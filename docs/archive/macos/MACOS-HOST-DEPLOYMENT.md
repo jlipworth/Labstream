@@ -1,5 +1,8 @@
 # macOS host deployment
 
+> **Archived:** merged into [`docs/MACOS.md`](../../MACOS.md). Retained as the issue-era host
+> deployment snapshot, not as current operating guidance.
+
 Labstream's native Mac target runs on the host Mac. There is no macOS simulator lane in
 this repository, and agents must not create fake `simctl` state for macOS.
 
