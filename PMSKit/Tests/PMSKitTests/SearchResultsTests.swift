@@ -65,7 +65,7 @@ private func searchItem(_ key: String, _ type: String,
     #expect(results.presentationGroups[0].sections.map(\.kind) == [.artists, .songs])
 }
 
-@Test func plexSearchKeepsFirstEncounterLibraryOrderAndExplicitIdentity() {
+@Test func plexSearchKeepsDiscoveryOrderAndExplicitIdentity() {
     let hubs = [Hub(title: "Native", metadata: [
         searchItem("m2", "movie", section: "/library/sections/2"),
         searchItem("a5", "artist", section: "5"),
@@ -75,8 +75,20 @@ private func searchItem(_ key: String, _ type: String,
                     Section(key: "2", title: "Video", type: "movie")]
 
     let results = SearchResults.plexNativeHubs(hubs, sections: sections)
-    #expect(results.presentationGroups.map(\.libraryID) == ["2", "5"])
-    #expect(results.presentationGroups.map(\.title) == ["Video", "Music"])
+    #expect(results.presentationGroups.map(\.libraryID) == ["5", "2"])
+    #expect(results.presentationGroups.map(\.title) == ["Music", "Video"])
+}
+
+@Test func plexSearchAppendsAttributedLibrariesMissingFromDiscovery() {
+    let hubs = [Hub(title: "Native", metadata: [
+        searchItem("known", "movie", section: "2"),
+        searchItem("unknown", "artist", section: "9"),
+    ])]
+    let sections = [Section(key: "2", title: "Video", type: "movie")]
+
+    let results = SearchResults.plexNativeHubs(hubs, sections: sections)
+    #expect(results.presentationGroups.map(\.libraryID) == ["2", "9"])
+    #expect(results.presentationGroups.map(\.title) == ["Video", "Library 9"])
 }
 
 @Test func plexUnattributedResultsDoNotInventALibraryIdentity() {
