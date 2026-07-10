@@ -1555,15 +1555,36 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             lock.unlock()
 
             let total = rangeEntry.baseOffset + bodyBytesWritten
+            // Live display bytes must reflect the WHOLE segment train, not just this callback's own
+            // task: durable checkpoint plus every still-in-flight segment's optimistic body (#A5).
+            // Update this task's own live body count first so the sum below includes THIS callback's
+            // fresh bytes, then read the full set for the row under the same lock discipline the rest
+            // of this delegate uses for cross-queue `rangeInflight` reads.
+            lock.lock()
+            if var live = rangeInflight[downloadTask.taskIdentifier] {
+                live.bodyBytesWritten = bodyBytesWritten
+                rangeInflight[downloadTask.taskIdentifier] = live
+            }
+            let liveSegmentBodyBytes = rangeInflight.values
+                .filter { $0.ratingKey == rangeEntry.ratingKey }
+                .map(\.bodyBytesWritten)
+            retryCounts[rangeEntry.ratingKey] = 0
+            lock.unlock()
+            let aggregatedLiveBytes = DownloadLiveRangeProgressPolicy.aggregatedLiveBytes(
+                durableBytes: durableBytes,
+                liveSegmentBodyBytes: liveSegmentBodyBytes)
             // Normalize against the resume display watermark HERE, where the durable base offset
             // is known — a blob-resumed task can report bytes from a fresh per-task baseline, and
-            // rebasing without the base offset used to double-count it into the display total.
+            // rebasing without the base offset used to double-count it into the display total. For
+            // the single-segment case `durableBytes == rangeEntry.baseOffset` for the task's whole
+            // life, so this is byte-for-byte the same rebase as before; for a segment train it
+            // generalizes the same way — the base is whatever is already durable across the row.
             let resumeWatermark = store.resumeDisplayBytes(ratingKey: rangeEntry.ratingKey)
-            let displayTotal = DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
-                taskBytes: total,
-                baseOffset: rangeEntry.baseOffset,
+            var displayTotal = DownloadLiveRangeProgressPolicy.displayBytesForResumedTask(
+                taskBytes: aggregatedLiveBytes,
+                baseOffset: durableBytes,
                 resumeDisplayBytes: resumeWatermark)
-            if let resumeWatermark, displayTotal != total {
+            if let resumeWatermark, displayTotal != aggregatedLiveBytes {
                 lock.lock()
                 let firstRebase = loggedRangeBlobResumeDisplayRebaseKeys
                     .insert(rangeEntry.ratingKey).inserted
@@ -1571,7 +1592,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 if firstRebase {
                     AppDiagnostics.record(.downloads, "downloads.range_blob_resume_display_rebased", fields: [
                         "download_id": .identifier(rangeEntry.ratingKey),
-                        "task_bytes": .bytes(total),
+                        "task_bytes": .bytes(aggregatedLiveBytes),
                         "resume_display_bytes": .bytes(resumeWatermark),
                         "display_bytes": .bytes(displayTotal),
                     ])
@@ -1584,6 +1605,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             } else {
                 store.setSourcePartSizeIfMissing(ratingKey: rangeEntry.ratingKey, effectiveExpectedBytes)
             }
+            // Never publish a live sample past the known total — a transient overlap between a
+            // just-superseded segment and its replacement must not flash the row past 100%.
+            if let effectiveExpectedBytes, effectiveExpectedBytes > 0 {
+                displayTotal = min(displayTotal, effectiveExpectedBytes)
+            }
             // A Range task's in-flight bytes live in an OS temp file until
             // `didFinishDownloadingTo` lets us append them to the durable partial. Keep the visible
             // row/aggregate "downloaded" total pinned to the last real checkpoint; detailed
@@ -1593,13 +1619,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             let progress = (effectiveExpectedBytes ?? 0) > 0
                 ? min(1, Double(checkpointBytes) / Double(effectiveExpectedBytes!))
                 : 0
-            lock.lock()
-            if var live = rangeInflight[downloadTask.taskIdentifier] {
-                live.bodyBytesWritten = bodyBytesWritten
-                rangeInflight[downloadTask.taskIdentifier] = live
-            }
-            retryCounts[rangeEntry.ratingKey] = 0
-            lock.unlock()
             store.updateProgress(ratingKey: rangeEntry.ratingKey, bytes: checkpointBytes, progress: progress)
             onRangeLiveProgress?(rangeEntry.ratingKey, displayTotal, effectiveExpectedBytes)
             recordRangeProgressIfNeeded(taskIdentifier: downloadTask.taskIdentifier,

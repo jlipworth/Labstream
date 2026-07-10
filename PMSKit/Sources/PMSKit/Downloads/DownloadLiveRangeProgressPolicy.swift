@@ -63,6 +63,27 @@ public enum DownloadLiveRangeProgressPolicy {
         return taskBytes
     }
 
+    /// Live display bytes across an active segment train: the durable partial already on disk plus
+    /// the sum of every still-in-flight segment's optimistic body bytes (#A5, segment train follow-up
+    /// to #212/#227/#231). Each segment's body is bytes accumulated in that task's own OS temp file
+    /// since its own `baseOffset`; segments are disjoint byte ranges by construction, so summing their
+    /// bodies alongside the shared destination file's durable size never double-counts.
+    ///
+    /// For the historical single-continuous-remainder case (`.openEndedRemainder`, exactly one live
+    /// segment) the destination file is untouched until the task finishes, so `durableBytes` stays
+    /// exactly equal to that segment's `baseOffset` for the task's whole life — this reduces to the
+    /// pre-existing `baseOffset + bodyBytesWritten` total byte-for-byte.
+    ///
+    /// The raw result here can transiently DIP: `finishRangeRemainder` removes a completed segment
+    /// from the live set before its body is asynchronously appended into the durable file, so a
+    /// callback that lands in that window undercounts. Callers MUST still route this value through
+    /// `mergedSample`, whose watermark keeps the published sample monotonic across that window.
+    public static func aggregatedLiveBytes(durableBytes: Int, liveSegmentBodyBytes: [Int]) -> Int {
+        let base = max(durableBytes, 0)
+        let liveSum = liveSegmentBodyBytes.reduce(0) { $0 + max($1, 0) }
+        return base + liveSum
+    }
+
     public static func liveDisplayBytes(for record: DownloadRecord,
                                         sample: DownloadLiveRangeProgressSample?,
                                         now: Date,
