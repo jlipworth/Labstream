@@ -534,6 +534,33 @@ public final class DownloadManager {
                 self?.resumeStaticRangeWhenReady(ratingKey: ratingKey, reason: reason.rawValue)
             }
         }
+        // Finding 6: logout revokes the JF/Emby token server-side, so an in-flight remainder can
+        // 401/403 after its retry/rehydration budget is spent purely because the user signed out.
+        // Decide on the main actor: if the backend session is actually gone, park the row in the same
+        // deferred "waiting for a valid session" state the resume path uses; otherwise (still signed
+        // in) it is a real auth error and stays `.failed`.
+        self.session.onRangeAuthHTTPFailure = { [weak self] ratingKey, httpStatus in
+            Task { @MainActor in
+                guard let self,
+                      let record = self.store.records.first(where: { $0.ratingKey == ratingKey }) else { return }
+                let kind = DownloadJobSnapshot(record: record).backend
+                let hasLiveSession = self.appModel.backendSession(for: kind) != nil
+                switch PostLogoutDownloadFailurePolicy.disposition(httpStatus: httpStatus,
+                                                                   hasLiveSession: hasLiveSession) {
+                case .deferAwaitingSession:
+                    self.recordDownloadDiagnostic("downloads.range_auth_deferred_signed_out", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "backend": .label(kind.rawValue),
+                        "status_code": .int(httpStatus),
+                    ])
+                    self.deferStaticRangeResume(record: record, reason: "backend_signed_out")
+                case .fail:
+                    self.store.setStatus(ratingKey: ratingKey, .failed)
+                    self.lastError[ratingKey] = .transferFailed("Server returned HTTP \(httpStatus).")
+                    self.refreshRecords()
+                }
+            }
+        }
         // `liveBytes` arrives already normalized against the resume display watermark — the
         // session owns the durable base offset the rebase needs, so it publishes display-ready
         // totals and records the rebase diagnostic itself.
