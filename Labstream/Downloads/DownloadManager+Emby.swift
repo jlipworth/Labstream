@@ -50,9 +50,9 @@ extension DownloadManager {
         }
         let server = backendSession.baseURL
         let token = backendSession.token
-        guard acquireInFlightSlotForStart(ratingKey: ratingKey,
-                                          backend: "Emby",
-                                          allowReplacingExistingActiveRow: allowReplacingExistingActiveRow) else { return }
+        guard let startAttempt = acquireStartAttempt(ratingKey: ratingKey,
+                                                     backend: "Emby",
+                                                     allowReplacingExistingActiveRow: allowReplacingExistingActiveRow) else { return }
         lastError[ratingKey] = nil
         // No `defer { activeJobs.remove }` — same in-flight-lifetime contract as the other lanes:
         // `session.start` only kicks off the transfer, so protection (and the encoder-teardown
@@ -144,6 +144,19 @@ extension DownloadManager {
             clearStaticRangePendingResume(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
             refreshRecords()
+            return
+        }
+
+        // Lens 6 F2: the PlaybackInfo POST above is an await with NO currency check — a
+        // delete/pause landing during it used to be fully undone (the row was re-seeded, the
+        // minted PlaySessionId persisted, and the transfer started). Exit WITHOUT touching the
+        // store; best-effort release of the session the negotiation just minted.
+        guard startAttemptStillCurrent(startAttempt, backend: "Emby",
+                                       phase: "playback_info") else {
+            stopSupersededMediaBrowserEncoder(ratingKey: ratingKey,
+                                              playSessionID: decision.playSessionId,
+                                              backendKind: .emby,
+                                              backendSession: backendSession)
             return
         }
 

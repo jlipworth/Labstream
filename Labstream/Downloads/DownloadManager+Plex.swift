@@ -36,9 +36,9 @@ extension DownloadManager {
         }
         let token = backendSession.token
         let server = backendSession.baseURL
-        guard acquireInFlightSlotForStart(ratingKey: ratingKey,
-                                          backend: "Plex",
-                                          allowReplacingExistingActiveRow: allowReplacingExistingActiveRow) else { return }
+        guard let startAttempt = acquireStartAttempt(ratingKey: ratingKey,
+                                                     backend: "Plex",
+                                                     allowReplacingExistingActiveRow: allowReplacingExistingActiveRow) else { return }
         lastError[ratingKey] = nil
         // NOTE: no `defer { activeJobs.remove }` here — that fired when this function returned,
         // which (for both choices) is right after `session.start` merely KICKS OFF the transfer,
@@ -121,6 +121,13 @@ extension DownloadManager {
             let preflight = await preflightOriginalPlayback(ratingKey: ratingKey, url: url,
                                                             token: token, expectedBytes: part.size,
                                                             durationMs: part.duration ?? item.duration)
+            // Lens 6 F3: the AVPlayer preflight can run for tens of seconds. A delete/pause
+            // landing inside it must supersede BOTH continuations: the pass branch would
+            // unconditionally upsert + session.start, and the fail branch would seed a zombie
+            // `.queued` prep row that the server-prep refresh kick then reanimates into a full
+            // optimize job. Exit without touching the store or the optimize queue.
+            guard startAttemptStillCurrent(startAttempt, backend: "Plex",
+                                           phase: "original_preflight") else { return }
             switch PlexDownloadRouter.routeAfterOriginalPreflight(
                 passed: preflight,
                 fallbackOptimizeTarget: Self.originalFallbackOptimizeTarget()

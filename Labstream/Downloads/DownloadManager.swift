@@ -98,6 +98,12 @@ public final class DownloadManager {
     /// The queue title must stay protected for the REAL download lifetime (until the file
     /// finishes/fails), not merely until optimize kickoff returns.
     var serverPrepAttempts = ServerPrepAttemptTracker()
+    /// Per-key entry-point start-attempt tokens (lens 6 F1–F3). Minted when a download entry point
+    /// accepts the in-flight slot, cleared by `releaseInFlight` (terminal/pause/delete). Entry
+    /// chains re-check their token after every negotiation await that precedes a store write or
+    /// `session.start`, so a delete/pause landing during PlaybackInfo/preflight cannot be undone by
+    /// the resumed chain re-seeding the row and starting the transfer.
+    @ObservationIgnored var startAttempts = DownloadStartAttemptTracker()
     private var serverPrepRefreshKickScheduled = false
     private var lastServerPrepRefreshKickAt: Date?
     private var lastServerPrepQueuePausedLogAt: Date?
@@ -538,6 +544,82 @@ public final class DownloadManager {
         return true
     }
 
+    /// What a download entry point captures when its start is accepted: the minted start-attempt
+    /// token plus whether a visible row already existed at entry (retry/replacement) — the guard
+    /// only treats a missing row as "deleted mid-await" for chains that entered with one.
+    struct DownloadStartAttemptHandle {
+        let ratingKey: String
+        let token: UUID
+        let enteredWithExistingRow: Bool
+    }
+
+    /// Acquire the in-flight slot AND mint this chain's start-attempt token (lens 6 F1–F3).
+    /// Returns nil when the slot is rejected (duplicate/already active), mirroring
+    /// `acquireInFlightSlotForStart`'s false.
+    func acquireStartAttempt(ratingKey: String,
+                             backend: String,
+                             allowReplacingExistingActiveRow: Bool = false) -> DownloadStartAttemptHandle? {
+        let enteredWithExistingRow = store.records.contains { $0.ratingKey == ratingKey }
+        guard acquireInFlightSlotForStart(ratingKey: ratingKey,
+                                          backend: backend,
+                                          allowReplacingExistingActiveRow: allowReplacingExistingActiveRow) else {
+            return nil
+        }
+        return DownloadStartAttemptHandle(ratingKey: ratingKey,
+                                          token: startAttempts.begin(ratingKey),
+                                          enteredWithExistingRow: enteredWithExistingRow)
+    }
+
+    /// Post-await currency check for download entry points (lens 6 F1–F3). Call after EVERY await
+    /// that precedes a store write or `session.start`. On failure this records
+    /// `downloads.start_superseded_after_await` and returns false — the caller must exit WITHOUT
+    /// upserting (a pause parked the row `.paused`; a delete removed it; a newer start owns the
+    /// key) and release only what its own chain minted (e.g. a just-minted PlaySessionId).
+    func startAttemptStillCurrent(_ handle: DownloadStartAttemptHandle,
+                                  backend: String,
+                                  phase: String) -> Bool {
+        let row = store.records.first { $0.ratingKey == handle.ratingKey }
+        let verdict = DownloadStartGuardPolicy.verdict(
+            tokenIsCurrent: startAttempts.isCurrent(handle.ratingKey, id: handle.token),
+            hasActiveSlot: activeJobs.contains(handle.ratingKey),
+            enteredWithExistingRow: handle.enteredWithExistingRow,
+            rowIsPresent: row != nil,
+            rowStatus: row?.status)
+        guard case .superseded(let reason) = verdict else { return true }
+        recordDownloadDiagnostic("downloads.start_superseded_after_await", fields: [
+            "download_id": .identifier(handle.ratingKey),
+            "backend": .label(backend),
+            "phase": .label(phase),
+            "reason": .label(reason.rawValue),
+        ])
+        return false
+    }
+
+    /// Best-effort teardown of a server session a SUPERSEDED negotiation minted before its chain
+    /// noticed the delete/pause. No transfer ever started, so at worst this DELETEs an encoder that
+    /// never spun up (harmless) — but if the backend did start one for the minted PlaySessionId, it
+    /// would otherwise leak with no row, no task, and no activeJobs slot pointing at it.
+    func stopSupersededMediaBrowserEncoder(ratingKey: String,
+                                           playSessionID: String?,
+                                           backendKind: DownloadBackendKind,
+                                           backendSession: BackendSession) {
+        guard let playSessionID, !playSessionID.isEmpty else { return }
+        recordDownloadDiagnostic("downloads.superseded_encoder_teardown", fields: [
+            "download_id": .identifier(ratingKey),
+            "backend": .label(backendKind.rawValue),
+        ])
+        switch backendKind {
+        case .jellyfin:
+            let service = JellyfinBrowseService(appModel: appModel)
+            Task { _ = await service.stopActiveEncoding(playSessionId: playSessionID, session: backendSession) }
+        case .emby:
+            let service = EmbyBrowseService(appModel: appModel)
+            Task { _ = await service.stopActiveEncoding(playSessionId: playSessionID, session: backendSession) }
+        case .plex:
+            break
+        }
+    }
+
     /// Pause one visible download row. Active URLSession transfers are cancelled with resume data
     /// when the backend lane supports it; server-prep rows are marked paused so relaunch/refresh
     /// does not auto-poll/retry until the user resumes.
@@ -925,7 +1007,10 @@ public final class DownloadManager {
         if deferStaticRangeRetryIfBackendUnavailable(record: record, reason: "retry_backend_not_ready") {
             return
         }
-        retryState.begin(ratingKey)
+        // Lens 6 F5: retry continuations are attempt-scoped. Each begin mints a token the async
+        // bodies below verify, so a pause→resume (which re-begins) cannot revive THIS chain after
+        // it was superseded.
+        let retryToken = retryState.begin(ratingKey)
         recordDownloadDiagnostic("downloads.retry", fields: [
             "download_id": .identifier(ratingKey),
         ])
@@ -1011,11 +1096,13 @@ public final class DownloadManager {
             store.setStatus(ratingKey: ratingKey, .queued)
         }
         if DownloadRecordIdentity.isJellyfinRecordKey(ratingKey) {
-            retryJellyfin(record: record, allowReplacingExistingActiveRow: allowActiveRowReplacement)
+            retryJellyfin(record: record, allowReplacingExistingActiveRow: allowActiveRowReplacement,
+                          attemptToken: retryToken)
             return
         }
         if DownloadRecordIdentity.isEmbyRecordKey(ratingKey) {
-            retryEmby(record: record, allowReplacingExistingActiveRow: allowActiveRowReplacement)
+            retryEmby(record: record, allowReplacingExistingActiveRow: allowActiveRowReplacement,
+                      attemptToken: retryToken)
             return
         }
         let metadata = record.metadata
@@ -1056,7 +1143,7 @@ public final class DownloadManager {
                                                                server: server,
                                                                token: token,
                                                                identity: self.appModel.identity) ?? item
-            guard self.retryAttemptCanContinue(ratingKey: ratingKey) else { return }
+            guard self.retryAttemptCanContinue(ratingKey: ratingKey, token: retryToken) else { return }
 
             // #131/#184: static retries must preserve the exact Part identity whenever possible,
             // not only when a durable partial exists. Plex optimized/final static rows keep
@@ -1105,7 +1192,7 @@ public final class DownloadManager {
                 : .optimize(targetName: Self.originalFallbackOptimizeTarget())
             // Drop the stale `.failed` row only once we know the replacement can be seeded.
             // This also removes any leftover invalid/partial file from the failed attempt.
-            guard self.retryAttemptCanContinue(ratingKey: ratingKey) else { return }
+            guard self.retryAttemptCanContinue(ratingKey: ratingKey, token: retryToken) else { return }
             self.releaseInFlight(ratingKey: ratingKey)
             if !DownloadRetryPolicy.shouldPromotePausedStaticPartial(record) {
                 self.store.remove(ratingKey: ratingKey)
@@ -1120,10 +1207,15 @@ public final class DownloadManager {
         store.records.contains { $0.ratingKey == ratingKey }
     }
 
-    private func retryAttemptCanContinue(ratingKey: String) -> Bool {
+    /// Lens 6 F5: `token` scopes the guard to the CALLER's retry attempt — a superseded chain
+    /// stays dead even after pause→resume re-begins retrying for the same key. `nil` preserves the
+    /// legacy any-current-attempt semantics for paths that predate token threading.
+    private func retryAttemptCanContinue(ratingKey: String, token: UUID? = nil) -> Bool {
         let row = store.records.first { $0.ratingKey == ratingKey }
+        let attemptIsCurrent = token.map { retryState.isCurrentRetryAttempt(ratingKey, id: $0) }
+            ?? retryState.isRetrying(ratingKey)
         return DownloadRetryPreparationPolicy.attemptCanContinue(
-            isRetrying: retryState.isRetrying(ratingKey),
+            isRetrying: attemptIsCurrent,
             rowIsPresent: row != nil,
             rowStatus: row?.status
         )
@@ -1229,7 +1321,8 @@ public final class DownloadManager {
         }
     }
 
-    private func retryJellyfin(record: DownloadRecord, allowReplacingExistingActiveRow: Bool = false) {
+    private func retryJellyfin(record: DownloadRecord, allowReplacingExistingActiveRow: Bool = false,
+                               attemptToken: UUID) {
         let retryIntent = DownloadBackendRetryIntentPolicy.jellyfinIntent(
             for: record,
             fallbackItemID: DownloadRecordIdentity.jellyfinItemID(fromRecordKey: record.ratingKey),
@@ -1259,7 +1352,7 @@ public final class DownloadManager {
                 ])
                 self.releaseInFlight(ratingKey: record.ratingKey)
             }
-            guard self.retryAttemptCanContinue(ratingKey: record.ratingKey) else { return }
+            guard self.retryAttemptCanContinue(ratingKey: record.ratingKey, token: attemptToken) else { return }
             // Keep the failed row visible until `downloadJellyfin` successfully seeds the
             // replacement. If PlaybackInfo/auth/network preflight fails, its start-failed path can
             // mark this existing row `.failed` instead of making the retry affordance disappear.
@@ -1272,7 +1365,8 @@ public final class DownloadManager {
         }
     }
 
-    private func retryEmby(record: DownloadRecord, allowReplacingExistingActiveRow: Bool = false) {
+    private func retryEmby(record: DownloadRecord, allowReplacingExistingActiveRow: Bool = false,
+                           attemptToken: UUID) {
         let retryIntent = DownloadBackendRetryIntentPolicy.embyIntent(
             for: record,
             fallbackItemID: DownloadRecordIdentity.embyItemID(fromRecordKey: record.ratingKey))
@@ -1301,7 +1395,7 @@ public final class DownloadManager {
                 ])
                 self.releaseInFlight(ratingKey: record.ratingKey)
             }
-            guard self.retryAttemptCanContinue(ratingKey: record.ratingKey) else { return }
+            guard self.retryAttemptCanContinue(ratingKey: record.ratingKey, token: attemptToken) else { return }
             // Keep the failed row visible until `downloadEmby` successfully seeds the replacement.
             // If PlaybackInfo/auth/network preflight fails, its start-failed path can mark this
             // existing row `.failed` instead of making the retry affordance disappear.
@@ -2499,6 +2593,9 @@ public final class DownloadManager {
         retryState.removeRetrying(ratingKey)
         clearRetryHandoff(ratingKey: ratingKey)
         activeJobs.remove(ratingKey)
+        // Lens 6 F1–F3: invalidate the entry-point start-attempt token with the slot, so a chain
+        // still parked on a negotiation await wakes up stale and exits without re-seeding the row.
+        startAttempts.clear(ratingKey)
         transcodeSourcedDownloads.remove(ratingKey)
         // Defense-in-depth: no terminal transition should leave optimize progress/ETA samples
         // behind for a key that is no longer in flight — a later re-download of the same item
@@ -2931,6 +3028,12 @@ public final class DownloadManager {
             return
         }
 
+        // Lens 6 F6: the /activities fetch above is an await, so a delete/release can land inside
+        // this poll cycle. Never re-plant server-prep progress/state for a job that no longer
+        // holds its in-flight slot — a stale write here re-creates prep-progress UI state for a
+        // removed row.
+        guard activeJobs.contains(ratingKey) else { return }
+
         // progress is 0…100, or -1 indeterminate. -1 / missing → "queued" (job seen but no
         // measurable progress yet); a real percent → "transcoding".
         guard let pct = activity.progress, pct >= 0 else {
@@ -3088,7 +3191,10 @@ public final class DownloadManager {
             fields["bg_attributed"] = .label(isActiveConversion ? "active"
                                              : (thisIsQueuedConversion ? "queued" : "none"))
 
-            if isActiveConversion {
+            // Lens 6 F6: the queue/jobs fetches above are awaits — gate the progress-map writes
+            // on the slot still being held so a delete inside this probe cycle cannot re-plant
+            // stale prep progress.
+            if isActiveConversion, activeJobs.contains(ratingKey) {
                 // FROZEN-% FIX: the UI's "Transcoding NN%" reads `optimizeProgress`, normally set by
                 // `pollOptimizeActivity` matching the `/activities` feed. Under concurrent/ambiguous
                 // jobs that match returns none and the value FREEZES. The server's own `bg_progress`
@@ -3123,7 +3229,7 @@ public final class DownloadManager {
                     didUpdateProgressState = true
                 }
                 if didUpdateProgressState { refreshRecords() }
-            } else if thisIsQueuedConversion {
+            } else if thisIsQueuedConversion, activeJobs.contains(ratingKey) {
                 // Waiting behind the active conversion, with no measurable progress yet. Keep the
                 // public caption flattened to "Preparing on server…" for a stable user-facing phase,
                 // but remember the coarse queued state so a real % is never clobbered if the row
