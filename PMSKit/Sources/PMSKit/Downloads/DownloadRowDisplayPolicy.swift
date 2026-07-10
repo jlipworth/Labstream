@@ -47,7 +47,11 @@ public enum DownloadRowDisplayPolicy {
                                   isServerPreparedVersion: Bool) -> String {
         switch lane {
         case .original where isServerPreparedVersion:
-            return "Downloading transcode"
+            // A server-prepared version rides the `.original` STATIC byte-range lane: it is a
+            // finished file on disk, transferred/resumed byte-for-byte like any original — NOT a
+            // live server transcode. Label it by that lane ("optimized"), never "transcode", which
+            // is reserved for the encoder-gated `.optimize`/`.compatibleRemux` lanes below.
+            return "Downloading optimized"
         case .original:
             return "Downloading original"
         case .compatibleRemux:

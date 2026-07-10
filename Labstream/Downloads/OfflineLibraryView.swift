@@ -594,12 +594,13 @@ public struct OfflineLibraryView: View {
         let tint: Color
         switch record.metadata?.resolvedDownloadLane() ?? .original {
         case .original where record.metadata?.isServerPreparedVersion == true:
-            // A server-prepared (transcoded) version rides the `.original` static lane for resumable
-            // byte-for-byte transfer, but it isn't the user's source file — badge it "Transcode"
-            // (consistent with on-demand optimize and the prep-phase pill), not "Original".
-            label = "Transcode"
-            systemImage = "gauge.with.dots.needle.bottom.50percent"
-            tint = .orange
+            // B4: a server-prepared version rides the `.original` STATIC byte-range lane — it is a
+            // finished file transferred/resumed byte-for-byte, NOT a live server transcode. Badge it
+            // "Optimized" (distinct from a true source "Original", but never the alarming orange
+            // "Transcode", which is reserved for the encoder-gated `.optimize`/remux lanes below).
+            label = "Optimized"
+            systemImage = "checkmark.seal"
+            tint = .secondary
         case .original:
             label = "Original"
             systemImage = "checkmark.seal"
