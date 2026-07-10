@@ -13,20 +13,20 @@ public enum DownloadDisplayClassifier {
     /// rate estimator should not present it as genuine wire speed.
     ///
     /// - `.original` (incl. existing-version): static, range-resumable → genuine wire speed → false.
-    /// - `.optimize`: Plex phase-2 downloads a rendered static Part (network-bound once it exists),
-    ///   so it's transcoder-gated only before the Part appears (`progress <= 0`); Jellyfin/Emby
-    ///   optimize is a live encoder stream for the whole transfer → true.
+    /// - `.optimize`: a `serverPrepThenStatic` row (Plex optimize, Emby persistent Convert) downloads
+    ///   a rendered static file (network-bound once it exists), so it's transcoder-gated only before
+    ///   that file appears (`progress <= 0`). Jellyfin optimize — and legacy Emby rows without a
+    ///   Convert job — resolve `liveForwardOnly`: a live encoder stream for the whole transfer → true.
     /// - `.compatibleRemux`: a live remux stream with no Content-Length is transcoder-gated → true,
     ///   but once the server reports a size (`progress > 0`) it's effectively static → false.
     public static func isLiveTranscoderSourced(_ record: DownloadRecord) -> Bool {
         let lane = record.metadata?.resolvedDownloadLane() ?? .original
-        let backend = record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
-            ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
         switch lane {
         case .original:
             return false
         case .optimize:
-            return backend == .plex ? record.progress <= 0 : true
+            let resumeMode = record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey)
+            return resumeMode == .liveForwardOnly ? true : record.progress <= 0
         case .compatibleRemux:
             return record.progress <= 0
         }

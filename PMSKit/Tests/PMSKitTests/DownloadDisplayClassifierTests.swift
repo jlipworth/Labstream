@@ -9,12 +9,14 @@ import Foundation
 @Suite("Download display classifier")
 struct DownloadDisplayClassifierTests {
 
-    private func record(lane: DownloadLane, ratingKey: String, progress: Double) -> DownloadRecord {
+    private func record(lane: DownloadLane, ratingKey: String, progress: Double,
+                        embyConvertJobID: Int? = nil) -> DownloadRecord {
         DownloadRecord(ratingKey: ratingKey, title: "t",
                        localURL: URL(fileURLWithPath: "/tmp/x.mp4"),
                        progress: progress, status: .downloading,
                        metadata: OfflineMetadata(ratingKey: ratingKey, title: "t", type: "movie",
-                                                 downloadLane: lane))
+                                                 downloadLane: lane,
+                                                 embyConvertJobID: embyConvertJobID))
     }
 
     @Test func originalIsAlwaysWireSpeed() {
@@ -35,13 +37,25 @@ struct DownloadDisplayClassifierTests {
             record(lane: .optimize, ratingKey: "plex:1", progress: 0.2)))
     }
 
-    @Test func embyJellyfinOptimizeIsLiveForWholeTransfer() {
+    @Test func jellyfinOptimizeIsLiveForWholeTransfer() {
+        // Jellyfin optimize — and legacy Emby rows without a Convert job — resolve
+        // liveForwardOnly: a live encoder stream end to end.
         for prefix in ["emby:1", "jellyfin:1"] {
             #expect(DownloadDisplayClassifier.isLiveTranscoderSourced(
                 record(lane: .optimize, ratingKey: prefix, progress: 0)))
             #expect(DownloadDisplayClassifier.isLiveTranscoderSourced(
                 record(lane: .optimize, ratingKey: prefix, progress: 0.9)))
         }
+    }
+
+    @Test func embyConvertIsGatedOnlyBeforeRenderedFileExists() {
+        // Emby persistent Convert (serverPrepThenStatic) renders first, then downloads the
+        // finished File source statically — same display rule as Plex optimize, not a live
+        // stream for the whole transfer.
+        #expect(DownloadDisplayClassifier.isLiveTranscoderSourced(
+            record(lane: .optimize, ratingKey: "emby:1", progress: 0, embyConvertJobID: 7)))
+        #expect(!DownloadDisplayClassifier.isLiveTranscoderSourced(
+            record(lane: .optimize, ratingKey: "emby:1", progress: 0.4, embyConvertJobID: 7)))
     }
 
     @Test func compatibleRemuxGatedUntilServerReportsSize() {
