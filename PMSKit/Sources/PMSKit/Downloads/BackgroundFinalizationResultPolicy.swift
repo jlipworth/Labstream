@@ -67,11 +67,22 @@ public enum BackgroundFinalizationResultPolicy {
         case .unverified(let reason):
             return BackgroundFinalizationResult(
                 status: .unverified,
-                resultLabel: "unverified_\(reason)",
+                resultLabel: unverifiedResultLabel(reason: reason),
                 shouldDeleteFile: false,
                 validationFailureReason: reason,
                 userFacingErrorMessage: nil
             )
         }
+    }
+
+    /// Bounded `unverified_*` label (audit lens 8, B-1). The AVFoundation probe reason is
+    /// free-form; a dynamic `unverified_\(reason)` could reach the redactor's 24-char bare-token
+    /// threshold and be blanked to "[token]" in the jsonl. Keep the LABEL under that limit —
+    /// sanitized and capped — while the full reason still travels in `validationFailureReason`.
+    public static func unverifiedResultLabel(reason: String) -> String {
+        let sanitized = DiagnosticRedactor.fieldKey(reason)
+        let capped = String(sanitized.prefix(12))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "_.:-"))
+        return "unverified_" + (capped.isEmpty || capped == "field" ? "probe" : capped)
     }
 }
