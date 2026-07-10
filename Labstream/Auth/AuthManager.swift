@@ -281,6 +281,17 @@ final class AuthManager {
             signOutJellyfin()
             if updateState { state = .idle }
             return false
+        } catch JellyfinAuthError.identityMismatch {
+            // Ambiguous, not a proven-bad credential: the probe succeeded (2xx) but reported a
+            // different user id. Preserve the keychain snapshot for a later retry (a true 401 is the
+            // only wipe trigger), but clear the runtime lane so browse/download paths don't act on a
+            // session the live probe did not confirm — same credential-preserving handling as the
+            // generic transport-failure branch below.
+            NSLog("[#93] restoreJellyfinSession preserving creds: probe user id mismatch (updateState=%@)",
+                  updateState ? "true" : "false")
+            clearRuntimeState(for: .jellyfin)
+            if updateState { state = .failed("Signed in, but the Jellyfin session could not be confirmed.") }
+            return true
         } catch {
             guard isCurrentAuthAttempt(attemptID) else { return false }
             // Preserve the keychain snapshot for a later retry, but do not leave the runtime lane
@@ -305,7 +316,14 @@ final class AuthManager {
         switch CredentialValidationPolicy.decision(httpStatus: status) {
         case .valid:
             let user = try JSONDecoder().decode(JellyfinAuthenticatedUser.self, from: data)
-            guard user.id == expectedUserID else { throw JellyfinAuthError.unauthorized }
+            // Compare GUID-format-insensitively (dashed/dashless, case) so a server or proxy that
+            // re-serializes the same id doesn't read as a different user. A normalized MISMATCH on
+            // an otherwise-valid 2xx probe is ambiguous (proxy/user remap), NOT proof the credential
+            // is invalid — surface it as identity-mismatch so restore PRESERVES the credential.
+            // Only a real 401 (`.invalidCredential`) wipes.
+            guard MediaBrowserUserIdentity.sameUser(user.id, expectedUserID) else {
+                throw JellyfinAuthError.identityMismatch
+            }
         case .invalidCredential:
             throw JellyfinAuthError.unauthorized
         case .preserveCredential, .refreshExpiredCredential:
@@ -364,7 +382,11 @@ final class AuthManager {
             }
             guard isCurrentAuthAttempt(attemptID) else { return false }
             let user = try JSONDecoder().decode(EmbyAuthenticatedUser.self, from: data)
-            guard user.id == snapshot.userID else { throw EmbyAuthError.unauthorized }
+            // GUID-format-insensitive compare for parity with Jellyfin restore. The Emby probe is
+            // /Users/{id}, which echoes the requested id, so a mismatch here is not expected.
+            guard MediaBrowserUserIdentity.sameUser(user.id, snapshot.userID) else {
+                throw EmbyAuthError.unauthorized
+            }
             applyEmbySessionSnapshot(snapshot)
             if updateState { state = .authenticated }
             recordAuthDiagnostic("auth.emby.restore.success", fields: restoreFields)
@@ -1754,6 +1776,9 @@ struct PlexSessionDiscovery {
 
 private enum JellyfinAuthError: Error {
     case unauthorized
+    /// A 2xx identity probe returned a different (normalized) user id than the saved session.
+    /// Ambiguous, not a revoked credential — restore preserves the keychain snapshot.
+    case identityMismatch
     case quickConnectDisabled
     case http(Int)
     case missingCredentials
