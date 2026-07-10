@@ -7,7 +7,12 @@ import PMSKit
 import UIKit
 #endif
 
-/// Shared Now Playing / remote-command machinery for the app-owned custom video player.
+///
+/// iOS/iPadOS and macOS both participate in the system transport stack (media keys, Control
+/// Center, lock screen, headphones, external transport surfaces) around the same
+/// `PlaybackController`; only the platform surfaces differ (PiP/AirPlay on iOS). visionOS
+/// instead uses a scoped `MPNowPlayingSession` via `VideoNowPlayingCoordinator` because it
+/// has no platform coordinator around the player layer.
 @MainActor
 final class VideoNowPlayingCore {
     private weak var controller: PlaybackController?
