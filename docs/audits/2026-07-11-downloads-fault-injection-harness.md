@@ -147,9 +147,9 @@ sibling supersede ordering. This exercises the replacement race without download
 Positive-offset bodies finish into real held stashes while the head remains live. The driver then
 terminates the app without pausing/deleting, relaunches without fault injection, observes the same
 row, and finally deletes it. It requires held-body creation → post-relaunch
-`downloads.range_stash_swept` → observe-only second probe ordering. This captures current
-device-style process-death behavior and distinguishes coverage from the still-open durable-stash
-remediation.
+`downloads.range_held_segments_restored` → one nonzero-checkpoint range start → final held purge,
+with no `downloads.range_stash_swept`. The single resumed start is load-bearing: the seven restored
+bodies occupy the train's other planner slots instead of being refetched.
 
 ### `drain-pause`
 
@@ -220,10 +220,10 @@ scenarios passed against the real foreground `BackgroundDownloadSession`:
 - `200-replace`: a 64 KiB durable prefix and six held siblings preceded the delayed one-byte v2
   200; replaceWhole purged all six held bodies, superseded two newly queued siblings, and final
   validation rejected the intentionally incomplete replacement.
-- `held-body-relaunch`: eight positive-offset stashes existed before process termination. The next
-  launch swept all eight, observed the same persisted row, and restarted from the durable zero-byte
-  checkpoint. This closes the lifecycle coverage cell while confirming the B.1 bandwidth-loss
-  finding: held metadata is still in-memory-only, so relaunch cannot reuse those completed bodies.
+- `held-body-relaunch`: the original run confirmed the B.1 loss by sweeping eight positive-offset
+  stashes. After the durable-manifest fix, the rerun restored seven held bodies, emitted no stash
+  sweep, resumed once from the nonzero durable checkpoint while the restored bodies filled the
+  remaining planner slots, then purged all seven on probe cleanup. B.1 is closed.
 - `drain-pause`: multiple 1 MiB held bodies assembled before pause; the pause landed inside the
   delayed fourth drain step, emitted `range_held_drain_halted`, preserved the unconsumed stash, and
   reached a stable paused row with no post-request `range_start`. A preceding failing run is the

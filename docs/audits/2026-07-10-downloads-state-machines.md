@@ -103,6 +103,11 @@ handling segment-scoped for marked tasks (:641–691); adopted rows set `.downlo
 then `sweepOrphanedRangeBodyStashes` protects only stashes still indexed in the (empty after
 relaunch) held map (:739–753) — the B.1 held-loss finding.
 
+**2026-07-11 remediation:** B.1 is closed. Held bodies now live in the Downloads directory with a
+persisted offset/length/validator/attempt manifest, restore before reattach planning, participate in
+the segment planner, and are removed with every consuming/terminal teardown path. The live relaunch
+probe restored seven bodies without a temporary-stash sweep.
+
 ### A.4 Per-task lifecycle
 
 created → resumed → {superseded (cancel expected) | finished-owned (`finishRangeRemainder`) |
@@ -312,11 +317,8 @@ promote to doc + test.
   (`demoteIncompleteCompletedStaticRows`, reconcile-on-missing-file); `Verifying → Paused`
   (`writeThenPause`); the `Transferring → Queued` bounce during request rebuilds (grace
   states); `Preparing → Paused/Failed`; `Paused → Failed` at reconcile without a checkpoint.
-- **M-2 [doc-gap + design risk]** The doc says held segment bodies are “kept … until the
-  checkpoint reaches them” (lines 101–110) implying durability; in code the held index is
-  in-memory only (session :74–79) and stashes are swept on the next reattach (B.1 confirmed:
-  up to ~3.5 GiB re-downloaded per row after process death). The code comment admits the
-  tradeoff; the shipped doc does not.
+- **M-2 [closed 2026-07-11]** Held segment bodies and their index are now durable across process
+  death; the relaunch harness restores them before planning and verifies reuse/no stash sweep.
 - **M-3 [undocumented invariant]** Train epochs, validator pinning by the *first arriving
   body* (head or held), per-stash validators, and the held re-check at drain
   (`StaticRangeTrainIntegrityPolicy`, session :85, :2402, :2464, :2694) — all landed in

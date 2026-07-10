@@ -603,10 +603,8 @@ install UUID match, clean launch/log smoke, and signed-in Home screenshot; simul
 2. Close the checklist's evidence gaps (lifecycle cause, blob presence, network path, free-space,
    remote-play/download correlation, and Emby server-completion timing) before treating device
    observations as deterministic.
-3. Continue the deferred backend/product findings in sections F–H (Emby F3/F4/F9,
-   Plex F5 and held-stash persistence). The simulator
-   relaunch probe now proves the held-stash item is real: eight completed stashes were swept and
-   refetched from the durable checkpoint because their metadata is not persisted.
+3. Continue the deferred backend/product findings in sections F–H (Emby F3/F4/F9 and Plex F5).
+   Held-stash persistence is now closed by the B.1 follow-up below.
 
 Phase 6's simulator/foreground harness is complete: validator/auth/reset/write-failure,
 pause/delete (including both operations during held drain), concurrent 200/416, and relaunch stash
@@ -678,6 +676,24 @@ new static transfer therefore leaves a resumable prep/job record instead of no r
 rows without a job id fail visibly/retryably on relaunch; completed-job rows retain the job id and
 resume source discovery. The start-slot policy test now explicitly covers preparing-row replacement.
 
+### Deferred follow-up closed: B.1 durable held-stash reuse
+
+Out-of-order static Range bodies now move from the delegate-safe temporary rename into the Downloads
+directory and persist an `OfflineHeldRangeSegment` manifest (offset, exact length, validator,
+relative path, and download-attempt id). Reattach restores valid manifests before task adoption or
+request rebuilding; unsafe paths, missing/length-mismatched files, stale attempts, validator
+mismatches, and offsets behind the durable checkpoint fail closed and are deleted. Drain, retry,
+changed-resource, finalize, failure, cancel/delete, and row removal now remove both manifest and
+file; pause preserves them. File inventory/storage audit treats manifested bodies as referenced,
+and a filename-scoped orphan sweep closes the rename-before-manifest crash window.
+
+The updated `held-body-relaunch` live probe passed on the golden visionOS simulator: seven held
+bodies were restored after process termination, no `range_stash_swept` occurred, the resumed train
+started once from the nonzero durable checkpoint (the seven restored bodies filled the remaining
+planner slots rather than being refetched), and delete purged all seven. PMSKit's full 1372-test /
+167-suite run, clean visionOS build, UUID-matched install, clean launch log, and signed-in Home smoke
+also passed.
+
 ### Remaining gates after automated follow-ups
 
 - **Phase 7 is physical-device evidence:** background-session redelivery, sleep/network/token
@@ -696,7 +712,3 @@ resume source discovery. The start-slot policy test now explicitly covers prepar
   42 queue item can delete the rendered version itself, while the current metadata cannot prove
   whether a newly matching Part belongs to this attempt or a concurrent job. Blind cleanup risks
   destroying the file being downloaded.
-- **B.1 durable held-stash reuse is architectural:** the live relaunch probe proves current
-  sweep/refetch behavior. Closing it requires moving held bodies out of purgeable `tmp`, persisting
-  offset/length/validator/attempt metadata atomically with each stash, restoring that manifest before
-  task reconciliation, and integrating those files into storage accounting and every teardown path.

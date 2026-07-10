@@ -19,7 +19,11 @@ struct OfflineDownloadFileInventoryTests {
                 OfflineTextSubtitleTrack(id: 1, displayName: "English", language: "en",
                                          codec: "vtt", relativePath: "plex_1.sub-1.vtt")
             ],
-            resumeDataRelativePath: "plex_1.resume"
+            resumeDataRelativePath: "plex_1.resume",
+            heldRangeSegments: [
+                OfflineHeldRangeSegment(offset: 1_024, length: 512,
+                                        relativePath: "plex_1.range-held-1024-abc")
+            ]
         )
 
         let paths = OfflineDownloadFileInventory.referencedRelativePaths(
@@ -36,6 +40,7 @@ struct OfflineDownloadFileInventoryTests {
             "plex_1.chapter-0.jpg",
             "plex_1.sub-1.vtt",
             "plex_1.resume",
+            "plex_1.range-held-1024-abc",
         ])
     }
 
@@ -78,6 +83,7 @@ struct OfflineDownloadFileInventoryTests {
         #expect(audit.orphanCandidates.isEmpty)
         #expect(OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename("plex_1.resume"))
         #expect(OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename("plex_1.sub-2.srt"))
+        #expect(OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename("plex_1.range-held-1024-abc"))
         #expect(!OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename("index.json"))
         #expect(!OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename("../escape.mp4"))
         #expect(!OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename("unowned.tmp"))

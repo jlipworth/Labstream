@@ -94,6 +94,9 @@ public enum OfflineDownloadFileInventory {
             || lowercased.hasSuffix(".jf-trickplay.m3u8") {
             return safePrefix(beforeFirstDotIn: relativePath)
         }
+        if relativePath.contains(".range-held-") {
+            return safePrefix(beforeFirstDotIn: relativePath)
+        }
         if matchesNumberedSuffix(relativePath, marker: ".chapter-", extension: "jpg")
             || matchesNumberedSuffix(relativePath, marker: ".jf-trickplay-", extension: "jpg") {
             return true
@@ -121,6 +124,7 @@ public enum OfflineDownloadFileInventory {
         relatives.append(contentsOf: metadata.jellyfinTrickPlayTileRelativePaths ?? [])
         relatives.append(contentsOf: Array(metadata.chapterImageRelativePaths?.values ?? [:].values))
         relatives.append(contentsOf: metadata.offlineTextSubtitles?.map(\.relativePath) ?? [])
+        relatives.append(contentsOf: metadata.heldRangeSegments?.map(\.relativePath) ?? [])
         return relatives
     }
 

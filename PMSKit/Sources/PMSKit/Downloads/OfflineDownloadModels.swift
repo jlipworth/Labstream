@@ -321,6 +321,25 @@ public struct OfflinePlaybackPositionPolicy: Sendable, Equatable {
     }
 }
 
+/// A completed out-of-order static Range body that has not reached the durable media checkpoint.
+/// The body itself lives beside the media file; this manifest makes it reusable after relaunch.
+public struct OfflineHeldRangeSegment: Codable, Sendable, Equatable {
+    public var offset: Int
+    public var length: Int
+    public var validator: String?
+    public var relativePath: String
+    public var attemptID: String?
+
+    public init(offset: Int, length: Int, validator: String? = nil,
+                relativePath: String, attemptID: String? = nil) {
+        self.offset = offset
+        self.length = length
+        self.validator = validator
+        self.relativePath = relativePath
+        self.attemptID = attemptID
+    }
+}
+
 public struct OfflineMetadata: Codable, Sendable, Equatable {
     public var ratingKey: String
     public var key: String?
@@ -492,6 +511,9 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// can reject a redelivered task from a PRIOR attempt or app life of the same ratingKey —
     /// ratingKey-only identity let old-rendition bytes splice into a re-download.
     public var downloadAttemptID: String?
+    /// Durable manifests for completed segment-train bodies that arrived ahead of the media
+    /// checkpoint. nil/empty for every non-static row and after the bodies are drained or purged.
+    public var heldRangeSegments: [OfflineHeldRangeSegment]?
 
     public init(ratingKey: String,
                 key: String? = nil,
@@ -552,7 +574,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 embyConvertSnapshotIDs: [String]? = nil,
                 serverPreparedVersion: Bool? = nil,
                 rangeValidator: String? = nil,
-                downloadAttemptID: String? = nil) {
+                downloadAttemptID: String? = nil,
+                heldRangeSegments: [OfflineHeldRangeSegment]? = nil) {
         self.ratingKey = ratingKey
         self.key = key
         self.title = title
@@ -613,6 +636,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.serverPreparedVersion = serverPreparedVersion
         self.rangeValidator = rangeValidator
         self.downloadAttemptID = downloadAttemptID
+        self.heldRangeSegments = heldRangeSegments
     }
 
     public init(from decoder: Decoder) throws {
@@ -678,6 +702,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         serverPreparedVersion = try c.decodeIfPresent(Bool.self, forKey: .serverPreparedVersion)
         rangeValidator = try c.decodeIfPresent(String.self, forKey: .rangeValidator)
         downloadAttemptID = try c.decodeIfPresent(String.self, forKey: .downloadAttemptID)
+        heldRangeSegments = try c.decodeIfPresent([OfflineHeldRangeSegment].self, forKey: .heldRangeSegments)
     }
 
     /// Preserve local side/durable assets that may have been cached or checkpointed asynchronously
@@ -719,6 +744,10 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         if downloadAttemptID == nil {
             downloadAttemptID = previous.downloadAttemptID
         }
+        // Held manifests are store-owned checkpoint state, never caller-owned snapshot state.
+        // Always take the current row's value so a stale metadata upsert cannot resurrect a body
+        // that drain/cancel already consumed and deleted.
+        heldRangeSegments = previous.heldRangeSegments
         if sourcePartSize == nil {
             sourcePartSize = previous.sourcePartSize
         }

@@ -311,7 +311,7 @@ if [[ $relaunch_held -eq 1 ]]; then
   # terminated. Rebooting here still preserves the app container and is a stronger relaunch seam.
   xcrun simctl boot "$simid" >/dev/null 2>&1 || true
   xcrun simctl bootstatus "$simid" -b >/dev/null
-  printf '==> Relaunching without fault injection to exercise on-disk stash reattach/sweep\n'
+  printf '==> Relaunching without fault injection to exercise durable held-body restoration/reuse\n'
   relaunch_args=(
     --vp-probe-backend plex
     --vp-probe-plex-download
@@ -458,17 +458,32 @@ if [[ $delete_existing != "1" && $delete_existing != "true" && $delete_existing 
       ;;
     held-body-relaunch)
       held_line=$(grep -n -m1 'downloads\.range_segment_held' "$log_file" | cut -d: -f1 || true)
-      swept_line=""
+      restored_line=""
       if [[ -n "$held_line" ]]; then
-        swept_line=$(awk -v held="$held_line" 'NR > held && /downloads\.range_stash_swept/ { print NR; exit }' "$log_file")
+        restored_line=$(awk -v held="$held_line" \
+          'NR > held && /downloads\.range_held_segments_restored/ { print NR; exit }' "$log_file")
       fi
       second_start_line=""
-      if [[ -n "$swept_line" ]]; then
-        second_start_line=$(awk -v swept="$swept_line" \
-          'NR > swept && /probe\.plex_download\.start/ && /observe_only=true/ { print NR; exit }' "$log_file")
+      resumed_range_line=""
+      if [[ -n "$restored_line" ]]; then
+        second_start_line=$(awk -v restored="$restored_line" \
+          'NR > restored && /probe\.plex_download\.start/ && /observe_only=true/ { print NR; exit }' "$log_file")
+        resumed_range_line=$(awk -v restored="$restored_line" \
+          'NR > restored && /downloads\.range_start/ && /offset_exact=[1-9][0-9]*/ { print NR; exit }' "$log_file")
       fi
-      if [[ -z "$held_line" || -z "$swept_line" || -z "$second_start_line" ]]; then
-        echo "ERROR: expected held body→relaunch stash sweep→observe-only second launch; inspect $log_file" >&2
+      purged_line=$(grep -n 'downloads\.range_held_segments_purged' "$log_file" | tail -1 | cut -d: -f1 || true)
+      resumed_start_count=0
+      if [[ -n "$restored_line" && -n "$purged_line" ]]; then
+        resumed_start_count=$(awk -v restored="$restored_line" -v purged="$purged_line" \
+          'NR > restored && NR < purged && /downloads\.range_start/ { count++ } END { print count + 0 }' "$log_file")
+      fi
+      swept_after_hold=$(awk -v held="${held_line:-0}" \
+        'NR > held && /downloads\.range_stash_swept/ { print NR; exit }' "$log_file")
+      if [[ -z "$held_line" || -z "$restored_line" || -z "$second_start_line" \
+            || -z "$resumed_range_line" || -z "$purged_line" || -n "$swept_after_hold" \
+            || $restored_line -ge $resumed_range_line || $resumed_range_line -ge $purged_line \
+            || $resumed_start_count -ne 1 ]]; then
+        echo "ERROR: expected held body→durable restore→nonzero resume→final purge with no stash sweep; inspect $log_file" >&2
         probe_status=1
       fi
       ;;
