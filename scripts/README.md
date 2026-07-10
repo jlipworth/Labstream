@@ -14,6 +14,8 @@ media details out of commits and public issues.
   sensitive publication regressions without echoing matched secrets.
 - `loc.sh` — informational per-module source line counts.
 - `perf-log-summary.py` — converts privacy-safe performance signposts into summaries/Markdown.
+- `compile-audit.py` — opt-in, isolated arm64 compile-cost baseline for PMSKit and all app schemes;
+  see [`docs/BUILD-PERFORMANCE-AUDIT.md`](../docs/BUILD-PERFORMANCE-AUDIT.md).
 - `tests/test_perf_log_summary.py` and `tests/test_tooling_hardening.py` — script/tooling tests.
 
 ## Simulator and worktree helpers
