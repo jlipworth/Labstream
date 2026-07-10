@@ -26,8 +26,17 @@ public struct BackgroundFinalizationResult: Sendable, Equatable {
 /// side effects; this policy pins the semantic contract shared by opaque and static-range
 /// finalization paths.
 public enum BackgroundFinalizationResultPolicy {
+    /// JF-F2 loop guard: consecutive truncation failures for the SAME row before it is parked
+    /// instead of deleted. Each truncation failure deletes the file and forces a full re-transcode
+    /// from zero, so an environment that reliably kills the encoder near the end (idle-kill,
+    /// proxy timeout) would otherwise re-render a long movie forever. After the budget the row is
+    /// preserved `.unverified` — playable to its truncation point, sticky across revalidation
+    /// (the re-probe re-derives `.truncated` and lands back here), recoverable by delete+re-add.
+    public static let maxConsecutiveTruncationFailures = 2
+
     public static func result(
-        for outcome: DownloadCompletionValidation.CompletionOutcome
+        for outcome: DownloadCompletionValidation.CompletionOutcome,
+        consecutiveTruncationFailures: Int = 0
     ) -> BackgroundFinalizationResult {
         switch outcome {
         case .complete:
@@ -57,6 +66,15 @@ public enum BackgroundFinalizationResultPolicy {
                 userFacingErrorMessage: "Download is incomplete (\(actualBytes / 1_000_000) of \(expectedBytes / 1_000_000) MB). Retry to continue."
             )
         case .truncated(let actualDurationMs, let expectedDurationMs):
+            if consecutiveTruncationFailures >= maxConsecutiveTruncationFailures {
+                return BackgroundFinalizationResult(
+                    status: .unverified,
+                    resultLabel: "unverified_truncated_parked",
+                    shouldDeleteFile: false,
+                    validationFailureReason: "truncated_repeated",
+                    userFacingErrorMessage: "Download keeps ending early (\(actualDurationMs / 1000)s of \(expectedDurationMs / 1000)s). Kept as-is; delete and re-download to retry."
+                )
+            }
             return BackgroundFinalizationResult(
                 status: .failed,
                 resultLabel: "failed_truncated",

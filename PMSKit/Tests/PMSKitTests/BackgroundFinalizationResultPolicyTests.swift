@@ -52,6 +52,37 @@ struct BackgroundFinalizationResultPolicyTests {
         ))
     }
 
+    @Test("Repeated truncation failures park the row unverified instead of re-deleting forever")
+    func truncationLoopGuard() {
+        // First and second failure: normal fail+delete (the file is genuinely truncated and a
+        // retry may succeed against a healthier server/session).
+        for failures in [0, 1] {
+            let result = BackgroundFinalizationResultPolicy.result(
+                for: .truncated(actualDurationMs: 6_480_000, expectedDurationMs: 7_200_000),
+                consecutiveTruncationFailures: failures)
+            #expect(result.status == .failed)
+            #expect(result.shouldDeleteFile)
+        }
+        // At the budget: park `.unverified`, preserve the file, and say why — no more automatic
+        // from-zero re-transcodes of a long movie.
+        let parked = BackgroundFinalizationResultPolicy.result(
+            for: .truncated(actualDurationMs: 6_480_000, expectedDurationMs: 7_200_000),
+            consecutiveTruncationFailures: BackgroundFinalizationResultPolicy.maxConsecutiveTruncationFailures)
+        #expect(parked == BackgroundFinalizationResult(
+            status: .unverified,
+            resultLabel: "unverified_truncated_parked",
+            shouldDeleteFile: false,
+            validationFailureReason: "truncated_repeated",
+            userFacingErrorMessage: "Download keeps ending early (6480s of 7200s). Kept as-is; delete and re-download to retry."
+        ))
+        // Past the budget (revalidation re-derives `.truncated`): stays parked, still preserved.
+        let stillParked = BackgroundFinalizationResultPolicy.result(
+            for: .truncated(actualDurationMs: 6_480_000, expectedDurationMs: 7_200_000),
+            consecutiveTruncationFailures: 5)
+        #expect(stillParked.status == .unverified)
+        #expect(!stillParked.shouldDeleteFile)
+    }
+
     @Test("Unverified transfers preserve bytes and stay playable")
     func unverifiedResult() {
         #expect(BackgroundFinalizationResultPolicy.result(

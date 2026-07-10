@@ -150,4 +150,57 @@ struct DownloadCompletionValidationTests {
                                                      expectedDurationMs: 10_000, actualDurationMs: 500)
                 == .unverified(reason: "item_failed"))
     }
+
+    // MARK: JF-F2 — forward-only lanes use the tightened truncation validation
+
+    @Test func forwardOnlyTruncationThresholdEdges() {
+        // expected 10_000ms → forward-only cutoff is 9_500ms (strictly below = truncated).
+        let threshold = DownloadCompletionValidation.forwardOnlyTruncationThreshold
+        #expect(DownloadCompletionValidation.isTruncated(expectedDurationMs: 10_000, actualDurationMs: 9_499,
+                                                         threshold: threshold))
+        #expect(!DownloadCompletionValidation.isTruncated(expectedDurationMs: 10_000, actualDurationMs: 9_500,
+                                                          threshold: threshold))
+        // The default lane keeps the looser 0.80 cutoff.
+        #expect(!DownloadCompletionValidation.isTruncated(expectedDurationMs: 10_000, actualDurationMs: 9_499))
+    }
+
+    @Test func outcomeForwardOnlyCatchesCleanEncoderKillAtNinetyPercent() {
+        // A cleanly killed encoder stream at 90% used to finalize `.complete` (0.80 threshold).
+        #expect(DownloadCompletionValidation.outcome(played: true, probeReason: "played",
+                                                     expectedDurationMs: 7_200_000, actualDurationMs: 6_480_000,
+                                                     forwardOnly: true)
+                == .truncated(actualDurationMs: 6_480_000, expectedDurationMs: 7_200_000))
+        // The same durations on a non-forward-only lane keep today's outcome.
+        #expect(DownloadCompletionValidation.outcome(played: true, probeReason: "played",
+                                                     expectedDurationMs: 7_200_000, actualDurationMs: 6_480_000)
+                == .complete)
+        // Container/metadata slop within 5% is still complete on the forward-only lane.
+        #expect(DownloadCompletionValidation.outcome(played: true, probeReason: "played",
+                                                     expectedDurationMs: 7_200_000, actualDurationMs: 7_150_000,
+                                                     forwardOnly: true)
+                == .complete)
+    }
+
+    @Test func outcomeForwardOnlyUnknownDurationIsUnverifiedNotComplete() {
+        // Nil source duration used to skip the truncation guard entirely and bless the row
+        // `.complete`; a forward-only row must stay `.unverified` (playable, re-checked later,
+        // and revalidation re-derives the same outcome — the state is sticky, not re-promoted).
+        #expect(DownloadCompletionValidation.outcome(played: true, probeReason: "played",
+                                                     expectedDurationMs: nil, actualDurationMs: 6_480_000,
+                                                     forwardOnly: true)
+                == .unverified(reason: "duration_unconfirmed"))
+        #expect(DownloadCompletionValidation.outcome(played: true, probeReason: "played",
+                                                     expectedDurationMs: 0, actualDurationMs: 6_480_000,
+                                                     forwardOnly: true)
+                == .unverified(reason: "duration_unconfirmed"))
+        // A probe that played but decoded no duration is equally unconfirmable.
+        #expect(DownloadCompletionValidation.outcome(played: true, probeReason: "played",
+                                                     expectedDurationMs: 7_200_000, actualDurationMs: nil,
+                                                     forwardOnly: true)
+                == .unverified(reason: "duration_unconfirmed"))
+        // Other lanes keep the historical leniency (their byte checks are the real gate).
+        #expect(DownloadCompletionValidation.outcome(played: true, probeReason: "played",
+                                                     expectedDurationMs: nil, actualDurationMs: nil)
+                == .complete)
+    }
 }
