@@ -32,6 +32,27 @@ struct ServerPrepAttemptTrackerTests {
         #expect(!tracker.hasPlexPoller(forRecordKey: "plex:1"))
     }
 
+    @Test("Poller currency survives only until pause/delete release or a newer attempt attaches")
+    func plexPollerCurrencyAfterReleaseAndReattach() {
+        var tracker = ServerPrepAttemptTracker()
+        let old = UUID(uuidString: "00000000-0000-0000-0000-000000000011")!
+        let new = UUID(uuidString: "00000000-0000-0000-0000-000000000022")!
+
+        tracker.beginPlexPoller(forRecordKey: "plex:1", id: old)
+        #expect(tracker.isCurrentPlexPoller(forRecordKey: "plex:1", id: old))
+
+        // Pause/delete tear the attempt down via releaseAll: the cancelled poller's terminal
+        // handler must observe it is no longer current and skip releasing anything.
+        _ = tracker.releaseAll(forRecordKey: "plex:1")
+        #expect(!tracker.isCurrentPlexPoller(forRecordKey: "plex:1", id: old))
+
+        // A quick resume attaches a NEW poller on the same key (same queue title). The
+        // superseded poller must still read stale; the new one is current.
+        tracker.beginPlexPoller(forRecordKey: "plex:1", id: new)
+        #expect(!tracker.isCurrentPlexPoller(forRecordKey: "plex:1", id: old))
+        #expect(tracker.isCurrentPlexPoller(forRecordKey: "plex:1", id: new))
+    }
+
     @Test("Emby convert attempt UUIDs replace older async work")
     func embyAttemptReplacement() {
         var tracker = ServerPrepAttemptTracker()
