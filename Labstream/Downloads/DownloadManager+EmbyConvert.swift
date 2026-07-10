@@ -112,7 +112,8 @@ extension DownloadManager {
         // "Server conversion failed"). Reusing the kept converted file avoids both.
         let requestedHeight = EmbyConvertedSourcePolicy.presetOutputHeight(forLabel: targetName)
         if let reuse = EmbyConvertedSourcePolicy.reusableSource(fileSources, requestedHeight: requestedHeight,
-                                                                primaryMediaSourceID: metadata.mediaSourceID),
+                                                                primaryMediaSourceID: metadata.mediaSourceID,
+                                                                requestedAudioStreamIndex: audioStreamIndex),
            let reuseId = reuse.id {
             recordDownloadDiagnostic("downloads.convert_reuse", fields: [
                 "download_id": .identifier(ratingKey),
@@ -145,6 +146,7 @@ extension DownloadManager {
             server: server, token: token, identity: identity, userId: userId, itemId: itemId,
             ratingKey: ratingKey, requestedHeight: requestedHeight,
             primaryMediaSourceId: metadata.mediaSourceID,
+            requestedAudioStreamIndex: audioStreamIndex,
             excludedSourceIds: [],
             initialSourceCount: fileSources.count,
             phase: "pre_create", attemptID: attemptID),
@@ -292,6 +294,13 @@ extension DownloadManager {
                 "target": .label(targetName),
                 "phase": .label("resume_pre_poll"),
             ])
+            // `store.remove` below deletes the row that holds the only `embyConvertJobID` handle,
+            // so if THIS attempt's job is still Converting nothing would ever cancel it — the
+            // orphan renders to completion server-side as a duplicate version. Cancel it first:
+            // DELETE /Sync/Jobs/{id} never deletes an already-converted file, so this is safe
+            // even when the reused source IS this job's own finished output.
+            cancelEmbyConvertJob(jobId: jobId, ratingKey: ratingKey,
+                                 server: server, token: token, identity: identity)
             clearOptimizeProgress(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
             let requestedProfileLabel = records.first { $0.ratingKey == ratingKey }?
@@ -472,6 +481,10 @@ extension DownloadManager {
         let maxAttempts = 72   // ~6 min at the 5s optimizePollInterval — comfortably past the index lag.
         var fileSources: [EmbyMediaSourceInfo] = []
         var newSource: EmbyMediaSourceInfo?
+        // Tier facts for the pickup sanity gate: a source with known dimensions far below what this
+        // job could have rendered is a foreign sibling, not our output.
+        let requestedHeight = EmbyConvertedSourcePolicy.presetOutputHeight(forLabel: targetName)
+        let primaryMediaSourceId = (item.media?.first?.id).map(String.init)
         markServerPrepFinalizing(ratingKey: ratingKey)
         recordDownloadDiagnostic("downloads.convert_finalizing", fields: [
             "download_id": .identifier(ratingKey),
@@ -496,7 +509,9 @@ extension DownloadManager {
             // The convert profile always yields h264/mp4, so a NEW h264/mp4 File source is exactly the
             // converted output — never the original HEVC/MKV source.
             if let fresh = EmbyConvertedSourcePolicy.newConvertedSource(fileSources,
-                                                                        excludingSnapshotIDs: snapshotIds) {
+                                                                        excludingSnapshotIDs: snapshotIds,
+                                                                        requestedHeight: requestedHeight,
+                                                                        primaryMediaSourceID: primaryMediaSourceId) {
                 newSource = fresh
                 break
             }
@@ -508,7 +523,9 @@ extension DownloadManager {
         // most-recent new File source, then most-recent h264/mp4 File source.
         if newSource == nil {
             newSource = EmbyConvertedSourcePolicy.completedSourceFallback(fileSources,
-                                                                          excludingSnapshotIDs: snapshotIds)
+                                                                          excludingSnapshotIDs: snapshotIds,
+                                                                          requestedHeight: requestedHeight,
+                                                                          primaryMediaSourceID: primaryMediaSourceId)
         }
 
         guard let newSourceId = newSource?.id, !newSourceId.isEmpty else {
@@ -619,6 +636,7 @@ extension DownloadManager {
                                                            ratingKey: String,
                                                            requestedHeight: Int?,
                                                            primaryMediaSourceId: String?,
+                                                           requestedAudioStreamIndex: Int? = nil,
                                                            excludedSourceIds: Set<String>,
                                                            initialSourceCount: Int,
                                                            phase: String,
@@ -640,7 +658,8 @@ extension DownloadManager {
                 return !excludedSourceIds.contains(id)
             }
             if let reuse = EmbyConvertedSourcePolicy.reusableSource(eligibleSources, requestedHeight: requestedHeight,
-                                                                    primaryMediaSourceID: primaryMediaSourceId) {
+                                                                    primaryMediaSourceID: primaryMediaSourceId,
+                                                                    requestedAudioStreamIndex: requestedAudioStreamIndex) {
                 recordDownloadDiagnostic("downloads.convert_reuse_refresh", fields: [
                     "download_id": .identifier(ratingKey),
                     "phase": .label(phase),
