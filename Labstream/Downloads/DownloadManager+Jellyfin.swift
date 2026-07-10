@@ -68,6 +68,7 @@ extension DownloadManager {
                                             }(),
                                             session: backendSession,
                                             mediaSourceID: jellyfinMediaSourceID,
+                                            audioStreamIndex: audioStreamIndex,
                                             downloadLane: DownloadChoicePolicy.downloadLane(for: choice),
                                             serverPreparedVersion: DownloadChoicePolicy.isServerPreparedVersion(for: choice))
         recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(

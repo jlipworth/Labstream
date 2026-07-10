@@ -54,6 +54,7 @@ struct DownloadOfflineMetadataBuilderTests {
                                                                optimizeQueueTitle: "queue-title",
                                                                session: session,
                                                                mediaSourceID: "media-source",
+                                                               audioStreamIndex: 7,
                                                                downloadLane: .original)
 
         #expect(metadata.ratingKey == "item-1")
@@ -72,6 +73,7 @@ struct DownloadOfflineMetadataBuilderTests {
         #expect(metadata.backendServerID == "server-1")
         #expect(metadata.backendUserID == "user-1")
         #expect(metadata.mediaSourceID == "media-source")
+        #expect(metadata.audioStreamIndex == 7)
         #expect(metadata.playSessionID == nil)
         #expect(metadata.resumeMode == .staticByteRange)
         #expect(metadata.serverPreparedVersion == nil)

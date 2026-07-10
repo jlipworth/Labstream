@@ -84,6 +84,7 @@ extension DownloadManager {
                                             }(),
                                             session: backendSession,
                                             mediaSourceID: embyMediaSourceHint,
+                                            audioStreamIndex: audioStreamIndex,
                                             downloadLane: DownloadChoicePolicy.downloadLane(for: choice),
                                             serverPreparedVersion: DownloadChoicePolicy.isServerPreparedVersion(for: choice))
         recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(

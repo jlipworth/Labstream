@@ -1400,6 +1400,7 @@ public final class DownloadManager {
             await self.downloadJellyfin(retryIntent.item, choice: retryIntent.choice,
                                         mediaIndex: retryIntent.mediaIndex,
                                         partIndex: retryIntent.partIndex,
+                                        audioStreamIndex: retryIntent.audioStreamIndex,
                                         mediaSourceIDOverride: retryIntent.mediaSourceIDOverride,
                                         allowReplacingExistingActiveRow: allowReplacingExistingActiveRow)
             self.refreshRecords()
@@ -1464,6 +1465,7 @@ public final class DownloadManager {
             await self.downloadEmby(retryIntent.item, choice: retryIntent.choice,
                                     mediaIndex: retryIntent.mediaIndex,
                                     partIndex: retryIntent.partIndex,
+                                    audioStreamIndex: retryIntent.audioStreamIndex,
                                     mediaSourceIDOverride: retryIntent.mediaSourceIDOverride,
                                     allowReplacingExistingActiveRow: allowReplacingExistingActiveRow)
             self.refreshRecords()
@@ -1549,7 +1551,9 @@ public final class DownloadManager {
                                                           jobId: jobId, snapshotIds: resumeSnapshot,
                                                           targetName: targetName, server: server,
                                                           token: token, identity: identity,
-                                                          userId: userId, attemptID: attemptID)
+                                                          userId: userId,
+                                                          audioStreamIndex: metadata.audioStreamIndex,
+                                                          attemptID: attemptID)
             }
         }
     }

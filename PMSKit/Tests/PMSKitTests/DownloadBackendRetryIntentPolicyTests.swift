@@ -12,7 +12,8 @@ struct DownloadBackendRetryIntentPolicyTests {
                                                   optimizeTargetName: "Original video quality",
                                                   mediaIndex: 2,
                                                   partIndex: 1,
-                                                  mediaSourceID: "source-1"))
+                                                  mediaSourceID: "source-1",
+                                                  audioStreamIndex: 7))
         let optimizedIntent = DownloadBackendRetryIntentPolicy.jellyfinIntent(
             for: optimized,
             fallbackItemID: "fallback",
@@ -21,6 +22,7 @@ struct DownloadBackendRetryIntentPolicyTests {
         #expect(optimizedIntent.mediaIndex == 2)
         #expect(optimizedIntent.partIndex == 1)
         #expect(optimizedIntent.mediaSourceIDOverride == "source-1")
+        #expect(optimizedIntent.audioStreamIndex == 7)
 
         let compatible = record(metadata: metadata(backend: .jellyfin,
                                                    lane: .compatibleRemux,
@@ -50,6 +52,7 @@ struct DownloadBackendRetryIntentPolicyTests {
     func embyIntent() {
         let existing = record(metadata: metadata(backend: .emby,
                                                  mediaSourceID: "converted-source",
+                                                 audioStreamIndex: 9,
                                                  lane: .original,
                                                  resumeMode: .staticByteRange,
                                                  serverPreparedVersion: true))
@@ -57,6 +60,7 @@ struct DownloadBackendRetryIntentPolicyTests {
                                                                          fallbackItemID: "fallback")
         #expect(existingIntent.choice == .existingVersion)
         #expect(existingIntent.mediaSourceIDOverride == "converted-source")
+        #expect(existingIntent.audioStreamIndex == 9)
 
         let optimized = record(metadata: metadata(backend: .emby,
                                                   optimizeTargetName: "720p 3 Mbps"))
@@ -90,6 +94,7 @@ struct DownloadBackendRetryIntentPolicyTests {
                           mediaIndex: Int = 0,
                           partIndex: Int = 0,
                           mediaSourceID: String? = nil,
+                          audioStreamIndex: Int? = nil,
                           lane: DownloadLane? = nil,
                           resumeMode: DownloadResumeMode? = nil,
                           serverPreparedVersion: Bool = false) -> OfflineMetadata {
@@ -102,6 +107,7 @@ struct DownloadBackendRetryIntentPolicyTests {
                                optimizeTargetName: optimizeTargetName,
                                backendKind: backend,
                                mediaSourceID: mediaSourceID,
+                               audioStreamIndex: audioStreamIndex,
                                downloadLane: lane,
                                resumeMode: resumeMode,
                                serverPreparedVersion: serverPreparedVersion ? true : nil)

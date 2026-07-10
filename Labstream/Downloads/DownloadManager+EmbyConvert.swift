@@ -132,7 +132,8 @@ extension DownloadManager {
             clearOptimizeProgress(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
             store.remove(ratingKey: ratingKey)
-            await downloadEmby(item, choice: .existingVersion, mediaSourceIDOverride: reuseId,
+            await downloadEmby(item, choice: .existingVersion, audioStreamIndex: audioStreamIndex,
+                               mediaSourceIDOverride: reuseId,
                                deferStaticStartWhenQueuePaused: true,
                                requestedProfileLabelOverride: metadata.requestedProfileLabel ?? targetName)
             return
@@ -164,7 +165,8 @@ extension DownloadManager {
             clearOptimizeProgress(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
             store.remove(ratingKey: ratingKey)
-            await downloadEmby(item, choice: .existingVersion, mediaSourceIDOverride: reuseId,
+            await downloadEmby(item, choice: .existingVersion, audioStreamIndex: audioStreamIndex,
+                               mediaSourceIDOverride: reuseId,
                                deferStaticStartWhenQueuePaused: true,
                                requestedProfileLabelOverride: metadata.requestedProfileLabel ?? targetName)
             return
@@ -257,7 +259,8 @@ extension DownloadManager {
         await pollAndDownloadEmbyConvertJob(item: item, ratingKey: ratingKey, jobId: job.id,
                                             snapshotIds: snapshotIds, targetName: targetName,
                                             server: server, token: token, identity: identity,
-                                            userId: userId, attemptID: attemptID)
+                                            userId: userId, audioStreamIndex: audioStreamIndex,
+                                            attemptID: attemptID)
     }
 
     /// Poll an Emby convert job to a terminal state, surfacing `Progress` through the optimize
@@ -267,6 +270,7 @@ extension DownloadManager {
                                                snapshotIds: Set<String>, targetName: String,
                                                server: URL, token: String,
                                                identity: EmbyClientIdentity, userId: String,
+                                               audioStreamIndex: Int? = nil,
                                                attemptID: UUID) async {
         // Relaunch/resume recovery: the Sync job can be effectively done (or even no longer useful
         // to poll) while Emby has already exposed the converted MP4 as a File MediaSource. Check for
@@ -283,6 +287,7 @@ extension DownloadManager {
             server: server, token: token, identity: identity, userId: userId, itemId: item.ratingKey,
             ratingKey: ratingKey, requestedHeight: requestedHeight,
             primaryMediaSourceId: primaryMediaSourceId,
+            requestedAudioStreamIndex: audioStreamIndex,
             excludedSourceIds: snapshotIds,
             initialSourceCount: snapshotIds.count,
             phase: "resume_pre_poll", attemptID: attemptID)
@@ -306,7 +311,8 @@ extension DownloadManager {
             let requestedProfileLabel = records.first { $0.ratingKey == ratingKey }?
                 .metadata?.requestedProfileLabel ?? targetName
             store.remove(ratingKey: ratingKey)
-            await downloadEmby(item, choice: .existingVersion, mediaSourceIDOverride: reuseId,
+            await downloadEmby(item, choice: .existingVersion, audioStreamIndex: audioStreamIndex,
+                               mediaSourceIDOverride: reuseId,
                                deferStaticStartWhenQueuePaused: true,
                                requestedProfileLabelOverride: requestedProfileLabel)
             return
@@ -413,7 +419,8 @@ extension DownloadManager {
                     await finishEmbyConvert(item: item, ratingKey: ratingKey, jobId: jobId,
                                             snapshotIds: snapshotIds, targetName: targetName,
                                             server: server, token: token, identity: identity,
-                                            userId: userId, attemptID: attemptID)
+                                            userId: userId, audioStreamIndex: audioStreamIndex,
+                                            attemptID: attemptID)
                 } else {
                     // Server-side Failed/Cancelled → fail the row (retry-only; keep the marker job
                     // for diagnostics — deleting it wouldn't delete a partial file anyway).
@@ -484,6 +491,7 @@ extension DownloadManager {
                                    snapshotIds: Set<String>, targetName: String,
                                    server: URL, token: String,
                                    identity: EmbyClientIdentity, userId: String,
+                                   audioStreamIndex: Int?,
                                    attemptID: UUID) async {
         // Cancel race (entry guard): bail if the row was deleted/cancelled before we got here.
         guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
@@ -597,7 +605,8 @@ extension DownloadManager {
         // specific converted MediaSource id (the #126 byte-for-byte reuse path) — it negotiates the
         // mp4/h264 converted source to `.original` and never re-enters the convert lane (only
         // `.optimize` reroutes). The KEPT converted file is what reuse serves next time.
-        await downloadEmby(item, choice: .existingVersion, mediaSourceIDOverride: newSourceId,
+        await downloadEmby(item, choice: .existingVersion, audioStreamIndex: audioStreamIndex,
+                           mediaSourceIDOverride: newSourceId,
                            deferStaticStartWhenQueuePaused: true,
                            requestedProfileLabelOverride: requestedProfileLabel)
     }
