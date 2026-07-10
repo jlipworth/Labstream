@@ -39,6 +39,20 @@ extension DownloadManager {
         let server = session.baseURL
         let token = session.token
         let identity = appModel.identity
+        // Lens 6 F3: several callers reach this seed after a long await (notably the `.original`
+        // preflight-fail fallback). If the in-flight slot is gone (delete/pause landed during that
+        // await, or the caller's bookkeeping was already released), seeding the 0% `.queued` row
+        // below would create a zombie prep row that the server-prep refresh kick reattaches a
+        // poller to and REANIMATES as a full optimize job for a download nobody wants anymore.
+        guard activeJobs.contains(ratingKey) else {
+            recordDownloadDiagnostic("downloads.start_superseded_after_await", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label("Plex"),
+                "phase": .label("optimize_seed"),
+                "reason": .label("slot_released"),
+            ])
+            return
+        }
         let queueTitle = metadata.optimizeQueueTitle
             ?? "\(item.title) [Labstream \(UUID().uuidString.prefix(8))]"
         var optimizeMetadata = metadata
@@ -162,6 +176,13 @@ extension DownloadManager {
                 "download_id": .identifier(ratingKey),
                 "target": .label(targetName),
             ])
+            // Lens 6 F3: if THIS attempt's freshly-seeded 0% `.queued` row outlived the attempt
+            // (the slot was released mid-chain and nothing newer owns the row), remove it —
+            // otherwise the server-prep refresh kick sees an unattached queued prep row and
+            // reanimates the deleted download.
+            removeAbandonedServerPrepSeedIfAttemptDead(ratingKey: ratingKey,
+                                                       queueTitle: queueTitle,
+                                                       targetName: targetName)
         } catch let error as DownloadError {
             recordDownloadDiagnostic("downloads.optimize_failed", fields: [
                 "download_id": .identifier(ratingKey),
@@ -254,6 +275,29 @@ extension DownloadManager {
                               byteRangeCheckpoint: true,
                               resetRangeRestartCounters: !consumeRangeRestartCounterPreservation(ratingKey: ratingKey))
         }
+    }
+
+    /// Lens 6 F3 cleanup: remove the zombie 0-progress `.queued` prep row a DEAD start attempt
+    /// seeded before it noticed it was superseded. Scoped hard so a live or newer attempt is never
+    /// touched: the slot must be gone, and the row must still be THIS attempt's seed (same queue
+    /// title + target, `.queued`, zero bytes/progress). A row a pause parked is `.paused` and a row
+    /// a newer attempt owns carries a different queue title — both are left alone.
+    private func removeAbandonedServerPrepSeedIfAttemptDead(ratingKey: String,
+                                                            queueTitle: String,
+                                                            targetName: String) {
+        guard !activeJobs.contains(ratingKey),
+              let row = store.records.first(where: { $0.ratingKey == ratingKey }),
+              row.status == .queued, row.bytes == 0, row.progress == 0,
+              row.metadata?.optimizeQueueTitle == queueTitle,
+              row.metadata?.optimizeTargetName == targetName else { return }
+        recordDownloadDiagnostic("downloads.server_prep_seed_removed", fields: [
+            "download_id": .identifier(ratingKey),
+            "target": .label(targetName),
+        ])
+        store.remove(ratingKey: ratingKey)
+        lastError[ratingKey] = nil
+        clearOptimizeProgress(ratingKey: ratingKey)
+        refreshRecords()
     }
 
     /// Ensure an async Plex optimize poller still owns the visible row before it mutates the store

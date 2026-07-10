@@ -36,9 +36,9 @@ extension DownloadManager {
         }
         let server = backendSession.baseURL
         let token = backendSession.token
-        guard acquireInFlightSlotForStart(ratingKey: ratingKey,
-                                          backend: "Jellyfin",
-                                          allowReplacingExistingActiveRow: allowReplacingExistingActiveRow) else { return }
+        guard let startAttempt = acquireStartAttempt(ratingKey: ratingKey,
+                                                     backend: "Jellyfin",
+                                                     allowReplacingExistingActiveRow: allowReplacingExistingActiveRow) else { return }
         lastError[ratingKey] = nil
         // No `defer { activeJobs.remove }` — same in-flight-lifetime fix as the Plex path:
         // `session.start` only kicks off the transfer, so protection is released terminally
@@ -244,6 +244,20 @@ extension DownloadManager {
                 }
                 jellyfinPlaySessionByRatingKey[ratingKey] = decision.playSessionId
                 mintedPlaySessionId = sourcePlan.playSessionID
+            }
+            // Lens 6 F1: both transcode lanes awaited PlaybackInfo above with NO currency check —
+            // a delete/pause landing during that await used to be fully undone (the seed upsert
+            // below re-created the row `.queued`, persisted the psid, started keepalives, and
+            // started the transfer). Exit WITHOUT touching the store; release only what this
+            // chain minted.
+            guard startAttemptStillCurrent(startAttempt, backend: "Jellyfin",
+                                           phase: "post_negotiation") else {
+                jellyfinPlaySessionByRatingKey.removeValue(forKey: ratingKey)
+                stopSupersededMediaBrowserEncoder(ratingKey: ratingKey,
+                                                  playSessionID: mintedPlaySessionId,
+                                                  backendKind: .jellyfin,
+                                                  backendSession: backendSession)
+                return
             }
         } catch {
             recordDownloadDiagnostic("downloads.start_failed", fields: [
