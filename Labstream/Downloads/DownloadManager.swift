@@ -2320,6 +2320,10 @@ public final class DownloadManager {
             "Network stalled; restarting this forward-only stream from the beginning.")
         store.setStatus(ratingKey: ratingKey, .failed)
         releaseInFlight(ratingKey: ratingKey)
+        // `releaseInFlight` wipes the stall tracker entry, including the attempt count
+        // `detectRestarts` just incremented — without re-seeding it the 2-restart cap never binds
+        // and a persistent wedge restarts the encoder from byte 0 every stall timeout forever.
+        forwardOnlyStallTracker.seedRestartAttempts(ratingKey, attempts: restart.attempt)
         refreshRecords()
         retry(ratingKey: ratingKey)
     }
