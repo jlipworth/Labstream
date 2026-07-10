@@ -38,6 +38,23 @@ struct DownloadMediaSelectionPolicyTests {
         #expect(DownloadMediaSelectionPolicy.containerExtension(selection: selection) == "mp4")
     }
 
+    // JF retry regression: a retry/rebuild reconstructs the item WITHOUT media/part arrays, so the
+    // selection collapses to the "mp4" fallback — the in-progress row's on-disk extension must win
+    // or a non-MP4 original's checkpoint reads 0 and the multi-GB partial is orphaned.
+    @Test("Existing row extension is stable across retry with a lean rebuilt item")
+    func containerExtensionStableAcrossRetry() {
+        let leanItem = MediaItem(ratingKey: "item", title: "Item", type: "movie")
+        let leanSelection = DownloadMediaSelectionPolicy.selection(item: leanItem, mediaIndex: 0, partIndex: 0)
+        #expect(DownloadMediaSelectionPolicy.containerExtension(selection: leanSelection) == "mp4")
+        #expect(DownloadMediaSelectionPolicy.containerExtension(
+            selection: leanSelection, existingRelativePath: "jellyfin-item.mkv") == "mkv")
+        // No existing row (fresh enqueue) or extension-less path → normal selection fallback.
+        #expect(DownloadMediaSelectionPolicy.containerExtension(
+            selection: leanSelection, existingRelativePath: nil) == "mp4")
+        #expect(DownloadMediaSelectionPolicy.containerExtension(
+            selection: leanSelection, existingRelativePath: "jellyfin-item") == "mp4")
+    }
+
     @Test("Download audio selection prefers override, then selected/default/first")
     func audioSelectionFallbacks() {
         let streams = [

@@ -95,7 +95,16 @@ extension DownloadManager {
                 // #112: `.existingVersion` is a Plex-only lane (server-generated Plex Versions). It
                 // is never produced for Jellyfin, but the switch must be exhaustive — treat it as a
                 // plain original static download here.
-                let ext = DownloadMediaSelectionPolicy.containerExtension(selection: selection)
+                // Retry/rebuild reconstructs `item` without media/part arrays, so the selection
+                // alone would collapse to ".mp4" and abandon an in-progress non-MP4 partial (its
+                // checkpoint reads 0 against the new destination). The existing ORIGINAL-lane row's
+                // on-disk extension is authoritative for what this transfer already wrote.
+                let existingOriginalPath = store.records
+                    .first { $0.ratingKey == ratingKey
+                        && $0.metadata?.resolvedDownloadLane() == .original }?
+                    .localURL.lastPathComponent
+                let ext = DownloadMediaSelectionPolicy.containerExtension(
+                    selection: selection, existingRelativePath: existingOriginalPath)
                 destination = store.destinationURL(ratingKey: ratingKey, ext: ext)
                 request = try JellyfinLibrary.downloadRequest(server: server,
                                                               token: token,
