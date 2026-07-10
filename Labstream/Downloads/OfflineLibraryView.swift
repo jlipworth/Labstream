@@ -270,6 +270,9 @@ public struct OfflineLibraryView: View {
                 .font(.caption.weight(.semibold))
                 .monospacedDigit()
                 .lineLimit(1)
+                // iOS toolbars compress adjacent items and ellipsize the value ("1.7 M…");
+                // the metric is only a few characters, so keep its intrinsic width.
+                .fixedSize(horizontal: true, vertical: false)
         } icon: {
             Image(systemName: systemImage)
                 .font(.caption.weight(.semibold))
