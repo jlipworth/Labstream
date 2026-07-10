@@ -162,6 +162,13 @@ extension DownloadManager {
                 "download_id": .identifier(ratingKey),
                 "target": .label(targetName),
             ])
+        } catch DownloadLifecycleCancellation.plexSessionUnavailable {
+            // A-1 (audit lens 8): park for deferred resume — keep the queued server-prep row, drop
+            // the in-memory slot so the prep scanner reattaches once the matching lane returns.
+            clearOptimizeProgress(ratingKey: ratingKey)
+            releaseInFlight(ratingKey: ratingKey)
+            refreshRecords()
+            scheduleServerPrepResumeRetries()
         } catch let error as DownloadError {
             recordDownloadDiagnostic("downloads.optimize_failed", fields: [
                 "download_id": .identifier(ratingKey),

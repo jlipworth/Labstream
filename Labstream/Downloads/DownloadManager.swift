@@ -71,6 +71,10 @@ public final class DownloadManager {
     /// user-visible failure, and never let it overwrite the newer row or start a duplicate transfer.
     enum DownloadLifecycleCancellation: Error {
         case staleOptimizeAttempt
+        /// A-1 (audit lens 8): the Plex lane signed out or was re-pointed at a different server
+        /// while the server-prep poller was mid-render. Not a failure — the row is parked for
+        /// deferred resume and the prep scanner reattaches once the matching session returns.
+        case plexSessionUnavailable
     }
 
     /// Live records (in-progress + completed), backed by `DownloadStore`.
@@ -240,7 +244,18 @@ public final class DownloadManager {
         self.session.onError = { [weak self] ratingKey, error in
             Task { @MainActor in
                 guard let self else { return }
-                self.lastError[ratingKey] = error
+                // A-3 (audit lens 8): the range engine's terminal branch surfaces persistent
+                // 401/403 rehydration exhaustion as a generic "Server returned HTTP 401." — remap
+                // it here (manager-side) to the sign-in-again affordance.
+                var surfaced = error
+                if case .transferFailed(let message) = error,
+                   DownloadTerminalAuthMessagePolicy.isAuthDeadTransferMessage(message) {
+                    surfaced = .notAuthenticated
+                    self.recordDownloadDiagnostic("downloads.transfer_auth_dead", fields: [
+                        "download_id": .identifier(ratingKey),
+                    ])
+                }
+                self.lastError[ratingKey] = surfaced
                 if case .invalidDownload = error {
                     await self.fallbackOriginalValidationFailureIfPossible(ratingKey: ratingKey)
                 }
@@ -1235,13 +1250,35 @@ public final class DownloadManager {
             // #84: gate on the Jellyfin lane being configured (resolved from its own session),
             // independent of `activeBackend`; an unconfigured lane stays retryable with the
             // accurate not-signed-in reason.
-            guard self.appModel.backendSession(for: .jellyfin) != nil else {
+            guard let backendSession = self.appModel.backendSession(for: .jellyfin) else {
                 if self.deferStaticRangeRetryIfBackendUnavailable(record: record,
                                                                   reason: "jellyfin_backend_not_ready") {
                     return
                 }
                 self.clearRetryHandoff(ratingKey: record.ratingKey)
                 self.lastError[record.ratingKey] = .notAuthenticated
+                self.store.setStatus(ratingKey: record.ratingKey, .failed)
+                self.refreshRecords()
+                return
+            }
+            // A-5 (audit lens 8): a lane pointed at a DIFFERENT Jellyfin server must defer, not
+            // retry — a forward-only/convert row replayed against a foreign server fails with a
+            // misleading 404. Static-range rows park via the deferred-resume path; others keep
+            // the retry affordance with an accurate reason.
+            if let metadata = record.metadata, !backendSession.matchesPersistedServer(metadata) {
+                if self.deferStaticRangeRetryIfBackendUnavailable(record: record,
+                                                                  reason: "jellyfin_session_mismatch") {
+                    return
+                }
+                self.recordDownloadDiagnostic("downloads.retry_deferred", fields: [
+                    "download_id": .identifier(record.ratingKey),
+                    "backend": .label("Jellyfin"),
+                    "reason": .label("jellyfin_session_mismatch"),
+                ])
+                self.clearRetryHandoff(ratingKey: record.ratingKey)
+                self.retryState.removeRetrying(record.ratingKey)
+                self.lastError[record.ratingKey] = .transferFailed(
+                    "Waiting for the original Jellyfin server session.")
                 self.store.setStatus(ratingKey: record.ratingKey, .failed)
                 self.refreshRecords()
                 return
@@ -1277,13 +1314,34 @@ public final class DownloadManager {
             // #84: gate on the Emby lane being configured (resolved from its own session),
             // independent of `activeBackend`; an unconfigured lane stays retryable with the
             // accurate not-signed-in reason.
-            guard self.appModel.backendSession(for: .emby) != nil else {
+            guard let backendSession = self.appModel.backendSession(for: .emby) else {
                 if self.deferStaticRangeRetryIfBackendUnavailable(record: record,
                                                                   reason: "emby_backend_not_ready") {
                     return
                 }
                 self.clearRetryHandoff(ratingKey: record.ratingKey)
                 self.lastError[record.ratingKey] = .notAuthenticated
+                self.store.setStatus(ratingKey: record.ratingKey, .failed)
+                self.refreshRecords()
+                return
+            }
+            // A-5 (audit lens 8): same server-identity guard as the Jellyfin retry funnel — a
+            // convert/forward-only row retried against a different Emby server defers with an
+            // accurate reason instead of failing with a foreign 404.
+            if let metadata = record.metadata, !backendSession.matchesPersistedServer(metadata) {
+                if self.deferStaticRangeRetryIfBackendUnavailable(record: record,
+                                                                  reason: "emby_session_mismatch") {
+                    return
+                }
+                self.recordDownloadDiagnostic("downloads.retry_deferred", fields: [
+                    "download_id": .identifier(record.ratingKey),
+                    "backend": .label("Emby"),
+                    "reason": .label("emby_session_mismatch"),
+                ])
+                self.clearRetryHandoff(ratingKey: record.ratingKey)
+                self.retryState.removeRetrying(record.ratingKey)
+                self.lastError[record.ratingKey] = .transferFailed(
+                    "Waiting for the original Emby server session.")
                 self.store.setStatus(ratingKey: record.ratingKey, .failed)
                 self.refreshRecords()
                 return
@@ -1645,6 +1703,13 @@ public final class DownloadManager {
                 refreshRecords()
                 scheduleServerPrepResumeRetries()
             }
+        } catch DownloadLifecycleCancellation.plexSessionUnavailable {
+            // A-1: park for deferred resume — keep the queued server-prep row, drop the in-memory
+            // slot/poller, and let the prep scanner reattach once the matching Plex lane returns.
+            clearOptimizeProgress(ratingKey: ratingKey)
+            releaseInFlight(ratingKey: ratingKey)
+            refreshRecords()
+            scheduleServerPrepResumeRetries()
         } catch let error as DownloadError {
             recordDownloadDiagnostic("downloads.optimize_resume_failed", fields: [
                 "download_id": .identifier(ratingKey),
@@ -1941,8 +2006,11 @@ public final class DownloadManager {
                 "download_id": .identifier(record.ratingKey),
                 "reason": .label(reason),
             ])
-            let started = session.revalidateCompletedDownload(ratingKey: record.ratingKey,
-                                                              validationLabel: "unverified_\(reason)")
+            // Bounded label (audit lens 8, B-1): a raw "unverified_\(reason)" can exceed the
+            // redactor's 24-char bare-token threshold and get blanked in the jsonl.
+            let started = session.revalidateCompletedDownload(
+                ratingKey: record.ratingKey,
+                validationLabel: BackgroundFinalizationResultPolicy.unverifiedResultLabel(reason: reason))
             if !started {
                 unverifiedRevalidationKeys.remove(record.ratingKey)
             } else {
@@ -2328,53 +2396,98 @@ public final class DownloadManager {
                                                  durationMs: Int?) {
         jellyfinDownloadKeepaliveTasks.removeValue(forKey: ratingKey)?.cancel()
         let identity = appModel.identity.jellyfin
+        let enqueueUserId = userId
         jellyfinDownloadKeepaliveTasks[ratingKey] = Task { [weak self] in
             guard let self else { return }
             var sentPlaying = false
+            var lastTickOutcome: JellyfinKeepaliveTickOutcome?
             while !Task.isCancelled {
                 guard let record = self.records.first(where: { $0.ratingKey == ratingKey }),
                       record.status == .queued || record.status == .downloading else { return }
+                // A-2 (audit lens 8): re-resolve the Jellyfin lane per tick — token rotation or a
+                // re-login mid-download must not keep pinging with the enqueue-time snapshot (the
+                // server sees silence and idle-kills the encoder with no diagnostic trail).
+                guard let liveSession = self.appModel.backendSession(for: .jellyfin),
+                      record.metadata.map(liveSession.matchesPersistedServer) != false else {
+                    self.recordDownloadDiagnostic("downloads.jellyfin_keepalive_degraded", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "reason": .label("jellyfin_session_mismatch_or_unavailable"),
+                        "action": .label("stopped"),
+                    ])
+                    return
+                }
+                let server = liveSession.baseURL
+                let token = liveSession.token
+                let liveUserId = liveSession.userID ?? enqueueUserId
                 let progress = max(0, min(record.progress, 1))
                 let positionTicks = JellyfinDownloadKeepalivePolicy.positionTicks(progress: progress,
                                                                                   durationMs: durationMs)
+                var statuses: [Int?] = []
                 do {
                     if !sentPlaying {
                         let playing = try JellyfinPlayback.playingRequest(
-                            server: session.baseURL,
-                            token: session.token,
+                            server: server,
+                            token: token,
                             identity: identity,
-                            userId: userId,
+                            userId: liveUserId,
                             itemId: itemId,
                             mediaSourceId: mediaSourceId,
                             playSessionId: playSessionId,
                             playMethod: .transcode,
                             positionTicks: positionTicks)
-                        _ = try? await URLSession.shared.data(for: playing)
-                        sentPlaying = true
+                        let status = await Self.controlPlaneRequestStatus(playing)
+                        statuses.append(status)
+                        // Only mark the session opened once the server actually accepted it, so a
+                        // transient failure retries the open instead of orphaning the session.
+                        if let status, (200..<300).contains(status) { sentPlaying = true }
                     }
                     let progressReq = try JellyfinPlayback.progressRequest(
-                        server: session.baseURL,
-                        token: session.token,
+                        server: server,
+                        token: token,
                         identity: identity,
-                        userId: userId,
+                        userId: liveUserId,
                         itemId: itemId,
                         mediaSourceId: mediaSourceId,
                         playSessionId: playSessionId,
                         playMethod: .transcode,
                         positionTicks: positionTicks,
                         isPaused: false)
-                    _ = try? await URLSession.shared.data(for: progressReq)
-                    let ping = try JellyfinPlayback.pingRequest(server: session.baseURL,
-                                                                token: session.token,
+                    statuses.append(await Self.controlPlaneRequestStatus(progressReq))
+                    let ping = try JellyfinPlayback.pingRequest(server: server,
+                                                                token: token,
                                                                 identity: identity,
                                                                 playSessionId: playSessionId)
-                    _ = try? await URLSession.shared.data(for: ping)
+                    statuses.append(await Self.controlPlaneRequestStatus(ping))
                 } catch {
                     recordDownloadDiagnostic("downloads.jellyfin_keepalive_failed", fields: [
                         "download_id": .identifier(ratingKey),
                         "error": .error(error),
                     ])
                 }
+                let outcome = JellyfinDownloadKeepalivePolicy.tickOutcome(statuses: statuses)
+                switch JellyfinDownloadKeepalivePolicy.healthAction(previous: lastTickOutcome,
+                                                                    outcome: outcome) {
+                case .none:
+                    break
+                case .emitDegraded(let reason):
+                    self.recordDownloadDiagnostic("downloads.jellyfin_keepalive_degraded", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "reason": .label(reason),
+                    ])
+                case .emitRecovered:
+                    self.recordDownloadDiagnostic("downloads.jellyfin_keepalive_recovered", fields: [
+                        "download_id": .identifier(ratingKey),
+                    ])
+                case .stopAuthDead(let statusCode):
+                    self.recordDownloadDiagnostic("downloads.jellyfin_keepalive_degraded", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "reason": .label("auth_dead"),
+                        "status_code": .int(statusCode),
+                        "action": .label("stopped"),
+                    ])
+                    return
+                }
+                lastTickOutcome = outcome
                 do {
                     try await Task.sleep(for: .seconds(JellyfinDownloadKeepalivePolicy.intervalSeconds))
                 } catch {
@@ -2385,6 +2498,14 @@ public final class DownloadManager {
         recordDownloadDiagnostic("downloads.jellyfin_keepalive_start", fields: [
             "download_id": .identifier(ratingKey),
         ])
+    }
+
+    /// Send one control-plane request (keepalive/report ping) and surface its HTTP status
+    /// (nil = transport failure). Control-plane traffic is deliberately EXEMPT from the
+    /// Wi-Fi-only download policy — tiny bodies that keep the server encoder alive.
+    private nonisolated static func controlPlaneRequestStatus(_ request: URLRequest) async -> Int? {
+        guard let (_, response) = try? await URLSession.shared.data(for: request) else { return nil }
+        return (response as? HTTPURLResponse)?.statusCode
     }
 
     /// Drop the in-flight protection (`activeJobs` slot + protected optimize-queue title) for a
@@ -2612,9 +2733,48 @@ public final class DownloadManager {
                                       server: URL,
                                       token: String,
                                       identity: ClientIdentity) async throws -> Part {
+        var pollHealth = PlexOptimizePollHealthPolicy.State()
         while !Task.isCancelled {
-            if let metadata = await fetchCurrentMediaItem(ratingKey: ratingKey, server: server,
-                                                          token: token, identity: identity) {
+            // A-1 (audit lens 8): this loop can outlive the enqueue-time server/token snapshot by
+            // hours. Re-resolve the Plex lane every iteration — on sign-out or a server change,
+            // park the row for deferred resume instead of polling the dead snapshot forever.
+            guard let liveSession = appModel.backendSession(for: .plex),
+                  store.records.first(where: { $0.ratingKey == ratingKey })?.metadata
+                      .map(liveSession.matchesPersistedServer) != false else {
+                recordDownloadDiagnostic("downloads.optimize_poll_deferred", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "target": .label(targetName),
+                    "reason": .label("plex_session_mismatch_or_unavailable"),
+                ])
+                throw DownloadLifecycleCancellation.plexSessionUnavailable
+            }
+            // Shadow the enqueue-time snapshot with the live lane so token refresh / address
+            // change keeps the poll (and the eventual Part download URL built by our caller from
+            // the SAME lane on resume) authenticated.
+            let server = liveSession.baseURL
+            let token = liveSession.token
+            let fetch = await fetchCurrentMediaItemForPoll(ratingKey: ratingKey, server: server,
+                                                           token: token, identity: identity)
+            switch PlexOptimizePollHealthPolicy.register(fetch.outcome, state: &pollHealth) {
+            case .none:
+                break
+            case .emitUnreachable(let bucket, let consecutiveFailures):
+                // Distinguishes an unreachable/auth-dead poll loop from a genuinely slow render.
+                recordDownloadDiagnostic("downloads.optimize_poll_unreachable", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "target": .label(targetName),
+                    "consecutive_failures_bucket": .label(bucket),
+                    "consecutive_failures": .int(consecutiveFailures),
+                    "auth_rejected": .bool(fetch.outcome == .authRejected),
+                ])
+            case .failAuthDead:
+                recordDownloadDiagnostic("downloads.optimize_poll_auth_dead", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "target": .label(targetName),
+                ])
+                throw DownloadError.notAuthenticated
+            }
+            if let metadata = fetch.item {
                 if let newPart = Self.optimizedDownloadCandidate(from: metadata.media ?? [],
                                                                  baselinePartIDs: originalPartIDs,
                                                                  targetName: targetName,
@@ -2690,16 +2850,40 @@ public final class DownloadManager {
         // Optimized downloads need that source metadata just as much as original downloads:
         // the optimized MP4 itself is downloaded later, but chapters and external text
         // subtitles come from the source item.
-        let req = PlexRequest(url: server.appendingPathComponent("/library/metadata/\(ratingKey)"),
-                              method: "GET",
-                              queryItems: [
-                                  .init(name: "includeChapters", value: "1"),
-                                  .init(name: "includeMarkers", value: "1"),
-                                  .init(name: "includeExtras", value: "1"),
-                              ],
-                              headers: PlexHeaders.standard(identity: identity, token: token))
+        let req = Self.currentMediaItemRequest(ratingKey: ratingKey, server: server,
+                                               token: token, identity: identity)
         return (try? await appModel.client.send(req, as: MetadataResponse.self))?
             .mediaContainer.metadata.first
+    }
+
+    private static func currentMediaItemRequest(ratingKey: String, server: URL, token: String,
+                                                identity: ClientIdentity) -> PlexRequest {
+        PlexRequest(url: server.appendingPathComponent("/library/metadata/\(ratingKey)"),
+                    method: "GET",
+                    queryItems: [
+                        .init(name: "includeChapters", value: "1"),
+                        .init(name: "includeMarkers", value: "1"),
+                        .init(name: "includeExtras", value: "1"),
+                    ],
+                    headers: PlexHeaders.standard(identity: identity, token: token))
+    }
+
+    /// A-1 (audit lens 8): the poll-loop variant of `fetchCurrentMediaItem` that surfaces WHY a
+    /// fetch produced no item, so the poller can tell auth revocation and unreachable servers
+    /// apart from a render still in progress instead of swallowing everything to nil.
+    private func fetchCurrentMediaItemForPoll(
+        ratingKey: String, server: URL, token: String, identity: ClientIdentity
+    ) async -> (item: MediaItem?, outcome: PlexOptimizePollHealthPolicy.FetchOutcome) {
+        let req = Self.currentMediaItemRequest(ratingKey: ratingKey, server: server,
+                                               token: token, identity: identity)
+        do {
+            let response = try await appModel.client.send(req, as: MetadataResponse.self)
+            return (response.mediaContainer.metadata.first, .success)
+        } catch PlexError.unauthorized {
+            return (nil, .authRejected)
+        } catch {
+            return (nil, .failure)
+        }
     }
 
 
