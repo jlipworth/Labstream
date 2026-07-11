@@ -171,13 +171,10 @@ struct CustomPlayerChrome: View {
             }
 
             #if os(iOS)
-            // The buffering/reconnect/failure platter owns the center of the iOS player.
-            // Leaving the ordinary transport here puts its glass pause/play button visibly
-            // behind the platter (macOS does not have this centered transport, which is why
-            // the overlap only reproduced on iPhone).
-            if shouldShowChrome,
-               selectedMenu == nil,
-               controller.transportStatus.activeStatus == nil {
+            // The status platter owns the primary transport action while buffering/reconnecting.
+            // Do not leave the ordinary center play/pause button visible through its translucent
+            // material, where it reads as a second action directly behind the dialog.
+            if shouldShowChrome, selectedMenu == nil, !isTransportStatusPresented {
                 iosCenterPlayPauseButton
                     .transition(.scale(scale: 0.92).combined(with: .opacity))
             }
@@ -232,7 +229,10 @@ struct CustomPlayerChrome: View {
                         .padding(.bottom, 14)
                 }
 
-                if shouldShowChrome, selectedMenu == nil {
+                // Treat the transport-status platter as modal chrome. It supplies the relevant
+                // pause/retry/close action, so the ordinary transport strip should not remain
+                // visible through the platter on iPad, iPhone, Mac, or visionOS.
+                if shouldShowChrome, selectedMenu == nil, !isTransportStatusPresented {
                     controls
                         .padding(.horizontal, bottomChromeHorizontalInset)
                         .padding(.bottom, bottomChromeBottomInset)
@@ -318,6 +318,10 @@ struct CustomPlayerChrome: View {
 
     private var shouldShowChrome: Bool {
         chromeVisible || controller.transport.showsPausedControl || controller.transportStatus.keepsChromeVisible || selectedMenu != nil
+    }
+
+    private var isTransportStatusPresented: Bool {
+        controller.transportStatus.activeStatus != nil
     }
 
     private var isCompactMobileChrome: Bool {
