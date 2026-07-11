@@ -25,7 +25,7 @@ Current status at this checkpoint:
 | Slice | Status | Evidence / remaining boundary |
 | --- | --- | --- |
 | 0A–0B | Complete | Repeatable compile audit plus nonzero macOS/iOS app test plans are on the rebased branch. |
-| 1A | Partial / advanced | The index has a serial revisioned writer, dirty retry, observable failures, bounded background-completion flush, and commit-aware held-body replacement (`0bbcb5d`, `f5ecf95`, `7005fd5`, `e4e4fd4`). Existing mutations still preserve synchronous durability. Held-manifest removal outcomes, tombstone ordering, split temp/replace crash seams, and broader fault/stress coverage remain. |
+| 1A | Partial / consultation boundary | The index has a serial revisioned writer, dirty retry, observable failures, bounded background-completion flush, commit-aware held replacement/removal outcomes, fail-closed tombstone persistence, and broad fault/stress coverage (`0bbcb5d` through `24e179c`). Existing mutations preserve synchronous durability. True transactional held-body deletion, cross-domain tombstone/row ordering, a literal bounded hung-write path, and a live explicit temp/rename committer require the larger reviewed design described below. |
 | 1B | Partial | Existing string attempt tokens, v2 task markers, stale-task rejection, and attempt-bearing held manifests are prior art. A typed `DownloadAttemptID`, schema v3, durable-before-reattach migration, and attempt-conditional store APIs remain. |
 | 1C | Partial | Main now has a final-verdict recheck, attempt-matched held bodies/orphan sweeping, and an Emby ambiguous-create tombstone. A work registry, attempt-scoped finalizing, side-asset staging/ownership, broad post-await guards, and compare-and-clear play-session cleanup remain. |
 | 1D–1F | Complete | Auth/secure-storage, system-media ownership, and player lifecycle generations survived the rebase unchanged. iPad/Mac physical ownership and lifecycle checks passed; iOS TSAN tests remain green. |
@@ -251,6 +251,61 @@ their relationship during the schema-v3 migration.
 - **Next 1A boundary:** make held-manifest remove/take results commit-aware, then resolve Emby
   tombstone corruption/removal ordering and add explicit temp-write/replace crash seams. If those
   require broad mutation API conversion, leave the remainder incomplete for consultation.
+
+#### 2026-07-11 — Phase 1A held-removal observability and fail-closed cleanup
+
+- **Status:** bounded result/diagnostic slice complete; strong transaction intentionally incomplete.
+- **Commit:** `0be7aac` (`Expose held manifest removal durability`).
+- **Changed boundary:** per-offset remove and whole-row take now return their exact revision ticket,
+  persistence result, removed manifest(s), and derived committed state. A repeated no-op after a
+  failed write retries the dirty full snapshot; an already durable no-op adds no redundant write.
+  Every session caller diagnoses an uncommitted removal explicitly.
+- **Safety decision:** body deletion deliberately retains the previous fail-closed behavior when
+  removal is uncommitted. Blindly retaining an old body is unsafe today: changed-resource and
+  whole-file restart paths can alter the destination/validator before purge, after which a crash
+  could reload and splice stale-resource bytes. The current path may refetch lost work, but it
+  cannot knowingly mix old bytes.
+- **Evidence:** injected remove/take failures prove a fresh store still sees the old manifest,
+  a no-op retry commits the removal, and a later durable no-op performs no write.
+- **Consultation boundary:** true delete-only-after-manifest-commit semantics require purge ordering
+  or revision-keyed deferred deletion across cancel, finalization, terminal failure,
+  changed-resource restart, whole-file replacement, oversize recovery, and held drain. That is a
+  broad download-lifecycle refactor and was not started silently.
+
+#### 2026-07-11 — Phase 1A Emby cleanup-tombstone hardening
+
+- **Status:** single-domain persistence hardening complete; cross-domain delete replay incomplete.
+- **Commit:** `08cebaa` (`Fail closed on Emby cleanup persistence errors`).
+- **Changed boundary:** missing queue files decode as empty, while read/decode/encode/commit failures
+  are distinct, privacy-safe results. Corrupt or unreadable canonical bytes refuse add/remove rather
+  than being overwritten as an empty queue. Removal is observable and the manager publishes
+  recovered only after durable removal. A commit that throws after atomic replacement is reconciled
+  under the same lock by checking the generated UUID's exact presence/absence.
+- **Evidence:** six app tests cover missing/ordered/same-key entries, malformed and read failures,
+  encode failures, temp-written/pre-replace failure, replace-then-throw add/removal reconciliation,
+  sibling preservation, and fresh-store results.
+- **Consultation boundary:** an add whose replacement succeeded but whose canonical re-read is also
+  unavailable can still leave both the old row and tombstone durable. Replaying the user's delete
+  intent without deleting a newer same-key attempt requires the Phase 1B durable attempt identity
+  and attempt-conditional row removal; an ad hoc rating-key identity was not introduced.
+
+#### 2026-07-11 — Phase 1A persistence fault/stress expansion
+
+- **Status:** test-only safe tranche complete; live explicit committer intentionally incomplete.
+- **Commit:** `24e179c` (`Expand download persistence fault coverage`).
+- **Evidence:** deterministic app tests now cover a blocked older commit followed by a newer full
+  snapshot and fresh-store restore; concurrent disjoint progress/status/metadata/delete mutations;
+  before-temp, temp-written/pre-replace, and replace-then-throw index states; permission and
+  out-of-space equivalents; dirty retry; and backing-file removal failure without row resurrection.
+- **Live-I/O boundary:** production still uses Foundation's same-volume `.atomic` write behind the
+  existing injected opaque commit seam. Replacing it with manual temp plus rename/`replaceItemAt`
+  changes file-protection/metadata inheritance, missing-destination behavior, stale-temp cleanup,
+  post-replace ambiguity, and fsync policy. That semantic change requires review rather than being
+  hidden inside fault-test work.
+- **Validation:** complete macOS and iPadOS plans passed 78/78, with Thread Sanitizer enabled on
+  iPadOS. Clean Mac, iOS Simulator, and visionOS builds passed. The visionOS product matched the
+  installed UUID, stayed alive, reached the signed-in populated Home surface, and emitted no crash,
+  assertion, or sanitizer signature. PMSKit remained green at 1,404 tests across 170 suites.
 
 #### 2026-07-11 — Phase 2D compiler-cliff removal
 
