@@ -895,7 +895,7 @@ download plus segment base offset rather than only by download. Parallel sibling
 cannot collectively exhaust Flight's whole-row budget; a complete validated held body clears only
 its own offset history, while durable appends retain the existing row-wide forward-progress reset.
 
-## K. DOWNSTREAM REMEDIATION CHECKPOINT (2026-07-12, through `d1ec849`)
+## K. DOWNSTREAM REMEDIATION CHECKPOINT (2026-07-12, through `a8fa19c`)
 
 This audit remains the characterization/evidence record. The companion
 `docs/research/2026-07-10-codebase-remediation-plan.md` owns the corrective Phase 1 queue and its
@@ -918,6 +918,15 @@ physical background-redelivery gates as an unresolved consultation boundary—no
 that can safely be split lane by lane.
 
 `d1ec849` added exact-attempt Store primitives for resume data, validators, source sizes, held
-segments, and static checkpoint evidence/reset. Their focused six-test suite plus 31 Store
-fault/persistence/staging regressions passed. Consumer conversion and the working-file layout
-migration remain open; the new primitives alone do not close the boundary above.
+segments, and static checkpoint evidence/reset. The follow-on train through `a8fa19c` converted
+Manager recovery/status, Session recovery/publication, backend record and metadata publication,
+transfer-start plans, Plex async handoff/deadline publication, and offline playback position/
+unverified promotion to captured attempt authority. Ownerless playback fallback is restricted to
+terminal legacy rows; active ownerless rows fail closed pending migration.
+
+The checkpoint primitive's focused six-test suite plus 31 Store fault/persistence/staging
+regressions passed. Later slices added stale-A/B and ownerless playback cases and repeatedly passed
+Mac builds plus focused attempt/start/server-prep, Plex optimize, Store, recovery, and backend
+policy suites. The working-file layout remains open despite this consumer conversion: stable media
+paths, rating-keyed Session retry/halt generations, manager-registry ownership of Session
+finalizers, and the physical background-redelivery/device matrix still prevent closure.
