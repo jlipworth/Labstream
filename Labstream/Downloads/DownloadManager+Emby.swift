@@ -87,6 +87,17 @@ extension DownloadManager {
                                             audioStreamIndex: audioStreamIndex,
                                             downloadLane: DownloadChoicePolicy.downloadLane(for: choice),
                                             serverPreparedVersion: DownloadChoicePolicy.isServerPreparedVersion(for: choice))
+        let seedDestination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
+        guard persistAttemptSeed(
+            DownloadRecord(ratingKey: ratingKey, attemptID: startAttempt.attemptID,
+                           title: item.title, localURL: seedDestination,
+                           bytes: 0, progress: 0, metadata: metadata),
+            for: startAttempt,
+            backend: "Emby"
+        ) else {
+            releaseInFlight(ratingKey: ratingKey)
+            return
+        }
         recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(
             item: item,
             choice: choice,
@@ -332,7 +343,8 @@ extension DownloadManager {
             return
         }
 
-        store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
+        store.upsert(DownloadRecord(ratingKey: ratingKey, attemptID: startAttempt.attemptID,
+                                    title: item.title,
                                     localURL: destination, bytes: 0, progress: 0,
                                     metadata: metadata))
         // #84: the authoritative media-source id comes from the PlaybackInfo decision; persist it

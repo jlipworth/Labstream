@@ -249,6 +249,112 @@ struct DownloadStorePersistenceTests {
         }
     }
 
+    @Test func attemptOwnedRecordReplacementIsExactCompareAndSwap() throws {
+        try withTemporaryDirectory { directory in
+            let ratingKey = "plex:cas"
+            let first = DownloadAttemptID(rawValue: "attempt-A")!
+            let second = DownloadAttemptID(rawValue: "attempt-B")!
+            let stale = DownloadAttemptID(rawValue: "attempt-stale")!
+            let store = DownloadStore(baseDirectory: directory)
+            let record = makeRecord(
+                ratingKey: ratingKey, title: "CAS", directory: directory, bytes: 0,
+                metadata: OfflineMetadata(ratingKey: ratingKey, title: "CAS", type: "movie"))
+
+            #expect(store.createAttemptOwnedRecord(record, attemptID: first)
+                == .committed(DownloadAttemptKey(ratingKey: ratingKey, attemptID: first)))
+            // Same-ID replay is the persistence-retry path and remains idempotent.
+            #expect(store.createAttemptOwnedRecord(record, attemptID: first)
+                == .committed(DownloadAttemptKey(ratingKey: ratingKey, attemptID: first)))
+            #expect(store.createAttemptOwnedRecord(record, attemptID: second, replacing: first)
+                == .committed(DownloadAttemptKey(ratingKey: ratingKey, attemptID: second)))
+
+            #expect(store.createAttemptOwnedRecord(record, attemptID: stale, replacing: first)
+                == .rejectedOwnership(
+                    expectedPreviousOwner: DownloadAttemptKey(ratingKey: ratingKey, attemptID: first),
+                    actualOwner: DownloadAttemptKey(ratingKey: ratingKey, attemptID: second),
+                    reason: .ownerMismatch))
+            #expect(store.record(for: ratingKey)?.attemptID == second)
+        }
+    }
+
+    @Test func attemptOwnedRecordRejectsMissingExpectedAndUnownedExistingRows() throws {
+        try withTemporaryDirectory { directory in
+            let expected = DownloadAttemptID(rawValue: "attempt-expected")!
+            let replacement = DownloadAttemptID(rawValue: "attempt-new")!
+            let missingStore = DownloadStore(baseDirectory: directory)
+            let missingRecord = makeRecord(
+                ratingKey: "plex:missing", title: "Missing", directory: directory, bytes: 0)
+            #expect(missingStore.createAttemptOwnedRecord(
+                missingRecord, attemptID: replacement, replacing: expected)
+                == .rejectedOwnership(
+                    expectedPreviousOwner: DownloadAttemptKey(
+                        ratingKey: "plex:missing", attemptID: expected),
+                    actualOwner: nil,
+                    reason: .missingExpectedOwner))
+
+            let unowned = makeRecord(
+                ratingKey: "plex:unowned", title: "Unowned", directory: directory, bytes: 0)
+            missingStore.upsert(unowned)
+            #expect(missingStore.createAttemptOwnedRecord(unowned, attemptID: replacement)
+                == .rejectedOwnership(
+                    expectedPreviousOwner: nil,
+                    actualOwner: nil,
+                    reason: .ownerMismatch))
+        }
+    }
+
+    @Test func attemptOwnedRecordRejectsLegacyResetPendingRow() throws {
+        try withTemporaryDirectory { directory in
+            let ratingKey = "plex:legacy-pending"
+            let previous = DownloadAttemptID(rawValue: "attempt-legacy")!
+            let replacement = DownloadAttemptID(rawValue: "attempt-new")!
+            try writeLegacyIndex(
+                schemaVersion: 2,
+                rows: [legacyRow(
+                    ratingKey: ratingKey,
+                    status: "downloading",
+                    bytes: 42,
+                    nestedAttemptID: previous.rawValue)],
+                directory: directory)
+            let store = DownloadStore(baseDirectory: directory)
+            guard case .committed = store.commitLegacyAttemptOwnershipMigration() else {
+                Issue.record("Expected migration to establish a pending reset barrier")
+                return
+            }
+            let record = makeRecord(
+                ratingKey: ratingKey, title: "Replacement", directory: directory, bytes: 0)
+            #expect(store.createAttemptOwnedRecord(
+                record, attemptID: replacement, replacing: previous)
+                == .rejectedOwnership(
+                    expectedPreviousOwner: DownloadAttemptKey(
+                        ratingKey: ratingKey, attemptID: previous),
+                    actualOwner: DownloadAttemptKey(ratingKey: ratingKey, attemptID: previous),
+                    reason: .legacyResetPending))
+        }
+    }
+
+    @Test func failedAttemptCreateCanRetryOnlyWithSameOwner() throws {
+        try withTemporaryDirectory { directory in
+            let writes = AtomicWriteHarness(failFirstWrite: true)
+            let store = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init { data, url in try writes.write(data, to: url) })
+            let ratingKey = "plex:retry-create"
+            let attempt = DownloadAttemptID(rawValue: "attempt-retry")!
+            let record = makeRecord(
+                ratingKey: ratingKey, title: "Retry", directory: directory, bytes: 0)
+
+            guard case .failed(let failedKey, _) = store.createAttemptOwnedRecord(
+                record, attemptID: attempt) else {
+                Issue.record("Expected injected first commit failure")
+                return
+            }
+            #expect(failedKey == DownloadAttemptKey(ratingKey: ratingKey, attemptID: attempt))
+            #expect(store.createAttemptOwnedRecord(record, attemptID: attempt)
+                == .committed(DownloadAttemptKey(ratingKey: ratingKey, attemptID: attempt)))
+        }
+    }
+
     @Test func failedAtomicWriteIsRecoveredByLaterFullStateMutation() throws {
         try withTemporaryDirectory { directory in
             let writes = AtomicWriteHarness(failFirstWrite: true)
