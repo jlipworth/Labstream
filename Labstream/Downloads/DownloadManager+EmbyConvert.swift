@@ -40,15 +40,21 @@ extension DownloadManager {
             let (data, response) = try await URLSession.shared.data(for: listRequest)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return }
             let list = try EmbyConvertRequest.decodeJobList(from: data)
+            // Jobs currently OWNED by live rows are never cancellable by a tombstone: deleting a
+            // crash-window row and immediately re-downloading the same item/preset creates a
+            // fingerprint-identical job inside the creation window, and without this exclusion
+            // the sweep would DELETE the user's active conversion.
+            let liveJobIDs = Set(store.records.compactMap { $0.metadata?.embyConvertJobID })
             let cleanupAction = EmbyConvertRecoveryPolicy.cleanupAction(
                 baselineJobIDs: Set(baseline), jobs: list.items, listIsComplete: list.isComplete,
                 fingerprint: fingerprint, attemptStartedAtEpochSeconds: startedAt, phase: phase,
-                nowEpochSeconds: Date().timeIntervalSince1970)
+                nowEpochSeconds: Date().timeIntervalSince1970,
+                liveJobIDs: liveJobIDs)
             switch cleanupAction {
             case .retainTombstone:
                 return
             case .discardTombstone:
-                store.removeEmbyConvertCleanupTombstone(id: tombstone.id)
+                discardEmbyCleanupTombstone(id: tombstone.id)
                 return
             case .cancel(let jobId):
                 let deleteRequest = try EmbyConvertRequest.deleteJobRequest(
@@ -57,7 +63,7 @@ extension DownloadManager {
                 guard let deleteHTTP = deleteResponse as? HTTPURLResponse,
                       (200..<300).contains(deleteHTTP.statusCode) || [404, 410].contains(deleteHTTP.statusCode)
                 else { return }
-                store.removeEmbyConvertCleanupTombstone(id: tombstone.id)
+                discardEmbyCleanupTombstone(id: tombstone.id)
                 recordDownloadDiagnostic("downloads.convert_cleanup_recovered", fields: [
                     "download_id": .identifier(tombstone.ratingKey),
                     "job_id": .int(jobId),
@@ -69,6 +75,13 @@ extension DownloadManager {
                 "download_id": .identifier(tombstone.ratingKey),
             ])
         }
+    }
+
+    /// Drop a completed/expired cleanup tombstone from both the durable store queue and the
+    /// in-memory deferred queue (tombstones whose persist failed at delete() time live only there).
+    func discardEmbyCleanupTombstone(id: UUID) {
+        store.removeEmbyConvertCleanupTombstone(id: id)
+        deferredEmbyCleanupTombstones.removeAll { $0.id == id }
     }
 
     func beginEmbyConvertAttempt(ratingKey: String) -> UUID {
@@ -372,11 +385,7 @@ extension DownloadManager {
             refreshRecords()
             return
         }
-        convertMetadata.embyConvertJobID = job.id
-        convertMetadata.embyConvertJobBaselineIDs = nil
-        convertMetadata.embyConvertRecoveryFingerprint = nil
-        convertMetadata.embyConvertRecoveryStartedAtEpochSeconds = nil
-        convertMetadata.embyConvertRecoveryPhase = nil
+        convertMetadata.adoptEmbyConvertJobID(job.id)
         store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
                                     localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
                                     bytes: 0, progress: 0, status: .preparing, metadata: convertMetadata))
@@ -457,11 +466,7 @@ extension DownloadManager {
             recordStaleEmbyConvertAttempt(ratingKey: ratingKey, phase: "recovery_persist", jobId: jobId)
             return
         }
-        metadata.embyConvertJobID = jobId
-        metadata.embyConvertJobBaselineIDs = nil
-        metadata.embyConvertRecoveryFingerprint = nil
-        metadata.embyConvertRecoveryStartedAtEpochSeconds = nil
-        metadata.embyConvertRecoveryPhase = nil
+        metadata.adoptEmbyConvertJobID(jobId)
         row.metadata = metadata
         store.upsert(row)
         refreshRecords()
@@ -567,6 +572,12 @@ extension DownloadManager {
                             "phase": .label("poll_http"),
                             "status_code": .int(http.statusCode),
                         ])
+                        // 404/410 proves the job no longer exists: clear the id so Retry creates a
+                        // fresh job instead of re-polling a dead one forever. 401/403 is an AUTH
+                        // problem — keep the id so re-login + Retry resumes polling the live job.
+                        if [404, 410].contains(http.statusCode) {
+                            store.clearEmbyConvertJobID(ratingKey: ratingKey)
+                        }
                         failEmbyConvert(ratingKey: ratingKey,
                                         .transferFailed("Server conversion is no longer available (HTTP \(http.statusCode))."))
                         return
@@ -657,14 +668,18 @@ extension DownloadManager {
                                             userId: userId, audioStreamIndex: audioStreamIndex,
                                             attemptID: attemptID)
                 } else {
-                    // Server-side Failed/Cancelled → fail the row (retry-only; keep the marker job
-                    // for diagnostics — deleting it wouldn't delete a partial file anyway).
+                    // Server-side Failed/Cancelled → fail the row (retry-only; the server job
+                    // itself is left alone — deleting it wouldn't delete a partial file anyway).
                     recordDownloadDiagnostic("downloads.convert_failed", fields: [
                         "download_id": .identifier(ratingKey),
                         "job_id": .int(jobId),
                         "phase": .label("server"),
                         "status": .label(job.status.rawValue),
                     ])
+                    // The job reached a terminal state: clear the persisted id so Retry creates a
+                    // fresh job. A `.failed` row that keeps its id resumes POLLING on retry (the
+                    // offline-recovery path), which for a terminal job would just re-fail forever.
+                    store.clearEmbyConvertJobID(ratingKey: ratingKey)
                     failEmbyConvert(ratingKey: ratingKey,
                                     .transferFailed("Server conversion \(job.status.rawValue.lowercased())."))
                 }

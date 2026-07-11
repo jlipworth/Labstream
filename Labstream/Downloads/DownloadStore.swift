@@ -130,11 +130,23 @@ final class DownloadStore: @unchecked Sendable {
     @discardableResult
     func addEmbyConvertCleanupTombstone(ratingKey: String, metadata: OfflineMetadata)
         -> EmbyConvertCleanupTombstone? {
+        addEmbyConvertCleanupTombstone(
+            EmbyConvertCleanupTombstone(id: UUID(), ratingKey: ratingKey, metadata: metadata))
+    }
+
+    /// Persist an EXISTING tombstone value (same id). Used to retry the durable write for
+    /// tombstones that were deferred in memory after a delete()-time persist failure.
+    @discardableResult
+    func addEmbyConvertCleanupTombstone(_ tombstone: EmbyConvertCleanupTombstone)
+        -> EmbyConvertCleanupTombstone? {
         lock.lock()
         var values = (try? JSONDecoder().decode(
             [EmbyConvertCleanupTombstone].self,
             from: Data(contentsOf: embyCleanupURL))) ?? []
-        let tombstone = EmbyConvertCleanupTombstone(id: UUID(), ratingKey: ratingKey, metadata: metadata)
+        guard !values.contains(where: { $0.id == tombstone.id }) else {
+            lock.unlock()
+            return tombstone
+        }
         let expectedIDs = EmbyConvertRecoveryPolicy.appendingCleanupTombstoneID(
             tombstone.id, to: values.map(\.id))
         values.append(tombstone)
@@ -940,10 +952,15 @@ final class DownloadStore: @unchecked Sendable {
     /// source snapshot have independent lifetimes and must remain available for polling/pickup.
     func clearEmbyConvertRecovery(ratingKey: String) {
         updateMetadata(ratingKey: ratingKey) {
-            $0.embyConvertJobBaselineIDs = nil
-            $0.embyConvertRecoveryFingerprint = nil
-            $0.embyConvertRecoveryStartedAtEpochSeconds = nil
-            $0.embyConvertRecoveryPhase = nil
+            $0.clearEmbyConvertRecoveryIdentity()
+        }
+    }
+
+    /// Forget a Sync job id that reached a TERMINAL server state (Failed/Cancelled/404/410), so a
+    /// retry creates a fresh job instead of resuming polling a dead one.
+    func clearEmbyConvertJobID(ratingKey: String) {
+        updateMetadata(ratingKey: ratingKey) {
+            $0.embyConvertJobID = nil
         }
     }
 

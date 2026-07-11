@@ -141,9 +141,18 @@ public struct EmbyConvertRecoveryEntry: Decodable, Sendable, Equatable {
         } else {
             itemId = (try? c.decode(Int.self, forKey: .itemId)).map(String.init)
         }
-        targetId = try c.decode(String.self, forKey: .targetId)
-        quality = try c.decode(String.self, forKey: .quality)
-        profile = try c.decode(String.self, forKey: .profile)
+        // `GET /Sync/Jobs` is server-wide: it also returns jobs created by OTHER clients (Emby
+        // mobile sync, etc.), which may omit/null these fields or use the numeric wire variant.
+        // Decode them tolerantly to an empty string — a foreign job must never make the whole
+        // baseline/recovery list undecodable (that failed EVERY convert start). An empty value can
+        // never equal a Labstream fingerprint's non-empty quality/profile, so matching stays exact.
+        if let value = try? c.decode(String.self, forKey: .targetId) {
+            targetId = value
+        } else {
+            targetId = (try? c.decode(Int.self, forKey: .targetId)).map(String.init) ?? ""
+        }
+        quality = (try? c.decode(String.self, forKey: .quality)) ?? ""
+        profile = (try? c.decode(String.self, forKey: .profile)) ?? ""
         bitrate = try c.decodeIfPresent(Int.self, forKey: .bitrate)
         status = try c.decodeIfPresent(EmbyConvertJobStatus.self, forKey: .status) ?? .unknown
         progress = try c.decodeIfPresent(Double.self, forKey: .progress)
@@ -163,13 +172,43 @@ public struct EmbyConvertRecoveryEntry: Decodable, Sendable, Equatable {
 public struct EmbyConvertJobList: Decodable, Sendable, Equatable {
     public let items: [EmbyConvertRecoveryEntry]
     public let totalRecordCount: Int
+    /// Entries in the wire payload that could not be decoded even tolerantly (foreign clients'
+    /// jobs with unexpected shapes). They are dropped from `items` but still counted so a foreign
+    /// job never masquerades as a truncated page.
+    public let undecodableItemCount: Int
 
-    /// Recovery requires the complete server baseline, never a silently truncated page.
-    public var isComplete: Bool { totalRecordCount == items.count }
+    /// Recovery requires the complete server baseline, never a silently truncated page. A dropped
+    /// foreign entry was still RECEIVED, so it counts toward completeness — it can never match a
+    /// Labstream fingerprint anyway.
+    public var isComplete: Bool { totalRecordCount == items.count + undecodableItemCount }
 
     enum CodingKeys: String, CodingKey {
         case items = "Items"
         case totalRecordCount = "TotalRecordCount"
+    }
+
+    /// Consumes one unkeyed-container slot without asserting anything about its shape, so a
+    /// per-entry decode failure can skip that entry instead of failing the whole list.
+    private struct SkippedEntry: Decodable {
+        init(from decoder: Decoder) throws {}
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        totalRecordCount = try c.decode(Int.self, forKey: .totalRecordCount)
+        var entries = try c.nestedUnkeyedContainer(forKey: .items)
+        var decoded: [EmbyConvertRecoveryEntry] = []
+        var dropped = 0
+        while !entries.isAtEnd {
+            if let entry = try? entries.decode(EmbyConvertRecoveryEntry.self) {
+                decoded.append(entry)
+            } else {
+                _ = try entries.decode(SkippedEntry.self)
+                dropped += 1
+            }
+        }
+        items = decoded
+        undecodableItemCount = dropped
     }
 }
 
@@ -197,6 +236,10 @@ public enum EmbyConvertRecoveryPolicy {
         case recover(baselineJobIDs: [Int], fingerprint: Fingerprint,
                      attemptStartedAtEpochSeconds: Double, phase: Phase)
         case failMissingIdentity
+        /// The crash-window identity is older than `recoveryExpirySeconds`: `matchingNewJobIDs`
+        /// can never adopt again, so recovery must hand the identity to cleanup and release the
+        /// row for a fresh attempt instead of looping `.preparing` → `.failed` forever.
+        case expireRecovery
     }
 
     public struct Fingerprint: Codable, Sendable, Equatable {
@@ -296,17 +339,24 @@ public enum EmbyConvertRecoveryPolicy {
                                      fingerprint: Fingerprint,
                                      attemptStartedAtEpochSeconds: Double,
                                      phase: Phase,
-                                     nowEpochSeconds: Double) -> CleanupAction {
+                                     nowEpochSeconds: Double,
+                                     liveJobIDs: Set<Int> = []) -> CleanupAction {
         guard phase == .dispatchAmbiguous else { return .discardTombstone }
         guard listIsComplete else { return .retainTombstone }
         // Cleanup may still cancel a uniquely identified long-retained job after the recovery
         // adoption deadline. Evaluate its creation window just before expiry, then use expiry only
         // to decide when a complete zero-candidate result proves there is nothing left to clean.
+        //
+        // `liveJobIDs` are jobs currently OWNED by live download rows. A tombstone must never
+        // cancel one: re-downloading the same item/preset shortly after a crash-window delete
+        // creates a new job whose fingerprint and creation window match the tombstone's, and
+        // without this exclusion the sweep would DELETE the user's active conversion.
         let matching = matchingNewJobIDs(
             baselineJobIDs: baselineJobIDs, jobs: jobs, fingerprint: fingerprint,
             attemptStartedAtEpochSeconds: attemptStartedAtEpochSeconds, phase: phase,
             nowEpochSeconds: min(nowEpochSeconds,
                                  attemptStartedAtEpochSeconds + recoveryExpirySeconds - 1))
+            .filter { !liveJobIDs.contains($0) }
         if matching.count == 1, let id = matching.first { return .cancel(jobID: id) }
         if matching.isEmpty,
            nowEpochSeconds > attemptStartedAtEpochSeconds + recoveryExpirySeconds {
@@ -317,13 +367,22 @@ public enum EmbyConvertRecoveryPolicy {
 
     /// Pure manager boundary: a persisted job id always wins; otherwise recovery requires both
     /// halves of the durable pre-POST identity. Partial/legacy state remains fail-closed.
+    ///
+    /// Identity older than `recoveryExpirySeconds` returns `.expireRecovery` instead of
+    /// `.recover`: `matchingNewJobIDs` hard-returns `[]` past expiry, so re-entering recovery
+    /// could only ever fail again — the row would loop `.preparing` → `.failed` on every Retry
+    /// with delete as the user's only escape. Cleanup tombstones carry the same expiry escape.
     public static func relaunchAction(jobID: Int?, baselineJobIDs: [Int]?,
                                       fingerprint: Fingerprint?,
                                       attemptStartedAtEpochSeconds: Double? = nil,
-                                      phase: Phase? = nil) -> RelaunchAction {
+                                      phase: Phase? = nil,
+                                      nowEpochSeconds: Double = Date().timeIntervalSince1970) -> RelaunchAction {
         if let jobID { return .poll(jobID: jobID) }
         if let baselineJobIDs, let fingerprint, let attemptStartedAtEpochSeconds,
            let phase, phase == .dispatchAmbiguous {
+            if nowEpochSeconds > attemptStartedAtEpochSeconds + recoveryExpirySeconds {
+                return .expireRecovery
+            }
             return .recover(baselineJobIDs: baselineJobIDs, fingerprint: fingerprint,
                             attemptStartedAtEpochSeconds: attemptStartedAtEpochSeconds, phase: phase)
         }

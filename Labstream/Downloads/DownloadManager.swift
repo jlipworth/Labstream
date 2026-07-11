@@ -129,6 +129,12 @@ public final class DownloadManager {
     /// active row progress, speed, and ETA between checkpoints.
     private var liveRangeProgress: [String: DownloadLiveRangeProgressSample] = [:]
 
+    /// Emby convert cleanup tombstones whose durable persist FAILED (disk full — exactly when a
+    /// user deletes downloads). The delete still completes; these in-memory copies keep the
+    /// cleanup intent alive for this process and each convert-resume sweep retries persisting
+    /// them. Lost on app death — an accepted trade-off versus wedging delete() forever.
+    @ObservationIgnored var deferredEmbyCleanupTombstones: [DownloadStore.EmbyConvertCleanupTombstone] = []
+
     private static let queuePausedDefaultsKey = "downloads.queuePaused"
 
     var storageAudit: OfflineDownloadStorageAudit {
@@ -1070,11 +1076,7 @@ public final class DownloadManager {
             resumeMode: record.metadata?.resolvedResumeMode(ratingKey: ratingKey),
             isEmbyRecord: DownloadRecordIdentity.isEmbyRecordKey(ratingKey),
             hasEmbyConvertJobID: record.metadata?.embyConvertJobID != nil,
-            hasEmbyConvertRecoveryIdentity:
-                record.metadata?.embyConvertJobBaselineIDs != nil
-                    && record.metadata?.embyConvertRecoveryFingerprint != nil
-                    && record.metadata?.embyConvertRecoveryStartedAtEpochSeconds != nil
-                    && record.metadata?.embyConvertRecoveryPhase == .dispatchAmbiguous
+            hasEmbyConvertRecoveryIdentity: record.metadata?.hasEmbyConvertRecoveryIdentity == true
         ) {
             store.setStatus(ratingKey: ratingKey, .preparing)
             resumePendingEmbyConvertDownloads()
@@ -1535,17 +1537,18 @@ public final class DownloadManager {
         let embyPreparing = store.records.filter { record in
             let backend = record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
                 ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
-            let hasCrashWindowIdentity = record.metadata?.embyConvertJobID == nil
-                && record.metadata?.embyConvertJobBaselineIDs != nil
-                && record.metadata?.embyConvertRecoveryFingerprint != nil
-                && record.metadata?.embyConvertRecoveryStartedAtEpochSeconds != nil
-                && record.metadata?.embyConvertRecoveryPhase == .dispatchAmbiguous
+            let hasCrashWindowIdentity = record.metadata?.hasEmbyConvertCrashWindowIdentity == true
             return (record.status == .preparing || (record.status == .failed && hasCrashWindowIdentity))
                 && backend == .emby
                 && record.metadata?.resolvedDownloadLane() == .optimize
                 && !activeJobs.contains(record.ratingKey)
         }
-        let cleanupTombstones = store.embyConvertCleanupTombstones
+        // Re-attempt the durable persist for tombstones whose write failed at delete() time; the
+        // ones that persist move to the store list, the rest stay in-memory and are still swept.
+        deferredEmbyCleanupTombstones.removeAll { tombstone in
+            store.addEmbyConvertCleanupTombstone(tombstone) != nil
+        }
+        let cleanupTombstones = store.embyConvertCleanupTombstones + deferredEmbyCleanupTombstones
         guard !embyPreparing.isEmpty || !cleanupTombstones.isEmpty else {
             refreshRecords()
             return
@@ -1654,6 +1657,34 @@ public final class DownloadManager {
                     // baseline so a user retry may create a fresh job.
                     store.clearEmbyConvertRecovery(ratingKey: record.ratingKey)
                 }
+                store.setStatus(ratingKey: record.ratingKey, .failed)
+                clearOptimizeProgress(ratingKey: record.ratingKey)
+                releaseInFlight(ratingKey: record.ratingKey)
+            case .expireRecovery:
+                // The identity is past the 24h adoption deadline: recovery could only ever fail
+                // again (matchingNewJobIDs hard-returns [] after expiry), which looped
+                // `.preparing` → `.failed` on every Retry forever. Hand the identity to the
+                // cleanup queue (cleanupAction can still cancel a uniquely identified long-
+                // retained job, and discards proven-empty evidence), release the row for a fresh
+                // attempt, and fail it with an actionable message.
+                recordDownloadDiagnostic("downloads.convert_failed", fields: [
+                    "download_id": .identifier(record.ratingKey),
+                    "phase": .label("recovery_expired"),
+                ])
+                if let tombstone = store.addEmbyConvertCleanupTombstone(
+                    ratingKey: record.ratingKey, metadata: metadata) {
+                    Task { [weak self] in
+                        await self?.recoverAndCancelEmbyConvertTombstone(
+                            tombstone, server: server, token: token, identity: identity,
+                            currentUserID: userId)
+                    }
+                } else {
+                    deferredEmbyCleanupTombstones.append(DownloadStore.EmbyConvertCleanupTombstone(
+                        id: UUID(), ratingKey: record.ratingKey, metadata: metadata))
+                }
+                store.clearEmbyConvertRecovery(ratingKey: record.ratingKey)
+                lastError[record.ratingKey] = .transferFailed(
+                    "Server conversion could not be recovered; retry to create a new conversion.")
                 store.setStatus(ratingKey: record.ratingKey, .failed)
                 clearOptimizeProgress(ratingKey: record.ratingKey)
                 releaseInFlight(ratingKey: record.ratingKey)
@@ -2083,24 +2114,27 @@ public final class DownloadManager {
         let rowToDelete = store.records.first(where: { $0.ratingKey == ratingKey })
         let embySession = appModel.backendSession(for: .emby)
         var embyCleanupTombstone: DownloadStore.EmbyConvertCleanupTombstone?
-        if let metadata = rowToDelete?.metadata,
-           metadata.embyConvertJobID == nil,
-           metadata.embyConvertJobBaselineIDs != nil,
-           metadata.embyConvertRecoveryFingerprint != nil,
-           metadata.embyConvertRecoveryStartedAtEpochSeconds != nil,
-           metadata.embyConvertRecoveryPhase == .dispatchAmbiguous {
+        if let metadata = rowToDelete?.metadata, metadata.hasEmbyConvertCrashWindowIdentity {
             // Persist cleanup intent BEFORE removing the visible row. If POST was accepted during
             // the crash window, deleting the UI row must not erase the only evidence able to find
             // and cancel that server job.
-            guard let tombstone = store.addEmbyConvertCleanupTombstone(
-                ratingKey: ratingKey, metadata: metadata) else {
+            if let tombstone = store.addEmbyConvertCleanupTombstone(
+                ratingKey: ratingKey, metadata: metadata) {
+                embyCleanupTombstone = tombstone
+            } else {
+                // Persist failed (disk full — exactly when users delete to free space). The user's
+                // delete MUST still complete: keep the cleanup intent alive in memory, where this
+                // launch's sweeps retry both the persist and the server-side cancel. Early-returning
+                // here made Delete a silent permanent no-op.
+                let deferred = DownloadStore.EmbyConvertCleanupTombstone(
+                    id: UUID(), ratingKey: ratingKey, metadata: metadata)
+                deferredEmbyCleanupTombstones.append(deferred)
+                embyCleanupTombstone = deferred
                 recordDownloadDiagnostic("downloads.convert_cleanup_deferred", fields: [
                     "download_id": .identifier(ratingKey),
                     "reason": .label("tombstone_persist_failed"),
                 ])
-                return
             }
-            embyCleanupTombstone = tombstone
         }
         let embySessionMatchesDeletedRow = rowToDelete?.metadata.map { metadata in
             embySession?.matchesPersistedServer(metadata) == true
