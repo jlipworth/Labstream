@@ -25,11 +25,11 @@ Current status at this checkpoint:
 | Slice | Status | Evidence / remaining boundary |
 | --- | --- | --- |
 | 0A–0B | Complete | Repeatable compile audit plus nonzero macOS/iOS app test plans are on the rebased branch. |
-| 1A | Partial | The index now has a serial revisioned writer, dirty retry, observable failures, and bounded internal flush (`7a599d1`, `1cd8097`). Existing mutations still preserve synchronous durability. Exact terminal/delete tickets, background-completion integration, held-manifest contracts, tombstone ordering, and split temp/replace crash seams remain. |
+| 1A | Partial | The index now has a serial revisioned writer, dirty retry, observable failures, and bounded internal flush (`0bbcb5d`, `f5ecf95`). Existing mutations still preserve synchronous durability. Exact lifecycle tickets, background-completion integration, held-manifest contracts, tombstone ordering, and split temp/replace crash seams remain. |
 | 1B | Partial | Existing string attempt tokens, v2 task markers, stale-task rejection, and attempt-bearing held manifests are prior art. A typed `DownloadAttemptID`, schema v3, durable-before-reattach migration, and attempt-conditional store APIs remain. |
 | 1C | Partial | Main now has a final-verdict recheck, attempt-matched held bodies/orphan sweeping, and an Emby ambiguous-create tombstone. A work registry, attempt-scoped finalizing, side-asset staging/ownership, broad post-await guards, and compare-and-clear play-session cleanup remain. |
 | 1D–1F | Complete | Auth/secure-storage, system-media ownership, and player lifecycle generations survived the rebase unchanged. iPad/Mac physical ownership and lifecycle checks passed; iOS TSAN tests remain green. |
-| 2A | Partial | Plex photo coverage, modern Mac decoding, the MediaSession clock, and `PERF-01` (`fe730a0`) are complete. The old dead-helper inventory must still be regenerated against the audited engine. |
+| 2A | Partial | Plex photo coverage, modern Mac decoding, the MediaSession clock, and `PERF-01` (`3378211`) are complete. The old dead-helper inventory must still be regenerated against the audited engine. |
 | 2B | Open / higher priority | `store.records` uses grew from 38 to 40 and single-row `first`/`contains` uses from 24 to 26. Only `status(for:)` is narrow today. |
 | 2C | Complete | Latest-rail execution is bounded and order preserving. |
 | 2D | Open | `OfflineLibraryView` remains 776 lines and optimizer item decoding retains the nested `try?`/coalescing cliff. |
@@ -62,7 +62,7 @@ their relationship during the schema-v3 migration.
 #### 2026-07-11 — `PERF-01` filesystem-stat boundary
 
 - **Status:** complete.
-- **Commit:** `fe730a0` (`Use file metadata for HTTP error body size`).
+- **Commit:** `3378211` (`Use file metadata for HTTP error body size`).
 - **Changed boundary:** failed HTTP download diagnostics now obtain the temporary body's logical
   byte count from filesystem attributes instead of allocating the entire body. HTTP handling,
   failure transitions, privacy-safe bucketing, raw-body handling, lifecycle ownership, and
@@ -113,7 +113,7 @@ their relationship during the schema-v3 migration.
 #### 2026-07-11 — Phase 1A revisioned-writer primitive
 
 - **Status:** primitive complete; production integration open.
-- **Commit:** `7a599d1` (`Add revisioned persistence writer primitive`).
+- **Commit:** `0bbcb5d` (`Add revisioned persistence writer primitive`).
 - **Changed boundary:** added a generic internal full-snapshot writer with synchronous revision
   acceptance, one serial encode/atomic-commit worker, pending-snapshot coalescing, dirty retention,
   later-mutation/flush retry, privacy-safe encode-versus-commit failures, and bounded async flush.
@@ -135,7 +135,7 @@ their relationship during the schema-v3 migration.
 #### 2026-07-11 — Phase 1A download-index integration
 
 - **Status:** main index integration complete; lifecycle and adjacent durability work remains.
-- **Commit:** `1cd8097` (`Serialize download index persistence`).
+- **Commit:** `f5ecf95` (`Serialize download index persistence`).
 - **Changed boundary:** all eleven existing `DownloadStore.persist()` paths now assign a revision
   and capture their full snapshot together under the store lock, then serialize schema-v2 encoding
   and atomic commit outside that lock. Load-time subtitle repair uses the same writer instead of a
@@ -161,6 +161,36 @@ their relationship during the schema-v3 migration.
   durability, then make background-session completion await a bounded flush through the required
   ticket before releasing the OS handler. Timeout/failure must be diagnosed without abandoning the
   dirty snapshot. Ordinary progress writes remain synchronous until that lifecycle path is proven.
+
+#### 2026-07-11 — Follow-up rebase onto download fix `640c906`
+
+- **Status:** rebased cleanly onto local `main`; no remediation patch changed according to
+  `git range-diff`. Safety ref: `codex/remediation-nondownloads-pre-main-20260711-190118`.
+- **Incoming boundary:** main now retains off-head static-range progress, counts persisted held
+  bodies in live progress, and keeps zero-byte paused static-range rows manually restartable. Its
+  only `DownloadStore` edit is the new reconciliation input; it does not alter the writer, index
+  schema, completion gate, or persistence lifecycle. The in-memory live-progress overlay must not
+  become index state or a persistence revision source.
+- **Compatibility evidence:** the incoming reconciliation call and all revisioned persistence code
+  survived together. PMSKit passed 1,401 tests across 170 suites; the full macOS and iPadOS app
+  plans passed 53/53, with Thread Sanitizer enabled on iPadOS.
+- **Newly elevated pre-existing risk:** `persistHeldRangeSegment` currently reports only that its
+  row mutated, not whether the synchronous manifest write committed. The caller can then delete the
+  previously referenced body even though disk still contains the old manifest. Because a failed
+  newest snapshot remains dirty, deleting the new body as rollback is also unsafe: a later retry
+  could commit a manifest pointing to that deleted body. Main's smaller held segments increase the
+  frequency of this durability boundary even though they did not create it.
+- **Adjusted next boundary:** before making ordinary index mutations asynchronous, make held-body
+  replacement commit-aware. Retain the new body because a dirty snapshot may commit it; delete the
+  previous body only after the replacement revision commits; on failure retain both and diagnose.
+  Add replacement/removal failure injection plus a store-level zero-byte static-pause reload and
+  reconcile test. Then gate background completion by capturing the exact latest store revision when
+  the in-memory completion gate becomes ready and performing a bounded retry/flush before firing.
+- **Known bound limitation:** while mutations preserve the old unbounded synchronous write attempt,
+  a truly hung initial atomic write can prevent the gate from becoming ready before the later bounded
+  flush runs. A literal end-to-end bound requires a separate migration of lifecycle mutations to
+  nonblocking ticket-returning submissions; merely returning a ticket after the current wait does
+  not solve that case.
 
 The three-run arm64 checkpoint at rebased commit `cf21073` is recorded locally under
 `build/compile-audit/post-main-e757bb1/` (raw logs remain ignored because they contain local
