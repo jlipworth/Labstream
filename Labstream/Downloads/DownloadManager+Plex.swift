@@ -214,7 +214,7 @@ extension DownloadManager {
                            server: server, token: token)
         cachePlexTextSubtitles(for: attemptKey, part: part, server: server, token: token)
         beginBackgroundTransfer(DownloadTransferStartPlan(
-            ratingKey: ratingKey,
+            attemptKey: attemptKey,
             backendLabel: "Plex",
             choiceLabel: choiceLabel,
             urlShape: url,
