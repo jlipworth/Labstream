@@ -86,6 +86,14 @@ final class DownloadStore: @unchecked Sendable {
         case persistenceFailed(PersistenceFlushResult)
     }
 
+    enum AttemptCompareClearResult: Sendable, Equatable {
+        case cleared
+        case alreadyAbsent
+        case expectedValueMismatch
+        case staleOrMissing
+        case persistenceFailed(PersistenceFlushResult)
+    }
+
     enum AttemptStagingPromotionResult: Sendable, Equatable {
         case promoted
         case staleOrMissingOwner
@@ -1274,10 +1282,51 @@ final class DownloadStore: @unchecked Sendable {
         updateMetadata(ratingKey: ratingKey) { $0.playSessionID = playSessionID }
     }
 
+    @discardableResult
+    func setPlaySessionID(
+        for key: DownloadAttemptKey,
+        _ playSessionID: String
+    ) -> AttemptMutationResult {
+        guard !playSessionID.isEmpty else { return .noChange }
+        return updateMetadata(for: key) { $0.playSessionID = playSessionID }
+    }
+
     /// #84: clear the persisted `PlaySessionId` after the encoder has been torn down (the launch
     /// sweep is idempotent — clearing prevents it from firing twice). No-op if the row is gone.
     func clearPlaySessionID(ratingKey: String) {
         updateMetadata(ratingKey: ratingKey) { $0.playSessionID = nil }
+    }
+
+    /// Clear only the exact server encoder handle that a confirmed teardown executed. A delayed
+    /// cleanup for attempt A/session X must not clear attempt B or even a newer session Y owned by
+    /// the same attempt after renegotiation.
+    @discardableResult
+    func clearPlaySessionID(
+        for key: DownloadAttemptKey,
+        expectedPlaySessionID: String
+    ) -> AttemptCompareClearResult {
+        lock.lock()
+        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
+              !row.legacyResetPending, var metadata = row.metadata else {
+            lock.unlock()
+            return .staleOrMissing
+        }
+        guard let current = metadata.playSessionID else {
+            lock.unlock()
+            return .alreadyAbsent
+        }
+        guard current == expectedPlaySessionID else {
+            lock.unlock()
+            return .expectedValueMismatch
+        }
+        metadata.playSessionID = nil
+        metadata.downloadAttemptID = key.attemptID.rawValue
+        row.metadata = metadata
+        rows[key.ratingKey] = row
+        lock.unlock()
+        let persistence = persist()
+        return persistence.result.committed(through: persistence.ticket)
+            ? .cleared : .persistenceFailed(persistence.result)
     }
 
     /// #84: persist the authoritative media-source id chosen for this download so a retry can
