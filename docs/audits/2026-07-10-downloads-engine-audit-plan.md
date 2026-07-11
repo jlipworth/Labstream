@@ -388,7 +388,8 @@ Deferred to user judgment / later phases:
   (adoption path only handles static-range tasks); feasible via opaque taskDescription.
 - JF-F5: persisted-psid branch never issues `.stop` (non-terminal rows post-relaunch).
 - EMBY-F3: POST-create crash orphans untaggable Sync job; EMBY-F4: `.optimizeCompatible`
-  silent 1080p downgrade (UX disclosure decision); EMBY-F6 existing-version silent source
+  silent 1080p downgrade (closed by explicit picker disclosure + above-1080p confirmation in the
+  2026-07-11 follow-up below); EMBY-F6 existing-version silent source
   swap (closed in the 2026-07-11 update below); EMBY-F11 handoff remove→re-download crash window
   (closed in the 2026-07-11 update below);
   EMBY-F13 unbounded poll on persistent 5xx (closed in the 2026-07-11 update below); EMBY-F9 no
@@ -603,7 +604,8 @@ install UUID match, clean launch/log smoke, and signed-in Home screenshot; simul
 2. Close the checklist's evidence gaps (lifecycle cause, blob presence, network path, free-space,
    remote-play/download correlation, and Emby server-completion timing) before treating device
    observations as deterministic.
-3. Continue the deferred backend/product findings in sections F–H (Emby F3/F4/F9 and Plex F5).
+3. Continue the remaining backend findings in sections F–H (Emby F3/F9). EMBY-F4 and Plex F5 are
+   closed by the follow-ups below.
    Held-stash persistence is now closed by the B.1 follow-up below.
 
 Phase 6's simulator/foreground harness is complete: validator/auth/reset/write-failure,
@@ -729,9 +731,15 @@ were emitted for the segment train while the existing 401 rehydrate path still p
   listing long enough for relaunch recovery. Official references:
   <https://dev.emby.media/doc/restapi/Sync.html> and
   <https://dev.emby.media/reference/RestAPI/SyncService/getSyncJobsById.html>.
-- **EMBY-F4 is an explicit product/UX decision:** compatible-remux currently accepts its documented
-  1080p ceiling; changing the route or adding downgrade confirmation requires user judgment rather
-  than an audit-only silent behavior change.
+- **EMBY-F4 is closed by explicit disclosure and confirmation:** the Emby compatible-remux picker
+  now states that a failed remux falls back to a compatible copy capped at 1080p. When the selected
+  source is known to exceed the 1920×1080 bounding box, Download presents a confirmation before
+  starting and points users who require 4K output to the explicit 4K bitrate preset. The fallback
+  route remains unchanged, preserving its resumable persistent-Convert behavior without silently
+  changing server cost or user intent. Jellyfin is unaffected because it does not use this Emby
+  Convert fallback. The pure boundary/backend policy is covered by PMSKit tests; the full 1374-test
+  / 168-suite run, clean visionOS build, UUID-matched install, clean launch log, and signed-in Home
+  smoke passed, with the simulator shut down. The device checklist now carries the live UX cell.
 - **EMBY-F9 needs live Emby evidence:** whether its forward-only encoder needs Jellyfin-style
   keepalives depends on real server idle behavior. No Emby credentials are available in this
   worktree/simulator, so a synthetic keepalive would not establish correctness.
