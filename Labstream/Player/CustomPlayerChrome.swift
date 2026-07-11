@@ -68,6 +68,7 @@ struct CustomPlayerChrome: View {
     let trickPlayProvider: (any TrickPlayThumbnailProviding)?
     #if os(iOS)
     let mobileSystemCoordinator: MobilePlayerSystemCoordinator?
+    @Binding var mobileVideoDisplayMode: MobileVideoDisplayMode
     #endif
     let onRetry: () -> Void
     let onClose: (() -> Void)?
@@ -85,6 +86,8 @@ struct CustomPlayerChrome: View {
     @State private var trickPlayRequestGeneration = 0
     @State private var hoverPreviewTargetMs: Int?
     @State private var hoverPreviewX: CGFloat?
+    @State private var mobileDisplayStatus: String?
+    @State private var mobileDisplayStatusTask: Task<Void, Never>?
     #if os(iOS)
     @State private var chromeViewportSize: CGSize = .zero
     #endif
@@ -109,6 +112,7 @@ struct CustomPlayerChrome: View {
         _scrubState = scrubState
         self.trickPlayProvider = trickPlayProvider
         #if os(iOS)
+        _mobileVideoDisplayMode = .constant(.fit)
         self.mobileSystemCoordinator = nil
         #endif
         self.onRetry = onRetry
@@ -122,6 +126,7 @@ struct CustomPlayerChrome: View {
          title: String,
          scrubState: Binding<PlaybackScrubState>,
          trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
+         mobileVideoDisplayMode: Binding<MobileVideoDisplayMode>,
          mobileSystemCoordinator: MobilePlayerSystemCoordinator?,
          onRetry: @escaping () -> Void,
          onClose: (() -> Void)?,
@@ -130,6 +135,7 @@ struct CustomPlayerChrome: View {
         self.title = title
         _scrubState = scrubState
         self.trickPlayProvider = trickPlayProvider
+        _mobileVideoDisplayMode = mobileVideoDisplayMode
         self.mobileSystemCoordinator = mobileSystemCoordinator
         self.onRetry = onRetry
         self.onClose = onClose
@@ -142,9 +148,22 @@ struct CustomPlayerChrome: View {
         ZStack {
             Color.clear
                 .contentShape(Rectangle())
-                .onTapGesture {
-                    handlePlayerSurfaceTap()
-                }
+                #if os(iOS)
+                .gesture(TapGesture(count: 2).exclusively(before: TapGesture(count: 1))
+                    .onEnded { gesture in
+                        switch gesture {
+                        case .first: setMobileVideoDisplayMode(mobileVideoDisplayMode.toggled)
+                        case .second: handlePlayerSurfaceTap()
+                        }
+                    })
+                .simultaneousGesture(MagnifyGesture().onEnded { value in
+                    guard let selection = MobileVideoDisplayMode.pinchSelection(
+                        magnification: Double(value.magnification)) else { return }
+                    setMobileVideoDisplayMode(selection)
+                })
+                #else
+                .onTapGesture { handlePlayerSurfaceTap() }
+                #endif
 
             if shouldShowChrome {
                 topChrome
@@ -162,6 +181,19 @@ struct CustomPlayerChrome: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 .padding(40)
                 .transition(.scale(scale: 0.96).combined(with: .opacity))
+
+            #if os(iOS)
+            if let mobileDisplayStatus {
+                Text(mobileDisplayStatus)
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 10)
+                    .background(.black.opacity(0.68), in: Capsule())
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+            #endif
 
             offlineSubtitleOverlay
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
@@ -256,6 +288,7 @@ struct CustomPlayerChrome: View {
         .onDisappear {
             hideTask?.cancel()
             endHoverPreview()
+            mobileDisplayStatusTask?.cancel()
             #if os(macOS)
             removeMacKeyMonitor()
             #endif
@@ -416,6 +449,9 @@ struct CustomPlayerChrome: View {
                 Spacer()
 
                 #if os(iOS)
+                displayModeButton
+                    .padding(.top, topUtilityButtonExtraTopPadding)
+
                 // System-player parity: AirPlay + Picture in Picture sit as monochrome glass
                 // circles at the top-trailing corner, opposite the close button. Backgrounding
                 // pauses ordinary video, but active AirPlay/PiP routes keep playing.
@@ -493,6 +529,37 @@ struct CustomPlayerChrome: View {
             .frame(width: topUtilityButtonHitSide, height: topUtilityButtonHitSide)
             .iosPlayerTopUtilityButtonStyle(isPhoneLandscape: isPhoneLandscapeChrome)
             .accessibilityLabel("AirPlay")
+    }
+
+    private var displayModeButton: some View {
+        Button {
+            setMobileVideoDisplayMode(mobileVideoDisplayMode.toggled)
+        } label: {
+            Label(mobileVideoDisplayMode.accessibilityLabel,
+                  systemImage: mobileVideoDisplayMode.systemImage)
+                .labelStyle(.iconOnly)
+                .font(.body.weight(.semibold))
+                .frame(width: topUtilityButtonVisualSide, height: topUtilityButtonVisualSide)
+                .frame(width: topUtilityButtonHitSide, height: topUtilityButtonHitSide)
+        }
+        .buttonStyle(.plain)
+        .iosPlayerTopUtilityButtonStyle(isPhoneLandscape: isPhoneLandscapeChrome)
+        .accessibilityLabel(mobileVideoDisplayMode.accessibilityLabel)
+    }
+
+    private func setMobileVideoDisplayMode(_ mode: MobileVideoDisplayMode) {
+        guard mode != mobileVideoDisplayMode else { return }
+        mobileVideoDisplayMode = mode
+        mobileDisplayStatusTask?.cancel()
+        withAnimation(.easeInOut(duration: 0.15)) { mobileDisplayStatus = mode.statusLabel }
+        mobileDisplayStatusTask = Task {
+            try? await Task.sleep(for: .seconds(1.2))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                withAnimation(.easeInOut(duration: 0.15)) { mobileDisplayStatus = nil }
+            }
+        }
+        revealChrome()
     }
 
     private var pipButton: some View {
