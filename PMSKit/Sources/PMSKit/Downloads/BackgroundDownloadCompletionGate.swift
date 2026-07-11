@@ -45,7 +45,10 @@ public struct BackgroundDownloadCompletionGate: Sendable, Equatable {
     /// Returns `[identifier]` when the app delegate completion handler can be fired immediately,
     /// otherwise returns `[]` and defers it until `endOperation()` drains the pending work.
     public mutating func finishEvents(identifier: String) -> [String] {
-        awaitingFinishIdentifiers.remove(identifier)
+        // Duplicate/stale URLSession callbacks must not manufacture a release. The session
+        // identifier is stable across app launches, so replaying one could consume a handler
+        // stored for a later background delivery cycle.
+        guard awaitingFinishIdentifiers.remove(identifier) != nil else { return [] }
         if pendingOperations > 0 {
             deferredIdentifiers.insert(identifier)
             return []

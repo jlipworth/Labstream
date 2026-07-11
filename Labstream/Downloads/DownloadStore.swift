@@ -1360,6 +1360,11 @@ final class DownloadStore: @unchecked Sendable {
         )
     }
 
+    /// Exact latest revision accepted before a lifecycle boundary begins its flush.
+    func currentPersistenceTicket() -> PersistenceTicket {
+        lock.withLock { PersistenceTicket(revision: nextPersistenceRevision) }
+    }
+
     private static func mapPersistenceResult(
         _ result: RevisionedPersistenceWriter<[Row]>.FlushResult
     ) -> PersistenceFlushResult {
