@@ -25,7 +25,7 @@ Current status at this checkpoint:
 | Slice | Status | Evidence / remaining boundary |
 | --- | --- | --- |
 | 0A–0B | Complete | Repeatable compile audit plus nonzero macOS/iOS app test plans are on the rebased branch. |
-| 1A | Open | `DownloadStore.persist()` still has no serial revisioned writer, dirty retry, observable failure, or bounded `flush()`; background completion cannot await store durability. |
+| 1A | Partial | The index now has a serial revisioned writer, dirty retry, observable failures, and bounded internal flush (`7a599d1`, `1cd8097`). Existing mutations still preserve synchronous durability. Exact terminal/delete tickets, background-completion integration, held-manifest contracts, tombstone ordering, and split temp/replace crash seams remain. |
 | 1B | Partial | Existing string attempt tokens, v2 task markers, stale-task rejection, and attempt-bearing held manifests are prior art. A typed `DownloadAttemptID`, schema v3, durable-before-reattach migration, and attempt-conditional store APIs remain. |
 | 1C | Partial | Main now has a final-verdict recheck, attempt-matched held bodies/orphan sweeping, and an Emby ambiguous-create tombstone. A work registry, attempt-scoped finalizing, side-asset staging/ownership, broad post-await guards, and compare-and-clear play-session cleanup remain. |
 | 1D–1F | Complete | Auth/secure-storage, system-media ownership, and player lifecycle generations survived the rebase unchanged. iPad/Mac physical ownership and lifecycle checks passed; iOS TSAN tests remain green. |
@@ -131,6 +131,36 @@ their relationship during the schema-v3 migration.
   durability at existing call sites, and prove fresh-store restore plus schema-v2 compatibility.
   Only after that characterization is green should ordinary mutations become asynchronous and
   explicit terminal/delete/background-completion tickets own the required flushes.
+
+#### 2026-07-11 — Phase 1A download-index integration
+
+- **Status:** main index integration complete; lifecycle and adjacent durability work remains.
+- **Commit:** `1cd8097` (`Serialize download index persistence`).
+- **Changed boundary:** all eleven existing `DownloadStore.persist()` paths now assign a revision
+  and capture their full snapshot together under the store lock, then serialize schema-v2 encoding
+  and atomic commit outside that lock. Load-time subtitle repair uses the same writer instead of a
+  failure-swallowing direct write. A failed newest snapshot remains dirty and a later mutation or
+  bounded flush retries it; diagnostics retain only stage, revision, and error type.
+- **Compatibility decision:** existing mutation methods still wait without a timeout for their
+  submitted write attempt to commit or fail. This preserves the pre-integration contract for held
+  manifests and other synchronous callers. The bounded async flush exists separately and will be
+  used only after lifecycle APIs own explicit durability tickets.
+- **Regression evidence:** app tests prove fresh-store restoration with schema version 2, recovery
+  from an injected first atomic-write failure by a later full-state mutation, durable subtitle
+  repair through the injected writer, and that a mutation cannot return while its atomic write is
+  deliberately suspended. Together with the writer cases, the focused persistence suites passed
+  11/11; the complete macOS and iPadOS plans passed 53/53, with Thread Sanitizer enabled on iPadOS.
+- **Runtime validation:** clean Mac, iOS Simulator, and visionOS Simulator builds passed. The clean
+  visionOS product matched the installed UUID, launched to the signed-in populated Home surface,
+  and produced no crash, assertion, or sanitizer signature in the smoke log.
+- **Known remaining boundary:** mutation APIs do not yet surface the private persistence ticket,
+  so background completion cannot name an exact required revision. Held manifest/body replacement
+  promises and Emby tombstones remain separate durability domains. The injected atomic-write seam
+  also cannot distinguish temp-write, replace, and cleanup crash stages.
+- **Next commit boundary:** surface exact tickets from the terminal/delete transitions that require
+  durability, then make background-session completion await a bounded flush through the required
+  ticket before releasing the OS handler. Timeout/failure must be diagnosed without abandoning the
+  dirty snapshot. Ordinary progress writes remain synchronous until that lifecycle path is proven.
 
 The three-run arm64 checkpoint at rebased commit `cf21073` is recorded locally under
 `build/compile-audit/post-main-e757bb1/` (raw logs remain ignored because they contain local
