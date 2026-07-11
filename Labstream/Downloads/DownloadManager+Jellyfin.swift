@@ -376,7 +376,8 @@ extension DownloadManager {
                                         width: Int = 320) {
         guard let mediaSourceId, !mediaSourceId.isEmpty else { return }
         let store = self.store
-        Task { [weak self] in
+        downloadWorkRegistry.start(for: attemptKey, kind: .sideCache(.jellyfinTrickPlay)) { [weak self] in
+            guard !Task.isCancelled else { return }
             do {
                 let playlistReq = try JellyfinLibrary.trickPlayPlaylistRequest(server: server,
                                                                                token: token,
@@ -389,7 +390,8 @@ extension DownloadManager {
                     for: Self.sideAssetRequest(applyingCellularPolicy: playlistReq))
                 guard let playlistHTTP = playlistResponse as? HTTPURLResponse,
                       (200..<300).contains(playlistHTTP.statusCode),
-                      let playlistText = String(data: playlistData, encoding: .utf8) else { return }
+                      let playlistText = String(data: playlistData, encoding: .utf8),
+                      !Task.isCancelled else { return }
                 let playlist = try JellyfinTrickPlayPlaylistParser.parse(playlistText)
                 var tileRelatives: [String] = []
                 var tileFilenamesByURI: [String: String] = [:]
@@ -410,6 +412,7 @@ extension DownloadManager {
                 }
                 var start = 0
                 while start < playlist.tiles.count {
+                    guard !Task.isCancelled else { return }
                     let end = min(start + batchSize, playlist.tiles.count)
                     let batch = Array(playlist.tiles[start..<end].enumerated()).map { (offset, tile) in
                         (index: start + offset, tile: tile)
@@ -439,6 +442,7 @@ extension DownloadManager {
                         return out.sorted { $0.index < $1.index }
                     }
                     for entry in fetched {
+                        guard !Task.isCancelled else { return }
                         let destination = store.jellyfinTrickPlayTileDestinationURL(
                             ratingKey: attemptKey.ratingKey, index: entry.index)
                         guard let staging = store.attemptStagingURL(for: attemptKey, stableURL: destination) else {

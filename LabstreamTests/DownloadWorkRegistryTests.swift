@@ -104,6 +104,34 @@ struct DownloadWorkRegistryTests {
                 == [.finalizer, .sideCache(.chapterImages)])
     }
 
+    @Test func cancelledOldSideCacheCompletionCannotRemoveReaddedAttemptsWork() async {
+        let registry = DownloadWorkRegistry()
+        let old = key("plex:readd", "attempt-A")
+        let replacement = key("plex:readd", "attempt-B")
+        let oldGate = AsyncWorkGate()
+        let replacementGate = AsyncWorkGate()
+        let oldToken = registry.start(for: old, kind: .sideCache(.poster)) {
+            await oldGate.wait()
+        }
+        await oldGate.waitUntilEntered()
+
+        #expect(registry.cancelCancellableWork(for: old) == [oldToken])
+        let replacementToken = registry.start(
+            for: replacement, kind: .sideCache(.poster)) {
+                await replacementGate.wait()
+            }
+        await replacementGate.waitUntilEntered()
+        await oldGate.open()
+        await Task.yield()
+
+        let afterOldCompletion = registry.snapshot()
+        #expect(afterOldCompletion.attempts.map(\.key) == [replacement])
+        #expect(afterOldCompletion.attempts.first?.entries.map(\.token) == [replacementToken])
+
+        await replacementGate.open()
+        await waitUntil { registry.snapshot().totalCount == 0 }
+    }
+
     private func key(_ ratingKey: String, _ attempt: String) -> DownloadAttemptKey {
         DownloadAttemptKey(
             ratingKey: ratingKey,
