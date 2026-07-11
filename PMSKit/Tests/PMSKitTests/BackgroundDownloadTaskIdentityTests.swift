@@ -115,4 +115,30 @@ struct BackgroundDownloadTaskIdentityTests {
         #expect(segment == "movie-123")
         #expect(opaque == "jellyfin:abcd")
     }
+
+    @Test("Startup purge requires a current marker mapped to a non-reset row")
+    func startupPurgeClassification() {
+        let attemptID = DownloadAttemptID(rawValue: "attempt-A")!
+        let current = DownloadAttemptMarker.taskDescription(
+            ratingKey: "plex:item", attemptID: attemptID)
+        let legacy = DownloadAttemptMarker.taskDescription(
+            ratingKey: "plex:item", attemptID: attemptID.rawValue)
+
+        #expect(!BackgroundDownloadTaskIdentity.shouldPurgeBeforeAdmission(
+            taskDescription: current,
+            mapsToKnownRow: true,
+            mapsToApprovedResetKey: false))
+        #expect(BackgroundDownloadTaskIdentity.shouldPurgeBeforeAdmission(
+            taskDescription: legacy,
+            mapsToKnownRow: true,
+            mapsToApprovedResetKey: false))
+        #expect(BackgroundDownloadTaskIdentity.shouldPurgeBeforeAdmission(
+            taskDescription: current,
+            mapsToKnownRow: false,
+            mapsToApprovedResetKey: false))
+        #expect(BackgroundDownloadTaskIdentity.shouldPurgeBeforeAdmission(
+            taskDescription: current,
+            mapsToKnownRow: true,
+            mapsToApprovedResetKey: true))
+    }
 }

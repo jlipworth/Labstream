@@ -71,6 +71,17 @@ extension DownloadManager {
                                             session: backendSession,
                                             downloadLane: DownloadChoicePolicy.downloadLane(for: choice),
                                             serverPreparedVersion: DownloadChoicePolicy.isServerPreparedVersion(for: choice))
+        let seedDestination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
+        guard persistAttemptSeed(
+            DownloadRecord(ratingKey: ratingKey, attemptID: startAttempt.attemptID,
+                           title: item.title, localURL: seedDestination,
+                           bytes: 0, progress: 0, metadata: metadata),
+            for: startAttempt,
+            backend: "Plex"
+        ) else {
+            releaseInFlight(ratingKey: ratingKey)
+            return
+        }
         recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(
             item: item,
             choice: choice,
@@ -135,6 +146,7 @@ extension DownloadManager {
             case .staticOriginal:
                 startStaticPlexPartDownload(ratingKey: ratingKey, item: item, part: part, url: url,
                                             metadata: metadata, choiceLabel: "original",
+                                            attemptID: startAttempt.attemptID,
                                             choice: choice, mediaIndex: mediaIndex, partIndex: partIndex,
                                             server: server, token: token)
             case .optimizeFallback(let fallback):
@@ -159,6 +171,7 @@ extension DownloadManager {
             let url = OptimizeRequest.downloadURL(server: server, token: token, partKey: part.key)
             startStaticPlexPartDownload(ratingKey: ratingKey, item: item, part: part, url: url,
                                         metadata: metadata, choiceLabel: "existing_version",
+                                        attemptID: startAttempt.attemptID,
                                         choice: choice, mediaIndex: mediaIndex, partIndex: partIndex,
                                         server: server, token: token)
 
@@ -174,6 +187,7 @@ extension DownloadManager {
     /// the optimize queue is untouched. `choiceLabel` only tags diagnostics.
     private func startStaticPlexPartDownload(ratingKey: String, item: MediaItem, part: Part, url: URL,
                                              metadata: OfflineMetadata, choiceLabel: String,
+                                             attemptID: DownloadAttemptID,
                                              choice: DownloadChoice, mediaIndex: Int, partIndex: Int,
                                              server: URL, token: String) {
         let expectedBytes = estimatedBytes(for: item, choice: choice,
@@ -188,7 +202,7 @@ extension DownloadManager {
         let destination = store.destinationURL(ratingKey: ratingKey,
                                                ext: ext.isEmpty ? "mp4" : ext)
         // Seed a 0% record so the UI shows the job immediately.
-        store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
+        store.upsert(DownloadRecord(ratingKey: ratingKey, attemptID: attemptID, title: item.title,
                                     localURL: destination, bytes: 0, progress: 0,
                                     metadata: metadata))
         refreshRecords()

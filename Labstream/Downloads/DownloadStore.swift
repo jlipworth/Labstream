@@ -60,8 +60,18 @@ final class DownloadStore: @unchecked Sendable {
 
     enum AttemptRecordCreateResult: Sendable, Equatable {
         case committed(DownloadAttemptKey)
-        case rejectedExistingOwner(DownloadAttemptKey?)
+        case rejectedOwnership(
+            expectedPreviousOwner: DownloadAttemptKey?,
+            actualOwner: DownloadAttemptKey?,
+            reason: AttemptRecordCreateRejection
+        )
         case failed(DownloadAttemptKey, PersistenceFlushResult)
+    }
+
+    enum AttemptRecordCreateRejection: String, Sendable, Equatable {
+        case missingExpectedOwner
+        case ownerMismatch
+        case legacyResetPending
     }
 
     enum LegacyAttemptResetResult: Sendable, Equatable {
@@ -978,19 +988,51 @@ final class DownloadStore: @unchecked Sendable {
     @discardableResult
     func createAttemptOwnedRecord(
         _ record: DownloadRecord,
-        attemptID: DownloadAttemptID
+        attemptID: DownloadAttemptID,
+        replacing expectedPreviousOwner: DownloadAttemptID? = nil
     ) -> AttemptRecordCreateResult {
         let key = DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
         lock.lock()
-        if let existing = rows[record.ratingKey], existing.attemptID != attemptID {
-            let existingKey = existing.attemptID.map {
-                DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: $0)
-            }
+        let existing = rows[record.ratingKey]
+        let expectedKey = expectedPreviousOwner.map {
+            DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: $0)
+        }
+        let existingKey = existing?.attemptID.map {
+            DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: $0)
+        }
+        if existing?.legacyResetPending == true {
             lock.unlock()
-            return .rejectedExistingOwner(existingKey)
+            return .rejectedOwnership(
+                expectedPreviousOwner: expectedKey,
+                actualOwner: existingKey,
+                reason: .legacyResetPending
+            )
+        }
+        // Same-ID replay is the only retry allowed after an ambiguous/failed commit. Otherwise a
+        // replacement must compare-and-swap the exact owner captured when the start was acquired.
+        if existing?.attemptID != attemptID {
+            let rejection: AttemptRecordCreateRejection?
+            if existing == nil, expectedPreviousOwner != nil {
+                rejection = .missingExpectedOwner
+            } else if let expectedPreviousOwner,
+                      existing?.attemptID == expectedPreviousOwner {
+                rejection = nil
+            } else if existing == nil, expectedPreviousOwner == nil {
+                rejection = nil
+            } else {
+                rejection = .ownerMismatch
+            }
+            if let rejection {
+                lock.unlock()
+                return .rejectedOwnership(
+                    expectedPreviousOwner: expectedKey,
+                    actualOwner: existingKey,
+                    reason: rejection
+                )
+            }
         }
         let rel = record.localURL.lastPathComponent
-        let previous = rows[record.ratingKey]
+        let previous = existing
         var metadata = record.metadata ?? previous?.metadata
         if var incoming = record.metadata, let oldMetadata = previous?.metadata {
             incoming.preserveCachedSideAssets(from: oldMetadata)
@@ -1231,6 +1273,11 @@ final class DownloadStore: @unchecked Sendable {
         return rows[ratingKey]?.attemptID?.rawValue
     }
 
+    func downloadAttemptIdentity(ratingKey: String) -> DownloadAttemptID? {
+        lock.lock(); defer { lock.unlock() }
+        return rows[ratingKey]?.attemptID
+    }
+
     /// First writer wins: concurrent task-creation paths for one attempt must all end up
     /// stamping the same token.
     func mintDownloadAttemptIDIfMissing(ratingKey: String, _ attemptID: String) {
@@ -1243,19 +1290,6 @@ final class DownloadStore: @unchecked Sendable {
         // Retain the nested rollout field until every callback reader has migrated. Top-level is
         // authoritative in v3; this mirror exists only for downgrade/dual-read compatibility.
         if row.metadata?.downloadAttemptID == nil { row.metadata?.downloadAttemptID = typed.rawValue }
-        rows[ratingKey] = row
-        lock.unlock()
-        persist()
-    }
-
-    func clearDownloadAttemptID(ratingKey: String) {
-        lock.lock()
-        guard var row = rows[ratingKey], row.attemptID != nil
-                || row.metadata?.downloadAttemptID != nil else { lock.unlock(); return }
-        row.attemptID = nil
-        row.decodedTopLevelAttemptIDPresent = false
-        row.decodedAttemptIdentityDisagrees = false
-        row.metadata?.downloadAttemptID = nil
         rows[ratingKey] = row
         lock.unlock()
         persist()

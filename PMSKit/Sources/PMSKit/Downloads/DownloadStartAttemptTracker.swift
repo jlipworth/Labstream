@@ -9,25 +9,29 @@ import Foundation
 /// resumed chain used to re-seed the row and start the transfer anyway, resurrecting a deleted
 /// download with a live server encoder.
 ///
-/// This tracker mints one UUID per accepted start; the coordinator clears it whenever the
+/// This tracker mints the SAME typed ID that becomes the row's durable owner; the coordinator
+/// clears it whenever the
 /// in-flight slot is released (terminal transition, pause, delete) and re-mints on the next
 /// accepted start. A chain that captured its token at acquisition can therefore detect, after
 /// every await, that it has been superseded — even when the same key has since been re-downloaded
 /// (which re-populates `activeJobs` but with a NEW token).
 public struct DownloadStartAttemptTracker: Sendable, Equatable {
-    private var attemptByKey: [String: UUID] = [:]
+    private var attemptByKey: [String: DownloadAttemptID] = [:]
 
     public init() {}
 
     /// Mint (or replace) the current start-attempt token for `recordKey`.
     @discardableResult
-    public mutating func begin(_ recordKey: String, id: UUID = UUID()) -> UUID {
+    public mutating func begin(
+        _ recordKey: String,
+        id: DownloadAttemptID = .generated()
+    ) -> DownloadAttemptID {
         attemptByKey[recordKey] = id
         return id
     }
 
     /// Whether `id` is still the live attempt for `recordKey`.
-    public func isCurrent(_ recordKey: String, id: UUID) -> Bool {
+    public func isCurrent(_ recordKey: String, id: DownloadAttemptID) -> Bool {
         attemptByKey[recordKey] == id
     }
 

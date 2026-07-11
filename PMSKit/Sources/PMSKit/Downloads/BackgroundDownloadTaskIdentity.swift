@@ -77,4 +77,16 @@ public enum BackgroundDownloadTaskIdentity {
         case nil: return .unmarked
         }
     }
+
+    /// Startup admission is deliberately stricter than steady-state reattach. A task must use the
+    /// current marker format, map to a durable row, and not belong to an approved legacy-reset row.
+    public static func shouldPurgeBeforeAdmission(
+        taskDescription: String?,
+        mapsToKnownRow: Bool,
+        mapsToApprovedResetKey: Bool
+    ) -> Bool {
+        !markerVersion(taskDescription: taskDescription).isCurrent
+            || !mapsToKnownRow
+            || mapsToApprovedResetKey
+    }
 }

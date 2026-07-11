@@ -45,6 +45,19 @@ struct BackgroundDownloadSessionDiagnosticSnapshot: Sendable {
 /// updates via `onChange`. The store itself is internally locked.
 final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
 
+    enum StartupActivationResult: Sendable, Equatable {
+        case activated(cancelledTaskCount: Int, resetKeyCount: Int)
+        case alreadyActive
+        case alreadyPurging
+        case failed(reason: String)
+    }
+
+    private enum StartupAdmissionState: Sendable, Equatable {
+        case dormant
+        case legacyPurge
+        case active
+    }
+
     private static let backgroundCompletionPersistenceTimeout: TimeInterval = 5
 
     /// The fixed background-session identifier. Shared with the app delegate so it can
@@ -143,6 +156,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private let progressNotifyInterval: TimeInterval = 0.5
     private static let appBundleIdentifier = "com.jlipworth.Labstream"
     private let lock = NSLock()
+    /// Background URLSession construction itself can trigger delegate delivery. Keep the session
+    /// dormant until schema-v3 ownership has committed and every pre-current task has disappeared.
+    private var startupAdmissionState: StartupAdmissionState = .dormant
+    private let startupResetQueue = DispatchQueue(
+        label: "com.labstream.downloads.startup-reset",
+        qos: .utility
+    )
+    /// Cancellation completion can race a late body/progress callback. Once purge claims an ID it
+    /// is rejected for the rest of this session object's life, even after admission opens.
+    private var permanentlyRejectedTaskIdentifiers: Set<Int> = []
 
     /// #227/#231: the static byte-range lane follows the Apple-standard large-transfer shape: one
     /// background `URLSessionDownloadTask` for the remaining bytes, using an open-ended
@@ -172,10 +195,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// blob adoption). If their delegate completions race in after
     /// cancellation, ignore their temp bytes.
     private var supersededRangeTaskIdentifiers: Set<Int> = []
-    /// Fallback attempt tokens for rows whose store row/metadata cannot persist one (guarded by
-    /// `lock`). The persisted `OfflineMetadata.downloadAttemptID` is authoritative; this only
-    /// keeps one process-lifetime token per key so every task of an attempt shares a stamp.
-    private var inMemoryAttemptIDs: [String: String] = [:]
     /// #227: bounded per-row budget for re-resuming a failed continuous remainder from the resume
     /// data the OS handed back. Cleared with the other retry counters once durable bytes append.
     private var rangeBlobResumeCounts: [String: Int] = [:]
@@ -344,6 +363,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
 
     func cleanupOrphanedNetworkTemps() {
+        guard isStartupAdmissionActive else { return }
         urlSession.getAllTasks { [weak self] tasks in
             self?.sweepOrphanedNetworkTemps(liveTaskCount: tasks.count, context: .manualScan)
         }
@@ -488,36 +508,189 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         self.store = store
         self.injectedProtocolClasses = protocolClasses
         super.init()
-        // Register so the app delegate can hand us the system completion handler when
-        // the app is relaunched to process finished background events.
-        let session = self
-        Task { @MainActor in BackgroundDownloadCompletionRegistry.shared.register(session) }
     }
 
-    /// The row's current download-attempt token, minting (and persisting) one when the attempt
-    /// has none yet. Every task this attempt creates is stamped with it; adoption/reattach paths
-    /// reject tasks whose stamp mismatches, so a prior attempt's zombie can never be adopted.
-    private func currentAttemptID(ratingKey: String) -> String {
-        if let persisted = store.downloadAttemptID(ratingKey: ratingKey) { return persisted }
-        let minted = UUID().uuidString
-        store.mintDownloadAttemptIDIfMissing(ratingKey: ratingKey, minted)
-        if let persisted = store.downloadAttemptID(ratingKey: ratingKey) { return persisted }
-        // Row has no metadata to persist into — keep one token per process so this attempt's
-        // tasks still agree with each other (they just won't survive a relaunch, which reads
-        // as legacy-drop: safe, only a re-fetch).
-        lock.lock(); defer { lock.unlock() }
-        if let inMemory = inMemoryAttemptIDs[ratingKey] { return inMemory }
-        inMemoryAttemptIDs[ratingKey] = minted
-        return minted
-    }
-
-    /// Ends the row's current attempt: called on cancel/delete and terminal failure so the next
-    /// start mints a fresh token and this attempt's stragglers are rejected everywhere.
-    private func clearAttemptID(ratingKey: String) {
-        store.clearDownloadAttemptID(ratingKey: ratingKey)
+    /// Explicit schema-v3 startup barrier. This is the ONLY API that may create the underlying
+    /// background session while dormant. It cancels all pre-current markers plus every task mapped
+    /// to an approved reset key, waits until cancellation has drained from the daemon's task list,
+    /// then durably resets those exact rows before opening callback/start admission.
+    func activateAfterPurgingLegacyTasks(
+        resetKeys: Set<DownloadAttemptKey>,
+        completion: @escaping @Sendable (StartupActivationResult) -> Void
+    ) {
         lock.lock()
-        inMemoryAttemptIDs.removeValue(forKey: ratingKey)
+        switch startupAdmissionState {
+        case .active:
+            lock.unlock()
+            completion(.alreadyActive)
+            return
+        case .legacyPurge:
+            lock.unlock()
+            completion(.alreadyPurging)
+            return
+        case .dormant:
+            startupAdmissionState = .legacyPurge
+            lock.unlock()
+        }
+
+        let session = urlSession
+        purgeLegacyTasks(
+            in: session,
+            resetKeys: resetKeys,
+            cancelledTaskIdentifiers: [],
+            pass: 0,
+            completion: completion
+        )
+    }
+
+    private func purgeLegacyTasks(
+        in session: URLSession,
+        resetKeys: Set<DownloadAttemptKey>,
+        cancelledTaskIdentifiers: Set<Int>,
+        pass: Int,
+        completion: @escaping @Sendable (StartupActivationResult) -> Void
+    ) {
+        session.getAllTasks { [weak self] tasks in
+            guard let self else {
+                completion(.failed(reason: "session_deallocated"))
+                return
+            }
+            let resetRatingKeys = Set(resetKeys.map(\.ratingKey))
+            let knownKeys = self.store.allRatingKeys
+            self.lock.lock()
+            let alreadyRejected = self.permanentlyRejectedTaskIdentifiers
+            self.lock.unlock()
+            let purgeTasks = tasks.filter { task in
+                let mappedKey = Self.ratingKey(for: task, knownKeys: knownKeys)
+                return alreadyRejected.contains(task.taskIdentifier)
+                    || BackgroundDownloadTaskIdentity.shouldPurgeBeforeAdmission(
+                        taskDescription: task.taskDescription,
+                        mapsToKnownRow: mappedKey != nil,
+                        mapsToApprovedResetKey: mappedKey.map(resetRatingKeys.contains) == true
+                    )
+            }
+            if !purgeTasks.isEmpty {
+                let ids = Set(purgeTasks.map(\.taskIdentifier))
+                self.lock.lock()
+                self.permanentlyRejectedTaskIdentifiers.formUnion(ids)
+                self.lock.unlock()
+                for task in purgeTasks { task.cancel() }
+
+                // Cancellation is asynchronous in nsurlsessiond. Re-enumerate until none of the
+                // claimed legacy/reset tasks remains; never open admission based on one snapshot.
+                guard pass < 100 else {
+                    self.failStartupAdmission(
+                        reason: "legacy_task_cancellation_timeout",
+                        completion: completion
+                    )
+                    return
+                }
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.05) {
+                    self.purgeLegacyTasks(
+                        in: session,
+                        resetKeys: resetKeys,
+                        cancelledTaskIdentifiers: cancelledTaskIdentifiers.union(ids),
+                        pass: pass + 1,
+                        completion: completion
+                    )
+                }
+                return
+            }
+
+            // Store reset synchronously waits for its persistence outcome. Never do that on
+            // URLSession's getAllTasks callback queue: it trips the Thread Performance Checker and
+            // can delay background delegate delivery. One serial utility queue owns reset+open.
+            self.startupResetQueue.async {
+                for key in resetKeys.sorted(by: {
+                    if $0.ratingKey != $1.ratingKey { return $0.ratingKey < $1.ratingKey }
+                    return $0.attemptID.rawValue < $1.attemptID.rawValue
+                }) {
+                    switch self.store.resetLegacyAttemptAfterTaskCancellation(key) {
+                    case .committed:
+                        continue
+                    case .cleanupFailed(_, let failureCount):
+                        self.failStartupAdmission(
+                            reason: "legacy_reset_cleanup_failed_\(failureCount)",
+                            completion: completion
+                        )
+                        return
+                    case .failed(_, let persistence):
+                        self.failStartupAdmission(
+                            reason: "legacy_reset_persistence_\(String(describing: persistence))",
+                            completion: completion
+                        )
+                        return
+                    case .staleOrMissing:
+                        self.failStartupAdmission(reason: "legacy_reset_stale_or_missing", completion: completion)
+                        return
+                    case .notPending:
+                        // Activation is retryable after a prior pass reset some keys and a later key
+                        // failed. These keys come from the already-committed migration plan, so an
+                        // exact owner with no remaining reset barrier is success, not a fatal replay.
+                        continue
+                    }
+                }
+
+                self.lock.lock()
+                guard self.startupAdmissionState == .legacyPurge else {
+                    self.lock.unlock()
+                    completion(.failed(reason: "admission_state_changed"))
+                    return
+                }
+                self.startupAdmissionState = .active
+                self.lock.unlock()
+                AppDiagnostics.record(.downloads, "downloads.startup_admission_opened", fields: [
+                    "cancelled_task_count": .int(cancelledTaskIdentifiers.count),
+                    "reset_key_count": .int(resetKeys.count),
+                ])
+                completion(.activated(
+                    cancelledTaskCount: cancelledTaskIdentifiers.count,
+                    resetKeyCount: resetKeys.count
+                ))
+            }
+        }
+    }
+
+    private func failStartupAdmission(
+        reason: String,
+        completion: @escaping @Sendable (StartupActivationResult) -> Void
+    ) {
+        lock.lock()
+        startupAdmissionState = .dormant
         lock.unlock()
+        AppDiagnostics.record(.downloads, "downloads.startup_admission_failed", fields: [
+            "reason": .label(reason),
+        ])
+        completion(.failed(reason: reason))
+    }
+
+    private func admitsTaskCallback(_ taskIdentifier: Int) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return startupAdmissionState == .active
+            && !permanentlyRejectedTaskIdentifiers.contains(taskIdentifier)
+    }
+
+    private func rejectTaskCallback(_ task: URLSessionTask, temporaryBody: URL? = nil) -> Bool {
+        guard !admitsTaskCallback(task.taskIdentifier) else { return false }
+        lock.lock()
+        permanentlyRejectedTaskIdentifiers.insert(task.taskIdentifier)
+        inflight.removeValue(forKey: task.taskIdentifier)
+        rangeInflight.removeValue(forKey: task.taskIdentifier)
+        lock.unlock()
+        if let temporaryBody { try? fileManager.removeItem(at: temporaryBody) }
+        task.cancel()
+        return true
+    }
+
+    private var isStartupAdmissionActive: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return startupAdmissionState == .active
+    }
+
+    /// Task creation never mints authority. The manager/store must have already committed the
+    /// top-level schema-v3 owner before the session is allowed to create external work.
+    private func currentAttemptIdentity(ratingKey: String) -> DownloadAttemptID? {
+        store.downloadAttemptIdentity(ratingKey: ratingKey)
     }
 
     private func fileSize(at url: URL) -> Int? {
@@ -663,6 +836,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     ///   reconcile the rest of the store to `.failed` (D2) — anything NOT in this set
     ///   has no live task and so can't be distinguished from a stall.
     func reattach(onReattached: (@Sendable (Set<String>) -> Void)? = nil) {
+        guard isStartupAdmissionActive else {
+            onReattached?([])
+            return
+        }
         urlSession.getAllTasks { [weak self] tasks in
             guard let self else { onReattached?([]); return }
             // Rebuild the taskIdentifier -> (ratingKey, destination) map for any
@@ -1213,6 +1390,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// Force the lazy background session to be created (and thus its delegate bound),
     /// so the OS can deliver `urlSessionDidFinishEvents` after a relaunch.
     func ensureSessionReady() {
+        guard isStartupAdmissionActive else { return }
         _ = urlSession
     }
 
@@ -1239,6 +1417,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     func start(ratingKey: String, with request: URLRequest, to destination: URL,
                expectedBytes: Int? = nil, byteRangeCheckpoint: Bool = false,
                resetRangeRestartCounters: Bool = true) throws {
+        guard isStartupAdmissionActive else { throw CancellationError() }
         let policyRequest = requestApplyingTaskPolicies(request)
         // Pre-flight storage check: refuse if free space can't plausibly hold the
         // file. Sized against the expected bytes (plus headroom for the OS and the
@@ -1283,9 +1462,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             return
         }
 
+        guard let attemptID = currentAttemptIdentity(ratingKey: ratingKey) else {
+            throw CancellationError()
+        }
         let task = urlSession.downloadTask(with: policyRequest)
         task.taskDescription = DownloadAttemptMarker.taskDescription(
-            ratingKey: ratingKey, attemptID: currentAttemptID(ratingKey: ratingKey))
+            ratingKey: ratingKey, attemptID: attemptID)
         lock.lock()
         retryCounts[ratingKey] = 0
         lastProgressNotify = nil
@@ -1536,8 +1718,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         if let validator = store.rangeValidator(ratingKey: ratingKey) {
             ranged.setValue(validator, forHTTPHeaderField: "If-Range")
         }
+        guard let attemptID = currentAttemptIdentity(ratingKey: ratingKey) else {
+            throw CancellationError()
+        }
         let task = urlSession.downloadTask(with: ranged)
-        let attemptID = currentAttemptID(ratingKey: ratingKey)
         task.taskDescription = plan.length != nil
             ? StaticRangeSegmentMarker.taskDescription(ratingKey: ratingKey,
                                                        offset: plan.offset,
@@ -1700,10 +1884,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// which the caller's normal failure path handles.
     @discardableResult
     func resume(ratingKey: String, resumeData: Data, to destination: URL) -> Bool {
+        guard isStartupAdmissionActive else { return false }
         guard !resumeData.isEmpty else { return false }
+        guard let attemptID = currentAttemptIdentity(ratingKey: ratingKey) else { return false }
         let task = urlSession.downloadTask(withResumeData: resumeData)
         task.taskDescription = DownloadAttemptMarker.taskDescription(
-            ratingKey: ratingKey, attemptID: currentAttemptID(ratingKey: ratingKey))
+            ratingKey: ratingKey, attemptID: attemptID)
         lock.lock()
         retryCounts[ratingKey] = 0
         lastProgressNotify = nil
@@ -1771,6 +1957,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
         // #169: opaque and range tasks share one session now — enumerate it once and dispatch each
         // matched task by lane (range entries are removed as `pauseRangeTask` matches them).
+        guard isStartupAdmissionActive else { return }
         urlSession.getAllTasks { tasks in
             var matched = false
             for task in tasks {
@@ -1992,11 +2179,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         rangeBlobResumeCounts.removeValue(forKey: ratingKey)
         lock.unlock()
         endRangeRequestRebuildGrace(ratingKey: ratingKey, reason: "cancelled")
-        // The attempt dies with the cancel: a delete → quick re-download of the same key mints a
-        // fresh token, so this attempt's late finishes/redeliveries are rejected, never adopted.
-        clearAttemptID(ratingKey: ratingKey)
+        // Keep the durable owner on the row. Delete removes the whole row immediately; restart
+        // paths need the old owner so the replacement can perform an exact A → B compare/swap.
+        // Clearing only the token would leave a schema-v3 row malformed across relaunch and would
+        // make a legitimate Retry look like an unsafe attempt to adopt an unowned row.
         // C2: the caller is about to delete/reset this row — held segment stashes must not survive.
         purgeHeldRangeSegments(ratingKey: ratingKey)
+
+        // A dormant session must remain inert: touching the lazy URLSession here would construct
+        // it outside the startup migration/admission boundary. There cannot be admitted task IDs
+        // while dormant, and activation owns cancellation of every pre-admission OS task.
+        guard isStartupAdmissionActive else { return }
 
         // #169: opaque and range tasks both live on `urlSession` now — cancel by id on one session.
         let all = ids.union(rangeIds)
@@ -2014,6 +2207,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     didWriteData bytesWritten: Int64,
                     totalBytesWritten: Int64,
                     totalBytesExpectedToWrite: Int64) {
+        guard !rejectTaskCallback(downloadTask) else { return }
         lock.lock()
         let rangeEntry = rangeInflight[downloadTask.taskIdentifier]
         let entry = rangeEntry == nil ? inflight[downloadTask.taskIdentifier] : nil
@@ -2260,6 +2454,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     func urlSession(_ session: URLSession,
                     downloadTask: URLSessionDownloadTask,
                     didFinishDownloadingTo location: URL) {
+        guard !rejectTaskCallback(downloadTask, temporaryBody: location) else { return }
         lock.lock()
         let superseded = supersededRangeTaskIdentifiers.remove(downloadTask.taskIdentifier) != nil
         let rangeEntry = superseded ? nil : rangeInflight[downloadTask.taskIdentifier]
@@ -3627,11 +3822,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// the rest of the app run. No-op for rows with no held segments (including the opaque lane).
     private func setFailedPurgingHeldSegments(ratingKey: String) {
         purgeHeldRangeSegments(ratingKey: ratingKey)
-        // A terminal failure ends the attempt (a Retry mints a fresh token) and must tear the
-        // rest of the train down BEFORE the `.failed` write: up to 7 live siblings would
+        // A terminal failure must tear the rest of the train down BEFORE the `.failed` write: up
+        // to 7 live siblings would
         // otherwise keep transferring, auto-promote the row back to `.downloading` via
-        // `updateProgress`, and loop an unbudgeted refetch cycle over the purged held bodies.
-        clearAttemptID(ratingKey: ratingKey)
+        // `updateProgress`, and loop an unbudgeted refetch cycle over the purged held bodies. The
+        // failed row deliberately retains attempt A: explicit Retry mints B and atomically replaces
+        // exactly A, while late callbacks from A remain identifiable as stale.
         let teardown = StaticRangeTrainIntegrityPolicy.terminalFailureTeardown()
         var superseded: [Int] = []
         lock.lock()
@@ -3960,6 +4156,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// instead of trying to request another Range after EOF.
     @discardableResult
     func finalizeCompletedStaticRangeFile(ratingKey: String, validationLabel: String) -> Bool {
+        guard isStartupAdmissionActive else { return false }
         guard let record = store.record(for: ratingKey) else { return false }
         let bytes = fileSize(at: record.localURL) ?? record.bytes
         guard bytes > 0 else { return false }
@@ -4653,6 +4850,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     func urlSession(_ session: URLSession,
                     task: URLSessionTask,
                     didCompleteWithError error: Error?) {
+        guard !rejectTaskCallback(task) else { return }
         // #169: opaque and range tasks now share ONE session, so the task id uniquely identifies its
         // lane (no independent id spaces). A range task's SUCCESS path is fully handled in
         // `finishRangeRemainder` (which removes the entry), so a range entry still present here means the
@@ -5003,9 +5201,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         retryCounts[entry.ratingKey] = nextAttempt
         lock.unlock()
 
+        guard let attemptID = currentAttemptIdentity(ratingKey: entry.ratingKey) else { return false }
         let retryTask = urlSession.downloadTask(withResumeData: resumeData)
         retryTask.taskDescription = DownloadAttemptMarker.taskDescription(
-            ratingKey: entry.ratingKey, attemptID: currentAttemptID(ratingKey: entry.ratingKey))
+            ratingKey: entry.ratingKey, attemptID: attemptID)
         lock.lock()
         inflight[retryTask.taskIdentifier] = entry
         loggedProgressMilestones[retryTask.taskIdentifier] = []
@@ -5212,8 +5411,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                            remainderReason: String,
                                            attempt: Int?,
                                            retryingSegment failedSegment: RangeTransfer? = nil) -> Bool {
+        guard let attemptID = currentAttemptIdentity(ratingKey: ratingKey) else { return false }
         let task = urlSession.downloadTask(withResumeData: resumeData)
-        let attemptID = currentAttemptID(ratingKey: ratingKey)
         task.taskDescription = DownloadAttemptMarker.taskDescription(ratingKey: ratingKey,
                                                                      attemptID: attemptID)
         let blobOffset = RangeTransferHTTPPolicy.rangeRequestStart(from: task.originalRequest)
@@ -5341,6 +5540,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     @discardableResult
     func resumeRange(ratingKey: String, resumeData: Data, to destination: URL,
                      expectedBytes: Int?) -> Bool {
+        guard isStartupAdmissionActive else { return false }
         guard !resumeData.isEmpty else { return false }
         lock.lock()
         rangeHaltKinds.removeValue(forKey: ratingKey)
@@ -5488,6 +5688,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// transaction used cellular/expensive/constrained networking without logging addresses/hosts.
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     didFinishCollecting metrics: URLSessionTaskMetrics) {
+        guard admitsTaskCallback(task.taskIdentifier) else { return }
         lock.lock()
         let rangeEntry = rangeInflight[task.taskIdentifier]
         let opaqueEntry = rangeEntry == nil ? inflight[task.taskIdentifier] : nil
@@ -5521,6 +5722,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// completion handler the app delegate stashed, so the OS knows our UI is current
     /// and snapshots a fresh app preview. Must run on the main queue.
     func urlSession(_ session: URLSession, taskIsWaitingForConnectivity task: URLSessionTask) {
+        guard !rejectTaskCallback(task) else { return }
         lock.lock()
         let rangeEntry = rangeInflight[task.taskIdentifier]
         let entry = rangeEntry == nil ? inflight[task.taskIdentifier] : nil
