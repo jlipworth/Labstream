@@ -848,3 +848,32 @@ mixed iPad/Vision Pro regression test. The valid pre/post-redeploy headset bundl
 `build/headset-evidence/headset-evidence-20260711T143359Z` (local, ignored, potentially sensitive).
 Focused policy coverage, the full **1396-test / 169-suite** PMSKit run, all 11 tooling-hardening
 tests, and a signed physical-device build passed before deployment.
+
+#### Post-fix off-head verification (2026-07-11)
+
+The 64 MiB/depth-two build was then left off-head from 14:59:44–19:44:40 UTC. Comparing the
+14:57:54 and 19:46:30 headset indexes proves **1,744,830,464 durable bytes** were committed while
+off-head: King of New York advanced 134,217,728 bytes, Legend 134,217,728 bytes, Steve Jobs
+671,088,640 bytes, and Tropic Thunder 805,306,368 bytes. Repeated background URLSession completion
+cycles occurred in the same app process, and the active task count never exceeded ten. This closes
+the primary phase-7 question: the corrected train does both transfer and checkpoint useful progress
+while the headset is not being worn.
+
+The pass exposed two remaining follow-ups. First, the toolbar briefly reported roughly 114 GB and
+fell to roughly 109 GB on a network switch. Diagnostics captured the exact cause: a 64 MiB segment's
+HTTP/3 task counter accumulated 4,991,033,070 optimistic body bytes across two transactions, so its
+row aggregate reached 5,726,836,652 bytes despite only 671,088,640 durable bytes. When URLSession
+reset the counter and the request rebuilt from the durable checkpoint, the phantom roughly 5 GB
+disappeared. Closed-segment live accounting must therefore cap each task contribution at that
+segment's planned body length (and retain raw counters only as diagnostics).
+
+Second, Flight stopped at a 402,653,184-byte durable checkpoint. Repeated internally resumed HTTP/3
+responses began ahead of their requested offsets; the final held segment started at 469,855,238
+instead of 469,762,048. Its assembled body was not a complete 64 MiB segment, so it correctly could
+not use the complete-internal-resume exception, exhausted the row's offset-mismatch budget, and
+failed rather than append corrupt bytes. The integrity guard worked, but retry/recovery policy still
+needs to prevent this path from terminally stranding an otherwise valid durable checkpoint.
+
+Local evidence bundles (ignored and potentially sensitive):
+`headset-evidence-20260711T145754Z`, `headset-evidence-20260711T194630Z`, and the immediate
+post-network-switch snapshot `headset-evidence-20260711T194812Z`.
