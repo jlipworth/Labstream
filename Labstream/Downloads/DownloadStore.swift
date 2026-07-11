@@ -1,4 +1,6 @@
 import Foundation
+import CryptoKit
+import Darwin
 import PMSKit
 
 // `DownloadStatus`, `OfflineMetadata`, and `DownloadRecord` — the pure, Codable value
@@ -82,6 +84,19 @@ final class DownloadStore: @unchecked Sendable {
         /// matching the store writer's existing semantics. Callers must not create dependent
         /// external work until a later mutation/flush proves the snapshot committed.
         case persistenceFailed(PersistenceFlushResult)
+    }
+
+    enum AttemptStagingPromotionResult: Sendable, Equatable {
+        case promoted
+        case staleOrMissingOwner
+        case invalidPath
+        case sourceMissing
+        case failed(errorType: String)
+    }
+
+    struct AttemptStagingSweepResult: Sendable, Equatable {
+        let removedRelativePaths: [String]
+        let failedRelativePaths: [String]
     }
 
     enum LegacyAttemptResetResult: Sendable, Equatable {
@@ -496,6 +511,128 @@ final class DownloadStore: @unchecked Sendable {
         let safeRatingKey = Self.safeFilenameComponent(ratingKey)
         let safeExt = Self.safeExtension(ext)
         return baseDirectory.appendingPathComponent("\(safeRatingKey).\(safeExt)")
+    }
+
+    /// Deterministic same-directory staging home for one attempt's media or side asset. The full
+    /// SHA-256 covers the unsanitized ownership key and final relative path, so legacy arbitrary
+    /// attempt tokens cannot collide merely because their path-safe spellings would be equal.
+    func attemptStagingURL(for key: DownloadAttemptKey, stableURL: URL) -> URL? {
+        guard let stableRelativePath = stableRelativePath(for: stableURL) else { return nil }
+        return baseDirectory.appendingPathComponent(
+            Self.attemptStagingRelativePath(for: key, stableRelativePath: stableRelativePath))
+    }
+
+    /// Atomically promote only while `key` is still the exact row owner. The ownership check and
+    /// POSIX rename share the store lock with attempt create/remove, so stale attempt A cannot pass
+    /// the check, let B take ownership, and then replace or delete B's stable file.
+    @discardableResult
+    func promoteAttemptStagingFile(for key: DownloadAttemptKey,
+                                   stagingURL: URL,
+                                   to stableURL: URL) -> AttemptStagingPromotionResult {
+        guard stableRelativePath(for: stableURL) != nil,
+              let expectedStaging = attemptStagingURL(for: key, stableURL: stableURL),
+              stagingURL.standardizedFileURL == expectedStaging.standardizedFileURL else {
+            return .invalidPath
+        }
+        lock.lock(); defer { lock.unlock() }
+        guard rows[key.ratingKey]?.attemptID == key.attemptID else {
+            return .staleOrMissingOwner
+        }
+        guard fileManager.fileExists(atPath: stagingURL.path) else { return .sourceMissing }
+        let result = stagingURL.withUnsafeFileSystemRepresentation { source in
+            stableURL.withUnsafeFileSystemRepresentation { destination in
+                guard let source, let destination else { return -1 }
+                return Int(Darwin.rename(source, destination))
+            }
+        }
+        guard result == 0 else {
+            return .failed(errorType: String(reflecting: POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)))
+        }
+        return .promoted
+    }
+
+    /// Conservative startup inventory: only recognized staging files not attributable to a
+    /// currently-owned row (or explicitly supplied live reference) are returned.
+    func unreferencedAttemptStagingURLs(
+        additionalReferencedRelativePaths: Set<String> = []
+    ) -> [URL] {
+        lock.lock(); defer { lock.unlock() }
+        return unreferencedAttemptStagingURLsLocked(
+            additionalReferencedRelativePaths: additionalReferencedRelativePaths)
+    }
+
+    /// Delete startup-orphan staging while holding the same lock as promotion. Unrelated files and
+    /// staging attributable to a current owner are never selected.
+    @discardableResult
+    func sweepUnreferencedAttemptStaging(
+        additionalReferencedRelativePaths: Set<String> = []
+    ) -> AttemptStagingSweepResult {
+        lock.lock(); defer { lock.unlock() }
+        let candidates = unreferencedAttemptStagingURLsLocked(
+            additionalReferencedRelativePaths: additionalReferencedRelativePaths)
+        var removed: [String] = []
+        var failed: [String] = []
+        for url in candidates {
+            do {
+                try fileManager.removeItem(at: url)
+                removed.append(url.lastPathComponent)
+            } catch {
+                failed.append(url.lastPathComponent)
+            }
+        }
+        return .init(removedRelativePaths: removed.sorted(), failedRelativePaths: failed.sorted())
+    }
+
+    private func stableRelativePath(for url: URL) -> String? {
+        let standardized = url.standardizedFileURL
+        guard standardized.deletingLastPathComponent() == baseDirectory.standardizedFileURL,
+              Self.isSafeOneLevelRelativePath(standardized.lastPathComponent),
+              !Self.isAttemptStagingRelativePath(standardized.lastPathComponent) else { return nil }
+        return standardized.lastPathComponent
+    }
+
+    private static func attemptStagingRelativePath(for key: DownloadAttemptKey,
+                                                   stableRelativePath: String) -> String {
+        let identity = "\(key.ratingKey.utf8.count):\(key.ratingKey)\u{0}"
+            + "\(key.attemptID.rawValue.utf8.count):\(key.attemptID.rawValue)\u{0}"
+            + stableRelativePath
+        let digest = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
+        return ".attempt-stage-v1-\(digest).stage"
+    }
+
+    private static func isAttemptStagingRelativePath(_ value: String) -> Bool {
+        let prefix = ".attempt-stage-v1-"
+        let suffix = ".stage"
+        guard value.hasPrefix(prefix), value.hasSuffix(suffix) else { return false }
+        let start = value.index(value.startIndex, offsetBy: prefix.count)
+        let end = value.index(value.endIndex, offsetBy: -suffix.count)
+        let digest = value[start..<end]
+        return digest.count == 64 && digest.allSatisfy { $0.isHexDigit && !$0.isUppercase }
+    }
+
+    private func unreferencedAttemptStagingURLsLocked(
+        additionalReferencedRelativePaths: Set<String>
+    ) -> [URL] {
+        var referenced = additionalReferencedRelativePaths.filter(Self.isAttemptStagingRelativePath)
+        for row in rows.values {
+            guard let attemptID = row.attemptID else { continue }
+            let key = DownloadAttemptKey(ratingKey: row.ratingKey, attemptID: attemptID)
+            let stablePaths = [row.relativePath] + sideAssetRelativePaths(for: row.metadata)
+            for stablePath in stablePaths where Self.isSafeOneLevelRelativePath(stablePath) {
+                referenced.insert(Self.attemptStagingRelativePath(
+                    for: key, stableRelativePath: stablePath))
+            }
+        }
+        let urls = (try? fileManager.contentsOfDirectory(
+            at: baseDirectory, includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsSubdirectoryDescendants])) ?? []
+        return urls.filter { url in
+            let name = url.lastPathComponent
+            guard Self.isAttemptStagingRelativePath(name), !referenced.contains(name) else {
+                return false
+            }
+            return (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        }.sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
     private static func safeFilenameComponent(_ value: String) -> String {
