@@ -1113,7 +1113,8 @@ final class DownloadStore: @unchecked Sendable {
             } else {
                 newStatus = DownloadStatus.reconciledStatus(
                     current: row.status, fileExists: fileExists,
-                    hasLiveTask: hasLiveTask, hasResumeData: hasResumeData)
+                    hasLiveTask: hasLiveTask, hasResumeData: hasResumeData,
+                    canRestartFromStaticCheckpoint: resumeMode == .staticByteRange)
             }
             let shouldResetOptimizedProgress = isPlexServerPrepOptimizedJob
                 && (row.bytes != 0 || row.progress != 0)

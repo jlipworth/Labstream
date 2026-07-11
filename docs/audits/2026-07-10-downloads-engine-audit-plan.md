@@ -808,3 +808,43 @@ continues cancelling exact-title queue items only while they are non-completed a
 completed type-42 item. Duplicate completed Plex Versions remain server/user-managed artifacts. The
 live probe is intentionally read-only and now preserves the structural evidence needed to detect if
 a future PMS release adds an output identity that makes safe cleanup possible.
+
+### Phase-7 physical evidence: off-head static trains (2026-07-11)
+
+The first real Vision Pro pass closed the ordinary off-head transfer question, while exposing three
+follow-up defects. The same process entered background from 12:53:59–13:27:39 UTC and again from
+13:29:37–14:14:58 UTC. Although SwiftUI/delegate progress callbacks were mostly deferred until wake,
+`downloads.health_snapshot.session_pending_temp_cleanup_bytes` grew from 528,455,202 to
+2,071,853,711 bytes in the first interval (+1,543,398,509) and from 2,152,600,219 to 4,504,388,449
+bytes in the second (+2,351,788,230). A 512 MiB Tropic Thunder segment completed and was durably held
+at the second wake. No process death, auth rejection, or waiting-for-connectivity event occurred;
+completed-task metrics reported HTTP/3 on a constrained, non-cellular, non-expensive path. Thus the
+background URLSession **did transfer off-head**, averaging roughly 0.76–0.86 MB/s across the active
+rows, but the suspended UI and checkpoint model made that work look stationary.
+
+The test had five rows expanded into 34 simultaneous 512 MiB Range tasks. Most transferred bytes
+remained in nsurlsessiond temp files or ahead-of-checkpoint held stashes because the leading segment
+had not finished, leaving four rows at a zero durable checkpoint. The corrective regime uses 64 MiB
+segments with depth two (head plus one look-ahead), so five rows create at most ten tasks and commit
+the leading checkpoint materially sooner. Held-stash lengths are now included in live/pause
+accounting.
+
+The downloaded-total bounce was also reproduced and explained. `refreshRecords()` discarded an
+active live overlay after 15 seconds without a callback even though the display policy intentionally
+keeps stale active samples across sleep/wake; completed ahead-of-checkpoint stashes also disappeared
+from the live sum before assembly. Active overlays now remain monotonic until the row leaves
+`.downloading`, and held bytes remain counted through the temp→stash→durable ownership transitions.
+
+Finally, pausing a zero-checkpoint static row could yield no opaque URLSession blob. Reconciliation
+then demoted the deliberately paused row to `.failed`, while the retained interrupted-resumable copy
+still read “Download paused — tap to resume,” rendering that text in failure red. Static Range rows
+now remain `.paused` without a blob because they can always issue a new Range request from their
+durable checkpoint, including byte zero.
+
+Evidence collection itself initially selected a connected iPad because its CoreDevice metadata
+contained a loose `vision` substring. Those bundles were not headset evidence. The selector now
+requires an exact visionOS platform, `realityDevice` type, or Apple Vision Pro marketing name, with a
+mixed iPad/Vision Pro regression test. The valid pre/post-redeploy headset bundle begins at
+`build/headset-evidence/headset-evidence-20260711T143359Z` (local, ignored, potentially sensitive).
+Focused policy coverage, the full **1396-test / 169-suite** PMSKit run, all 11 tooling-hardening
+tests, and a signed physical-device build passed before deployment.

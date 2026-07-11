@@ -81,6 +81,17 @@ struct DownloadLiveRangeProgressPolicyTests {
             liveSegmentBodyBytes: [-10, 50]) == 50)
     }
 
+    @Test("Held bodies remain in the live aggregate after leaving URLSession temp ownership")
+    func heldBodiesRemainInAggregate() {
+        let durable = 64 * 1024 * 1024
+        let liveBodies = [8 * 1024 * 1024, 4 * 1024 * 1024]
+        let heldBodies = [64 * 1024 * 1024]
+        #expect(DownloadLiveRangeProgressPolicy.aggregatedLiveBytes(
+            durableBytes: durable,
+            liveSegmentBodyBytes: liveBodies + heldBodies)
+            == 140 * 1024 * 1024)
+    }
+
     @Test("Train pause display is durable + Σ bodies, never the highest segment file position")
     func trainPauseDisplayUsesAggregateNotMaxPosition() {
         // B1 regression: reproduce the 8-segment train from the field report (15.67 GB original,

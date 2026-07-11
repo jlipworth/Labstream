@@ -72,7 +72,8 @@ public enum DownloadStatus: String, Codable, Sendable, Equatable {
     public static func reconciledStatus(current: DownloadStatus,
                                         fileExists: Bool,
                                         hasLiveTask: Bool,
-                                        hasResumeData: Bool = false) -> DownloadStatus {
+                                        hasResumeData: Bool = false,
+                                        canRestartFromStaticCheckpoint: Bool = false) -> DownloadStatus {
         switch current {
         case .preparing:
             // The convert job runs server-side and survives app death, so a `.preparing` row is
@@ -92,9 +93,11 @@ public enum DownloadStatus: String, Codable, Sendable, Equatable {
             return .failed
         case .paused:
             // A recoverable interruption stays resumable only while its resume blob persists;
-            // if the task is somehow live again, let it run.
+            // static Range rows are the exception: they can always re-request from their durable
+            // checkpoint, including byte zero, without an opaque URLSession resume blob.
+            // If the task is somehow live again, let it run.
             if hasLiveTask { return .downloading }
-            return hasResumeData ? .paused : .failed
+            return hasResumeData || canRestartFromStaticCheckpoint ? .paused : .failed
         case .failed:
             return .failed
         }

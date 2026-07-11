@@ -425,6 +425,29 @@ struct OfflineDownloadModelsTests {
         }
     }
 
+    @Test("paused static range rows remain manually restartable without an opaque resume blob")
+    func pausedStaticRangeRowsRemainRestartable() {
+        #expect(DownloadStatus.reconciledStatus(
+            current: .paused,
+            fileExists: true,
+            hasLiveTask: false,
+            hasResumeData: false,
+            canRestartFromStaticCheckpoint: true) == .paused)
+        // Byte zero is still a valid static checkpoint: Resume can issue a fresh Range request.
+        #expect(DownloadStatus.reconciledStatus(
+            current: .paused,
+            fileExists: false,
+            hasLiveTask: false,
+            hasResumeData: false,
+            canRestartFromStaticCheckpoint: true) == .paused)
+        // Opaque/non-static rows retain the old fail-closed behavior.
+        #expect(DownloadStatus.reconciledStatus(
+            current: .paused,
+            fileExists: false,
+            hasLiveTask: false,
+            hasResumeData: false) == .failed)
+    }
+
     @Test("failed rows stay failed across all disk/task combinations")
     func failedRowsAreTerminal() {
         for fileExists in [true, false] {

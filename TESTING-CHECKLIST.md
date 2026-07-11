@@ -250,6 +250,23 @@ them.
 | Play while downloading | While the row is active, confirm the Offline row has no partial-file Play action. From the online detail, Play must start the normal remote stream while the download continues; after validated completion, Play Offline becomes available and uses the local file. | The active download is evidenced by `downloads.range_progress`/`downloads.progress_milestone` on its hash. Local launch after completion records `playback.offline_launch` with that same hash; it must not occur for the partial row. Remote playback emits `playback.start_path`/`playback.session_start`, but those events do not carry the download hash. | There is no shared correlation field between a remote playback session and the simultaneous download. The “remote play continued while this row downloaded” portion still needs screen recording/timestamps; diagnostics can prove only the two independent activities and that partial offline launch did not occur. |
 | Emby Convert finishes while asleep | Start a new Emby Convert job, lock/background the device before server completion, and leave it asleep until the server reports completion. On wake/relaunch, pass if the persisted job is resumed, the newly converted file is selected, the row hands off to the static transfer lane, and it eventually validates without creating a duplicate Convert job. | For the same hash: initial `downloads.convert_start`; after recovery `downloads.convert_resume`; then `downloads.convert_finalizing`, `downloads.convert_completed`, and a new `downloads.transfer_start`/`downloads.range_start`, ending in `downloads.finalize_finished`. `downloads.convert_poll_error` or `downloads.convert_failed` documents a real failure branch. | Convert polling is app-driven and there is no server-completion timestamp or sleep/wake event. Diagnostics establish discovery/handoff after recovery, not that the server finished specifically while the device slept; retain server-side job timestamps for that claim. |
 
+### Physical evidence recorded 2026-07-11
+
+- [x] **Ordinary off-head static transfer continued at the transport layer.** During two same-process
+      Vision Pro background intervals (about 34 and 45 minutes), URLSession-owned temp bytes grew by
+      1,543,398,509 and 2,351,788,230 bytes respectively. Deferred callbacks arrived at wake, including
+      a completed 512 MiB held segment. No process death, auth failure, or connectivity-wait event was
+      recorded; task metrics reported HTTP/3 over a constrained, non-cellular path.
+- [ ] **Retest user-visible/durable off-head progress after the follow-up fix.** The first run exposed
+      34 simultaneous 512 MiB tasks across five rows, stale live-overlay expiry, held-stash omission
+      from the aggregate, and zero-checkpoint paused rows reconciling to failed/red. The follow-up uses
+      64 MiB segments at depth two, keeps active overlays monotonic, counts held bodies, and preserves
+      static paused intent without an opaque resume blob. Require another off-head interval before
+      checking this presentation/durable-checkpoint cell.
+- The first collector attempt selected a connected iPad because of a loose `vision` substring match;
+  it is invalid evidence. Headset collection now requires exact visionOS/realityDevice identity and is
+  regression-tested with mixed iPad/Vision Pro inventory.
+
 ## 6. Music
 
 Run the common music rows against Plex and at least one Jellyfin and Emby library.

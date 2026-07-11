@@ -1786,9 +1786,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let isTrain = entries.contains { $0.segmentLength != nil }
         let durableBytes = entries.first.flatMap { fileSize(at: $0.destination) }
             ?? store.durableStaticRangeCheckpointSize(ratingKey: ratingKey)
+        lock.lock()
+        let heldBodyBytes = heldRangeSegments[ratingKey]?.values.map(\.length) ?? []
+        lock.unlock()
         let aggregate = DownloadLiveRangeProgressPolicy.aggregatedLiveBytes(
             durableBytes: durableBytes,
-            liveSegmentBodyBytes: entries.map(\.bodyBytesWritten))
+            liveSegmentBodyBytes: entries.map(\.bodyBytesWritten) + heldBodyBytes)
         return RangePauseContext(isTrain: isTrain,
                                  durableBytes: durableBytes,
                                  aggregateDisplayBytes: aggregate)
@@ -2086,11 +2089,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             let liveSegmentBodyBytes = rangeInflight.values
                 .filter { $0.ratingKey == rangeEntry.ratingKey }
                 .map(\.bodyBytesWritten)
+            let heldSegmentBodyBytes = heldRangeSegments[rangeEntry.ratingKey]?.values.map(\.length) ?? []
             retryCounts[rangeEntry.ratingKey] = 0
             lock.unlock()
             let aggregatedLiveBytes = DownloadLiveRangeProgressPolicy.aggregatedLiveBytes(
                 durableBytes: durableBytes,
-                liveSegmentBodyBytes: liveSegmentBodyBytes)
+                liveSegmentBodyBytes: liveSegmentBodyBytes + heldSegmentBodyBytes)
             // Normalize against the resume display watermark HERE, where the durable base offset
             // is known — a blob-resumed task can report bytes from a fresh per-task baseline, and
             // rebasing without the base offset used to double-count it into the display total. For
@@ -4568,6 +4572,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     var bodies = rangeInflight.values
                         .filter { $0.ratingKey == rangeEntry.ratingKey }
                         .map(\.bodyBytesWritten)
+                    bodies.append(contentsOf: heldRangeSegments[rangeEntry.ratingKey]?.values.map(\.length) ?? [])
                     lock.unlock()
                     bodies.append(max(rangeEntry.bodyBytesWritten, Int(max(task.countOfBytesReceived, 0))))
                     displayBytes = DownloadLiveRangeProgressPolicy.aggregatedLiveBytes(
