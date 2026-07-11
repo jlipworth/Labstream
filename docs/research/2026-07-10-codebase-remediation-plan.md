@@ -192,6 +192,38 @@ their relationship during the schema-v3 migration.
   nonblocking ticket-returning submissions; merely returning a ticket after the current wait does
   not solve that case.
 
+#### 2026-07-11 — Phase 1A held-manifest replacement ownership
+
+- **Status:** replacement failure/cancel ownership complete; removal-result semantics remain.
+- **Commit:** `7005fd5` (`Keep held range bodies valid across manifest failures`).
+- **Changed boundary:** held-manifest persistence now distinguishes an accepted in-memory mutation
+  from a committed revision. A failed replacement keeps the new body because the dirty snapshot may
+  later commit it, and retains same-run ownership of every predecessor because disk may still name
+  the old generation. Predecessors are deleted only after a committed replacement, or together with
+  the current body during remove/purge/cancel. Orphan sweeping protects both current-map and retained
+  generations across the non-atomic store/session ownership transition.
+- **Cancel race:** the post-persistence halt check and live-map install are now one session-lock
+  decision. A cancel that lands during the synchronous manifest attempt refuses reinstall, submits
+  a superseding removal, and owns the new, persisted-previous, live-map, and retained body URLs.
+  Pause remains preservative.
+- **Regression evidence:** a production-used pure ownership policy covers failed replacement,
+  later committed cleanup, cancel disposition, per-offset removal, and key purge across multiple
+  generations. Store tests prove failed replacement leaves disk on the old manifest while a later
+  mutation commits the new manifest, with both bodies valid throughout. A new store-level fixture
+  also proves main's zero-byte static pause survives reload/reconcile while a live-forward row still
+  fails closed. The complete macOS and iPadOS plans passed 59/59, with Thread Sanitizer enabled on
+  iPadOS.
+- **Runtime validation:** clean Mac, iOS Simulator, and visionOS Simulator builds passed. The clean
+  visionOS product matched the installed UUID, launched to the signed-in populated Home surface,
+  and produced no crash, assertion, or sanitizer signature in the smoke log.
+- **Known remaining boundary:** manifest removal/take still return values without a commit outcome;
+  a failed removal therefore remains a diagnosable lost-work/refetch case rather than a proven
+  transactional delete. Background completion still fires without the explicit bounded retry/flush.
+- **Next commit boundary:** capture the exact latest store ticket when the in-memory background
+  completion gate becomes ready, bounded-flush/retry through it, diagnose committed/failed/timeout,
+  and always release the OS handler. Keep the hung-initial-synchronous-write limitation explicit;
+  nonblocking lifecycle mutations are a separate migration.
+
 The three-run arm64 checkpoint at rebased commit `cf21073` is recorded locally under
 `build/compile-audit/post-main-e757bb1/` (raw logs remain ignored because they contain local
 paths). Median clean builds were 15.37 s visionOS, 14.10 s mobile, 16.73 s Mac, and 7.02 s
