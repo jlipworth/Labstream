@@ -29,7 +29,7 @@ Current status at this checkpoint:
 | 1B | Partial | Existing string attempt tokens, v2 task markers, stale-task rejection, and attempt-bearing held manifests are prior art. A typed `DownloadAttemptID`, schema v3, durable-before-reattach migration, and attempt-conditional store APIs remain. |
 | 1C | Partial | Main now has a final-verdict recheck, attempt-matched held bodies/orphan sweeping, and an Emby ambiguous-create tombstone. A work registry, attempt-scoped finalizing, side-asset staging/ownership, broad post-await guards, and compare-and-clear play-session cleanup remain. |
 | 1D–1F | Complete | Auth/secure-storage, system-media ownership, and player lifecycle generations survived the rebase unchanged. iPad/Mac physical ownership and lifecycle checks passed; iOS TSAN tests remain green. |
-| 2A | Partial | Plex photo coverage, modern Mac decoding, the MediaSession clock, and `PERF-01` (`3378211`) are complete. The old dead-helper inventory must still be regenerated against the audited engine. |
+| 2A | Complete | Plex photo coverage, modern Mac decoding, the effective MediaSession clock, and `PERF-01` are complete. The regenerated inventory found and mechanically removed exactly the four original definition-only helpers (`2fb3d00`, `5a5f050`, `cf1f919`, `6bff1c8`); no production deprecation remains. |
 | 2B | Open / higher priority | `store.records` uses grew from 38 to 40 and single-row `first`/`contains` uses from 24 to 26. Only `status(for:)` is narrow today. |
 | 2C | Complete | Latest-rail execution is bounded and order preserving. |
 | 2D | Complete | Optimizer flexible-ID decoding is explicit and the Offline root view is split at behavior-neutral opaque boundaries (`cc516ea`, `43ba92b`). Both cliffs disappeared from the compile audit; extracted Offline boundaries are below 50 ms on all app platforms. |
@@ -276,6 +276,24 @@ their relationship during the schema-v3 migration.
   passed 62/62, with Thread Sanitizer enabled on iPadOS. A clean visionOS build matched the installed
   UUID, launched to the signed-in populated Home surface, and produced no crash/assertion/sanitizer
   signature in its smoke log.
+
+#### 2026-07-11 — Phase 2A warning and dead-helper closeout
+
+- **Status:** complete.
+- **Commits:** `2fb3d00`, `5a5f050`, `cf1f919`, and `6bff1c8` remove the four
+  original private definition-only helpers one at a time. Static reference checks prove each
+  symbol now has zero production occurrences; their active snapshot, retry-attempt, and polling
+  primitives remain in use.
+- **Warning inventory:** the current production corpus has no `String(cString:)`, deprecated
+  declaration, or deprecated-call occurrence. Parsing every raw Phase 2D compile-audit warning
+  found no ordinary source compiler/deprecation warning; the remaining messages are exclusively
+  custom type-check review triggers. The `DetailView` trigger overlaps Phase 2B's narrow lookup
+  rather than representing unfinished 2A cleanup.
+- **Validation:** the complete macOS plan passed 62/62. The complete iPadOS plan passed 62/62
+  with Thread Sanitizer enabled. A clean visionOS build matched the installed UUID, stayed alive,
+  reached the signed-in populated Home surface, and emitted no crash, assertion, or sanitizer
+  signature. The deletions change no reachable behavior, schema, persistence, or download state
+  transition.
 
 The three-run arm64 checkpoint at rebased commit `cf21073` is recorded locally under
 `build/compile-audit/post-main-e757bb1/` (raw logs remain ignored because they contain local
