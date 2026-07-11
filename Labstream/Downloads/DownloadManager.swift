@@ -346,7 +346,7 @@ public final class DownloadManager {
         }
         // B.13: capture which rows exist BEFORE the task snapshot is requested — rows the main
         // actor seeds while `getAllTasks` is in flight must not be reconciled against it.
-        let snapshotRatingKeys = Set(store.records.map(\.ratingKey))
+        let snapshotRatingKeys = store.allRatingKeys
         self.session.reattach { [weak self, store] liveKeys in
             store.reconcile(liveRatingKeys: liveKeys, snapshotRatingKeys: snapshotRatingKeys)
             Task { @MainActor in
@@ -540,7 +540,7 @@ public final class DownloadManager {
     func acquireInFlightSlotForStart(ratingKey: String,
                                      backend: String,
                                      allowReplacingExistingActiveRow: Bool = false) -> Bool {
-        let existingStatus = store.records.first(where: { $0.ratingKey == ratingKey })?.status
+        let existingStatus = store.status(for: ratingKey)
         if allowReplacingExistingActiveRow,
            existingStatus?.isActiveWork == true,
            activeJobs.contains(ratingKey),
@@ -615,7 +615,7 @@ public final class DownloadManager {
     func acquireStartAttempt(ratingKey: String,
                              backend: String,
                              allowReplacingExistingActiveRow: Bool = false) -> DownloadStartAttemptHandle? {
-        let enteredWithExistingRow = store.records.contains { $0.ratingKey == ratingKey }
+        let enteredWithExistingRow = store.contains(ratingKey: ratingKey)
         guard acquireInFlightSlotForStart(ratingKey: ratingKey,
                                           backend: backend,
                                           allowReplacingExistingActiveRow: allowReplacingExistingActiveRow) else {
@@ -801,7 +801,7 @@ public final class DownloadManager {
         }
 
         // B.13: same snapshot rule as launch — rows created while `getAllTasks` runs are skipped.
-        let snapshotRatingKeys = Set(store.records.map(\.ratingKey))
+        let snapshotRatingKeys = store.allRatingKeys
         session.reattach { [weak self, store] liveKeys in
             store.reconcile(liveRatingKeys: liveKeys, snapshotRatingKeys: snapshotRatingKeys)
             Task { @MainActor in
@@ -2084,7 +2084,7 @@ public final class DownloadManager {
     /// detector on the next refresh, which re-drives the same doomed start — the churn cousin of
     /// the #210 refresh⇄resume recursion.
     func markStartAbortedBeforeTransfer(ratingKey: String) {
-        if let status = store.records.first(where: { $0.ratingKey == ratingKey })?.status,
+        if let status = store.status(for: ratingKey),
            status.isActiveWork {
             store.setStatus(ratingKey: ratingKey, .failed)
         }
@@ -3327,7 +3327,7 @@ public final class DownloadManager {
             // race this loop before/without a registered Task handle, and a concurrent reap can
             // remove the queue row entirely. Re-check LIVE app state every iteration and stop
             // polling the server the moment this download no longer exists or lost its slot.
-            let rowExists = store.records.contains { $0.ratingKey == ratingKey }
+            let rowExists = store.contains(ratingKey: ratingKey)
             guard ServerPrepRefreshPolicy.plexPrepPollerShouldContinue(
                 rowExists: rowExists,
                 slotActive: activeJobs.contains(ratingKey)
@@ -3342,7 +3342,7 @@ public final class DownloadManager {
             // hours. Re-resolve the Plex lane every iteration — on sign-out or a server change,
             // park the row for deferred resume instead of polling the dead snapshot forever.
             guard let liveSession = appModel.backendSession(for: .plex),
-                  store.records.first(where: { $0.ratingKey == ratingKey })?.metadata
+                  store.metadata(for: ratingKey)
                       .map(liveSession.matchesPersistedServer) != false else {
                 recordDownloadDiagnostic("downloads.optimize_poll_deferred", fields: [
                     "download_id": .identifier(ratingKey),
@@ -3656,9 +3656,8 @@ public final class DownloadManager {
               // probe races a refresh during optimize resume/retry. Without a duration the
               // server-speed estimate cannot be converted into wall-clock seconds; the progress
               // EMA below still covers subsequent polls.
-              let durationMs = (records.first(where: { $0.ratingKey == ratingKey })
-                    ?? store.records.first(where: { $0.ratingKey == ratingKey }))?
-                    .metadata?.duration,
+              let durationMs = records.first(where: { $0.ratingKey == ratingKey })?
+                    .metadata?.duration ?? store.duration(for: ratingKey),
               durationMs > 0 else { return nil }
         let durationSec = Double(durationMs) / 1000.0
         let remainingVideoSeconds = durationSec * (1.0 - Double(pct) / 100.0)

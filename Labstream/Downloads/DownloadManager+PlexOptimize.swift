@@ -301,8 +301,8 @@ extension DownloadManager {
         // If the #88 chapter-image cache landed while the Plex optimize job was rendering, preserve
         // it across this final "start the rendered Part" upsert instead of racing it back to nil.
         if downloadMetadata.chapterImageRelativePaths == nil {
-            downloadMetadata.chapterImageRelativePaths = store.records.first { $0.ratingKey == ratingKey }?
-                .metadata?.chapterImageRelativePaths
+            downloadMetadata.chapterImageRelativePaths = store.metadata(for: ratingKey)?
+                .chapterImageRelativePaths
         }
         store.upsert(DownloadRecord(ratingKey: ratingKey, title: title,
                                     localURL: destination, bytes: 0, progress: 0,

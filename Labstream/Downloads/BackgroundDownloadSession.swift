@@ -1712,7 +1712,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
 
     private func pauseStillApplies(ratingKey: String) -> Bool {
-        let status = store.records.first(where: { $0.ratingKey == ratingKey })?.status
+        let status = store.status(for: ratingKey)
         lock.lock()
         let hasReplacement = inflight.values.contains { $0.ratingKey == ratingKey }
             || rangeInflight.values.contains { $0.ratingKey == ratingKey }
