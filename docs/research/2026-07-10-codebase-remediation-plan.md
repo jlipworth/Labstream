@@ -26,8 +26,8 @@ Current status at this checkpoint:
 | --- | --- | --- |
 | 0A–0B | Complete | Repeatable compile audit plus nonzero macOS/iOS app test plans are on the rebased branch. |
 | 1A | Partial / consultation boundary | The index has a serial revisioned writer, dirty retry, observable failures, bounded background-completion flush, commit-aware held replacement/removal outcomes, fail-closed tombstone persistence, and broad fault/stress coverage (`0bbcb5d` through `24e179c`). Existing mutations preserve synchronous durability. True transactional held-body deletion, cross-domain tombstone/row ordering, a literal bounded hung-write path, and a live explicit temp/rename committer require the larger reviewed design described below. |
-| 1B | Partial | Existing string attempt tokens, v2 task markers, stale-task rejection, and attempt-bearing held manifests are prior art. A typed `DownloadAttemptID`, schema v3, durable-before-reattach migration, and attempt-conditional store APIs remain. |
-| 1C | Partial | Main now has a final-verdict recheck, attempt-matched held bodies/orphan sweeping, and an Emby ambiguous-create tombstone. A work registry, attempt-scoped finalizing, side-asset staging/ownership, broad post-await guards, and compare-and-clear play-session cleanup remain. |
+| 1B | Partial / consultation required | Existing string attempt tokens, v2 task markers, stale-task rejection, and attempt-bearing held manifests are prior art. The remaining typed ID, schema-v3 durable-before-admission migration, task rebinding, conditional mutation conversion, and Emby identity merge form one atomic 12–20-file lifecycle migration; no independently shippable production subset fixes `COR-01`. |
+| 1C | Partial / consultation required | Final-verdict checks, attempt-matched held bodies, and the Emby ambiguous-create tombstone are prior art. The remaining registry, attempt-scoped finalization/staging/side-assets, durable encoder teardown, compare-clear, and startup sweep depend on 1B and span every download lane; partial tail guards remain racy. |
 | 1D–1F | Complete | Auth/secure-storage, system-media ownership, and player lifecycle generations survived the rebase unchanged. iPad/Mac physical ownership and lifecycle checks passed; iOS TSAN tests remain green. |
 | 2A | Complete | Plex photo coverage, modern Mac decoding, the effective MediaSession clock, and `PERF-01` are complete. The regenerated inventory found and mechanically removed exactly the four original definition-only helpers (`2fb3d00`, `5a5f050`, `cf1f919`, `6bff1c8`); no production deprecation remains. |
 | 2B | Complete | Locked record/metadata/duration/presence accessors and the existing ownership accessor now serve every single-key store read (`4fb60a6`, `9fb7b56`, `6c16df5`, `36b992b`). Exactly 11 intentional batch/UI snapshots remain. |
@@ -306,6 +306,28 @@ their relationship during the schema-v3 migration.
   iPadOS. Clean Mac, iOS Simulator, and visionOS builds passed. The visionOS product matched the
   installed UUID, stayed alive, reached the signed-in populated Home surface, and emitted no crash,
   assertion, or sanitizer signature. PMSKit remained green at 1,404 tests across 170 suites.
+
+#### 2026-07-11 — Phase 1B/1C scope gate
+
+- **Status:** implementation intentionally not started; explicit user consultation required.
+- **Phase 1B atomic boundary:** the current authority remains an optional metadata-nested String
+  under schema v2, minted lazily during task creation. Session registration/reattach can begin
+  before an ID assignment is proven durable; opaque/range/finalizer entries and roughly 150
+  callback mutations remain rating-key-only; Emby Convert keeps a separate UUID authority. The
+  minimum safe migration must land typed top-level ownership, schema-v3 dual-read/legacy assignment,
+  durable-before-admission startup, legacy task rebinding, attempt-bearing work entries,
+  attempt-conditional mutations, and Emby identity pairing together. It touches approximately
+  12–20 production/test files and requires force-quit/reattach plus signed-device gates.
+- **Phase 1C coupled boundary:** the remaining shared work registry, attempt-specific finalizer and
+  side-asset staging, durable ActiveEncoding teardown intent, compare-and-clear PlaySessionId,
+  expected-ID metadata writes, startup sweep, and delete/re-add suspension tests depend on 1B.
+  Current side-cache tasks are unretained and write stable rating-key paths; finalization and
+  encoder cleanup remain rating-key-owned. A row-exists check or finalizer-only key change would
+  leave TOCTOU/file-alias races and can worsen concurrent finalization.
+- **Decision:** do not land unused typed-ID scaffolding or partial guarded overloads merely to show
+  progress. They do not fix `COR-01`, add interim churn, and violate the plan's atomic migration
+  requirement. Await approval for the coordinated download-engine migration and its rollback/test
+  plan.
 
 #### 2026-07-11 — Phase 2D compiler-cliff removal
 
