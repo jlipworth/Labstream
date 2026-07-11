@@ -2,7 +2,8 @@
 
 Status: **active implementation plan**
 
-Audit baseline: app/PMSKit code through `edf2d27`; documentation baseline `5d106fd`
+Audit baseline: original app/PMSKit review through `edf2d27`; latest reconciled `main`
+baseline `5d369c2`
 
 Scope: correctness, concurrency, reliability, performance, Swift idioms, testability,
 backend sharing, platform sharing, conditional compilation, and build cost.
@@ -14,6 +15,40 @@ lists. Line references in both documents are as of the audit baseline and may dr
 lines past it.
 
 ## Implementation checkpoint — 2026-07-11 after the downloads audit
+
+### 2026-07-12 rebase onto the continued download-state-machine work
+
+The 43-commit remediation stack is now rebased onto `main` at `5d369c2`. The seven incoming
+commits since `640c906` harden Emby recovery, Jellyfin keepalive ownership, Plex optimize
+matching, range-fault fixtures, held-manifest batching, live-progress accounting, and durable
+background range-task behavior. They improve the download engine, but do not replace the
+remaining Phase 1 migration boundaries.
+
+`git range-diff` reports 39 remediation commits replayed identically and four intentionally
+adapted to the incoming code:
+
+- held-body replacement ownership now also preserves main's per-offset mismatch reset and its
+  batched manifest removals;
+- the narrow single-row lookup keeps main's shared crash-window identity predicate;
+- batched held-manifest removal retains one persistence attempt while exposing the exact
+  revision outcome and preserving every current, persisted, fallback, and retained body owner;
+- Emby tombstones retain fail-closed observable persistence while also preserving main's
+  delete-on-ENOSPC behavior, exact-ID deferred retry, live-job exclusion, and expired-recovery
+  handoff. A cleanup success is reported only after the tombstone removal is durably proved.
+
+Post-rebase evidence is green: the complete macOS app plan passed 78/78, the complete iPadOS
+plan passed 78/78 under Thread Sanitizer, the focused tombstone/held-manifest suites passed
+18/18, and PMSKit passed 1,409 tests across 170 suites. Both worktree simulators were shut down
+after validation.
+
+**Plan adjustment:** Phase 1A remains partial at the same explicit strong-transaction boundary.
+Main's batch removal reduces write amplification but does not make body deletion conditional on
+manifest commit; its background-task work does not make synchronous mutations literally bounded;
+and the in-memory Emby fallback intentionally cannot provide cross-launch delete replay until its
+exact tombstone commits. Phase 1B and 1C also remain atomic migrations: none of the incoming work
+introduces schema-v3 typed attempt identity, task rebinding, attempt-conditional finalization, or
+the work registry. Do not reopen the now-closed incremental 1A slices; the next correctness work is
+the reviewed 1B/1C migration (or an explicit decision to defer it), followed by Phases 3–5.
 
 The remediation stack was rebased onto `main` at `e757bb1` after auditing the 29 reachable
 incoming commits from `6a523cf..e757bb1`. Those commits are overwhelmingly downloads-engine
