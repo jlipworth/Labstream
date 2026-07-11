@@ -279,19 +279,33 @@ final class DownloadStore: @unchecked Sendable {
 
     @discardableResult
     func removeHeldRangeSegment(ratingKey: String, offset: Int) -> OfflineHeldRangeSegment? {
+        removeHeldRangeSegments(ratingKey: ratingKey, offsets: [offset]).first
+    }
+
+    /// Batch variant: remove several manifest entries with ONE index persist. Launch reattach and
+    /// drain-discard sweeps otherwise paid a full index.json rewrite per removed manifest.
+    @discardableResult
+    func removeHeldRangeSegments(ratingKey: String, offsets: [Int]) -> [OfflineHeldRangeSegment] {
+        guard !offsets.isEmpty else { return [] }
+        let offsetSet = Set(offsets)
         lock.lock()
         guard var row = rows[ratingKey], var metadata = row.metadata,
-              let previous = metadata.heldRangeSegments?.first(where: { $0.offset == offset }) else {
+              let segments = metadata.heldRangeSegments else {
             lock.unlock()
-            return nil
+            return []
         }
-        let remaining = metadata.heldRangeSegments?.filter { $0.offset != offset } ?? []
+        let removed = segments.filter { offsetSet.contains($0.offset) }
+        guard !removed.isEmpty else {
+            lock.unlock()
+            return []
+        }
+        let remaining = segments.filter { !offsetSet.contains($0.offset) }
         metadata.heldRangeSegments = remaining.isEmpty ? nil : remaining
         row.metadata = metadata
         rows[ratingKey] = row
         lock.unlock()
         persist()
-        return previous
+        return removed
     }
 
     @discardableResult

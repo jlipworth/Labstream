@@ -18,9 +18,12 @@ public struct DownloadLiveRangeProgressSample: Equatable, Sendable {
 }
 
 /// Pure policy for merging and displaying live static-range progress samples.
+///
+/// Samples deliberately have NO time-based staleness: an active background URLSession can keep
+/// writing while the suspended app receives no delegate callbacks, and expiring the last sample
+/// made the toolbar total fall to the durable checkpoint and jump back at wake. A sample lives
+/// exactly as long as its row stays `.downloading` (terminal/pause cleanup removes it).
 public enum DownloadLiveRangeProgressPolicy {
-    public static let staleIntervalSeconds: TimeInterval = 15
-
     /// Keep the largest live count within the active continuous-remainder transfer. #227/#231
     /// should not make the UI jump backwards when URLSession reports blob-resumed task bytes from a
     /// fresh per-task baseline. Preserve an earlier expected-byte total when the current callback
@@ -33,12 +36,6 @@ public enum DownloadLiveRangeProgressPolicy {
         return DownloadLiveRangeProgressSample(bytes: bytes,
                                                expectedBytes: expectedBytes ?? previous?.expectedBytes,
                                                updatedAt: updatedAt)
-    }
-
-    public static func isFresh(_ sample: DownloadLiveRangeProgressSample,
-                               now: Date,
-                               staleInterval: TimeInterval = staleIntervalSeconds) -> Bool {
-        now.timeIntervalSince(sample.updatedAt) <= staleInterval
     }
 
     /// Normalize a task byte count against a persisted resume display watermark. A
@@ -85,9 +82,7 @@ public enum DownloadLiveRangeProgressPolicy {
     }
 
     public static func liveDisplayBytes(for record: DownloadRecord,
-                                        sample: DownloadLiveRangeProgressSample?,
-                                        now: Date,
-                                        staleInterval: TimeInterval = staleIntervalSeconds) -> Int? {
+                                        sample: DownloadLiveRangeProgressSample?) -> Int? {
         guard record.status == .downloading,
               let sample,
               sample.bytes > record.bytes else { return nil }
