@@ -2434,7 +2434,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     ) -> (ratingKey: String, destination: URL)? {
         guard StaticRangeSegmentMarker.parse(task.taskDescription) == nil else { return nil }
         guard let ratingKey = Self.ratingKey(for: task, knownKeys: store.allRatingKeys),
-              let record = store.records.first(where: { $0.ratingKey == ratingKey }),
+              let record = store.record(for: ratingKey),
               record.metadata?.resolvedResumeMode(ratingKey: ratingKey) == .liveForwardOnly,
               record.status != .complete, record.status != .failed, record.status != .unverified
         else { return nil }
@@ -2484,7 +2484,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
         guard let markedOffset else { reject("unmarked_task"); return nil }
         guard let ratingKey = resolvedKey else { reject("unknown_row"); return nil }
-        guard let record = store.records.first(where: { $0.ratingKey == ratingKey }) else {
+        guard let record = store.record(for: ratingKey) else {
             reject("no_record"); return nil
         }
         guard StaticRangeRecoveryPolicy.isStaticRangeRecord(record) else {
@@ -3915,7 +3915,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// instead of trying to request another Range after EOF.
     @discardableResult
     func finalizeCompletedStaticRangeFile(ratingKey: String, validationLabel: String) -> Bool {
-        guard let record = store.records.first(where: { $0.ratingKey == ratingKey }) else { return false }
+        guard let record = store.record(for: ratingKey) else { return false }
         let bytes = fileSize(at: record.localURL) ?? record.bytes
         guard bytes > 0 else { return false }
 
@@ -4319,7 +4319,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // early — or a static download the server cut short while still returning 2xx — can play its
         // first fraction of a second and pass the probe. A decoded duration far under the source's is
         // truncated, not complete. Legitimate short clips compare against their own short duration.
-        let finalizeRecord = store.records.first { $0.ratingKey == ratingKey }
+        let finalizeRecord = store.record(for: ratingKey)
         // Lens 5 F3: apply the verdict only to the attempt it was probed for. A delete (row gone)
         // or delete + re-download (attempt token changed) during the probe means `destination` and
         // the row now belong to a DIFFERENT transfer — deleting the file or stamping a status here
