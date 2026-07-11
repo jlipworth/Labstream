@@ -317,7 +317,7 @@ struct LibraryGridView: View {
 
     @State private var paging = LibraryPagingModel()
 
-    private var columns: [GridItem] {
+    private var regularColumns: [GridItem] {
         [GridItem(.adaptive(minimum: DS.Poster.gridMin(compact: compactWidth),
                             maximum: DS.Poster.gridMax(compact: compactWidth)),
                   spacing: DS.gridGutter(compact: compactWidth))]
@@ -352,11 +352,12 @@ struct LibraryGridView: View {
     }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                switch paging.loadState {
-                case .idle, .loading:
-                    SkeletonGrid()
+        GeometryReader { geometry in
+            ScrollViewReader { proxy in
+                ScrollView {
+                    switch paging.loadState {
+                    case .idle, .loading:
+                        SkeletonGrid(availableWidth: geometry.size.width)
                 case .failed(let message):
                     ContentUnavailableView("Couldn’t load \(source.title)",
                                            systemImage: "exclamationmark.triangle",
@@ -369,12 +370,14 @@ struct LibraryGridView: View {
                                                description: Text("No items in \(source.title)."))
                             .frame(maxWidth: .infinity, minHeight: 360)
                     } else {
-                        LazyVGrid(columns: columns,
-                                  spacing: compactWidth ? DS.Space.lg : DS.Space.xxl) {
+                        let metrics = compactGridMetrics(availableWidth: geometry.size.width)
+                        LazyVGrid(columns: gridColumns(metrics: metrics),
+                                  spacing: metrics?.rowSpacing ?? DS.Space.xxl) {
                             ForEach(Array(paging.slots.enumerated()), id: \.offset) { index, slot in
                                 LibraryGridSlot(index: index,
                                                 item: slot,
-                                                width: DS.Poster.gridMin(compact: compactWidth)) {
+                                                width: metrics?.posterWidth ?? DS.Poster.gridMin(compact: compactWidth),
+                                                usesDenseLabels: metrics != nil) {
                                     prefetchPage(containing: index)
                                 }
                                 // Keep the stable sparse-grid offset as the scroll target for
@@ -386,26 +389,38 @@ struct LibraryGridView: View {
                                 .id(index)
                             }
                         }
-                        .padding(DS.pagePadding(compact: compactWidth))
-                        // Reserve the rail's own narrow strip past the base padding so the last
-                        // poster column clears the trailing A–Z index on compact (#209);
-                        // regular width has ample gutter and needs no reservation.
-                        .padding(.trailing, alphabetRailVisible && compactWidth ? LibraryAlphabetRail.compactGridTrailingReservation : 0)
+                        .padding(.horizontal, metrics?.horizontalPadding ?? DS.pagePadding(compact: compactWidth))
+                        .padding(.vertical, metrics?.horizontalPadding ?? DS.pagePadding(compact: compactWidth))
+                        .padding(.trailing, metrics?.trailingReservation ?? 0)
                     }
                 }
-            }
-            .overlay(alignment: .trailing) {
-                if paging.alphabetBuckets.count > 1, case .loaded = paging.loadState {
-                    LibraryAlphabetRail(entries: paging.alphabetBuckets) { entry in
-                        jump(to: entry, proxy: proxy)
+                }
+                .overlay(alignment: .trailing) {
+                    if paging.alphabetBuckets.count > 1, case .loaded = paging.loadState {
+                        LibraryAlphabetRail(entries: paging.alphabetBuckets) { entry in
+                            jump(to: entry, proxy: proxy)
+                        }
+                        .padding(.trailing, 10)
                     }
-                    .padding(.trailing, 10)
                 }
             }
         }
         .navigationTitle(source.title)
         .task(id: loadIdentity) { await load() }
         .refreshable { await load(force: true) }
+    }
+
+    private func compactGridMetrics(availableWidth: CGFloat) -> MobileLibraryGridLayout.Metrics? {
+        guard compactWidth else { return nil }
+        let reservation = alphabetRailVisible ? LibraryAlphabetRail.compactGridTrailingReservation : 0
+        return MobileLibraryGridLayout.metrics(availableWidth: Double(availableWidth),
+                                               trailingReservation: Double(reservation))
+    }
+
+    private func gridColumns(metrics: MobileLibraryGridLayout.Metrics?) -> [GridItem] {
+        guard let metrics else { return regularColumns }
+        return Array(repeating: GridItem(.fixed(CGFloat(metrics.posterWidth)), spacing: CGFloat(metrics.gutter)),
+                     count: metrics.columnCount)
     }
 
     private func load(force: Bool = false) async {
@@ -452,19 +467,22 @@ private struct LibraryGridSlot: View {
     let index: Int
     let item: MediaItem?
     let width: CGFloat
+    let usesDenseLabels: Bool
     let onPlaceholderAppear: () -> Void
 
     var body: some View {
         Group {
             if let item {
                 NavigationLink(value: item) {
-                    PosterCell(item: item, width: width)
+                    PosterCell(item: item,
+                               width: width,
+                               labelStyle: usesDenseLabels ? .denseLibrary : .standard)
                 }
                 .cardLink()
                 .videoCardContextMenu(for: item)
                 .id("loaded-\(item.ratingKey)")
             } else {
-                LibraryPlaceholderPoster()
+                LibraryPlaceholderPoster(width: width)
                     .id("placeholder-\(index)")
                     .onAppear(perform: onPlaceholderAppear)
             }
@@ -473,13 +491,12 @@ private struct LibraryGridSlot: View {
 }
 
 private struct LibraryPlaceholderPoster: View {
-    @Environment(\.labstreamCompactWidth) private var compactWidth
+    let width: CGFloat
 
     var body: some View {
-        let side = DS.Poster.gridMin(compact: compactWidth)
         RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous)
             .fill(.regularMaterial)
-            .frame(width: side, height: DS.Poster.height(for: side))
+            .frame(width: width, height: DS.Poster.height(for: width))
             .overlay { ShimmerView() }
             .clipShape(RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous))
     }
@@ -489,19 +506,24 @@ private struct LibraryPlaceholderPoster: View {
 /// its layout (and the same gutters as the real grid) rather than flashing a spinner.
 private struct SkeletonGrid: View {
     @Environment(\.labstreamCompactWidth) private var compactWidth
-
-    private var columns: [GridItem] {
-        [GridItem(.adaptive(minimum: DS.Poster.gridMin(compact: compactWidth),
-                            maximum: DS.Poster.gridMax(compact: compactWidth)),
-                  spacing: DS.gridGutter(compact: compactWidth))]
-    }
+    let availableWidth: CGFloat
 
     var body: some View {
-        LazyVGrid(columns: columns, spacing: compactWidth ? DS.Space.lg : DS.Space.xxl) {
+        let metrics = compactWidth
+            ? MobileLibraryGridLayout.metrics(availableWidth: Double(availableWidth))
+            : nil
+        let columns = metrics.map {
+            Array(repeating: GridItem(.fixed($0.posterWidth), spacing: $0.gutter), count: $0.columnCount)
+        } ?? [GridItem(.adaptive(minimum: DS.Poster.gridMin(compact: false),
+                                maximum: DS.Poster.gridMax(compact: false)),
+                       spacing: DS.gridGutter(compact: false))]
+        let width = metrics?.posterWidth ?? DS.Poster.gridMin(compact: false)
+        LazyVGrid(columns: columns, spacing: metrics?.rowSpacing ?? DS.Space.xxl) {
             ForEach(0..<12, id: \.self) { _ in
-                LibraryPlaceholderPoster()
+                LibraryPlaceholderPoster(width: width)
             }
         }
-        .padding(DS.pagePadding(compact: compactWidth))
+        .padding(.horizontal, metrics?.horizontalPadding ?? DS.pagePadding(compact: compactWidth))
+        .padding(.vertical, metrics?.horizontalPadding ?? DS.pagePadding(compact: compactWidth))
     }
 }

@@ -213,12 +213,8 @@ struct DetailView: View {
     private var detailLayout: some View {
         #if os(iOS)
         if isCompactPhoneLayout {
-            VStack(alignment: .leading, spacing: DS.Space.xl) {
-                detailPoster(width: 220)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                metadataColumn
-            }
-        } else if horizontalSizeClass == .compact {
+            compactPhoneDetailLayout
+        } else if compactWidth {
             // Compact-width iPad (Split View / Slide Over): stack like the phone layout, but
             // the 300-pt regular hero plus page padding overflows a ~320-pt pane, so use the
             // 220-pt compact hero, centered as in the phone branch above.
@@ -242,6 +238,106 @@ struct DetailView: View {
             Spacer(minLength: 0)
         }
         #endif
+    }
+
+    /// Phone-only hierarchy optimized for a narrow, vertically-scrolling detail page. iPad and
+    /// visionOS continue to use `metadataColumn` unchanged.
+    private var compactPhoneDetailLayout: some View {
+        VStack(alignment: .leading, spacing: DS.Space.xl) {
+            compactPhoneArtwork
+
+            DetailTitleHeader(item: detailed, showItem: showItem)
+
+            DetailMetadataRow(year: detailed.year,
+                              runtimeMinutes: runtimeMinutes,
+                              contentRating: detailed.contentRating,
+                              rating: detailed.rating,
+                              criticRating: detailed.criticRating,
+                              isWatched: isWatched)
+
+            playButton
+                .controlSize(.large)
+
+            VStack(spacing: DS.Space.md) {
+                downloadButton
+                if supportsWatchedToggle {
+                    markWatchedButton
+                }
+            }
+            .controlSize(.large)
+
+            if let playbackErrorMessage {
+                Text(playbackErrorMessage)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+            }
+
+            if let tagline = detailed.tagline, !tagline.isEmpty {
+                Text(tagline)
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    .italic()
+            }
+
+            if let genres = detailed.genres, !genres.isEmpty {
+                Text(genres.map(\.tag).joined(separator: " · "))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            DetailCreditsSection(roles: detailed.roles,
+                                 directors: detailed.directors,
+                                 studios: detailed.studios)
+
+            DetailMovieVersionPicker(versions: movieVersions,
+                                     activeVersionRatingKey: activeVersionRatingKey,
+                                     selectedVersionRatingKey: $selectedVersionRatingKey,
+                                     resolvedLabels: movieVersionLabels)
+
+            DetailMediaVersionPicker(media: detailed.media,
+                                     selectedMediaIndex: $selectedMediaIndex)
+
+            if let media = selectedMedia {
+                DetailMediaInfoSummary(specBadges: mediaSpecBadges(media),
+                                       chapterCount: detailed.chapters?.count)
+            }
+
+            if let summary = detailed.summary, !summary.isEmpty {
+                Text(summary)
+                    .font(.body)
+                    .foregroundStyle(.primary.opacity(0.9))
+                    .lineSpacing(4)
+                    .padding(.top, DS.Space.sm)
+            }
+        }
+    }
+
+    /// Full-width 16:9 key art for compact phones. The policy prefers backend landscape art,
+    /// deliberately crops a poster fallback to fill the landscape frame, and preserves the
+    /// existing `PosterImage` placeholder when neither path exists.
+    @ViewBuilder
+    private var compactPhoneArtwork: some View {
+        GeometryReader { geometry in
+            switch MobileDetailArtworkPolicy.selection(art: detailed.art, thumb: detailed.thumb) {
+            case .landscape(let path):
+                compactPhoneArtworkImage(path: path, size: geometry.size)
+            case .croppedPoster(let path):
+                // PosterImage renders loaded artwork with `.fill`, intentionally cropping the
+                // portrait fallback into this landscape frame rather than letterboxing it.
+                compactPhoneArtworkImage(path: path, size: geometry.size)
+            case .none:
+                compactPhoneArtworkImage(path: nil, size: geometry.size)
+            }
+        }
+        .aspectRatio(16.0 / 9.0, contentMode: .fit)
+    }
+
+    private func compactPhoneArtworkImage(path: String?, size: CGSize) -> some View {
+        PosterImage(path: path,
+                    width: size.width,
+                    height: size.height,
+                    cornerRadius: DS.Radius.card)
+            .shadow(color: .black.opacity(0.4), radius: 24, x: 0, y: 16)
     }
 
     /// Hero sizes to the item's real artwork ratio when the backend reports one
