@@ -111,6 +111,7 @@ struct MusicHomeRail: Identifiable {
     let title: String
     let items: [MediaItem]
     let style: Style
+    let destination: RailViewAllDestination?
 }
 
 extension AppModel {

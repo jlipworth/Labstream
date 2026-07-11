@@ -198,19 +198,23 @@ struct MediaBrowserMusicProvider: MusicProvider {
         var rails: [MusicHomeRail] = []
         if !discover.isEmpty {
             rails.append(MusicHomeRail(id: "discover", title: "Discover",
-                                       items: discover, style: .albums))
+                                       items: discover, style: .albums, destination: nil))
         }
         if !recentlyAdded.isEmpty {
             rails.append(MusicHomeRail(id: "recently-added", title: "Recently Added",
-                                       items: recentlyAdded, style: .albums))
+                                       items: recentlyAdded, style: .albums,
+                                       destination: RailViewAllDestination(
+                                        title: "Recently Added", backend: appModel.activeBackend,
+                                        sessionIdentity: appModel.activeBrowseSessionKey,
+                                        query: .albums(libraryID: libraryID))))
         }
         if !recentlyPlayed.isEmpty {
             rails.append(MusicHomeRail(id: "recently-played", title: "Recently Played",
-                                       items: recentlyPlayed, style: .tracks))
+                                       items: recentlyPlayed, style: .tracks, destination: nil))
         }
         if !favorites.isEmpty {
             rails.append(MusicHomeRail(id: "favorite-albums", title: "Favorite Albums",
-                                       items: favorites, style: .albums))
+                                       items: favorites, style: .albums, destination: nil))
         }
         return rails
     }

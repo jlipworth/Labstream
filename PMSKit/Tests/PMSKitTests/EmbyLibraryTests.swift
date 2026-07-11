@@ -20,6 +20,29 @@ struct EmbyLibraryTests {
         return Dictionary(uniqueKeysWithValues: (comps.queryItems ?? []).map { ($0.name, $0.value ?? "") })
     }
 
+    @Test func resumeAndNextUpRequestsCarryExplicitBounds() throws {
+        let resume = try EmbyLibrary.resumeItemsRequest(server: server,
+                                                        token: "token-abc",
+                                                        identity: identity,
+                                                        userId: "user-9",
+                                                        parentId: "view-1",
+                                                        startIndex: 60,
+                                                        limit: 30)
+        let next = try EmbyLibrary.nextUpRequest(server: server,
+                                                token: "token-abc",
+                                                identity: identity,
+                                                userId: "user-9",
+                                                startIndex: 90,
+                                                limit: 30)
+        let resumeQuery = try query(resume)
+        let nextQuery = try query(next)
+        #expect(resumeQuery["StartIndex"] == "60")
+        #expect(resumeQuery["Limit"] == "30")
+        #expect(resumeQuery["ParentId"] == "view-1")
+        #expect(nextQuery["StartIndex"] == "90")
+        #expect(nextQuery["Limit"] == "30")
+    }
+
     @Test func userViewsRequestUsesPathStyleAndPreservesBasePath() throws {
         let request = try EmbyLibrary.userViewsRequest(server: server, token: "token-abc", identity: identity, userId: "user-9")
         let url = try #require(request.url)

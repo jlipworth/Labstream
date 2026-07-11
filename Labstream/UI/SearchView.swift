@@ -67,7 +67,10 @@ struct SearchView: View {
                             SearchSongsSection(tracks: trackResults)
                         }
                         ForEach(nonMusicGroups) { group in
-                            SearchLibrarySection(group: group)
+                            SearchLibrarySection(group: group,
+                                                 query: query,
+                                                 backend: appModel.activeBackend,
+                                                 sessionIdentity: appModel.activeBrowseSessionKey)
                         }
                     }
                     .padding(.vertical, DS.Space.xl)
@@ -87,6 +90,9 @@ struct SearchView: View {
                 // against the source backend even after a backend switch.
                 DetailView(item: item, originBackend: appModel.activeBackend)
             }
+        }
+        .navigationDestination(for: RailViewAllDestination.self) { destination in
+            RailViewAllView(destination: destination)
         }
         .searchable(text: $query, prompt: "Movies, shows, music…")
         .searchFocused($searchFieldFocused)
@@ -154,7 +160,8 @@ struct SearchView: View {
                            hubIdentifier: hub.hubIdentifier, size: kept.count, metadata: kept)
             }
             guard !nonMusicHubs.isEmpty else { return nil }
-            return SearchResultGroup(id: group.id, title: group.title, hubs: nonMusicHubs)
+            return SearchResultGroup(id: group.id, title: group.title, hubs: nonMusicHubs,
+                                     backendID: group.backendID, libraryID: group.libraryID)
         }
     }
 
@@ -250,6 +257,9 @@ struct SearchView: View {
 /// One source-library section containing one or more type/native result hubs.
 private struct SearchLibrarySection: View {
     let group: SearchResultGroup
+    let query: String
+    let backend: MediaBackendKind
+    let sessionIdentity: String
 
     @Environment(\.labstreamCompactWidth) private var compactWidth
 
@@ -260,8 +270,31 @@ private struct SearchLibrarySection: View {
                 .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
 
             ForEach(group.hubs) { hub in
-                SearchHubSection(hub: hub)
+                SearchHubSection(hub: hub,
+                                 destination: destination(for: hub))
             }
+        }
+    }
+
+    private func destination(for hub: Hub) -> RailViewAllDestination? {
+        guard backend.isMediaBrowser,
+              let libraryID = group.libraryID,
+              let itemTypes = mediaBrowserItemTypes(for: hub.type) else { return nil }
+        return RailViewAllDestination(title: hub.title, backend: backend,
+                                      sessionIdentity: sessionIdentity,
+                                      query: .mediaBrowserSearch(text: query,
+                                                                 parentID: libraryID,
+                                                                 itemTypes: itemTypes))
+    }
+
+    private func mediaBrowserItemTypes(for type: String?) -> String? {
+        switch type {
+        case "movie": return "Movie"
+        case "show": return "Series"
+        case "season": return "Season"
+        case "episode": return "Episode"
+        case "video": return "Video"
+        default: return nil
         }
     }
 }
@@ -269,14 +302,13 @@ private struct SearchLibrarySection: View {
 /// One titled section of search results (a hub) rendered as a horizontal rail.
 private struct SearchHubSection: View {
     let hub: Hub
+    let destination: RailViewAllDestination?
 
     @Environment(\.labstreamCompactWidth) private var compactWidth
 
     var body: some View {
         VStack(alignment: .leading, spacing: compactWidth ? DS.Space.sm : DS.Space.lg) {
-            Text(hub.title)
-                .font(compactWidth ? .title3.bold() : .title2.bold())
-                .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
+            RailSectionHeader(title: hub.title, destination: destination)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: compactWidth ? DS.Space.md : DS.Space.xl) {

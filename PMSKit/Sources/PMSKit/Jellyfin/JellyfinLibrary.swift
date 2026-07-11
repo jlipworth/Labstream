@@ -151,6 +151,7 @@ public enum JellyfinLibrary {
                                           identity: JellyfinClientIdentity,
                                           userId: String,
                                           parentId: String? = nil,
+                                          startIndex: Int? = nil,
                                           limit: Int = 20) throws -> URLRequest {
         var query = [
             URLQueryItem(name: "userId", value: userId),
@@ -162,6 +163,7 @@ public enum JellyfinLibrary {
             URLQueryItem(name: "excludeActiveSessions", value: "false"),
         ]
         if let parentId { query.append(URLQueryItem(name: "parentId", value: parentId)) }
+        if let startIndex { query.append(URLQueryItem(name: "startIndex", value: String(startIndex))) }
         let url = try url(server: server, path: "/UserItems/Resume", queryItems: query)
         return get(url: url, token: token, identity: identity)
     }
@@ -171,6 +173,7 @@ public enum JellyfinLibrary {
                                      identity: JellyfinClientIdentity,
                                      userId: String,
                                      parentId: String? = nil,
+                                     startIndex: Int? = nil,
                                      limit: Int = 20) throws -> URLRequest {
         var query = [
             URLQueryItem(name: "userId", value: userId),
@@ -181,6 +184,7 @@ public enum JellyfinLibrary {
             URLQueryItem(name: "enableResumable", value: "true"),
         ]
         if let parentId { query.append(URLQueryItem(name: "parentId", value: parentId)) }
+        if let startIndex { query.append(URLQueryItem(name: "startIndex", value: String(startIndex))) }
         let url = try url(server: server, path: "/Shows/NextUp", queryItems: query)
         return get(url: url, token: token, identity: identity)
     }

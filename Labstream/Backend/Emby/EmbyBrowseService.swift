@@ -174,27 +174,41 @@ struct EmbyBrowseService {
     }
 
     func resumeItems(parentId: String? = nil, limit: Int = 20) async throws -> [MediaItem] {
+        try await resumeItemsPage(parentId: parentId, startIndex: 0, limit: limit).items
+    }
+
+    func resumeItemsPage(parentId: String? = nil,
+                         startIndex: Int,
+                         limit: Int) async throws -> (items: [MediaItem], total: Int?) {
         let context = try context()
         let req = try EmbyLibrary.resumeItemsRequest(server: context.server,
                                                      token: context.token,
                                                      identity: embyIdentity,
                                                      userId: context.userID,
                                                      parentId: parentId,
+                                                     startIndex: startIndex,
                                                      limit: limit)
         let response = try await send(req, as: EmbyItemsResponse.self)
-        return response.items.compactMap { $0.toMediaItem() }
+        return (response.items.compactMap { $0.toMediaItem() }, response.totalRecordCount)
     }
 
     func nextUp(parentId: String? = nil, limit: Int = 20) async throws -> [MediaItem] {
+        try await nextUpPage(parentId: parentId, startIndex: 0, limit: limit).items
+    }
+
+    func nextUpPage(parentId: String? = nil,
+                    startIndex: Int,
+                    limit: Int) async throws -> (items: [MediaItem], total: Int?) {
         let context = try context()
         let req = try EmbyLibrary.nextUpRequest(server: context.server,
                                                 token: context.token,
                                                 identity: embyIdentity,
                                                 userId: context.userID,
                                                 parentId: parentId,
+                                                startIndex: startIndex,
                                                 limit: limit)
         let response = try await send(req, as: EmbyItemsResponse.self)
-        return response.items.compactMap { $0.toMediaItem() }
+        return (response.items.compactMap { $0.toMediaItem() }, response.totalRecordCount)
     }
 
     func latestItems(parentId: String?,

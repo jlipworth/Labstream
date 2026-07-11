@@ -70,6 +70,9 @@ struct MusicLibraryView: View {
         .navigationDestination(for: MediaItem.self) { item in
             musicDestination(for: item, sectionKey: selectedSection?.key)
         }
+        .navigationDestination(for: RailViewAllDestination.self) { destination in
+            RailViewAllView(destination: destination)
+        }
         .task(id: loadIdentity) { await load() }
         .refreshable { await load(force: true) }
     }
@@ -217,7 +220,11 @@ private struct MusicHomePivot: View {
                             MusicRail(title: hub.title, items: hub.metadata)
                         }
                         if !fallbackAlbums.isEmpty {
-                            MusicRail(title: "Recently Added", items: fallbackAlbums)
+                            MusicRail(title: "Recently Added", items: fallbackAlbums,
+                                      destination: RailViewAllDestination(
+                                        title: "Recently Added", backend: .plex,
+                                        sessionIdentity: appModel.activeBrowseSessionKey,
+                                        query: .albums(libraryID: section.key)))
                             Text("Browse everything from the Artists and Albums pivots above.")
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
@@ -365,14 +372,13 @@ private struct MusicHomePivot: View {
 struct MusicRail: View {
     let title: String
     let items: [MediaItem]
+    var destination: RailViewAllDestination? = nil
 
     @Environment(\.labstreamCompactWidth) private var compactWidth
 
     var body: some View {
         VStack(alignment: .leading, spacing: compactWidth ? DS.Space.sm : DS.Space.lg) {
-            Text(title)
-                .font(compactWidth ? .title3.bold() : .title2.bold())
-                .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
+            RailSectionHeader(title: title, destination: destination)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: compactWidth ? DS.Space.md : DS.Space.xl) {

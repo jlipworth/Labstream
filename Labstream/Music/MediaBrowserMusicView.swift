@@ -67,6 +67,9 @@ struct MediaBrowserMusicView: View {
         .navigationDestination(for: MediaItem.self) { item in
             musicDestination(for: item, sectionKey: selectedLibrary?.id)
         }
+        .navigationDestination(for: RailViewAllDestination.self) { destination in
+            RailViewAllView(destination: destination)
+        }
         .task(id: backendIdentity) { await load() }
         .refreshable { await load(force: true) }
     }
@@ -168,7 +171,8 @@ private struct MediaBrowserMusicHome: View {
                             switch rail.style {
                             case .albums:
                                 // Album rails navigate to the (provider-backed) album detail.
-                                MusicRail(title: rail.title, items: rail.items)
+                                MusicRail(title: rail.title, items: rail.items,
+                                          destination: rail.destination)
                             case .tracks:
                                 // Track rails play on tap through the shared player.
                                 MediaBrowserMusicTrackRail(title: rail.title, tracks: rail.items)
