@@ -42,22 +42,19 @@ struct DownloadLiveRangeProgressPolicyTests {
 
     @Test("Live display bytes require forward progress on an active downloading row")
     func liveDisplayBytes() {
-        let now = Date(timeIntervalSince1970: 2_000)
-        let fresh = DownloadLiveRangeProgressSample(bytes: 150, expectedBytes: nil, updatedAt: now.addingTimeInterval(-15))
-        let stale = DownloadLiveRangeProgressSample(bytes: 150, expectedBytes: nil, updatedAt: now.addingTimeInterval(-16))
+        // Samples have no time-based staleness — an old sample is displayed for as long as the
+        // row stays `.downloading` (a suspended app receives no callbacks while the background
+        // session keeps writing); status transitions are what remove samples.
+        let old = DownloadLiveRangeProgressSample(
+            bytes: 150, expectedBytes: nil,
+            updatedAt: Date(timeIntervalSince1970: 1_000))
 
         #expect(DownloadLiveRangeProgressPolicy.liveDisplayBytes(for: record(),
-                                                                 sample: fresh,
-                                                                 now: now) == 150)
-        #expect(DownloadLiveRangeProgressPolicy.liveDisplayBytes(for: record(),
-                                                                 sample: stale,
-                                                                 now: now) == 150)
+                                                                 sample: old) == 150)
         #expect(DownloadLiveRangeProgressPolicy.liveDisplayBytes(for: record(bytes: 150),
-                                                                 sample: fresh,
-                                                                 now: now) == nil)
+                                                                 sample: old) == nil)
         #expect(DownloadLiveRangeProgressPolicy.liveDisplayBytes(for: record(status: .paused),
-                                                                 sample: fresh,
-                                                                 now: now) == nil)
+                                                                 sample: old) == nil)
     }
 
     @Test("Aggregated live bytes sum durable plus every live segment body")

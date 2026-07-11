@@ -19,6 +19,11 @@ extension DownloadManager {
         _ tombstone: DownloadStore.EmbyConvertCleanupTombstone,
         server: URL, token: String, identity: EmbyClientIdentity,
         currentUserID: String) async {
+        // One recovery per tombstone at a time: overlapping sweeps (pause/retry/backend-ready
+        // edges) otherwise duplicate the job-list fetch and race DELETEs for the same job.
+        guard !embyCleanupTombstonesInFlight.contains(tombstone.id) else { return }
+        embyCleanupTombstonesInFlight.insert(tombstone.id)
+        defer { embyCleanupTombstonesInFlight.remove(tombstone.id) }
         let metadata = tombstone.metadata
         guard let baseline = metadata.embyConvertJobBaselineIDs,
               let fingerprint = metadata.embyConvertRecoveryFingerprint,

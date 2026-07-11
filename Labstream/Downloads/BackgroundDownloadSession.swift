@@ -965,6 +965,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             let rowAttemptID = record.metadata?.downloadAttemptID
             let storedValidator = record.metadata?.rangeValidator
             var seenOffsets = Set<Int>()
+            // Collect invalid manifests per row and remove them with ONE index persist below; a
+            // per-manifest store removal paid a full index.json rewrite each, on the launch
+            // reattach path that gates download recovery.
+            var invalidManifests: [(offset: Int, length: Int, url: URL?, actualLength: Int?)] = []
             for manifest in manifests {
                 let url = store.heldRangeSegmentURL(relativePath: manifest.relativePath)
                 let actualLength = url.flatMap(fileSize(at:))
@@ -980,14 +984,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                         heldValidator: manifest.validator
                     ) != .discardChangedResource
                 guard valid, let url else {
-                    _ = store.removeHeldRangeSegment(ratingKey: ratingKey, offset: manifest.offset)
-                    if let url { try? fileManager.removeItem(at: url) }
-                    AppDiagnostics.record(.downloads, "downloads.range_held_manifest_discarded", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "base_offset": .int(manifest.offset),
-                        "manifest_length": .int(manifest.length),
-                        "actual_length": .int(actualLength ?? -1),
-                    ])
+                    invalidManifests.append((manifest.offset, manifest.length, url, actualLength))
                     continue
                 }
                 lock.lock()
@@ -998,6 +995,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 if !alreadyRestored {
                     restoredCount += 1
                     restoredBytes += manifest.length
+                }
+            }
+            if !invalidManifests.isEmpty {
+                _ = store.removeHeldRangeSegments(ratingKey: ratingKey,
+                                                  offsets: invalidManifests.map(\.offset))
+                for invalid in invalidManifests {
+                    if let url = invalid.url { try? fileManager.removeItem(at: url) }
+                    AppDiagnostics.record(.downloads, "downloads.range_held_manifest_discarded", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "base_offset": .int(invalid.offset),
+                        "manifest_length": .int(invalid.length),
+                        "actual_length": .int(invalid.actualLength ?? -1),
+                    ])
                 }
             }
         }
@@ -3295,16 +3305,33 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
 
     private func removeHeldRangeSegment(ratingKey: String, offset: Int, fallbackURL: URL? = nil) {
-        let persisted = store.removeHeldRangeSegment(ratingKey: ratingKey, offset: offset)
+        removeHeldRangeSegments(ratingKey: ratingKey, segments: [(offset, fallbackURL)])
+    }
+
+    /// Batch removal: one manifest persist for a whole discard set, instead of a full index
+    /// rewrite per segment (the drain-discard sweep can drop many at once).
+    private func removeHeldRangeSegments(ratingKey: String,
+                                         segments: [(offset: Int, fallbackURL: URL?)]) {
+        guard !segments.isEmpty else { return }
+        let persisted = store.removeHeldRangeSegments(ratingKey: ratingKey,
+                                                      offsets: segments.map(\.offset))
         lock.lock()
-        let mapped = heldRangeSegments[ratingKey]?.removeValue(forKey: offset)
+        var mappedURLsByOffset: [Int: URL] = [:]
+        for segment in segments {
+            if let mapped = heldRangeSegments[ratingKey]?.removeValue(forKey: segment.offset) {
+                mappedURLsByOffset[segment.offset] = mapped.url
+            }
+        }
         lock.unlock()
         var urls = Set<URL>()
-        if let fallbackURL { urls.insert(fallbackURL) }
-        if let mapped { urls.insert(mapped.url) }
-        if let persisted,
-           let url = store.heldRangeSegmentURL(relativePath: persisted.relativePath) {
-            urls.insert(url)
+        for segment in segments {
+            if let fallbackURL = segment.fallbackURL { urls.insert(fallbackURL) }
+            if let mapped = mappedURLsByOffset[segment.offset] { urls.insert(mapped) }
+        }
+        for entry in persisted {
+            if let url = store.heldRangeSegmentURL(relativePath: entry.relativePath) {
+                urls.insert(url)
+            }
         }
         for url in urls { try? fileManager.removeItem(at: url) }
     }
@@ -3331,10 +3358,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             }
             let stashed = held.map { (offset: $0.key, length: $0.value.length) }
             let run = StaticRangeSegmentAssemblyPolicy.appendableRun(durableBytes: durable, stashedSegments: stashed)
-            for seg in run.discard {
-                removeHeldRangeSegment(ratingKey: ratingKey, offset: seg.offset,
-                                       fallbackURL: held[seg.offset]?.url)
-            }
+            removeHeldRangeSegments(ratingKey: ratingKey,
+                                    segments: run.discard.map { ($0.offset, held[$0.offset]?.url) })
             guard let next = run.append.first, let entry = held[next.offset] else { break }
             if StaticRangeTrainIntegrityPolicy.heldSpliceDecision(
                 storedValidator: storedValidator,
