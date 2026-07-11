@@ -7,6 +7,21 @@ import AppKit
 import UIKit
 #endif
 
+/// Pointer-driven Mac menus should be information-dense; iOS/visionOS retain the 44-point
+/// touch/gaze rows. Keeping these metrics shared prevents Quality, Speed, Subtitles, and Audio
+/// from drifting into differently padded variants of the same picker.
+private enum PlayerPickerMetrics {
+    #if os(macOS)
+    static let rowHeight: CGFloat = 30
+    static let rowVerticalPadding: CGFloat = 2
+    static let contentPadding: CGFloat = 8
+    #else
+    static let rowHeight: CGFloat = 44
+    static let rowVerticalPadding: CGFloat = DS.Space.sm
+    static let contentPadding: CGFloat = DS.Space.md
+    #endif
+}
+
 /// Shared, observable selection state for the player menus (e.g. the active bitrate
 /// cap so the Quality menu shows the right checkmark even after a programmatic reload).
 @Observable
@@ -48,14 +63,14 @@ struct QualityTabView: View {
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, DS.Space.sm)
-                        .frame(minHeight: 44)
+                        .padding(.vertical, PlayerPickerMetrics.rowVerticalPadding)
+                        .frame(minHeight: PlayerPickerMetrics.rowHeight)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(DS.Space.md)
+            .padding(PlayerPickerMetrics.contentPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -92,14 +107,14 @@ struct SpeedTabView: View {
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, DS.Space.sm)
-                        .frame(minHeight: 44)
+                        .padding(.vertical, PlayerPickerMetrics.rowVerticalPadding)
+                        .frame(minHeight: PlayerPickerMetrics.rowHeight)
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                 }
             }
-            .padding(DS.Space.md)
+            .padding(PlayerPickerMetrics.contentPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -325,7 +340,7 @@ struct ChaptersTabView: View {
                                 .id(index)
                         }
                     }
-                    .padding(.vertical, DS.Space.sm)
+                    .padding(.vertical, PlayerPickerMetrics.rowVerticalPadding)
                 }
                 // contentMargins, not .padding on the lazy content — see the hit-region
                 // gotcha in docs/DEVELOPMENT.md (padding shifts gaze/hit shapes).
@@ -387,7 +402,7 @@ struct SubtitlesTabView: View {
                         Text("Loading…")
                             .foregroundStyle(.secondary)
                     }
-                    .padding(.vertical, DS.Space.sm)
+                    .padding(.vertical, PlayerPickerMetrics.rowVerticalPadding)
                 } else if let loadError {
                     VStack(alignment: .leading, spacing: DS.Space.sm) {
                         Text(loadError)
@@ -401,7 +416,7 @@ struct SubtitlesTabView: View {
                 } else if tracks.isEmpty {
                     Text("No subtitle tracks")
                         .foregroundStyle(.secondary)
-                        .padding(.vertical, DS.Space.sm)
+                        .padding(.vertical, PlayerPickerMetrics.rowVerticalPadding)
                 } else {
                     ForEach(tracks) { track in
                         Button {
@@ -426,15 +441,15 @@ struct SubtitlesTabView: View {
                                         .foregroundStyle(.tint)
                                 }
                             }
-                            .padding(.vertical, DS.Space.sm)
-                            .frame(minHeight: 44)
+                            .padding(.vertical, PlayerPickerMetrics.rowVerticalPadding)
+                            .frame(minHeight: PlayerPickerMetrics.rowHeight)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
                 }
             }
-            .padding(DS.Space.md)
+            .padding(PlayerPickerMetrics.contentPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .task {
@@ -509,11 +524,11 @@ struct AudioTabView: View {
                         Text("Loading…")
                             .foregroundStyle(.secondary)
                     }
-                    .padding(.vertical, DS.Space.sm)
+                    .padding(.vertical, PlayerPickerMetrics.rowVerticalPadding)
                 } else if tracks.isEmpty {
                     Text("No alternate audio tracks")
                         .foregroundStyle(.secondary)
-                        .padding(.vertical, DS.Space.sm)
+                    .padding(.vertical, PlayerPickerMetrics.rowVerticalPadding)
                 } else {
                     ForEach(tracks) { track in
                         Button {
@@ -533,15 +548,15 @@ struct AudioTabView: View {
                                         .foregroundStyle(.tint)
                                 }
                             }
-                            .padding(.vertical, DS.Space.sm)
-                            .frame(minHeight: 44)
+                            .padding(.vertical, PlayerPickerMetrics.rowVerticalPadding)
+                            .frame(minHeight: PlayerPickerMetrics.rowHeight)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
                 }
             }
-            .padding(DS.Space.md)
+            .padding(PlayerPickerMetrics.contentPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .task {
@@ -591,7 +606,7 @@ struct AudioStreamsTabView: View {
                 if didLoad && choices.isEmpty {
                     Text("No audio track metadata")
                         .foregroundStyle(.secondary)
-                        .padding(.vertical, DS.Space.sm)
+                    .padding(.vertical, PlayerPickerMetrics.rowVerticalPadding)
                 } else {
                     ForEach(choices) { choice in
                         Button {
@@ -611,15 +626,15 @@ struct AudioStreamsTabView: View {
                                         .foregroundStyle(.tint)
                                 }
                             }
-                            .padding(.vertical, DS.Space.sm)
-                            .frame(minHeight: 44)
+                            .padding(.vertical, PlayerPickerMetrics.rowVerticalPadding)
+                            .frame(minHeight: PlayerPickerMetrics.rowHeight)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }
                 }
             }
-            .padding(DS.Space.md)
+            .padding(PlayerPickerMetrics.contentPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onAppear {
