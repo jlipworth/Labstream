@@ -1278,10 +1278,6 @@ public final class DownloadManager {
         }
     }
 
-    private func retryRowStillPresent(ratingKey: String) -> Bool {
-        store.records.contains { $0.ratingKey == ratingKey }
-    }
-
     /// Lens 6 F5: `token` scopes the guard to the CALLER's retry attempt — a superseded chain
     /// stays dead even after pause→resume re-begins retrying for the same key. `nil` preserves the
     /// legacy any-current-attempt semantics for paths that predate token threading.
