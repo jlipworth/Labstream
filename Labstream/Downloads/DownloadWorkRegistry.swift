@@ -91,7 +91,7 @@ final class DownloadWorkRegistry {
     func start(
         for key: DownloadAttemptKey,
         kind: Kind,
-        operation: @escaping @Sendable () async -> Void
+        operation: @escaping @MainActor @Sendable () async -> Void
     ) -> Token {
         let token = Token()
         let task = Task { [weak self] in

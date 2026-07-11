@@ -615,7 +615,10 @@ public final class DownloadManager {
               let live = appModel.backendSession(for: intent.backend),
               intent.matches(session: live) else { return }
         cleanupIntentsInFlight.insert(intent.id)
-        Task { [weak self] in
+        downloadWorkRegistry.start(
+            for: intent.attemptKey,
+            kind: .requiredCleanup
+        ) { [weak self] in
             guard let self else { return }
             let confirmedGone: Bool
             switch intent.backend {
