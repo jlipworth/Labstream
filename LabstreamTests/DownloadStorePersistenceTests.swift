@@ -405,6 +405,53 @@ struct DownloadStorePersistenceTests {
         }
     }
 
+    @Test func playSessionCompareClearRequiresExactAttemptAndExpectedValue() throws {
+        try withTemporaryDirectory { directory in
+            let ratingKey = "emby:compare-clear"
+            let attemptA = DownloadAttemptID(rawValue: "attempt-A")!
+            let attemptB = DownloadAttemptID(rawValue: "attempt-B")!
+            let keyA = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptA)
+            let keyB = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptB)
+            var metadata = OfflineMetadata(
+                ratingKey: ratingKey, title: "Compare clear", type: "movie")
+            metadata.playSessionID = "session-A"
+            let record = makeRecord(
+                ratingKey: ratingKey,
+                title: "Compare clear",
+                directory: directory,
+                bytes: 0,
+                metadata: metadata)
+            let store = DownloadStore(baseDirectory: directory)
+
+            #expect(store.createAttemptOwnedRecord(record, attemptID: attemptA) == .committed(keyA))
+            #expect(store.clearPlaySessionID(
+                for: keyA, expectedPlaySessionID: "other"
+            ) == .expectedValueMismatch)
+            #expect(store.metadata(for: ratingKey)?.playSessionID == "session-A")
+
+            var replacement = record
+            replacement.attemptID = attemptB
+            replacement.metadata?.downloadAttemptID = attemptB.rawValue
+            replacement.metadata?.playSessionID = "session-B"
+            #expect(store.createAttemptOwnedRecord(
+                replacement, attemptID: attemptB, replacing: attemptA
+            ) == .committed(keyB))
+            #expect(store.clearPlaySessionID(
+                for: keyA, expectedPlaySessionID: "session-A"
+            ) == .staleOrMissing)
+            #expect(store.clearPlaySessionID(
+                for: keyB, expectedPlaySessionID: "session-A"
+            ) == .expectedValueMismatch)
+            #expect(store.metadata(for: ratingKey)?.playSessionID == "session-B")
+            #expect(store.clearPlaySessionID(
+                for: keyB, expectedPlaySessionID: "session-B"
+            ) == .cleared)
+            #expect(store.clearPlaySessionID(
+                for: keyB, expectedPlaySessionID: "session-B"
+            ) == .alreadyAbsent)
+        }
+    }
+
     @Test func conditionalRemovalSerializesStablePathAgainstReplacementSeed() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("attempt-remove-race-\(UUID().uuidString)", isDirectory: true)
