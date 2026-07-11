@@ -69,6 +69,298 @@ public struct EmbyConvertJob: Decodable, Sendable, Equatable {
     }
 }
 
+/// Identity-bearing row returned by `GET /Sync/Jobs`.
+///
+/// Emby serializes item/user identifiers as JSON numbers on current servers even though the
+/// corresponding request APIs accept strings. Recovery normalizes the requested item ids to
+/// strings so callers never have to guess which wire representation a server version uses.
+public struct EmbyConvertRecoveryEntry: Decodable, Sendable, Equatable {
+    public let id: Int
+    public let requestedItemIds: [String]
+    public let itemId: String?
+    public let targetId: String
+    public let quality: String
+    public let profile: String
+    public let bitrate: Int?
+    public let status: EmbyConvertJobStatus
+    public let progress: Double?
+    public let dateCreated: String?
+    public let dateLastModified: String?
+    public let userId: String?
+    public let syncNewContent: Bool?
+    public let unwatchedOnly: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case id = "Id"
+        case requestedItemIds = "RequestedItemIds"
+        case itemId = "ItemId"
+        case targetId = "TargetId"
+        case quality = "Quality"
+        case profile = "Profile"
+        case bitrate = "Bitrate"
+        case status = "Status"
+        case progress = "Progress"
+        case dateCreated = "DateCreated"
+        case dateLastModified = "DateLastModified"
+        case userId = "UserId"
+        case syncNewContent = "SyncNewContent"
+        case unwatchedOnly = "UnwatchedOnly"
+    }
+
+    public init(id: Int, requestedItemIds: [String], itemId: String? = nil,
+                targetId: String, quality: String, profile: String, bitrate: Int?,
+                status: EmbyConvertJobStatus = .unknown, progress: Double? = nil,
+                dateCreated: String? = nil, dateLastModified: String? = nil,
+                userId: String? = nil, syncNewContent: Bool? = nil, unwatchedOnly: Bool? = nil) {
+        self.id = id
+        self.requestedItemIds = requestedItemIds
+        self.itemId = itemId
+        self.targetId = targetId
+        self.quality = quality
+        self.profile = profile
+        self.bitrate = bitrate
+        self.status = status
+        self.progress = progress
+        self.dateCreated = dateCreated
+        self.dateLastModified = dateLastModified
+        self.userId = userId
+        self.syncNewContent = syncNewContent
+        self.unwatchedOnly = unwatchedOnly
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int.self, forKey: .id)
+        if let values = try? c.decode([String].self, forKey: .requestedItemIds) {
+            requestedItemIds = values
+        } else {
+            requestedItemIds = (try? c.decode([Int].self, forKey: .requestedItemIds))?.map(String.init) ?? []
+        }
+        if let value = try? c.decode(String.self, forKey: .itemId) {
+            itemId = value
+        } else {
+            itemId = (try? c.decode(Int.self, forKey: .itemId)).map(String.init)
+        }
+        targetId = try c.decode(String.self, forKey: .targetId)
+        quality = try c.decode(String.self, forKey: .quality)
+        profile = try c.decode(String.self, forKey: .profile)
+        bitrate = try c.decodeIfPresent(Int.self, forKey: .bitrate)
+        status = try c.decodeIfPresent(EmbyConvertJobStatus.self, forKey: .status) ?? .unknown
+        progress = try c.decodeIfPresent(Double.self, forKey: .progress)
+        dateCreated = try c.decodeIfPresent(String.self, forKey: .dateCreated)
+        dateLastModified = try c.decodeIfPresent(String.self, forKey: .dateLastModified)
+        if let value = try? c.decode(String.self, forKey: .userId) {
+            userId = value
+        } else {
+            userId = (try? c.decode(Int.self, forKey: .userId)).map(String.init)
+        }
+        syncNewContent = try c.decodeIfPresent(Bool.self, forKey: .syncNewContent)
+        unwatchedOnly = try c.decodeIfPresent(Bool.self, forKey: .unwatchedOnly)
+    }
+}
+
+/// Envelope returned by the list endpoint. The server does not guarantee creation-time ordering.
+public struct EmbyConvertJobList: Decodable, Sendable, Equatable {
+    public let items: [EmbyConvertRecoveryEntry]
+    public let totalRecordCount: Int
+
+    /// Recovery requires the complete server baseline, never a silently truncated page.
+    public var isComplete: Bool { totalRecordCount == items.count }
+
+    enum CodingKeys: String, CodingKey {
+        case items = "Items"
+        case totalRecordCount = "TotalRecordCount"
+    }
+}
+
+/// Pure fail-closed recovery for the POST-response persistence crash window.
+public enum EmbyConvertRecoveryPolicy {
+    public static let candidateClockSkewSeconds: TimeInterval = 5
+    public static let maximumCreateResponseWindowSeconds: TimeInterval = 10 * 60
+    public static let recoveryExpirySeconds: TimeInterval = 24 * 60 * 60
+
+    public enum Phase: String, Codable, Sendable, Equatable {
+        case prepared
+        case dispatchAmbiguous
+    }
+    public enum CreateFailureDisposition: Sendable, Equatable {
+        case clearRecovery
+        case preserveForRecovery
+    }
+    public enum CleanupAction: Sendable, Equatable {
+        case cancel(jobID: Int)
+        case retainTombstone
+        case discardTombstone
+    }
+    public enum RelaunchAction: Sendable, Equatable {
+        case poll(jobID: Int)
+        case recover(baselineJobIDs: [Int], fingerprint: Fingerprint,
+                     attemptStartedAtEpochSeconds: Double, phase: Phase)
+        case failMissingIdentity
+    }
+
+    public struct Fingerprint: Codable, Sendable, Equatable {
+        public let itemId: String
+        public let targetId: String
+        public let quality: String
+        public let profile: String
+        public let bitrate: Int?
+        public let userId: String?
+        public let syncNewContent: Bool
+        public let unwatchedOnly: Bool
+        // Emby 4.9.3's list response does not expose these create shapers, but they remain durably
+        // recorded so a future server field can tighten matching without a metadata migration.
+        public let container: String?
+        public let videoCodec: String?
+        public let audioCodec: String?
+        public let audioStreamIndex: Int?
+
+        public init(itemId: String, targetId: String = "originalmediafolder",
+                    quality: String, profile: String, bitrate: Int?, userId: String? = nil,
+                    syncNewContent: Bool = false, unwatchedOnly: Bool = false,
+                    container: String? = nil, videoCodec: String? = nil,
+                    audioCodec: String? = nil, audioStreamIndex: Int? = nil) {
+            self.itemId = itemId
+            self.targetId = targetId
+            self.quality = quality
+            self.profile = profile
+            self.bitrate = bitrate
+            self.userId = userId
+            self.syncNewContent = syncNewContent
+            self.unwatchedOnly = unwatchedOnly
+            self.container = container
+            self.videoCodec = videoCodec
+            self.audioCodec = audioCodec
+            self.audioStreamIndex = audioStreamIndex
+        }
+    }
+
+    /// Returns a job id only when the full-baseline difference contains exactly one exact match.
+    /// Zero or multiple matches are deliberately indistinguishable and remain fail-closed.
+    public static func recoveredJobID(baselineJobIDs: Set<Int>,
+                                      jobs: [EmbyConvertRecoveryEntry],
+                                      fingerprint: Fingerprint,
+                                      attemptStartedAtEpochSeconds: Double? = nil,
+                                      phase: Phase = .dispatchAmbiguous,
+                                      nowEpochSeconds: Double = Date().timeIntervalSince1970) -> Int? {
+        let matches = matchingNewJobIDs(
+            baselineJobIDs: baselineJobIDs, jobs: jobs, fingerprint: fingerprint,
+            attemptStartedAtEpochSeconds: attemptStartedAtEpochSeconds,
+            phase: phase, nowEpochSeconds: nowEpochSeconds)
+        guard matches.count == 1 else { return nil }
+        return matches[0]
+    }
+
+    public static func matchingNewJobIDs(baselineJobIDs: Set<Int>,
+                                         jobs: [EmbyConvertRecoveryEntry],
+                                         fingerprint: Fingerprint,
+                                         attemptStartedAtEpochSeconds: Double? = nil,
+                                         phase: Phase = .dispatchAmbiguous,
+                                         nowEpochSeconds: Double = Date().timeIntervalSince1970) -> [Int] {
+        guard phase == .dispatchAmbiguous else { return [] }
+        if let start = attemptStartedAtEpochSeconds,
+           nowEpochSeconds > start + recoveryExpirySeconds { return [] }
+        return jobs.filter {
+            !baselineJobIDs.contains($0.id)
+                && $0.requestedItemIds.contains(fingerprint.itemId)
+                && $0.targetId == fingerprint.targetId
+                && $0.quality == fingerprint.quality
+                && $0.profile == fingerprint.profile
+                && $0.bitrate == fingerprint.bitrate
+                // Emby 4.9.3 returns `UserId` here as an internal JSON integer, while create takes
+                // the public user GUID/string and exposes no mapping endpoint between them. Persist
+                // the requested id in the fingerprint, but do not pretend these unequal id domains
+                // are comparable (live mutation proved every other exposed field matched).
+                && $0.syncNewContent == fingerprint.syncNewContent
+                && $0.unwatchedOnly == fingerprint.unwatchedOnly
+                && candidateDateIsBounded($0.dateCreated,
+                                          attemptStartedAtEpochSeconds: attemptStartedAtEpochSeconds)
+        }.map(\.id).sorted()
+    }
+
+    private static func candidateDateIsBounded(_ raw: String?,
+                                               attemptStartedAtEpochSeconds: Double?) -> Bool {
+        guard let start = attemptStartedAtEpochSeconds else { return true }
+        guard let raw else { return false }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let date = formatter.date(from: raw) ?? ISO8601DateFormatter().date(from: raw)
+        guard let epoch = date?.timeIntervalSince1970 else { return false }
+        return epoch >= start - candidateClockSkewSeconds
+            && epoch <= start + maximumCreateResponseWindowSeconds
+    }
+
+    public static func cleanupAction(baselineJobIDs: Set<Int>,
+                                     jobs: [EmbyConvertRecoveryEntry],
+                                     listIsComplete: Bool,
+                                     fingerprint: Fingerprint,
+                                     attemptStartedAtEpochSeconds: Double,
+                                     phase: Phase,
+                                     nowEpochSeconds: Double) -> CleanupAction {
+        guard phase == .dispatchAmbiguous else { return .discardTombstone }
+        guard listIsComplete else { return .retainTombstone }
+        // Cleanup may still cancel a uniquely identified long-retained job after the recovery
+        // adoption deadline. Evaluate its creation window just before expiry, then use expiry only
+        // to decide when a complete zero-candidate result proves there is nothing left to clean.
+        let matching = matchingNewJobIDs(
+            baselineJobIDs: baselineJobIDs, jobs: jobs, fingerprint: fingerprint,
+            attemptStartedAtEpochSeconds: attemptStartedAtEpochSeconds, phase: phase,
+            nowEpochSeconds: min(nowEpochSeconds,
+                                 attemptStartedAtEpochSeconds + recoveryExpirySeconds - 1))
+        if matching.count == 1, let id = matching.first { return .cancel(jobID: id) }
+        if matching.isEmpty,
+           nowEpochSeconds > attemptStartedAtEpochSeconds + recoveryExpirySeconds {
+            return .discardTombstone
+        }
+        return .retainTombstone
+    }
+
+    /// Pure manager boundary: a persisted job id always wins; otherwise recovery requires both
+    /// halves of the durable pre-POST identity. Partial/legacy state remains fail-closed.
+    public static func relaunchAction(jobID: Int?, baselineJobIDs: [Int]?,
+                                      fingerprint: Fingerprint?,
+                                      attemptStartedAtEpochSeconds: Double? = nil,
+                                      phase: Phase? = nil) -> RelaunchAction {
+        if let jobID { return .poll(jobID: jobID) }
+        if let baselineJobIDs, let fingerprint, let attemptStartedAtEpochSeconds,
+           let phase, phase == .dispatchAmbiguous {
+            return .recover(baselineJobIDs: baselineJobIDs, fingerprint: fingerprint,
+                            attemptStartedAtEpochSeconds: attemptStartedAtEpochSeconds, phase: phase)
+        }
+        return .failMissingIdentity
+    }
+
+    /// Once POST is dispatched, a transport failure or unusable 2xx body cannot prove the server
+    /// did not create the job. Only pre-dispatch failures and explicit 4xx rejections may discard
+    /// the baseline safely; 5xx responses remain commit-ambiguous.
+    public static func createFailureDisposition(postWasDispatched: Bool,
+                                                httpStatusCode: Int?) -> CreateFailureDisposition {
+        guard postWasDispatched else { return .clearRecovery }
+        if let httpStatusCode, (400..<500).contains(httpStatusCode) { return .clearRecovery }
+        return .preserveForRecovery
+    }
+
+    /// Recovery/cancellation must run under the same public Emby user that created the job. The
+    /// Sync-list `UserId` is an incomparable internal integer, so ownership is enforced against the
+    /// two public ids we control and persist locally instead.
+    public static func publicUserMatches(currentSessionUserID: String?,
+                                         persistedBackendUserID: String?,
+                                         fingerprintUserID: String?) -> Bool {
+        let values = [currentSessionUserID, persistedBackendUserID, fingerprintUserID].map {
+            $0?.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard values.allSatisfy({ $0?.isEmpty == false }) else { return false }
+        return values[0] == values[1] && values[1] == values[2]
+    }
+
+    /// Durable cleanup entries are attempt-scoped by UUID, not rating key. Re-downloading and
+    /// deleting the same item while an older cleanup is pending must preserve both attempts.
+    public static func appendingCleanupTombstoneID(_ newID: UUID,
+                                                   to existingIDs: [UUID]) -> [UUID] {
+        existingIDs + [newID]
+    }
+}
+
 /// Pure request builders + response models for the Emby "Convert Media" Sync job lane (the
 /// server-side prepare-then-download path). Mirrors the existing `EmbyPlayback` request style:
 /// auth via `EmbyAuth.applyAuth`, base-path-preserving URL join via `EmbyPlayback.embyURL`.
@@ -243,6 +535,18 @@ public enum EmbyConvertRequest {
         return req
     }
 
+    /// `GET {server}/Sync/Jobs` — list the complete Sync-job baseline used by fail-closed recovery.
+    public static func jobListRequest(server: URL,
+                                      token: String,
+                                      identity: EmbyClientIdentity) throws -> URLRequest {
+        let url = try EmbyPlayback.embyURL(server: server, path: "/Sync/Jobs")
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        EmbyAuth.applyAuth(to: &req, identity: identity, userId: nil, token: token)
+        return req
+    }
+
     /// `DELETE {server}/Sync/Jobs/{jobId}` — cancel a job the user abandons. Deleting the job does
     /// NOT delete the already-converted file (verified live), so this only ever cancels an
     /// in-flight conversion; never call it on success.
@@ -291,6 +595,10 @@ public enum EmbyConvertRequest {
     /// shape — use `decodeCreatedJob(from:)` for that.
     public static func decodeJob(from data: Data) throws -> EmbyConvertJob {
         try JSONDecoder().decode(EmbyConvertJob.self, from: data)
+    }
+
+    public static func decodeJobList(from data: Data) throws -> EmbyConvertJobList {
+        try JSONDecoder().decode(EmbyConvertJobList.self, from: data)
     }
 
     /// Decode a `POST /Sync/Jobs` (create) response body into the created `EmbyConvertJob`.

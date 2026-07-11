@@ -213,6 +213,18 @@ public final class DownloadManager {
     /// consume `/Videos/{id}/stream.mp4` as a file transfer, not through the playback controller, so
     /// keep the server-minted PlaySessionId alive until the transfer reaches a terminal row state.
     @ObservationIgnored private var jellyfinDownloadKeepaliveTasks: [String: Task<Void, Never>] = [:]
+    /// Emby applies the same ~60-second idle expiry to compatible-remux encoders. This is separate
+    /// bookkeeping because only Emby's `.compatibleRemux` lane is live; its optimize lane is a
+    /// persistent Convert job and must never emit playback keepalives.
+    private struct EmbyKeepaliveTaskHandle {
+        let generation: UUID
+        let task: Task<Void, Never>
+    }
+    @ObservationIgnored private var embyDownloadKeepaliveTasks: [String: EmbyKeepaliveTaskHandle] = [:]
+    /// Auth-dead tasks exit permanently for the credential generation that received 401/403.
+    /// Without this sentinel every `refreshRecords()` would immediately recreate the task and
+    /// hammer the server. Values are non-secret stable digests of server+user+token identity.
+    @ObservationIgnored private var embyKeepaliveAuthQuarantine: [String: String] = [:]
 
     /// Last (progress 0…1, time) sample per ratingKey, used to derive `optimizeETA` rate.
     private var optimizeProgressSamples: [String: (p: Double, time: Date)] = [:]
@@ -1057,7 +1069,12 @@ public final class DownloadManager {
             status: record.status,
             resumeMode: record.metadata?.resolvedResumeMode(ratingKey: ratingKey),
             isEmbyRecord: DownloadRecordIdentity.isEmbyRecordKey(ratingKey),
-            hasEmbyConvertJobID: record.metadata?.embyConvertJobID != nil
+            hasEmbyConvertJobID: record.metadata?.embyConvertJobID != nil,
+            hasEmbyConvertRecoveryIdentity:
+                record.metadata?.embyConvertJobBaselineIDs != nil
+                    && record.metadata?.embyConvertRecoveryFingerprint != nil
+                    && record.metadata?.embyConvertRecoveryStartedAtEpochSeconds != nil
+                    && record.metadata?.embyConvertRecoveryPhase == .dispatchAmbiguous
         ) {
             store.setStatus(ratingKey: ratingKey, .preparing)
             resumePendingEmbyConvertDownloads()
@@ -1507,9 +1524,10 @@ public final class DownloadManager {
 
     /// Re-hydrate `.preparing` Emby convert rows after an app relaunch and RESUME polling their
     /// server-side Sync job (rather than restarting the conversion — it runs server-side and
-    /// survives app death, which is the whole point of this lane). Idempotent: a row already being
-    /// polled (`activeJobs`) is skipped. Best-effort — a row whose Emby lane is signed out stays
-    /// `.preparing` and resumes automatically on the next call once the lane returns.
+    /// survives app death, which is the whole point of this lane). A `.failed` row retaining a
+    /// complete pre-POST recovery identity also re-enters recovery here; it must never blind-POST a
+    /// replacement. Idempotent: a row already being polled (`activeJobs`) is skipped. Best-effort —
+    /// a row whose Emby lane is signed out stays parked and resumes once the lane returns.
     private func resumePendingEmbyConvertDownloads() {
         // Use the store's current rows, not the published `records` snapshot. Manual Resume paths
         // mutate the store and then call this immediately; reading stale published rows can skip the
@@ -1517,60 +1535,55 @@ public final class DownloadManager {
         let embyPreparing = store.records.filter { record in
             let backend = record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
                 ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
-            return record.status == .preparing
+            let hasCrashWindowIdentity = record.metadata?.embyConvertJobID == nil
+                && record.metadata?.embyConvertJobBaselineIDs != nil
+                && record.metadata?.embyConvertRecoveryFingerprint != nil
+                && record.metadata?.embyConvertRecoveryStartedAtEpochSeconds != nil
+                && record.metadata?.embyConvertRecoveryPhase == .dispatchAmbiguous
+            return (record.status == .preparing || (record.status == .failed && hasCrashWindowIdentity))
                 && backend == .emby
                 && record.metadata?.resolvedDownloadLane() == .optimize
                 && !activeJobs.contains(record.ratingKey)
         }
-        for record in embyPreparing where record.metadata?.embyConvertJobID == nil {
-            recordDownloadDiagnostic("downloads.convert_failed", fields: [
-                "download_id": .identifier(record.ratingKey),
-                "phase": .label("resume_missing_job_id"),
-            ])
-            lastError[record.ratingKey] = .transferFailed("Server conversion did not finish starting; retry to create a new conversion.")
-            store.setStatus(ratingKey: record.ratingKey, .failed)
-            clearOptimizeProgress(ratingKey: record.ratingKey)
-            releaseInFlight(ratingKey: record.ratingKey)
-        }
-        let candidates = embyPreparing.filter { $0.metadata?.embyConvertJobID != nil }
-        guard !candidates.isEmpty else {
+        let cleanupTombstones = store.embyConvertCleanupTombstones
+        guard !embyPreparing.isEmpty || !cleanupTombstones.isEmpty else {
             refreshRecords()
             return
         }
         guard let session = appModel.backendSession(for: .emby),
               let userId = session.userID else {
-            if !candidates.isEmpty {
-                recordDownloadDiagnostic("downloads.convert_resume_skip", fields: [
-                    "candidate_count": .int(candidates.count),
-                    "reason": .label("emby_session_unavailable"),
-                ])
-            }
+            recordDownloadDiagnostic("downloads.convert_resume_skip", fields: [
+                "candidate_count": .int(embyPreparing.count + cleanupTombstones.count),
+                "reason": .label("emby_session_unavailable"),
+            ])
             refreshRecords()
             return
         }
         let server = session.baseURL
         let token = session.token
         let identity = appModel.identity.emby
-        for record in candidates {
+        for tombstone in cleanupTombstones
+            where session.matchesPersistedServer(tombstone.metadata) {
+            Task { [weak self] in
+                await self?.recoverAndCancelEmbyConvertTombstone(
+                    tombstone, server: server, token: token, identity: identity,
+                    currentUserID: userId)
+            }
+        }
+        for record in embyPreparing {
             guard let metadata = record.metadata,
-                  let jobId = metadata.embyConvertJobID,
                   metadata.resolvedBackendKind(ratingKey: record.ratingKey) == .emby else { continue }
             guard session.matchesPersistedServer(metadata) else {
-                recordDownloadDiagnostic("downloads.convert_resume_skip", fields: [
+                var fields: [String: DiagnosticFieldValue] = [
                     "download_id": .identifier(record.ratingKey),
-                    "job_id": .int(jobId),
                     "reason": .label("emby_session_mismatch"),
-                ])
+                ]
+                if let jobId = metadata.embyConvertJobID { fields["job_id"] = .int(jobId) }
+                recordDownloadDiagnostic("downloads.convert_resume_skip", fields: fields)
                 continue
             }
             let ratingKey = record.ratingKey
             let targetName = metadata.optimizeTargetName ?? ""
-            activeJobs.insert(ratingKey)
-            let attemptID = beginEmbyConvertAttempt(ratingKey: ratingKey)
-            recordDownloadDiagnostic("downloads.convert_resume", fields: [
-                "download_id": .identifier(ratingKey),
-                "job_id": .int(jobId),
-            ])
             // Use the FULL pre-conversion File-source snapshot persisted at trigger time so the
             // freshly converted source is identified as "not in the snapshot" even when a PRIOR
             // converted version already existed. Fall back to the original source id alone for rows
@@ -1579,16 +1592,74 @@ public final class DownloadManager {
             let item = metadata.makeMediaItem()
             let resumeSnapshot: Set<String> = metadata.embyConvertSnapshotIDs.map { Set($0) }
                 ?? (metadata.mediaSourceID.map { [$0] } ?? [])
-            Task { [weak self] in
-                await self?.pollAndDownloadEmbyConvertJob(item: item, ratingKey: ratingKey,
-                                                          jobId: jobId, snapshotIds: resumeSnapshot,
-                                                          targetName: targetName, server: server,
-                                                          token: token, identity: identity,
-                                                          userId: userId,
-                                                          audioStreamIndex: metadata.audioStreamIndex,
-                                                          attemptID: attemptID)
+
+            switch EmbyConvertRecoveryPolicy.relaunchAction(
+                jobID: metadata.embyConvertJobID,
+                baselineJobIDs: metadata.embyConvertJobBaselineIDs,
+                fingerprint: metadata.embyConvertRecoveryFingerprint,
+                attemptStartedAtEpochSeconds: metadata.embyConvertRecoveryStartedAtEpochSeconds,
+                phase: metadata.embyConvertRecoveryPhase) {
+            case .poll(let jobId):
+                activeJobs.insert(ratingKey)
+                let attemptID = beginEmbyConvertAttempt(ratingKey: ratingKey)
+                recordDownloadDiagnostic("downloads.convert_resume", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "job_id": .int(jobId),
+                ])
+                Task { [weak self] in
+                    await self?.pollAndDownloadEmbyConvertJob(
+                        item: item, ratingKey: ratingKey, jobId: jobId,
+                        snapshotIds: resumeSnapshot, targetName: targetName, server: server,
+                        token: token, identity: identity, userId: userId,
+                        audioStreamIndex: metadata.audioStreamIndex, attemptID: attemptID)
+                }
+            case .recover(let baseline, let fingerprint, let startedAt, let recoveryPhase):
+                guard EmbyConvertRecoveryPolicy.publicUserMatches(
+                    currentSessionUserID: userId,
+                    persistedBackendUserID: metadata.backendUserID,
+                    fingerprintUserID: fingerprint.userId) else {
+                    recordDownloadDiagnostic("downloads.convert_resume_skip", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "reason": .label("emby_user_mismatch"),
+                    ])
+                    continue
+                }
+                // A prior bounded/list attempt may have parked this row failed while preserving
+                // ownership evidence. Relaunch/retry re-enters recovery, never a blind new POST.
+                store.setStatus(ratingKey: ratingKey, .preparing)
+                activeJobs.insert(ratingKey)
+                let attemptID = beginEmbyConvertAttempt(ratingKey: ratingKey)
+                recordDownloadDiagnostic("downloads.convert_recovery", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "baseline_count": .int(baseline.count),
+                ])
+                Task { [weak self] in
+                    await self?.recoverAndResumeEmbyConvertJob(
+                        item: item, ratingKey: ratingKey, baselineJobIDs: Set(baseline),
+                        fingerprint: fingerprint, attemptStartedAtEpochSeconds: startedAt,
+                        recoveryPhase: recoveryPhase, snapshotIds: resumeSnapshot,
+                        targetName: targetName, server: server, token: token, identity: identity,
+                        userId: userId, audioStreamIndex: metadata.audioStreamIndex,
+                        attemptID: attemptID)
+                }
+            case .failMissingIdentity:
+                recordDownloadDiagnostic("downloads.convert_failed", fields: [
+                    "download_id": .identifier(record.ratingKey),
+                    "phase": .label("resume_missing_job_id"),
+                ])
+                lastError[record.ratingKey] = .transferFailed(
+                    "Server conversion did not finish starting; retry to create a new conversion.")
+                if metadata.embyConvertRecoveryPhase == .prepared {
+                    // Durable proof POST was never handed to URLSession: safe to discard this
+                    // baseline so a user retry may create a fresh job.
+                    store.clearEmbyConvertRecovery(ratingKey: record.ratingKey)
+                }
+                store.setStatus(ratingKey: record.ratingKey, .failed)
+                clearOptimizeProgress(ratingKey: record.ratingKey)
+                releaseInFlight(ratingKey: record.ratingKey)
             }
         }
+        refreshRecords()
     }
 
     private func shouldKeepEmbyServerPrepPollingWhileQueuePaused(_ record: DownloadRecord) -> Bool {
@@ -2011,6 +2082,26 @@ public final class DownloadManager {
         // already-converted file, so this only ever cancels an in-flight conversion).
         let rowToDelete = store.records.first(where: { $0.ratingKey == ratingKey })
         let embySession = appModel.backendSession(for: .emby)
+        var embyCleanupTombstone: DownloadStore.EmbyConvertCleanupTombstone?
+        if let metadata = rowToDelete?.metadata,
+           metadata.embyConvertJobID == nil,
+           metadata.embyConvertJobBaselineIDs != nil,
+           metadata.embyConvertRecoveryFingerprint != nil,
+           metadata.embyConvertRecoveryStartedAtEpochSeconds != nil,
+           metadata.embyConvertRecoveryPhase == .dispatchAmbiguous {
+            // Persist cleanup intent BEFORE removing the visible row. If POST was accepted during
+            // the crash window, deleting the UI row must not erase the only evidence able to find
+            // and cancel that server job.
+            guard let tombstone = store.addEmbyConvertCleanupTombstone(
+                ratingKey: ratingKey, metadata: metadata) else {
+                recordDownloadDiagnostic("downloads.convert_cleanup_deferred", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "reason": .label("tombstone_persist_failed"),
+                ])
+                return
+            }
+            embyCleanupTombstone = tombstone
+        }
         let embySessionMatchesDeletedRow = rowToDelete?.metadata.map { metadata in
             embySession?.matchesPersistedServer(metadata) == true
         } ?? false
@@ -2076,6 +2167,17 @@ public final class DownloadManager {
         }
         session.cancel(ratingKey: ratingKey)
         store.remove(ratingKey: ratingKey)
+        if let tombstone = embyCleanupTombstone,
+           let embySession,
+           let embyUserID = embySession.userID,
+           embySession.matchesPersistedServer(tombstone.metadata) {
+            let embyIdentity = appModel.identity.emby
+            Task { [weak self] in
+                await self?.recoverAndCancelEmbyConvertTombstone(
+                    tombstone, server: embySession.baseURL, token: embySession.token,
+                    identity: embyIdentity, currentUserID: embyUserID)
+            }
+        }
         lastError[ratingKey] = nil
         // Drop server-prep progress state too, or re-downloading the same item resurfaces the
         // deleted row's stale "Preparing on server… N%" caption and seeds the ETA estimator with
@@ -2501,6 +2603,7 @@ public final class DownloadManager {
         records = fresh
         offlineLibrarySnapshot = makeOfflineLibrarySnapshot(from: fresh)
         ensureJellyfinDownloadKeepalives(for: fresh)
+        ensureEmbyDownloadKeepalives(for: fresh)
         for restart in forwardOnlyRestarts {
             Task { @MainActor [weak self] in
                 self?.restartStalledForwardOnlyStream(restart)
@@ -2619,6 +2722,136 @@ public final class DownloadManager {
                 userId: userId,
                 durationMs: candidate.durationMs)
         }
+    }
+
+    private func ensureEmbyDownloadKeepalives(for records: [DownloadRecord]) {
+        for record in records {
+            guard let metadata = record.metadata,
+                  let session = appModel.backendSession(for: .emby),
+                  let userId = session.userID,
+                  session.matchesPersistedServer(metadata),
+                  EmbyDownloadKeepalivePolicy.matchesPersistedUser(
+                    metadata.backendUserID, currentUserID: userId)
+            else { continue }
+            let authGeneration = Self.embyKeepaliveAuthGeneration(session)
+            switch EmbyDownloadKeepalivePolicy.authQuarantineAction(
+                quarantinedGeneration: embyKeepaliveAuthQuarantine[record.ratingKey],
+                currentGeneration: authGeneration) {
+            case .suppress:
+                continue
+            case .clear:
+                embyKeepaliveAuthQuarantine.removeValue(forKey: record.ratingKey)
+            case .none:
+                break
+            }
+            guard let candidate = EmbyDownloadKeepalivePolicy.candidate(
+                for: record,
+                hasExistingTask: embyDownloadKeepaliveTasks[record.ratingKey] != nil)
+            else { continue }
+
+            startEmbyDownloadKeepalive(
+                ratingKey: candidate.ratingKey,
+                playSessionId: candidate.playSessionID,
+                userId: userId)
+        }
+    }
+
+    private nonisolated static func embyKeepaliveAuthGeneration(_ session: BackendSession) -> String {
+        return DiagnosticRedactor.stableIdentifier(
+            for: "\(session.serverID ?? "")|\(session.baseURL.absoluteString)|\(session.userID ?? "")|\(session.token)")
+    }
+
+    func startEmbyDownloadKeepalive(ratingKey: String,
+                                    playSessionId: String,
+                                    userId: String) {
+        embyDownloadKeepaliveTasks.removeValue(forKey: ratingKey)?.task.cancel()
+        let identity = appModel.identity.emby
+        let enqueueUserId = userId
+        let generation = UUID()
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          EmbyDownloadKeepalivePolicy.shouldRemoveTask(
+                            completingGeneration: generation,
+                            currentGeneration: self.embyDownloadKeepaliveTasks[ratingKey]?.generation)
+                    else { return }
+                    self.embyDownloadKeepaliveTasks.removeValue(forKey: ratingKey)
+                }
+            }
+            var lastTickOutcome: JellyfinKeepaliveTickOutcome?
+            while !Task.isCancelled {
+                guard let record = self.records.first(where: { $0.ratingKey == ratingKey }),
+                      EmbyDownloadKeepalivePolicy.candidate(for: record, hasExistingTask: false) != nil
+                else { return }
+                // Re-resolve every tick so token rotation, sign-out, or server replacement stops
+                // the old control plane rather than silently pinging with stale credentials.
+                guard let liveSession = self.appModel.backendSession(for: .emby),
+                      record.metadata.map(liveSession.matchesPersistedServer) != false,
+                      EmbyDownloadKeepalivePolicy.matchesPersistedUser(
+                        record.metadata?.backendUserID, currentUserID: liveSession.userID) else {
+                    self.recordDownloadDiagnostic("downloads.emby_keepalive_degraded", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "reason": .label("emby_session_mismatch_or_unavailable"),
+                        "action": .label("stopped"),
+                    ])
+                    return
+                }
+                let server = liveSession.baseURL
+                let token = liveSession.token
+                let liveUserId = liveSession.userID ?? enqueueUserId
+                var statuses: [Int?] = []
+                do {
+                    // Live evidence: Ping alone keeps Emby's compatible-remux encoder alive past
+                    // its ~60s idle deadline. Do not send Playing/Progress here: those mutate the
+                    // user's resume position/watch history for what is only a file download.
+                    let ping = try EmbyPlayback.pingRequest(
+                        server: server, token: token, identity: identity,
+                        userId: liveUserId, playSessionId: playSessionId)
+                    statuses.append(await Self.controlPlaneRequestStatus(ping))
+                } catch {
+                    self.recordDownloadDiagnostic("downloads.emby_keepalive_failed", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "error": .error(error),
+                    ])
+                }
+                let outcome = JellyfinDownloadKeepalivePolicy.tickOutcome(statuses: statuses)
+                switch JellyfinDownloadKeepalivePolicy.healthAction(previous: lastTickOutcome,
+                                                                    outcome: outcome) {
+                case .none:
+                    break
+                case .emitDegraded(let reason):
+                    self.recordDownloadDiagnostic("downloads.emby_keepalive_degraded", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "reason": .label(reason),
+                    ])
+                case .emitRecovered:
+                    self.recordDownloadDiagnostic("downloads.emby_keepalive_recovered", fields: [
+                        "download_id": .identifier(ratingKey),
+                    ])
+                case .stopAuthDead(let statusCode):
+                    self.embyKeepaliveAuthQuarantine[ratingKey] =
+                        Self.embyKeepaliveAuthGeneration(liveSession)
+                    self.recordDownloadDiagnostic("downloads.emby_keepalive_degraded", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "reason": .label("auth_dead"),
+                        "status_code": .int(statusCode),
+                        "action": .label("stopped"),
+                    ])
+                    return
+                }
+                lastTickOutcome = outcome
+                do {
+                    try await Task.sleep(for: .seconds(EmbyDownloadKeepalivePolicy.intervalSeconds))
+                } catch { return }
+            }
+        }
+        embyDownloadKeepaliveTasks[ratingKey] = EmbyKeepaliveTaskHandle(generation: generation,
+                                                                       task: task)
+        recordDownloadDiagnostic("downloads.emby_keepalive_start", fields: [
+            "download_id": .identifier(ratingKey),
+        ])
     }
 
     func startJellyfinDownloadKeepalive(ratingKey: String,
@@ -2779,6 +3012,8 @@ public final class DownloadManager {
         _ = serverPrepAttempts.releaseAll(forRecordKey: ratingKey)
         serverPrepPollerTasks.removeValue(forKey: ratingKey)?.cancel()
         jellyfinDownloadKeepaliveTasks.removeValue(forKey: ratingKey)?.cancel()
+        embyDownloadKeepaliveTasks.removeValue(forKey: ratingKey)?.task.cancel()
+        embyKeepaliveAuthQuarantine.removeValue(forKey: ratingKey)
         forwardOnlyStallTracker.remove(ratingKey)
         // CLEANUP INVARIANT: a transcoded Emby download leaves a live FFmpeg encoder running on
         // the server until ActiveEncodings is deleted. Fire teardown for the minted PlaySessionId

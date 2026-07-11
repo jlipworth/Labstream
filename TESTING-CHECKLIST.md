@@ -168,6 +168,14 @@ Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The 
       source above 1920×1080, Download requires confirmation and identifies the 4K preset as the
       resolution-preserving converted alternative; 1080p-or-lower and non-Emby choices do not
       show that confirmation.
+- [ ] An Emby compatible-remux download runs for at least two minutes without truncating near the
+      server's one-minute idle boundary. Diagnostics show `downloads.emby_keepalive_start`; token
+      rotation/rejection produces bounded degraded/auth-dead evidence, and no download keepalive
+      changes watch progress because the lane sends Ping only—not Playing/Progress.
+- [ ] Kill the app immediately after a new Emby Convert POST is accepted but before the returned job
+      id is persisted. Relaunch recovers exactly one job from the durable full-list baseline and
+      continues it without a duplicate POST; zero/multiple differences fail closed and Retry does
+      not create another job while ownership remains ambiguous.
 - [ ] A job records and continues against its own backend session through active-backend
       switches. Simultaneous jobs from different backends progress independently and display
       unambiguous backend badges.

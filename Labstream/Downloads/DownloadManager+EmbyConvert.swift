@@ -15,6 +15,62 @@ extension DownloadManager {
 
     // MARK: - Emby convert-then-download (server-side prepare → resumable download)
 
+    func recoverAndCancelEmbyConvertTombstone(
+        _ tombstone: DownloadStore.EmbyConvertCleanupTombstone,
+        server: URL, token: String, identity: EmbyClientIdentity,
+        currentUserID: String) async {
+        let metadata = tombstone.metadata
+        guard let baseline = metadata.embyConvertJobBaselineIDs,
+              let fingerprint = metadata.embyConvertRecoveryFingerprint,
+              let startedAt = metadata.embyConvertRecoveryStartedAtEpochSeconds,
+              let phase = metadata.embyConvertRecoveryPhase else { return }
+        guard EmbyConvertRecoveryPolicy.publicUserMatches(
+            currentSessionUserID: currentUserID,
+            persistedBackendUserID: metadata.backendUserID,
+            fingerprintUserID: fingerprint.userId) else {
+            recordDownloadDiagnostic("downloads.convert_cleanup_deferred", fields: [
+                "download_id": .identifier(tombstone.ratingKey),
+                "reason": .label("emby_user_mismatch"),
+            ])
+            return
+        }
+        do {
+            let listRequest = try EmbyConvertRequest.jobListRequest(
+                server: server, token: token, identity: identity)
+            let (data, response) = try await URLSession.shared.data(for: listRequest)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return }
+            let list = try EmbyConvertRequest.decodeJobList(from: data)
+            let cleanupAction = EmbyConvertRecoveryPolicy.cleanupAction(
+                baselineJobIDs: Set(baseline), jobs: list.items, listIsComplete: list.isComplete,
+                fingerprint: fingerprint, attemptStartedAtEpochSeconds: startedAt, phase: phase,
+                nowEpochSeconds: Date().timeIntervalSince1970)
+            switch cleanupAction {
+            case .retainTombstone:
+                return
+            case .discardTombstone:
+                store.removeEmbyConvertCleanupTombstone(id: tombstone.id)
+                return
+            case .cancel(let jobId):
+                let deleteRequest = try EmbyConvertRequest.deleteJobRequest(
+                    server: server, token: token, identity: identity, jobId: jobId)
+                let (_, deleteResponse) = try await URLSession.shared.data(for: deleteRequest)
+                guard let deleteHTTP = deleteResponse as? HTTPURLResponse,
+                      (200..<300).contains(deleteHTTP.statusCode) || [404, 410].contains(deleteHTTP.statusCode)
+                else { return }
+                store.removeEmbyConvertCleanupTombstone(id: tombstone.id)
+                recordDownloadDiagnostic("downloads.convert_cleanup_recovered", fields: [
+                    "download_id": .identifier(tombstone.ratingKey),
+                    "job_id": .int(jobId),
+                ])
+            }
+        } catch {
+            // Retain the durable tombstone; a later backend-ready/lifecycle pass retries it.
+            recordDownloadDiagnostic("downloads.convert_cleanup_deferred", fields: [
+                "download_id": .identifier(tombstone.ratingKey),
+            ])
+        }
+    }
+
     func beginEmbyConvertAttempt(ratingKey: String) -> UUID {
         serverPrepAttempts.beginEmbyConvertAttempt(forRecordKey: ratingKey)
     }
@@ -189,12 +245,59 @@ extension DownloadManager {
         // is still sent (harmless, matches the Emby web client) but is purely cosmetic.
         let jobName = "\(item.title) [Labstream \(UUID().uuidString.prefix(8))]"
         let quality = EmbyConvertRequest.convertQuality(forPresetLabel: targetName)
+        let recoveryFingerprint = EmbyConvertRecoveryPolicy.Fingerprint(
+            itemId: itemId, quality: quality.quality, profile: quality.profile, bitrate: quality.bitrate,
+            userId: userId, container: quality.container, videoCodec: quality.videoCodec,
+            audioCodec: quality.audioCodec, audioStreamIndex: audioStreamIndex)
+
+        // Capture the COMPLETE Sync-job id set before POST. This is the only durable ownership
+        // evidence available if the process dies after Emby accepts POST but before we persist its
+        // response id; list ordering and the submitted name are both unusable for recovery.
+        let jobBaseline: EmbyConvertJobList
+        do {
+            let req = try EmbyConvertRequest.jobListRequest(
+                server: server, token: token, identity: identity)
+            let (data, response) = try await URLSession.shared.data(for: req)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                throw DownloadError.transferFailed("Convert baseline HTTP \(http.statusCode)")
+            }
+            jobBaseline = try EmbyConvertRequest.decodeJobList(from: data)
+            guard jobBaseline.isComplete else {
+                throw DownloadError.transferFailed("Convert baseline was incomplete")
+            }
+        } catch {
+            guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
+                                              targetName: targetName) else {
+                recordStaleEmbyConvertAttempt(ratingKey: ratingKey, phase: "baseline_error")
+                return
+            }
+            recordDownloadDiagnostic("downloads.convert_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "phase": .label("baseline"),
+                "error": .error(error),
+            ])
+            failEmbyConvert(ratingKey: ratingKey,
+                            (error as? DownloadError) ?? .transferFailed(
+                                DiagnosticRedactor.safeUserFacingErrorMessage(error,
+                                                                              operation: "Transfer")))
+            return
+        }
+        guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
+                                          targetName: targetName) else {
+            recordStaleEmbyConvertAttempt(ratingKey: ratingKey, phase: "post_baseline")
+            return
+        }
+        convertMetadata.embyConvertJobBaselineIDs = Array(Set(jobBaseline.items.map(\.id))).sorted()
+        convertMetadata.embyConvertRecoveryFingerprint = recoveryFingerprint
+        convertMetadata.embyConvertRecoveryStartedAtEpochSeconds = Date().timeIntervalSince1970
+        convertMetadata.embyConvertRecoveryPhase = .prepared
 
         recordDownloadDiagnostic("downloads.convert_start", fields: [
             "download_id": .identifier(ratingKey),
             "target": .label(targetName),
             "bitrate": .int(quality.bitrate ?? 0),
             "snapshot_count": .int(snapshotIds.count),
+            "job_baseline_count": .int(jobBaseline.items.count),
         ])
 
         // Refresh the visible `.preparing` row with the full pre-conversion snapshot before creating
@@ -206,6 +309,8 @@ extension DownloadManager {
 
         // 1. Create the convert job.
         let job: EmbyConvertJob
+        var postWasDispatched = false
+        var createHTTPStatus: Int?
         do {
             let req = try EmbyConvertRequest.createJobRequest(
                 server: server, token: token, identity: identity, userId: userId, itemId: itemId,
@@ -213,9 +318,21 @@ extension DownloadManager {
                 name: jobName,
                 container: quality.container, videoCodec: quality.videoCodec, audioCodec: quality.audioCodec,
                 audioStreamIndex: audioStreamIndex)
+            // Persist dispatch ambiguity BEFORE handing POST to URLSession. A kill after this point
+            // must recover by bounded list identity; `.prepared` rows can never adopt a job.
+            convertMetadata.embyConvertRecoveryPhase = .dispatchAmbiguous
+            store.upsert(DownloadRecord(
+                ratingKey: ratingKey, title: item.title,
+                localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
+                bytes: 0, progress: 0, status: .preparing, metadata: convertMetadata))
+            refreshRecords()
+            postWasDispatched = true
             let (data, response) = try await URLSession.shared.data(for: req)
-            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                throw DownloadError.transferFailed("Convert job HTTP \(http.statusCode)")
+            if let http = response as? HTTPURLResponse {
+                createHTTPStatus = http.statusCode
+                if !(200..<300).contains(http.statusCode) {
+                    throw DownloadError.transferFailed("Convert job HTTP \(http.statusCode)")
+                }
             }
             // The CREATE response nests the job under "Job" (SyncJobCreationResult) — decode the
             // envelope, NOT the bare top-level shape the single-job poll GET returns.
@@ -231,6 +348,11 @@ extension DownloadManager {
                 "phase": .label("create"),
                 "error": .error(error),
             ])
+            if EmbyConvertRecoveryPolicy.createFailureDisposition(
+                postWasDispatched: postWasDispatched,
+                httpStatusCode: createHTTPStatus) == .clearRecovery {
+                store.clearEmbyConvertRecovery(ratingKey: ratingKey)
+            }
             failEmbyConvert(ratingKey: ratingKey,
                             (error as? DownloadError) ?? .transferFailed(
                                 DiagnosticRedactor.safeUserFacingErrorMessage(error,
@@ -251,6 +373,10 @@ extension DownloadManager {
             return
         }
         convertMetadata.embyConvertJobID = job.id
+        convertMetadata.embyConvertJobBaselineIDs = nil
+        convertMetadata.embyConvertRecoveryFingerprint = nil
+        convertMetadata.embyConvertRecoveryStartedAtEpochSeconds = nil
+        convertMetadata.embyConvertRecoveryPhase = nil
         store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
                                     localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
                                     bytes: 0, progress: 0, status: .preparing, metadata: convertMetadata))
@@ -261,6 +387,94 @@ extension DownloadManager {
                                             server: server, token: token, identity: identity,
                                             userId: userId, audioStreamIndex: audioStreamIndex,
                                             attemptID: attemptID)
+    }
+
+    /// Recover the narrow POST-accepted / response-id-not-persisted crash window. No heuristic
+    /// fallback is allowed: only one exact new job relative to the durable full baseline is adopted.
+    func recoverAndResumeEmbyConvertJob(item: MediaItem, ratingKey: String,
+                                        baselineJobIDs: Set<Int>,
+                                        fingerprint: EmbyConvertRecoveryPolicy.Fingerprint,
+                                        attemptStartedAtEpochSeconds: Double,
+                                        recoveryPhase: EmbyConvertRecoveryPolicy.Phase,
+                                        snapshotIds: Set<String>, targetName: String,
+                                        server: URL, token: String,
+                                        identity: EmbyClientIdentity, userId: String,
+                                        audioStreamIndex: Int?, attemptID: UUID) async {
+        let list: EmbyConvertJobList
+        do {
+            let req = try EmbyConvertRequest.jobListRequest(
+                server: server, token: token, identity: identity)
+            let (data, response) = try await URLSession.shared.data(for: req)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                throw DownloadError.transferFailed("Convert recovery HTTP \(http.statusCode)")
+            }
+            list = try EmbyConvertRequest.decodeJobList(from: data)
+            guard list.isComplete else {
+                throw DownloadError.transferFailed("Convert recovery list was incomplete")
+            }
+        } catch {
+            guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
+                                              targetName: targetName) else {
+                recordStaleEmbyConvertAttempt(ratingKey: ratingKey, phase: "recovery_list_error")
+                return
+            }
+            recordDownloadDiagnostic("downloads.convert_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "phase": .label("recovery_list"),
+                "error": .error(error),
+            ])
+            failEmbyConvert(ratingKey: ratingKey,
+                            .transferFailed("Server conversion could not be recovered safely; retry."))
+            return
+        }
+
+        guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
+                                          targetName: targetName) else {
+            recordStaleEmbyConvertAttempt(ratingKey: ratingKey, phase: "post_recovery_list")
+            return
+        }
+        let matchingIDs = EmbyConvertRecoveryPolicy.matchingNewJobIDs(
+            baselineJobIDs: baselineJobIDs, jobs: list.items, fingerprint: fingerprint,
+            attemptStartedAtEpochSeconds: attemptStartedAtEpochSeconds,
+            phase: recoveryPhase)
+        guard matchingIDs.count == 1, let jobId = matchingIDs.first else {
+            recordDownloadDiagnostic("downloads.convert_failed", fields: [
+                "download_id": .identifier(ratingKey),
+                "phase": .label("recovery_ambiguous"),
+                "candidate_count": .int(matchingIDs.count),
+                "baseline_count": .int(baselineJobIDs.count),
+            ])
+            failEmbyConvert(ratingKey: ratingKey,
+                            .transferFailed("Server conversion could not be identified safely; retry."))
+            return
+        }
+
+        // Persist ownership BEFORE polling or publishing recovery. A second kill after this upsert
+        // follows the ordinary job-id resume path and can safely cancel this exact job on delete.
+        guard var row = store.records.first(where: { $0.ratingKey == ratingKey }),
+              var metadata = row.metadata,
+              metadata.embyConvertJobID == nil else {
+            recordStaleEmbyConvertAttempt(ratingKey: ratingKey, phase: "recovery_persist", jobId: jobId)
+            return
+        }
+        metadata.embyConvertJobID = jobId
+        metadata.embyConvertJobBaselineIDs = nil
+        metadata.embyConvertRecoveryFingerprint = nil
+        metadata.embyConvertRecoveryStartedAtEpochSeconds = nil
+        metadata.embyConvertRecoveryPhase = nil
+        row.metadata = metadata
+        store.upsert(row)
+        refreshRecords()
+        recordDownloadDiagnostic("downloads.convert_resume", fields: [
+            "download_id": .identifier(ratingKey),
+            "job_id": .int(jobId),
+            "recovered": .bool(true),
+        ])
+
+        await pollAndDownloadEmbyConvertJob(
+            item: item, ratingKey: ratingKey, jobId: jobId, snapshotIds: snapshotIds,
+            targetName: targetName, server: server, token: token, identity: identity,
+            userId: userId, audioStreamIndex: audioStreamIndex, attemptID: attemptID)
     }
 
     /// Poll an Emby convert job to a terminal state, surfacing `Progress` through the optimize
@@ -474,6 +688,11 @@ extension DownloadManager {
     /// pre-seed `notAuthenticated` site can use this too.
     private func failEmbyConvert(ratingKey: String, _ error: DownloadError) {
         lastError[ratingKey] = error
+        // Do not blanket-clear the pre-POST baseline/fingerprint here. An ambiguous dispatched
+        // POST or a zero/multiple/list-error recovery must retain ownership evidence so Relaunch/
+        // Retry re-enters recovery rather than creating and orphaning another server job. The
+        // definitive pre-dispatch/non-2xx create branch clears explicitly; exact adoption clears
+        // atomically with persisting the recovered job id.
         store.setStatus(ratingKey: ratingKey, .failed)
         clearOptimizeProgress(ratingKey: ratingKey)
         releaseInFlight(ratingKey: ratingKey)

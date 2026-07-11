@@ -482,6 +482,16 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// than restarting the conversion), and so deleting a `.preparing` row can also cancel the
     /// server-side job via `DELETE /Sync/Jobs/{id}`. `nil` for every non-Emby-convert row.
     public var embyConvertJobID: Int?
+    /// Complete Sync-job id set captured immediately before `POST /Sync/Jobs`. Together with the
+    /// exact fingerprint below, this closes the crash window where Emby accepted POST but the app
+    /// died before persisting the returned job id. Never use list order as a substitute: Emby does
+    /// not return jobs in strict creation order.
+    public var embyConvertJobBaselineIDs: [Int]?
+    /// Exact create identity paired with `embyConvertJobBaselineIDs`. Relaunch recovery adopts only
+    /// one newly-added exact match and fails closed for zero/multiple matches.
+    public var embyConvertRecoveryFingerprint: EmbyConvertRecoveryPolicy.Fingerprint?
+    public var embyConvertRecoveryStartedAtEpochSeconds: Double?
+    public var embyConvertRecoveryPhase: EmbyConvertRecoveryPolicy.Phase?
     /// Emby convert-then-download: the FULL set of pre-existing `File` MediaSource ids on the item
     /// captured at convert-trigger time. Persisted so a relaunch-resume identifies the freshly
     /// converted source as "the one NOT in this set" — including when the item already had a PRIOR
@@ -571,6 +581,10 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 resumeDataRelativePath: String? = nil,
                 resumeDisplayBytes: Int? = nil,
                 embyConvertJobID: Int? = nil,
+                embyConvertJobBaselineIDs: [Int]? = nil,
+                embyConvertRecoveryFingerprint: EmbyConvertRecoveryPolicy.Fingerprint? = nil,
+                embyConvertRecoveryStartedAtEpochSeconds: Double? = nil,
+                embyConvertRecoveryPhase: EmbyConvertRecoveryPolicy.Phase? = nil,
                 embyConvertSnapshotIDs: [String]? = nil,
                 serverPreparedVersion: Bool? = nil,
                 rangeValidator: String? = nil,
@@ -632,6 +646,10 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.resumeDataRelativePath = resumeDataRelativePath
         self.resumeDisplayBytes = resumeDisplayBytes
         self.embyConvertJobID = embyConvertJobID
+        self.embyConvertJobBaselineIDs = embyConvertJobBaselineIDs
+        self.embyConvertRecoveryFingerprint = embyConvertRecoveryFingerprint
+        self.embyConvertRecoveryStartedAtEpochSeconds = embyConvertRecoveryStartedAtEpochSeconds
+        self.embyConvertRecoveryPhase = embyConvertRecoveryPhase
         self.embyConvertSnapshotIDs = embyConvertSnapshotIDs
         self.serverPreparedVersion = serverPreparedVersion
         self.rangeValidator = rangeValidator
@@ -698,6 +716,13 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         resumeDataRelativePath = try c.decodeIfPresent(String.self, forKey: .resumeDataRelativePath)
         resumeDisplayBytes = try c.decodeIfPresent(Int.self, forKey: .resumeDisplayBytes)
         embyConvertJobID = try c.decodeIfPresent(Int.self, forKey: .embyConvertJobID)
+        embyConvertJobBaselineIDs = try c.decodeIfPresent([Int].self, forKey: .embyConvertJobBaselineIDs)
+        embyConvertRecoveryFingerprint = try c.decodeIfPresent(
+            EmbyConvertRecoveryPolicy.Fingerprint.self, forKey: .embyConvertRecoveryFingerprint)
+        embyConvertRecoveryStartedAtEpochSeconds = try c.decodeIfPresent(
+            Double.self, forKey: .embyConvertRecoveryStartedAtEpochSeconds)
+        embyConvertRecoveryPhase = try c.decodeIfPresent(
+            EmbyConvertRecoveryPolicy.Phase.self, forKey: .embyConvertRecoveryPhase)
         embyConvertSnapshotIDs = try c.decodeIfPresent([String].self, forKey: .embyConvertSnapshotIDs)
         serverPreparedVersion = try c.decodeIfPresent(Bool.self, forKey: .serverPreparedVersion)
         rangeValidator = try c.decodeIfPresent(String.self, forKey: .rangeValidator)

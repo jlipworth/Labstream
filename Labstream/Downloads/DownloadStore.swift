@@ -17,6 +17,12 @@ import PMSKit
 /// `URLSession` delegate can call in from a delegate queue, so writes are locked.
 final class DownloadStore: @unchecked Sendable {
 
+    struct EmbyConvertCleanupTombstone: Codable, Sendable, Equatable, Identifiable {
+        let id: UUID
+        let ratingKey: String
+        let metadata: OfflineMetadata
+    }
+
     struct StaticRangeRecoveryEvidence: Sendable {
         let ratingKey: String
         let status: DownloadStatus
@@ -86,6 +92,7 @@ final class DownloadStore: @unchecked Sendable {
     private var lastProgressPersist = Date.distantPast   // guarded by `lock`
     private let baseDirectory: URL                  // Application Support/Downloads
     private let indexURL: URL                        // baseDirectory/index.json
+    private let embyCleanupURL: URL                  // durable orphan-prevention queue
     private let fileManager: FileManager
 
     /// - Parameter baseDirectory: where media files + the index live. Defaults to
@@ -102,6 +109,7 @@ final class DownloadStore: @unchecked Sendable {
             .appendingPathComponent("Downloads", isDirectory: true)
         self.baseDirectory = dir
         self.indexURL = dir.appendingPathComponent("index.json")
+        self.embyCleanupURL = dir.appendingPathComponent("emby-convert-cleanup.json")
         try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
         // Exclude the offline cache from iCloud/device backups and give newly-created
         // auth-adjacent artifacts a protected parent directory.
@@ -110,6 +118,47 @@ final class DownloadStore: @unchecked Sendable {
             protection: CredentialArtifactStorage.authArtifactProtection,
             fileManager: fileManager)
         load()
+    }
+
+    var embyConvertCleanupTombstones: [EmbyConvertCleanupTombstone] {
+        lock.lock(); defer { lock.unlock() }
+        return (try? JSONDecoder().decode(
+            [EmbyConvertCleanupTombstone].self,
+            from: Data(contentsOf: embyCleanupURL))) ?? []
+    }
+
+    @discardableResult
+    func addEmbyConvertCleanupTombstone(ratingKey: String, metadata: OfflineMetadata)
+        -> EmbyConvertCleanupTombstone? {
+        lock.lock()
+        var values = (try? JSONDecoder().decode(
+            [EmbyConvertCleanupTombstone].self,
+            from: Data(contentsOf: embyCleanupURL))) ?? []
+        let tombstone = EmbyConvertCleanupTombstone(id: UUID(), ratingKey: ratingKey, metadata: metadata)
+        let expectedIDs = EmbyConvertRecoveryPolicy.appendingCleanupTombstoneID(
+            tombstone.id, to: values.map(\.id))
+        values.append(tombstone)
+        assert(values.map(\.id) == expectedIDs)
+        do {
+            let data = try JSONEncoder().encode(values)
+            try data.write(to: embyCleanupURL, options: .atomic)
+            lock.unlock()
+            return tombstone
+        } catch {
+            lock.unlock()
+            return nil
+        }
+    }
+
+    func removeEmbyConvertCleanupTombstone(id: UUID) {
+        lock.lock()
+        var values = (try? JSONDecoder().decode(
+            [EmbyConvertCleanupTombstone].self,
+            from: Data(contentsOf: embyCleanupURL))) ?? []
+        values.removeAll { $0.id == id }
+        let data = try? JSONEncoder().encode(values)
+        if let data { try? data.write(to: embyCleanupURL, options: .atomic) }
+        lock.unlock()
     }
 
     /// The directory media files should be written into.
@@ -885,6 +934,17 @@ final class DownloadStore: @unchecked Sendable {
         sideAssetHydrationCache.removeValue(forKey: ratingKey)
         lock.unlock()
         persist()
+    }
+
+    /// Remove only the short-lived Sync-list crash-window markers. The server job id and File
+    /// source snapshot have independent lifetimes and must remain available for polling/pickup.
+    func clearEmbyConvertRecovery(ratingKey: String) {
+        updateMetadata(ratingKey: ratingKey) {
+            $0.embyConvertJobBaselineIDs = nil
+            $0.embyConvertRecoveryFingerprint = nil
+            $0.embyConvertRecoveryStartedAtEpochSeconds = nil
+            $0.embyConvertRecoveryPhase = nil
+        }
     }
 
     /// Update transfer progress for an in-flight download. Moving any bytes from a task still owned by

@@ -402,6 +402,12 @@ extension DownloadManager {
                               expectedBytes: expectedBytes,
                               byteRangeCheckpoint: EmbyDownloadRoutePlan.usesByteRangeCheckpoint(for: route),
                               resetRangeRestartCounters: !consumeRangeRestartCounterPreservation(ratingKey: ratingKey))
+            if useServerSession {
+                // The row now has its persisted PlaySessionId and the transfer is registered.
+                // Refresh starts the compatible-remux keepalive from the same relaunch-safe
+                // candidate path used when a background task is reattached after process death.
+                refreshRecords()
+            }
         }
     }
 
