@@ -783,6 +783,106 @@ struct DownloadStorePersistenceTests {
         }
     }
 
+    @Test func stalePlaybackAttemptCannotPromoteOrMoveReplacementPosition() throws {
+        try withTemporaryDirectory { directory in
+            let ratingKey = "plex:playback-owner"
+            let attemptA = DownloadAttemptID(rawValue: "attempt-a")!
+            let attemptB = DownloadAttemptID(rawValue: "attempt-b")!
+            let keyA = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptA)
+            let keyB = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptB)
+            let store = DownloadStore(baseDirectory: directory)
+            let metadata = OfflineMetadata(ratingKey: ratingKey, title: "Playback", type: "movie")
+            let destination = directory.appendingPathComponent("playback.mp4")
+            guard case .committed = store.createAttemptOwnedRecord(
+                DownloadRecord(ratingKey: ratingKey, attemptID: attemptA, title: "Playback",
+                               localURL: destination, status: .unverified, metadata: metadata),
+                attemptID: attemptA) else {
+                Issue.record("attempt A seed failed")
+                return
+            }
+            guard case .committed = store.createAttemptOwnedRecord(
+                DownloadRecord(ratingKey: ratingKey, attemptID: attemptB, title: "Playback",
+                               localURL: destination, status: .complete, metadata: metadata),
+                attemptID: attemptB, replacing: attemptA) else {
+                Issue.record("attempt B replacement failed")
+                return
+            }
+
+            #expect(store.markCompleteIfUnverified(for: keyA) == .staleOrMissing)
+            #expect(store.setLocalPlaybackPosition(
+                for: keyA, positionMs: 12_000, durationMs: 60_000) == .staleOrMissing)
+            #expect(store.record(for: keyB)?.status == .complete)
+            #expect(store.record(for: keyB)?.metadata?.localPlaybackPositionMs == nil)
+        }
+    }
+
+    @Test func exactPlaybackPromotionIsConditionalAndDurable() throws {
+        try withTemporaryDirectory { directory in
+            let ratingKey = "plex:conditional-promotion"
+            let attempt = DownloadAttemptID(rawValue: "attempt")!
+            let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attempt)
+            let metadata = OfflineMetadata(ratingKey: ratingKey, title: "Conditional", type: "movie")
+            let store = DownloadStore(baseDirectory: directory)
+            guard case .committed = store.createAttemptOwnedRecord(
+                DownloadRecord(ratingKey: ratingKey, attemptID: attempt, title: "Conditional",
+                               localURL: directory.appendingPathComponent("conditional.mp4"),
+                               status: .queued, metadata: metadata),
+                attemptID: attempt) else {
+                Issue.record("attempt seed failed")
+                return
+            }
+
+            #expect(store.markCompleteIfUnverified(for: key) == .notUnverified)
+            #expect(store.setStatus(for: key, .unverified) == .applied)
+            #expect(store.markCompleteIfUnverified(for: key) == .promoted)
+            #expect(store.markCompleteIfUnverified(for: key) == .notUnverified)
+            #expect(store.setLocalPlaybackPosition(
+                for: key, positionMs: 15_000, durationMs: 60_000) == .applied)
+
+            let restored = DownloadStore(baseDirectory: directory)
+            #expect(restored.record(for: key)?.status == .complete)
+            #expect(restored.record(for: key)?.metadata?.localPlaybackPositionMs == 15_000)
+        }
+    }
+
+    @Test func ownerlessPlaybackFallbackRejectsActiveRows() throws {
+        try withTemporaryDirectory { directory in
+            let ratingKey = "plex:ownerless-active"
+            let store = DownloadStore(baseDirectory: directory)
+            store.upsert(DownloadRecord(
+                ratingKey: ratingKey, title: "Ownerless",
+                localURL: directory.appendingPathComponent("ownerless.mp4"), status: .queued,
+                metadata: OfflineMetadata(ratingKey: ratingKey, title: "Ownerless", type: "movie")))
+
+            #expect(!store.markCompleteIfUnverifiedOwnerlessTerminalRow(ratingKey: ratingKey))
+            #expect(!store.setLocalPlaybackPositionForOwnerlessTerminalRow(
+                ratingKey: ratingKey, positionMs: 5_000, durationMs: 60_000))
+            #expect(store.record(for: ratingKey)?.status == .queued)
+            #expect(store.record(for: ratingKey)?.metadata?.localPlaybackPositionMs == nil)
+        }
+    }
+
+    @Test func ownerlessPlaybackFallbackPreservesLegacyTerminalRows() throws {
+        try withTemporaryDirectory { directory in
+            let ratingKey = "plex:ownerless-terminal"
+            let store = DownloadStore(baseDirectory: directory)
+            store.upsert(DownloadRecord(
+                ratingKey: ratingKey, title: "Legacy Terminal",
+                localURL: directory.appendingPathComponent("legacy-terminal.mp4"),
+                status: .unverified,
+                metadata: OfflineMetadata(
+                    ratingKey: ratingKey, title: "Legacy Terminal", type: "movie")))
+
+            #expect(store.markCompleteIfUnverifiedOwnerlessTerminalRow(ratingKey: ratingKey))
+            #expect(store.setLocalPlaybackPositionForOwnerlessTerminalRow(
+                ratingKey: ratingKey, positionMs: 7_000, durationMs: 60_000))
+            let restored = DownloadStore(baseDirectory: directory)
+            #expect(restored.record(for: ratingKey)?.attemptID == nil)
+            #expect(restored.record(for: ratingKey)?.status == .complete)
+            #expect(restored.record(for: ratingKey)?.metadata?.localPlaybackPositionMs == 7_000)
+        }
+    }
+
     private func makeRecord(
         ratingKey: String,
         title: String,
