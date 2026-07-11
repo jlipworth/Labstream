@@ -348,7 +348,7 @@ extension DownloadManager {
                                                             queueTitle: String,
                                                             targetName: String) {
         guard !activeJobs.contains(ratingKey),
-              let row = store.records.first(where: { $0.ratingKey == ratingKey }),
+              let row = store.record(for: ratingKey),
               row.status == .queued, row.bytes == 0, row.progress == 0,
               row.metadata?.optimizeQueueTitle == queueTitle,
               row.metadata?.optimizeTargetName == targetName else { return }
@@ -380,7 +380,7 @@ extension DownloadManager {
                 throw DownloadLifecycleCancellation.staleOptimizeAttempt
             }
         }
-        guard let current = store.records.first(where: { $0.ratingKey == ratingKey }),
+        guard let current = store.record(for: ratingKey),
               current.status == .queued,
               current.bytes == 0,
               current.progress == 0 else {

@@ -100,10 +100,11 @@ extension DownloadManager {
                 // alone would collapse to ".mp4" and abandon an in-progress non-MP4 partial (its
                 // checkpoint reads 0 against the new destination). The existing ORIGINAL-lane row's
                 // on-disk extension is authoritative for what this transfer already wrote.
-                let existingOriginalPath = store.records
-                    .first { $0.ratingKey == ratingKey
-                        && $0.metadata?.resolvedDownloadLane() == .original }?
-                    .localURL.lastPathComponent
+                let existingOriginalPath = store.record(for: ratingKey).flatMap { record in
+                    record.metadata?.resolvedDownloadLane() == .original
+                        ? record.localURL.lastPathComponent
+                        : nil
+                }
                 let ext = DownloadMediaSelectionPolicy.containerExtension(
                     selection: selection, existingRelativePath: existingOriginalPath)
                 destination = store.destinationURL(ratingKey: ratingKey, ext: ext)
