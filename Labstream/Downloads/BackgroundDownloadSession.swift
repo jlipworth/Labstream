@@ -514,19 +514,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
 
     private func fileSize(at url: URL) -> Int? {
-        guard let raw = (try? fileManager.attributesOfItem(atPath: url.path)[.size]) else {
-            return nil
-        }
-        if let number = raw as? NSNumber {
-            return number.intValue
-        }
-        if let int = raw as? Int {
-            return int
-        }
-        if let int64 = raw as? Int64 {
-            return Int(int64)
-        }
-        return nil
+        DownloadFileStat.logicalSize(at: url, attributesOfItem: fileManager.attributesOfItem(atPath:))
     }
 
     private func availableStorageBytes() -> Int64? {
@@ -2311,7 +2299,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 // A download task writes the response body to `location` even on a 4xx. Keep only
                 // the URL shape and body-size bucket at .error level — raw server bodies can carry
                 // paths, item names, or private server text that later gets pasted into issues.
-                let bodyBytes = (try? Data(contentsOf: location))?.count
+                let bodyBytes = fileSize(at: location)
                 let reqShape = DiagnosticRedactor.urlShape(downloadTask.originalRequest?.url)
                 let bodyBucket = bodyBytes.map(DiagnosticRedactor.byteBucket) ?? "unknown"
                 downloadLog.error("download-http-error ratingKey=\(entry.ratingKey, privacy: .public) http=\(http.statusCode, privacy: .public) req_shape=\(reqShape, privacy: .public) body_bytes=\(bodyBucket, privacy: .public)")
