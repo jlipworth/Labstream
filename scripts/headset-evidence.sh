@@ -163,16 +163,18 @@ try:
 except Exception:
     devices = []
 
-def text_blob(obj):
-    try:
-        return json.dumps(obj).lower()
-    except Exception:
-        return str(obj).lower()
-
 candidates = []
 for d in devices:
-    blob = text_blob(d)
-    if "vision" in blob or "reality" in blob or "xros" in blob:
+    hardware = d.get("hardwareProperties") or {}
+    platform = str(hardware.get("platform") or "").casefold()
+    device_type = str(hardware.get("deviceType") or "").casefold()
+    marketing_name = str(hardware.get("marketingName") or "").casefold()
+    # Do not search the entire CoreDevice JSON blob for a loose "vision" substring.
+    # Non-visionOS devices expose capabilities/metadata containing words such as
+    # "provisioning", which previously made a connected iPad win over the actual headset.
+    if (platform == "visionos"
+            or device_type == "realitydevice"
+            or marketing_name == "apple vision pro"):
         candidates.append(d)
 
 for d in candidates:

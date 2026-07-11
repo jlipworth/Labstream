@@ -27,8 +27,15 @@ enum StaticRangeTransferRegime {
             return bytes
         }
         #endif
-        return 512 * 1024 * 1024
+        // Device evidence on 2026-07-11 showed five resumed rows expanding to 34 simultaneous
+        // 512 MiB tasks. visionOS kept transferring off-head, but leading segments took so long
+        // to finish that gigabytes remained in nsurlsessiond temp/held files with no durable
+        // checkpoint. Smaller segments commit useful progress within minutes on a constrained
+        // path instead of making the first checkpoint depend on a half-gigabyte head task.
+        return 64 * 1024 * 1024
     }
     /// Cap on live + newly-planned segment depth per download.
-    static let maxQueuedSegments = 8
+    /// Two keeps one head plus one look-ahead segment active. This preserves overlap without
+    /// multiplying five visible downloads into 40 competing HTTP/3 transactions.
+    static let maxQueuedSegments = 2
 }

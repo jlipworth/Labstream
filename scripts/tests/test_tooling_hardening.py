@@ -337,6 +337,53 @@ class ToolingHardeningTests(unittest.TestCase):
             self.assertIn(device, verbose_combined)
             self.assertIn(team, verbose_combined)
 
+    def test_headset_evidence_selects_visionos_platform_not_loose_vision_substring(self):
+        ipad = "11111111-1111-1111-1111-111111111111"
+        headset = "22222222-2222-2222-2222-222222222222"
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            fakebin = tmp_root / "fakebin"
+            fakebin.mkdir()
+            fixture = tmp_root / "devices.json"
+            fixture.write_text(textwrap.dedent(f"""\
+                {{"result":{{"devices":[
+                  {{"identifier":"{ipad}",
+                    "capabilities":[{{"name":"Provisioning Vision Metadata"}}],
+                    "hardwareProperties":{{"platform":"iOS","deviceType":"iPad","marketingName":"iPad Pro"}}}},
+                  {{"identifier":"{headset}",
+                    "hardwareProperties":{{"platform":"visionOS","deviceType":"realityDevice","marketingName":"Apple Vision Pro"}}}}
+                ]}}}}
+                """))
+            (fakebin / "xcrun").write_text(textwrap.dedent(f"""\
+                #!/usr/bin/env bash
+                set -u
+                if [ "$1 $2 $3" = "devicectl list devices" ]; then
+                  json=''
+                  while [ "$#" -gt 0 ]; do
+                    if [ "$1" = "--json-output" ]; then json="$2"; break; fi
+                    shift
+                  done
+                  cp {fixture} "$json"
+                  exit 0
+                fi
+                exit 1
+                """))
+            (fakebin / "xcrun").chmod(0o755)
+            out = tmp_root / "headset-evidence-test"
+            env = os.environ.copy()
+            env["PATH"] = f"{fakebin}:{env['PATH']}"
+            subprocess.run(
+                [str(REPO / "scripts" / "headset-evidence.sh"), "--out", str(out)],
+                cwd=REPO,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True,
+            )
+            summary = __import__("json").loads((out / "summary.json").read_text())
+            self.assertEqual(summary["device"], headset)
+
     def test_deploy_build_uses_versioned_xcodebuild_args(self):
         device = "12345678-1234-1234-1234-123456789ABC"
         team = "TEAMID1234"

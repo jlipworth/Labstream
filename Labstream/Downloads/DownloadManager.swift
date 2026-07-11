@@ -2532,8 +2532,11 @@ public final class DownloadManager {
         )
         staticRangeRecovery.subtractManualQueueResumes(manualResumeTerminalKeys)
         let activeKeys = Set(fresh.filter { $0.status == .downloading }.map(\.ratingKey))
-        liveRangeProgress = liveRangeProgress.filter { key, sample in
-            guard DownloadLiveRangeProgressPolicy.isFresh(sample, now: now) else { return false }
+        liveRangeProgress = liveRangeProgress.filter { key, _ in
+            // An active background URLSession can keep writing while the suspended app receives no
+            // delegate callbacks. Expiring its last sample after 15 seconds made the toolbar total
+            // fall to the durable checkpoint and jump back at wake. Keep the monotonic watermark
+            // until the row actually leaves `.downloading`; terminal/pause cleanup still removes it.
             return StaticRangeRefreshCleanupPolicy.shouldKeepLiveRangeProgress(
                 key: key,
                 activeDownloadingKeys: activeKeys
