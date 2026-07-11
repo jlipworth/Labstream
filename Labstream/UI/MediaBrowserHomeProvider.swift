@@ -16,6 +16,7 @@ struct MediaBrowserHomeRail: Identifiable, Hashable {
     let id: String
     let title: String
     let items: [MediaItem]
+    let destination: RailViewAllDestination?
 }
 
 struct MediaBrowserHomeContent {
@@ -56,6 +57,8 @@ struct MediaBrowserHomeProvider {
 
     private func homeRails(for libraries: [MediaBrowserHomeLibraryLink]) async throws -> HomeRailsLoad<MediaBrowserHomeRail> {
         var rails: [MediaBrowserHomeRail] = []
+        let sessionIdentity = appModel.activeBrowseSessionKey
+        let backend = appModel.activeBackend
         // Track per-rail errors so a partial MediaBrowser Home is displayed but not pinned as
         // authoritative; a pop-back / later `.task` can recover missing rails (#93).
         var tracker = HomeRailsLoadTracker()
@@ -72,13 +75,15 @@ struct MediaBrowserHomeProvider {
         if let continueWatching = tracker.record(await continueWatchingResult), !continueWatching.isEmpty {
             rails.append(MediaBrowserHomeRail(id: "continue-watching",
                                               title: "Continue Watching",
-                                              items: continueWatching))
+                                              items: continueWatching,
+                                              destination: RailViewAllDestination(title: "Continue Watching", backend: backend, sessionIdentity: sessionIdentity, query: .mediaBrowserResume(parentID: nil))))
         }
 
         if let nextUpItems = tracker.record(await nextUpResult), !nextUpItems.isEmpty {
             rails.append(MediaBrowserHomeRail(id: "next-up",
                                               title: "Next Up",
-                                              items: nextUpItems))
+                                              items: nextUpItems,
+                                              destination: RailViewAllDestination(title: "Next Up", backend: backend, sessionIdentity: sessionIdentity, query: .mediaBrowserNextUp(parentID: nil))))
         }
 
         for library in libraries.prefix(8) {
@@ -90,7 +95,8 @@ struct MediaBrowserHomeProvider {
             if !items.isEmpty {
                 rails.append(MediaBrowserHomeRail(id: "latest-\(library.id)",
                                                   title: "Recently Added \(library.title)",
-                                                  items: items))
+                                                  items: items,
+                                                  destination: RailViewAllDestination(title: "Recently Added \(library.title)", backend: backend, sessionIdentity: sessionIdentity, query: .mediaBrowserRecentlyAdded(parentID: library.id, itemTypes: MediaBrowserHomeProvider.latestItemTypes(for: library)))))
             }
         }
 

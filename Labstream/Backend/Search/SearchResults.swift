@@ -19,7 +19,8 @@ struct SearchResults: Sendable {
         self.groups = groups.compactMap { group in
             let hubs = group.hubs.filter { !$0.metadata.isEmpty }
             guard !hubs.isEmpty else { return nil }
-            return SearchResultGroup(id: group.id, title: group.title, hubs: hubs)
+            return SearchResultGroup(id: group.id, title: group.title, hubs: hubs,
+                                     backendID: group.backendID, libraryID: group.libraryID)
         }
     }
 
@@ -92,6 +93,16 @@ struct SearchResultGroup: Identifiable, Sendable {
     let id: String
     let title: String
     let hubs: [Hub]
+    let backendID: String?
+    let libraryID: String?
+
+    init(id: String, title: String, hubs: [Hub], backendID: String? = nil, libraryID: String? = nil) {
+        self.id = id
+        self.title = title
+        self.hubs = hubs
+        self.backendID = backendID
+        self.libraryID = libraryID
+    }
 
     static func mediaBrowserLibrary(backendID: String,
                                     libraryID: String,
@@ -102,7 +113,9 @@ struct SearchResultGroup: Identifiable, Sendable {
         guard !hubs.isEmpty else { return nil }
         return SearchResultGroup(id: "\(backendID)-library-\(libraryID)",
                                  title: title,
-                                 hubs: hubs)
+                                 hubs: hubs,
+                                 backendID: backendID,
+                                 libraryID: libraryID)
     }
 }
 

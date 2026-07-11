@@ -207,6 +207,7 @@ struct JellyfinLibraryTests {
                                                              identity: identity,
                                                              userId: "user-1",
                                                              parentId: "view-1",
+                                                             startIndex: 24,
                                                              limit: 12)
         let url = try #require(request.url)
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
@@ -216,6 +217,7 @@ struct JellyfinLibraryTests {
         #expect(query["userId"] == "user-1")
         #expect(query["parentId"] == "view-1")
         #expect(query["limit"] == "12")
+        #expect(query["startIndex"] == "24")
         #expect(query["includeItemTypes"] == "Movie,Episode,Video")
         #expect(query["enableUserData"] == "true")
         #expect(query["excludeActiveSessions"] == "false")
@@ -226,6 +228,7 @@ struct JellyfinLibraryTests {
                                                         token: "token-abc",
                                                         identity: identity,
                                                         userId: "user-1",
+                                                        startIndex: 20,
                                                         limit: 10)
         let url = try #require(request.url)
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
@@ -234,6 +237,7 @@ struct JellyfinLibraryTests {
         #expect(components.path == "/base/Shows/NextUp")
         #expect(query["userId"] == "user-1")
         #expect(query["limit"] == "10")
+        #expect(query["startIndex"] == "20")
         #expect(query["enableResumable"] == "true")
         #expect(query["enableUserData"] == "true")
     }

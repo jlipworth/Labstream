@@ -125,6 +125,7 @@ public enum EmbyLibrary {
                                           identity: EmbyClientIdentity,
                                           userId: String,
                                           parentId: String? = nil,
+                                          startIndex: Int? = nil,
                                           limit: Int = 20) throws -> URLRequest {
         var query = [
             URLQueryItem(name: "Limit", value: String(limit)),
@@ -134,6 +135,7 @@ public enum EmbyLibrary {
             URLQueryItem(name: "EnableImages", value: "true"),
         ]
         if let parentId { query.append(URLQueryItem(name: "ParentId", value: parentId)) }
+        if let startIndex { query.append(URLQueryItem(name: "StartIndex", value: String(startIndex))) }
         let url = try url(server: server, path: "/Users/\(userId)/Items/Resume", queryItems: query)
         return get(url: url, token: token, identity: identity, userId: userId)
     }
@@ -144,6 +146,7 @@ public enum EmbyLibrary {
                                      identity: EmbyClientIdentity,
                                      userId: String,
                                      parentId: String? = nil,
+                                     startIndex: Int? = nil,
                                      limit: Int = 20) throws -> URLRequest {
         var query = [
             URLQueryItem(name: "UserId", value: userId),
@@ -153,6 +156,7 @@ public enum EmbyLibrary {
             URLQueryItem(name: "EnableImages", value: "true"),
         ]
         if let parentId { query.append(URLQueryItem(name: "ParentId", value: parentId)) }
+        if let startIndex { query.append(URLQueryItem(name: "StartIndex", value: String(startIndex))) }
         let url = try url(server: server, path: "/Shows/NextUp", queryItems: query)
         return get(url: url, token: token, identity: identity, userId: userId)
     }

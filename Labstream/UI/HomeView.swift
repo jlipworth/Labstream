@@ -46,7 +46,9 @@ struct HomeView: View {
                         // hubs; only TRACK items drop (rail cells have no play
                         // affordance — v2, MUSIC-DESIGN §3.1).
                         ForEach(hubs.hidingMusicTracks) { hub in
-                            HubRail(hub: hub)
+                            HubRail(hub: hub,
+                                    destination: RailViewAllEligibility.plexRecentlyAdded(
+                                        hub: hub, sessionIdentity: appModel.activeBrowseSessionKey))
                         }
                     }
                     .padding(.vertical, HomeLayoutMetrics.pageVerticalPadding(compact: compactWidth))
@@ -73,6 +75,9 @@ struct HomeView: View {
                 // switches backends while this detail is still on the stack.
                 DetailView(item: item, originBackend: appModel.activeBackend)
             }
+        }
+        .navigationDestination(for: RailViewAllDestination.self) { destination in
+            RailViewAllView(destination: destination)
         }
         // Re-run whenever the server URL resolves after discovery/rediscovery.
         .task(id: loadIdentity) { await load() }
@@ -106,7 +111,8 @@ struct HomeView: View {
                     ForEach(mediaBrowserRails) { rail in
                         HubRail(hub: Hub(title: rail.title,
                                          hubIdentifier: "\(appModel.activeBackend.rawValue)-\(rail.id)",
-                                         metadata: rail.items))
+                                         metadata: rail.items),
+                                destination: rail.destination)
                     }
                 }
             }
@@ -206,6 +212,7 @@ struct HomeView: View {
 /// One horizontal rail of posters for a hub.
 private struct HubRail: View {
     let hub: Hub
+    let destination: RailViewAllDestination?
 
     @Environment(\.labstreamCompactWidth) private var compactWidth
     @Environment(\.labstreamHomeUsesDenseSectionSpacing) private var denseSectionSpacing
@@ -214,9 +221,7 @@ private struct HubRail: View {
         VStack(alignment: .leading,
                spacing: HomeLayoutMetrics.titleToRailSpacing(compact: compactWidth,
                                                              denseSections: denseSectionSpacing)) {
-            Text(hub.title)
-                .font(compactWidth ? .title3.bold() : .title2.bold())
-                .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
+            RailSectionHeader(title: hub.title, destination: destination)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: compactWidth ? DS.Space.md : DS.Space.xl) {
