@@ -85,6 +85,207 @@ struct EmbyConvertJobTests {
         #expect(job.progress == nil)
     }
 
+    // MARK: - list/recovery
+
+    private let listResponseJSON = """
+    {"Items":[
+      {"Id":90,"RequestedItemIds":[1200],"ItemId":1200,"TargetId":"originalmediafolder",
+       "Quality":"custom","Profile":"tv","Bitrate":8000000,"Status":"Completed",
+       "Progress":100,"DateCreated":"2026-07-01T00:00:00Z","SyncNewContent":false,"UnwatchedOnly":false},
+      {"Id":91,"RequestedItemIds":["1200"],"ItemId":"1200","TargetId":"originalmediafolder",
+       "Quality":"custom","Profile":"tv","Bitrate":8000000,"Status":"Queued","Progress":0,
+       "SyncNewContent":false,"UnwatchedOnly":false}
+    ],"TotalRecordCount":2}
+    """
+
+    @Test("job-list decoder preserves recovery identity and normalizes numeric item ids")
+    func jobListDecode() throws {
+        let list = try EmbyConvertRequest.decodeJobList(from: Data(listResponseJSON.utf8))
+        #expect(list.totalRecordCount == 2)
+        #expect(list.isComplete)
+        #expect(list.items.map(\.id) == [90, 91])
+        #expect(list.items[0].requestedItemIds == ["1200"])
+        #expect(list.items[0].itemId == "1200")
+        #expect(list.items[0].targetId == "originalmediafolder")
+        #expect(list.items[0].quality == "custom")
+        #expect(list.items[0].profile == "tv")
+        #expect(list.items[0].bitrate == 8_000_000)
+        #expect(list.items[0].status == .completed)
+        #expect(list.items[0].progress == 100)
+        #expect(list.items[0].dateCreated != nil)
+        #expect(list.items[1].requestedItemIds == ["1200"])
+        let truncated = try EmbyConvertRequest.decodeJobList(
+            from: Data(listResponseJSON.replacingOccurrences(
+                of: "\"TotalRecordCount\":2", with: "\"TotalRecordCount\":3").utf8))
+        #expect(!truncated.isComplete)
+    }
+
+    private func recoveryEntry(id: Int, itemId: String = "1200", targetId: String = "originalmediafolder",
+                               quality: String = "custom", profile: String = "tv",
+                               bitrate: Int? = 8_000_000, dateCreated: String? = nil) -> EmbyConvertRecoveryEntry {
+        .init(id: id, requestedItemIds: [itemId], itemId: itemId, targetId: targetId,
+              quality: quality, profile: profile, bitrate: bitrate,
+              dateCreated: dateCreated, syncNewContent: false, unwatchedOnly: false)
+    }
+
+    @Test("recovery uses the full baseline and adopts one exact new match")
+    func recoveryAdoptsExactlyOne() {
+        let fingerprint = EmbyConvertRecoveryPolicy.Fingerprint(
+            itemId: "1200", quality: "custom", profile: "tv", bitrate: 8_000_000)
+        let jobs = [recoveryEntry(id: 100), recoveryEntry(id: 41), recoveryEntry(id: 99)]
+        #expect(EmbyConvertRecoveryPolicy.recoveredJobID(
+            baselineJobIDs: [41, 99], jobs: jobs, fingerprint: fingerprint) == 100)
+    }
+
+    @Test("recovery does not compare public create user GUID with list-internal numeric UserId")
+    func recoveryUserIdDomainsAreNotComparable() {
+        let fingerprint = EmbyConvertRecoveryPolicy.Fingerprint(
+            itemId: "1200", quality: "custom", profile: "tv", bitrate: 8_000_000,
+            userId: "public-user-guid")
+        let job = EmbyConvertRecoveryEntry(
+            id: 100, requestedItemIds: ["1200"], itemId: "1200",
+            targetId: "originalmediafolder", quality: "custom", profile: "tv", bitrate: 8_000_000,
+            userId: "7", syncNewContent: false, unwatchedOnly: false)
+        #expect(EmbyConvertRecoveryPolicy.recoveredJobID(
+            baselineJobIDs: [], jobs: [job], fingerprint: fingerprint) == 100)
+    }
+
+    @Test("row/tombstone ownership requires all persisted public user ids to match current session")
+    func recoveryPublicUserOwnership() {
+        #expect(EmbyConvertRecoveryPolicy.publicUserMatches(
+            currentSessionUserID: "user-a", persistedBackendUserID: "user-a",
+            fingerprintUserID: "user-a"))
+        #expect(!EmbyConvertRecoveryPolicy.publicUserMatches(
+            currentSessionUserID: "user-b", persistedBackendUserID: "user-a",
+            fingerprintUserID: "user-a"))
+        #expect(!EmbyConvertRecoveryPolicy.publicUserMatches(
+            currentSessionUserID: "user-a", persistedBackendUserID: nil,
+            fingerprintUserID: "user-a"))
+        #expect(!EmbyConvertRecoveryPolicy.publicUserMatches(
+            currentSessionUserID: "user-a", persistedBackendUserID: "user-a",
+            fingerprintUserID: nil))
+    }
+
+    @Test("cleanup queue preserves multiple attempt UUIDs for the same rating key")
+    func cleanupTombstoneIDsAppendWithoutReplacement() {
+        let first = UUID()
+        let second = UUID()
+        #expect(EmbyConvertRecoveryPolicy.appendingCleanupTombstoneID(
+            second, to: [first]) == [first, second])
+    }
+
+    @Test("recovery fails closed for zero, multiple, baseline, or inexact matches")
+    func recoveryFailsClosed() {
+        let fingerprint = EmbyConvertRecoveryPolicy.Fingerprint(
+            itemId: "1200", quality: "custom", profile: "tv", bitrate: 8_000_000)
+        #expect(EmbyConvertRecoveryPolicy.recoveredJobID(
+            baselineJobIDs: [], jobs: [], fingerprint: fingerprint) == nil)
+        #expect(EmbyConvertRecoveryPolicy.recoveredJobID(
+            baselineJobIDs: [], jobs: [recoveryEntry(id: 1), recoveryEntry(id: 2)],
+            fingerprint: fingerprint) == nil)
+        #expect(EmbyConvertRecoveryPolicy.recoveredJobID(
+            baselineJobIDs: [1], jobs: [recoveryEntry(id: 1)], fingerprint: fingerprint) == nil)
+        let mismatches = [
+            recoveryEntry(id: 1, itemId: "other"),
+            recoveryEntry(id: 2, targetId: "other-target"),
+            recoveryEntry(id: 3, quality: "other"),
+            recoveryEntry(id: 4, profile: "custom"),
+            recoveryEntry(id: 5, bitrate: 4_000_000),
+        ]
+        #expect(EmbyConvertRecoveryPolicy.recoveredJobID(
+            baselineJobIDs: [], jobs: mismatches, fingerprint: fingerprint) == nil)
+    }
+
+    @Test("bounded recovery requires dispatched phase, creation window, and unexpired evidence")
+    func recoveryWindowBounds() throws {
+        let fingerprint = EmbyConvertRecoveryPolicy.Fingerprint(
+            itemId: "1200", quality: "custom", profile: "tv", bitrate: 8_000_000)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let start = try #require(formatter.date(from: "2026-07-11T08:00:00.000Z")).timeIntervalSince1970
+        let inside = recoveryEntry(id: 1, dateCreated: "2026-07-11T08:00:02.000Z")
+        #expect(EmbyConvertRecoveryPolicy.recoveredJobID(
+            baselineJobIDs: [], jobs: [inside], fingerprint: fingerprint,
+            attemptStartedAtEpochSeconds: start, phase: .dispatchAmbiguous,
+            nowEpochSeconds: start + 30) == 1)
+        #expect(EmbyConvertRecoveryPolicy.recoveredJobID(
+            baselineJobIDs: [], jobs: [inside], fingerprint: fingerprint,
+            attemptStartedAtEpochSeconds: start, phase: .prepared,
+            nowEpochSeconds: start + 30) == nil)
+        #expect(EmbyConvertRecoveryPolicy.recoveredJobID(
+            baselineJobIDs: [], jobs: [recoveryEntry(id: 2, dateCreated: "2026-07-11T09:00:00.000Z")],
+            fingerprint: fingerprint, attemptStartedAtEpochSeconds: start, phase: .dispatchAmbiguous,
+            nowEpochSeconds: start + 30) == nil)
+        #expect(EmbyConvertRecoveryPolicy.recoveredJobID(
+            baselineJobIDs: [], jobs: [inside], fingerprint: fingerprint,
+            attemptStartedAtEpochSeconds: start, phase: .dispatchAmbiguous,
+            nowEpochSeconds: start + EmbyConvertRecoveryPolicy.recoveryExpirySeconds + 1) == nil)
+    }
+
+    @Test("cleanup discards pre-dispatch/expired-empty evidence, cancels one, and retains ambiguity")
+    func recoveryCleanupActions() throws {
+        let fingerprint = EmbyConvertRecoveryPolicy.Fingerprint(
+            itemId: "1200", quality: "custom", profile: "tv", bitrate: 8_000_000)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let start = try #require(formatter.date(from: "2026-07-11T08:00:00.000Z")).timeIntervalSince1970
+        let match = recoveryEntry(id: 9, dateCreated: "2026-07-11T08:00:02.000Z")
+        #expect(EmbyConvertRecoveryPolicy.cleanupAction(
+            baselineJobIDs: [], jobs: [], listIsComplete: true, fingerprint: fingerprint,
+            attemptStartedAtEpochSeconds: start, phase: .prepared, nowEpochSeconds: start + 1)
+            == .discardTombstone)
+        #expect(EmbyConvertRecoveryPolicy.cleanupAction(
+            baselineJobIDs: [], jobs: [match], listIsComplete: true, fingerprint: fingerprint,
+            attemptStartedAtEpochSeconds: start, phase: .dispatchAmbiguous, nowEpochSeconds: start + 1)
+            == .cancel(jobID: 9))
+        #expect(EmbyConvertRecoveryPolicy.cleanupAction(
+            baselineJobIDs: [], jobs: [match, recoveryEntry(id: 10, dateCreated: "2026-07-11T08:00:03.000Z")],
+            listIsComplete: true, fingerprint: fingerprint,
+            attemptStartedAtEpochSeconds: start, phase: .dispatchAmbiguous, nowEpochSeconds: start + 1)
+            == .retainTombstone)
+        #expect(EmbyConvertRecoveryPolicy.cleanupAction(
+            baselineJobIDs: [], jobs: [], listIsComplete: true, fingerprint: fingerprint,
+            attemptStartedAtEpochSeconds: start, phase: .dispatchAmbiguous,
+            nowEpochSeconds: start + EmbyConvertRecoveryPolicy.recoveryExpirySeconds + 1)
+            == .discardTombstone)
+        #expect(EmbyConvertRecoveryPolicy.cleanupAction(
+            baselineJobIDs: [], jobs: [], listIsComplete: false, fingerprint: fingerprint,
+            attemptStartedAtEpochSeconds: start, phase: .dispatchAmbiguous,
+            nowEpochSeconds: start + EmbyConvertRecoveryPolicy.recoveryExpirySeconds + 1)
+            == .retainTombstone)
+    }
+
+    @Test("relaunch manager policy polls known jobs, recovers only complete identity, and fails partial state")
+    func recoveryRelaunchAction() {
+        let fingerprint = EmbyConvertRecoveryPolicy.Fingerprint(
+            itemId: "1200", quality: "custom", profile: "tv", bitrate: 8_000_000)
+        #expect(EmbyConvertRecoveryPolicy.relaunchAction(
+            jobID: 7, baselineJobIDs: [1, 2], fingerprint: fingerprint) == .poll(jobID: 7))
+        #expect(EmbyConvertRecoveryPolicy.relaunchAction(
+            jobID: nil, baselineJobIDs: [1, 2], fingerprint: fingerprint,
+            attemptStartedAtEpochSeconds: 100, phase: .dispatchAmbiguous)
+            == .recover(baselineJobIDs: [1, 2], fingerprint: fingerprint,
+                        attemptStartedAtEpochSeconds: 100, phase: .dispatchAmbiguous))
+        #expect(EmbyConvertRecoveryPolicy.relaunchAction(
+            jobID: nil, baselineJobIDs: nil, fingerprint: fingerprint) == .failMissingIdentity)
+        #expect(EmbyConvertRecoveryPolicy.relaunchAction(
+            jobID: nil, baselineJobIDs: [1, 2], fingerprint: nil) == .failMissingIdentity)
+    }
+
+    @Test("create failures preserve recovery after ambiguous dispatch but clear on definitive rejection")
+    func recoveryCreateFailureDisposition() {
+        #expect(EmbyConvertRecoveryPolicy.createFailureDisposition(
+            postWasDispatched: false, httpStatusCode: nil) == .clearRecovery)
+        #expect(EmbyConvertRecoveryPolicy.createFailureDisposition(
+            postWasDispatched: true, httpStatusCode: 400) == .clearRecovery)
+        #expect(EmbyConvertRecoveryPolicy.createFailureDisposition(
+            postWasDispatched: true, httpStatusCode: 500) == .preserveForRecovery)
+        #expect(EmbyConvertRecoveryPolicy.createFailureDisposition(
+            postWasDispatched: true, httpStatusCode: nil) == .preserveForRecovery)
+        #expect(EmbyConvertRecoveryPolicy.createFailureDisposition(
+            postWasDispatched: true, httpStatusCode: 200) == .preserveForRecovery)
+    }
+
     // MARK: - isTerminal / didSucceed
 
     @Test("isTerminal is true only for Completed/Failed/Cancelled")
@@ -203,6 +404,17 @@ struct EmbyConvertJobTests {
         #expect(req.httpMethod == "GET")
         #expect(req.url?.path == "/Sync/Jobs/99")
         #expect(req.value(forHTTPHeaderField: "Authorization")?.hasPrefix("Emby ") == true)
+    }
+
+    @Test("jobListRequest is a base-path-preserving authenticated GET")
+    func jobListRequestShape() throws {
+        let req = try EmbyConvertRequest.jobListRequest(
+            server: URL(string: "https://emby.example.internal/emby")!, token: token, identity: identity)
+        #expect(req.httpMethod == "GET")
+        #expect(req.url?.path == "/emby/Sync/Jobs")
+        #expect(req.value(forHTTPHeaderField: "Accept") == "application/json")
+        #expect(req.value(forHTTPHeaderField: "Authorization")?.hasPrefix("Emby ") == true)
+        #expect(req.value(forHTTPHeaderField: "X-Emby-Token") == token)
     }
 
     @Test("deleteJobRequest is a DELETE to /Sync/Jobs/{id}")

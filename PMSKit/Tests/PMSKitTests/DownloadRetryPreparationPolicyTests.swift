@@ -39,6 +39,15 @@ struct DownloadRetryPreparationPolicyTests {
                                                                              resumeMode: .serverPrepThenStatic,
                                                                              isEmbyRecord: true,
                                                                              hasEmbyConvertJobID: false))
+        #expect(DownloadRetryPreparationPolicy.shouldResumePausedEmbyConvert(
+            status: .failed, resumeMode: .serverPrepThenStatic, isEmbyRecord: true,
+            hasEmbyConvertJobID: false, hasEmbyConvertRecoveryIdentity: true))
+        #expect(DownloadRetryPreparationPolicy.shouldResumePausedEmbyConvert(
+            status: .paused, resumeMode: .serverPrepThenStatic, isEmbyRecord: true,
+            hasEmbyConvertJobID: false, hasEmbyConvertRecoveryIdentity: true))
+        #expect(!DownloadRetryPreparationPolicy.shouldResumePausedEmbyConvert(
+            status: .failed, resumeMode: .serverPrepThenStatic, isEmbyRecord: true,
+            hasEmbyConvertJobID: true, hasEmbyConvertRecoveryIdentity: false))
     }
 
     @Test("Persisted resume data requires a resumable row and a usable blob")

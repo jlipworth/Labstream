@@ -575,6 +575,29 @@ struct OfflineDownloadModelsTests {
         #expect(legacy.sourcePartSize == nil)
     }
 
+    @Test("OfflineMetadata carries the Emby create-recovery baseline and fingerprint with legacy defaults")
+    func metadataCarriesEmbyRecoveryIdentity() throws {
+        let fingerprint = EmbyConvertRecoveryPolicy.Fingerprint(
+            itemId: "1200", quality: "custom", profile: "tv", bitrate: 8_000_000)
+        let meta = OfflineMetadata(
+            ratingKey: "emby:1200", title: "Movie", type: "movie",
+            embyConvertJobBaselineIDs: [9, 2, 4],
+            embyConvertRecoveryFingerprint: fingerprint,
+            embyConvertRecoveryStartedAtEpochSeconds: 1234,
+            embyConvertRecoveryPhase: .dispatchAmbiguous)
+        let round = try JSONDecoder().decode(
+            OfflineMetadata.self, from: try JSONEncoder().encode(meta))
+        #expect(round.embyConvertJobBaselineIDs == [9, 2, 4])
+        #expect(round.embyConvertRecoveryFingerprint == fingerprint)
+        #expect(round.embyConvertRecoveryStartedAtEpochSeconds == 1234)
+        #expect(round.embyConvertRecoveryPhase == .dispatchAmbiguous)
+
+        let legacy = try decode(
+            OfflineMetadata.self, from: #"{"ratingKey":"emby:x","title":"T","type":"movie"}"#)
+        #expect(legacy.embyConvertJobBaselineIDs == nil)
+        #expect(legacy.embyConvertRecoveryFingerprint == nil)
+    }
+
     @Test("validation policy shortens required playback for short clips")
     func validationPolicyShortClipRequiredPlayback() {
         let short = OfflinePlaybackValidationPolicy.make(durationMs: 2_000)

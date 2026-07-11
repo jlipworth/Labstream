@@ -387,13 +387,14 @@ Deferred to user judgment / later phases:
 - JF-F4 (device-only): forward-only download finishing while app terminated is dropped
   (adoption path only handles static-range tasks); feasible via opaque taskDescription.
 - JF-F5: persisted-psid branch never issues `.stop` (non-terminal rows post-relaunch).
-- EMBY-F3: POST-create crash orphans untaggable Sync job; EMBY-F4: `.optimizeCompatible`
+- EMBY-F3: POST-create crash orphan recovery (closed by the durable full-baseline/exact-difference
+  recovery and live Sync-list/create/delete evidence in the 2026-07-11 follow-up below); EMBY-F4: `.optimizeCompatible`
   silent 1080p downgrade (closed by explicit picker disclosure + above-1080p confirmation in the
   2026-07-11 follow-up below); EMBY-F6 existing-version silent source
   swap (closed in the 2026-07-11 update below); EMBY-F11 handoff remove→re-download crash window
   (closed in the 2026-07-11 update below);
   EMBY-F13 unbounded poll on persistent 5xx (closed in the 2026-07-11 update below); EMBY-F9 no
-  Emby keepalive (live-verify).
+  Emby keepalive (closed by the live idle comparison + ping-only keepalive below).
 - PLEX-F3 vacuous height guard on original-quality reuse (closed in the 2026-07-11 update below);
   PLEX-F4 vanished-render retry downloads raw source unpreflighted (closed in the 2026-07-11
   update below); PLEX-F5 reuse leaves duplicate job rendering; PLEX-F6c poller has no overall
@@ -604,9 +605,8 @@ install UUID match, clean launch/log smoke, and signed-in Home screenshot; simul
 2. Close the checklist's evidence gaps (lifecycle cause, blob presence, network path, free-space,
    remote-play/download correlation, and Emby server-completion timing) before treating device
    observations as deterministic.
-3. Continue the remaining backend findings in sections F–H (Emby F3/F9). EMBY-F4 and Plex F5 are
-   closed by the follow-ups below.
-   Held-stash persistence is now closed by the B.1 follow-up below.
+3. Execute the remaining Phase-7 physical-device evidence cells when the headset/network is
+   available. EMBY-F3/F4/F9, Plex F5, and held-stash persistence are closed by the follow-ups below.
 
 Phase 6's simulator/foreground harness is complete: validator/auth/reset/write-failure,
 pause/delete (including both operations during held drain), concurrent 200/416, and relaunch stash
@@ -719,18 +719,34 @@ were emitted for the segment train while the existing 401 rehydrate path still p
 - **Phase 7 is physical-device evidence:** background-session redelivery, sleep/network/token
   changes, and real disk pressure require the headset and controlled human actions from
   `TESTING-CHECKLIST.md`.
-- **EMBY-F3 needs live validation of a fail-closed baseline-difference recovery:** a process kill
-  after the Sync-job POST succeeds but before its integer job id is persisted cannot be recovered by
-  name (Emby 4.9.3 ignores the submitted name) and the create call exposes no client idempotency key.
-  However, the official Sync API also exposes `GET /Sync/Jobs`; its job model includes `Id`,
-  `RequestedItemIds`, target/quality/profile fields, status, and creation time. A plausible safe
-  design is therefore to persist the complete pre-create job-id baseline plus the attempted item /
-  quality identity before POST, then recover only one newly-added matching job and fail closed on
-  zero/multiple matches. Do not ship that path until a real Emby server proves the list response
-  shape, visibility/ordering of a just-created Convert job, and whether completed jobs remain in the
-  listing long enough for relaunch recovery. Official references:
+- **EMBY-F3 is closed by durable full-baseline recovery and live Sync evidence:** the real server's
+  `GET /Sync/Jobs` returned a complete 34-row `{Items, TotalRecordCount}` envelope with the required
+  integer job id, requested-item ids, target, quality, profile, bitrate, status, and creation fields.
+  Thirty-two completed jobs remained visible for weeks, and list order was not reliably
+  chronological. A controlled long-item mutation then proved immediate visibility: the baseline
+  grew from 34 to 35, the exact full-baseline difference selected the POST-returned job, and awaited
+  cleanup returned DELETE 204 before the conversion could complete.
+
+  Production now refuses to POST unless it can durably persist a complete pre-create id set, a
+  bounded creation timestamp/dispatch-ambiguity phase, and the item/target/quality/profile/bitrate /
+  sync flags fingerprint. Recovery also requires the current public Emby user to match both the
+  locally persisted backend user and fingerprint user. (The list's `UserId` is an unrelated internal
+  integer and cannot be compared.) A relaunch with no persisted job id adopts only one bounded exact
+  new match, persists that id before polling, and fails closed on zero/multiple/truncated/list-error
+  outcomes. Ambiguous dispatched-POST transport, 5xx, or 2xx-decode failures retain the evidence;
+  relaunch and manual Retry re-enter recovery rather than creating another job. Only a definitive
+  pre-dispatch/4xx rejection or exact adoption clears row markers.
+
+  Deleting an unresolved row first writes an atomic durable cleanup tombstone, then repeatedly lists
+  and cancels only one bounded exact job; multiple tombstones for repeated same-item attempts coexist
+  by UUID. Truncated/multiple/user-mismatched results retain their tombstones, while a complete
+  zero-match result expires after the bounded retention window. Emby 4.9.3 does not expose
+  container/video/audio/audio-stream or client/device identity in the list. Those create shapers are
+  persisted for future tightening, but current safety comes from the public-user guard, full
+  baseline, and creation-time bound—not a cryptographic idempotency identity. Legacy rows without a
+  job id or complete recovery identity retain the prior fail-closed behavior. Official references:
   <https://dev.emby.media/doc/restapi/Sync.html> and
-  <https://dev.emby.media/reference/RestAPI/SyncService/getSyncJobsById.html>.
+  <https://dev.emby.media/reference/RestAPI/SyncService/getSyncJobs.html>.
 - **EMBY-F4 is closed by explicit disclosure and confirmation:** the Emby compatible-remux picker
   now states that a failed remux falls back to a compatible copy capped at 1080p. When the selected
   source is known to exceed the 1920×1080 bounding box, Download presents a confirmation before
@@ -740,9 +756,29 @@ were emitted for the segment train while the existing 401 rehydrate path still p
   Convert fallback. The pure boundary/backend policy is covered by PMSKit tests; the full 1374-test
   / 168-suite run, clean visionOS build, UUID-matched install, clean launch log, and signed-in Home
   smoke passed, with the simulator shut down. The device checklist now carries the live UX cell.
-- **EMBY-F9 needs live Emby evidence:** whether its forward-only encoder needs Jellyfin-style
-  keepalives depends on real server idle behavior. No Emby credentials are available in this
-  worktree/simulator, so a synthetic keepalive would not establish correctness.
+- **EMBY-F9 is closed by a live causal comparison and ping-only production keepalive:** a real
+  compatible-remux transfer with no control-plane keepalive advanced normally and then failed
+  materially short at about 62 seconds / 52 MB despite HTTP 200. The paired Playing/Progress/Ping
+  arm advanced through the full 180-second deadline, and a safer Ping-only arm independently
+  advanced through 120 seconds; every ping returned 204 and both arms ended only when the probe
+  cancelled them. Active-encoding cleanup returned 204 after every arm.
+
+  Emby `.compatibleRemux` rows now send only `/Sessions/Playing/Ping` every 20 seconds, avoiding the
+  watch-history/resume mutations of Playing/Progress. Eligibility is restricted to active Emby
+  compatible-remux rows with a persisted PlaySessionId; static originals, existing versions, and
+  persistent Convert jobs never ping. Relaunch/reattach restarts the task from persisted metadata,
+  every tick re-resolves and user-checks the current backend session/token, HTTP/auth health uses the
+  existing tested keepalive policy, and an auth-dead session generation is quarantined so refreshes
+  cannot restart-loop until credentials/user/server change. Generation-tagged task cleanup lets a
+  naturally exited task restart without removing a newer replacement. Diagnostics expose
+  start/degraded/recovered/failure states, and terminal release cancels the task and quarantine.
+
+Combined closure verification: full PMSKit **1394 tests / 169 suites** passed. The live F3 mutation
+again proved baseline 34→35, exact adoption, and DELETE 204 cleanup. The strengthened Ping-only F9
+probe required real advancement beyond the observed idle boundary and recent progress at the
+120-second deadline; it reached about 106 MB with every Ping returning 204, then cleanup returned
+204. A full clean visionOS build, UUID-matched install, clean launch log, signed-in Home screenshot,
+and simulator shutdown also passed.
 
 ### Deferred follow-up closed without mutation: PLEX-F5 completed optimize artifacts
 

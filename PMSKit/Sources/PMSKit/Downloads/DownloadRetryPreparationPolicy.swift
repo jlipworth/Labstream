@@ -18,11 +18,11 @@ public enum DownloadRetryPreparationPolicy {
     public static func shouldResumePausedEmbyConvert(status: DownloadStatus,
                                                      resumeMode: DownloadResumeMode?,
                                                      isEmbyRecord: Bool,
-                                                     hasEmbyConvertJobID: Bool) -> Bool {
-        status == .paused
-            && resumeMode == .serverPrepThenStatic
-            && isEmbyRecord
-            && hasEmbyConvertJobID
+                                                     hasEmbyConvertJobID: Bool,
+                                                     hasEmbyConvertRecoveryIdentity: Bool = false) -> Bool {
+        guard resumeMode == .serverPrepThenStatic, isEmbyRecord else { return false }
+        if status == .paused, hasEmbyConvertJobID { return true }
+        return (status == .paused || status == .failed) && hasEmbyConvertRecoveryIdentity
     }
 
     public static func shouldResumePersistedURLSessionData(status: DownloadStatus,
