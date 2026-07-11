@@ -634,7 +634,7 @@ public final class DownloadManager {
     func startAttemptStillCurrent(_ handle: DownloadStartAttemptHandle,
                                   backend: String,
                                   phase: String) -> Bool {
-        let row = store.records.first { $0.ratingKey == handle.ratingKey }
+        let row = store.record(for: handle.ratingKey)
         let verdict = DownloadStartGuardPolicy.verdict(
             tokenIsCurrent: startAttempts.isCurrent(handle.ratingKey, id: handle.token),
             hasActiveSlot: activeJobs.contains(handle.ratingKey),
@@ -941,7 +941,7 @@ public final class DownloadManager {
             isQueuePaused: isQueuePaused,
             wasManuallyResumedWhileQueuePaused: staticRangeRecovery.wasManuallyResumedWhileQueuePaused(ratingKey)
         ) {
-            guard let record = store.records.first(where: { $0.ratingKey == ratingKey }) else {
+            guard let record = store.record(for: ratingKey) else {
                 staticRangeRecovery.removePendingResume(ratingKey)
                 return
             }
@@ -963,7 +963,7 @@ public final class DownloadManager {
             refreshRecords()
             return
         }
-        guard let record = store.records.first(where: { $0.ratingKey == ratingKey }) else {
+        guard let record = store.record(for: ratingKey) else {
             staticRangeRecovery.removePendingResume(ratingKey)
             return
         }
@@ -1282,7 +1282,7 @@ public final class DownloadManager {
     /// stays dead even after pause→resume re-begins retrying for the same key. `nil` preserves the
     /// legacy any-current-attempt semantics for paths that predate token threading.
     private func retryAttemptCanContinue(ratingKey: String, token: UUID? = nil) -> Bool {
-        let row = store.records.first { $0.ratingKey == ratingKey }
+        let row = store.record(for: ratingKey)
         let attemptIsCurrent = token.map { retryState.isCurrentRetryAttempt(ratingKey, id: $0) }
             ?? retryState.isRetrying(ratingKey)
         return DownloadRetryPreparationPolicy.attemptCanContinue(
@@ -1961,7 +1961,7 @@ public final class DownloadManager {
             // in-memory active slot so the debounced resume retries can attach a fresh poller. This
             // is safe against newer same-item attempts because Plex queueTitle is the per-attempt
             // identity; never release when the row has already handed off to bytes or another title.
-            if let current = store.records.first(where: { $0.ratingKey == ratingKey }),
+            if let current = store.record(for: ratingKey),
                current.status == .queued, current.bytes == 0, current.progress == 0,
                current.metadata?.optimizeTargetName == targetName,
                current.metadata?.optimizeQueueTitle == metadata.optimizeQueueTitle {
@@ -2113,7 +2113,7 @@ public final class DownloadManager {
         // server-side "Convert Media" Sync job, or it keeps rendering after the user abandoned it.
         // Capture the row BEFORE removing it (best-effort; deleting the job never deletes an
         // already-converted file, so this only ever cancels an in-flight conversion).
-        let rowToDelete = store.records.first(where: { $0.ratingKey == ratingKey })
+        let rowToDelete = store.record(for: ratingKey)
         let embySession = appModel.backendSession(for: .emby)
         var embyCleanupTombstone: DownloadStore.EmbyConvertCleanupTombstone?
         if let metadata = rowToDelete?.metadata, metadata.hasEmbyConvertCrashWindowIdentity {
@@ -2659,7 +2659,7 @@ public final class DownloadManager {
 
     private func restartStalledForwardOnlyStream(_ restart: DownloadForwardOnlyStallRestart) {
         let ratingKey = restart.record.ratingKey
-        guard let current = store.records.first(where: { $0.ratingKey == ratingKey }),
+        guard let current = store.record(for: ratingKey),
               DownloadStallRecoveryPolicy.isForwardOnlyMediaBrowserStream(current) else { return }
         let backend = DownloadJobSnapshot(record: current).backend
         recordDownloadDiagnostic("downloads.forward_stream_stall_restart", fields: [
@@ -3100,7 +3100,7 @@ public final class DownloadManager {
         // the DELETE must hit the server the encoder actually runs on. If that lane is no longer
         // configured (signed out), skip now — the persisted `playSessionID` stays put and the launch
         // sweep retries once the lane returns.
-        let storeRow = store.records.first(where: { $0.ratingKey == ratingKey })
+        let storeRow = store.record(for: ratingKey)
         let releaseMetadata = storeRow?.metadata ?? rowSnapshot?.metadata
         // JF-F5: the delete path (row already removed, snapshot in hand) is the last chance to
         // tear down a persisted-psid encoder — after this the handle is gone and no launch sweep

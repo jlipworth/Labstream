@@ -218,7 +218,7 @@ extension DownloadManager {
         // and resolve the Plex session from its lane — so the original→optimize fallback fires
         // even if the user has since switched to Jellyfin/Emby, as long as the Plex lane is still
         // configured (lanes persist independently).
-        let record = store.records.first(where: { $0.ratingKey == ratingKey })
+        let record = store.record(for: ratingKey)
         let backendSession = appModel.backendSession(for: .plex)
         guard PlexOriginalFallbackPolicy.shouldFallback(
             record: record,

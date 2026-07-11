@@ -97,7 +97,7 @@ extension DownloadManager {
                                      targetName: String? = nil, jobId: Int? = nil) -> Bool {
         guard activeJobs.contains(ratingKey),
               serverPrepAttempts.isCurrentEmbyConvertAttempt(forRecordKey: ratingKey, id: attemptID),
-              let row = store.records.first(where: { $0.ratingKey == ratingKey }),
+              let row = store.record(for: ratingKey),
               row.status == .preparing else { return false }
         if let targetName, row.metadata?.optimizeTargetName != targetName { return false }
         if let jobId, row.metadata?.embyConvertJobID != jobId { return false }
@@ -465,7 +465,7 @@ extension DownloadManager {
 
         // Persist ownership BEFORE polling or publishing recovery. A second kill after this upsert
         // follows the ordinary job-id resume path and can safely cancel this exact job on delete.
-        guard var row = store.records.first(where: { $0.ratingKey == ratingKey }),
+        guard var row = store.record(for: ratingKey),
               var metadata = row.metadata,
               metadata.embyConvertJobID == nil else {
             recordStaleEmbyConvertAttempt(ratingKey: ratingKey, phase: "recovery_persist", jobId: jobId)
