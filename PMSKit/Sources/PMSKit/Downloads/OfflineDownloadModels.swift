@@ -495,6 +495,39 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     public var embyConvertRecoveryFingerprint: EmbyConvertRecoveryPolicy.Fingerprint?
     public var embyConvertRecoveryStartedAtEpochSeconds: Double?
     public var embyConvertRecoveryPhase: EmbyConvertRecoveryPolicy.Phase?
+
+    /// Both halves of the durable pre-POST recovery identity are present. The four fields are only
+    /// meaningful together — every eligibility check must use this single predicate so retry,
+    /// relaunch resume, and delete-tombstoning can never drift apart.
+    public var hasEmbyConvertRecoveryIdentity: Bool {
+        embyConvertJobBaselineIDs != nil
+            && embyConvertRecoveryFingerprint != nil
+            && embyConvertRecoveryStartedAtEpochSeconds != nil
+            && embyConvertRecoveryPhase == .dispatchAmbiguous
+    }
+
+    /// The POST-accepted / response-id-not-persisted crash window: a complete recovery identity
+    /// with NO adopted job id. Rows in this state re-enter bounded list recovery; deleting one
+    /// must persist a cleanup tombstone first.
+    public var hasEmbyConvertCrashWindowIdentity: Bool {
+        embyConvertJobID == nil && hasEmbyConvertRecoveryIdentity
+    }
+
+    /// Atomically adopt a created/recovered Sync job id and clear the crash-window markers, so a
+    /// row can never hold both an owned job id and a live recovery identity.
+    public mutating func adoptEmbyConvertJobID(_ jobID: Int) {
+        embyConvertJobID = jobID
+        clearEmbyConvertRecoveryIdentity()
+    }
+
+    /// Remove only the short-lived Sync-list crash-window markers. The server job id and File
+    /// source snapshot have independent lifetimes and must remain available for polling/pickup.
+    public mutating func clearEmbyConvertRecoveryIdentity() {
+        embyConvertJobBaselineIDs = nil
+        embyConvertRecoveryFingerprint = nil
+        embyConvertRecoveryStartedAtEpochSeconds = nil
+        embyConvertRecoveryPhase = nil
+    }
     /// Emby convert-then-download: the FULL set of pre-existing `File` MediaSource ids on the item
     /// captured at convert-trigger time. Persisted so a relaunch-resume identifies the freshly
     /// converted source as "the one NOT in this set" — including when the item already had a PRIOR

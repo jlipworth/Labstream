@@ -120,6 +120,37 @@ struct EmbyConvertJobTests {
         #expect(!truncated.isComplete)
     }
 
+    /// `GET /Sync/Jobs` is server-wide: jobs created by OTHER Emby clients can null/omit
+    /// Quality/Profile or use numeric TargetId. One foreign entry must never make the whole
+    /// baseline undecodable — that hard-failed EVERY Labstream convert start.
+    @Test("job-list decoder tolerates foreign clients' Sync jobs without failing the list")
+    func jobListDecodeToleratesForeignJobs() throws {
+        let foreign = """
+        {"Items":[
+          {"Id":90,"RequestedItemIds":[1200],"ItemId":1200,"TargetId":"originalmediafolder",
+           "Quality":"custom","Profile":"tv","Bitrate":8000000,"Status":"Completed",
+           "SyncNewContent":false,"UnwatchedOnly":false},
+          {"Id":91,"RequestedItemIds":[7],"ItemId":7,"TargetId":42,
+           "Quality":null,"Status":"Queued"},
+          {"NotEvenAnId":true}
+        ],"TotalRecordCount":3}
+        """
+        let list = try EmbyConvertRequest.decodeJobList(from: Data(foreign.utf8))
+        // Tolerant fields decode in place (numeric TargetId, null Quality, absent Profile)…
+        #expect(list.items.map(\.id) == [90, 91])
+        #expect(list.items[1].targetId == "42")
+        #expect(list.items[1].quality == "")
+        #expect(list.items[1].profile == "")
+        // …and an entry with no usable Id is dropped but still counted toward completeness.
+        #expect(list.undecodableItemCount == 1)
+        #expect(list.isComplete)
+        // A tolerant-empty quality/profile can never match a Labstream fingerprint.
+        let fingerprint = EmbyConvertRecoveryPolicy.Fingerprint(
+            itemId: "7", targetId: "42", quality: "custom", profile: "tv", bitrate: nil)
+        #expect(EmbyConvertRecoveryPolicy.recoveredJobID(
+            baselineJobIDs: [], jobs: [list.items[1]], fingerprint: fingerprint) == nil)
+    }
+
     private func recoveryEntry(id: Int, itemId: String = "1200", targetId: String = "originalmediafolder",
                                quality: String = "custom", profile: String = "tv",
                                bitrate: Int? = 8_000_000, dateCreated: String? = nil) -> EmbyConvertRecoveryEntry {
@@ -255,6 +286,39 @@ struct EmbyConvertJobTests {
             == .retainTombstone)
     }
 
+    /// A tombstone must never cancel a job a LIVE row currently owns: delete + immediate
+    /// re-download of the same item/preset creates a fingerprint-identical job inside the
+    /// creation window, and cancelling it would kill the user's active conversion.
+    @Test("cleanup never cancels a job owned by a live download row")
+    func recoveryCleanupExcludesLiveJobs() throws {
+        let fingerprint = EmbyConvertRecoveryPolicy.Fingerprint(
+            itemId: "1200", quality: "custom", profile: "tv", bitrate: 8_000_000)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let start = try #require(formatter.date(from: "2026-07-11T08:00:00.000Z")).timeIntervalSince1970
+        let match = recoveryEntry(id: 9, dateCreated: "2026-07-11T08:00:02.000Z")
+        // The sole candidate is live-owned: retain (re-evaluated later), never cancel.
+        #expect(EmbyConvertRecoveryPolicy.cleanupAction(
+            baselineJobIDs: [], jobs: [match], listIsComplete: true, fingerprint: fingerprint,
+            attemptStartedAtEpochSeconds: start, phase: .dispatchAmbiguous,
+            nowEpochSeconds: start + 1, liveJobIDs: [9])
+            == .retainTombstone)
+        // Excluding the live job can also disambiguate down to the true orphan.
+        let orphan = recoveryEntry(id: 10, dateCreated: "2026-07-11T08:00:03.000Z")
+        #expect(EmbyConvertRecoveryPolicy.cleanupAction(
+            baselineJobIDs: [], jobs: [match, orphan], listIsComplete: true, fingerprint: fingerprint,
+            attemptStartedAtEpochSeconds: start, phase: .dispatchAmbiguous,
+            nowEpochSeconds: start + 1, liveJobIDs: [9])
+            == .cancel(jobID: 10))
+        // Past expiry with only a live-owned candidate: nothing left to clean.
+        #expect(EmbyConvertRecoveryPolicy.cleanupAction(
+            baselineJobIDs: [], jobs: [match], listIsComplete: true, fingerprint: fingerprint,
+            attemptStartedAtEpochSeconds: start, phase: .dispatchAmbiguous,
+            nowEpochSeconds: start + EmbyConvertRecoveryPolicy.recoveryExpirySeconds + 1,
+            liveJobIDs: [9])
+            == .discardTombstone)
+    }
+
     @Test("relaunch manager policy polls known jobs, recovers only complete identity, and fails partial state")
     func recoveryRelaunchAction() {
         let fingerprint = EmbyConvertRecoveryPolicy.Fingerprint(
@@ -263,13 +327,40 @@ struct EmbyConvertJobTests {
             jobID: 7, baselineJobIDs: [1, 2], fingerprint: fingerprint) == .poll(jobID: 7))
         #expect(EmbyConvertRecoveryPolicy.relaunchAction(
             jobID: nil, baselineJobIDs: [1, 2], fingerprint: fingerprint,
-            attemptStartedAtEpochSeconds: 100, phase: .dispatchAmbiguous)
+            attemptStartedAtEpochSeconds: 100, phase: .dispatchAmbiguous,
+            nowEpochSeconds: 130)
             == .recover(baselineJobIDs: [1, 2], fingerprint: fingerprint,
                         attemptStartedAtEpochSeconds: 100, phase: .dispatchAmbiguous))
         #expect(EmbyConvertRecoveryPolicy.relaunchAction(
             jobID: nil, baselineJobIDs: nil, fingerprint: fingerprint) == .failMissingIdentity)
         #expect(EmbyConvertRecoveryPolicy.relaunchAction(
             jobID: nil, baselineJobIDs: [1, 2], fingerprint: nil) == .failMissingIdentity)
+    }
+
+    /// Past `recoveryExpirySeconds`, `matchingNewJobIDs` can never adopt again — re-entering
+    /// recovery looped `.preparing` → `.failed` on every Retry with delete as the only escape.
+    @Test("relaunch expires a crash-window identity older than the adoption deadline")
+    func recoveryRelaunchActionExpires() {
+        let fingerprint = EmbyConvertRecoveryPolicy.Fingerprint(
+            itemId: "1200", quality: "custom", profile: "tv", bitrate: 8_000_000)
+        let start: Double = 100
+        #expect(EmbyConvertRecoveryPolicy.relaunchAction(
+            jobID: nil, baselineJobIDs: [1, 2], fingerprint: fingerprint,
+            attemptStartedAtEpochSeconds: start, phase: .dispatchAmbiguous,
+            nowEpochSeconds: start + EmbyConvertRecoveryPolicy.recoveryExpirySeconds + 1)
+            == .expireRecovery)
+        #expect(EmbyConvertRecoveryPolicy.relaunchAction(
+            jobID: nil, baselineJobIDs: [1, 2], fingerprint: fingerprint,
+            attemptStartedAtEpochSeconds: start, phase: .dispatchAmbiguous,
+            nowEpochSeconds: start + EmbyConvertRecoveryPolicy.recoveryExpirySeconds - 1)
+            == .recover(baselineJobIDs: [1, 2], fingerprint: fingerprint,
+                        attemptStartedAtEpochSeconds: start, phase: .dispatchAmbiguous))
+        // A persisted job id still wins regardless of age.
+        #expect(EmbyConvertRecoveryPolicy.relaunchAction(
+            jobID: 7, baselineJobIDs: [1, 2], fingerprint: fingerprint,
+            attemptStartedAtEpochSeconds: start, phase: .dispatchAmbiguous,
+            nowEpochSeconds: start + EmbyConvertRecoveryPolicy.recoveryExpirySeconds + 1)
+            == .poll(jobID: 7))
     }
 
     @Test("create failures preserve recovery after ambiguous dispatch but clear on definitive rejection")

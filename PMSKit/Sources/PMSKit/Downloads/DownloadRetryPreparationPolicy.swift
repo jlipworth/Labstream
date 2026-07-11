@@ -21,7 +21,12 @@ public enum DownloadRetryPreparationPolicy {
                                                      hasEmbyConvertJobID: Bool,
                                                      hasEmbyConvertRecoveryIdentity: Bool = false) -> Bool {
         guard resumeMode == .serverPrepThenStatic, isEmbyRecord else { return false }
-        if status == .paused, hasEmbyConvertJobID { return true }
+        // A `.failed` row that still owns a Sync job id resumes POLLING that job — never a fresh
+        // POST. The poll-health budget parks a row `.failed` after ~5 minutes offline while the
+        // job keeps rendering server-side; routing that retry to the backend-intent path orphaned
+        // the live job as a duplicate conversion. Rows whose job reached a terminal server state
+        // have the job id cleared at failure time, so they fall through to a clean restart.
+        if status == .paused || status == .failed, hasEmbyConvertJobID { return true }
         return (status == .paused || status == .failed) && hasEmbyConvertRecoveryIdentity
     }
 

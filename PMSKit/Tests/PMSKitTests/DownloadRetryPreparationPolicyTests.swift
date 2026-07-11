@@ -45,9 +45,14 @@ struct DownloadRetryPreparationPolicyTests {
         #expect(DownloadRetryPreparationPolicy.shouldResumePausedEmbyConvert(
             status: .paused, resumeMode: .serverPrepThenStatic, isEmbyRecord: true,
             hasEmbyConvertJobID: false, hasEmbyConvertRecoveryIdentity: true))
-        #expect(!DownloadRetryPreparationPolicy.shouldResumePausedEmbyConvert(
+        // A `.failed` row still owning a Sync job id resumes POLLING it (poll-health parked it
+        // while the job kept rendering); a fresh POST would orphan a duplicate conversion.
+        #expect(DownloadRetryPreparationPolicy.shouldResumePausedEmbyConvert(
             status: .failed, resumeMode: .serverPrepThenStatic, isEmbyRecord: true,
             hasEmbyConvertJobID: true, hasEmbyConvertRecoveryIdentity: false))
+        #expect(!DownloadRetryPreparationPolicy.shouldResumePausedEmbyConvert(
+            status: .failed, resumeMode: .serverPrepThenStatic, isEmbyRecord: true,
+            hasEmbyConvertJobID: false, hasEmbyConvertRecoveryIdentity: false))
     }
 
     @Test("Persisted resume data requires a resumable row and a usable blob")
