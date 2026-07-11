@@ -717,9 +717,18 @@ were emitted for the segment train while the existing 401 rehydrate path still p
 - **Phase 7 is physical-device evidence:** background-session redelivery, sleep/network/token
   changes, and real disk pressure require the headset and controlled human actions from
   `TESTING-CHECKLIST.md`.
-- **EMBY-F3 needs a server-correlatable create identity:** a process kill after the Sync-job POST
-  succeeds but before its integer job id is persisted cannot be recovered safely by title/time
-  heuristics. The current Emby request shape exposes no client idempotency key.
+- **EMBY-F3 needs live validation of a fail-closed baseline-difference recovery:** a process kill
+  after the Sync-job POST succeeds but before its integer job id is persisted cannot be recovered by
+  name (Emby 4.9.3 ignores the submitted name) and the create call exposes no client idempotency key.
+  However, the official Sync API also exposes `GET /Sync/Jobs`; its job model includes `Id`,
+  `RequestedItemIds`, target/quality/profile fields, status, and creation time. A plausible safe
+  design is therefore to persist the complete pre-create job-id baseline plus the attempted item /
+  quality identity before POST, then recover only one newly-added matching job and fail closed on
+  zero/multiple matches. Do not ship that path until a real Emby server proves the list response
+  shape, visibility/ordering of a just-created Convert job, and whether completed jobs remain in the
+  listing long enough for relaunch recovery. Official references:
+  <https://dev.emby.media/doc/restapi/Sync.html> and
+  <https://dev.emby.media/reference/RestAPI/SyncService/getSyncJobsById.html>.
 - **EMBY-F4 is an explicit product/UX decision:** compatible-remux currently accepts its documented
   1080p ceiling; changing the route or adding downgrade confirmation requires user judgment rather
   than an audit-only silent behavior change.
