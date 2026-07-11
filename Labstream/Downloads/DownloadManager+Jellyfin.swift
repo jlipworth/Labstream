@@ -322,13 +322,14 @@ extension DownloadManager {
         refreshRecords()
         // #102: cache the poster locally (best-effort) so artwork shows offline. Unlike the
         // Plex lane this MUST use the authenticated MediaBrowser image request.
-        cacheJellyfinPoster(ratingKey: ratingKey, item: item, server: server,
+        let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: startAttempt.attemptID)
+        cacheJellyfinPoster(for: attemptKey, item: item, server: server,
                             token: token, identity: identity)
-        cacheJellyfinTrickPlay(ratingKey: ratingKey, itemId: itemId, mediaSourceId: resolvedJellyfinMediaSourceID,
+        cacheJellyfinTrickPlay(for: attemptKey, itemId: itemId, mediaSourceId: resolvedJellyfinMediaSourceID,
                                server: server, token: token, identity: identity)
-        cacheChapterImages(ratingKey: ratingKey, item: item, backend: .jellyfin,
+        cacheChapterImages(for: attemptKey, item: item, backend: .jellyfin,
                            server: server, token: token)
-        cacheJellyfinTextSubtitles(ratingKey: ratingKey, itemId: itemId, mediaSourceId: resolvedJellyfinMediaSourceID,
+        cacheJellyfinTextSubtitles(for: attemptKey, itemId: itemId, mediaSourceId: resolvedJellyfinMediaSourceID,
                                    part: part, server: server, token: token, identity: identity)
 
         beginBackgroundTransfer(DownloadTransferStartPlan(
@@ -366,7 +367,7 @@ extension DownloadManager {
     /// playlist, downloads each referenced tile through header auth (stripping ApiKey from tile
     /// URLs in the request builder), then writes a sanitized local playlist whose tile lines are
     /// only local filenames. A miss/corrupt playlist never fails the media download.
-    private func cacheJellyfinTrickPlay(ratingKey: String,
+    private func cacheJellyfinTrickPlay(for attemptKey: DownloadAttemptKey,
                                         itemId: String,
                                         mediaSourceId: String?,
                                         server: URL,
@@ -400,7 +401,7 @@ extension DownloadManager {
                 if playlist.tiles.count > batchSize {
                     await MainActor.run {
                         self?.recordDownloadDiagnostic("downloads.side_cache_throttled", fields: [
-                            "download_id": .identifier(ratingKey),
+                            "download_id": .identifier(attemptKey.ratingKey),
                             "asset": .label("jellyfin_trickplay_tiles"),
                             "request_count": .int(playlist.tiles.count),
                             "batch_size": .int(batchSize),
@@ -438,8 +439,17 @@ extension DownloadManager {
                         return out.sorted { $0.index < $1.index }
                     }
                     for entry in fetched {
-                        let destination = store.jellyfinTrickPlayTileDestinationURL(ratingKey: ratingKey, index: entry.index)
-                        try entry.data.write(to: destination, options: .atomic)
+                        let destination = store.jellyfinTrickPlayTileDestinationURL(
+                            ratingKey: attemptKey.ratingKey, index: entry.index)
+                        guard let staging = store.attemptStagingURL(for: attemptKey, stableURL: destination) else {
+                            continue
+                        }
+                        defer { try? FileManager.default.removeItem(at: staging) }
+                        try entry.data.write(to: staging, options: .atomic)
+                        guard Self.promoteSideAsset(store: store, key: attemptKey,
+                                                    stagingURL: staging, stableURL: destination) else {
+                            continue
+                        }
                         tileFilenamesByURI[entry.uri] = destination.lastPathComponent
                         tileRelatives.append(destination.lastPathComponent)
                     }
@@ -448,13 +458,21 @@ extension DownloadManager {
                 guard !tileRelatives.isEmpty else { return }
                 let sanitized = JellyfinTrickPlayOfflineCachePlanner.sanitizedPlaylist(playlistText, tileFilenamesByURI: tileFilenamesByURI)
                 guard !sanitized.localizedCaseInsensitiveContains("apikey=") else { return }
-                let playlistURL = store.jellyfinTrickPlayPlaylistDestinationURL(ratingKey: ratingKey)
-                try sanitized.data(using: .utf8)?.write(to: playlistURL, options: .atomic)
+                let playlistURL = store.jellyfinTrickPlayPlaylistDestinationURL(
+                    ratingKey: attemptKey.ratingKey)
+                guard let playlistStaging = store.attemptStagingURL(
+                    for: attemptKey, stableURL: playlistURL) else { return }
+                defer { try? FileManager.default.removeItem(at: playlistStaging) }
+                try sanitized.data(using: .utf8)?.write(to: playlistStaging, options: .atomic)
+                guard Self.promoteSideAsset(store: store, key: attemptKey,
+                                            stagingURL: playlistStaging,
+                                            stableURL: playlistURL) else { return }
                 await MainActor.run {
-                    store.setJellyfinTrickPlayRelativePaths(ratingKey: ratingKey,
-                                                            playlist: playlistURL.lastPathComponent,
-                                                            tiles: tileRelatives)
-                    self?.refreshRecords()
+                    let result = store.updateMetadata(for: attemptKey) {
+                        $0.jellyfinTrickPlayPlaylistRelativePath = playlistURL.lastPathComponent
+                        $0.jellyfinTrickPlayTileRelativePaths = tileRelatives
+                    }
+                    if result == .applied || result == .noChange { self?.refreshRecords() }
                 }
             } catch {
                 // Optional asset cache. Never log token-bearing playlist/tile URLs.
