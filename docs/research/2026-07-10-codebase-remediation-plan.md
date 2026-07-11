@@ -364,6 +364,47 @@ their relationship during the schema-v3 migration.
   requirement. Await approval for the coordinated download-engine migration and its rollback/test
   plan.
 
+#### 2026-07-12 — Phase 1B/1C coordinated migration approved
+
+- **Status:** approved for coordinated implementation. Phase 1B and 1C remain one compatibility
+  train: intermediate commits may establish reviewed seams and tests, but production must not admit
+  background work through a partially migrated ownership model.
+- **Upgrade policy:** preserve completed downloads and their referenced playable/side-asset files.
+  Do not rebind or adopt any pre-v3 active `URLSession` task. After the schema-v3 attempt IDs are
+  durably committed, cancel every pre-v3 active task and discard/reset that row's partial media,
+  resume blob, held-range bodies/manifests, and recognized network/staging temp state. The row
+  remains retryable from a clean checkpoint under its new attempt identity. This intentionally
+  trades resumable pre-v3 progress for an unambiguous ownership boundary; completed media is not
+  part of that discard.
+- **Admission and persistence:** attempt-ID migration and every new attempt-ID assignment fail
+  closed. Session registration, task creation/admission, recovery, and callback mutation may not
+  proceed until the owning ID is durably committed. A write failure leaves the prior canonical
+  index readable, reports a redacted actionable failure, and permits a later retry; it must not
+  fall back to rating-key-only ownership or an in-memory-only ID.
+- **Files and side assets:** asynchronous media/finalizer/side-cache work writes only to
+  attempt-scoped staging paths. After a final ownership check, current work atomically promotes to
+  the existing stable final filename and commits metadata conditionally for that same attempt.
+  Delete, retry, supersede, and startup sweeps remove old-attempt staging without touching a newer
+  attempt's stable file.
+- **Compatibility window:** for one release train, write the schema-v3 top-level typed attempt ID
+  while retaining the metadata-nested shadow needed by the compatibility reader, and retain legacy
+  index/task-marker parsing. The top-level schema-v3 value is authoritative; disagreement with the
+  nested shadow fails closed and is diagnosed rather than guessed. New work is never emitted in a
+  rating-key-only marker format.
+- **Required server cleanup:** use a generic, attempt-keyed durable cleanup-intent schema carrying
+  backend, persisted server identity, and expected session/job ID. Initially migrate only
+  Jellyfin/Emby ActiveEncoding teardown and the existing Emby Convert cleanup lifecycle; this
+  approval adds no new Plex cleanup behavior. Required teardown is not cancelled with ordinary
+  finalizer/side-cache work, and an intent clears only after the exact operation is confirmed gone.
+  If the required intent cannot be durably persisted, block final row/file deletion so the last
+  cleanup handle is not lost; surface the failure and allow retry.
+- **Rollout and rollback:** exercise the migration first in internal/device builds with the named
+  schema, cancellation/reset, delete/re-add, cleanup, force-quit, background-redelivery, iPad, and
+  Vision Pro gates. There is no blind rollback to a pre-v3 binary after schema-v3 rows or markers
+  are emitted. A rollback build must retain the v3 reader, nested-shadow and legacy parsers, and
+  fail-closed ownership rules, or first quiesce/cancel and reconcile all new-format tasks and
+  durable cleanup intents.
+
 #### 2026-07-11 — Phase 2D compiler-cliff removal
 
 - **Status:** complete.
