@@ -25,7 +25,7 @@ Current status at this checkpoint:
 | Slice | Status | Evidence / remaining boundary |
 | --- | --- | --- |
 | 0A–0B | Complete | Repeatable compile audit plus nonzero macOS/iOS app test plans are on the rebased branch. |
-| 1A | Partial / advanced | The index has a serial revisioned writer, dirty retry, observable failures, bounded internal flush, and commit-aware held-body replacement (`0bbcb5d`, `f5ecf95`, `7005fd5`). Existing mutations still preserve synchronous durability. Background-completion integration, held-manifest removal outcomes, tombstone ordering, and split temp/replace crash seams remain. |
+| 1A | Partial / advanced | The index has a serial revisioned writer, dirty retry, observable failures, bounded background-completion flush, and commit-aware held-body replacement (`0bbcb5d`, `f5ecf95`, `7005fd5`, `e4e4fd4`). Existing mutations still preserve synchronous durability. Held-manifest removal outcomes, tombstone ordering, split temp/replace crash seams, and broader fault/stress coverage remain. |
 | 1B | Partial | Existing string attempt tokens, v2 task markers, stale-task rejection, and attempt-bearing held manifests are prior art. A typed `DownloadAttemptID`, schema v3, durable-before-reattach migration, and attempt-conditional store APIs remain. |
 | 1C | Partial | Main now has a final-verdict recheck, attempt-matched held bodies/orphan sweeping, and an Emby ambiguous-create tombstone. A work registry, attempt-scoped finalizing, side-asset staging/ownership, broad post-await guards, and compare-and-clear play-session cleanup remain. |
 | 1D–1F | Complete | Auth/secure-storage, system-media ownership, and player lifecycle generations survived the rebase unchanged. iPad/Mac physical ownership and lifecycle checks passed; iOS TSAN tests remain green. |
@@ -223,6 +223,34 @@ their relationship during the schema-v3 migration.
   completion gate becomes ready, bounded-flush/retry through it, diagnose committed/failed/timeout,
   and always release the OS handler. Keep the hung-initial-synchronous-write limitation explicit;
   nonblocking lifecycle mutations are a separate migration.
+
+#### 2026-07-11 — Phase 1A background-completion persistence barrier
+
+- **Status:** exact accepted-revision retry/flush before OS handler release complete.
+- **Commit:** `e4e4fd4` (`Flush persistence before background completion`).
+- **Changed boundary:** when the in-memory completion gate drains, the session captures the
+  store's exact latest accepted revision and performs one bounded five-second retry/flush before
+  releasing every ready background-session handler. Committed, failed, and timeout outcomes are
+  privacy-safely diagnosed and all release the OS handler; failed/timed-out snapshots remain dirty.
+- **Replay safety:** `BackgroundDownloadCompletionGate` now ignores finish events without an
+  awaiting handler. Duplicate or stale callbacks therefore cannot launch a delayed barrier that
+  consumes a future handler using the same fixed session identifier.
+- **Regression evidence:** PMSKit gate tests cover absent and duplicate finish events. App tests
+  block a real dirty retry and prove no release before commit, exercise a real bounded timeout,
+  verify observation-before-release ordering, and prove the timed-out dirty revision can still
+  commit later. PMSKit passed 1,403 tests across 170 suites; complete macOS and iPadOS app plans
+  passed 62/62, with Thread Sanitizer enabled on iPadOS.
+- **Runtime validation:** clean Mac, iOS Simulator, and visionOS Simulator builds passed. The clean
+  visionOS product matched the installed UUID, launched to the signed-in populated Home surface,
+  and produced no crash, assertion, or sanitizer signature in the smoke log.
+- **Explicit limitation:** five seconds bounds the persistence flush wait, not synchronous
+  diagnostic-sink latency. More importantly, a write already hung inside an ordinary synchronous
+  mutation can prevent the in-memory gate from draining before this barrier begins. Making that
+  end-to-end lifecycle literally bounded requires a separately reviewed nonblocking mutation/ticket
+  migration rather than disguising a large download-engine refactor inside this slice.
+- **Next 1A boundary:** make held-manifest remove/take results commit-aware, then resolve Emby
+  tombstone corruption/removal ordering and add explicit temp-write/replace crash seams. If those
+  require broad mutation API conversion, leave the remainder incomplete for consultation.
 
 The three-run arm64 checkpoint at rebased commit `cf21073` is recorded locally under
 `build/compile-audit/post-main-e757bb1/` (raw logs remain ignored because they contain local
