@@ -17,6 +17,24 @@ import PMSKit
 /// `URLSession` delegate can call in from a delegate queue, so writes are locked.
 final class DownloadStore: @unchecked Sendable {
 
+    struct IndexPersistence: Sendable {
+        let atomicWrite: @Sendable (Data, URL) throws -> Void
+
+        static let live = IndexPersistence { data, url in
+            try data.write(to: url, options: .atomic)
+        }
+    }
+
+    struct PersistenceTicket: Sendable, Equatable {
+        let revision: UInt64
+    }
+
+    enum PersistenceFlushResult: Sendable, Equatable {
+        case committed(revision: UInt64)
+        case failed(revision: UInt64, stage: String, errorType: String)
+        case timedOut(targetRevision: UInt64, committedRevision: UInt64)
+    }
+
     struct EmbyConvertCleanupTombstone: Codable, Sendable, Equatable, Identifiable {
         let id: UUID
         let ratingKey: String
@@ -35,7 +53,7 @@ final class DownloadStore: @unchecked Sendable {
     }
 
     /// Codable row as persisted on disk (relative path, not absolute URL).
-    private struct Row: Codable {
+    private struct Row: Codable, Sendable {
         let ratingKey: String
         let title: String
         let relativePath: String
@@ -94,10 +112,14 @@ final class DownloadStore: @unchecked Sendable {
     private let indexURL: URL                        // baseDirectory/index.json
     private let embyCleanupURL: URL                  // durable orphan-prevention queue
     private let fileManager: FileManager
+    private let indexWriter: RevisionedPersistenceWriter<[Row]>
+    private var nextPersistenceRevision: UInt64 = 0 // guarded by `lock`
 
     /// - Parameter baseDirectory: where media files + the index live. Defaults to
     ///   `Application Support/Labstream/Downloads`, created if missing.
-    init(baseDirectory: URL? = nil, fileManager: FileManager = .default) {
+    init(baseDirectory: URL? = nil,
+         fileManager: FileManager = .default,
+         indexPersistence: IndexPersistence = .live) {
         self.fileManager = fileManager
         let appSupport = (try? fileManager.url(for: .applicationSupportDirectory,
                                                 in: .userDomainMask,
@@ -108,8 +130,19 @@ final class DownloadStore: @unchecked Sendable {
             .appendingPathComponent("Labstream", isDirectory: true)
             .appendingPathComponent("Downloads", isDirectory: true)
         self.baseDirectory = dir
-        self.indexURL = dir.appendingPathComponent("index.json")
+        let indexURL = dir.appendingPathComponent("index.json")
+        self.indexURL = indexURL
         self.embyCleanupURL = dir.appendingPathComponent("emby-convert-cleanup.json")
+        self.indexWriter = RevisionedPersistenceWriter<[Row]>(
+            encode: { rows in try DownloadIndexCoding.encode(rows) },
+            commit: { data in try indexPersistence.atomicWrite(data, indexURL) },
+            failureObserver: { failure in
+                NSLog("DownloadStore: index %@ failed at revision %llu (%@)",
+                      failure.stage.rawValue,
+                      failure.revision,
+                      failure.errorType)
+            }
+        )
         try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
         // Exclude the offline cache from iCloud/device backups and give newly-created
         // auth-adjacent artifacts a protected parent directory.
@@ -1253,13 +1286,8 @@ final class DownloadStore: @unchecked Sendable {
             return (repaired.ratingKey, repaired)
         })
         if repairedSubtitleRows > 0 {
-            let snapshot = Array(rows.values)
             lock.unlock()
-            guard let data = try? DownloadIndexCoding.encode(snapshot) else {
-                lock.lock()
-                return
-            }
-            try? data.write(to: indexURL, options: .atomic)
+            persist()
             lock.lock()
         }
     }
@@ -1290,13 +1318,42 @@ final class DownloadStore: @unchecked Sendable {
         return tracks.isEmpty ? nil : tracks
     }
 
-    private func persist() {
+    @discardableResult
+    private func persist() -> PersistenceTicket {
         lock.lock()
+        nextPersistenceRevision += 1
+        let revision = nextPersistenceRevision
         let snapshot = Array(rows.values)
         lock.unlock()
-        // #135 Stage 6: write the versioned envelope so a future on-disk migration can
-        // branch on the schema version it reads back.
-        guard let data = try? DownloadIndexCoding.encode(snapshot) else { return }
-        try? data.write(to: indexURL, options: .atomic)
+        indexWriter.submit(revision: revision, snapshot: snapshot)
+        _ = indexWriter.waitSynchronouslyForOutcome(through: revision)
+        return PersistenceTicket(revision: revision)
+    }
+
+    func flushPersistence(
+        through ticket: PersistenceTicket? = nil,
+        timeout: TimeInterval
+    ) async -> PersistenceFlushResult {
+        let target: UInt64
+        if let ticket {
+            target = ticket.revision
+        } else {
+            target = lock.withLock { nextPersistenceRevision }
+        }
+        switch await indexWriter.flush(through: target, timeout: timeout) {
+        case .committed(let revision):
+            return .committed(revision: revision)
+        case .failed(let failure):
+            return .failed(
+                revision: failure.revision,
+                stage: failure.stage.rawValue,
+                errorType: failure.errorType
+            )
+        case .timedOut(let targetRevision, let committedRevision):
+            return .timedOut(
+                targetRevision: targetRevision,
+                committedRevision: committedRevision
+            )
+        }
     }
 }

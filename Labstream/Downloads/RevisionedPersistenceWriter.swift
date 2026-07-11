@@ -85,6 +85,25 @@ final class RevisionedPersistenceWriter<Snapshot: Sendable>: @unchecked Sendable
         }
     }
 
+    /// Transitional compatibility for call sites that already perform synchronous disk I/O.
+    /// This intentionally has no timeout: the old path returned only after its encode/write
+    /// attempt finished. New lifecycle boundaries should use the bounded async API instead.
+    func waitSynchronouslyForOutcome(through targetRevision: UInt64) -> FlushResult {
+        condition.lock()
+        while committedRevision < targetRevision {
+            if let failure = lastFailure,
+               failure.revision >= targetRevision,
+               !workerRunning {
+                condition.unlock()
+                return .failed(failure)
+            }
+            condition.wait()
+        }
+        let revision = committedRevision
+        condition.unlock()
+        return .committed(revision: revision)
+    }
+
     var state: State {
         condition.lock(); defer { condition.unlock() }
         return State(
