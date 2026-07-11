@@ -74,6 +74,16 @@ final class DownloadStore: @unchecked Sendable {
         case legacyResetPending
     }
 
+    enum AttemptMutationResult: Sendable, Equatable {
+        case applied
+        case noChange
+        case staleOrMissing
+        /// The guarded in-memory mutation remains authoritative and its full snapshot stays dirty,
+        /// matching the store writer's existing semantics. Callers must not create dependent
+        /// external work until a later mutation/flush proves the snapshot committed.
+        case persistenceFailed(PersistenceFlushResult)
+    }
+
     enum LegacyAttemptResetResult: Sendable, Equatable {
         case committed(DownloadAttemptKey, cleanupFailureCount: Int)
         case cleanupFailed(DownloadAttemptKey, cleanupFailureCount: Int)
@@ -695,6 +705,18 @@ final class DownloadStore: @unchecked Sendable {
     func record(for ratingKey: String) -> DownloadRecord? {
         lock.lock()
         let row = rows[ratingKey]
+        lock.unlock()
+        return row.map(hydratedRecord)
+    }
+
+    func ownsAttempt(_ key: DownloadAttemptKey) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return rows[key.ratingKey]?.attemptID == key.attemptID
+    }
+
+    func record(for key: DownloadAttemptKey) -> DownloadRecord? {
+        lock.lock()
+        let row = rows[key.ratingKey]?.attemptID == key.attemptID ? rows[key.ratingKey] : nil
         lock.unlock()
         return row.map(hydratedRecord)
     }
@@ -1591,6 +1613,35 @@ final class DownloadStore: @unchecked Sendable {
         persist()
     }
 
+    /// Attempt-conditional metadata mutation. The top-level attempt ID remains authoritative and
+    /// its rollback shadow cannot be changed by a metadata closure.
+    @discardableResult
+    func updateMetadata(
+        for key: DownloadAttemptKey,
+        mutate: (inout OfflineMetadata) -> Void
+    ) -> AttemptMutationResult {
+        lock.lock()
+        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
+              !row.legacyResetPending, var metadata = row.metadata else {
+            lock.unlock()
+            return .staleOrMissing
+        }
+        let previous = metadata
+        mutate(&metadata)
+        metadata.downloadAttemptID = key.attemptID.rawValue
+        guard metadata != previous else {
+            lock.unlock()
+            return .noChange
+        }
+        row.metadata = metadata
+        rows[key.ratingKey] = row
+        sideAssetHydrationCache.removeValue(forKey: key.ratingKey)
+        lock.unlock()
+        let persistence = persist()
+        return persistence.result.committed(through: persistence.ticket)
+            ? .applied : .persistenceFailed(persistence.result)
+    }
+
     /// Remove only the short-lived Sync-list crash-window markers. The server job id and File
     /// source snapshot have independent lifetimes and must remain available for polling/pickup.
     func clearEmbyConvertRecovery(ratingKey: String) {
@@ -1648,6 +1699,50 @@ final class DownloadStore: @unchecked Sendable {
         if shouldPersist { persist() }
     }
 
+    @discardableResult
+    func updateProgress(
+        for key: DownloadAttemptKey,
+        bytes: Int,
+        progress: Double
+    ) -> AttemptMutationResult {
+        lock.lock()
+        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
+              !row.legacyResetPending else {
+            lock.unlock()
+            return .staleOrMissing
+        }
+        let previousStatus = row.status
+        let statusChanged = row.status == .queued || row.status == .paused || row.status == .failed
+        if statusChanged { row.status = .downloading }
+        let changed = row.bytes != bytes || row.progress != progress || statusChanged
+        guard changed else {
+            lock.unlock()
+            return .noChange
+        }
+        row.bytes = bytes
+        row.progress = progress
+        rows[key.ratingKey] = row
+        let now = Date()
+        let shouldPersist = statusChanged
+            || now.timeIntervalSince(lastProgressPersist) >= Self.progressPersistInterval
+        if shouldPersist { lastProgressPersist = now }
+        lock.unlock()
+        if statusChanged {
+            AppDiagnostics.record(.downloads, "downloads.status_transition", fields: [
+                "download_id": .identifier(key.ratingKey),
+                "from": .label(previousStatus.rawValue),
+                "to": .label(DownloadStatus.downloading.rawValue),
+                "bytes_exact": .int(bytes),
+                "progress_percent": .int(Int((progress * 100).rounded(.down))),
+                "source": .label("progress_attempt"),
+            ])
+        }
+        guard shouldPersist else { return .applied }
+        let persistence = persist()
+        return persistence.result.committed(through: persistence.ticket)
+            ? .applied : .persistenceFailed(persistence.result)
+    }
+
     /// Set the explicit lifecycle status for a row (D2). No-op if the row is gone.
     func setStatus(ratingKey: String, _ status: DownloadStatus) {
         lock.lock()
@@ -1669,6 +1764,40 @@ final class DownloadStore: @unchecked Sendable {
             ])
         }
         persist()
+    }
+
+    @discardableResult
+    func setStatus(
+        for key: DownloadAttemptKey,
+        _ status: DownloadStatus
+    ) -> AttemptMutationResult {
+        lock.lock()
+        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
+              !row.legacyResetPending else {
+            lock.unlock()
+            return .staleOrMissing
+        }
+        let previousStatus = row.status
+        guard previousStatus != status else {
+            lock.unlock()
+            return .noChange
+        }
+        let bytes = row.bytes
+        let progress = row.progress
+        row.status = status
+        rows[key.ratingKey] = row
+        lock.unlock()
+        AppDiagnostics.record(.downloads, "downloads.status_transition", fields: [
+            "download_id": .identifier(key.ratingKey),
+            "from": .label(previousStatus.rawValue),
+            "to": .label(status.rawValue),
+            "bytes_exact": .int(bytes),
+            "progress_percent": .int(Int((progress * 100).rounded(.down))),
+            "source": .label("setStatus_attempt"),
+        ])
+        let persistence = persist()
+        return persistence.result.committed(through: persistence.ticket)
+            ? .applied : .persistenceFailed(persistence.result)
     }
 
     /// Promote a previously byte-complete but probe-inconclusive row once a later validation or
@@ -1852,6 +1981,49 @@ final class DownloadStore: @unchecked Sendable {
             }
         }
         persist()
+    }
+
+    /// Attempt-conditional removal. A stale finalizer/delete for attempt A cannot remove attempt B
+    /// or any of B's files, even when both attempts reuse the same rating key and stable paths.
+    @discardableResult
+    func remove(for key: DownloadAttemptKey) -> AttemptMutationResult {
+        lock.lock()
+        guard let existing = rows[key.ratingKey], existing.attemptID == key.attemptID,
+              !existing.legacyResetPending else {
+            lock.unlock()
+            return .staleOrMissing
+        }
+        // Keep ownership and stable-path deletion in one critical section. If the row were removed
+        // and the lock released first, attempt B could seed/write the same stable paths before A's
+        // delayed cleanup ran, letting A delete B's file despite the initial ID check.
+        deleteArtifacts(for: existing)
+        _ = rows.removeValue(forKey: key.ratingKey)
+        sideAssetHydrationCache.removeValue(forKey: key.ratingKey)
+        lock.unlock()
+        let persistence = persist()
+        return persistence.result.committed(through: persistence.ticket)
+            ? .applied : .persistenceFailed(persistence.result)
+    }
+
+    private func deleteArtifacts(for row: Row) {
+        let url = baseDirectory.appendingPathComponent(row.relativePath)
+        do { try fileManager.removeItem(at: url) }
+        catch where fileManager.fileExists(atPath: url.path) {
+            NSLog("DownloadStore: failed to delete media for %@ (%@); local file orphaned",
+                  row.ratingKey, DiagnosticRedactor.safeErrorSummary(error))
+        } catch {}
+        var assets = [row.metadata?.posterRelativePath,
+                      row.metadata?.plexBIFRelativePath,
+                      row.metadata?.jellyfinTrickPlayPlaylistRelativePath,
+                      row.metadata?.resumeDataRelativePath].compactMap { $0 }
+        assets.append(contentsOf: row.metadata?.jellyfinTrickPlayTileRelativePaths ?? [])
+        assets.append(contentsOf: Array(
+            row.metadata?.chapterImageRelativePaths?.values ?? Dictionary<Int, String>().values))
+        assets.append(contentsOf: row.metadata?.offlineTextSubtitles?.map(\.relativePath) ?? [])
+        assets.append(contentsOf: row.metadata?.heldRangeSegments?.map(\.relativePath) ?? [])
+        for asset in assets where Self.isSafeOneLevelRelativePath(asset) {
+            try? fileManager.removeItem(at: baseDirectory.appendingPathComponent(asset))
+        }
     }
 
     // MARK: - Persistence
