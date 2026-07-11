@@ -346,14 +346,25 @@ extension DownloadManager {
             return
         }
 
-        store.upsert(DownloadRecord(ratingKey: ratingKey, attemptID: startAttempt.attemptID,
-                                    title: item.title,
-                                    localURL: destination, bytes: 0, progress: 0,
-                                    metadata: metadata))
+        guard persistEmbyAttemptRecord(
+            DownloadRecord(ratingKey: ratingKey, attemptID: startAttempt.attemptID,
+                           title: item.title,
+                           localURL: destination, bytes: 0, progress: 0,
+                           metadata: metadata),
+            for: attemptKey, context: "resolved_destination") else {
+            releaseInFlight(ratingKey: ratingKey)
+            return
+        }
         // #84: the authoritative media-source id comes from the PlaybackInfo decision; persist it
         // (replacing the pre-decision hint) so a retry can re-issue without re-deriving.
         if !decision.mediaSourceId.isEmpty, decision.mediaSourceId != embyMediaSourceHint {
-            store.setMediaSourceID(ratingKey: ratingKey, decision.mediaSourceId)
+            guard updateEmbyAttemptMetadata(
+                for: attemptKey, context: "media_source", mutate: {
+                    $0.mediaSourceID = decision.mediaSourceId
+                }) else {
+                releaseInFlight(ratingKey: ratingKey)
+                return
+            }
         }
         refreshRecords()
         // #102: cache the poster locally (best-effort) so artwork shows offline. The Emby image
@@ -410,7 +421,13 @@ extension DownloadManager {
                 // encoder down on next launch.
                 transcodeSourcedDownloads.insert(ratingKey)
                 embyPlaySessionByRatingKey[ratingKey] = decision.playSessionId
-                store.setPlaySessionID(ratingKey: ratingKey, decision.playSessionId)
+                guard updateEmbyAttemptMetadata(
+                    for: attemptKey, context: "play_session", mutate: {
+                        $0.playSessionID = decision.playSessionId
+                    }) else {
+                    throw DownloadError.transferFailed(
+                        "Download ownership changed before transfer start.")
+                }
             }
             try session.start(ratingKey: ratingKey,
                               with: request,
@@ -447,6 +464,50 @@ extension DownloadManager {
                 "download_id": .identifier(key.ratingKey),
                 "context": .label(context),
                 "failure": .label(String(describing: failure)),
+            ])
+            return false
+        }
+    }
+
+    @discardableResult
+    func updateEmbyAttemptMetadata(
+        for key: DownloadAttemptKey,
+        context: String,
+        mutate: (inout OfflineMetadata) -> Void
+    ) -> Bool {
+        switch store.updateMetadata(for: key, mutate: mutate) {
+        case .applied, .noChange:
+            return true
+        case .staleOrMissing:
+            recordDownloadDiagnostic("downloads.emby_metadata_owner_stale", fields: [
+                "download_id": .identifier(key.ratingKey), "context": .label(context),
+            ])
+            return false
+        case .persistenceFailed:
+            recordDownloadDiagnostic("downloads.emby_metadata_persist_failed", fields: [
+                "download_id": .identifier(key.ratingKey), "context": .label(context),
+            ])
+            return false
+        }
+    }
+
+    @discardableResult
+    func persistEmbyAttemptRecord(
+        _ record: DownloadRecord,
+        for key: DownloadAttemptKey,
+        context: String
+    ) -> Bool {
+        switch store.createAttemptOwnedRecord(record, attemptID: key.attemptID) {
+        case .committed:
+            return true
+        case .rejectedOwnership:
+            recordDownloadDiagnostic("downloads.emby_record_owner_stale", fields: [
+                "download_id": .identifier(key.ratingKey), "context": .label(context),
+            ])
+            return false
+        case .failed:
+            recordDownloadDiagnostic("downloads.emby_record_persist_failed", fields: [
+                "download_id": .identifier(key.ratingKey), "context": .label(context),
             ])
             return false
         }
