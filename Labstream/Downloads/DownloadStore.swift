@@ -35,6 +35,11 @@ final class DownloadStore: @unchecked Sendable {
         case timedOut(targetRevision: UInt64, committedRevision: UInt64)
     }
 
+    private struct PersistenceAttempt {
+        let ticket: PersistenceTicket
+        let result: PersistenceFlushResult
+    }
+
     struct EmbyConvertCleanupTombstone: Codable, Sendable, Equatable, Identifiable {
         let id: UUID
         let ratingKey: String
@@ -285,18 +290,19 @@ final class DownloadStore: @unchecked Sendable {
         return baseDirectory.appendingPathComponent(relativePath)
     }
 
-    /// Atomically replace the manifest entry at an offset. The caller installs the new entry in
-    /// its in-memory assembly map before deleting the returned previous file.
+    /// Replace the manifest entry at an offset. `persisted` means the in-memory row accepted the
+    /// replacement; only `committed` permits the caller to delete the previous body. A failed
+    /// attempt remains dirty and may commit on a later mutation/flush.
     @discardableResult
     func persistHeldRangeSegment(ratingKey: String,
                                  segment: OfflineHeldRangeSegment)
-        -> (persisted: Bool, previous: OfflineHeldRangeSegment?) {
+        -> (persisted: Bool, committed: Bool, previous: OfflineHeldRangeSegment?) {
         guard Self.isSafeOneLevelRelativePath(segment.relativePath),
-              segment.offset >= 0, segment.length > 0 else { return (false, nil) }
+              segment.offset >= 0, segment.length > 0 else { return (false, false, nil) }
         lock.lock()
         guard var row = rows[ratingKey], var metadata = row.metadata else {
             lock.unlock()
-            return (false, nil)
+            return (false, false, nil)
         }
         var segments = metadata.heldRangeSegments ?? []
         let previous = segments.first { $0.offset == segment.offset }
@@ -306,8 +312,14 @@ final class DownloadStore: @unchecked Sendable {
         row.metadata = metadata
         rows[ratingKey] = row
         lock.unlock()
-        persist()
-        return (true, previous)
+        let attempt = persist()
+        let committed: Bool
+        if case .committed(let revision) = attempt.result {
+            committed = revision >= attempt.ticket.revision
+        } else {
+            committed = false
+        }
+        return (true, committed, previous)
     }
 
     @discardableResult
@@ -1319,15 +1331,18 @@ final class DownloadStore: @unchecked Sendable {
     }
 
     @discardableResult
-    private func persist() -> PersistenceTicket {
+    private func persist() -> PersistenceAttempt {
         lock.lock()
         nextPersistenceRevision += 1
         let revision = nextPersistenceRevision
         let snapshot = Array(rows.values)
         lock.unlock()
         indexWriter.submit(revision: revision, snapshot: snapshot)
-        _ = indexWriter.waitSynchronouslyForOutcome(through: revision)
-        return PersistenceTicket(revision: revision)
+        let result = indexWriter.waitSynchronouslyForOutcome(through: revision)
+        return PersistenceAttempt(
+            ticket: PersistenceTicket(revision: revision),
+            result: Self.mapPersistenceResult(result)
+        )
     }
 
     func flushPersistence(
@@ -1340,7 +1355,15 @@ final class DownloadStore: @unchecked Sendable {
         } else {
             target = lock.withLock { nextPersistenceRevision }
         }
-        switch await indexWriter.flush(through: target, timeout: timeout) {
+        return Self.mapPersistenceResult(
+            await indexWriter.flush(through: target, timeout: timeout)
+        )
+    }
+
+    private static func mapPersistenceResult(
+        _ result: RevisionedPersistenceWriter<[Row]>.FlushResult
+    ) -> PersistenceFlushResult {
+        switch result {
         case .committed(let revision):
             return .committed(revision: revision)
         case .failed(let failure):

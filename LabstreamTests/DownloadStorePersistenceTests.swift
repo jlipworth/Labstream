@@ -109,6 +109,110 @@ struct DownloadStorePersistenceTests {
         }
     }
 
+    @Test func failedHeldManifestReplacementRetainsBothBodiesUntilLaterCommit() throws {
+        try withTemporaryDirectory { directory in
+            let ratingKey = "plex:held-replacement"
+            let oldManifest = OfflineHeldRangeSegment(
+                offset: 64,
+                length: 64,
+                relativePath: "old-held-body"
+            )
+            let newManifest = OfflineHeldRangeSegment(
+                offset: 64,
+                length: 64,
+                relativePath: "new-held-body"
+            )
+            let oldBody = directory.appendingPathComponent(oldManifest.relativePath)
+            let newBody = directory.appendingPathComponent(newManifest.relativePath)
+            try Data(repeating: 1, count: oldManifest.length).write(to: oldBody)
+            try Data(repeating: 2, count: newManifest.length).write(to: newBody)
+
+            let initial = DownloadStore(baseDirectory: directory)
+            initial.upsert(makeRecord(
+                ratingKey: ratingKey,
+                title: "Held Replacement",
+                directory: directory,
+                bytes: 0,
+                metadata: OfflineMetadata(
+                    ratingKey: ratingKey,
+                    title: "Held Replacement",
+                    type: "movie",
+                    resumeMode: .staticByteRange,
+                    heldRangeSegments: [oldManifest]
+                )
+            ))
+
+            let writes = AtomicWriteHarness(failFirstWrite: true)
+            let replacing = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init { data, url in try writes.write(data, to: url) }
+            )
+            let result = replacing.persistHeldRangeSegment(
+                ratingKey: ratingKey,
+                segment: newManifest
+            )
+
+            #expect(result.persisted)
+            #expect(!result.committed)
+            #expect(result.previous == oldManifest)
+            #expect(FileManager.default.fileExists(atPath: oldBody.path))
+            #expect(FileManager.default.fileExists(atPath: newBody.path))
+            #expect(DownloadStore(baseDirectory: directory)
+                .records.first?.metadata?.heldRangeSegments == [oldManifest])
+
+            replacing.setStatus(ratingKey: ratingKey, .downloading)
+            #expect(writes.attemptCount == 2)
+            #expect(DownloadStore(baseDirectory: directory)
+                .records.first?.metadata?.heldRangeSegments == [newManifest])
+            #expect(FileManager.default.fileExists(atPath: oldBody.path))
+            #expect(FileManager.default.fileExists(atPath: newBody.path))
+        }
+    }
+
+    @Test func zeroByteStaticPauseRemainsRestartableAcrossStoreReconcile() throws {
+        try withTemporaryDirectory { directory in
+            let staticKey = "plex:static-zero"
+            let liveKey = "jellyfin:live-zero"
+            let store = DownloadStore(baseDirectory: directory)
+            store.upsert(makeRecord(
+                ratingKey: staticKey,
+                title: "Static Zero",
+                directory: directory,
+                bytes: 0,
+                metadata: OfflineMetadata(
+                    ratingKey: staticKey,
+                    title: "Static Zero",
+                    type: "movie",
+                    resumeMode: .staticByteRange
+                )
+            ))
+            store.upsert(makeRecord(
+                ratingKey: liveKey,
+                title: "Live Zero",
+                directory: directory,
+                bytes: 0,
+                metadata: OfflineMetadata(
+                    ratingKey: liveKey,
+                    title: "Live Zero",
+                    type: "movie",
+                    resumeMode: .liveForwardOnly
+                )
+            ))
+
+            let restored = DownloadStore(baseDirectory: directory)
+            restored.reconcile(
+                liveRatingKeys: [],
+                snapshotRatingKeys: [staticKey, liveKey]
+            )
+
+            #expect(restored.status(for: staticKey) == .paused)
+            #expect(restored.status(for: liveKey) == .failed)
+            let afterRelaunch = DownloadStore(baseDirectory: directory)
+            #expect(afterRelaunch.status(for: staticKey) == .paused)
+            #expect(afterRelaunch.status(for: liveKey) == .failed)
+        }
+    }
+
     @Test func subtitleRepairPersistsThroughInjectedWriter() throws {
         try withTemporaryDirectory { directory in
             let ratingKey = "plex:item-1"
