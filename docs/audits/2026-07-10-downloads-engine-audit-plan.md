@@ -780,6 +780,18 @@ probe required real advancement beyond the observed idle boundary and recent pro
 204. A full clean visionOS build, UUID-matched install, clean launch log, signed-in Home screenshot,
 and simulator shutdown also passed.
 
+### Audit execution stop point
+
+The audit/refactor's automatable scope is complete: Phases 1–6, the Phase-7 checklist deliverable,
+and every backend follow-up that could be established with local tests, simulator evidence, or the
+available live Plex/Emby servers are implemented, documented, verified, and committed. The eight
+Phase-7 rows remain deliberately **unverified**, not failed or implicitly passed: they require a
+physical headset plus controlled off-head/locked, OS-termination, network-route/token, and real
+disk-pressure actions. The user previously deferred headset collection because the hotspot cannot
+keep the Mac and headset reliably reachable. Resume from `TESTING-CHECKLIST.md`'s
+“Physical-device background and failure cells” when that external setup is available; do not reopen
+the engine refactor merely because those device-evidence boxes remain unchecked.
+
 ### Deferred follow-up closed without mutation: PLEX-F5 completed optimize artifacts
 
 The read-only live Plex status probe now reports privacy-safe type-42 state distributions, raw key
