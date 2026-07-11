@@ -655,7 +655,10 @@ their relationship during the schema-v3 migration.
   `row(for:)` at 81/90/81 ms, confirming the required threshold while disproving any blanket
   sub-50 ms claim. `OptimizeRequest` emitted no warning even at 50 ms, freshly supporting its
   preferred target. Single clean observations were 15.12 s Mac, 12.59 s mobile, 14.00 s visionOS,
-  and 6.69 s PMSKit cold; they are not comparable medians.
+  and 6.69 s PMSKit cold; they are not comparable medians. A separate full-clean visionOS build at
+  `637db75` installed with a matching UUID, launched through the signed-in connection screen to a
+  populated Home surface, and produced no fatal/assertion/sanitizer/crash match. The simulator was
+  shut down immediately afterward.
 - **Validation:** PMSKit passed 1,404 tests across 170 suites. Complete macOS and iPadOS app plans
   passed 62/62, with Thread Sanitizer enabled on iPadOS. A clean visionOS build matched the installed
   UUID, launched to the signed-in populated Home surface, and produced no crash/assertion/sanitizer
