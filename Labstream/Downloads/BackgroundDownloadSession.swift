@@ -45,6 +45,8 @@ struct BackgroundDownloadSessionDiagnosticSnapshot: Sendable {
 /// updates via `onChange`. The store itself is internally locked.
 final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
 
+    private static let backgroundCompletionPersistenceTimeout: TimeInterval = 5
+
     /// The fixed background-session identifier. Shared with the app delegate so it can
     /// route `handleEventsForBackgroundURLSession` to THIS session's completion handler.
     #if os(macOS)
@@ -546,11 +548,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lock.lock()
         let identifiers = backgroundCompletionGate.endOperation()
         lock.unlock()
-        for identifier in identifiers {
-            Task { @MainActor in
-                BackgroundDownloadCompletionRegistry.shared.fireCompletion(for: identifier)
-            }
-        }
+        flushPersistenceThenFireBackgroundCompletions(identifiers)
     }
 
     func noteBackgroundCompletionHandlerStored(identifier: String) {
@@ -563,10 +561,46 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lock.lock()
         let identifiers = backgroundCompletionGate.finishEvents(identifier: identifier)
         lock.unlock()
-        for identifier in identifiers {
-            Task { @MainActor in
-                BackgroundDownloadCompletionRegistry.shared.fireCompletion(for: identifier)
-            }
+        flushPersistenceThenFireBackgroundCompletions(identifiers)
+    }
+
+    private func flushPersistenceThenFireBackgroundCompletions(_ identifiers: [String]) {
+        guard !identifiers.isEmpty else { return }
+        let ticket = store.currentPersistenceTicket()
+        let store = self.store
+        Task {
+            await BackgroundCompletionPersistenceBarrier.flushThenRelease(
+                identifiers: identifiers,
+                flush: {
+                    await store.flushPersistence(
+                        through: ticket,
+                        timeout: Self.backgroundCompletionPersistenceTimeout
+                    )
+                },
+                observe: { result in
+                    let outcome: String
+                    let revision: UInt64
+                    switch result {
+                    case .committed(let committedRevision):
+                        outcome = "committed"
+                        revision = committedRevision
+                    case .failed(let failedRevision, _, _):
+                        outcome = "failed"
+                        revision = failedRevision
+                    case .timedOut(let targetRevision, _):
+                        outcome = "timed_out"
+                        revision = targetRevision
+                    }
+                    AppDiagnostics.record(.downloads, "downloads.background_completion_persistence", fields: [
+                        "outcome": .label(outcome),
+                        "revision": .int(Int(clamping: revision)),
+                        "handler_count": .int(identifiers.count),
+                    ])
+                },
+                release: { identifier in
+                    BackgroundDownloadCompletionRegistry.shared.fireCompletion(for: identifier)
+                }
+            )
         }
     }
 

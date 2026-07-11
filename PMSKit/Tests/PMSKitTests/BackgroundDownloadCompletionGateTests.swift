@@ -60,4 +60,24 @@ struct BackgroundDownloadCompletionGateTests {
         #expect(gate.endOperation().isEmpty)
         #expect(gate.pendingOperationCount == 0)
     }
+
+    @Test("Finish without a stored handler never manufactures a completion")
+    func finishWithoutStoreIsIgnored() {
+        var gate = BackgroundDownloadCompletionGate()
+        #expect(gate.finishEvents(identifier: "session").isEmpty)
+        #expect(!gate.hasPendingHandler)
+    }
+
+    @Test("Duplicate finish cannot replay into a later handler generation")
+    func duplicateFinishDoesNotReplay() {
+        var gate = BackgroundDownloadCompletionGate()
+        gate.storeHandler(identifier: "session")
+        #expect(gate.finishEvents(identifier: "session") == ["session"])
+        #expect(gate.finishEvents(identifier: "session").isEmpty)
+
+        gate.storeHandler(identifier: "session")
+        #expect(gate.hasPendingHandler)
+        #expect(gate.finishEvents(identifier: "session") == ["session"])
+        #expect(!gate.hasPendingHandler)
+    }
 }
