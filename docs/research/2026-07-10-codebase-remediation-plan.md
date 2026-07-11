@@ -30,7 +30,7 @@ Current status at this checkpoint:
 | 1C | Partial | Main now has a final-verdict recheck, attempt-matched held bodies/orphan sweeping, and an Emby ambiguous-create tombstone. A work registry, attempt-scoped finalizing, side-asset staging/ownership, broad post-await guards, and compare-and-clear play-session cleanup remain. |
 | 1D–1F | Complete | Auth/secure-storage, system-media ownership, and player lifecycle generations survived the rebase unchanged. iPad/Mac physical ownership and lifecycle checks passed; iOS TSAN tests remain green. |
 | 2A | Complete | Plex photo coverage, modern Mac decoding, the effective MediaSession clock, and `PERF-01` are complete. The regenerated inventory found and mechanically removed exactly the four original definition-only helpers (`2fb3d00`, `5a5f050`, `cf1f919`, `6bff1c8`); no production deprecation remains. |
-| 2B | Open / higher priority | `store.records` uses grew from 38 to 40 and single-row `first`/`contains` uses from 24 to 26. Only `status(for:)` is narrow today. |
+| 2B | Complete | Locked record/metadata/duration/presence accessors and the existing ownership accessor now serve every single-key store read (`4fb60a6`, `9fb7b56`, `6c16df5`, `36b992b`). Exactly 11 intentional batch/UI snapshots remain. |
 | 2C | Complete | Latest-rail execution is bounded and order preserving. |
 | 2D | Complete | Optimizer flexible-ID decoding is explicit and the Offline root view is split at behavior-neutral opaque boundaries (`cc516ea`, `43ba92b`). Both cliffs disappeared from the compile audit; extracted Offline boundaries are below 50 ms on all app platforms. |
 | 3–4 | Open | Incoming main did not change the MediaBrowser value/request seams or Plex browse execution. Canonical backend work now spans a larger audited download-policy surface. |
@@ -294,6 +294,32 @@ their relationship during the schema-v3 migration.
   reached the signed-in populated Home surface, and emitted no crash, assertion, or sanitizer
   signature. The deletions change no reachable behavior, schema, persistence, or download state
   transition.
+
+#### 2026-07-11 — Phase 2B narrow Offline lookups
+
+- **Status:** complete.
+- **Commits:** `4fb60a6` adds the narrow accessors and regression/benchmark fixture;
+  `9fb7b56`, `6c16df5`, and `36b992b` mechanically migrate scalar, manager, and
+  background-session reads in separate review boundaries.
+- **Behavior boundary:** `record(for:)` copies one value under the existing store lock and hydrates
+  it only after unlocking through the same helper as `records`. Metadata, duration, presence,
+  status, keys, and the existing attempt-ownership read remain direct locked value lookups. There
+  is no schema, persistence, mutation, state-machine, task-ownership, or cache-invalidation change.
+- **Static evidence:** the current app corpus has zero `store.records.first`/`contains` single-key
+  scans. The 11 remaining `store.records` reads are intentional full-library restore, recovery,
+  refresh, or UI publication snapshots. Independent review found the keyed substitutions
+  semantically equivalent and found no new lock inversion, deadlock, or cache race.
+- **Operation evidence:** a cold keyed lookup in a 1,000-row fixture stats only its one target
+  poster; metadata/duration/presence/attempt reads stat no file. Rich, legacy, and missing rows are
+  equal to the former full-snapshot lookup behavior.
+- **Benchmark:** 31-iteration debug medians on the arm64 Mac were 6.7 µs versus 136.8 µs at 10
+  rows, 7.2 µs versus 2.45 ms at 100 rows, and 6.5 µs versus 22.78 ms at 1,000 rows. The narrow
+  path remains approximately constant while the former hydrate/sort/filter path grows with the
+  library (roughly 20×, 341×, and 3,504× slower respectively in this fixture).
+- **Validation:** the complete clean macOS and iPadOS plans passed 65/65, with Thread Sanitizer
+  enabled on iPadOS. PMSKit passed 1,404 tests across 170 suites. Clean macOS, iOS Simulator, and
+  visionOS builds passed; the visionOS product matched the installed UUID, stayed alive, reached
+  the signed-in populated Home surface, and emitted no crash, assertion, or sanitizer signature.
 
 The three-run arm64 checkpoint at rebased commit `cf21073` is recorded locally under
 `build/compile-audit/post-main-e757bb1/` (raw logs remain ignored because they contain local
