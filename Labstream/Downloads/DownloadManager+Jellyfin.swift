@@ -39,6 +39,8 @@ extension DownloadManager {
         guard let startAttempt = acquireStartAttempt(ratingKey: ratingKey,
                                                      backend: "Jellyfin",
                                                      allowReplacingExistingActiveRow: allowReplacingExistingActiveRow) else { return }
+        let attemptKey = DownloadAttemptKey(ratingKey: ratingKey,
+                                            attemptID: startAttempt.attemptID)
         lastError[ratingKey] = nil
         // No `defer { activeJobs.remove }` — same in-flight-lifetime fix as the Plex path:
         // `session.start` only kicks off the transfer, so protection is released terminally
@@ -111,7 +113,7 @@ extension DownloadManager {
                 // alone would collapse to ".mp4" and abandon an in-progress non-MP4 partial (its
                 // checkpoint reads 0 against the new destination). The existing ORIGINAL-lane row's
                 // on-disk extension is authoritative for what this transfer already wrote.
-                let existingOriginalPath = store.record(for: ratingKey).flatMap { record in
+                let existingOriginalPath = store.record(for: attemptKey).flatMap { record in
                     record.metadata?.resolvedDownloadLane() == .original
                         ? record.localURL.lastPathComponent
                         : nil
@@ -282,6 +284,14 @@ extension DownloadManager {
                 return
             }
         } catch {
+            guard store.ownsAttempt(attemptKey) else {
+                jellyfinPlaySessionByRatingKey.removeValue(forKey: ratingKey)
+                stopSupersededMediaBrowserEncoder(ratingKey: ratingKey,
+                                                  playSessionID: mintedPlaySessionId,
+                                                  backendKind: .jellyfin,
+                                                  backendSession: backendSession)
+                return
+            }
             recordDownloadDiagnostic("downloads.start_failed", fields: [
                 "download_id": .identifier(ratingKey),
                 "backend": .label("Jellyfin"),
@@ -289,21 +299,48 @@ extension DownloadManager {
             ])
             lastError[ratingKey] = .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
-            store.setStatus(ratingKey: ratingKey, .failed)
+            _ = store.setStatus(for: attemptKey, .failed)
             clearStaticRangePendingResume(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
             refreshRecords()
             return
         }
 
-        store.upsert(DownloadRecord(ratingKey: ratingKey, attemptID: startAttempt.attemptID,
-                                    title: item.title,
-                                    localURL: destination, bytes: 0, progress: 0,
-                                    metadata: metadata))
+        let publishResult = store.createAttemptOwnedRecord(
+            DownloadRecord(ratingKey: ratingKey, attemptID: startAttempt.attemptID,
+                           title: item.title, localURL: destination,
+                           bytes: 0, progress: 0, metadata: metadata),
+            attemptID: startAttempt.attemptID)
+        guard case .committed(let publishedKey) = publishResult,
+              publishedKey == attemptKey else {
+            jellyfinPlaySessionByRatingKey.removeValue(forKey: ratingKey)
+            stopSupersededMediaBrowserEncoder(ratingKey: ratingKey,
+                                              playSessionID: mintedPlaySessionId,
+                                              backendKind: .jellyfin,
+                                              backendSession: backendSession)
+            if store.ownsAttempt(attemptKey) {
+                _ = store.setStatus(for: attemptKey, .failed)
+                releaseInFlight(ratingKey: ratingKey)
+            }
+            return
+        }
         // #84: persist the minted PlaySessionId onto the now-seeded row so a hard app kill can
         // still tear the encoder down on next launch (was in-memory only).
         if let mintedPlaySessionId {
-            store.setPlaySessionID(ratingKey: ratingKey, mintedPlaySessionId)
+            guard jellyfinMutationAccepted(
+                store.setPlaySessionID(for: attemptKey, mintedPlaySessionId),
+                key: attemptKey, phase: "play_session") else {
+                jellyfinPlaySessionByRatingKey.removeValue(forKey: ratingKey)
+                stopSupersededMediaBrowserEncoder(ratingKey: ratingKey,
+                                                  playSessionID: mintedPlaySessionId,
+                                                  backendKind: .jellyfin,
+                                                  backendSession: backendSession)
+                if store.ownsAttempt(attemptKey) {
+                    _ = store.setStatus(for: attemptKey, .failed)
+                    releaseInFlight(ratingKey: ratingKey)
+                }
+                return
+            }
             if let mediaSourceID = resolvedJellyfinMediaSourceID,
                let userID = backendSession.userID, !userID.isEmpty {
                 startJellyfinDownloadKeepalive(ratingKey: ratingKey,
@@ -317,12 +354,20 @@ extension DownloadManager {
         }
         if let resolvedJellyfinMediaSourceID,
            resolvedJellyfinMediaSourceID != jellyfinMediaSourceID {
-            store.setMediaSourceID(ratingKey: ratingKey, resolvedJellyfinMediaSourceID)
+            guard jellyfinMutationAccepted(
+                store.updateMetadata(for: attemptKey) {
+                    $0.mediaSourceID = resolvedJellyfinMediaSourceID
+                }, key: attemptKey, phase: "media_source") else {
+                if store.ownsAttempt(attemptKey) {
+                    _ = store.setStatus(for: attemptKey, .failed)
+                    releaseInFlight(ratingKey: ratingKey)
+                }
+                return
+            }
         }
         refreshRecords()
         // #102: cache the poster locally (best-effort) so artwork shows offline. Unlike the
         // Plex lane this MUST use the authenticated MediaBrowser image request.
-        let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: startAttempt.attemptID)
         cacheJellyfinPoster(for: attemptKey, item: item, server: server,
                             token: token, identity: identity)
         cacheJellyfinTrickPlay(for: attemptKey, itemId: itemId, mediaSourceId: resolvedJellyfinMediaSourceID,
@@ -340,6 +385,7 @@ extension DownloadManager {
             expectedBytes: expectedBytes,
             releaseInFlightOnFailure: true
         )) {
+            guard store.ownsAttempt(attemptKey) else { throw CancellationError() }
             // A Jellyfin `.optimize`/`.optimizeCompatible` download streams the file directly from
             // the transcoder/remuxer — there is no separate "render then static download" phase, so
             // the byte rate is encoder-gated and the stream is forward-only (not range-resumable).
@@ -354,6 +400,21 @@ extension DownloadManager {
                               expectedBytes: expectedBytes,
                               byteRangeCheckpoint: transferRoute.usesByteRangeCheckpoint,
                               resetRangeRestartCounters: !consumeRangeRestartCounterPreservation(ratingKey: ratingKey))
+        }
+    }
+
+    private func jellyfinMutationAccepted(_ result: DownloadStore.AttemptMutationResult,
+                                           key: DownloadAttemptKey,
+                                           phase: String) -> Bool {
+        switch result {
+        case .applied, .noChange:
+            return true
+        case .staleOrMissing, .persistenceFailed:
+            recordDownloadDiagnostic("downloads.jellyfin_attempt_mutation_rejected", fields: [
+                "download_id": .identifier(key.ratingKey),
+                "phase": .label(phase),
+            ])
+            return false
         }
     }
 

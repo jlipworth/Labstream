@@ -146,14 +146,15 @@ extension DownloadManager {
     func triggerConvertAndDownload(item: MediaItem, targetName: String,
                                            metadata: OfflineMetadata,
                                            session: BackendSession,
+                                           attemptKey storeAttemptKey: DownloadAttemptKey,
                                            audioStreamIndex: Int? = nil) async {
         let itemId = item.ratingKey
-        let ratingKey = DownloadRecordIdentity.recordKey(for: itemId, backend: .emby)
+        let ratingKey = storeAttemptKey.ratingKey
         let server = session.baseURL
         let token = session.token
         let identity = appModel.identity.emby
         guard let userId = session.userID else {
-            failEmbyConvert(ratingKey: ratingKey, .notAuthenticated)
+            failEmbyConvert(for: storeAttemptKey, .notAuthenticated)
             return
         }
         let attemptID = beginEmbyConvertAttempt(ratingKey: ratingKey)
@@ -306,7 +307,7 @@ extension DownloadManager {
                 "phase": .label("baseline"),
                 "error": .error(error),
             ])
-            failEmbyConvert(ratingKey: ratingKey,
+            failEmbyConvert(for: storeAttemptKey,
                             (error as? DownloadError) ?? .transferFailed(
                                 DiagnosticRedactor.safeUserFacingErrorMessage(error,
                                                                               operation: "Transfer")))
@@ -383,7 +384,7 @@ extension DownloadManager {
                 httpStatusCode: createHTTPStatus) == .clearRecovery {
                 store.clearEmbyConvertRecovery(ratingKey: ratingKey)
             }
-            failEmbyConvert(ratingKey: ratingKey,
+            failEmbyConvert(for: storeAttemptKey,
                             (error as? DownloadError) ?? .transferFailed(
                                 DiagnosticRedactor.safeUserFacingErrorMessage(error,
                                                                               operation: "Transfer")))
@@ -412,6 +413,7 @@ extension DownloadManager {
                                             snapshotIds: snapshotIds, targetName: targetName,
                                             server: server, token: token, identity: identity,
                                             userId: userId, audioStreamIndex: audioStreamIndex,
+                                            attemptKey: storeAttemptKey,
                                             attemptID: attemptID)
     }
 
@@ -425,7 +427,9 @@ extension DownloadManager {
                                         snapshotIds: Set<String>, targetName: String,
                                         server: URL, token: String,
                                         identity: EmbyClientIdentity, userId: String,
-                                        audioStreamIndex: Int?, attemptID: UUID) async {
+                                        audioStreamIndex: Int?,
+                                        attemptKey storeAttemptKey: DownloadAttemptKey,
+                                        attemptID: UUID) async {
         let list: EmbyConvertJobList
         do {
             let req = try EmbyConvertRequest.jobListRequest(
@@ -449,7 +453,7 @@ extension DownloadManager {
                 "phase": .label("recovery_list"),
                 "error": .error(error),
             ])
-            failEmbyConvert(ratingKey: ratingKey,
+            failEmbyConvert(for: storeAttemptKey,
                             .transferFailed("Server conversion could not be recovered safely; retry."))
             return
         }
@@ -470,7 +474,7 @@ extension DownloadManager {
                 "candidate_count": .int(matchingIDs.count),
                 "baseline_count": .int(baselineJobIDs.count),
             ])
-            failEmbyConvert(ratingKey: ratingKey,
+            failEmbyConvert(for: storeAttemptKey,
                             .transferFailed("Server conversion could not be identified safely; retry."))
             return
         }
@@ -496,7 +500,8 @@ extension DownloadManager {
         await pollAndDownloadEmbyConvertJob(
             item: item, ratingKey: ratingKey, jobId: jobId, snapshotIds: snapshotIds,
             targetName: targetName, server: server, token: token, identity: identity,
-            userId: userId, audioStreamIndex: audioStreamIndex, attemptID: attemptID)
+            userId: userId, audioStreamIndex: audioStreamIndex,
+            attemptKey: storeAttemptKey, attemptID: attemptID)
     }
 
     /// Poll an Emby convert job to a terminal state, surfacing `Progress` through the optimize
@@ -507,6 +512,7 @@ extension DownloadManager {
                                                server: URL, token: String,
                                                identity: EmbyClientIdentity, userId: String,
                                                audioStreamIndex: Int? = nil,
+                                               attemptKey storeAttemptKey: DownloadAttemptKey,
                                                attemptID: UUID) async {
         // Relaunch/resume recovery: the Sync job can be effectively done (or even no longer useful
         // to poll) while Emby has already exposed the converted MP4 as a File MediaSource. Check for
@@ -595,7 +601,7 @@ extension DownloadManager {
                         if [404, 410].contains(http.statusCode) {
                             store.clearEmbyConvertJobID(ratingKey: ratingKey)
                         }
-                        failEmbyConvert(ratingKey: ratingKey,
+                        failEmbyConvert(for: storeAttemptKey,
                                         .transferFailed("Server conversion is no longer available (HTTP \(http.statusCode))."))
                         return
                     }
@@ -625,7 +631,7 @@ extension DownloadManager {
                         "phase": .label("poll_unreachable"),
                         "consecutive_failures": .int(pollHealth.consecutiveFailures),
                     ])
-                    failEmbyConvert(ratingKey: ratingKey,
+                    failEmbyConvert(for: storeAttemptKey,
                                     .transferFailed("Server conversion status stayed unreachable. Retry to continue."))
                     return
                 }
@@ -683,6 +689,7 @@ extension DownloadManager {
                                             snapshotIds: snapshotIds, targetName: targetName,
                                             server: server, token: token, identity: identity,
                                             userId: userId, audioStreamIndex: audioStreamIndex,
+                                            attemptKey: storeAttemptKey,
                                             attemptID: attemptID)
                 } else {
                     // Server-side Failed/Cancelled → fail the row (retry-only; the server job
@@ -697,7 +704,7 @@ extension DownloadManager {
                     // fresh job. A `.failed` row that keeps its id resumes POLLING on retry (the
                     // offline-recovery path), which for a terminal job would just re-fail forever.
                     store.clearEmbyConvertJobID(ratingKey: ratingKey)
-                    failEmbyConvert(ratingKey: ratingKey,
+                    failEmbyConvert(for: storeAttemptKey,
                                     .transferFailed("Server conversion \(job.status.rawValue.lowercased())."))
                 }
                 return
@@ -718,16 +725,16 @@ extension DownloadManager {
     /// keeping this helper Emby-local rather than folding both lanes into one shared finalizer.
     /// `clearOptimizeProgress`/`setStatus` are no-ops when no row/progress exists yet, so the
     /// pre-seed `notAuthenticated` site can use this too.
-    private func failEmbyConvert(ratingKey: String, _ error: DownloadError) {
-        lastError[ratingKey] = error
+    private func failEmbyConvert(for key: DownloadAttemptKey, _ error: DownloadError) {
+        lastError[key.ratingKey] = error
         // Do not blanket-clear the pre-POST baseline/fingerprint here. An ambiguous dispatched
         // POST or a zero/multiple/list-error recovery must retain ownership evidence so Relaunch/
         // Retry re-enters recovery rather than creating and orphaning another server job. The
         // definitive pre-dispatch/non-2xx create branch clears explicitly; exact adoption clears
         // atomically with persisting the recovered job id.
-        store.setStatus(ratingKey: ratingKey, .failed)
-        clearOptimizeProgress(ratingKey: ratingKey)
-        releaseInFlight(ratingKey: ratingKey)
+        guard setEmbyAttemptStatus(.failed, for: key, context: "convert_failure") else { return }
+        clearOptimizeProgress(ratingKey: key.ratingKey)
+        releaseInFlight(ratingKey: key.ratingKey)
         refreshRecords()
     }
 
@@ -764,6 +771,7 @@ extension DownloadManager {
                                    server: URL, token: String,
                                    identity: EmbyClientIdentity, userId: String,
                                    audioStreamIndex: Int?,
+                                   attemptKey storeAttemptKey: DownloadAttemptKey,
                                    attemptID: UUID) async {
         // Cancel race (entry guard): bail if the row was deleted/cancelled before we got here.
         guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
@@ -845,7 +853,7 @@ extension DownloadManager {
                 "phase": .label("no_converted_source"),
                 "source_count": .int(fileSources.count),
             ])
-            failEmbyConvert(ratingKey: ratingKey,
+            failEmbyConvert(for: storeAttemptKey,
                             .transferFailed("Converted source not found after completion."))
             return
         }

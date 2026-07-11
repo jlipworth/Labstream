@@ -2279,7 +2279,8 @@ public final class DownloadManager {
                         item: item, ratingKey: ratingKey, jobId: jobId,
                         snapshotIds: resumeSnapshot, targetName: targetName, server: server,
                         token: token, identity: identity, userId: userId,
-                        audioStreamIndex: metadata.audioStreamIndex, attemptID: attemptID)
+                        audioStreamIndex: metadata.audioStreamIndex,
+                        attemptKey: key, attemptID: attemptID)
                 }
             case .recover(let baseline, let fingerprint, let startedAt, let recoveryPhase):
                 guard EmbyConvertRecoveryPolicy.publicUserMatches(
@@ -2309,7 +2310,7 @@ public final class DownloadManager {
                         recoveryPhase: recoveryPhase, snapshotIds: resumeSnapshot,
                         targetName: targetName, server: server, token: token, identity: identity,
                         userId: userId, audioStreamIndex: metadata.audioStreamIndex,
-                        attemptID: attemptID)
+                        attemptKey: key, attemptID: attemptID)
                 }
             case .failMissingIdentity:
                 recordDownloadDiagnostic("downloads.convert_failed", fields: [
