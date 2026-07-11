@@ -35,13 +35,18 @@ public enum OptimizedVersionMatch {
                                sourceHeight: Int?) -> Bool {
         // Original-quality target: the render must land at (≈) the source height, else it's a
         // down-rezzed reuse masquerading as original.
-        if isOriginalQuality {
-            // Fail closed when either side is unknown. Treating the optional comparison as a
-            // no-op made the guard vacuous and allowed a 720p/1080p sibling to satisfy an
-            // Original-quality request whose source/result metadata omitted height.
-            guard let sourceHeight, let actualHeight = media.height else { return false }
+        if isOriginalQuality, let sourceHeight {
+            // With a known source height, fail closed on a candidate that omits height: treating
+            // the optional comparison as a no-op made the guard vacuous and allowed a 720p/1080p
+            // sibling to satisfy an Original-quality request. (An unanalyzed fresh render is
+            // re-evaluated on the next poll once ffprobe fills the height in.)
+            guard let actualHeight = media.height else { return false }
             if abs(actualHeight - sourceHeight) > 16 { return false }
         }
+        // When the SOURCE height is unknown (legacy rows persisted before `sourceMediaHeight`
+        // existed, on items whose Media omits height), the gate cannot be enforced at all — accept
+        // rather than reject every candidate forever, which turned legacy in-flight optimizes into
+        // guaranteed 24h `optimizeTimedOut` spins.
         // Treat the target resolution as a bounding box, not an exact output height. Wide
         // CinemaScope-ish sources rendered by a 1080p profile can legitimately come back as e.g.
         // 1920x802: width hits the 1080p target while height preserves aspect ratio. Reject only

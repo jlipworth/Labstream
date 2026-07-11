@@ -68,8 +68,13 @@ struct OptimizedVersionMatchTests {
                 targetDimensions: nil, targetVideoKbps: nil, isOriginalQuality: true, sourceHeight: 2160))
         #expect(OptimizedVersionMatch.matches(media: media(height: 2156),
                 targetDimensions: nil, targetVideoKbps: nil, isOriginalQuality: true, sourceHeight: 2160))
-        #expect(!OptimizedVersionMatch.matches(media: media(height: 2160),
+        // Unknown SOURCE height (legacy rows / unanalyzed items): the gate cannot be enforced, so
+        // accept — rejecting every candidate forever turned these into guaranteed 24h timeouts.
+        #expect(OptimizedVersionMatch.matches(media: media(height: 2160),
                 targetDimensions: nil, targetVideoKbps: nil, isOriginalQuality: true, sourceHeight: nil))
+        #expect(OptimizedVersionMatch.matches(media: media(height: nil),
+                targetDimensions: nil, targetVideoKbps: nil, isOriginalQuality: true, sourceHeight: nil))
+        // Known source height but heightless candidate: still fail closed (re-polled later).
         #expect(!OptimizedVersionMatch.matches(media: media(height: nil),
                 targetDimensions: nil, targetVideoKbps: nil, isOriginalQuality: true, sourceHeight: 2160))
     }
