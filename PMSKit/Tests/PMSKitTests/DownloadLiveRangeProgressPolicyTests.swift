@@ -15,6 +15,23 @@ struct DownloadLiveRangeProgressPolicyTests {
                        status: status)
     }
 
+    @Test("Closed segment accounting caps replayed task counters at planned length")
+    func capsClosedSegmentTaskCounters() {
+        let segment = 64 * 1_024 * 1_024
+        #expect(DownloadLiveRangeProgressPolicy.accountedTaskBodyBytes(
+            reportedBytes: 4_991_033_070,
+            segmentLength: segment) == segment)
+        #expect(DownloadLiveRangeProgressPolicy.accountedTaskBodyBytes(
+            reportedBytes: segment / 2,
+            segmentLength: segment) == segment / 2)
+        #expect(DownloadLiveRangeProgressPolicy.accountedTaskBodyBytes(
+            reportedBytes: 4_991_033_070,
+            segmentLength: nil) == 4_991_033_070)
+        #expect(DownloadLiveRangeProgressPolicy.accountedTaskBodyBytes(
+            reportedBytes: -1,
+            segmentLength: segment) == 0)
+    }
+
     @Test("Merging keeps live display bytes monotonic")
     func mergedSampleBytes() {
         let now = Date(timeIntervalSince1970: 1_000)

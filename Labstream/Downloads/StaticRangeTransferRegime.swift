@@ -27,12 +27,11 @@ enum StaticRangeTransferRegime {
             return bytes
         }
         #endif
-        // Device evidence on 2026-07-11 showed five resumed rows expanding to 34 simultaneous
-        // 512 MiB tasks. visionOS kept transferring off-head, but leading segments took so long
-        // to finish that gigabytes remained in nsurlsessiond temp/held files with no durable
-        // checkpoint. Smaller segments commit useful progress within minutes on a constrained
-        // path instead of making the first checkpoint depend on a half-gigabyte head task.
-        return 64 * 1024 * 1024
+        // The original device failure was excessive train DEPTH: five rows expanded to 34
+        // simultaneous tasks. Keep long-lived 512 MiB background transfers, which avoid repeatedly
+        // completing and replacing 64 MiB URLSession tasks while off-head, and bound fan-out with
+        // maxQueuedSegments below.
+        return 512 * 1024 * 1024
     }
     /// Cap on live + newly-planned segment depth per download.
     /// Two keeps one head plus one look-ahead segment active. This preserves overlap without
