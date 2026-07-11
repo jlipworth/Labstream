@@ -355,6 +355,105 @@ struct DownloadStorePersistenceTests {
         }
     }
 
+    @Test func staleAttemptCannotMutateOrRemoveReplacementAttempt() throws {
+        try withTemporaryDirectory { directory in
+            let ratingKey = "plex:attempt-isolation"
+            let attemptA = DownloadAttemptID(rawValue: "attempt-A")!
+            let attemptB = DownloadAttemptID(rawValue: "attempt-B")!
+            let keyA = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptA)
+            let keyB = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptB)
+            let metadata = OfflineMetadata(
+                ratingKey: ratingKey, title: "Isolation", type: "movie", summary: "original")
+            let record = makeRecord(
+                ratingKey: ratingKey,
+                title: "Isolation",
+                directory: directory,
+                bytes: 0,
+                metadata: metadata)
+            let store = DownloadStore(baseDirectory: directory)
+
+            #expect(store.createAttemptOwnedRecord(record, attemptID: attemptA) == .committed(keyA))
+            #expect(store.createAttemptOwnedRecord(
+                record, attemptID: attemptB, replacing: attemptA) == .committed(keyB))
+            try Data(repeating: 0xB, count: 32).write(to: record.localURL)
+
+            #expect(!store.ownsAttempt(keyA))
+            #expect(store.ownsAttempt(keyB))
+            #expect(store.record(for: keyA) == nil)
+            #expect(store.record(for: keyB)?.attemptID == attemptB)
+
+            #expect(store.setStatus(for: keyA, .complete) == .staleOrMissing)
+            #expect(store.updateProgress(for: keyA, bytes: 9_999, progress: 1) == .staleOrMissing)
+            #expect(store.updateMetadata(for: keyA) { $0.summary = "stale mutation" }
+                == .staleOrMissing)
+            #expect(store.remove(for: keyA) == .staleOrMissing)
+            #expect(FileManager.default.fileExists(atPath: record.localURL.path))
+
+            #expect(store.setStatus(for: keyB, .queued) == .applied)
+            #expect(store.updateProgress(for: keyB, bytes: 16, progress: 0.5) == .applied)
+            #expect(store.updateMetadata(for: keyB) { $0.summary = "current mutation" } == .applied)
+            let current = try #require(store.record(for: keyB))
+            #expect(current.status == .downloading)
+            #expect(current.bytes == 16)
+            #expect(current.progress == 0.5)
+            #expect(current.metadata?.summary == "current mutation")
+            #expect(current.metadata?.downloadAttemptID == attemptB.rawValue)
+
+            #expect(store.remove(for: keyB) == .applied)
+            #expect(store.record(for: ratingKey) == nil)
+            #expect(!FileManager.default.fileExists(atPath: record.localURL.path))
+        }
+    }
+
+    @Test func conditionalRemovalSerializesStablePathAgainstReplacementSeed() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("attempt-remove-race-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let ratingKey = "plex:remove-race"
+        let attemptA = DownloadAttemptID(rawValue: "attempt-A")!
+        let attemptB = DownloadAttemptID(rawValue: "attempt-B")!
+        let keyA = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptA)
+        let fileURL = directory.appendingPathComponent("remove-race.mp4")
+        let fileManager = BlockingRemovalFileManager(blockedPath: fileURL.path)
+        let store = DownloadStore(baseDirectory: directory, fileManager: fileManager)
+        let record = DownloadRecord(
+            ratingKey: ratingKey,
+            title: "Remove race",
+            localURL: fileURL,
+            status: .downloading,
+            metadata: OfflineMetadata(ratingKey: ratingKey, title: "Remove race", type: "movie"))
+        #expect(store.createAttemptOwnedRecord(record, attemptID: attemptA) == .committed(keyA))
+        try Data(repeating: 0xA, count: 32).write(to: fileURL)
+
+        let removeReturned = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .utility).async {
+            _ = store.remove(for: keyA)
+            removeReturned.signal()
+        }
+        #expect(await waitForSignal(fileManager.removalStarted, timeout: 1))
+
+        let replacementReturned = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .utility).async {
+            _ = store.createAttemptOwnedRecord(
+                record, attemptID: attemptB, replacing: attemptA)
+            replacementReturned.signal()
+        }
+        // B cannot publish its row while A still owns the lock and is deleting A's stable path.
+        #expect(!(await waitForSignal(replacementReturned, timeout: 0.02)))
+        fileManager.allowRemoval.signal()
+        #expect(await waitForSignal(removeReturned, timeout: 1))
+        #expect(await waitForSignal(replacementReturned, timeout: 1))
+        #expect(store.record(for: ratingKey) == nil)
+
+        // After A is fully removed, a fresh B seed/write is safe from A's cleanup tail.
+        let keyB = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptB)
+        #expect(store.createAttemptOwnedRecord(record, attemptID: attemptB) == .committed(keyB))
+        try Data(repeating: 0xB, count: 32).write(to: fileURL)
+        #expect(store.ownsAttempt(keyB))
+        #expect(FileManager.default.fileExists(atPath: fileURL.path))
+    }
+
     @Test func failedAtomicWriteIsRecoveredByLaterFullStateMutation() throws {
         try withTemporaryDirectory { directory in
             let writes = AtomicWriteHarness(failFirstWrite: true)
@@ -697,6 +796,25 @@ struct DownloadStorePersistenceTests {
                 continuation.resume(returning: semaphore.wait(timeout: .now() + timeout) == .success)
             }
         }
+    }
+}
+
+private final class BlockingRemovalFileManager: FileManager, @unchecked Sendable {
+    let removalStarted = DispatchSemaphore(value: 0)
+    let allowRemoval = DispatchSemaphore(value: 0)
+    private let blockedPath: String
+
+    init(blockedPath: String) {
+        self.blockedPath = blockedPath
+        super.init()
+    }
+
+    override func removeItem(at URL: URL) throws {
+        if URL.path == blockedPath {
+            removalStarted.signal()
+            allowRemoval.wait()
+        }
+        try super.removeItem(at: URL)
     }
 }
 
