@@ -4,6 +4,31 @@ import Testing
 @testable import Labstream
 
 struct DownloadCleanupIntentJournalTests {
+    @Test func managerFactoryBindsOnlyMediaBrowserAttemptsToPersistedServerAuthority() throws {
+        let attemptID = try #require(DownloadAttemptID(rawValue: "attempt-1"))
+        let key = DownloadAttemptKey(ratingKey: "jellyfin:item", attemptID: attemptID)
+        let metadata = OfflineMetadata(
+            ratingKey: key.ratingKey, title: "Item", type: "movie",
+            backendKind: .jellyfin,
+            backendBaseURLString: "HTTPS://Media.Example/base?token=secret",
+            backendServerID: "server-1", backendUserID: "user-1")
+        let value = try #require(DownloadManager.makeActiveEncodingCleanupIntent(
+            attemptKey: key, metadata: metadata, playSessionID: "play-1"))
+        #expect(value.attemptKey == key)
+        #expect(value.backend == .jellyfin)
+        #expect(value.server.baseURLString == "https://media.example/base")
+        #expect(value.operation == .activeEncoding(playSessionID: "play-1"))
+
+        var plex = metadata
+        plex.backendKind = .plex
+        #expect(DownloadManager.makeActiveEncodingCleanupIntent(
+            attemptKey: key, metadata: plex, playSessionID: "play-1") == nil)
+        var missingUser = metadata
+        missingUser.backendUserID = nil
+        #expect(DownloadManager.makeActiveEncodingCleanupIntent(
+            attemptKey: key, metadata: missingUser, playSessionID: "play-1") == nil)
+    }
+
     @Test func exactAddIsIdempotentAndCompareRemovePreservesSiblings() throws {
         try withTemporaryDirectory { directory in
             let journal = DownloadCleanupIntentJournal(directory: directory)
