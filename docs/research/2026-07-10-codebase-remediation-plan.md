@@ -61,8 +61,8 @@ Current status at this checkpoint:
 | --- | --- | --- |
 | 0A–0B | Complete | Repeatable compile audit plus nonzero macOS/iOS app test plans are on the rebased branch. |
 | 1A | Partial / consultation boundary | The index has a serial revisioned writer, dirty retry, observable failures, bounded background-completion flush, commit-aware held replacement/removal outcomes, fail-closed tombstone persistence, and broad fault/stress coverage (`0bbcb5d` through `24e179c`). Existing mutations preserve synchronous durability. True transactional held-body deletion, cross-domain tombstone/row ordering, a literal bounded hung-write path, and a live explicit temp/rename committer require the larger reviewed design described below. |
-| 1B | Partial / consultation required | Existing string attempt tokens, v2 task markers, stale-task rejection, and attempt-bearing held manifests are prior art. The remaining typed ID, schema-v3 durable-before-admission migration, task rebinding, conditional mutation conversion, and Emby identity merge form one atomic 12–20-file lifecycle migration; no independently shippable production subset fixes `COR-01`. |
-| 1C | Partial / consultation required | Final-verdict checks, attempt-matched held bodies, and the Emby ambiguous-create tombstone are prior art. The remaining registry, attempt-scoped finalization/staging/side-assets, durable encoder teardown, compare-clear, and startup sweep depend on 1B and span every download lane; partial tail guards remain racy. |
+| 1B | In progress / admission closed across intermediate slices | Typed top-level schema-v3 ownership, durable legacy assignment/reset, current task markers, dormant callback admission, and fail-closed attempt seeding have landed. Attempt-bearing in-memory work and conditional mutation conversion remain before `COR-01` can be closed. |
+| 1C | In progress / coupled to 1B | Cleanup-only legacy rows are retained and deletion is fail-closed pending the approved durable journal. The registry, attempt-scoped finalization/staging/side-assets, durable encoder teardown, compare-clear, and startup sweep still span every download lane; partial tail guards remain racy. |
 | 1D–1F | Complete | Auth/secure-storage, system-media ownership, and player lifecycle generations survived the rebase unchanged. iPad/Mac physical ownership and lifecycle checks passed; iOS TSAN tests remain green. |
 | 2A | Complete | Plex photo coverage, modern Mac decoding, the effective MediaSession clock, and `PERF-01` are complete. The regenerated inventory found and mechanically removed exactly the four original definition-only helpers (`2fb3d00`, `5a5f050`, `cf1f919`, `6bff1c8`); no production deprecation remains. |
 | 2B | Complete | Locked record/metadata/duration/presence accessors and the existing ownership accessor now serve every single-key store read (`4fb60a6`, `9fb7b56`, `6c16df5`, `36b992b`). Exactly 11 intentional batch/UI snapshots remain. |
@@ -404,6 +404,42 @@ their relationship during the schema-v3 migration.
   are emitted. A rollback build must retain the v3 reader, nested-shadow and legacy parsers, and
   fail-closed ownership rules, or first quiesce/cancel and reconcile all new-format tasks and
   durable cleanup intents.
+
+#### 2026-07-12 — Phase 1B durable ownership and startup admission
+
+- **Status:** in progress; the production session remains deliberately fail-closed at each new
+  ownership boundary while the remaining callback mutations are converted.
+- **Commits:** `cbe443c` (`Add durable schema-v3 download attempt ownership`) and `e301dbb`
+  (`Gate download startup on durable attempt ownership`).
+- **Schema and migration:** `DownloadAttemptID`/`DownloadAttemptKey` are typed, schema v3 writes an
+  authoritative top-level owner plus the one-train nested shadow, and shadow disagreement or a
+  missing required v3 owner fails closed. Legacy active rows receive a durable owner, then every
+  pre-v3 task is cancelled and drained before their partial media/resume/held artifacts are reset.
+  Completed rows are preserved; cleanup-bearing completed rows become attempt-keyed cleanup-only
+  work instead of being rebound to URLSession.
+- **Admission:** the background session is inert until explicit activation. Registration no longer
+  reattaches autonomously; mutating delegate callbacks reject pre-admission tasks and delete any
+  delivered temporary body. Activation repeatedly enumerates and cancels legacy/current-orphan
+  work, commits exact-key resets on a serial utility queue, and only then opens task creation and
+  the manager-owned initial reattach/reconcile pass.
+- **New attempts:** Plex, Jellyfin, and Emby entry paths now durably seed the exact attempt owner
+  before preflight, PlaybackInfo, server encoder/Convert creation, side work, or URLSession task
+  creation. Store creation is an exact compare/swap: a fresh row requires no owner, same-ID retry
+  is idempotent, and B may replace only the expected A. Persistence failure rejects the start with
+  no in-memory owner fallback.
+- **Terminal ownership:** failure and cancellation retain attempt A on an existing row so explicit
+  Retry can perform an exact A→B replacement and late A work remains classifiable. Delete removes
+  the row rather than creating an intermediate ownerless v3 revision. A dormant cancel cannot
+  instantiate URLSession. Cleanup-only legacy rows cannot be deleted until their required cleanup
+  handle has moved into the approved attempt-aware durable journal.
+- **Evidence:** startup admission/migration, store CAS/fault, and marker policy fixtures pass in the
+  complete macOS plan (90/90). PMSKit passes 1,418 tests across 171 suites. No simulator was booted
+  for this headless boundary.
+- **Remaining atomic boundary:** carry `DownloadAttemptKey` through every in-memory transfer,
+  retry, finalizer, and side-cache entry; convert all callback/store mutations to exact-owner APIs;
+  stage files per attempt; add the work registry and generic cleanup-intent journal; migrate
+  Jellyfin/Emby ActiveEncoding and Emby Convert teardown; then run delete/re-add, force-quit,
+  background-redelivery, device, and simulator gates before declaring 1B/1C complete.
 
 #### 2026-07-11 — Phase 2D compiler-cliff removal
 
