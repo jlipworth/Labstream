@@ -21,16 +21,16 @@ struct RailPagingSource {
                 throw CancellationError()
             }
             switch destination.query {
-            case .plexRecentlyAdded(let path):
+            case .plexRecentlyAdded(let path, let type):
                 guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
                     throw RailPagingSourceError.missingSession
                 }
                 let request = PlexRequest(url: server.appendingPathComponent(path),
                                           method: "GET",
-                                          queryItems: [
+                                          queryItems: ([
                                             .init(name: "X-Plex-Container-Start", value: String(start)),
                                             .init(name: "X-Plex-Container-Size", value: String(limit)),
-                                          ],
+                                          ] + (type.map { [.init(name: "type", value: String($0))] } ?? [])),
                                           headers: PlexHeaders.standard(identity: appModel.identity, token: token))
                 let response = try await appModel.client.send(request, as: MetadataResponse.self)
                 return RailPage(items: response.mediaContainer.metadata,
