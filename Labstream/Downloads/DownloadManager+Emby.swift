@@ -390,7 +390,7 @@ extension DownloadManager {
         }
 
         beginBackgroundTransfer(DownloadTransferStartPlan(
-            ratingKey: ratingKey,
+            attemptKey: attemptKey,
             backendLabel: "Emby",
             choiceLabel: EmbyDownloadRoutePlan.diagnosticChoiceLabel(
                 route: route,

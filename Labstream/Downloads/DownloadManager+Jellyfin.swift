@@ -333,7 +333,7 @@ extension DownloadManager {
                                    part: part, server: server, token: token, identity: identity)
 
         beginBackgroundTransfer(DownloadTransferStartPlan(
-            ratingKey: ratingKey,
+            attemptKey: attemptKey,
             backendLabel: "Jellyfin",
             choiceLabel: DownloadChoicePolicy.diagnosticChoiceLabel(choice),
             urlShape: request.url,

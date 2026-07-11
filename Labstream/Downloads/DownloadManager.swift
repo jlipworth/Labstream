@@ -1174,12 +1174,14 @@ public final class DownloadManager {
         case .parkStaticWithoutLiveTask:
             // A freshly seeded URLSession task can still be `.queued` until first progress. Route
             // queued rows through the session too, but park no-live static gaps immediately.
-            store.setStatus(ratingKey: ratingKey, .paused)
+            guard let key = attemptKey(for: record),
+                  setAttemptStatus(.paused, for: key, context: "user_pause") else { return }
             session.pause(ratingKey: ratingKey)
         case .cancelTaskOnly:
             session.pause(ratingKey: ratingKey)
         case .parkPreparing:
-            store.setStatus(ratingKey: ratingKey, .paused)
+            guard let key = attemptKey(for: record),
+                  setAttemptStatus(.paused, for: key, context: "user_pause") else { return }
         }
         clearOptimizeProgress(ratingKey: ratingKey)
         releaseInFlight(ratingKey: ratingKey)
@@ -1331,7 +1333,7 @@ public final class DownloadManager {
         }
     }
 
-    private func setAttemptStatus(
+    func setAttemptStatus(
         _ status: DownloadStatus,
         for key: DownloadAttemptKey,
         context: String
@@ -1347,6 +1349,26 @@ public final class DownloadManager {
             return false
         case .persistenceFailed(let failure):
             recordDownloadDiagnostic("downloads.status_persist_failed", fields: [
+                "download_id": .identifier(key.ratingKey),
+                "context": .label(context),
+                "failure": .label(Self.startupPersistenceFailureLabel(failure)),
+            ])
+            return false
+        }
+    }
+
+    private func removeAttempt(_ key: DownloadAttemptKey, context: String) -> Bool {
+        switch store.remove(for: key) {
+        case .applied, .noChange:
+            return true
+        case .staleOrMissing:
+            recordDownloadDiagnostic("downloads.remove_owner_stale", fields: [
+                "download_id": .identifier(key.ratingKey),
+                "context": .label(context),
+            ])
+            return false
+        case .persistenceFailed(let failure):
+            recordDownloadDiagnostic("downloads.remove_persist_failed", fields: [
                 "download_id": .identifier(key.ratingKey),
                 "context": .label(context),
                 "failure": .label(Self.startupPersistenceFailureLabel(failure)),
@@ -1618,6 +1640,10 @@ public final class DownloadManager {
         // bodies below verify, so a pause→resume (which re-begins) cannot revive THIS chain after
         // it was superseded.
         let retryToken = retryState.begin(ratingKey)
+        guard let retryAttemptKey = attemptKey(for: record) else {
+            retryState.removeRetrying(ratingKey)
+            return
+        }
         recordDownloadDiagnostic("downloads.retry", fields: [
             "download_id": .identifier(ratingKey),
         ])
@@ -1635,20 +1661,23 @@ public final class DownloadManager {
             hasEmbyConvertJobID: record.metadata?.embyConvertJobID != nil,
             hasEmbyConvertRecoveryIdentity: record.metadata?.hasEmbyConvertRecoveryIdentity == true
         ) {
-            store.setStatus(ratingKey: ratingKey, .preparing)
+            guard setAttemptStatus(
+                .preparing, for: retryAttemptKey, context: "retry_emby_convert") else {
+                retryState.removeRetrying(ratingKey)
+                return
+            }
             resumePendingEmbyConvertDownloads()
             refreshRecords()
             return
         }
-        let retryAttemptKey = attemptKey(for: record)
-        let persistedResumeData = retryAttemptKey.flatMap { store.resumeData(for: $0) }
+        let persistedResumeData = store.resumeData(for: retryAttemptKey)
         let supportsPersistedResumeData =
             record.metadata?.resolvedResumeMode(ratingKey: ratingKey) != .liveForwardOnly
         if DownloadRetryPreparationPolicy.shouldResumePersistedURLSessionData(
             status: record.status,
             supportsPersistedResumeData: supportsPersistedResumeData,
             hasResumeData: persistedResumeData != nil
-        ), let resumeData = persistedResumeData, let retryAttemptKey {
+        ), let resumeData = persistedResumeData {
             // Consume the blob path, but keep its display watermark until the resumed task proves
             // equal/greater progress. URLSession can report a blob-resumed download task's
             // `countOfBytesReceived` from near zero even while it still owns a large resumable temp
@@ -1697,7 +1726,11 @@ public final class DownloadManager {
             }
             // The blob was refused/stale — fall through to a clean restart below (for range rows
             // the durable partial remains the checkpoint; only the blob's temp is lost).
-            store.setStatus(ratingKey: ratingKey, .failed)
+            guard setAttemptStatus(
+                .failed, for: retryAttemptKey, context: "resume_blob_refused") else {
+                retryState.removeRetrying(ratingKey)
+                return
+            }
         }
         if DownloadRetryPreparationPolicy.shouldResumePausedPlexServerPrep(
             status: record.status,
@@ -1721,7 +1754,11 @@ public final class DownloadManager {
             // against the same destination file. Keep the visible row as queued while letting the
             // backend entry point intentionally replace this persisted active intent, instead of
             // briefly showing user-visible `.failed` as a retry trampoline.
-            store.setStatus(ratingKey: ratingKey, .queued)
+            guard setAttemptStatus(
+                .queued, for: retryAttemptKey, context: "retry_static") else {
+                retryState.removeRetrying(ratingKey)
+                return
+            }
         }
         if DownloadRecordIdentity.isJellyfinRecordKey(ratingKey) {
             retryJellyfin(record: record, allowReplacingExistingActiveRow: allowActiveRowReplacement,
@@ -1753,7 +1790,8 @@ public final class DownloadManager {
                 }
                 self.clearRetryHandoff(ratingKey: ratingKey)
                 self.lastError[ratingKey] = .notAuthenticated
-                self.store.setStatus(ratingKey: ratingKey, .failed)
+                guard self.setAttemptStatus(
+                    .failed, for: retryAttemptKey, context: "retry_auth") else { return }
                 self.refreshRecords()
                 return
             }
@@ -1771,7 +1809,7 @@ public final class DownloadManager {
                                                                server: server,
                                                                token: token,
                                                                identity: self.appModel.identity) ?? item
-            guard self.retryAttemptCanContinue(ratingKey: ratingKey, token: retryToken) else { return }
+            guard self.retryAttemptCanContinue(for: retryAttemptKey, token: retryToken) else { return }
 
             // #131/#184: static retries must preserve the exact Part identity whenever possible,
             // not only when a durable partial exists. Plex optimized/final static rows keep
@@ -1795,7 +1833,8 @@ public final class DownloadManager {
                         "The saved server version is no longer available. Choose another version and retry.")
                     self.clearStaticRangePendingResume(ratingKey: ratingKey)
                     self.releaseInFlight(ratingKey: ratingKey)
-                    self.store.setStatus(ratingKey: ratingKey, .failed)
+                    guard self.setAttemptStatus(
+                        .failed, for: retryAttemptKey, context: "retry_part_missing") else { return }
                     self.refreshRecords()
                     return
                 }
@@ -1834,10 +1873,10 @@ public final class DownloadManager {
                 : .optimize(targetName: Self.originalFallbackOptimizeTarget())
             // Drop the stale `.failed` row only once we know the replacement can be seeded.
             // This also removes any leftover invalid/partial file from the failed attempt.
-            guard self.retryAttemptCanContinue(ratingKey: ratingKey, token: retryToken) else { return }
+            guard self.retryAttemptCanContinue(for: retryAttemptKey, token: retryToken) else { return }
             self.releaseInFlight(ratingKey: ratingKey)
             if !DownloadRetryPolicy.shouldPromotePausedStaticPartial(record) {
-                self.store.remove(ratingKey: ratingKey)
+                guard self.removeAttempt(retryAttemptKey, context: "retry_replace") else { return }
             }
             await self.download(currentItem, choice: choice, mediaIndex: mediaIndex, partIndex: partIndex,
                                 allowReplacingExistingActiveRow: allowActiveRowReplacement)
@@ -1848,10 +1887,14 @@ public final class DownloadManager {
     /// Lens 6 F5: `token` scopes the guard to the CALLER's retry attempt — a superseded chain
     /// stays dead even after pause→resume re-begins retrying for the same key. `nil` preserves the
     /// legacy any-current-attempt semantics for paths that predate token threading.
-    private func retryAttemptCanContinue(ratingKey: String, token: UUID? = nil) -> Bool {
-        let row = store.record(for: ratingKey)
-        let attemptIsCurrent = token.map { retryState.isCurrentRetryAttempt(ratingKey, id: $0) }
-            ?? retryState.isRetrying(ratingKey)
+    private func retryAttemptCanContinue(
+        for key: DownloadAttemptKey,
+        token: UUID? = nil
+    ) -> Bool {
+        let row = store.record(for: key)
+        let attemptIsCurrent = token.map {
+            retryState.isCurrentRetryAttempt(key.ratingKey, id: $0)
+        } ?? retryState.isRetrying(key.ratingKey)
         return DownloadRetryPreparationPolicy.attemptCanContinue(
             isRetrying: attemptIsCurrent,
             rowIsPresent: row != nil,
@@ -1884,6 +1927,7 @@ public final class DownloadManager {
     /// fetching current metadata. A server-prep row already has the queue title/baseline needed by
     /// `resumePendingServerPrepDownloads`, so recreating risks a duplicate Plex transcode.
     private func resumePausedPlexServerPrep(record: DownloadRecord, targetName: String) {
+        guard let key = attemptKey(for: record) else { return }
         guard let backendSession = appModel.backendSession(for: .plex) else {
             lastError[record.ratingKey] = .notAuthenticated
             clearRetryHandoff(ratingKey: record.ratingKey)
@@ -1914,13 +1958,14 @@ public final class DownloadManager {
         clearServerPrepPoller(ratingKey: record.ratingKey, reason: "paused_resume")
         retryState.removeRetrying(record.ratingKey)
         clearRetryHandoff(ratingKey: record.ratingKey)
-        store.setStatus(ratingKey: record.ratingKey, .queued)
+        guard setAttemptStatus(.queued, for: key, context: "plex_prep_resume") else { return }
         optimizeState[record.ratingKey] = DownloadOptimizeStateLabel.queued
         refreshRecords()
         resumePendingServerPrepDownloads(allowWhileQueuePaused: true)
     }
 
     private func retryPausedPlexOptimize(record: DownloadRecord, targetName: String) {
+        guard let key = attemptKey(for: record) else { return }
         let metadata = record.metadata
         let item = metadata?.makeMediaItem()
             ?? MediaItem(ratingKey: record.ratingKey, title: record.title, type: "movie")
@@ -1930,7 +1975,7 @@ public final class DownloadManager {
             guard let self else { return }
             guard let backendSession = self.appModel.backendSession(for: .plex) else {
                 self.lastError[record.ratingKey] = .notAuthenticated
-                self.store.setStatus(ratingKey: record.ratingKey, .paused)
+                _ = self.setAttemptStatus(.paused, for: key, context: "plex_optimize_auth")
                 self.refreshRecords()
                 return
             }
@@ -1942,7 +1987,7 @@ public final class DownloadManager {
                 ])
                 self.lastError[record.ratingKey] = .transferFailed(
                     "Waiting for the original Plex server session.")
-                self.store.setStatus(ratingKey: record.ratingKey, .paused)
+                _ = self.setAttemptStatus(.paused, for: key, context: "plex_optimize_server")
                 self.refreshRecords()
                 return
             }
@@ -1950,14 +1995,14 @@ public final class DownloadManager {
                                                                server: backendSession.baseURL,
                                                                token: backendSession.token,
                                                                identity: self.appModel.identity) ?? item
-            guard self.retryAttemptCanContinue(ratingKey: record.ratingKey) else { return }
+            guard self.retryAttemptCanContinue(for: key) else { return }
             self.recordDownloadDiagnostic("downloads.paused_optimize_resume", fields: [
                 "download_id": .identifier(record.ratingKey),
                 "target": .label(targetName),
             ])
             self.releaseInFlight(ratingKey: record.ratingKey)
             if !DownloadRetryPolicy.shouldPromotePausedStaticPartial(record) {
-                self.store.remove(ratingKey: record.ratingKey)
+                guard self.removeAttempt(key, context: "plex_optimize_replace") else { return }
             }
             await self.download(currentItem, choice: .optimize(targetName: targetName),
                                 mediaIndex: mediaIndex, partIndex: partIndex)
@@ -1967,6 +2012,7 @@ public final class DownloadManager {
 
     private func retryJellyfin(record: DownloadRecord, allowReplacingExistingActiveRow: Bool = false,
                                attemptToken: UUID) {
+        guard let key = attemptKey(for: record) else { return }
         let retryIntent = DownloadBackendRetryIntentPolicy.jellyfinIntent(
             for: record,
             fallbackItemID: DownloadRecordIdentity.jellyfinItemID(fromRecordKey: record.ratingKey),
@@ -1984,7 +2030,7 @@ public final class DownloadManager {
                 }
                 self.clearRetryHandoff(ratingKey: record.ratingKey)
                 self.lastError[record.ratingKey] = .notAuthenticated
-                self.store.setStatus(ratingKey: record.ratingKey, .failed)
+                _ = self.setAttemptStatus(.failed, for: key, context: "jellyfin_retry_auth")
                 self.refreshRecords()
                 return
             }
@@ -2006,7 +2052,7 @@ public final class DownloadManager {
                 self.retryState.removeRetrying(record.ratingKey)
                 self.lastError[record.ratingKey] = .transferFailed(
                     "Waiting for the original Jellyfin server session.")
-                self.store.setStatus(ratingKey: record.ratingKey, .failed)
+                _ = self.setAttemptStatus(.failed, for: key, context: "jellyfin_retry_server")
                 self.refreshRecords()
                 return
             }
@@ -2018,7 +2064,7 @@ public final class DownloadManager {
                 ])
                 self.releaseInFlight(ratingKey: record.ratingKey)
             }
-            guard self.retryAttemptCanContinue(ratingKey: record.ratingKey, token: attemptToken) else { return }
+            guard self.retryAttemptCanContinue(for: key, token: attemptToken) else { return }
             // Keep the failed row visible until `downloadJellyfin` successfully seeds the
             // replacement. If PlaybackInfo/auth/network preflight fails, its start-failed path can
             // mark this existing row `.failed` instead of making the retry affordance disappear.
@@ -2034,6 +2080,7 @@ public final class DownloadManager {
 
     private func retryEmby(record: DownloadRecord, allowReplacingExistingActiveRow: Bool = false,
                            attemptToken: UUID) {
+        guard let key = attemptKey(for: record) else { return }
         let retryIntent = DownloadBackendRetryIntentPolicy.embyIntent(
             for: record,
             fallbackItemID: DownloadRecordIdentity.embyItemID(fromRecordKey: record.ratingKey))
@@ -2050,7 +2097,7 @@ public final class DownloadManager {
                 }
                 self.clearRetryHandoff(ratingKey: record.ratingKey)
                 self.lastError[record.ratingKey] = .notAuthenticated
-                self.store.setStatus(ratingKey: record.ratingKey, .failed)
+                _ = self.setAttemptStatus(.failed, for: key, context: "emby_retry_auth")
                 self.refreshRecords()
                 return
             }
@@ -2071,7 +2118,7 @@ public final class DownloadManager {
                 self.retryState.removeRetrying(record.ratingKey)
                 self.lastError[record.ratingKey] = .transferFailed(
                     "Waiting for the original Emby server session.")
-                self.store.setStatus(ratingKey: record.ratingKey, .failed)
+                _ = self.setAttemptStatus(.failed, for: key, context: "emby_retry_server")
                 self.refreshRecords()
                 return
             }
@@ -2083,7 +2130,7 @@ public final class DownloadManager {
                 ])
                 self.releaseInFlight(ratingKey: record.ratingKey)
             }
-            guard self.retryAttemptCanContinue(ratingKey: record.ratingKey, token: attemptToken) else { return }
+            guard self.retryAttemptCanContinue(for: key, token: attemptToken) else { return }
             // Keep the failed row visible until `downloadEmby` successfully seeds the replacement.
             // If PlaybackInfo/auth/network preflight fails, its start-failed path can mark this
             // existing row `.failed` instead of making the retry affordance disappear.
@@ -2192,7 +2239,8 @@ public final class DownloadManager {
         }
         for record in embyPreparing {
             guard let metadata = record.metadata,
-                  metadata.resolvedBackendKind(ratingKey: record.ratingKey) == .emby else { continue }
+                  metadata.resolvedBackendKind(ratingKey: record.ratingKey) == .emby,
+                  let key = attemptKey(for: record) else { continue }
             guard session.matchesPersistedServer(metadata) else {
                 var fields: [String: DiagnosticFieldValue] = [
                     "download_id": .identifier(record.ratingKey),
@@ -2246,7 +2294,8 @@ public final class DownloadManager {
                 }
                 // A prior bounded/list attempt may have parked this row failed while preserving
                 // ownership evidence. Relaunch/retry re-enters recovery, never a blind new POST.
-                store.setStatus(ratingKey: ratingKey, .preparing)
+                guard setAttemptStatus(
+                    .preparing, for: key, context: "emby_convert_recover") else { continue }
                 activeJobs.insert(ratingKey)
                 let attemptID = beginEmbyConvertAttempt(ratingKey: ratingKey)
                 recordDownloadDiagnostic("downloads.convert_recovery", fields: [
@@ -2274,7 +2323,7 @@ public final class DownloadManager {
                     // baseline so a user retry may create a fresh job.
                     store.clearEmbyConvertRecovery(ratingKey: record.ratingKey)
                 }
-                store.setStatus(ratingKey: record.ratingKey, .failed)
+                _ = setAttemptStatus(.failed, for: key, context: "emby_convert_identity")
                 clearOptimizeProgress(ratingKey: record.ratingKey)
                 releaseInFlight(ratingKey: record.ratingKey)
             case .expireRecovery:
@@ -2309,7 +2358,7 @@ public final class DownloadManager {
                 store.clearEmbyConvertRecovery(ratingKey: record.ratingKey)
                 lastError[record.ratingKey] = .transferFailed(
                     "Server conversion could not be recovered; retry to create a new conversion.")
-                store.setStatus(ratingKey: record.ratingKey, .failed)
+                _ = setAttemptStatus(.failed, for: key, context: "emby_convert_expired")
                 clearOptimizeProgress(ratingKey: record.ratingKey)
                 releaseInFlight(ratingKey: record.ratingKey)
             }
@@ -2490,6 +2539,7 @@ public final class DownloadManager {
                                                token: String,
                                                pollerID: UUID) async {
         let ratingKey = record.ratingKey
+        guard let key = attemptKey(for: record) else { return }
         let identity = appModel.identity
         // Legacy prep rows predate the persisted deadline. Seed it once before polling and write it
         // back to the row so another relaunch continues the same clock instead of resetting it.
@@ -2565,7 +2615,7 @@ public final class DownloadManager {
             try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
                                              metadata: metadata,
                                              targetName: targetName)
-            try startOptimizedPartDownload(ratingKey: ratingKey,
+            try startOptimizedPartDownload(attemptKey: key,
                                            title: record.title,
                                            part: part,
                                            metadata: metadata,
@@ -2605,7 +2655,7 @@ public final class DownloadManager {
                 "error": .error(error),
             ])
             lastError[ratingKey] = error
-            store.setStatus(ratingKey: ratingKey, .failed)
+            _ = setAttemptStatus(.failed, for: key, context: "plex_poller_error")
             clearOptimizeProgress(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
             refreshRecords()
@@ -2629,7 +2679,7 @@ public final class DownloadManager {
             ])
             lastError[ratingKey] = .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
-            store.setStatus(ratingKey: ratingKey, .failed)
+            _ = setAttemptStatus(.failed, for: key, context: "plex_poller_error")
             clearOptimizeProgress(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
             refreshRecords()
@@ -2703,9 +2753,9 @@ public final class DownloadManager {
     /// detector on the next refresh, which re-drives the same doomed start — the churn cousin of
     /// the #210 refresh⇄resume recursion.
     func markStartAbortedBeforeTransfer(ratingKey: String) {
-        if let status = store.status(for: ratingKey),
-           status.isActiveWork {
-            store.setStatus(ratingKey: ratingKey, .failed)
+        if let record = store.record(for: ratingKey), record.status.isActiveWork,
+           let key = attemptKey(for: record) {
+            _ = setAttemptStatus(.failed, for: key, context: "start_aborted")
         }
         clearStaticRangePendingResume(ratingKey: ratingKey)
     }
@@ -2812,6 +2862,12 @@ public final class DownloadManager {
             session.cancel(ratingKey: ratingKey)
             _ = store.remove(for: key)
         } else {
+            // Deliberate migration compatibility: v1/v2 completed rows without asynchronous
+            // cleanup evidence remain ownerless after the v3 migration and can only be deleted by
+            // this terminal-row fallback. Active/reset-pending rows never enter it.
+            guard rowToDelete?.status == .complete || rowToDelete?.status == .unverified else {
+                return
+            }
             session.cancel(ratingKey: ratingKey)
             store.remove(ratingKey: ratingKey)
         }
@@ -2880,13 +2936,13 @@ public final class DownloadManager {
             try startBackgroundTransfer(plan, start: start)
         } catch let error as DownloadError {
             lastError[plan.ratingKey] = error
-            store.setStatus(ratingKey: plan.ratingKey, .failed)
+            _ = setAttemptStatus(.failed, for: plan.attemptKey, context: "transfer_start")
             if plan.releaseInFlightOnFailure { releaseInFlight(ratingKey: plan.ratingKey) }
             refreshRecords()
         } catch {
             lastError[plan.ratingKey] = .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
-            store.setStatus(ratingKey: plan.ratingKey, .failed)
+            _ = setAttemptStatus(.failed, for: plan.attemptKey, context: "transfer_start")
             if plan.releaseInFlightOnFailure { releaseInFlight(ratingKey: plan.ratingKey) }
             refreshRecords()
         }
@@ -3108,8 +3164,9 @@ public final class DownloadManager {
         )
         if isQueuePaused {
             for ratingKey in serverPrepRefreshPlan.parkWhileQueuePausedKeys {
-                if fresh.first(where: { $0.ratingKey == ratingKey })?.status != .paused {
-                    store.setStatus(ratingKey: ratingKey, .paused)
+                if let record = fresh.first(where: { $0.ratingKey == ratingKey }),
+                   record.status != .paused, let key = attemptKey(for: record) {
+                    _ = setAttemptStatus(.paused, for: key, context: "queue_pause_prep")
                 }
             }
             if !serverPrepRefreshPlan.parkWhileQueuePausedKeys.isEmpty { fresh = store.records }
@@ -3288,7 +3345,8 @@ public final class DownloadManager {
         clearRetryHandoff(ratingKey: ratingKey)
         lastError[ratingKey] = .transferFailed(
             "Network stalled; restarting this forward-only stream from the beginning.")
-        store.setStatus(ratingKey: ratingKey, .failed)
+        guard let key = attemptKey(for: current),
+              setAttemptStatus(.failed, for: key, context: "stream_stall") else { return }
         releaseInFlight(ratingKey: ratingKey)
         // `releaseInFlight` wipes the stall tracker entry, including the attempt count
         // `detectRestarts` just incremented — without re-seeding it the 2-restart cap never binds

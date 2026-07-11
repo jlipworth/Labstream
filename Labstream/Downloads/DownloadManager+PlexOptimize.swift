@@ -205,13 +205,12 @@ extension DownloadManager {
             try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
                                              metadata: optimizeMetadata,
                                              targetName: targetName)
-            try startOptimizedPartDownload(ratingKey: ratingKey,
+            try startOptimizedPartDownload(attemptKey: attemptKey,
                                            title: item.title,
                                            part: part,
                                            metadata: optimizeMetadata,
                                            server: server,
-                                           token: token,
-                                           attemptKey: attemptKey)
+                                           token: token)
         } catch DownloadLifecycleCancellation.staleOptimizeAttempt {
             recordDownloadDiagnostic("downloads.optimize_stale", fields: [
                 "download_id": .identifier(ratingKey),
@@ -240,7 +239,7 @@ extension DownloadManager {
                 "error": .error(error),
             ])
             lastError[ratingKey] = error
-            store.setStatus(ratingKey: ratingKey, .failed)
+            _ = setAttemptStatus(.failed, for: attemptKey, context: "plex_optimize_start")
             clearOptimizeProgress(ratingKey: ratingKey)
             refreshRecords()
         } catch is CancellationError {
@@ -262,25 +261,28 @@ extension DownloadManager {
             ])
             lastError[ratingKey] = .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
-            store.setStatus(ratingKey: ratingKey, .failed)
+            _ = setAttemptStatus(.failed, for: attemptKey, context: "plex_optimize_start")
             clearOptimizeProgress(ratingKey: ratingKey)
             refreshRecords()
         }
     }
 
-    func startOptimizedPartDownload(ratingKey: String,
+    func startOptimizedPartDownload(attemptKey: DownloadAttemptKey,
                                             title: String,
                                             part: Part,
                                             metadata: OfflineMetadata,
                                             server: URL,
-                                            token: String,
-                                            attemptKey: DownloadAttemptKey? = nil) throws {
+                                            token: String) throws {
+        let ratingKey = attemptKey.ratingKey
+        guard store.ownsAttempt(attemptKey) else {
+            throw DownloadLifecycleCancellation.staleOptimizeAttempt
+        }
         let targetName = metadata.optimizeTargetName ?? "unknown"
         let ext = part.container ?? (part.file as NSString?)?.pathExtension ?? "mp4"
         let destination = store.destinationURL(ratingKey: ratingKey,
                                                ext: ext.isEmpty ? "mp4" : ext)
         if rejectIfOverStorageLimit(ratingKey: ratingKey, backend: "Plex", expectedBytes: part.size) {
-            store.setStatus(ratingKey: ratingKey, .failed)
+            _ = setAttemptStatus(.failed, for: attemptKey, context: "plex_optimize_storage")
             releaseInFlight(ratingKey: ratingKey)
             throw lastError[ratingKey] ?? DownloadError.storageLimitExceeded("Storage limit exceeded.")
         }
@@ -318,7 +320,7 @@ extension DownloadManager {
                                          targetName: targetName)
         let url = OptimizeRequest.downloadURL(server: server, token: token, partKey: part.key)
         try startBackgroundTransfer(DownloadTransferStartPlan(
-            ratingKey: ratingKey,
+            attemptKey: attemptKey,
             backendLabel: "Plex",
             choiceLabel: "optimize",
             urlShape: url,
@@ -331,11 +333,7 @@ extension DownloadManager {
             // Plex often exposes downloadable text subtitle streams only on the rendered optimized
             // Part, not on the original source Part (where subtitle `key` can be nil). Cache from the
             // exact Part we are downloading so optimized offline playback has the same sidecars.
-            // Relaunch pickup currently calls this method without a captured attempt key. Never
-            // re-read a potentially newer owner in this asynchronous tail; fresh chains carry it.
-            if let attemptKey {
-                cachePlexTextSubtitles(for: attemptKey, part: part, server: server, token: token)
-            }
+            cachePlexTextSubtitles(for: attemptKey, part: part, server: server, token: token)
             // The rendered Part is a static file by this point (the poll waited for it to
             // appear), so a Plex optimize download is usually network-bound — but the server
             // can still be finalizing/serving it as it writes, so mark it transcode-sourced and
