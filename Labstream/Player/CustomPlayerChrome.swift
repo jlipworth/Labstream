@@ -229,10 +229,7 @@ struct CustomPlayerChrome: View {
                         .padding(.bottom, 14)
                 }
 
-                // Treat the transport-status platter as modal chrome. It supplies the relevant
-                // pause/retry/close action, so the ordinary transport strip should not remain
-                // visible through the platter on iPad, iPhone, Mac, or visionOS.
-                if shouldShowChrome, selectedMenu == nil, !isTransportStatusPresented {
+                if shouldShowChrome, selectedMenu == nil {
                     controls
                         .padding(.horizontal, bottomChromeHorizontalInset)
                         .padding(.bottom, bottomChromeBottomInset)
