@@ -1027,8 +1027,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 }
             }
             if !invalidManifests.isEmpty {
-                _ = store.removeHeldRangeSegments(ratingKey: ratingKey,
-                                                  offsets: invalidManifests.map(\.offset))
+                let removal = store.removeHeldRangeSegments(
+                    ratingKey: ratingKey,
+                    offsets: invalidManifests.map(\.offset)
+                )
+                if !removal.committed {
+                    recordUncommittedHeldManifestRemoval(
+                        ratingKey: ratingKey,
+                        operation: "restore_discard",
+                        persistence: removal.persistence
+                    )
+                }
                 for invalid in invalidManifests {
                     if let url = invalid.url { try? fileManager.removeItem(at: url) }
                     AppDiagnostics.record(.downloads, "downloads.range_held_manifest_discarded", fields: [
@@ -3414,12 +3423,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         fallbackURLsByOffset: [Int: Set<URL>] = [:]
     ) {
         guard !segments.isEmpty else { return }
-        let persisted = store.removeHeldRangeSegments(
+        let removal = store.removeHeldRangeSegments(
             ratingKey: ratingKey,
             offsets: segments.map(\.offset)
         )
+        if !removal.committed {
+            recordUncommittedHeldManifestRemoval(
+                ratingKey: ratingKey,
+                operation: "remove",
+                persistence: removal.persistence
+            )
+        }
         let persistedByOffset = Dictionary(
-            persisted.map { ($0.offset, $0) },
+            removal.removed.map { ($0.offset, $0) },
             uniquingKeysWith: { first, _ in first }
         )
         lock.lock()
@@ -3454,6 +3470,28 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             ))
         }
         for url in urls { try? fileManager.removeItem(at: url) }
+    }
+
+    private func recordUncommittedHeldManifestRemoval(
+        ratingKey: String,
+        operation: String,
+        persistence: DownloadStore.PersistenceFlushResult
+    ) {
+        let outcome: String
+        switch persistence {
+        case .committed:
+            outcome = "revision_mismatch"
+        case .failed(_, let stage, _):
+            outcome = "failed_\(stage)"
+        case .timedOut:
+            outcome = "timed_out"
+        }
+        AppDiagnostics.record(.downloads, "downloads.range_held_manifest_remove_uncommitted", fields: [
+            "download_id": .identifier(ratingKey),
+            "operation": .label(operation),
+            "outcome": .label(outcome),
+            "body_disposition": .label("delete_to_fail_closed"),
+        ])
     }
 
     /// Fold any held out-of-order segments that are now contiguous with the durable checkpoint.
@@ -3628,10 +3666,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let held = heldRangeSegments.removeValue(forKey: ratingKey)
         let retained = heldRangeRetainedPredecessorURLs.removeValue(forKey: ratingKey)
         lock.unlock()
-        let persisted = store.takeHeldRangeSegments(ratingKey: ratingKey)
+        let take = store.takeHeldRangeSegments(ratingKey: ratingKey)
+        if !take.committed {
+            recordUncommittedHeldManifestRemoval(
+                ratingKey: ratingKey,
+                operation: "purge",
+                persistence: take.persistence
+            )
+        }
         let currentURLs = held?.values.map(\.url) ?? []
         let retainedURLs = retained?.values.map { $0 } ?? []
-        let persistedURLs = persisted.compactMap {
+        let persistedURLs = take.removed.compactMap {
             store.heldRangeSegmentURL(relativePath: $0.relativePath)
         }
         let urls = HeldRangeBodyOwnershipPolicy.purgeBodies(
@@ -3639,7 +3684,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             persisted: persistedURLs,
             retainedPredecessors: retainedURLs
         )
-        guard !urls.isEmpty || !persisted.isEmpty else { return }
+        guard !urls.isEmpty || !take.removed.isEmpty else { return }
         for url in urls { try? fileManager.removeItem(at: url) }
         AppDiagnostics.record(.downloads, "downloads.range_held_segments_purged", fields: [
             "download_id": .identifier(ratingKey),
