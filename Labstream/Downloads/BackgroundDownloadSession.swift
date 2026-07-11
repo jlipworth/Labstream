@@ -129,13 +129,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private var staticRangeRetryBudget = StaticRangeRetryBudget()
     /// taskIdentifiers whose expected-size has already been logged once (diagnostics).
     private var loggedExpectation: Set<Int> = []
-    /// Retry count by ratingKey for transient URLSession drops that provide resume data.
-    private var retryCounts: [String: Int] = [:]
-    /// JF-F2 loop guard: consecutive `.truncated` finalize outcomes per row. Deliberately NOT
+    /// Retry count by exact attempt for transient URLSession drops that provide resume data.
+    private var retryCounts: [DownloadAttemptKey: Int] = [:]
+    /// JF-F2 loop guard: consecutive `.truncated` finalize outcomes per attempt. Deliberately NOT
     /// reset by `start`/`clearRetryCount` (a retry that truncates again must keep counting toward
     /// the parking budget); reset only on a `.complete` finalize. Only touched inside
     /// `finalizeTransferredFile`, guarded by `finalizationStateQueue` (async context — no NSLock).
-    private var truncationFailureCounts: [String: Int] = [:]
+    private var truncationFailureCounts: [DownloadAttemptKey: Int] = [:]
     /// Bounded per-row backend/request rehydrations after auth/forbidden HTTP responses on static
     /// Range tasks. This is intentionally separate from transient retry counts: 403 should not blindly
     /// replay the same URL, but one fresh backend negotiation may mint a usable request.
@@ -1542,7 +1542,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lock.lock()
         rangeHaltKinds.removeValue(forKey: attemptKey)
         if resetRangeRestartCounters {
-            staticRangeRetryBudget.reset(downloadID: ratingKey)
+            staticRangeRetryBudget.reset(key: staticRangeRetryKey(for: attemptKey))
             rangeHTTPRehydrateCounts.removeValue(forKey: attemptKey)
             // An exhausted blob-resume budget must not survive a user Retry: the fresh start
             // re-plans from the durable checkpoint, so the prior attempt's blob failures are
@@ -1561,7 +1561,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         task.taskDescription = DownloadAttemptMarker.taskDescription(
             ratingKey: ratingKey, attemptID: attemptID)
         lock.lock()
-        retryCounts[ratingKey] = 0
+        retryCounts[attemptKey] = 0
         lastProgressNotify = nil
         loggedProgressMilestones[task.taskIdentifier] = []
         lastRangeProgressDiagnostic.removeValue(forKey: task.taskIdentifier)
@@ -1880,7 +1880,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             }
         }
         if resetsRetryCount {
-            retryCounts[ratingKey] = 0
+            retryCounts[candidate.attemptKey] = 0
         }
         lastProgressNotify = nil
         loggedProgressMilestones[task.taskIdentifier] = []
@@ -1935,6 +1935,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let halted = rangeHaltKinds[attemptKey] != nil
         lock.unlock()
         return halted
+    }
+
+    private func staticRangeRetryKey(for key: DownloadAttemptKey) -> StaticRangeRetryKey {
+        StaticRangeRetryKey(downloadID: key.ratingKey, attemptID: key.attemptID.rawValue)
     }
 
     /// Reset the visible range watermark only while the callback still owns the row. A stale
@@ -2022,16 +2026,18 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         guard isStartupAdmissionActive else { return false }
         guard !resumeData.isEmpty else { return false }
         guard let attemptID = currentAttemptIdentity(ratingKey: ratingKey) else { return false }
+        let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+        guard store.ownsAttempt(attemptKey) else { return false }
         let task = urlSession.downloadTask(withResumeData: resumeData)
         task.taskDescription = DownloadAttemptMarker.taskDescription(
             ratingKey: ratingKey, attemptID: attemptID)
         lock.lock()
-        retryCounts[ratingKey] = 0
+        retryCounts[attemptKey] = 0
         lastProgressNotify = nil
         loggedProgressMilestones[task.taskIdentifier] = []
         lastRangeProgressDiagnostic.removeValue(forKey: task.taskIdentifier)
         inflight[task.taskIdentifier] = OpaqueTransfer(
-            attemptKey: DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID),
+            attemptKey: attemptKey,
             destination: destination
         )
         lock.unlock()
@@ -2332,8 +2338,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         rangeTrainEpochs[attemptKey] = (rangeTrainEpochs[attemptKey] ?? 0) + 1
         // M-7: the row is being cancelled/deleted — its restart budgets die with it, so a
         // re-download of the same key starts clean even if it skips `start()`'s reset.
-        retryCounts.removeValue(forKey: ratingKey)
-        staticRangeRetryBudget.reset(downloadID: ratingKey)
+        retryCounts.removeValue(forKey: attemptKey)
+        staticRangeRetryBudget.reset(key: staticRangeRetryKey(for: attemptKey))
         rangeHTTPRehydrateCounts.removeValue(forKey: attemptKey)
         rangeBlobResumeCounts.removeValue(forKey: attemptKey)
         lock.unlock()
@@ -2502,7 +2508,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 .filter { $0.ratingKey == rangeEntry.ratingKey }
                 .map(\.bodyBytesWritten)
             let heldSegmentBodyBytes = heldRangeSegments[rangeEntry.attemptKey]?.values.map(\.length) ?? []
-            retryCounts[rangeEntry.ratingKey] = 0
+            retryCounts[rangeEntry.attemptKey] = 0
             lock.unlock()
             let aggregatedLiveBytes = DownloadLiveRangeProgressPolicy.aggregatedLiveBytes(
                 durableBytes: durableBytes,
@@ -3292,7 +3298,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             lock.lock()
             let supersededSiblings = supersedeRangeTasksLocked(ratingKey: entry.ratingKey)
             rangeTrainEpochs[entry.attemptKey] = (rangeTrainEpochs[entry.attemptKey] ?? 0) + 1
-            retryCounts.removeValue(forKey: entry.ratingKey)
+            retryCounts.removeValue(forKey: entry.attemptKey)
             rangeHTTPRehydrateCounts.removeValue(forKey: entry.attemptKey)
             lock.unlock()
             for identifier in supersededSiblings {
@@ -3491,7 +3497,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     // This exact offset produced a complete, validated body. Clear only its own
                     // mismatch history; sibling segment retries remain independent.
                     staticRangeRetryBudget.resetOffsetMismatch(
-                        downloadID: entry.ratingKey,
+                        key: staticRangeRetryKey(for: entry.attemptKey),
                         segmentOffset: entry.baseOffset)
                     // M3: a replacement uses a new filename. Delete both the prior live-map and
                     // prior persisted-manifest file only after the new manifest/map are installed
@@ -3674,8 +3680,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // Forward progress: this response body's validator matched, so the resource is stable again — clear
             // the consecutive validator-change restart counter (#169 HIGH 1 livelock bound).
             lock.lock()
-            retryCounts.removeValue(forKey: entry.ratingKey)
-            staticRangeRetryBudget.reset(downloadID: entry.ratingKey)
+            retryCounts.removeValue(forKey: entry.attemptKey)
+            staticRangeRetryBudget.reset(key: staticRangeRetryKey(for: entry.attemptKey))
             rangeHTTPRehydrateCounts.removeValue(forKey: entry.attemptKey)
             rangeBlobResumeCounts.removeValue(forKey: entry.attemptKey)
             lock.unlock()
@@ -4163,7 +4169,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lock.lock()
         let halted = rangeHaltKinds[entry.attemptKey] != nil
         let retryAttempt = staticRangeRetryBudget.recordOffsetMismatch(
-            downloadID: entry.ratingKey,
+            key: staticRangeRetryKey(for: entry.attemptKey),
             segmentOffset: entry.baseOffset)
         lock.unlock()
 
@@ -4178,7 +4184,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         case .failExhausted:
             lock.lock()
             staticRangeRetryBudget.resetOffsetMismatch(
-                downloadID: entry.ratingKey,
+                key: staticRangeRetryKey(for: entry.attemptKey),
                 segmentOffset: entry.baseOffset)
             lock.unlock()
             AppDiagnostics.record(.downloads, "downloads.range_offset_retry_exhausted", fields: [
@@ -4263,7 +4269,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private func restartRangeFromChangedResource(entry: RangeTransfer) {
         lock.lock()
         let halted = rangeHaltKinds[entry.attemptKey] != nil
-        let retryAttempt = staticRangeRetryBudget.recordValidatorChange(downloadID: entry.ratingKey)
+        let retryAttempt = staticRangeRetryBudget.recordValidatorChange(key: staticRangeRetryKey(for: entry.attemptKey))
         // B.2: tear the whole segment train down BEFORE re-planning. Stale old-resource siblings
         // left in flight would (a) be counted by the re-plan's liveSegmentOffsets as covering
         // their offsets in the NEW train, and (b) each trigger another delete-and-restart (or a
@@ -4307,7 +4313,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // forever re-downloading from 0 with zero forward progress. After N consecutive restarts with
             // no successful append, fail clearly instead of livelocking.
             lock.lock()
-            staticRangeRetryBudget.reset(downloadID: entry.ratingKey)
+            staticRangeRetryBudget.reset(key: staticRangeRetryKey(for: entry.attemptKey))
             lock.unlock()
             AppDiagnostics.record(.downloads, "downloads.range_validator_unstable", fields: [
                 "download_id": .identifier(entry.ratingKey),
@@ -4568,7 +4574,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             errorDomain: nsError.domain,
             errorCode: nsError.code,
             hasRequest: entry.request != nil,
-            currentRetryCount: retryCounts[entry.ratingKey] ?? 0
+            currentRetryCount: retryCounts[entry.attemptKey] ?? 0
         )
         guard case .retry(let nextAttempt) = decision else {
             lock.unlock()
@@ -4591,7 +4597,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             }
             return false
         }
-        retryCounts[entry.ratingKey] = nextAttempt
+        retryCounts[entry.attemptKey] = nextAttempt
         lock.unlock()
 
         guard let request = entry.request else { return false }
@@ -4817,14 +4823,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let truncationFailures: Int = finalizationStateQueue.sync {
             switch outcome {
             case .truncated:
-                let next = truncationFailureCounts[ratingKey, default: 0] + 1
-                truncationFailureCounts[ratingKey] = next
+                let next = truncationFailureCounts[attemptKey, default: 0] + 1
+                truncationFailureCounts[attemptKey] = next
                 return next
             case .complete:
-                truncationFailureCounts.removeValue(forKey: ratingKey)
+                truncationFailureCounts.removeValue(forKey: attemptKey)
                 return 0
             default:
-                return truncationFailureCounts[ratingKey] ?? 0
+                return truncationFailureCounts[attemptKey] ?? 0
             }
         }
         let finalizationResult = BackgroundFinalizationResultPolicy.result(
@@ -5406,7 +5412,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     private func clearRetryCount(for attemptKey: DownloadAttemptKey) {
         lock.lock()
-        retryCounts.removeValue(forKey: attemptKey.ratingKey)
+        retryCounts.removeValue(forKey: attemptKey)
         rangeHTTPRehydrateCounts.removeValue(forKey: attemptKey)
         rangeBlobResumeCounts.removeValue(forKey: attemptKey)
         lastProgressNotify = nil
@@ -5443,7 +5449,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             errorCode: error.code,
             hasResumeData: hasResumeData,
             supportsResumeData: supportsResumeData,
-            currentRetryCount: retryCounts[entry.ratingKey] ?? 0
+            currentRetryCount: retryCounts[entry.attemptKey] ?? 0
         )
         guard case .retry(let nextAttempt) = decision,
               let resumeData,
@@ -5451,7 +5457,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             lock.unlock()
             return false
         }
-        retryCounts[entry.ratingKey] = nextAttempt
+        retryCounts[entry.attemptKey] = nextAttempt
         lock.unlock()
 
         let retryTask = urlSession.downloadTask(withResumeData: resumeData)
@@ -5487,14 +5493,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             errorDomain: error.domain,
             errorCode: error.code,
             hasRequest: entry.request != nil,
-            currentRetryCount: retryCounts[entry.ratingKey] ?? 0
+            currentRetryCount: retryCounts[entry.attemptKey] ?? 0
         )
         guard case .retry(let nextAttempt) = decision,
               let request = entry.request else {
             lock.unlock()
             return false
         }
-        retryCounts[entry.ratingKey] = nextAttempt
+        retryCounts[entry.attemptKey] = nextAttempt
         lock.unlock()
 
         guard let durableBytes = resetStaticRangeProgressToDurableCheckpoint(
@@ -5821,9 +5827,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // not just the blob counter — otherwise a row resumed via persisted blob keeps the prior
         // attempt's rehydrate/validator budgets while a plain Retry would have cleared them.
         rangeBlobResumeCounts.removeValue(forKey: attemptKey)
-        staticRangeRetryBudget.reset(downloadID: ratingKey)
+        staticRangeRetryBudget.reset(key: staticRangeRetryKey(for: attemptKey))
         rangeHTTPRehydrateCounts.removeValue(forKey: attemptKey)
-        retryCounts[ratingKey] = 0
+        retryCounts[attemptKey] = 0
         lock.unlock()
         return adoptBlobResumedRangeTask(ratingKey: ratingKey,
                                          resumeData: resumeData,
@@ -5888,14 +5894,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             statusCode: statusCode,
             hasRequest: entry.request != nil,
             supportsDurableCheckpoint: true,
-            currentRetryCount: retryCounts[entry.ratingKey] ?? 0
+            currentRetryCount: retryCounts[entry.attemptKey] ?? 0
         )
         guard case .retry(let nextAttempt) = decision,
               let request = entry.request else {
             lock.unlock()
             return false
         }
-        retryCounts[entry.ratingKey] = nextAttempt
+        retryCounts[entry.attemptKey] = nextAttempt
         lock.unlock()
 
         let delay = Self.rangeHTTPRetryDelay(nextAttempt: nextAttempt)
