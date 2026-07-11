@@ -54,6 +54,9 @@ enum AppStartup {
     static func prepareForLaunch() {
         LabstreamShortcuts.updateAppShortcutParameters()
         MetricKitDiagnostics.shared.register()
+        AppDiagnostics.record(.downloads, "app.process_launch", fields: [
+            "launch_source": .label("process_start"),
+        ])
     }
 
     static func recordScenePhase(_ phase: ScenePhase, downloadManager: DownloadManager) {

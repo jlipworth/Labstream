@@ -529,6 +529,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         return nil
     }
 
+    private func availableStorageBytes() -> Int64? {
+        guard let attributes = try? fileManager.attributesOfFileSystem(forPath: store.directory.path),
+              let number = attributes[.systemFreeSize] as? NSNumber else { return nil }
+        return number.int64Value
+    }
+
     /// Sync accessor for async contexts (`finalizeTransferredFile`): NSLock is unavailable in
     /// async functions, and a pending handler means the app is background-launched right now.
     private func hasPendingBackgroundCompletionHandler() -> Bool {
@@ -1191,7 +1197,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "download_id": .identifier(ratingKey),
                 "reason": .label("storage_full"),
                 "required_bytes": .bytes(Int(required)),
+                "required_bytes_exact": .int(Int(required)),
                 "free_bytes": .bytes(Int(free)),
+                "free_bytes_exact": .int(Int(free)),
             ])
             throw DownloadManager.DownloadError.storageFull
         }
@@ -1326,7 +1334,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "download_id": .identifier(ratingKey),
                 "reason": .label("storage_full"),
                 "required_bytes": .bytes(Int(requiredFreeBytes)),
+                "required_bytes_exact": .int(Int(requiredFreeBytes)),
                 "free_bytes": .bytes(Int(free)),
+                "free_bytes_exact": .int(Int(free)),
             ])
             throw DownloadManager.DownloadError.storageFull
         }
@@ -1611,10 +1621,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// retry checkpoint.
     private func handleRangeStartStorageFull(ratingKey: String, error: Error, context: String) -> Bool {
         guard case DownloadManager.DownloadError.storageFull = error else { return false }
-        AppDiagnostics.record(.downloads, "downloads.range_storage_full", fields: [
+        var fields: [String: DiagnosticFieldValue] = [
             "download_id": .identifier(ratingKey),
             "context": .label(context),
-        ])
+        ]
+        if let free = availableStorageBytes() {
+            fields["free_bytes"] = .bytes(Int(free))
+            fields["free_bytes_exact"] = .int(Int(free))
+        }
+        AppDiagnostics.record(.downloads, "downloads.range_storage_full", fields: fields)
         setFailedPurgingHeldSegments(ratingKey: ratingKey)
         onError?(ratingKey, .storageFull)
         onChange?()
@@ -4481,11 +4496,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     ratingKey: rangeEntry.ratingKey,
                     expectedBytes: rangeEntry.expectedBytes
                 )
-                AppDiagnostics.record(.downloads, "downloads.range_storage_full", fields: [
+                var fields: [String: DiagnosticFieldValue] = [
                     "download_id": .identifier(rangeEntry.ratingKey),
                     "context": .label("task_completion"),
                     "bytes": .bytes(durableBytes),
-                ])
+                ]
+                if let free = availableStorageBytes() {
+                    fields["free_bytes"] = .bytes(Int(free))
+                    fields["free_bytes_exact"] = .int(Int(free))
+                }
+                AppDiagnostics.record(.downloads, "downloads.range_storage_full", fields: fields)
                 setFailedPurgingHeldSegments(ratingKey: rangeEntry.ratingKey)
                 onError?(rangeEntry.ratingKey, .storageFull)
                 onChange?()
@@ -5253,6 +5273,39 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         default:
             return 4
         }
+    }
+
+    /// Phase-7 path-handoff evidence from the connections that actually served this task. This is
+    /// stronger than a point-in-time NWPath snapshot: a multi-transaction task records whether any
+    /// transaction used cellular/expensive/constrained networking without logging addresses/hosts.
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    didFinishCollecting metrics: URLSessionTaskMetrics) {
+        lock.lock()
+        let rangeEntry = rangeInflight[task.taskIdentifier]
+        let opaqueEntry = rangeEntry == nil ? inflight[task.taskIdentifier] : nil
+        lock.unlock()
+        let stampedRatingKey = task.taskDescription.map {
+            DownloadAttemptMarker.ratingKey(
+                fromTaskDescription: StaticRangeSegmentMarker.ratingKey(fromTaskDescription: $0))
+        }
+        let fallbackRatingKey = Self.ratingKey(for: task, knownKeys: store.allRatingKeys)
+        let ratingKey = rangeEntry?.ratingKey ?? opaqueEntry?.ratingKey
+            ?? stampedRatingKey ?? fallbackRatingKey
+        let hasRangeRequest = RangeTransferHTTPPolicy.rangeRequestStart(from: task.originalRequest) != nil
+            || RangeTransferHTTPPolicy.rangeRequestStart(from: task.currentRequest) != nil
+        let transactions = metrics.transactionMetrics
+        AppDiagnostics.record(.downloads, "downloads.task_network_metrics", fields: [
+            "download_id": .identifier(ratingKey),
+            "task_id": .int(task.taskIdentifier),
+            "task_type": .label(rangeEntry != nil || hasRangeRequest
+                ? "rangeDownloadTask" : "downloadTask"),
+            "transaction_count": .int(transactions.count),
+            "redirect_count": .int(metrics.redirectCount),
+            "cellular_observed": .bool(transactions.contains { $0.isCellular }),
+            "expensive_observed": .bool(transactions.contains { $0.isExpensive }),
+            "constrained_observed": .bool(transactions.contains { $0.isConstrained }),
+            "network_protocol": .label(transactions.last?.networkProtocolName ?? "unknown"),
+        ])
     }
 
     /// Called when the background session has delivered all events queued while the

@@ -694,6 +694,24 @@ planner slots rather than being refetched), and delete purged all seven. PMSKit'
 167-suite run, clean visionOS build, UUID-matched install, clean launch log, and signed-in Home smoke
 also passed.
 
+### Phase-7 evidence instrumentation follow-up
+
+The device checklist's automatable evidence gaps are now narrower. Every diagnostic event carries
+a hashed per-process run id and PID, with `app.process_launch`/`app.scene_phase` bracketing relaunch
+and foreground/background transitions. Launch recovery emits `downloads.range_launch_checkpoint`
+per nonterminal static row with explicit resume-manifest/blob presence, durable bytes, and held-body
+counts. `downloads.task_network_metrics` records the actual URLSession transactions' cellular,
+expensive, and constrained flags without addresses or hosts. Storage preflight/start/ENOSPC events
+now include exact free bytes (and exact required bytes where known). `TESTING-CHECKLIST.md` maps
+these fields into the physical-device cells and retains only evidence the OS/server cannot supply to
+the app (termination cause, locked-versus-off-head state, routed-Wi-Fi identity, user revocation
+timestamp, and Emby's server-side completion timestamp).
+
+A live `401-mid-train` simulator probe verified the new envelope on real session callbacks:
+`downloads.range_launch_checkpoint` reported an existing paused blob/checkpoint, all download and
+probe events shared one hashed process run id, and eight `downloads.task_network_metrics` events
+were emitted for the segment train while the existing 401 rehydrate path still passed.
+
 ### Remaining gates after automated follow-ups
 
 - **Phase 7 is physical-device evidence:** background-session redelivery, sleep/network/token

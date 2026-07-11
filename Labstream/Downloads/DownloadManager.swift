@@ -303,6 +303,19 @@ public final class DownloadManager {
         // BEFORE `reconcile` parks them `.paused`, so we can auto-resume an interrupted download
         // after a hard kill without overriding a row the user deliberately paused.
         let interruptedStaticKeys = store.interruptedStaticByteRangeKeys()
+        for evidence in store.staticRangeRecoveryEvidence() {
+            recordDownloadDiagnostic("downloads.range_launch_checkpoint", fields: [
+                "download_id": .identifier(evidence.ratingKey),
+                "status": .label(evidence.status.rawValue),
+                "durable_bytes": .bytes(evidence.durableBytes),
+                "durable_bytes_exact": .int(evidence.durableBytes),
+                "resume_manifest_recorded": .bool(evidence.resumeManifestRecorded),
+                "resume_blob_present": .bool(evidence.resumeBlobPresent),
+                "resume_blob_bytes": .bytes(evidence.resumeBlobBytes),
+                "held_body_count": .int(evidence.heldBodyCount),
+                "held_body_bytes": .bytes(evidence.heldBodyBytes),
+            ])
+        }
         // B.13: capture which rows exist BEFORE the task snapshot is requested — rows the main
         // actor seeds while `getAllTasks` is in flight must not be reconciled against it.
         let snapshotRatingKeys = Set(store.records.map(\.ratingKey))
