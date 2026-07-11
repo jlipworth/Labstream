@@ -486,19 +486,24 @@ their relationship during the schema-v3 migration.
 #### 2026-07-11 — Phase 2D compiler-cliff removal
 
 - **Status:** complete.
-- **Commits:** `cc516ea` (`Simplify optimizer item ID decoding`) and `43ba92b`
+- **Commits (current rebased IDs):** `b33ccea` (`Simplify optimizer item ID decoding`) and `f1bdec1`
   (`Split Offline library view type-check boundaries`).
 - **Optimizer boundary:** replaced the nested throwing optional/coalescing expression with explicit
   String-then-Int decoding while preserving nil for null, malformed, and missing IDs. The flexible
   ID fixture covers every accepted/rejected shape. A clean PMSKit build with 50 ms thresholds emits
   no `OptimizeRequest.Item` expression or initializer warning, down from about 2,084/2,090 ms.
+  The retained summary records zero PMSKit cold-build warnings, but the ignored raw log that would
+  identify the exact post-fix expression time was not retained; do not cite a precise sub-50 ms
+  number from this artifact alone.
 - **Offline boundary:** split rows/empty state, scroll/navigation behavior, platform presentation,
   row actions, and deletion confirmation into opaque helper boundaries without moving state or
   changing modifier order. Independent review found navigation, toolbar, focus, row identity,
   swipe/delete, Mac presentation, full-screen cover, and dialog behavior unchanged. Clean Mac,
-  iOS, and visionOS builds with 50 ms thresholds report no extracted boundary over 50 ms; only the
-  pre-existing row renderer reports 73–81 ms, below the 300 ms acceptance target. The old root body
-  measured about 2,073 ms.
+  iOS, and visionOS builds removed the old root-body cliff, which measured about 2,073 ms. The
+  contemporaneous review observed the extracted boundaries below the 300 ms acceptance target,
+  but the retained summary does not preserve per-boundary warning rows; the earlier stronger claim
+  that every extracted boundary was durably evidenced below 50 ms is therefore intentionally not
+  repeated.
 - **Build evidence:** the three-run arm64 audit at
   `build/compile-audit/phase2d-43ba92b/summary.md` records clean medians of 14.85 s Mac, 12.29 s
   mobile, 12.21 s visionOS, and 5.16 s PMSKit. Against the same-machine pre-fix checkpoint these are
@@ -511,8 +516,10 @@ their relationship during the schema-v3 migration.
 #### 2026-07-11 — Phase 2A warning and dead-helper closeout
 
 - **Status:** complete.
-- **Commits:** `2fb3d00`, `5a5f050`, `cf1f919`, and `6bff1c8` remove the four
-  original private definition-only helpers one at a time. Static reference checks prove each
+- **Commits (current rebased IDs):** `ab2b049`, `7b429ea`, `b14f3a0`, and `bef60e9` remove the four
+  original private definition-only helpers one at a time. The other 2A changes are `d2566b3`
+  (Plex photo coverage), `2dfb88c` (filesystem error-body size), `5eefc87` (modern decoding), and
+  `5fe0978` (injected restart clock). Static reference checks prove each removed
   symbol now has zero production occurrences; their active snapshot, retry-attempt, and polling
   primitives remain in use.
 - **Warning inventory:** the current production corpus has no `String(cString:)`, deprecated
@@ -529,16 +536,17 @@ their relationship during the schema-v3 migration.
 #### 2026-07-11 — Phase 2B narrow Offline lookups
 
 - **Status:** complete.
-- **Commits:** `4fb60a6` adds the narrow accessors and regression/benchmark fixture;
-  `9fb7b56`, `6c16df5`, and `36b992b` mechanically migrate scalar, manager, and
+- **Commits (current rebased IDs):** `3a86b15` adds the narrow accessors and regression/benchmark
+  fixture; `22fcf81`, `ff046e9`, and `be507d6` mechanically migrate scalar, manager, and
   background-session reads in separate review boundaries.
 - **Behavior boundary:** `record(for:)` copies one value under the existing store lock and hydrates
   it only after unlocking through the same helper as `records`. Metadata, duration, presence,
   status, keys, and the existing attempt-ownership read remain direct locked value lookups. There
   is no schema, persistence, mutation, state-machine, task-ownership, or cache-invalidation change.
 - **Static evidence:** the current app corpus has zero `store.records.first`/`contains` single-key
-  scans. The 11 remaining `store.records` reads are intentional full-library restore, recovery,
-  refresh, or UI publication snapshots. Independent review found the keyed substitutions
+  scans. The 12 remaining `store.records` reads are intentional full-library restore, recovery,
+  refresh, ownership, or UI publication snapshots; the twelfth is the Phase 1 Emby batch
+  ownership lookup, not a scalar callback regression. Independent review found the keyed substitutions
   semantically equivalent and found no new lock inversion, deadlock, or cache race.
 - **Operation evidence:** a cold keyed lookup in a 1,000-row fixture stats only its one target
   poster; metadata/duration/presence/attempt reads stat no file. Rich, legacy, and missing rows are
