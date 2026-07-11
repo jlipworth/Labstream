@@ -25,7 +25,7 @@ Current status at this checkpoint:
 | Slice | Status | Evidence / remaining boundary |
 | --- | --- | --- |
 | 0A–0B | Complete | Repeatable compile audit plus nonzero macOS/iOS app test plans are on the rebased branch. |
-| 1A | Partial | The index now has a serial revisioned writer, dirty retry, observable failures, and bounded internal flush (`0bbcb5d`, `f5ecf95`). Existing mutations still preserve synchronous durability. Exact lifecycle tickets, background-completion integration, held-manifest contracts, tombstone ordering, and split temp/replace crash seams remain. |
+| 1A | Partial / advanced | The index has a serial revisioned writer, dirty retry, observable failures, bounded internal flush, and commit-aware held-body replacement (`0bbcb5d`, `f5ecf95`, `7005fd5`). Existing mutations still preserve synchronous durability. Background-completion integration, held-manifest removal outcomes, tombstone ordering, and split temp/replace crash seams remain. |
 | 1B | Partial | Existing string attempt tokens, v2 task markers, stale-task rejection, and attempt-bearing held manifests are prior art. A typed `DownloadAttemptID`, schema v3, durable-before-reattach migration, and attempt-conditional store APIs remain. |
 | 1C | Partial | Main now has a final-verdict recheck, attempt-matched held bodies/orphan sweeping, and an Emby ambiguous-create tombstone. A work registry, attempt-scoped finalizing, side-asset staging/ownership, broad post-await guards, and compare-and-clear play-session cleanup remain. |
 | 1D–1F | Complete | Auth/secure-storage, system-media ownership, and player lifecycle generations survived the rebase unchanged. iPad/Mac physical ownership and lifecycle checks passed; iOS TSAN tests remain green. |
