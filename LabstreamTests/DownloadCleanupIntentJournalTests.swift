@@ -29,6 +29,59 @@ struct DownloadCleanupIntentJournalTests {
             attemptKey: key, metadata: missingUser, playSessionID: "play-1") == nil)
     }
 
+    @Test func managerFactoryPrefersKnownConvertJobAndBuildsExactAmbiguousAuthority() throws {
+        let attemptID = try #require(DownloadAttemptID(rawValue: "convert-attempt"))
+        let key = DownloadAttemptKey(ratingKey: "emby:item", attemptID: attemptID)
+        let fingerprint = EmbyConvertRecoveryPolicy.Fingerprint(
+            itemId: "item", quality: "Custom", profile: "profile", bitrate: 4_000_000,
+            userId: "user-1")
+        var metadata = OfflineMetadata(
+            ratingKey: key.ratingKey, title: "Item", type: "movie",
+            backendKind: .emby, backendBaseURLString: "https://emby.example",
+            backendServerID: "server-1", backendUserID: "user-1",
+            embyConvertJobID: 42, embyConvertJobBaselineIDs: [1, 2],
+            embyConvertRecoveryFingerprint: fingerprint,
+            embyConvertRecoveryStartedAtEpochSeconds: 123,
+            embyConvertRecoveryPhase: .dispatchAmbiguous)
+
+        let known = try #require(DownloadManager.makeEmbyConvertCleanupIntent(
+            attemptKey: key, metadata: metadata))
+        #expect(known.operation == .embyConvert(.knownJob(jobID: 42)))
+
+        metadata.embyConvertJobID = nil
+        let ambiguous = try #require(DownloadManager.makeEmbyConvertCleanupIntent(
+            attemptKey: key, metadata: metadata))
+        #expect(ambiguous.operation == .embyConvert(.ambiguousCreate(
+            baselineJobIDs: [1, 2], fingerprint: fingerprint,
+            attemptStartedAtEpochSeconds: 123, phase: .dispatchAmbiguous)))
+
+        metadata.embyConvertRecoveryPhase = nil
+        #expect(DownloadManager.makeEmbyConvertCleanupIntent(
+            attemptKey: key, metadata: metadata) == nil)
+    }
+
+    @Test func convertIntentUsesSameExactJournalCompareRemoveContract() throws {
+        try withTemporaryDirectory { directory in
+            let attemptID = try #require(DownloadAttemptID(rawValue: "convert-attempt"))
+            let key = DownloadAttemptKey(ratingKey: "emby:item", attemptID: attemptID)
+            let server = try #require(DurableDownloadCleanupIntent.ServerIdentity(
+                baseURL: URL(string: "https://emby.example")!,
+                serverID: "server-1", userID: "user-1"))
+            let value = try #require(DurableDownloadCleanupIntent(
+                attemptKey: key, backend: .emby, server: server,
+                operation: .embyConvert(.knownJob(jobID: 42))))
+            let journal = DownloadCleanupIntentJournal(directory: directory)
+            #expect(journal.add(value) == .committed(value))
+            #expect(journal.remove(
+                id: value.id, attemptKey: key,
+                operation: .embyConvert(.knownJob(jobID: 7))) == .committed(removed: false))
+            #expect(try loaded(journal) == [value])
+            #expect(journal.remove(
+                id: value.id, attemptKey: key, operation: value.operation)
+                == .committed(removed: true))
+        }
+    }
+
     @Test func exactAddIsIdempotentAndCompareRemovePreservesSiblings() throws {
         try withTemporaryDirectory { directory in
             let journal = DownloadCleanupIntentJournal(directory: directory)

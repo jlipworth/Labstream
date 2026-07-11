@@ -529,20 +529,27 @@ public final class DownloadManager {
                 continue
             }
 
+            var cleanupAuthorityDurable = true
             if let playSessionID = metadata.playSessionID, !playSessionID.isEmpty {
                 if let intent = persistActiveEncodingCleanupIntent(
                     attemptKey: key, metadata: metadata, playSessionID: playSessionID
                 ) {
-                    // Cleanup-only admission can be released only after the external obligation is
-                    // independently durable. Emby Convert crash-window authority remains on the
-                    // row in this slice and therefore keeps its cleanup-only barrier.
-                    if !Self.hasEmbyConvertCleanupAuthority(metadata) {
-                        startupCleanupOnlyKeys.remove(key)
-                    }
                     executeActiveEncodingCleanupIntent(intent)
+                } else {
+                    cleanupAuthorityDurable = false
                 }
-            } else if cleanupOnly && !Self.hasEmbyConvertCleanupAuthority(metadata) {
-                // No ActiveEncoding or Convert cleanup authority exists on this row.
+            }
+            if Self.hasEmbyConvertCleanupAuthority(metadata) {
+                if let intent = persistEmbyConvertCleanupIntent(
+                    attemptKey: key, metadata: metadata
+                ) {
+                    executeEmbyConvertCleanupIntent(intent)
+                } else {
+                    cleanupAuthorityDurable = false
+                }
+            }
+            if cleanupOnly && cleanupAuthorityDurable {
+                // Every external cleanup authority on the row is now independent of row lifetime.
                 startupCleanupOnlyKeys.remove(key)
             }
         }
@@ -552,8 +559,9 @@ public final class DownloadManager {
             return
         }
         for intent in intents {
-            if case .activeEncoding = intent.operation {
-                executeActiveEncodingCleanupIntent(intent)
+            switch intent.operation {
+            case .activeEncoding: executeActiveEncodingCleanupIntent(intent)
+            case .embyConvert: executeEmbyConvertCleanupIntent(intent)
             }
         }
     }
@@ -603,6 +611,56 @@ public final class DownloadManager {
         )
     }
 
+    private func persistEmbyConvertCleanupIntent(
+        attemptKey: DownloadAttemptKey,
+        metadata: OfflineMetadata
+    ) -> DurableDownloadCleanupIntent? {
+        guard let candidate = Self.makeEmbyConvertCleanupIntent(
+            attemptKey: attemptKey, metadata: metadata
+        ) else { return nil }
+        guard case .loaded(let existing) = cleanupIntentJournal.load() else { return nil }
+        if let durable = existing.first(where: {
+            $0.attemptKey == candidate.attemptKey && $0.backend == candidate.backend
+                && $0.server == candidate.server && $0.operation == candidate.operation
+        }) {
+            return durable
+        }
+        switch cleanupIntentJournal.add(candidate) {
+        case .committed(let durable): return durable
+        case .conflictingID, .failed: return nil
+        }
+    }
+
+    nonisolated static func makeEmbyConvertCleanupIntent(
+        attemptKey: DownloadAttemptKey,
+        metadata: OfflineMetadata
+    ) -> DurableDownloadCleanupIntent? {
+        guard metadata.resolvedBackendKind(ratingKey: attemptKey.ratingKey) == .emby,
+              let baseURLString = metadata.backendBaseURLString,
+              let baseURL = URL(string: baseURLString),
+              let userID = metadata.backendUserID,
+              let server = DurableDownloadCleanupIntent.ServerIdentity(
+                baseURL: baseURL, serverID: metadata.backendServerID, userID: userID
+              ) else { return nil }
+        let operation: DurableDownloadCleanupIntent.Operation
+        if let jobID = metadata.embyConvertJobID {
+            operation = .embyConvert(.knownJob(jobID: jobID))
+        } else if let baseline = metadata.embyConvertJobBaselineIDs,
+                  let fingerprint = metadata.embyConvertRecoveryFingerprint,
+                  let started = metadata.embyConvertRecoveryStartedAtEpochSeconds,
+                  let phase = metadata.embyConvertRecoveryPhase {
+            operation = .embyConvert(.ambiguousCreate(
+                baselineJobIDs: baseline,
+                fingerprint: fingerprint,
+                attemptStartedAtEpochSeconds: started,
+                phase: phase))
+        } else {
+            return nil
+        }
+        return DurableDownloadCleanupIntent(
+            attemptKey: attemptKey, backend: .emby, server: server, operation: operation)
+    }
+
     nonisolated private static func hasEmbyConvertCleanupAuthority(
         _ metadata: OfflineMetadata
     ) -> Bool {
@@ -644,6 +702,101 @@ public final class DownloadManager {
                 _ = self.cleanupIntentJournal.remove(
                     id: intent.id, attemptKey: intent.attemptKey, operation: intent.operation)
             }
+        }
+    }
+
+    private func executeEmbyConvertCleanupIntent(_ intent: DurableDownloadCleanupIntent) {
+        guard case .embyConvert(let convertIdentity) = intent.operation,
+              !cleanupIntentsInFlight.contains(intent.id),
+              let live = appModel.backendSession(for: .emby),
+              let currentUserID = live.userID,
+              intent.matches(session: live) else { return }
+        cleanupIntentsInFlight.insert(intent.id)
+        downloadWorkRegistry.start(for: intent.attemptKey, kind: .requiredCleanup) { [weak self] in
+            guard let self else { return }
+            defer { self.cleanupIntentsInFlight.remove(intent.id) }
+            do {
+                let resolved: EmbyConvertCleanupResolution
+                switch convertIdentity {
+                case .knownJob(let jobID):
+                    resolved = .cancel(jobID: jobID)
+                case .ambiguousCreate(let baseline, let fingerprint, let started, let phase):
+                    guard EmbyConvertRecoveryPolicy.publicUserMatches(
+                        currentSessionUserID: currentUserID,
+                        persistedBackendUserID: intent.server.userID,
+                        fingerprintUserID: fingerprint.userId) else { return }
+                    let listRequest = try EmbyConvertRequest.jobListRequest(
+                        server: live.baseURL, token: live.token, identity: self.appModel.identity.emby)
+                    let (data, response) = try await URLSession.shared.data(for: listRequest)
+                    guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return }
+                    let list = try EmbyConvertRequest.decodeJobList(from: data)
+                    // Preserve the legacy tombstone sweep's one-train exclusion exactly: every
+                    // job currently owned by any live row is protected, including a job this same
+                    // attempt may have adopted after its ambiguous intent was journaled.
+                    let liveJobIDs = Set(self.store.records.compactMap {
+                        $0.metadata?.embyConvertJobID
+                    })
+                    switch EmbyConvertRecoveryPolicy.cleanupAction(
+                        baselineJobIDs: Set(baseline), jobs: list.items,
+                        listIsComplete: list.isComplete, fingerprint: fingerprint,
+                        attemptStartedAtEpochSeconds: started, phase: phase,
+                        nowEpochSeconds: Date().timeIntervalSince1970,
+                        liveJobIDs: liveJobIDs
+                    ) {
+                    case .retainTombstone: return
+                    case .discardTombstone: resolved = .discard
+                    case .cancel(let jobID): resolved = .cancel(jobID: jobID)
+                    }
+                }
+
+                if case .cancel(let jobID) = resolved {
+                    let request = try EmbyConvertRequest.deleteJobRequest(
+                        server: live.baseURL, token: live.token,
+                        identity: self.appModel.identity.emby, jobId: jobID)
+                    let (_, response) = try await URLSession.shared.data(for: request)
+                    guard let http = response as? HTTPURLResponse,
+                          (200..<300).contains(http.statusCode) || [404, 410].contains(http.statusCode)
+                    else { return }
+                }
+
+                guard self.clearEmbyConvertMetadataIfExact(intent) else { return }
+                _ = self.cleanupIntentJournal.remove(
+                    id: intent.id, attemptKey: intent.attemptKey, operation: intent.operation)
+            } catch {
+                // Transport/decode/identity uncertainty retains the durable intent for a later pass.
+                return
+            }
+        }
+    }
+
+    private enum EmbyConvertCleanupResolution {
+        case cancel(jobID: Int)
+        case discard
+    }
+
+    /// Clear only the exact row authority represented by this completed cleanup. A replacement
+    /// attempt, a newly adopted job, or a changed ambiguous-create fingerprint remains untouched.
+    private func clearEmbyConvertMetadataIfExact(
+        _ intent: DurableDownloadCleanupIntent
+    ) -> Bool {
+        guard case .embyConvert(let identity) = intent.operation else { return false }
+        let result = store.updateMetadata(for: intent.attemptKey) { metadata in
+            switch identity {
+            case .knownJob(let expectedJobID):
+                guard metadata.embyConvertJobID == expectedJobID else { return }
+                metadata.embyConvertJobID = nil
+            case .ambiguousCreate(let baseline, let fingerprint, let started, let phase):
+                guard metadata.embyConvertJobID == nil,
+                      metadata.embyConvertJobBaselineIDs == baseline,
+                      metadata.embyConvertRecoveryFingerprint == fingerprint,
+                      metadata.embyConvertRecoveryStartedAtEpochSeconds == started,
+                      metadata.embyConvertRecoveryPhase == phase else { return }
+                metadata.clearEmbyConvertRecoveryIdentity()
+            }
+        }
+        switch result {
+        case .persistenceFailed: return false
+        case .applied, .noChange, .staleOrMissing: return true
         }
     }
 
@@ -2475,6 +2628,7 @@ public final class DownloadManager {
     /// Delete a download and its backing file.
     public func delete(ratingKey: String) {
         let rowToDelete = store.record(for: ratingKey)
+        var convertCleanupIntent: DurableDownloadCleanupIntent?
         if let metadata = rowToDelete?.metadata {
             let backend = metadata.resolvedBackendKind(ratingKey: ratingKey)
             let transientPlaySessionID: String? = switch backend {
@@ -2500,26 +2654,20 @@ public final class DownloadManager {
                     return
                 }
             }
-        }
-        if let attemptID = rowToDelete?.attemptID,
-           startupCleanupOnlyKeys.contains(DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)),
-           rowToDelete?.metadata.map(Self.hasEmbyConvertCleanupAuthority) == true {
-            // Convert cleanup migration intentionally remains outside this ActiveEncoding slice.
-            recordDownloadDiagnostic("downloads.delete_deferred", fields: [
-                "download_id": .identifier(ratingKey),
-                "reason": .label("awaiting_convert_cleanup_migration"),
-            ])
-            return
-        }
-        if rowToDelete?.metadata?.embyConvertJobID != nil {
-            // A known Convert job is still row-owned in this intermediate slice. Unlike the
-            // ambiguous-create path below, it has no independent legacy tombstone yet, so an
-            // asynchronous best-effort DELETE cannot justify destroying the last durable handle.
-            recordDownloadDiagnostic("downloads.delete_deferred", fields: [
-                "download_id": .identifier(ratingKey),
-                "reason": .label("awaiting_convert_cleanup_migration"),
-            ])
-            return
+            if Self.hasEmbyConvertCleanupAuthority(metadata) {
+                guard let attemptID = rowToDelete?.attemptID,
+                      let intent = persistEmbyConvertCleanupIntent(
+                        attemptKey: DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID),
+                        metadata: metadata
+                      ) else {
+                    recordDownloadDiagnostic("downloads.delete_deferred", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "reason": .label("convert_cleanup_intent_not_durable"),
+                    ])
+                    return
+                }
+                convertCleanupIntent = intent
+            }
         }
         recordDownloadDiagnostic("downloads.cancel_or_delete", fields: [
             "download_id": .identifier(ratingKey),
@@ -2533,60 +2681,6 @@ public final class DownloadManager {
         // server-side "Convert Media" Sync job, or it keeps rendering after the user abandoned it.
         // Capture the row BEFORE removing it (best-effort; deleting the job never deletes an
         // already-converted file, so this only ever cancels an in-flight conversion).
-        let embySession = appModel.backendSession(for: .emby)
-        var embyCleanupTombstone: DownloadStore.EmbyConvertCleanupTombstone?
-        if let metadata = rowToDelete?.metadata, metadata.hasEmbyConvertCrashWindowIdentity {
-            // Persist cleanup intent BEFORE removing the visible row. If POST was accepted during
-            // the crash window, deleting the UI row must not erase the only evidence able to find
-            // and cancel that server job.
-            let candidate = DownloadStore.EmbyConvertCleanupTombstone(
-                id: UUID(), ratingKey: ratingKey, metadata: metadata
-            )
-            switch store.addEmbyConvertCleanupTombstone(candidate) {
-            case .committed(let tombstone):
-                embyCleanupTombstone = tombstone
-            case .failed(let failure):
-                // The row is the only durable authority for a crash-window Convert. If its
-                // tombstone cannot commit, fail closed rather than orphaning server work.
-                recordDownloadDiagnostic("downloads.convert_cleanup_deferred", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "reason": .label("tombstone_\(failure.stage.rawValue)_failed"),
-                    "error_type": .label(failure.errorType),
-                ])
-                return
-            }
-        }
-        let embySessionMatchesDeletedRow = rowToDelete?.metadata.map { metadata in
-            embySession?.matchesPersistedServer(metadata) == true
-        } ?? false
-        switch DownloadDeletePolicy.embyConvertCancelDecision(
-            for: rowToDelete,
-            embySessionMatchesPersistedServer: embySessionMatchesDeletedRow
-        ) {
-        case .none:
-            break
-        case .cancel(let jobId):
-            guard let embySession else { break }
-            let server = embySession.baseURL
-            let token = embySession.token
-            let identity = appModel.identity.emby
-            recordDownloadDiagnostic("downloads.convert_cancel", fields: [
-                "download_id": .identifier(ratingKey),
-                "job_id": .int(jobId),
-            ])
-            Task {
-                if let req = try? EmbyConvertRequest.deleteJobRequest(
-                    server: server, token: token, identity: identity, jobId: jobId) {
-                    _ = try? await URLSession.shared.data(for: req)
-                }
-            }
-        case .skip(let jobId, let reason):
-            recordDownloadDiagnostic("downloads.convert_cancel_skip", fields: [
-                "download_id": .identifier(ratingKey),
-                "job_id": .int(jobId),
-                "reason": .label(reason),
-            ])
-        }
         // Plex parity: deleting a row still in server prep (optimize job triggered, no rendered
         // Part handed off yet) must also remove its type-42 background-processing item, or the
         // server keeps transcoding — and later stores a rendered version — for a download the
@@ -2628,17 +2722,7 @@ public final class DownloadManager {
             session.cancel(ratingKey: ratingKey)
             store.remove(ratingKey: ratingKey)
         }
-        if let tombstone = embyCleanupTombstone,
-           let embySession,
-           let embyUserID = embySession.userID,
-           embySession.matchesPersistedServer(tombstone.metadata) {
-            let embyIdentity = appModel.identity.emby
-            Task { [weak self] in
-                await self?.recoverAndCancelEmbyConvertTombstone(
-                    tombstone, server: embySession.baseURL, token: embySession.token,
-                    identity: embyIdentity, currentUserID: embyUserID)
-            }
-        }
+        if let convertCleanupIntent { executeEmbyConvertCleanupIntent(convertCleanupIntent) }
         lastError[ratingKey] = nil
         // Drop server-prep progress state too, or re-downloading the same item resurfaces the
         // deleted row's stale "Preparing on server… N%" caption and seeds the ETA estimator with
