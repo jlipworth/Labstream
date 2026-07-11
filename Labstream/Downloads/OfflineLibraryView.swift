@@ -33,93 +33,118 @@ public struct OfflineLibraryView: View {
     }
 
     public var body: some View {
+        platformPresentedContent
+            .confirmationDialog(
+                pendingDeletion?.dialogTitle ?? "Delete download?",
+                isPresented: deletionDialogIsPresented,
+                titleVisibility: .visible
+            ) {
+                deletionDialogActions
+            } message: {
+                deletionDialogMessage
+            }
+    }
+
+    private var offlineNavigationContent: some View {
         let snapshot = manager.offlineLibrarySnapshot
 
         // No NavigationStack here: RootView already wraps the Offline tab in one on every
         // platform, so opening a second stack nested large-title collapse and toolbar merging.
         // The navigationTitle/toolbar below attach to this content and merge into the outer stack.
-        ScrollViewReader { scrollProxy in
-            Group {
-                if snapshot.rows.isEmpty {
-                    ContentUnavailableView(
-                        "No Offline Downloads",
-                        systemImage: "arrow.down.circle",
-                        description: Text("Download a movie or episode to watch it offline. "
-                                          + "Transfers may pause while the app is backgrounded or the device sleeps.")
-                    )
-                } else {
-                    List {
-                        SwiftUI.Section {
-                            ForEach(snapshot.rows) { rowSnapshot in
-                                #if os(iOS)
-                                row(for: rowSnapshot)
-                                    .id(rowSnapshot.id)
-                                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                        Button(role: .destructive) {
-                                            confirmDelete(rowSnapshot)
-                                        } label: {
-                                            Label("Delete", systemImage: "trash")
-                                        }
-                                    }
-                                #else
-                                row(for: rowSnapshot)
-                                    .id(rowSnapshot.id)
-                                #endif
-                            }
-                            .onDelete { offsets in
-                                confirmDelete(rows: offsets.compactMap { index in
-                                    snapshot.rows.indices.contains(index) ? snapshot.rows[index] : nil
-                                })
-                            }
-                        } footer: {
-                            Text(snapshot.footerText)
-                        }
-                    }
-                }
-            }
+        return ScrollViewReader { scrollProxy in
+            navigableOfflineContent(snapshot: snapshot, scrollProxy: scrollProxy)
+        }
+    }
+
+    private func navigableOfflineContent(
+        snapshot: OfflineLibrarySnapshot,
+        scrollProxy: ScrollViewProxy
+    ) -> some View {
+        offlineRowsOrEmpty(snapshot: snapshot)
             .navigationTitle("Offline")
-            .toolbar {
-                offlineToolbar(snapshot: snapshot)
-            }
-            .task(id: focusedRatingKey) {
-                await focusRequestedDownload(using: scrollProxy)
-            }
+            .toolbar { offlineToolbar(snapshot: snapshot) }
+            .task(id: focusedRatingKey) { await focusRequestedDownload(using: scrollProxy) }
             .onChange(of: snapshot.ratingKeys) { _, _ in
-                Task { @MainActor in
-                    await focusRequestedDownload(using: scrollProxy)
+                Task { @MainActor in await focusRequestedDownload(using: scrollProxy) }
+            }
+    }
+
+    @ViewBuilder
+    private func offlineRowsOrEmpty(snapshot: OfflineLibrarySnapshot) -> some View {
+        if snapshot.rows.isEmpty {
+            ContentUnavailableView(
+                "No Offline Downloads",
+                systemImage: "arrow.down.circle",
+                description: Text("Download a movie or episode to watch it offline. "
+                                  + "Transfers may pause while the app is backgrounded or the device sleeps.")
+            )
+        } else {
+            List {
+                SwiftUI.Section {
+                    ForEach(snapshot.rows) { rowSnapshot in
+                        offlineRowWithPlatformActions(rowSnapshot)
+                    }
+                    .onDelete { offsets in
+                        confirmDelete(rows: offsets.compactMap { index in
+                            snapshot.rows.indices.contains(index) ? snapshot.rows[index] : nil
+                        })
+                    }
+                } footer: {
+                    Text(snapshot.footerText)
                 }
             }
         }
-        #if os(macOS)
-        .onChange(of: playing?.id) { _, _ in
-            syncMacPlayerPresentation()
-        }
-        .onDisappear {
-            dismissMacPlayerPresentation()
-        }
+    }
+
+    @ViewBuilder
+    private func offlineRowWithPlatformActions(_ rowSnapshot: OfflineDownloadRowSnapshot) -> some View {
+        #if os(iOS)
+        row(for: rowSnapshot)
+            .id(rowSnapshot.id)
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                Button(role: .destructive) { confirmDelete(rowSnapshot) } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
         #else
-        .fullScreenCover(item: $playing) { record in
-            offlinePlayerView(for: record)
-        }
+        row(for: rowSnapshot)
+            .id(rowSnapshot.id)
         #endif
-        .confirmationDialog(pendingDeletion?.dialogTitle ?? "Delete download?",
-                            isPresented: Binding(
-                                get: { pendingDeletion != nil },
-                                set: { isPresented in
-                                    if !isPresented { pendingDeletion = nil }
-                                }
-                            ),
-                            titleVisibility: .visible) {
-            Button(pendingDeletion?.actionTitle ?? "Delete Download", role: .destructive) {
-                commitPendingDeletion()
-            }
-            Button("Cancel", role: .cancel) {
-                pendingDeletion = nil
-            }
-        } message: {
-            if let pendingDeletion {
-                Text(pendingDeletion.message)
-            }
+    }
+
+    @ViewBuilder
+    private var platformPresentedContent: some View {
+        #if os(macOS)
+        offlineNavigationContent
+            .onChange(of: playing?.id) { _, _ in syncMacPlayerPresentation() }
+            .onDisappear { dismissMacPlayerPresentation() }
+        #else
+        offlineNavigationContent
+            .fullScreenCover(item: $playing) { record in offlinePlayerView(for: record) }
+        #endif
+    }
+
+    private var deletionDialogIsPresented: Binding<Bool> {
+        Binding(
+            get: { pendingDeletion != nil },
+            set: { isPresented in if !isPresented { pendingDeletion = nil } }
+        )
+    }
+
+    @ViewBuilder
+    private var deletionDialogActions: some View {
+        Button(pendingDeletion?.actionTitle ?? "Delete Download", role: .destructive) {
+            commitPendingDeletion()
+        }
+        Button("Cancel", role: .cancel) {
+            pendingDeletion = nil
+        }
+    }
+
+    @ViewBuilder
+    private var deletionDialogMessage: some View {
+        if let pendingDeletion {
+            Text(pendingDeletion.message)
         }
     }
 
