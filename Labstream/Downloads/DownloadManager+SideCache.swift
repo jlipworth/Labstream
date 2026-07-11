@@ -46,9 +46,11 @@ extension DownloadManager {
         let posterURL = store.posterDestinationURL(ratingKey: attemptKey.ratingKey)
         guard let stagingURL = store.attemptStagingURL(for: attemptKey, stableURL: posterURL) else { return }
         let store = self.store
-        Task { [weak self] in
+        downloadWorkRegistry.start(for: attemptKey, kind: .sideCache(.poster)) { [weak self] in
+            guard !Task.isCancelled else { return }
             defer { try? FileManager.default.removeItem(at: stagingURL) }
             guard await Self.fetchAndWritePoster(request: request, to: stagingURL),
+                  !Task.isCancelled,
                   Self.promoteSideAsset(store: store, key: attemptKey,
                                         stagingURL: stagingURL, stableURL: posterURL) else { return }
             await MainActor.run {
@@ -72,7 +74,7 @@ extension DownloadManager {
                 for: sideAssetRequest(applyingCellularPolicy: request))
             if let http = response as? HTTPURLResponse,
                !(200...299).contains(http.statusCode) { return false }
-            guard !data.isEmpty else { return false }
+            guard !data.isEmpty, !Task.isCancelled else { return false }
             try data.write(to: destination, options: .atomic)
             return true
         } catch {
@@ -201,7 +203,7 @@ extension DownloadManager {
     /// already-backend-authenticated request, the on-disk destination, and the pre-computed
     /// `OfflineTextSubtitleTrack` (pure; its inputs are known before the fetch). Deliberately carries
     /// no `Stream` so the shared tail names no PMSKit type that collides with `Foundation.Stream`.
-    private struct PendingSubtitle {
+    private struct PendingSubtitle: Sendable {
         let request: URLRequest
         let destination: URL
         let staging: URL
@@ -217,11 +219,13 @@ extension DownloadManager {
     private func cacheTextSubtitles(for attemptKey: DownloadAttemptKey, pending: [PendingSubtitle]) {
         guard !pending.isEmpty else { return }
         let store = self.store
-        Task { [weak self] in
+        downloadWorkRegistry.start(for: attemptKey, kind: .sideCache(.textSubtitles)) { [weak self] in
             var tracks: [OfflineTextSubtitleTrack] = []
             for item in pending {
+                guard !Task.isCancelled else { return }
                 defer { try? FileManager.default.removeItem(at: item.staging) }
                 guard await Self.fetchAndWriteTextSubtitle(request: item.request, to: item.staging),
+                      !Task.isCancelled,
                       Self.promoteSideAsset(store: store, key: attemptKey,
                                             stagingURL: item.staging, stableURL: item.destination)
                 else { continue }
@@ -254,7 +258,8 @@ extension DownloadManager {
                 for: sideAssetRequest(applyingCellularPolicy: request))
             if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { return false }
             guard let text = String(data: data, encoding: .utf8),
-                  !OfflineTextSubtitleParser.parse(text).isEmpty else { return false }
+                  !OfflineTextSubtitleParser.parse(text).isEmpty,
+                  !Task.isCancelled else { return false }
             try data.write(to: destination, options: .atomic)
             return true
         } catch {
@@ -280,7 +285,8 @@ extension DownloadManager {
         // Wi-Fi-only download policy can be stamped, instead of the shared PlexClient.
         let bifRequest = Self.sideAssetRequest(applyingCellularPolicy: request.urlRequest())
         let store = self.store
-        Task { [weak self] in
+        downloadWorkRegistry.start(for: attemptKey, kind: .sideCache(.plexBIF)) { [weak self] in
+            guard !Task.isCancelled else { return }
             defer { try? FileManager.default.removeItem(at: staging) }
             do {
                 let (data, response) = try await URLSession.shared.data(for: bifRequest)
@@ -288,7 +294,8 @@ extension DownloadManager {
                    !(200..<300).contains(http.statusCode) { return }
                 guard !data.isEmpty, (try? BIFParser.parse(data)) != nil else { return }
                 try data.write(to: staging, options: .atomic)
-                guard Self.promoteSideAsset(store: store, key: attemptKey,
+                guard !Task.isCancelled,
+                      Self.promoteSideAsset(store: store, key: attemptKey,
                                             stagingURL: staging, stableURL: destination) else { return }
                 await MainActor.run {
                     let result = store.updateMetadata(for: attemptKey) {
@@ -348,28 +355,31 @@ extension DownloadManager {
             }
         }
         guard !requests.isEmpty else { return }
+        let pendingRequests = requests
         let store = self.store
-        Task { [weak self] in
+        downloadWorkRegistry.start(for: attemptKey, kind: .sideCache(.chapterImages)) { [weak self] in
+            guard !Task.isCancelled else { return }
             // Bound side-asset fanout (#187). The old task group launched every chapter thumbnail at
             // once and accumulated all image Data before writing. A long movie times several overnight
             // downloads could amplify memory/network pressure independent of the media transfer. Fetch
             // in small batches and write each batch before requesting the next one.
             let batchSize = DownloadSideAssetPolicy.chapterImageBatchSize
-            if DownloadSideAssetPolicy.shouldLogChapterImageThrottling(requestCount: requests.count) {
+            if DownloadSideAssetPolicy.shouldLogChapterImageThrottling(requestCount: pendingRequests.count) {
                 await MainActor.run {
                     self?.recordDownloadDiagnostic("downloads.side_cache_throttled", fields: [
                         "download_id": .identifier(attemptKey.ratingKey),
                         "asset": .label("chapter_images"),
-                        "request_count": .int(requests.count),
+                        "request_count": .int(pendingRequests.count),
                         "batch_size": .int(batchSize),
                     ])
                 }
             }
             var relativesByIndex: [Int: String] = [:]
             var start = 0
-            while start < requests.count {
-                let end = min(start + batchSize, requests.count)
-                let batch = Array(requests[start..<end])
+            while start < pendingRequests.count {
+                guard !Task.isCancelled else { return }
+                let end = min(start + batchSize, pendingRequests.count)
+                let batch = Array(pendingRequests[start..<end])
                 let fetched: [(index: Int, data: Data)] = await withTaskGroup(of: (Int, Data)?.self) { group in
                     for entry in batch {
                         group.addTask {
@@ -385,6 +395,7 @@ extension DownloadManager {
                     return out
                 }
                 for entry in fetched {
+                    guard !Task.isCancelled else { return }
                     let destination = store.chapterImageDestinationURL(ratingKey: attemptKey.ratingKey, index: entry.index)
                     guard let staging = store.attemptStagingURL(for: attemptKey, stableURL: destination) else { continue }
                     defer { try? FileManager.default.removeItem(at: staging) }
@@ -410,6 +421,7 @@ extension DownloadManager {
     nonisolated static func promoteSideAsset(store: DownloadStore, key: DownloadAttemptKey,
                                              stagingURL: URL, stableURL: URL) -> Bool {
         defer { try? FileManager.default.removeItem(at: stagingURL) }
+        guard !Task.isCancelled else { return false }
         return store.promoteAttemptStagingFile(for: key, stagingURL: stagingURL, to: stableURL)
             == .promoted
     }

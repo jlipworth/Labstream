@@ -121,6 +121,9 @@ public final class DownloadManager {
     /// `session.start`, so a delete/pause landing during PlaybackInfo/preflight cannot be undone by
     /// the resumed chain re-seeding the row and starting the transfer.
     @ObservationIgnored var startAttempts = DownloadStartAttemptTracker()
+    /// Attempt-scoped ownership for async finalizers and side-cache tails. A replacement seed
+    /// cancels only the previous owner's cancellable work; durable cleanup remains registered.
+    @ObservationIgnored let downloadWorkRegistry = DownloadWorkRegistry()
     private var serverPrepRefreshKickScheduled = false
     private var lastServerPrepRefreshKickAt: Date?
     private var lastServerPrepQueuePausedLogAt: Date?
@@ -920,6 +923,11 @@ public final class DownloadManager {
         )
         switch result {
         case .committed(let key) where key.attemptID == handle.attemptID:
+            if let previousOwner = handle.expectedPreviousOwner,
+               previousOwner != key.attemptID {
+                _ = downloadWorkRegistry.cancelCancellableWork(for: DownloadAttemptKey(
+                    ratingKey: handle.ratingKey, attemptID: previousOwner))
+            }
             return true
         case .committed:
             lastError[handle.ratingKey] = .transferFailed(
@@ -2608,8 +2616,15 @@ public final class DownloadManager {
                 "reason": .label(reason),
             ])
         }
-        session.cancel(ratingKey: ratingKey)
-        store.remove(ratingKey: ratingKey)
+        if let attemptID = rowToDelete?.attemptID {
+            let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+            _ = downloadWorkRegistry.cancelCancellableWork(for: key)
+            session.cancel(ratingKey: ratingKey)
+            _ = store.remove(for: key)
+        } else {
+            session.cancel(ratingKey: ratingKey)
+            store.remove(ratingKey: ratingKey)
+        }
         if let tombstone = embyCleanupTombstone,
            let embySession,
            let embyUserID = embySession.userID,
