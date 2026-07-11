@@ -162,9 +162,47 @@ struct LiveDownloadStatusProbeTests {
             }
             let data = try await send(request(cfg, path: key))
             let queue = try JSONDecoder().decode(BackgroundProcessingItems.self, from: data)
+            let rawRoot = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            let rawContainer = rawRoot?["MediaContainer"] as? [String: Any]
+            let rawItems = rawContainer?["Item"] as? [[String: Any]] ?? []
+            let itemKeys = Set(rawItems.flatMap { $0.keys })
+            let statusKeys = Set(rawItems.compactMap { $0["Status"] as? [String: Any] }
+                .flatMap { $0.keys })
+            let nestedKeySummary = ["Device", "Location", "MediaSettings", "Policy", "target"]
+                .map { name -> String in
+                    let keys = Set(rawItems.compactMap { $0[name] as? [String: Any] }
+                        .flatMap { $0.keys })
+                    return "\(name)=\(keys.sorted().joined(separator: "+"))"
+                }.joined(separator: ";")
+            let sourceMatches = rawItems.filter { raw in
+                let location = raw["Location"] as? [String: Any]
+                let uri = location?["uri"] as? String
+                return uri?.contains("/metadata/\(cfg.ratingKey)") == true
+                    || uri?.contains("%2Fmetadata%2F\(cfg.ratingKey)") == true
+            }
+            let sourceMatchMarked = sourceMatches.filter {
+                ($0["title"] as? String)?.contains("[Labstream ") == true
+            }.count
+            let sourceMatchCompleted = sourceMatches.filter {
+                let state = (($0["Status"] as? [String: Any])?["state"] as? String)?.lowercased()
+                return state.map(BackgroundProcessingItems.completedStates.contains) == true
+            }.count
+            let states = Dictionary(grouping: queue.items) { item in
+                item.state?.lowercased() ?? "missing"
+            }.mapValues { $0.count }
+            let stateSummary = states.keys.sorted().map { "\($0):\(states[$0]!)" }.joined(separator: ",")
+            let markedStates = Dictionary(grouping: queue.items.filter {
+                $0.title?.contains("[Labstream ") == true
+            }) { item in item.state?.lowercased() ?? "missing" }.mapValues { $0.count }
+            let markedStateSummary = markedStates.keys.sorted()
+                .map { "\($0):\(markedStates[$0]!)" }.joined(separator: ",")
             print("""
             >>> DLSTAT type42 items=\(queue.items.count) labstream_marked=\(queue.markedCount(marker: "[Labstream ")) \
-            pending=\(queue.pendingCount)
+            pending=\(queue.pendingCount) states=\(stateSummary) marked_states=\(markedStateSummary) \
+            item_keys=\(itemKeys.sorted().joined(separator: ",")) \
+            status_keys=\(statusKeys.sorted().joined(separator: ",")) \
+            nested_keys=\(nestedKeySummary) source_matches=\(sourceMatches.count) \
+            source_match_marked=\(sourceMatchMarked) source_match_completed=\(sourceMatchCompleted)
             """)
         } catch {
             print(">>> DLSTAT type42 error=\(error)")

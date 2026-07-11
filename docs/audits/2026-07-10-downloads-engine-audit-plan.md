@@ -735,7 +735,20 @@ were emitted for the segment train while the existing 401 rehydrate path still p
 - **EMBY-F9 needs live Emby evidence:** whether its forward-only encoder needs Jellyfin-style
   keepalives depends on real server idle behavior. No Emby credentials are available in this
   worktree/simulator, so a synthetic keepalive would not establish correctness.
-- **PLEX-F5 needs safe queue-item identity/cancellation evidence:** cancelling a completed Plex type-
-  42 queue item can delete the rendered version itself, while the current metadata cannot prove
-  whether a newly matching Part belongs to this attempt or a concurrent job. Blind cleanup risks
-  destroying the file being downloaded.
+
+### Deferred follow-up closed without mutation: PLEX-F5 completed optimize artifacts
+
+The read-only live Plex status probe now reports privacy-safe type-42 state distributions, raw key
+shape, nested key shape, and source-item correlation. On the configured server, the probed media
+item had one original Part plus two optimized MP4 Parts and two matching type-42 queue entries: one
+Labstream-marked and one foreign, both complete. The queue entry identifies its *source* through
+`Location.uri` and exposes its unique title/id/status, but exposes no rendered output Part id; the
+rendered `Part` likewise carries no queue title/id. Therefore, after concurrent matching renders,
+the client cannot prove which output Part belongs to its marked entry. Deleting the marked completed
+entry can delete the very Part selected for download.
+
+PLEX-F5 is closed as a fail-closed server limitation rather than by adding unsafe cleanup: Labstream
+continues cancelling exact-title queue items only while they are non-completed and preserves every
+completed type-42 item. Duplicate completed Plex Versions remain server/user-managed artifacts. The
+live probe is intentionally read-only and now preserves the structural evidence needed to detect if
+a future PMS release adds an output identity that makes safe cleanup possible.
