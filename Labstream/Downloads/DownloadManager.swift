@@ -265,6 +265,9 @@ public final class DownloadManager {
     let appModel: AppModel
     let store: DownloadStore
     let session: BackgroundDownloadSession
+    /// Attempt-scoped server cleanup survives row/file removal in a separate durability domain.
+    let cleanupIntentJournal: DownloadCleanupIntentJournal
+    @ObservationIgnored private var cleanupIntentsInFlight: Set<UUID> = []
 
     /// Poll cadence for Plex server-side optimize jobs. Deliberately no wall-clock timeout:
     /// long 4K/HDR software transcodes can legitimately run for hours, and the app must base
@@ -279,6 +282,7 @@ public final class DownloadManager {
         let migrationResult = store.commitLegacyAttemptOwnershipMigration()
         self.store = store
         self.session = BackgroundDownloadSession(store: store)
+        self.cleanupIntentJournal = DownloadCleanupIntentJournal(directory: store.directory)
         self.records = store.records
         self.offlineLibrarySnapshot = makeOfflineLibrarySnapshot(from: self.records)
         // Reattach to any transfers that survived a relaunch + receive progress.
@@ -475,16 +479,7 @@ public final class DownloadManager {
                         liveKeys: liveKeys
                     )
                 }
-                // Cleanup-only legacy ownership remains durable for the later attempt-aware 1C
-                // journal. The current rating-key-only teardown must not race a replacement row.
-                if self.startupCleanupOnlyKeys.isEmpty {
-                    self.teardownOrphanedEncodersOnLaunch()
-                } else {
-                    self.recordDownloadDiagnostic("downloads.startup_cleanup_deferred", fields: [
-                        "cleanup_count": .int(self.startupCleanupOnlyKeys.count),
-                        "reason": .label("awaiting_attempt_aware_cleanup"),
-                    ])
-                }
+                self.migrateAndRetryActiveEncodingCleanupOnLaunch()
             }
         }
     }
@@ -497,38 +492,151 @@ public final class DownloadManager {
     /// teardown that fails (server unreachable / wrong server) retries on a later launch instead
     /// of leaking the encoder forever.
     func teardownOrphanedEncodersOnLaunch() {
-        guard startupRecoveryState == .ready, startupCleanupOnlyKeys.isEmpty else { return }
+        migrateAndRetryActiveEncodingCleanupOnLaunch()
+    }
+
+    /// Move row-owned ActiveEncoding handles into the independent journal before executing them.
+    /// The journal is the authority once a row is deleted; an unreadable/unwritable journal is
+    /// never treated as an empty queue.
+    func migrateAndRetryActiveEncodingCleanupOnLaunch() {
+        guard startupRecoveryState == .ready else { return }
+
         for record in records {
-            guard let md = record.metadata, let psid = md.playSessionID, !psid.isEmpty,
-                  record.status == .failed || record.status == .complete || record.status == .unverified else { continue }
-            let kind = md.resolvedBackendKind(ratingKey: record.ratingKey)
-            // Need a live session for that backend to issue the DELETE.
-            guard let live = appModel.backendSession(for: kind) else { continue }
-            // Only tear down on the SAME server the encoder lives on. If the lane was re-pointed
-            // at a different server (re-login elsewhere), firing the DELETE there would hit the
-            // wrong server and leak the original encoder — skip and keep the psid so a later
-            // launch on the matching server retries.
-            guard live.matchesPersistedServer(md) else { continue }
-            let key = record.ratingKey
-            switch kind {
+            guard let attemptID = record.attemptID, let metadata = record.metadata else { continue }
+            let key = DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
+            let cleanupOnly = startupCleanupOnlyKeys.contains(key)
+            let terminal = record.status == .failed || record.status == .complete
+                || record.status == .unverified
+            guard cleanupOnly || terminal else { continue }
+
+            let backend = metadata.resolvedBackendKind(ratingKey: record.ratingKey)
+            if backend == .plex {
+                // Plex has no ActiveEncoding cleanup. Preserve the prior stale-handle repair, but
+                // use exact attempt/value authority so this sweep cannot clear a replacement row.
+                if let playSessionID = metadata.playSessionID, !playSessionID.isEmpty {
+                    switch store.clearPlaySessionID(for: key, expectedPlaySessionID: playSessionID) {
+                    case .cleared, .alreadyAbsent:
+                        startupCleanupOnlyKeys.remove(key)
+                    case .expectedValueMismatch, .staleOrMissing, .persistenceFailed:
+                        break
+                    }
+                } else {
+                    startupCleanupOnlyKeys.remove(key)
+                }
+                continue
+            }
+
+            if let playSessionID = metadata.playSessionID, !playSessionID.isEmpty {
+                if let intent = persistActiveEncodingCleanupIntent(
+                    attemptKey: key, metadata: metadata, playSessionID: playSessionID
+                ) {
+                    // Cleanup-only admission can be released only after the external obligation is
+                    // independently durable. Emby Convert crash-window authority remains on the
+                    // row in this slice and therefore keeps its cleanup-only barrier.
+                    if !Self.hasEmbyConvertCleanupAuthority(metadata) {
+                        startupCleanupOnlyKeys.remove(key)
+                    }
+                    executeActiveEncodingCleanupIntent(intent)
+                }
+            } else if cleanupOnly && !Self.hasEmbyConvertCleanupAuthority(metadata) {
+                // No ActiveEncoding or Convert cleanup authority exists on this row.
+                startupCleanupOnlyKeys.remove(key)
+            }
+        }
+
+        guard case .loaded(let intents) = cleanupIntentJournal.load() else {
+            recordDownloadDiagnostic("downloads.cleanup_intent_load_failed")
+            return
+        }
+        for intent in intents {
+            if case .activeEncoding = intent.operation {
+                executeActiveEncodingCleanupIntent(intent)
+            }
+        }
+    }
+
+    /// Return the existing exact operation when already durable; otherwise append one new intent.
+    /// The server identity comes from persisted row authority, never from whichever lane happens
+    /// to be selected when cleanup runs.
+    private func persistActiveEncodingCleanupIntent(
+        attemptKey: DownloadAttemptKey,
+        metadata: OfflineMetadata,
+        playSessionID: String
+    ) -> DurableDownloadCleanupIntent? {
+        guard let candidate = Self.makeActiveEncodingCleanupIntent(
+            attemptKey: attemptKey, metadata: metadata, playSessionID: playSessionID
+        ) else { return nil }
+        guard case .loaded(let existing) = cleanupIntentJournal.load() else { return nil }
+        if let durable = existing.first(where: {
+            $0.attemptKey == candidate.attemptKey && $0.backend == candidate.backend
+                && $0.server == candidate.server && $0.operation == candidate.operation
+        }) {
+            return durable
+        }
+        switch cleanupIntentJournal.add(candidate) {
+        case .committed(let durable): return durable
+        case .conflictingID, .failed: return nil
+        }
+    }
+
+    nonisolated static func makeActiveEncodingCleanupIntent(
+        attemptKey: DownloadAttemptKey,
+        metadata: OfflineMetadata,
+        playSessionID: String
+    ) -> DurableDownloadCleanupIntent? {
+        let backend = metadata.resolvedBackendKind(ratingKey: attemptKey.ratingKey)
+        guard backend == .jellyfin || backend == .emby,
+              let baseURLString = metadata.backendBaseURLString,
+              let baseURL = URL(string: baseURLString),
+              let userID = metadata.backendUserID,
+              let server = DurableDownloadCleanupIntent.ServerIdentity(
+                baseURL: baseURL, serverID: metadata.backendServerID, userID: userID
+              ) else { return nil }
+        return DurableDownloadCleanupIntent(
+            attemptKey: attemptKey,
+            backend: backend,
+            server: server,
+            operation: .activeEncoding(playSessionID: playSessionID)
+        )
+    }
+
+    nonisolated private static func hasEmbyConvertCleanupAuthority(
+        _ metadata: OfflineMetadata
+    ) -> Bool {
+        metadata.embyConvertJobID != nil || metadata.hasEmbyConvertCrashWindowIdentity
+    }
+
+    private func executeActiveEncodingCleanupIntent(_ intent: DurableDownloadCleanupIntent) {
+        guard case .activeEncoding(let playSessionID) = intent.operation,
+              !cleanupIntentsInFlight.contains(intent.id),
+              let live = appModel.backendSession(for: intent.backend),
+              intent.matches(session: live) else { return }
+        cleanupIntentsInFlight.insert(intent.id)
+        Task { [weak self] in
+            guard let self else { return }
+            let confirmedGone: Bool
+            switch intent.backend {
             case .jellyfin:
-                recordDownloadDiagnostic("downloads.jellyfin_encoder_teardown", fields: [
-                    "download_id": .identifier(key),
-                    "phase": .label("launch_sweep"),
-                ])
-                let service = JellyfinBrowseService(appModel: appModel)
-                Task { if await service.stopActiveEncoding(playSessionId: psid, session: live) { store.clearPlaySessionID(ratingKey: key) } }
+                confirmedGone = await JellyfinBrowseService(appModel: self.appModel)
+                    .stopActiveEncoding(playSessionId: playSessionID, session: live)
             case .emby:
-                recordDownloadDiagnostic("downloads.emby_encoder_teardown", fields: [
-                    "download_id": .identifier(key),
-                    "phase": .label("launch_sweep"),
-                ])
-                let service = EmbyBrowseService(appModel: appModel)
-                Task { if await service.stopActiveEncoding(playSessionId: psid, session: live) { store.clearPlaySessionID(ratingKey: key) } }
+                confirmedGone = await EmbyBrowseService(appModel: self.appModel)
+                    .stopActiveEncoding(playSessionId: playSessionID, session: live)
             case .plex:
-                // Plex optimize renders server-side then serves a static file — no live encoder to
-                // tear down (the queue item is reaped separately). Clear the unused psid.
-                store.clearPlaySessionID(ratingKey: key)
+                confirmedGone = false
+            }
+            self.cleanupIntentsInFlight.remove(intent.id)
+            guard confirmedGone else { return }
+            switch self.store.clearPlaySessionID(
+                for: intent.attemptKey, expectedPlaySessionID: playSessionID
+            ) {
+            case .persistenceFailed:
+                // Repeat the idempotent DELETE later; never drop the only durable cleanup record
+                // while the row clear is still dirty/unproven.
+                return
+            case .cleared, .alreadyAbsent, .expectedValueMismatch, .staleOrMissing:
+                _ = self.cleanupIntentJournal.remove(
+                    id: intent.id, attemptKey: intent.attemptKey, operation: intent.operation)
             }
         }
     }
@@ -2355,17 +2463,50 @@ public final class DownloadManager {
 
     /// Delete a download and its backing file.
     public func delete(ratingKey: String) {
-        if let attemptID = store.downloadAttemptIdentity(ratingKey: ratingKey),
-           startupCleanupOnlyKeys.contains(DownloadAttemptKey(
-                ratingKey: ratingKey,
-                attemptID: attemptID
-           )) {
-            // Completed legacy rows may still be the only durable record of an encoder/convert
-            // cleanup obligation. Until 1C has moved that obligation into an attempt-aware cleanup
-            // journal, deleting the row/file would silently orphan the server work. Fail closed.
+        let rowToDelete = store.record(for: ratingKey)
+        if let metadata = rowToDelete?.metadata {
+            let backend = metadata.resolvedBackendKind(ratingKey: ratingKey)
+            let transientPlaySessionID: String? = switch backend {
+            case .emby: embyPlaySessionByRatingKey[ratingKey]
+            case .jellyfin: jellyfinPlaySessionByRatingKey[ratingKey]
+            case .plex: nil
+            }
+            if backend != .plex,
+               let playSessionID = metadata.playSessionID ?? transientPlaySessionID,
+               !playSessionID.isEmpty {
+                guard let attemptID = rowToDelete?.attemptID,
+                      persistActiveEncodingCleanupIntent(
+                        attemptKey: DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID),
+                        metadata: metadata,
+                        playSessionID: playSessionID
+                      ) != nil else {
+                    // The row/file is still the only durable cleanup authority. Deleting it after
+                    // a journal failure would permanently leak the server encoder.
+                    recordDownloadDiagnostic("downloads.delete_deferred", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "reason": .label("cleanup_intent_not_durable"),
+                    ])
+                    return
+                }
+            }
+        }
+        if let attemptID = rowToDelete?.attemptID,
+           startupCleanupOnlyKeys.contains(DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)),
+           rowToDelete?.metadata.map(Self.hasEmbyConvertCleanupAuthority) == true {
+            // Convert cleanup migration intentionally remains outside this ActiveEncoding slice.
             recordDownloadDiagnostic("downloads.delete_deferred", fields: [
                 "download_id": .identifier(ratingKey),
-                "reason": .label("awaiting_attempt_aware_cleanup"),
+                "reason": .label("awaiting_convert_cleanup_migration"),
+            ])
+            return
+        }
+        if rowToDelete?.metadata?.embyConvertJobID != nil {
+            // A known Convert job is still row-owned in this intermediate slice. Unlike the
+            // ambiguous-create path below, it has no independent legacy tombstone yet, so an
+            // asynchronous best-effort DELETE cannot justify destroying the last durable handle.
+            recordDownloadDiagnostic("downloads.delete_deferred", fields: [
+                "download_id": .identifier(ratingKey),
+                "reason": .label("awaiting_convert_cleanup_migration"),
             ])
             return
         }
@@ -2381,7 +2522,6 @@ public final class DownloadManager {
         // server-side "Convert Media" Sync job, or it keeps rendering after the user abandoned it.
         // Capture the row BEFORE removing it (best-effort; deleting the job never deletes an
         // already-converted file, so this only ever cancels an in-flight conversion).
-        let rowToDelete = store.record(for: ratingKey)
         let embySession = appModel.backendSession(for: .emby)
         var embyCleanupTombstone: DownloadStore.EmbyConvertCleanupTombstone?
         if let metadata = rowToDelete?.metadata, metadata.hasEmbyConvertCrashWindowIdentity {
@@ -2395,17 +2535,14 @@ public final class DownloadManager {
             case .committed(let tombstone):
                 embyCleanupTombstone = tombstone
             case .failed(let failure):
-                // Persist failed (disk full — exactly when users delete to free space). The user's
-                // delete MUST still complete: keep the cleanup intent alive in memory, where this
-                // launch's sweeps retry both the persist and the server-side cancel. Early-returning
-                // here made Delete a silent permanent no-op.
-                deferredEmbyCleanupTombstones.append(candidate)
-                embyCleanupTombstone = candidate
+                // The row is the only durable authority for a crash-window Convert. If its
+                // tombstone cannot commit, fail closed rather than orphaning server work.
                 recordDownloadDiagnostic("downloads.convert_cleanup_deferred", fields: [
                     "download_id": .identifier(ratingKey),
                     "reason": .label("tombstone_\(failure.stage.rawValue)_failed"),
                     "error_type": .label(failure.errorType),
                 ])
+                return
             }
         }
         let embySessionMatchesDeletedRow = rowToDelete?.metadata.map { metadata in
@@ -3380,7 +3517,7 @@ public final class DownloadManager {
         let embySessionMatchesMetadata = releaseMetadata.map { metadata in
             embySession?.matchesPersistedServer(metadata) == true
         }
-        let embyPlaySessionId = embyPlaySessionByRatingKey.removeValue(forKey: ratingKey)
+        let embyPlaySessionId = embyPlaySessionByRatingKey[ratingKey]
         switch DownloadEncoderTeardownPolicy.decision(
             backend: .emby,
             transientPlaySessionID: embyPlaySessionId,
@@ -3390,19 +3527,24 @@ public final class DownloadManager {
             rowRemoved: rowRemoved
         ) {
         case .none:
+            embyPlaySessionByRatingKey.removeValue(forKey: ratingKey)
             break
         case .stop(let playSessionId):
-            guard let embySession else { break }
-            recordDownloadDiagnostic("downloads.emby_encoder_teardown", fields: [
-                "download_id": .identifier(ratingKey),
-            ])
-            let service = EmbyBrowseService(appModel: appModel)
-            let store = self.store
-            Task {
-                if await service.stopActiveEncoding(playSessionId: playSessionId, session: embySession) {
-                    store.clearPlaySessionID(ratingKey: ratingKey)
-                }
+            guard let metadata = releaseMetadata,
+                  let attemptID = storeRow?.attemptID ?? rowSnapshot?.attemptID,
+                  let intent = persistActiveEncodingCleanupIntent(
+                    attemptKey: DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID),
+                    metadata: metadata,
+                    playSessionID: playSessionId
+                  ) else {
+                recordDownloadDiagnostic("downloads.emby_encoder_teardown_skip", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "reason": .label("cleanup_intent_not_durable"),
+                ])
+                break
             }
+            embyPlaySessionByRatingKey.removeValue(forKey: ratingKey)
+            executeActiveEncodingCleanupIntent(intent)
         case .skip(let reason):
             recordDownloadDiagnostic("downloads.emby_encoder_teardown_skip", fields: [
                 "download_id": .identifier(ratingKey),
@@ -3414,7 +3556,7 @@ public final class DownloadManager {
         let jellyfinSessionMatchesMetadata = releaseMetadata.map { metadata in
             jellyfinSession?.matchesPersistedServer(metadata) == true
         }
-        let jellyfinPlaySessionId = jellyfinPlaySessionByRatingKey.removeValue(forKey: ratingKey)
+        let jellyfinPlaySessionId = jellyfinPlaySessionByRatingKey[ratingKey]
         switch DownloadEncoderTeardownPolicy.decision(
             backend: .jellyfin,
             transientPlaySessionID: jellyfinPlaySessionId,
@@ -3424,19 +3566,24 @@ public final class DownloadManager {
             rowRemoved: rowRemoved
         ) {
         case .none:
+            jellyfinPlaySessionByRatingKey.removeValue(forKey: ratingKey)
             break
         case .stop(let playSessionId):
-            guard let jellyfinSession else { break }
-            recordDownloadDiagnostic("downloads.jellyfin_encoder_teardown", fields: [
-                "download_id": .identifier(ratingKey),
-            ])
-            let service = JellyfinBrowseService(appModel: appModel)
-            let store = self.store
-            Task {
-                if await service.stopActiveEncoding(playSessionId: playSessionId, session: jellyfinSession) {
-                    store.clearPlaySessionID(ratingKey: ratingKey)
-                }
+            guard let metadata = releaseMetadata,
+                  let attemptID = storeRow?.attemptID ?? rowSnapshot?.attemptID,
+                  let intent = persistActiveEncodingCleanupIntent(
+                    attemptKey: DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID),
+                    metadata: metadata,
+                    playSessionID: playSessionId
+                  ) else {
+                recordDownloadDiagnostic("downloads.jellyfin_encoder_teardown_skip", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "reason": .label("cleanup_intent_not_durable"),
+                ])
+                break
             }
+            jellyfinPlaySessionByRatingKey.removeValue(forKey: ratingKey)
+            executeActiveEncodingCleanupIntent(intent)
         case .skip(let reason):
             recordDownloadDiagnostic("downloads.jellyfin_encoder_teardown_skip", fields: [
                 "download_id": .identifier(ratingKey),
