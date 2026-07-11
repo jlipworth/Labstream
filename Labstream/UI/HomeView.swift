@@ -404,6 +404,11 @@ private extension MediaItem {
 /// Visual polish: a fixed 2:3 poster, a continue-watching progress sliver when the
 /// item has a resume point, and a visionOS hover lift. The title block reserves a
 /// stable height so rows of cells with 1- vs 2-line titles still align cleanly.
+enum PosterCellLabelStyle {
+    case standard
+    case denseLibrary
+}
+
 struct PosterCell: View {
     let item: MediaItem
     /// Explicit width from grid callers; nil means "rail default for this size class".
@@ -414,6 +419,8 @@ struct PosterCell: View {
     /// Optional width/height aspect override for artwork whose shape is known independently
     /// of `item.primaryImageAspectRatio` (e.g. season poster art on an episode item).
     var aspectOverride: Double?
+    /// Compact library grids use denser typography; rail/search/music callers retain defaults.
+    var labelStyle: PosterCellLabelStyle = .standard
 
     @Environment(\.labstreamCompactWidth) private var compactWidth
 
@@ -442,19 +449,19 @@ struct PosterCell: View {
                 // title + year treatment.
                 if item.kind == .episode {
                     Text(item.grandparentTitle ?? item.title)
-                        .font(.headline)
+                        .font(labelStyle == .denseLibrary ? .subheadline.weight(.semibold) : .headline)
                         .lineLimit(1)
                     Text(episodeSubtitle)
-                        .font(.subheadline)
+                        .font(labelStyle == .denseLibrary ? .caption : .subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 } else {
                     Text(item.title)
-                        .font(.headline)
+                        .font(labelStyle == .denseLibrary ? .subheadline.weight(.semibold) : .headline)
                         .lineLimit(1)
                     if let year = item.year {
                         Text(String(year))
-                            .font(.subheadline)
+                            .font(labelStyle == .denseLibrary ? .caption : .subheadline)
                             .foregroundStyle(.secondary)
                     }
                 }
