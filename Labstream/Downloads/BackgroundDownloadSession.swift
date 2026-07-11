@@ -82,6 +82,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// resource validator so the drain can re-verify version consistency at splice time (B.2).
     /// Guarded by `lock`.
     private var heldRangeSegments: [String: [Int: (url: URL, length: Int, validator: String?)]] = [:]
+    /// Previous held bodies retained because their replacement manifest write failed. The old
+    /// on-disk manifest may still reference them, while the dirty writer may later commit the new
+    /// body. Keep same-run ownership so drain/purge/delete can remove both generations.
+    /// Guarded by `lock`.
+    private var heldRangeRetainedPredecessorURLs: [String: [Int: Set<URL>]] = [:]
     /// Train generation per ratingKey (B.2/B.3(b)): bumped whenever the whole segment train is torn
     /// down (changed-resource restart, adopted whole-file 200). A finished body carries the epoch
     /// captured at its delegate finish; the off-queue apply discards the body when the train moved
@@ -1012,7 +1017,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// Crash window backstop: a durable body may have been renamed into Downloads just before its
     /// index manifest was committed. Only Labstream's private held-body filename class is swept.
     private func sweepOrphanedDurableHeldRangeSegments() {
-        let referenced = store.referencedHeldRangeSegmentRelativePaths
+        var referenced = store.referencedHeldRangeSegmentRelativePaths
+        lock.lock()
+        referenced.formUnion(heldRangeSegments.values.flatMap {
+            $0.values.map { $0.url.lastPathComponent }
+        })
+        referenced.formUnion(heldRangeRetainedPredecessorURLs.values.flatMap {
+            $0.values.flatMap { $0.map(\.lastPathComponent) }
+        })
+        lock.unlock()
         guard let entries = try? fileManager.contentsOfDirectory(
             at: store.directory, includingPropertiesForKeys: nil) else { return }
         var sweptCount = 0
@@ -3019,8 +3032,35 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                         continueRangeAfterBody(entry: entry, partialSize: durableBytesBeforeAppend)
                         return
                     }
+                    let previousPersistedURL = persistence.previous.flatMap {
+                        store.heldRangeSegmentURL(relativePath: $0.relativePath)
+                    }
                     lock.lock()
+                    let haltAfterPersistence = rangeHaltKinds[entry.ratingKey]
                     let previousInMemory = heldRangeSegments[entry.ratingKey]?[entry.baseOffset]
+                    var predecessorURLs = Set<URL>()
+                    if let previousInMemory { predecessorURLs.insert(previousInMemory.url) }
+                    if let previousPersistedURL { predecessorURLs.insert(previousPersistedURL) }
+                    let alreadyRetained = heldRangeRetainedPredecessorURLs[entry.ratingKey]?[entry.baseOffset] ?? []
+                    let ownership = HeldRangeBodyOwnershipPolicy.replacementPlan(
+                        haltKind: haltAfterPersistence,
+                        manifestCommitted: persistence.committed,
+                        newBody: durableStash,
+                        predecessors: predecessorURLs,
+                        alreadyRetained: alreadyRetained
+                    )
+                    guard ownership.installNewBody else {
+                        lock.unlock()
+                        // Cancel/purge may have completed while the synchronous manifest attempt
+                        // was in flight. Supersede any accepted dirty manifest and own the new body;
+                        // never reinstall a cancelled row into the live map.
+                        removeHeldRangeSegment(
+                            ratingKey: entry.ratingKey,
+                            offset: entry.baseOffset,
+                            fallbackURLs: ownership.deleteBodies
+                        )
+                        return
+                    }
                     heldRangeSegments[entry.ratingKey, default: [:]][entry.baseOffset] =
                         (url: durableStash, length: stashLen, validator: validator)
                     // This exact offset produced a complete, validated body. Clear only its own
@@ -3028,23 +3068,38 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     staticRangeRetryBudget.resetOffsetMismatch(
                         downloadID: entry.ratingKey,
                         segmentOffset: entry.baseOffset)
-                    lock.unlock()
                     // M3: a replacement uses a new filename. Delete both the prior live-map and
-                    // prior persisted-manifest file only after the new manifest/map are installed.
-                    var replacedURLs = Set<URL>()
-                    if let previousInMemory { replacedURLs.insert(previousInMemory.url) }
-                    if let previous = persistence.previous,
-                       let url = store.heldRangeSegmentURL(relativePath: previous.relativePath) {
-                        replacedURLs.insert(url)
+                    // prior persisted-manifest file only after the new manifest/map are installed
+                    // AND the replacement manifest is durable. On failure the writer retains a
+                    // dirty snapshot that may commit later, so both bodies must remain valid.
+                    if ownership.retainPredecessors.isEmpty {
+                        heldRangeRetainedPredecessorURLs[entry.ratingKey]?.removeValue(
+                            forKey: entry.baseOffset
+                        )
+                        if heldRangeRetainedPredecessorURLs[entry.ratingKey]?.isEmpty == true {
+                            heldRangeRetainedPredecessorURLs.removeValue(forKey: entry.ratingKey)
+                        }
+                    } else {
+                        heldRangeRetainedPredecessorURLs[entry.ratingKey, default: [:]][
+                            entry.baseOffset
+                        ] = ownership.retainPredecessors
                     }
-                    for url in replacedURLs where url != durableStash {
-                        try? fileManager.removeItem(at: url)
+                    lock.unlock()
+                    for url in ownership.deleteBodies { try? fileManager.removeItem(at: url) }
+                    if !persistence.committed {
+                        AppDiagnostics.record(.downloads, "downloads.range_held_persist_failed", fields: [
+                            "download_id": .identifier(entry.ratingKey),
+                            "base_offset": .int(entry.baseOffset),
+                            "stage": .label("manifest_commit"),
+                            "retained_previous_body_count": .int(ownership.retainPredecessors.count),
+                        ])
                     }
                     AppDiagnostics.record(.downloads, "downloads.range_segment_held", fields: [
                         "download_id": .identifier(entry.ratingKey),
                         "base_offset": .int(entry.baseOffset),
                         "durable_bytes": .int(durableBytesBeforeAppend),
                         "body_bytes": .int(stashLen),
+                        "manifest_committed": .bool(persistence.committed),
                     ])
                     onChange?()
                     // A task slot freed — top the train up (reuses continuation's halt/grace logic).
@@ -3304,34 +3359,65 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
     }
 
-    private func removeHeldRangeSegment(ratingKey: String, offset: Int, fallbackURL: URL? = nil) {
-        removeHeldRangeSegments(ratingKey: ratingKey, segments: [(offset, fallbackURL)])
+    private func removeHeldRangeSegment(
+        ratingKey: String,
+        offset: Int,
+        fallbackURL: URL? = nil,
+        fallbackURLs: Set<URL> = []
+    ) {
+        removeHeldRangeSegments(
+            ratingKey: ratingKey,
+            segments: [(offset: offset, fallbackURL: fallbackURL)],
+            fallbackURLsByOffset: fallbackURLs.isEmpty ? [:] : [offset: fallbackURLs]
+        )
     }
 
     /// Batch removal: one manifest persist for a whole discard set, instead of a full index
-    /// rewrite per segment (the drain-discard sweep can drop many at once).
-    private func removeHeldRangeSegments(ratingKey: String,
-                                         segments: [(offset: Int, fallbackURL: URL?)]) {
+    /// rewrite per segment. Retained replacement generations remain owned per offset.
+    private func removeHeldRangeSegments(
+        ratingKey: String,
+        segments: [(offset: Int, fallbackURL: URL?)],
+        fallbackURLsByOffset: [Int: Set<URL>] = [:]
+    ) {
         guard !segments.isEmpty else { return }
-        let persisted = store.removeHeldRangeSegments(ratingKey: ratingKey,
-                                                      offsets: segments.map(\.offset))
+        let persisted = store.removeHeldRangeSegments(
+            ratingKey: ratingKey,
+            offsets: segments.map(\.offset)
+        )
+        let persistedByOffset = Dictionary(
+            persisted.map { ($0.offset, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
         lock.lock()
-        var mappedURLsByOffset: [Int: URL] = [:]
+        var mappedByOffset: [Int: URL] = [:]
+        var retainedByOffset: [Int: Set<URL>] = [:]
         for segment in segments {
             if let mapped = heldRangeSegments[ratingKey]?.removeValue(forKey: segment.offset) {
-                mappedURLsByOffset[segment.offset] = mapped.url
+                mappedByOffset[segment.offset] = mapped.url
             }
+            if let retained = heldRangeRetainedPredecessorURLs[ratingKey]?.removeValue(
+                forKey: segment.offset
+            ) {
+                retainedByOffset[segment.offset] = retained
+            }
+        }
+        if heldRangeRetainedPredecessorURLs[ratingKey]?.isEmpty == true {
+            heldRangeRetainedPredecessorURLs.removeValue(forKey: ratingKey)
         }
         lock.unlock()
         var urls = Set<URL>()
         for segment in segments {
-            if let fallbackURL = segment.fallbackURL { urls.insert(fallbackURL) }
-            if let mapped = mappedURLsByOffset[segment.offset] { urls.insert(mapped) }
-        }
-        for entry in persisted {
-            if let url = store.heldRangeSegmentURL(relativePath: entry.relativePath) {
-                urls.insert(url)
+            var fallbacks = fallbackURLsByOffset[segment.offset] ?? []
+            if let fallbackURL = segment.fallbackURL { fallbacks.insert(fallbackURL) }
+            let persistedURL = persistedByOffset[segment.offset].flatMap {
+                store.heldRangeSegmentURL(relativePath: $0.relativePath)
             }
+            urls.formUnion(HeldRangeBodyOwnershipPolicy.removalBodies(
+                current: mappedByOffset[segment.offset],
+                persisted: persistedURL,
+                fallback: fallbacks,
+                retainedPredecessors: retainedByOffset[segment.offset] ?? []
+            ))
         }
         for url in urls { try? fileManager.removeItem(at: url) }
     }
@@ -3506,22 +3592,24 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private func purgeHeldRangeSegments(ratingKey: String) {
         lock.lock()
         let held = heldRangeSegments.removeValue(forKey: ratingKey)
+        let retained = heldRangeRetainedPredecessorURLs.removeValue(forKey: ratingKey)
         lock.unlock()
         let persisted = store.takeHeldRangeSegments(ratingKey: ratingKey)
-        var urls = Set<URL>()
-        if let held {
-            for entry in held.values { urls.insert(entry.url) }
+        let currentURLs = held?.values.map(\.url) ?? []
+        let retainedURLs = retained?.values.map { $0 } ?? []
+        let persistedURLs = persisted.compactMap {
+            store.heldRangeSegmentURL(relativePath: $0.relativePath)
         }
-        for manifest in persisted {
-            if let url = store.heldRangeSegmentURL(relativePath: manifest.relativePath) {
-                urls.insert(url)
-            }
-        }
+        let urls = HeldRangeBodyOwnershipPolicy.purgeBodies(
+            current: currentURLs,
+            persisted: persistedURLs,
+            retainedPredecessors: retainedURLs
+        )
         guard !urls.isEmpty || !persisted.isEmpty else { return }
         for url in urls { try? fileManager.removeItem(at: url) }
         AppDiagnostics.record(.downloads, "downloads.range_held_segments_purged", fields: [
             "download_id": .identifier(ratingKey),
-            "purged_count": .int(max(held?.count ?? 0, persisted.count)),
+            "purged_count": .int(urls.count),
         ])
     }
 
