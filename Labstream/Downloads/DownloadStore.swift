@@ -86,6 +86,13 @@ final class DownloadStore: @unchecked Sendable {
         case persistenceFailed(PersistenceFlushResult)
     }
 
+    enum AttemptUnverifiedPromotionResult: Sendable, Equatable {
+        case promoted
+        case notUnverified
+        case staleOrMissing
+        case persistenceFailed(PersistenceFlushResult)
+    }
+
     enum AttemptCompareClearResult: Sendable, Equatable {
         case cleared
         case alreadyAbsent
@@ -1488,12 +1495,42 @@ final class DownloadStore: @unchecked Sendable {
     /// so offline progress stays per downloaded row/version and online timeline semantics remain
     /// untouched. The pure policy clamps negatives/over-duration values and resets near-EOF
     /// positions to 0 so reopening does not land on a final frame.
-    func setLocalPlaybackPosition(ratingKey: String, positionMs: Int, durationMs: Int?) {
-        updateMetadata(ratingKey: ratingKey) { meta in
+    @discardableResult
+    func setLocalPlaybackPosition(
+        for key: DownloadAttemptKey,
+        positionMs: Int,
+        durationMs: Int?
+    ) -> AttemptMutationResult {
+        updateMetadata(for: key) { meta in
             let effectiveDuration = durationMs ?? meta.duration
             meta.localPlaybackPositionMs = OfflinePlaybackPositionPolicy.standard
                 .persistedPositionMs(currentMs: positionMs, durationMs: effectiveDuration)
         }
+    }
+
+    /// Compatibility for completed v1/v2 rows that legitimately have no asynchronous owner.
+    /// Active ownerless rows are never eligible: they must pass startup ownership migration first.
+    @discardableResult
+    func setLocalPlaybackPositionForOwnerlessTerminalRow(
+        ratingKey: String,
+        positionMs: Int,
+        durationMs: Int?
+    ) -> Bool {
+        lock.lock()
+        guard var row = rows[ratingKey], row.attemptID == nil,
+              row.status == .complete || row.status == .unverified,
+              var metadata = row.metadata else {
+            lock.unlock()
+            return false
+        }
+        let effectiveDuration = durationMs ?? metadata.duration
+        metadata.localPlaybackPositionMs = OfflinePlaybackPositionPolicy.standard
+            .persistedPositionMs(currentMs: positionMs, durationMs: effectiveDuration)
+        row.metadata = metadata
+        rows[ratingKey] = row
+        let ticket = enqueueAttemptPersistenceLocked()
+        lock.unlock()
+        return waitForPersistence(through: ticket).result.committed(through: ticket)
     }
 
     /// #84: persist the server-minted `PlaySessionId` for a transcoded JF/Emby (or Plex optimize)
@@ -2467,21 +2504,52 @@ final class DownloadStore: @unchecked Sendable {
     /// actual local playback proves the file is usable. No-op for already-complete/active/failed rows
     /// so callers can safely invoke this from reconnect and playback-progress paths.
     @discardableResult
-    func markCompleteIfUnverified(ratingKey: String) -> Bool {
+    func markCompleteIfUnverified(
+        for key: DownloadAttemptKey
+    ) -> AttemptUnverifiedPromotionResult {
         lock.lock()
-        guard var row = rows[ratingKey], row.status == .unverified else {
+        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
+              !row.legacyResetPending else {
+            lock.unlock()
+            return .staleOrMissing
+        }
+        guard row.status == .unverified else {
+            lock.unlock()
+            return .notUnverified
+        }
+        row.status = .complete
+        rows[key.ratingKey] = row
+        let ticket = enqueueAttemptPersistenceLocked()
+        lock.unlock()
+        AppDiagnostics.record(.downloads, "downloads.unverified_promoted", fields: [
+            "download_id": .identifier(key.ratingKey),
+            "source": .label("local_playback"),
+        ])
+        let persistence = waitForPersistence(through: ticket)
+        return persistence.result.committed(through: persistence.ticket)
+            ? .promoted : .persistenceFailed(persistence.result)
+    }
+
+    /// Compatibility for terminal v1/v2 rows that intentionally remained ownerless during the
+    /// schema-v3 migration. The status check and nil-owner proof share the Store lock.
+    @discardableResult
+    func markCompleteIfUnverifiedOwnerlessTerminalRow(ratingKey: String) -> Bool {
+        lock.lock()
+        guard var row = rows[ratingKey], row.attemptID == nil,
+              row.status == .unverified else {
             lock.unlock()
             return false
         }
         row.status = .complete
         rows[ratingKey] = row
+        let ticket = enqueueAttemptPersistenceLocked()
         lock.unlock()
         AppDiagnostics.record(.downloads, "downloads.unverified_promoted", fields: [
             "download_id": .identifier(ratingKey),
-            "source": .label("local_playback"),
+            "source": .label("local_playback_legacy"),
         ])
-        persist()
-        return true
+        let persistence = waitForPersistence(through: ticket)
+        return persistence.result.committed(through: persistence.ticket)
     }
 
     /// Reconcile persisted rows against disk at launch (D2).

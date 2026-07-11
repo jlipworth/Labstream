@@ -3026,14 +3026,38 @@ public final class DownloadManager {
 
 
     func updateLocalPlaybackPosition(ratingKey: String, positionMs: Int, durationMs: Int?) {
-        if positionMs > 0, store.markCompleteIfUnverified(ratingKey: ratingKey) {
+        guard let record = store.record(for: ratingKey) else { return }
+        var promoted = false
+        if let attemptID = record.attemptID {
+            let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+            if positionMs > 0, case .promoted = store.markCompleteIfUnverified(for: key) {
+                promoted = true
+            }
+            switch store.setLocalPlaybackPosition(
+                for: key, positionMs: positionMs, durationMs: durationMs) {
+            case .applied, .noChange:
+                break
+            case .staleOrMissing, .persistenceFailed:
+                return
+            }
+        } else {
+            // Completed v1/v2 rows can legitimately remain ownerless. Active ownerless rows are
+            // rejected inside both Store operations and must pass startup migration instead.
+            guard record.status == .complete || record.status == .unverified else { return }
+            if positionMs > 0,
+               store.markCompleteIfUnverifiedOwnerlessTerminalRow(ratingKey: ratingKey) {
+                promoted = true
+            }
+            guard store.setLocalPlaybackPositionForOwnerlessTerminalRow(
+                ratingKey: ratingKey, positionMs: positionMs, durationMs: durationMs) else { return }
+        }
+        if promoted {
             recordDownloadDiagnostic("downloads.unverified_playback_confirmed", fields: [
                 "download_id": .identifier(ratingKey),
                 "position_ms": .int(positionMs),
                 "duration_ms": .int(durationMs ?? -1),
             ])
         }
-        store.setLocalPlaybackPosition(ratingKey: ratingKey, positionMs: positionMs, durationMs: durationMs)
         refreshRecords()
     }
 
