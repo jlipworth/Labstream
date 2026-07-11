@@ -8,12 +8,12 @@ struct StaticRangeRetryBudgetTests {
     func offsetMismatchBudget() {
         var budget = StaticRangeRetryBudget(maxValidatorChangeRestarts: 3, maxOffsetMismatchRetries: 2)
 
-        #expect(budget.recordOffsetMismatch(downloadID: "row") == StaticRangeRetryAttempt(attempt: 1, isExhausted: false))
-        #expect(budget.recordOffsetMismatch(downloadID: "row") == StaticRangeRetryAttempt(attempt: 2, isExhausted: false))
-        #expect(budget.recordOffsetMismatch(downloadID: "row") == StaticRangeRetryAttempt(attempt: 3, isExhausted: true))
+        #expect(budget.recordOffsetMismatch(downloadID: "row", segmentOffset: 0) == StaticRangeRetryAttempt(attempt: 1, isExhausted: false))
+        #expect(budget.recordOffsetMismatch(downloadID: "row", segmentOffset: 0) == StaticRangeRetryAttempt(attempt: 2, isExhausted: false))
+        #expect(budget.recordOffsetMismatch(downloadID: "row", segmentOffset: 0) == StaticRangeRetryAttempt(attempt: 3, isExhausted: true))
         // Exhausted attempts do not keep increasing persisted state forever; the next retry remains
         // the first over-budget attempt until the caller resets.
-        #expect(budget.recordOffsetMismatch(downloadID: "row") == StaticRangeRetryAttempt(attempt: 3, isExhausted: true))
+        #expect(budget.recordOffsetMismatch(downloadID: "row", segmentOffset: 0) == StaticRangeRetryAttempt(attempt: 3, isExhausted: true))
     }
 
     @Test("Validator changes count restarts until reset")
@@ -31,9 +31,9 @@ struct StaticRangeRetryBudgetTests {
     func budgetsArePerDownload() {
         var budget = StaticRangeRetryBudget(maxValidatorChangeRestarts: 1, maxOffsetMismatchRetries: 1)
 
-        #expect(!budget.recordOffsetMismatch(downloadID: "a").isExhausted)
-        #expect(!budget.recordOffsetMismatch(downloadID: "b").isExhausted)
-        #expect(budget.recordOffsetMismatch(downloadID: "a").isExhausted)
+        #expect(!budget.recordOffsetMismatch(downloadID: "a", segmentOffset: 0).isExhausted)
+        #expect(!budget.recordOffsetMismatch(downloadID: "b", segmentOffset: 0).isExhausted)
+        #expect(budget.recordOffsetMismatch(downloadID: "a", segmentOffset: 0).isExhausted)
         #expect(!budget.recordValidatorChange(downloadID: "a").isExhausted)
         #expect(!budget.recordValidatorChange(downloadID: "b").isExhausted)
     }
@@ -41,12 +41,27 @@ struct StaticRangeRetryBudgetTests {
     @Test("Resetting one budget does not erase the other row")
     func resetIsScoped() {
         var budget = StaticRangeRetryBudget(maxValidatorChangeRestarts: 1, maxOffsetMismatchRetries: 1)
-        _ = budget.recordOffsetMismatch(downloadID: "a")
-        _ = budget.recordOffsetMismatch(downloadID: "b")
+        _ = budget.recordOffsetMismatch(downloadID: "a", segmentOffset: 0)
+        _ = budget.recordOffsetMismatch(downloadID: "b", segmentOffset: 0)
 
         budget.reset(downloadID: "a")
 
-        #expect(!budget.recordOffsetMismatch(downloadID: "a").isExhausted)
-        #expect(budget.recordOffsetMismatch(downloadID: "b").isExhausted)
+        #expect(!budget.recordOffsetMismatch(downloadID: "a", segmentOffset: 0).isExhausted)
+        #expect(budget.recordOffsetMismatch(downloadID: "b", segmentOffset: 0).isExhausted)
+    }
+
+    @Test("Parallel segment offsets do not consume each other's mismatch budget")
+    func offsetMismatchBudgetIsPerSegment() {
+        var budget = StaticRangeRetryBudget(maxValidatorChangeRestarts: 1,
+                                            maxOffsetMismatchRetries: 1)
+
+        #expect(!budget.recordOffsetMismatch(downloadID: "row", segmentOffset: 0).isExhausted)
+        #expect(!budget.recordOffsetMismatch(downloadID: "row", segmentOffset: 512).isExhausted)
+        #expect(budget.recordOffsetMismatch(downloadID: "row", segmentOffset: 0).isExhausted)
+        #expect(budget.recordOffsetMismatch(downloadID: "row", segmentOffset: 512).isExhausted)
+
+        budget.resetOffsetMismatch(downloadID: "row", segmentOffset: 0)
+        #expect(!budget.recordOffsetMismatch(downloadID: "row", segmentOffset: 0).isExhausted)
+        #expect(budget.recordOffsetMismatch(downloadID: "row", segmentOffset: 512).isExhausted)
     }
 }

@@ -797,7 +797,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                         baseOffset: reattachPlan.candidateBaseOffset,
                         segmentLength: recoveredSegmentLength,
                         responseStatus: nil,
-                        bodyBytesWritten: max(0, Int(task.countOfBytesReceived)),
+                        bodyBytesWritten: DownloadLiveRangeProgressPolicy.accountedTaskBodyBytes(
+                            reportedBytes: Int(task.countOfBytesReceived),
+                            segmentLength: recoveredSegmentLength),
                         remainderReason: "reattached")
                     switch reattachPlan.disposition {
                     case .dropLegacyRange, .rejectOffsetMismatch, .rejectAttemptMismatch:
@@ -1980,6 +1982,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // already on disk (`baseOffset`) plus this response body so far, against the FILE's
             // expected size. The task's own `totalBytesExpectedToWrite` is just this remainder.
             let bodyBytesWritten = Int(totalBytesWritten)
+            let accountedBodyBytes = DownloadLiveRangeProgressPolicy.accountedTaskBodyBytes(
+                reportedBytes: bodyBytesWritten,
+                segmentLength: rangeEntry.segmentLength)
             lock.lock()
             let halted = rangeHaltKinds[rangeEntry.ratingKey] != nil
             if halted {
@@ -2093,7 +2098,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // of this delegate uses for cross-queue `rangeInflight` reads.
             lock.lock()
             if var live = rangeInflight[downloadTask.taskIdentifier] {
-                live.bodyBytesWritten = bodyBytesWritten
+                live.bodyBytesWritten = accountedBodyBytes
                 rangeInflight[downloadTask.taskIdentifier] = live
             }
             let liveSegmentBodyBytes = rangeInflight.values
@@ -2501,7 +2506,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             baseOffset: baseOffset,
             segmentLength: segmentLength,
             responseStatus: http?.statusCode,
-            bodyBytesWritten: max(0, Int(task.countOfBytesReceived)),
+            bodyBytesWritten: DownloadLiveRangeProgressPolicy.accountedTaskBodyBytes(
+                reportedBytes: Int(task.countOfBytesReceived),
+                segmentLength: segmentLength),
             remainderReason: Self.deadFinishAdoptedReason)
     }
 
@@ -3028,6 +3035,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     let previousInMemory = heldRangeSegments[entry.ratingKey]?[entry.baseOffset]
                     heldRangeSegments[entry.ratingKey, default: [:]][entry.baseOffset] =
                         (url: durableStash, length: stashLen, validator: validator)
+                    // This exact offset produced a complete, validated body. Clear only its own
+                    // mismatch history; sibling segment retries remain independent.
+                    staticRangeRetryBudget.resetOffsetMismatch(
+                        downloadID: entry.ratingKey,
+                        segmentOffset: entry.baseOffset)
                     lock.unlock()
                     // M3: a replacement uses a new filename. Delete both the prior live-map and
                     // prior persisted-manifest file only after the new manifest/map are installed.
@@ -3597,7 +3609,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private func retryRangeOffsetMismatch(entry: RangeTransfer, durableBytes: Int, serverOffset: Int?) -> Bool {
         lock.lock()
         let halted = rangeHaltKinds[entry.ratingKey] != nil
-        let retryAttempt = staticRangeRetryBudget.recordOffsetMismatch(downloadID: entry.ratingKey)
+        let retryAttempt = staticRangeRetryBudget.recordOffsetMismatch(
+            downloadID: entry.ratingKey,
+            segmentOffset: entry.baseOffset)
         lock.unlock()
 
         let disposition = StaticRangeContinuationPolicy.afterOffsetMismatch(
@@ -3609,7 +3623,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         case .halted:
             return true
         case .failExhausted:
-            lock.lock(); staticRangeRetryBudget.resetOffsetMismatch(downloadID: entry.ratingKey); lock.unlock()
+            lock.lock()
+            staticRangeRetryBudget.resetOffsetMismatch(
+                downloadID: entry.ratingKey,
+                segmentOffset: entry.baseOffset)
+            lock.unlock()
             AppDiagnostics.record(.downloads, "downloads.range_offset_retry_exhausted", fields: [
                 "download_id": .identifier(entry.ratingKey),
                 "attempt": .int(retryAttempt.attempt - 1),
@@ -4599,7 +4617,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                         .map(\.bodyBytesWritten)
                     bodies.append(contentsOf: heldRangeSegments[rangeEntry.ratingKey]?.values.map(\.length) ?? [])
                     lock.unlock()
-                    bodies.append(max(rangeEntry.bodyBytesWritten, Int(max(task.countOfBytesReceived, 0))))
+                    let reportedBodyBytes = max(
+                        rangeEntry.bodyBytesWritten,
+                        Int(max(task.countOfBytesReceived, 0)))
+                    bodies.append(DownloadLiveRangeProgressPolicy.accountedTaskBodyBytes(
+                        reportedBytes: reportedBodyBytes,
+                        segmentLength: rangeEntry.segmentLength))
                     displayBytes = DownloadLiveRangeProgressPolicy.aggregatedLiveBytes(
                         durableBytes: durable, liveSegmentBodyBytes: bodies)
                 } else {

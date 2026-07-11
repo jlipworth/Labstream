@@ -20,7 +20,11 @@ public struct StaticRangeRetryBudget: Sendable, Equatable {
     public let maxOffsetMismatchRetries: Int
 
     private var validatorChangeRestarts: [String: Int] = [:]
-    private var offsetMismatchRetries: [String: Int] = [:]
+    /// Offset mismatches are segment-local. Parallel look-ahead segments can be internally resumed
+    /// independently by CFNetwork; allowing sibling offsets to consume one row-wide budget made a
+    /// valid durable checkpoint terminally fail even though no single segment exhausted its retry
+    /// allowance.
+    private var offsetMismatchRetries: [String: [Int: Int]] = [:]
 
     public init(maxValidatorChangeRestarts: Int = 3, maxOffsetMismatchRetries: Int = 3) {
         self.maxValidatorChangeRestarts = max(0, maxValidatorChangeRestarts)
@@ -36,6 +40,13 @@ public struct StaticRangeRetryBudget: Sendable, Equatable {
         offsetMismatchRetries[downloadID] = nil
     }
 
+    public mutating func resetOffsetMismatch(downloadID: String, segmentOffset: Int) {
+        offsetMismatchRetries[downloadID]?[segmentOffset] = nil
+        if offsetMismatchRetries[downloadID]?.isEmpty == true {
+            offsetMismatchRetries[downloadID] = nil
+        }
+    }
+
     public mutating func recordValidatorChange(downloadID: String) -> StaticRangeRetryAttempt {
         let attempt = (validatorChangeRestarts[downloadID] ?? 0) + 1
         validatorChangeRestarts[downloadID] = attempt
@@ -45,10 +56,11 @@ public struct StaticRangeRetryBudget: Sendable, Equatable {
         )
     }
 
-    public mutating func recordOffsetMismatch(downloadID: String) -> StaticRangeRetryAttempt {
-        let attempt = (offsetMismatchRetries[downloadID] ?? 0) + 1
+    public mutating func recordOffsetMismatch(downloadID: String,
+                                              segmentOffset: Int) -> StaticRangeRetryAttempt {
+        let attempt = (offsetMismatchRetries[downloadID]?[segmentOffset] ?? 0) + 1
         if attempt <= maxOffsetMismatchRetries {
-            offsetMismatchRetries[downloadID] = attempt
+            offsetMismatchRetries[downloadID, default: [:]][segmentOffset] = attempt
         }
         return StaticRangeRetryAttempt(
             attempt: attempt,

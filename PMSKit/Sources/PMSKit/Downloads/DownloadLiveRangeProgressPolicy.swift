@@ -24,6 +24,18 @@ public struct DownloadLiveRangeProgressSample: Equatable, Sendable {
 /// made the toolbar total fall to the durable checkpoint and jump back at wake. A sample lives
 /// exactly as long as its row stays `.downloading` (terminal/pause cleanup removes it).
 public enum DownloadLiveRangeProgressPolicy {
+    /// Bytes a task may contribute to the optimistic row total. A closed Range segment owns at
+    /// most its requested body length. CFNetwork can report a cumulative `totalBytesWritten` across
+    /// internal HTTP/3 transactions after a path change; counting that raw value made one 64 MiB
+    /// segment temporarily add almost 5 GB to the toolbar total. Open-ended remainders remain
+    /// uncapped because their full expected body length may be unknown.
+    public static func accountedTaskBodyBytes(reportedBytes: Int,
+                                               segmentLength: Int?) -> Int {
+        let nonnegative = max(reportedBytes, 0)
+        guard let segmentLength else { return nonnegative }
+        return min(nonnegative, max(segmentLength, 0))
+    }
+
     /// Keep the largest live count within the active continuous-remainder transfer. #227/#231
     /// should not make the UI jump backwards when URLSession reports blob-resumed task bytes from a
     /// fresh per-task baseline. Preserve an earlier expected-byte total when the current callback

@@ -824,10 +824,10 @@ rows, but the suspended UI and checkpoint model made that work look stationary.
 
 The test had five rows expanded into 34 simultaneous 512 MiB Range tasks. Most transferred bytes
 remained in nsurlsessiond temp files or ahead-of-checkpoint held stashes because the leading segment
-had not finished, leaving four rows at a zero durable checkpoint. The corrective regime uses 64 MiB
-segments with depth two (head plus one look-ahead), so five rows create at most ten tasks and commit
-the leading checkpoint materially sooner. Held-stash lengths are now included in live/pause
-accounting.
+had not finished, leaving four rows at a zero durable checkpoint. The first corrective experiment
+used 64 MiB segments with depth two (head plus one look-ahead), so five rows created at most ten
+tasks and committed the leading checkpoint materially sooner. Held-stash lengths are included in
+live/pause accounting.
 
 The downloaded-total bounce was also reproduced and explained. `refreshRecords()` discarded an
 active live overlay after 15 seconds without a callback even though the display policy intentionally
@@ -877,3 +877,20 @@ needs to prevent this path from terminally stranding an otherwise valid durable 
 Local evidence bundles (ignored and potentially sensitive):
 `headset-evidence-20260711T145754Z`, `headset-evidence-20260711T194630Z`, and the immediate
 post-network-switch snapshot `headset-evidence-20260711T194812Z`.
+
+#### Corrections from the post-fix evidence
+
+The 64 MiB experiment conflated two variables. The original evidence proved that train depth eight
+was excessive, but did not prove that the 512 MiB body size itself caused the off-head failure. The
+64 MiB completion cadence then declined from 15 durable appends in the 15:00 UTC hour, to 11 at
+16:00, four at 17:00, and none while still off-head at 18:00. The shipping correction therefore
+restores **512 MiB segments while retaining depth two**: five rows still create at most ten tasks,
+but each URLSession task remains useful for longer instead of requiring frequent background
+completion and replacement cycles.
+
+Closed-segment optimistic accounting now caps each task at its requested segment length. Raw
+CFNetwork counters remain diagnostic-only, so an internally replayed multi-transaction counter can
+no longer add phantom gigabytes to the toolbar total. Offset-mismatch budgets are also keyed by
+download plus segment base offset rather than only by download. Parallel sibling segments therefore
+cannot collectively exhaust Flight's whole-row budget; a complete validated held body clears only
+its own offset history, while durable appends retain the existing row-wide forward-progress reset.
