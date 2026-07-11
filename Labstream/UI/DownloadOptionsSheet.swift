@@ -57,6 +57,7 @@ struct DownloadOptionsSheet: View {
     @State private var retryingExistingDownload = false
     @State private var isStartingDownload = false
     @State private var confirmingExistingDownloadRemoval = false
+    @State private var confirmingCompatibleRemuxFallback = false
 
     private var sheetBackend: DownloadBackendKind {
         backend ?? appModel.activeBackend.downloadBackendKind
@@ -112,6 +113,14 @@ struct DownloadOptionsSheet: View {
         } message: {
             Text(existingDownloadRemovalMessage)
         }
+        .confirmationDialog(DownloadCompatibleRemuxDisclosurePolicy.confirmationTitle,
+                            isPresented: $confirmingCompatibleRemuxFallback,
+                            titleVisibility: .visible) {
+            Button("Continue with fallback") { startDownload() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(DownloadCompatibleRemuxDisclosurePolicy.confirmationMessage)
+        }
     }
 
     private var formDialog: some View {
@@ -156,7 +165,7 @@ struct DownloadOptionsSheet: View {
                 }
                 if existingRecord == nil, probeState != .checking {
                     ToolbarItem(placement: .confirmationAction) {
-                        Button("Download") { startDownload() }
+                        Button("Download") { requestStartDownload() }
                             .disabled(isStartingDownload || selectedChoice == nil || selectedStorageLimitMessage != nil)
                     }
                 }
@@ -194,7 +203,7 @@ struct DownloadOptionsSheet: View {
                 Button("Close") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 if existingRecord == nil, probeState != .checking {
-                    Button("Download") { startDownload() }
+                    Button("Download") { requestStartDownload() }
                         .buttonStyle(.borderedProminent)
                         .keyboardShortcut(.defaultAction)
                         .disabled(isStartingDownload || selectedChoice == nil || selectedStorageLimitMessage != nil)
@@ -233,10 +242,10 @@ struct DownloadOptionsSheet: View {
                 if let compatibleRemux {
                     macSelectionSection(
                         title: "Original quality",
-                        footer: "Keeps original video quality by copying/remuxing into a compatible MP4 (audio is converted only if needed). This uses a live server remux, not a prebuilt offline copy; it can be slower and may restart from the beginning if interrupted."
+                        footer: compatibleRemuxFooter
                     ) {
                         macSelectionRow(title: "Original quality (compatible)",
-                                        subtitle: serverPreparedSubtitle(compatibleRemux.codecSummary ?? "Keeps original video, converts to a compatible MP4"),
+                                        subtitle: compatibleRemuxSubtitle(option: compatibleRemux),
                                         systemImage: "wand.and.stars",
                                         selected: selectedChoice == .optimizeCompatible) {
                             selectedChoice = .optimizeCompatible
@@ -841,7 +850,7 @@ struct DownloadOptionsSheet: View {
                         .foregroundStyle(.tint)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Original quality (compatible)").foregroundStyle(.primary)
-                        Text(serverPreparedSubtitle(option.codecSummary ?? "Keeps original video, converts to a compatible MP4") ?? "")
+                        Text(compatibleRemuxSubtitle(option: option) ?? "")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -857,7 +866,7 @@ struct DownloadOptionsSheet: View {
             Text("Original quality")
         } footer: {
             Label {
-                Text("Keeps original video quality by copying/remuxing into a compatible MP4 (audio is converted only if needed). This uses a live server remux, not a prebuilt offline copy; it can be slower and may restart from the beginning if interrupted.")
+                Text(compatibleRemuxFooter)
             } icon: {
                 Image(systemName: "info.circle")
             }
@@ -883,6 +892,22 @@ struct DownloadOptionsSheet: View {
         }
         if let resolution { parts.append(resolution) }
         return parts.isEmpty ? "Original file" : parts.joined(separator: " · ")
+    }
+
+    private func compatibleRemuxSubtitle(option: CompatibleRemuxOption) -> String? {
+        var lines = [option.codecSummary ?? "Keeps original video, converts to a compatible MP4"]
+        if DownloadCompatibleRemuxDisclosurePolicy.showsFallbackDisclosure(backend: sheetBackend) {
+            lines.append(DownloadCompatibleRemuxDisclosurePolicy.fallbackCaption)
+        }
+        return serverPreparedSubtitle(lines.joined(separator: "\n"))
+    }
+
+    private var compatibleRemuxFooter: String {
+        var text = "Keeps original video quality by copying/remuxing into a compatible MP4 (audio is converted only if needed). This uses a live server remux, not a prebuilt offline copy; it can be slower and may restart from the beginning if interrupted."
+        if DownloadCompatibleRemuxDisclosurePolicy.showsFallbackDisclosure(backend: sheetBackend) {
+            text += " " + DownloadCompatibleRemuxDisclosurePolicy.fallbackCaption
+        }
+        return text
     }
 
 
@@ -1329,6 +1354,20 @@ struct DownloadOptionsSheet: View {
             // transcode (a now-compatible file goes original). `.original` is intent-only here.
             downloadManager.retry(ratingKey: DownloadRecordIdentity.recordKey(for: item.ratingKey, backend: sheetBackend))
         }
+    }
+
+    private func requestStartDownload() {
+        guard !isStartingDownload, existingRecord == nil, selectedChoice != nil else { return }
+        if selectedChoice == .optimizeCompatible {
+            let source = DownloadMediaSelectionPolicy.selection(
+                item: item, mediaIndex: mediaIndex, partIndex: partIndex).media
+            if DownloadCompatibleRemuxDisclosurePolicy.requiresConfirmation(
+                backend: sheetBackend, sourceWidth: source?.width, sourceHeight: source?.height) {
+                confirmingCompatibleRemuxFallback = true
+                return
+            }
+        }
+        startDownload()
     }
 
     private func startDownload() {

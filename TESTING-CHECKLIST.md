@@ -164,6 +164,10 @@ Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The 
 - [ ] The download sheet shows only routes valid for the selected backend, item, version,
       media source, and storage policy; a probe failure offers a safe fallback rather than a
       dead end.
+- [ ] On Emby, the compatible-remux row discloses its possible 1080p Convert fallback. For a
+      source above 1920×1080, Download requires confirmation and identifies the 4K preset as the
+      resolution-preserving converted alternative; 1080p-or-lower and non-Emby choices do not
+      show that confirmation.
 - [ ] A job records and continues against its own backend session through active-backend
       switches. Simultaneous jobs from different backends progress independently and display
       unambiguous backend badges.
