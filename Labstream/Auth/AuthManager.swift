@@ -317,12 +317,6 @@ final class AuthManager {
         return http.statusCode
     }
 
-    private func loadJellyfinSessionSnapshot() -> Bool {
-        guard let snapshot = readJellyfinSessionSnapshot() else { return false }
-        applyJellyfinSessionSnapshot(snapshot)
-        return true
-    }
-
     private func readJellyfinSessionSnapshot() -> JellyfinSessionSnapshot? {
         guard let urlString = keychain.jellyfinServerURLString,
               let server = URL(string: urlString),
