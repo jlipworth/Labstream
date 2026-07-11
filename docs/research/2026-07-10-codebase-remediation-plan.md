@@ -3,7 +3,7 @@
 Status: **active implementation plan**
 
 Audit baseline: original app/PMSKit review through `edf2d27`; latest reconciled `main`
-baseline `5d369c2`; Phase 1 implementation journal reconciled through `a8fa19c`
+baseline `5d369c2`; Phase 1 implementation journal reconciled through `f05944c`
 
 Scope: correctness, concurrency, reliability, performance, Swift idioms, testability,
 backend sharing, platform sharing, conditional compilation, and build cost.
@@ -594,14 +594,34 @@ their relationship during the schema-v3 migration.
   suites; the transfer/Plex sequence included 17- and 23-test focused runs. These headless gates do
   not replace background-redelivery or signed-device validation. At `a8fa19c`, the full Mac plan
   passed 123 tests with zero failures and the full PMSKit run passed 1,424 tests in 172 suites.
-- **Remaining exactness work:** opaque and static media still read/write stable row destinations;
+- **Remaining exactness work at this checkpoint:** opaque and static media still read/write stable row destinations;
   the schema-v4-or-equivalent working-layout and live schema-v3 partial migration policy remain the
   primary blast-radius consultation. Session maps/budgets including range train epochs, halt kinds,
   retry/truncation/HTTP/blob counters, request-rebuild grace, and `StaticRangeRetryBudget` are still
-  rating-keyed and require an attempt-generation audit before A can influence B through memory-only
-  state. Background-session finalizer tasks carry exact Store authority but are not yet registered
+  rating-keyed and required an attempt-generation audit before A could influence B through
+  memory-only state. The next entry records their migration. Background-session finalizer tasks
+  carry exact Store authority but are not yet registered
   in the manager work registry or cooperatively cancellable. Force-quit/background-redelivery,
   iPad, and Vision Pro gates remain required before Phase 1B/1C or `COR-01` can close.
+
+#### 2026-07-12 — Phase 1 in-memory range ownership
+
+- **Commits:** `1ae5f34` (`Key range session state by attempt`) and `f05944c` (`Isolate
+  download retry budgets by attempt`).
+- Session held-body maps, predecessor ownership, train epochs, halt state, HTTP/blob recovery
+  counts, request-rebuild grace, transient retries, and truncation-finalizer counts are now keyed by
+  `DownloadAttemptKey`. A multiline audit also found and converted 16 checkpoint-reset consumers
+  that the earlier single-line grep had missed; stale or unproved exact resets now stop the caller.
+- PMSKit's range budget uses an app-independent `StaticRangeRetryKey(downloadID, attemptID)`, so
+  validator-change and per-offset mismatch budgets cannot leak from A into replacement B. The new
+  same-download A/B isolation case passed within the full 1,425-test PMSKit run; the focused Mac
+  Session/Store suites and Mac build also passed.
+- **New consultation boundary:** Manager encoder/keepalive maps cannot be safely converted alone.
+  `releaseInFlight(ratingKey:)` is a roughly 55-call cross-backend teardown funnel that mixes
+  attempt-owned encoder/keepalive resources with the current rating-key slot, server-prep, stall,
+  and presentation state. Safe work requires splitting exact-attempt teardown from conditionally
+  admitted current-slot cleanup, threading captured keys through every backend release call, and
+  adding A/B release-isolation tests. No asymmetric partial was made.
 
 #### 2026-07-11 — Phase 2D compiler-cliff removal
 

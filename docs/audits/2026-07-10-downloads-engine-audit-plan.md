@@ -895,7 +895,7 @@ download plus segment base offset rather than only by download. Parallel sibling
 cannot collectively exhaust Flight's whole-row budget; a complete validated held body clears only
 its own offset history, while durable appends retain the existing row-wide forward-progress reset.
 
-## K. DOWNSTREAM REMEDIATION CHECKPOINT (2026-07-12, through `a8fa19c`)
+## K. DOWNSTREAM REMEDIATION CHECKPOINT (2026-07-12, through `f05944c`)
 
 This audit remains the characterization/evidence record. The companion
 `docs/research/2026-07-10-codebase-remediation-plan.md` owns the corrective Phase 1 queue and its
@@ -928,5 +928,10 @@ The checkpoint primitive's focused six-test suite plus 31 Store fault/persistenc
 regressions passed. Later slices added stale-A/B and ownerless playback cases and repeatedly passed
 Mac builds plus focused attempt/start/server-prep, Plex optimize, Store, recovery, and backend
 policy suites. The working-file layout remains open despite this consumer conversion: stable media
-paths, rating-keyed Session retry/halt generations, manager-registry ownership of Session
-finalizers, and the physical background-redelivery/device matrix still prevent closure.
+paths, cross-backend Manager teardown ownership, manager-registry ownership of Session finalizers,
+and the physical background-redelivery/device matrix still prevent closure.
+
+Follow-up commits `1ae5f34` and `f05944c` moved Session range/held/halt/grace/retry/truncation state
+and PMSKit validator/offset budgets to exact attempt keys. A multiline audit additionally converted
+16 legacy checkpoint-reset consumers missed by the earlier single-line inventory. Stable media
+paths, finalizer registration, the cross-backend `releaseInFlight` split, and device gates remain.
