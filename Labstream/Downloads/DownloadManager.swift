@@ -2322,7 +2322,8 @@ public final class DownloadManager {
                 if metadata.embyConvertRecoveryPhase == .prepared {
                     // Durable proof POST was never handed to URLSession: safe to discard this
                     // baseline so a user retry may create a fresh job.
-                    store.clearEmbyConvertRecovery(ratingKey: record.ratingKey)
+                    guard clearEmbyConvertRecoveryIfExact(
+                        for: key, expected: metadata) else { continue }
                 }
                 _ = setAttemptStatus(.failed, for: key, context: "emby_convert_identity")
                 clearOptimizeProgress(ratingKey: record.ratingKey)
@@ -2356,7 +2357,8 @@ public final class DownloadManager {
                         "error_type": .label(failure.errorType),
                     ])
                 }
-                store.clearEmbyConvertRecovery(ratingKey: record.ratingKey)
+                guard clearEmbyConvertRecoveryIfExact(
+                    for: key, expected: metadata) else { continue }
                 lastError[record.ratingKey] = .transferFailed(
                     "Server conversion could not be recovered; retry to create a new conversion.")
                 _ = setAttemptStatus(.failed, for: key, context: "emby_convert_expired")
