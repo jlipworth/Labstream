@@ -355,13 +355,14 @@ extension DownloadManager {
         refreshRecords()
         // #102: cache the poster locally (best-effort) so artwork shows offline. The Emby image
         // endpoint needs the authenticated request (token + userId in the header), unlike Plex.
-        cacheEmbyPoster(ratingKey: ratingKey, item: item, server: server,
+        let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: startAttempt.attemptID)
+        cacheEmbyPoster(for: attemptKey, item: item, server: server,
                         token: token, identity: identity, userId: userId)
         // #88/#89: cache per-chapter images for the offline Chapters rail AND the Emby offline
         // scrubber. This is a static `/Items/{id}/Images/Chapter/{index}` GET — no PlaySessionId /
         // encoder negotiation — so it is safe to fire here independent of the media transfer.
-        cacheChapterImages(ratingKey: ratingKey, item: item, backend: .emby,
-                           server: server, token: token)
+        cacheChapterImages(for: attemptKey, item: item, backend: .emby,
+                           server: server, token: token, userID: userId)
         // Emby optimized/converted downloads are often handed off as a new static MediaSource that
         // does not carry subtitle streams. Cache compatible text sidecars from the source
         // MediaSource when this call is a convert-then-static override; otherwise use the
@@ -369,7 +370,7 @@ extension DownloadManager {
         // server to bake subtitles into the optimized MP4.
         let subtitleMediaSourceID = mediaSourceIDOverride == nil ? decision.mediaSourceId
             : (selection.mediaSourceID ?? decision.mediaSourceId)
-        cacheEmbyTextSubtitles(ratingKey: ratingKey, itemId: itemId,
+        cacheEmbyTextSubtitles(for: attemptKey, itemId: itemId,
                                mediaSourceId: subtitleMediaSourceID, part: part,
                                server: server, token: token, identity: identity, userId: userId)
 

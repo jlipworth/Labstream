@@ -81,6 +81,27 @@ struct DownloadStoreAttemptStagingTests {
         }
     }
 
+    @Test func sideCacheTailDeletesOnlyStaleAttemptsStaging() throws {
+        try withStore { store, _ in
+            let a = key("plex:side-cache", "attempt-a")
+            let b = key("plex:side-cache", "attempt-b")
+            let stable = store.posterDestinationURL(ratingKey: a.ratingKey)
+            try Data("owner-b".utf8).write(to: stable)
+            #expect(created(store, key: a, stable: stable))
+            let staging = try #require(store.attemptStagingURL(for: a, stableURL: stable))
+            try Data("stale-a".utf8).write(to: staging)
+            #expect(created(store, key: b, stable: stable, replacing: a.attemptID))
+
+            #expect(!DownloadManager.promoteSideAsset(store: store, key: a,
+                                                      stagingURL: staging, stableURL: stable))
+            #expect(!FileManager.default.fileExists(atPath: staging.path))
+            #expect(String(decoding: try Data(contentsOf: stable), as: UTF8.self) == "owner-b")
+            #expect(store.updateMetadata(for: a) { $0.posterRelativePath = stable.lastPathComponent }
+                    == .staleOrMissing)
+            #expect(store.record(for: b)?.metadata?.posterRelativePath == nil)
+        }
+    }
+
     private func key(_ ratingKey: String, _ attempt: String) -> DownloadAttemptKey {
         DownloadAttemptKey(ratingKey: ratingKey,
                            attemptID: DownloadAttemptID(rawValue: attempt)!)

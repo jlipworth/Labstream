@@ -30,7 +30,8 @@ extension DownloadManager {
     /// `.optimizeFailed`; we still poll metadata so an out-of-band optimized part is picked up.
     func triggerOptimizeAndDownload(item: MediaItem, targetName: String,
                                             metadata: OfflineMetadata,
-                                            session: BackendSession) async {
+                                            session: BackendSession,
+                                            attemptKey: DownloadAttemptKey) async {
         let ratingKey = item.ratingKey
         guard let pollerID = beginServerPrepPoller(ratingKey: ratingKey, source: "start") else { return }
         // Audit B.9: run the chain inside a Task registered in `serverPrepPollerTasks` (exactly
@@ -41,7 +42,8 @@ extension DownloadManager {
             guard let self else { return }
             await self.runOptimizeAndDownload(item: item, targetName: targetName,
                                               metadata: metadata, session: session,
-                                              ratingKey: ratingKey, pollerID: pollerID)
+                                              ratingKey: ratingKey, pollerID: pollerID,
+                                              attemptKey: attemptKey)
         }
         registerServerPrepPollerTask(task, ratingKey: ratingKey)
         await task.value
@@ -52,7 +54,8 @@ extension DownloadManager {
                                         metadata: OfflineMetadata,
                                         session: BackendSession,
                                         ratingKey: String,
-                                        pollerID: UUID) async {
+                                        pollerID: UUID,
+                                        attemptKey: DownloadAttemptKey) async {
         // #84: the whole optimize/poll/download chain runs off the captured Plex session — the
         // server/token come from it, not from any `appModel.active*` re-read.
         let server = session.baseURL
@@ -148,10 +151,10 @@ extension DownloadManager {
                                         localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
                                         bytes: 0, progress: 0, metadata: optimizeMetadata))
             refreshRecords()
-            cacheChapterImages(ratingKey: ratingKey, item: sourceItem, backend: .plex,
+            cacheChapterImages(for: attemptKey, item: sourceItem, backend: .plex,
                                server: server, token: token)
             if let sourcePart = sourceItem.media?[safe: sourceMediaIndex]?.part[safe: sourcePartIndex] {
-                cachePlexTextSubtitles(ratingKey: ratingKey, part: sourcePart,
+                cachePlexTextSubtitles(for: attemptKey, part: sourcePart,
                                        server: server, token: token)
             }
             let originalPartIDs = Set(optimizeMetadata.optimizeBaselinePartIDs ?? [])
@@ -207,7 +210,8 @@ extension DownloadManager {
                                            part: part,
                                            metadata: optimizeMetadata,
                                            server: server,
-                                           token: token)
+                                           token: token,
+                                           attemptKey: attemptKey)
         } catch DownloadLifecycleCancellation.staleOptimizeAttempt {
             recordDownloadDiagnostic("downloads.optimize_stale", fields: [
                 "download_id": .identifier(ratingKey),
@@ -269,7 +273,8 @@ extension DownloadManager {
                                             part: Part,
                                             metadata: OfflineMetadata,
                                             server: URL,
-                                            token: String) throws {
+                                            token: String,
+                                            attemptKey: DownloadAttemptKey? = nil) throws {
         let targetName = metadata.optimizeTargetName ?? "unknown"
         let ext = part.container ?? (part.file as NSString?)?.pathExtension ?? "mp4"
         let destination = store.destinationURL(ratingKey: ratingKey,
@@ -326,7 +331,11 @@ extension DownloadManager {
             // Plex often exposes downloadable text subtitle streams only on the rendered optimized
             // Part, not on the original source Part (where subtitle `key` can be nil). Cache from the
             // exact Part we are downloading so optimized offline playback has the same sidecars.
-            cachePlexTextSubtitles(ratingKey: ratingKey, part: part, server: server, token: token)
+            // Relaunch pickup currently calls this method without a captured attempt key. Never
+            // re-read a potentially newer owner in this asynchronous tail; fresh chains carry it.
+            if let attemptKey {
+                cachePlexTextSubtitles(for: attemptKey, part: part, server: server, token: token)
+            }
             // The rendered Part is a static file by this point (the poll waited for it to
             // appear), so a Plex optimize download is usually network-bound — but the server
             // can still be finalizing/serving it as it writes, so mark it transcode-sourced and

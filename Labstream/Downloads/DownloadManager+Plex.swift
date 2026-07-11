@@ -93,9 +93,10 @@ extension DownloadManager {
         // D5/#102: cache poster-shaped artwork locally so artwork shows offline. Episodes
         // often expose a landscape still as `thumb`, which looks wrong in the Offline tab's
         // small portrait tile; prefer the show/season poster when TV hierarchy provides it.
-        cachePoster(ratingKey: ratingKey, thumb: DownloadSideAssetPolicy.offlinePosterRef(for: item),
+        let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: startAttempt.attemptID)
+        cachePoster(for: attemptKey, thumb: DownloadSideAssetPolicy.offlinePosterRef(for: item),
                     server: server, token: token)
-        cachePlexBIF(ratingKey: ratingKey, item: item, mediaIndex: mediaIndex,
+        cachePlexBIF(for: attemptKey, item: item, mediaIndex: mediaIndex,
                      server: server, token: token)
 
         let staticPart = chosenMedia?.part[safe: partIndex]
@@ -155,7 +156,8 @@ extension DownloadManager {
                     "target": .label(fallback),
                 ])
                 await triggerOptimizeAndDownload(item: item, targetName: fallback,
-                                                 metadata: metadata, session: backendSession)
+                                                 metadata: metadata, session: backendSession,
+                                                 attemptKey: attemptKey)
             }
 
         case .staticExistingVersion:
@@ -177,7 +179,8 @@ extension DownloadManager {
 
         case .optimize(let targetName):
             await triggerOptimizeAndDownload(item: item, targetName: targetName,
-                                             metadata: metadata, session: backendSession)
+                                             metadata: metadata, session: backendSession,
+                                             attemptKey: attemptKey)
         }
     }
 
@@ -206,9 +209,10 @@ extension DownloadManager {
                                     localURL: destination, bytes: 0, progress: 0,
                                     metadata: metadata))
         refreshRecords()
-        cacheChapterImages(ratingKey: ratingKey, item: item, backend: .plex,
+        let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+        cacheChapterImages(for: attemptKey, item: item, backend: .plex,
                            server: server, token: token)
-        cachePlexTextSubtitles(ratingKey: ratingKey, part: part, server: server, token: token)
+        cachePlexTextSubtitles(for: attemptKey, part: part, server: server, token: token)
         beginBackgroundTransfer(DownloadTransferStartPlan(
             ratingKey: ratingKey,
             backendLabel: "Plex",
@@ -241,7 +245,9 @@ extension DownloadManager {
             hasServerPrepQueueTitle: serverPrepAttempts.queueTitle(forRecordKey: ratingKey) != nil,
             hasPlexSession: backendSession != nil),
             let metadata = record?.metadata,
+            let attemptID = record?.attemptID,
             let backendSession else { return }
+        let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
         let item = metadata.makeMediaItem()
         let target = Self.originalFallbackOptimizeTarget()
         recordDownloadDiagnostic("downloads.original_validation_fallback", fields: [
@@ -251,7 +257,8 @@ extension DownloadManager {
         activeJobs.insert(ratingKey)
         lastError[ratingKey] = nil
         await triggerOptimizeAndDownload(item: item, targetName: target,
-                                         metadata: metadata, session: backendSession)
+                                         metadata: metadata, session: backendSession,
+                                         attemptKey: attemptKey)
     }
 
     static func originalFallbackOptimizeTarget(defaults: UserDefaults = .standard) -> String {
