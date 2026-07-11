@@ -5421,7 +5421,10 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
             // Repeated-reset coverage is specifically the segment-zero resume chain. Sibling
             // segments start concurrently; faulting any two of them would prove only parallel
             // failures, not reset→blob adoption→second reset on the same logical segment.
-            let firstSegmentEnd = 512 * 1_024 * 1_024 - 1
+            // Derive the boundary from the live regime (it honors the DEBUG segment-size
+            // override): a hardcoded 512 MiB survived the shrink to 64 MiB segments and let the
+            // two drops land on two different concurrent siblings.
+            let firstSegmentEnd = StaticRangeTransferRegime.segmentBytes - 1
             return rangeEnd(request.value(forHTTPHeaderField: "Range")).map { $0 <= firstSegmentEnd } ?? false
         }
         return true
@@ -5601,7 +5604,7 @@ final class DebugDownloadFaultURLProtocol: URLProtocol, URLSessionDataDelegate, 
         Self.lock.unlock()
 
         // Validator comparison happens when the download body finishes, not when URLSession
-        // delivers response headers. Letting every real 512 MiB segment complete makes this
+        // delivers response headers. Letting every real full-size segment complete makes this
         // deterministic fault take minutes and several gigabytes. End each mutated response after
         // a small body: the real delegate/stash/apply path still runs, and validator integrity is
         // deliberately checked before body-length/alignment handling.
