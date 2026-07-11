@@ -290,7 +290,9 @@ struct StaticRangeReattachPolicyTests {
 
         #expect(plan == StaticRangeReattachPlan(
             candidateBaseOffset: 0,
-            disposition: .rejectAttemptMismatch(taskAttemptID: "attempt-OLD", rowAttemptID: "attempt-NEW")
+            disposition: .rejectAttemptMismatch(
+                taskAttemptID: DownloadAttemptID(rawValue: "attempt-OLD")!,
+                rowAttemptID: DownloadAttemptID(rawValue: "attempt-NEW")!)
         ))
     }
 
@@ -310,7 +312,9 @@ struct StaticRangeReattachPolicyTests {
 
         #expect(plan == StaticRangeReattachPlan(
             candidateBaseOffset: 0,
-            disposition: .rejectAttemptMismatch(taskAttemptID: "attempt-OLD", rowAttemptID: nil)
+            disposition: .rejectAttemptMismatch(
+                taskAttemptID: DownloadAttemptID(rawValue: "attempt-OLD")!,
+                rowAttemptID: nil)
         ))
     }
 
@@ -330,7 +334,9 @@ struct StaticRangeReattachPolicyTests {
 
         #expect(plan == StaticRangeReattachPlan(
             candidateBaseOffset: 512,
-            disposition: .rejectAttemptMismatch(taskAttemptID: "attempt-OLD", rowAttemptID: "attempt-NEW")
+            disposition: .rejectAttemptMismatch(
+                taskAttemptID: DownloadAttemptID(rawValue: "attempt-OLD")!,
+                rowAttemptID: DownloadAttemptID(rawValue: "attempt-NEW")!)
         ))
     }
 
@@ -388,5 +394,36 @@ struct StaticRangeReattachPolicyTests {
             candidateBaseOffset: 512,
             disposition: .dropLegacyRange(requestedOffset: 512, durableBytes: 0, rangeRequestShape: .closed)
         ))
+    }
+
+    @Test("Typed policy adopts only current markers and cancels matching legacy markers")
+    func typedPolicyRequiresCurrentMarker() {
+        let attemptID = DownloadAttemptID(rawValue: "attempt-A")!
+        let current = StaticRangeReattachPolicy.planTyped(
+            taskIdentifier: 80,
+            downloadID: "plex:item",
+            durableBytes: 0,
+            requestedOffset: 0,
+            rangeRequestShape: .closed,
+            bodyBytesWritten: 10,
+            existingTasks: [],
+            taskMarker: StaticRangeSegmentMarker.value(offset: 0, attemptID: attemptID),
+            rowAttemptID: attemptID
+        )
+        #expect(current.disposition == .adopt)
+
+        let legacy = StaticRangeReattachPolicy.planTyped(
+            taskIdentifier: 81,
+            downloadID: "plex:item",
+            durableBytes: 0,
+            requestedOffset: 0,
+            rangeRequestShape: .closed,
+            bodyBytesWritten: 10,
+            existingTasks: [],
+            taskMarker: StaticRangeSegmentMarker.value(offset: 0, attemptID: attemptID.rawValue),
+            rowAttemptID: attemptID
+        )
+        #expect(legacy.disposition == .dropLegacyRange(
+            requestedOffset: 0, durableBytes: 0, rangeRequestShape: .closed))
     }
 }

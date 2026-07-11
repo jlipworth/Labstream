@@ -55,12 +55,28 @@ struct StaticRangeSegmentMarkerTests {
         #expect(StaticRangeSegmentMarker.parse("prefix-lbs-segment:v1:512") == 512)
     }
 
-    @Test("v2 marker round-trips offset and attempt token")
+    @Test("Typed marker emits current v3 and round-trips ownership")
     func v2RoundTrips() {
+        let attemptID = DownloadAttemptID(rawValue: "attempt-A")!
+        let marker = StaticRangeSegmentMarker.value(offset: 512, attemptID: attemptID)
+        #expect(marker == "lbs-segment:v3:512:attempt-A")
+        #expect(StaticRangeSegmentMarker.parse(marker) == 512)
+        #expect(StaticRangeSegmentMarker.attemptIdentity(marker) == attemptID)
+        #expect(StaticRangeSegmentMarker.attemptID(marker) == "attempt-A")
+        #expect(StaticRangeSegmentMarker.version(marker) == .currentV3)
+        #expect(BackgroundDownloadTaskIdentity.markerVersion(taskDescription: marker)
+                == .currentSegmentV3)
+    }
+
+    @Test("String builder retains legacy v2 for cancellation compatibility")
+    func legacyV2Classification() {
         let marker = StaticRangeSegmentMarker.value(offset: 512, attemptID: "attempt-A")
         #expect(marker == "lbs-segment:v2:512:attempt-A")
-        #expect(StaticRangeSegmentMarker.parse(marker) == 512)
-        #expect(StaticRangeSegmentMarker.attemptID(marker) == "attempt-A")
+        #expect(StaticRangeSegmentMarker.attemptIdentity(marker)
+                == DownloadAttemptID(rawValue: "attempt-A"))
+        #expect(StaticRangeSegmentMarker.version(marker) == .legacyV2)
+        #expect(BackgroundDownloadTaskIdentity.markerVersion(taskDescription: marker)
+                == .legacySegmentV2)
     }
 
     @Test("v2 combined-description builder round-trips key, offset, and attempt")
@@ -100,11 +116,27 @@ struct StaticRangeSegmentMarkerTests {
 struct DownloadAttemptMarkerTests {
     @Test("Round-trips key and attempt token")
     func roundTrips() {
+        let attemptID = DownloadAttemptID(rawValue: "attempt-A")!
         let description = DownloadAttemptMarker.taskDescription(ratingKey: "movie-123",
-                                                                attemptID: "attempt-A")
+                                                                attemptID: attemptID)
 
+        #expect(description.contains("lbs-attempt:v2:attempt-A"))
+        #expect(DownloadAttemptMarker.attemptIdentity(fromTaskDescription: description) == attemptID)
         #expect(DownloadAttemptMarker.attemptID(fromTaskDescription: description) == "attempt-A")
         #expect(DownloadAttemptMarker.ratingKey(fromTaskDescription: description) == "movie-123")
+        #expect(DownloadAttemptMarker.version(fromTaskDescription: description) == .currentV2)
+    }
+
+    @Test("String builder retains legacy v1 for cancellation compatibility")
+    func legacyV1Classification() {
+        let description = DownloadAttemptMarker.taskDescription(
+            ratingKey: "movie-123", attemptID: "attempt-A")
+        #expect(description.contains("lbs-attempt:v1:attempt-A"))
+        #expect(DownloadAttemptMarker.attemptIdentity(fromTaskDescription: description)
+                == DownloadAttemptID(rawValue: "attempt-A"))
+        #expect(DownloadAttemptMarker.version(fromTaskDescription: description) == .legacyV1)
+        #expect(BackgroundDownloadTaskIdentity.markerVersion(taskDescription: description)
+                == .legacyAttemptV1)
     }
 
     @Test("Bare rating keys expose no attempt and pass through unchanged")
@@ -124,6 +156,10 @@ struct DownloadAttemptMarkerTests {
 
         #expect(BackgroundDownloadTaskIdentity.attemptID(taskDescription: segment) == "attempt-A")
         #expect(BackgroundDownloadTaskIdentity.attemptID(taskDescription: opaque) == "attempt-B")
+        #expect(BackgroundDownloadTaskIdentity.attemptIdentity(taskDescription: segment)
+                == DownloadAttemptID(rawValue: "attempt-A"))
+        #expect(BackgroundDownloadTaskIdentity.attemptIdentity(taskDescription: opaque)
+                == DownloadAttemptID(rawValue: "attempt-B"))
         #expect(BackgroundDownloadTaskIdentity.attemptID(taskDescription: "movie-123") == nil)
         #expect(BackgroundDownloadTaskIdentity.attemptID(taskDescription: nil) == nil)
     }

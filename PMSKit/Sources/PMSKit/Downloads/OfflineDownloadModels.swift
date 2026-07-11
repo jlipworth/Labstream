@@ -898,6 +898,9 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
 /// and `plexBIFURL` is the re-resolved cached Plex trick-play index for offline scrubbing.
 public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
     public let ratingKey: String
+    /// Top-level durable owner of asynchronous work for this row. Optional only while decoding
+    /// legacy rows and for completed legacy rows proven to have no outstanding work.
+    public var attemptID: DownloadAttemptID?
     public let title: String
     public let localURL: URL
     public var bytes: Int
@@ -926,6 +929,7 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
     public var isUnverified: Bool { status == .unverified }
 
     public init(ratingKey: String,
+                attemptID: DownloadAttemptID? = nil,
                 title: String,
                 localURL: URL,
                 bytes: Int = 0,
@@ -938,6 +942,7 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
                 chapterImageURLs: [Int: URL] = [:],
                 sideAssetBytes: Int = 0) {
         self.ratingKey = ratingKey
+        self.attemptID = attemptID
         self.title = title
         self.localURL = localURL
         self.bytes = bytes
@@ -952,13 +957,14 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case ratingKey, title, localURL, bytes, progress, status, metadata, posterURL, plexBIFURL
+        case ratingKey, attemptID, title, localURL, bytes, progress, status, metadata, posterURL, plexBIFURL
         case jellyfinTrickPlayPlaylistURL, chapterImageURLs, sideAssetBytes
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         ratingKey = try c.decode(String.self, forKey: .ratingKey)
+        attemptID = try c.decodeIfPresent(DownloadAttemptID.self, forKey: .attemptID)
         title = try c.decode(String.self, forKey: .title)
         localURL = try c.decode(URL.self, forKey: .localURL)
         bytes = try c.decodeIfPresent(Int.self, forKey: .bytes) ?? 0
@@ -976,6 +982,7 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(ratingKey, forKey: .ratingKey)
+        try c.encodeIfPresent(attemptID, forKey: .attemptID)
         try c.encode(title, forKey: .title)
         try c.encode(localURL, forKey: .localURL)
         try c.encode(bytes, forKey: .bytes)
