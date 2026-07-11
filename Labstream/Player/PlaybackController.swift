@@ -423,6 +423,7 @@ final class PlaybackController {
         AudioPrefKey.language,
         PlaybackPreferences.Keys.subtitleAutoSelectMode,
         PlaybackPreferences.Keys.subtitleBurnMode,
+        PlaybackPreferences.Keys.mobileVideoDisplayMode,
     ]
 
     /// Resume target (ms) for the current item, retained so the status observer can do a

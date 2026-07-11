@@ -42,6 +42,8 @@ struct CustomPlayerView: View {
     #if os(iOS)
     @State private var mobileSystemCoordinator = MobilePlayerSystemCoordinator()
     @State private var mobileOrientationCoordinator = MobilePlayerOrientationCoordinator()
+    @AppStorage(PlaybackPreferences.Keys.mobileVideoDisplayMode)
+    private var mobileVideoDisplayModeRaw = MobileVideoDisplayMode.fit.rawValue
     #endif
     #if os(macOS)
     @State private var macSystemCoordinator = MacPlayerSystemCoordinator()
@@ -117,6 +119,7 @@ struct CustomPlayerView: View {
             if !isDetachedToCinema {
                 #if os(iOS)
                 PlayerLayerView(player: controller?.player,
+                                displayMode: mobileVideoDisplayMode,
                                 mobileSystemCoordinator: mobileSystemCoordinator)
                     .ignoresSafeArea()
                     // The AVPlayerLayer itself has no tappable affordances. Keep it out of
@@ -134,6 +137,7 @@ struct CustomPlayerView: View {
                                        title: item.title,
                                        scrubState: $scrubState,
                                        trickPlayProvider: trickPlayProvider,
+                                       mobileVideoDisplayMode: mobileVideoDisplayModeBinding,
                                        mobileSystemCoordinator: mobileSystemCoordinator,
                                        onRetry: { controller.retry() },
                                        onClose: onClose,
@@ -181,6 +185,17 @@ struct CustomPlayerView: View {
             }
         }
     }
+
+    #if os(iOS)
+    private var mobileVideoDisplayMode: MobileVideoDisplayMode {
+        MobileVideoDisplayMode.persisted(mobileVideoDisplayModeRaw)
+    }
+
+    private var mobileVideoDisplayModeBinding: Binding<MobileVideoDisplayMode> {
+        Binding(get: { mobileVideoDisplayMode },
+                set: { mobileVideoDisplayModeRaw = $0.rawValue })
+    }
+    #endif
 
     private func runPlayer() async {
         await MainActor.run {
@@ -322,12 +337,17 @@ final class PlayerLayerHostView: NSView {
 struct PlayerLayerView: UIViewRepresentable {
     let player: AVPlayer?
     #if os(iOS)
+    var displayMode: MobileVideoDisplayMode = .fit
     var mobileSystemCoordinator: MobilePlayerSystemCoordinator?
     #endif
 
     func makeUIView(context: Context) -> UIView {
         let view = PlayerLayerHostView()
+        #if os(iOS)
+        view.playerLayer.videoGravity = displayMode == .fill ? .resizeAspectFill : .resizeAspect
+        #else
         view.playerLayer.videoGravity = .resizeAspect
+        #endif
         view.playerLayer.player = player
         #if os(iOS)
         mobileSystemCoordinator?.attach(playerLayer: view.playerLayer)
@@ -339,6 +359,7 @@ struct PlayerLayerView: UIViewRepresentable {
         guard let hostView = uiView as? PlayerLayerHostView else { return }
         hostView.playerLayer.player = player
         #if os(iOS)
+        hostView.playerLayer.videoGravity = displayMode == .fill ? .resizeAspectFill : .resizeAspect
         mobileSystemCoordinator?.attach(playerLayer: hostView.playerLayer)
         #endif
     }

@@ -1026,7 +1026,7 @@ struct SettingsView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Clears the remembered playback speed and subtitle/audio language. Quality, Up Next, skip, and download defaults are unaffected.")
+                Text("Clears the remembered playback speed, video fit/fill mode, and subtitle/audio language. Quality, Up Next, skip, and download defaults are unaffected.")
             }
 
             Button(role: .destructive) {

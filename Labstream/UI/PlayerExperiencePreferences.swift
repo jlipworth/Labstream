@@ -30,6 +30,7 @@ enum PlaybackPreferences {
         static let subtitlesOff = "subtitlesOff"
         static let subtitleAutoSelectMode = "subtitleAutoSelectMode"
         static let subtitleBurnMode = "subtitleBurnMode"
+        static let mobileVideoDisplayMode = "mobileVideoDisplayMode"
     }
 
     enum SkipMode: String, CaseIterable, Identifiable {
