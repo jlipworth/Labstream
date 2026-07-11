@@ -169,6 +169,101 @@ struct DownloadStorePersistenceTests {
         }
     }
 
+    @Test func failedHeldManifestRemovalIsObservableAndNoOpRetryCommitsIt() throws {
+        try withTemporaryDirectory { directory in
+            let ratingKey = "plex:held-remove"
+            let segment = OfflineHeldRangeSegment(
+                offset: 64, length: 64, relativePath: "held-remove-body"
+            )
+            let initial = DownloadStore(baseDirectory: directory)
+            initial.upsert(makeRecord(
+                ratingKey: ratingKey,
+                title: "Held Remove",
+                directory: directory,
+                bytes: 0,
+                metadata: OfflineMetadata(
+                    ratingKey: ratingKey,
+                    title: "Held Remove",
+                    type: "movie",
+                    resumeMode: .staticByteRange,
+                    heldRangeSegments: [segment]
+                )
+            ))
+
+            let writes = AtomicWriteHarness(failFirstWrite: true)
+            let removing = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init { data, url in try writes.write(data, to: url) }
+            )
+            let failed = removing.removeHeldRangeSegment(
+                ratingKey: ratingKey, offset: segment.offset
+            )
+
+            #expect(failed.removed == segment)
+            #expect(!failed.committed)
+            #expect(DownloadStore(baseDirectory: directory)
+                .record(for: ratingKey)?.metadata?.heldRangeSegments == [segment])
+
+            let retriedNoOp = removing.removeHeldRangeSegment(
+                ratingKey: ratingKey, offset: segment.offset
+            )
+            #expect(retriedNoOp.removed == nil)
+            #expect(retriedNoOp.committed)
+            #expect(writes.attemptCount == 2)
+            #expect(DownloadStore(baseDirectory: directory)
+                .record(for: ratingKey)?.metadata?.heldRangeSegments == nil)
+
+            let alreadyDurableNoOp = removing.removeHeldRangeSegment(
+                ratingKey: ratingKey, offset: segment.offset
+            )
+            #expect(alreadyDurableNoOp.committed)
+            #expect(writes.attemptCount == 2)
+        }
+    }
+
+    @Test func failedHeldManifestTakeIsObservableAndNoOpRetryCommitsIt() throws {
+        try withTemporaryDirectory { directory in
+            let ratingKey = "plex:held-take"
+            let segments = [
+                OfflineHeldRangeSegment(offset: 64, length: 64, relativePath: "held-take-1"),
+                OfflineHeldRangeSegment(offset: 128, length: 64, relativePath: "held-take-2"),
+            ]
+            let initial = DownloadStore(baseDirectory: directory)
+            initial.upsert(makeRecord(
+                ratingKey: ratingKey,
+                title: "Held Take",
+                directory: directory,
+                bytes: 0,
+                metadata: OfflineMetadata(
+                    ratingKey: ratingKey,
+                    title: "Held Take",
+                    type: "movie",
+                    resumeMode: .staticByteRange,
+                    heldRangeSegments: segments
+                )
+            ))
+
+            let writes = AtomicWriteHarness(failFirstWrite: true)
+            let taking = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init { data, url in try writes.write(data, to: url) }
+            )
+            let failed = taking.takeHeldRangeSegments(ratingKey: ratingKey)
+
+            #expect(failed.removed == segments)
+            #expect(!failed.committed)
+            #expect(DownloadStore(baseDirectory: directory)
+                .record(for: ratingKey)?.metadata?.heldRangeSegments == segments)
+
+            let retriedNoOp = taking.takeHeldRangeSegments(ratingKey: ratingKey)
+            #expect(retriedNoOp.removed.isEmpty)
+            #expect(retriedNoOp.committed)
+            #expect(writes.attemptCount == 2)
+            #expect(DownloadStore(baseDirectory: directory)
+                .record(for: ratingKey)?.metadata?.heldRangeSegments == nil)
+        }
+    }
+
     @Test func zeroByteStaticPauseRemainsRestartableAcrossStoreReconcile() throws {
         try withTemporaryDirectory { directory in
             let staticKey = "plex:static-zero"

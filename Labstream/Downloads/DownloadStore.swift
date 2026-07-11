@@ -57,6 +57,39 @@ final class DownloadStore: @unchecked Sendable {
         let heldBodyBytes: Int
     }
 
+    struct HeldRangeSegmentRemovalResult: Sendable, Equatable {
+        let removed: OfflineHeldRangeSegment?
+        let ticket: PersistenceTicket
+        let persistence: PersistenceFlushResult
+
+        var committed: Bool {
+            guard case .committed(let revision) = persistence else { return false }
+            return revision >= ticket.revision
+        }
+    }
+
+    struct HeldRangeSegmentsRemovalResult: Sendable, Equatable {
+        let removed: [OfflineHeldRangeSegment]
+        let ticket: PersistenceTicket
+        let persistence: PersistenceFlushResult
+
+        var committed: Bool {
+            guard case .committed(let revision) = persistence else { return false }
+            return revision >= ticket.revision
+        }
+    }
+
+    struct HeldRangeSegmentsTakeResult: Sendable, Equatable {
+        let removed: [OfflineHeldRangeSegment]
+        let ticket: PersistenceTicket
+        let persistence: PersistenceFlushResult
+
+        var committed: Bool {
+            guard case .committed(let revision) = persistence else { return false }
+            return revision >= ticket.revision
+        }
+    }
+
     /// Codable row as persisted on disk (relative path, not absolute URL).
     private struct Row: Codable, Sendable {
         let ratingKey: String
@@ -323,51 +356,68 @@ final class DownloadStore: @unchecked Sendable {
     }
 
     @discardableResult
-    func removeHeldRangeSegment(ratingKey: String, offset: Int) -> OfflineHeldRangeSegment? {
-        removeHeldRangeSegments(ratingKey: ratingKey, offsets: [offset]).first
+    func removeHeldRangeSegment(ratingKey: String, offset: Int) -> HeldRangeSegmentRemovalResult {
+        let batch = removeHeldRangeSegments(ratingKey: ratingKey, offsets: [offset])
+        return HeldRangeSegmentRemovalResult(
+            removed: batch.removed.first,
+            ticket: batch.ticket,
+            persistence: batch.persistence
+        )
     }
 
-    /// Batch variant: remove several manifest entries with ONE index persist. Launch reattach and
-    /// drain-discard sweeps otherwise paid a full index.json rewrite per removed manifest.
+    /// Batch variant: remove several manifest entries with one index persist while returning the
+    /// exact durability outcome. A no-op still proves/retries a dirty prior removal.
     @discardableResult
-    func removeHeldRangeSegments(ratingKey: String, offsets: [Int]) -> [OfflineHeldRangeSegment] {
-        guard !offsets.isEmpty else { return [] }
+    func removeHeldRangeSegments(
+        ratingKey: String,
+        offsets: [Int]
+    ) -> HeldRangeSegmentsRemovalResult {
         let offsetSet = Set(offsets)
         lock.lock()
-        guard var row = rows[ratingKey], var metadata = row.metadata,
-              let segments = metadata.heldRangeSegments else {
-            lock.unlock()
-            return []
+        var removed: [OfflineHeldRangeSegment] = []
+        if !offsetSet.isEmpty,
+           var row = rows[ratingKey],
+           var metadata = row.metadata,
+           let segments = metadata.heldRangeSegments {
+            removed = segments.filter { offsetSet.contains($0.offset) }
+            if !removed.isEmpty {
+                let remaining = segments.filter { !offsetSet.contains($0.offset) }
+                metadata.heldRangeSegments = remaining.isEmpty ? nil : remaining
+                row.metadata = metadata
+                rows[ratingKey] = row
+            }
         }
-        let removed = segments.filter { offsetSet.contains($0.offset) }
-        guard !removed.isEmpty else {
-            lock.unlock()
-            return []
-        }
-        let remaining = segments.filter { !offsetSet.contains($0.offset) }
-        metadata.heldRangeSegments = remaining.isEmpty ? nil : remaining
-        row.metadata = metadata
-        rows[ratingKey] = row
         lock.unlock()
-        persist()
-        return removed
+        // Even a no-op must prove the current full snapshot: a prior failed removal already
+        // changed memory, so absence alone is not proof that the durable manifest was cleared.
+        let attempt = removed.isEmpty ? proveCleanupNoOpDurable() : persist()
+        return HeldRangeSegmentsRemovalResult(
+            removed: removed,
+            ticket: attempt.ticket,
+            persistence: attempt.result
+        )
     }
 
     @discardableResult
-    func takeHeldRangeSegments(ratingKey: String) -> [OfflineHeldRangeSegment] {
+    func takeHeldRangeSegments(ratingKey: String) -> HeldRangeSegmentsTakeResult {
         lock.lock()
-        guard var row = rows[ratingKey], var metadata = row.metadata else {
-            lock.unlock()
-            return []
+        var removed: [OfflineHeldRangeSegment] = []
+        if var row = rows[ratingKey], var metadata = row.metadata {
+            removed = metadata.heldRangeSegments ?? []
+            if !removed.isEmpty {
+                metadata.heldRangeSegments = nil
+                row.metadata = metadata
+                rows[ratingKey] = row
+            }
         }
-        let segments = metadata.heldRangeSegments ?? []
-        guard !segments.isEmpty else { lock.unlock(); return [] }
-        metadata.heldRangeSegments = nil
-        row.metadata = metadata
-        rows[ratingKey] = row
         lock.unlock()
-        persist()
-        return segments
+        // As above, retry a dirty prior take even when this call sees no in-memory manifests.
+        let attempt = removed.isEmpty ? proveCleanupNoOpDurable() : persist()
+        return HeldRangeSegmentsTakeResult(
+            removed: removed,
+            ticket: attempt.ticket,
+            persistence: attempt.result
+        )
     }
 
     var referencedHeldRangeSegmentRelativePaths: Set<String> {
@@ -1372,6 +1422,21 @@ final class DownloadStore: @unchecked Sendable {
             ticket: PersistenceTicket(revision: revision),
             result: Self.mapPersistenceResult(result)
         )
+    }
+
+    /// A cleanup repeated after its failed write sees no manifest in memory, but the absence is
+    /// durable only once that dirty full snapshot commits. Avoid a redundant write for an already
+    /// committed no-op; otherwise submit a new full snapshot so the call returns real proof.
+    private func proveCleanupNoOpDurable() -> PersistenceAttempt {
+        let ticket = currentPersistenceTicket()
+        let state = indexWriter.state
+        if state.dirtyRevision == nil, state.committedRevision >= ticket.revision {
+            return PersistenceAttempt(
+                ticket: ticket,
+                result: .committed(revision: state.committedRevision)
+            )
+        }
+        return persist()
     }
 
     func flushPersistence(
