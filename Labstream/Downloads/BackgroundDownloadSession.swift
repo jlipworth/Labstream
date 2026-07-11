@@ -1188,7 +1188,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 self.onRangeRequestNeeded?(ratingKey, reason)
             }
             for ratingKey in adoptedRangeKeys {
-                self.store.setStatus(ratingKey: ratingKey, .downloading)
+                guard let attemptID = recordsByKey[ratingKey]?.attemptID else { continue }
+                _ = self.store.setStatus(
+                    for: DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID),
+                    .downloading)
             }
             for (ratingKey, count) in adoptedSegmentCounts {
                 AppDiagnostics.record(.downloads, "downloads.range_segment_train_adopted", fields: [
@@ -1861,7 +1864,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 for identifier in superseded {
                     cancelURLSessionTask(identifier: identifier)
                 }
-                store.setStatus(ratingKey: ratingKey, .downloading)
+                _ = store.setStatus(for: candidate.attemptKey, .downloading)
                 onChange?()
                 AppDiagnostics.record(.downloads, "downloads.range_duplicate_start_suppressed", fields: [
                     "download_id": .identifier(ratingKey),
@@ -2738,7 +2741,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // unreliable before properties load); the delegate can't await, so we finalize
         // status in a detached Task. Bytes/progress are recorded now so the in-flight
         // count is correct even while the probe runs.
-        publishTransferFinalizing(ratingKey: entry.ratingKey, bytes: bytes)
+        guard publishTransferFinalizing(for: entry.attemptKey, bytes: bytes) else { return }
         let destination = entry.destination
 
         // GH #135: the fixup + #98 retrying probe + truncation guard + complete/unverified decision
@@ -3721,15 +3724,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// tracked for the row, and it still claims live work, park it `.paused` (the durable partial
     /// stays the checkpoint). A cancel/delete halt has no row left, so this no-ops there.
     private func markPausedIfHaltStrandedRow(ratingKey: String) {
+        guard let attemptID = currentAttemptIdentity(ratingKey: ratingKey) else { return }
+        let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+        guard store.ownsAttempt(key) else { return }
         lock.lock()
         let halted = rangeHaltKinds[ratingKey] != nil
         let hasLiveTask = inflight.values.contains { $0.ratingKey == ratingKey }
             || rangeInflight.values.contains { $0.ratingKey == ratingKey }
         lock.unlock()
         guard halted, !hasLiveTask else { return }
-        let status = store.status(for: ratingKey)
+        let status = store.record(for: key)?.status
         guard status == .downloading || status == .queued else { return }
-        store.setStatus(ratingKey: ratingKey, .paused)
+        guard acceptedAttemptMutation(store.setStatus(for: key, .paused),
+                                      key: key, phase: "halt_stranded_pause") else { return }
         onChange?()
     }
 
@@ -3859,7 +3866,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             let held = heldRangeSegments[ratingKey] ?? [:]
             lock.unlock()
             guard haltKind == nil else {
-                settleHeldRangeDrainHalt(ratingKey: ratingKey, haltKind: haltKind!, durableBytes: durable,
+                settleHeldRangeDrainHalt(for: key, haltKind: haltKind!, durableBytes: durable,
                                          expectedBytes: expectedBytes, publishProgress: false)
                 break
             }
@@ -3899,7 +3906,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // Resume, while cancel/delete owns disposal of both the stash map and destination.
             lock.lock(); let haltBeforeAppend = rangeHaltKinds[ratingKey]; lock.unlock()
             guard haltBeforeAppend == nil else {
-                settleHeldRangeDrainHalt(ratingKey: ratingKey, haltKind: haltBeforeAppend!,
+                settleHeldRangeDrainHalt(for: key, haltKind: haltBeforeAppend!,
                                          durableBytes: durable, expectedBytes: expectedBytes,
                                          publishProgress: false)
                 break
@@ -3932,13 +3939,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // rest of the held run to drain. Cancel/delete must not resurrect a removed row.
             lock.lock(); let haltAfterAppend = rangeHaltKinds[ratingKey]; lock.unlock()
             if let haltAfterAppend {
-                settleHeldRangeDrainHalt(ratingKey: ratingKey, haltKind: haltAfterAppend,
+                settleHeldRangeDrainHalt(for: key, haltKind: haltAfterAppend,
                                          durableBytes: durable, expectedBytes: expectedBytes,
                                          publishProgress: haltAfterAppend == .pause)
                 break
             }
-            store.updateProgress(ratingKey: ratingKey, bytes: durable,
-                                 progress: (expectedBytes ?? 0) > 0 ? min(1, Double(durable) / Double(expectedBytes!)) : 0)
+            guard acceptedAttemptMutation(
+                store.updateProgress(for: key, bytes: durable,
+                                     progress: (expectedBytes ?? 0) > 0
+                                        ? min(1, Double(durable) / Double(expectedBytes!)) : 0),
+                key: key, phase: "held_drain_progress") else { break }
         }
         // M2: read + mutate the held map under the same lock the rest of the file uses for
         // cross-queue access, rather than reading it unlocked.
@@ -3951,16 +3961,21 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// Stop an in-progress held-body drain at a pause/cancel boundary. A pause leaves the
     /// unconsumed held stashes mapped for Resume and parks the row after publishing any append that
     /// won the race. Cancel/delete owns teardown and must never recreate or mutate its removed row.
-    private func settleHeldRangeDrainHalt(ratingKey: String, haltKind: StaticRangeHaltKind,
+    private func settleHeldRangeDrainHalt(for key: DownloadAttemptKey,
+                                          haltKind: StaticRangeHaltKind,
                                           durableBytes: Int, expectedBytes: Int?,
                                           publishProgress: Bool) {
+        let ratingKey = key.ratingKey
         guard haltKind == .pause else { return }
         if publishProgress {
-            store.updateProgress(ratingKey: ratingKey, bytes: durableBytes,
-                                 progress: (expectedBytes ?? 0) > 0
-                                    ? min(1, Double(durableBytes) / Double(expectedBytes!)) : 0)
+            guard acceptedAttemptMutation(
+                store.updateProgress(for: key, bytes: durableBytes,
+                                     progress: (expectedBytes ?? 0) > 0
+                                        ? min(1, Double(durableBytes) / Double(expectedBytes!)) : 0),
+                key: key, phase: "held_drain_halt_progress") else { return }
         }
-        store.setStatus(ratingKey: ratingKey, .paused)
+        guard acceptedAttemptMutation(store.setStatus(for: key, .paused),
+                                      key: key, phase: "held_drain_halt_status") else { return }
         AppDiagnostics.record(.downloads, "downloads.range_held_drain_halted", fields: [
             "download_id": .identifier(ratingKey),
             "partial_bytes": .int(durableBytes),
@@ -4004,7 +4019,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "reason": .label("terminal_failed"),
             ])
         }
-        store.setStatus(ratingKey: ratingKey, .failed)
+        _ = acceptedAttemptMutation(store.setStatus(for: key, .failed),
+                                    key: key, phase: "terminal_failed")
     }
 
     /// C2: remove every held out-of-order segment stash for a row AND delete its on-disk temp file.
@@ -4327,8 +4343,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "bytes": .bytes(bytes),
             "validation": .label(validationLabel),
         ])
+        guard publishTransferFinalizing(for: attemptKey, bytes: bytes) else { return false }
         beginPendingBackgroundCompletionOperation()
-        publishTransferFinalizing(ratingKey: ratingKey, bytes: bytes)
         let destination = record.localURL
         let expectedExactBytes = store.sourceExactBytes(for: attemptKey)
         Task { [self] in
@@ -4435,9 +4451,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // or a late drain. (The append path already drains before finalizing; this is the backstop
         // for the replaceWhole / 416-complete / offset>=expected finalize entrypoints.)
         purgeHeldRangeSegments(for: entry.attemptKey)
-        beginPendingBackgroundCompletionOperation()
         let bytes = fileSize(at: entry.destination) ?? entry.totalBytes
-        publishTransferFinalizing(ratingKey: entry.ratingKey, bytes: bytes)
+        guard publishTransferFinalizing(for: entry.attemptKey, bytes: bytes) else { return }
+        beginPendingBackgroundCompletionOperation()
         let destination = entry.destination
         // The range lane knows the source's exact size; the finalize byte-completeness guard
         // depends on it (headset evidence: a 416'd legacy bounded response finalized a truncated
@@ -4458,9 +4474,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// Keep the persisted progress at exact 100% so the bar reflects that the network/file transfer
     /// finished, then let the UI derive the explicit "Verifying download…" display state from
     /// `.downloading + progress == 1.0` until `finalizeTransferredFile` writes the terminal status.
-    private func publishTransferFinalizing(ratingKey: String, bytes: Int) {
-        store.updateProgress(ratingKey: ratingKey, bytes: bytes, progress: 1.0)
+    private func publishTransferFinalizing(for key: DownloadAttemptKey, bytes: Int) -> Bool {
+        guard acceptedAttemptMutation(
+            store.updateProgress(for: key, bytes: bytes, progress: 1.0),
+            key: key, phase: "publish_finalizing") else { return false }
         onChange?()
+        return true
     }
 
     private func failRangeMove(entry: RangeTransfer, error: Error, stage: String) {
@@ -5702,7 +5721,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 cancelURLSessionTask(identifier: identifier)
             }
             endRangeRequestRebuildGrace(ratingKey: ratingKey, reason: "blob_resumed")
-            store.setStatus(ratingKey: ratingKey, .downloading)
+            guard acceptedAttemptMutation(store.setStatus(for: entry.attemptKey, .downloading),
+                                          key: entry.attemptKey,
+                                          phase: "blob_resume_status") else {
+                task.cancel()
+                return false
+            }
             AppDiagnostics.record(.downloads, "downloads.range_blob_resume", fields: [
                 "download_id": .identifier(ratingKey),
                 "task_id": .int(task.taskIdentifier),
