@@ -13,6 +13,70 @@ remediation queue for those findings — do not treat the two documents as indep
 lists. Line references in both documents are as of the audit baseline and may drift a few
 lines past it.
 
+## Implementation checkpoint — 2026-07-11 after the downloads audit
+
+The remediation stack was rebased onto `main` at `e757bb1` after auditing the 29 reachable
+incoming commits from `6a523cf..e757bb1`. Those commits are overwhelmingly downloads-engine
+characterization and hardening. They add useful fault infrastructure and several attempt-aware
+guards, but they do not complete the release-blocking persistence/ownership work below.
+
+Current status at this checkpoint:
+
+| Slice | Status | Evidence / remaining boundary |
+| --- | --- | --- |
+| 0A–0B | Complete | Repeatable compile audit plus nonzero macOS/iOS app test plans are on the rebased branch. |
+| 1A | Open | `DownloadStore.persist()` still has no serial revisioned writer, dirty retry, observable failure, or bounded `flush()`; background completion cannot await store durability. |
+| 1B | Partial | Existing string attempt tokens, v2 task markers, stale-task rejection, and attempt-bearing held manifests are prior art. A typed `DownloadAttemptID`, schema v3, durable-before-reattach migration, and attempt-conditional store APIs remain. |
+| 1C | Partial | Main now has a final-verdict recheck, attempt-matched held bodies/orphan sweeping, and an Emby ambiguous-create tombstone. A work registry, attempt-scoped finalizing, side-asset staging/ownership, broad post-await guards, and compare-and-clear play-session cleanup remain. |
+| 1D–1F | Complete | Auth/secure-storage, system-media ownership, and player lifecycle generations survived the rebase unchanged. iPad/Mac physical ownership and lifecycle checks passed; iOS TSAN tests remain green. |
+| 2A | Partial | Plex photo coverage, modern Mac decoding, and the MediaSession clock are complete. Error-body sizing still reads the whole file; the old dead-helper inventory must be regenerated against the audited engine. |
+| 2B | Open / higher priority | `store.records` uses grew from 38 to 40 and single-row `first`/`contains` uses from 24 to 26. Only `status(for:)` is narrow today. |
+| 2C | Complete | Latest-rail execution is bounded and order preserving. |
+| 2D | Open | `OfflineLibraryView` remains 776 lines and optimizer item decoding retains the nested `try?`/coalescing cliff. |
+| 3–4 | Open | Incoming main did not change the MediaBrowser value/request seams or Plex browse execution. Canonical backend work now spans a larger audited download-policy surface. |
+| 5E | Higher priority after correctness | `BackgroundDownloadSession` grew from about 4,994 to 5,755 lines, `DownloadManager` from 3,264 to 3,749, and `DownloadStore` from 1,091 to 1,271. Extract mechanically only after 1A–1C. |
+
+The audited engine added two durability domains that 1A–1C must model explicitly:
+
+- attempt-bearing held-range manifests and persisted held response bodies;
+- Emby ambiguous-create cleanup tombstones and their retry/clear lifecycle.
+
+Do not serialize only the main download index while leaving these adjacent durable artifacts
+unordered relative to terminal/background-completion promises. Likewise, do not introduce a
+second attempt authority beside the current server-prep/marker identities; document and test
+their relationship during the schema-v3 migration.
+
+### Revised execution order from the incoming diff
+
+1. Record a new post-audit compile/static-reference baseline and regenerate the warning/dead-helper inventory.
+2. Land the isolated `PERF-01` filesystem-stat change with a large sparse-file test.
+3. Implement 1A revisioned persistence/dirty retry/bounded flush, including background completion and the adjacent held-manifest/tombstone durability boundaries.
+4. Implement 1B typed attempt identity and the atomic schema-v3/dual-read migration.
+5. Implement 1C attempt-conditional mutations, work registry, side-asset staging, and compare-and-clear cleanup using the new audit fixtures.
+6. Add 2B narrow lookups and benchmarks, then land the two 2D compiler fixes as separate measured changes.
+7. Start 3A canonical backend identity with compatibility aliases and legacy row/system-entry fixtures; continue through 3B–3E and Phase 4 only after the release-blocking download work is green.
+8. Move the download portion of 5E ahead of broad platform presentation decomposition, but keep each extraction behavior-neutral and separately reviewed.
+
+The three-run arm64 checkpoint at rebased commit `cf21073` is recorded locally under
+`build/compile-audit/post-main-e757bb1/` (raw logs remain ignored because they contain local
+paths). Median clean builds were 15.37 s visionOS, 14.10 s mobile, 16.73 s Mac, and 7.02 s
+PMSKit; no-op medians were 1.51 s, 1.19 s, 1.26 s, and 0.57 s respectively. The measurement
+confirms both 2D cliffs rather than merely carrying forward the old estimate:
+
+- `OfflineLibraryView.body` took about 2,073 ms to type-check;
+- `OptimizeRequest.Item.init(from:)` took about 2,090 ms, with its ID expression about 2,084 ms.
+
+The app clean lanes also reported smaller review-trigger warnings in `AppServices`,
+`ContentView`, `DebugPlexDownloadProbe`, `DetailView`, and `SettingsView`. Treat these as the
+new warning inventory; do not conflate them with the original four dead private helpers.
+
+Two pending feature branches need explicit integration review rather than blind conflict
+resolution. Saved sessions must preserve 1D's fail-closed client identity, transactional secret
+semantics, and post-await auth-attempt checks; same-server/different-profile changes must also
+invalidate the new download pollers/keepalives by profile identity. Music-experience changes are
+mostly additive, but must retain the 1E lease and 1F lifecycle guards and rerun their ownership,
+repeat/shuffle, and Up Next tests.
+
 This plan turns the July 2026 whole-repository audit into independently reviewable work.
 It is intentionally staged: correctness and test seams come before broad deduplication,
 and package/target restructuring happens only after measurements show that it is useful.
