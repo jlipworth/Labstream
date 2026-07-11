@@ -204,12 +204,33 @@ extension DownloadManager {
         let ext = part.container ?? (part.file as NSString?)?.pathExtension ?? "mp4"
         let destination = store.destinationURL(ratingKey: ratingKey,
                                                ext: ext.isEmpty ? "mp4" : ext)
-        // Seed a 0% record so the UI shows the job immediately.
-        store.upsert(DownloadRecord(ratingKey: ratingKey, attemptID: attemptID, title: item.title,
-                                    localURL: destination, bytes: 0, progress: 0,
-                                    metadata: metadata))
-        refreshRecords()
         let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+        // Publish the 0% row only while this exact seeded attempt still owns the key. A stale
+        // preflight must never upsert over a delete/re-download B before side-cache or URLSession
+        // work starts.
+        let record = DownloadRecord(ratingKey: ratingKey, attemptID: attemptID, title: item.title,
+                                    localURL: destination, bytes: 0, progress: 0,
+                                    metadata: metadata)
+        switch store.createAttemptOwnedRecord(record, attemptID: attemptID) {
+        case .committed(let committed) where committed == attemptKey:
+            break
+        case .committed, .rejectedOwnership:
+            recordDownloadDiagnostic("downloads.start_superseded_after_await", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label("Plex"),
+                "phase": .label("static_publish"),
+                "reason": .label("owner_changed"),
+            ])
+            return
+        case .failed:
+            lastError[ratingKey] = .transferFailed(
+                "The download could not be saved safely. Check storage and try again.")
+            _ = setAttemptStatus(.failed, for: attemptKey, context: "plex_static_publish")
+            if store.ownsAttempt(attemptKey) { releaseInFlight(ratingKey: ratingKey) }
+            refreshRecords()
+            return
+        }
+        refreshRecords()
         cacheChapterImages(for: attemptKey, item: item, backend: .plex,
                            server: server, token: token)
         cachePlexTextSubtitles(for: attemptKey, part: part, server: server, token: token)
