@@ -82,6 +82,9 @@ struct CustomPlayerChrome: View {
     @State private var trickPlayPreviewTimeMs: Int?
     @State private var trickPlayPreviewLoading = false
     @State private var trickPlayImageCache = TrickPlayPreviewImageCache(limit: 32)
+    @State private var trickPlayRequestGeneration = 0
+    @State private var hoverPreviewTargetMs: Int?
+    @State private var hoverPreviewX: CGFloat?
     #if os(iOS)
     @State private var chromeViewportSize: CGSize = .zero
     #endif
@@ -252,7 +255,7 @@ struct CustomPlayerChrome: View {
         }
         .onDisappear {
             hideTask?.cancel()
-            trickPlayPreviewTask?.cancel()
+            endHoverPreview()
             #if os(macOS)
             removeMacKeyMonitor()
             #endif
@@ -261,6 +264,9 @@ struct CustomPlayerChrome: View {
         .onChange(of: controller.transport.pauseRequested) { _, _ in scheduleChromeHideIfNeeded() }
         .onChange(of: controller.transportStatus.status) { _, _ in
             scheduleChromeHideIfNeeded()
+        }
+        .onChange(of: selectedMenu) { _, menu in
+            if menu != nil { endHoverPreview() }
         }
         #if os(iOS)
         // System-player behavior: the status bar and home indicator ride with the chrome —
@@ -715,11 +721,8 @@ struct CustomPlayerChrome: View {
                     .foregroundStyle(.white.opacity(0.68))
                     .frame(width: 62, alignment: .trailing)
 
-                Slider(value: scrubberBinding, in: 0...1) { editing in
-                    handleScrubEditingChanged(editing)
-                }
+                timelineSlider
                 .controlSize(.small)
-                .disabled(scrubState.durationMs <= 0)
                 .tint(.white)
 
                 Text(format(ms: scrubState.durationMs))
@@ -874,10 +877,7 @@ struct CustomPlayerChrome: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 62, alignment: .trailing)
 
-                Slider(value: scrubberBinding, in: 0...1) { editing in
-                    handleScrubEditingChanged(editing)
-                }
-                .disabled(scrubState.durationMs <= 0)
+                timelineSlider
 
                 Text(format(ms: scrubState.durationMs))
                     .font(.caption.monospacedDigit())
@@ -1037,10 +1037,7 @@ struct CustomPlayerChrome: View {
 
     private var compactScrubberColumn: some View {
         VStack(spacing: 4) {
-            Slider(value: scrubberBinding, in: 0...1) { editing in
-                handleScrubEditingChanged(editing)
-            }
-            .disabled(scrubState.durationMs <= 0)
+            timelineSlider
 
             HStack {
                 Text(format(ms: scrubState.displayedPositionMs))
@@ -1150,29 +1147,31 @@ struct CustomPlayerChrome: View {
 
     @ViewBuilder private var trickPlayPreview: some View {
         VStack(spacing: 8) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(.regularMaterial)
-                if let trickPlayPreviewImage {
-                    Image(uiImage: trickPlayPreviewImage)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .transition(.opacity)
-                } else if trickPlayPreviewLoading {
-                    Rectangle()
-                        .fill(.ultraThinMaterial)
-                        .overlay { ShimmerView() }
-                } else {
-                    Image(systemName: "film")
-                        .font(.title2.weight(.semibold))
-                        .foregroundStyle(.secondary)
+            if trickPlayProvider != nil {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(.regularMaterial)
+                    if let trickPlayPreviewImage {
+                        Image(uiImage: trickPlayPreviewImage)
+                            .resizable()
+                            .aspectRatio(contentMode: .fill)
+                            .transition(.opacity)
+                    } else if trickPlayPreviewLoading {
+                        Rectangle()
+                            .fill(.ultraThinMaterial)
+                            .overlay { ShimmerView() }
+                    } else {
+                        Image(systemName: "film")
+                            .font(.title2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
                 }
-            }
-            .frame(width: 190, height: 107)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(.white.opacity(0.16), lineWidth: 0.75)
+                .frame(width: 190, height: 107)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(.white.opacity(0.16), lineWidth: 0.75)
+                }
             }
 
             Text(format(ms: trickPlayPreviewTimeMs ?? scrubState.displayedPositionMs))
@@ -1187,6 +1186,40 @@ struct CustomPlayerChrome: View {
         .shadow(radius: 16)
         .allowsHitTesting(false)
         .accessibilityLabel("Scrub preview")
+    }
+
+    /// Shared slider surface. Continuous hover is deliberately attached to its padded container,
+    /// not an overlay, so pointer previews never steal click/drag hit testing from `Slider`.
+    private var timelineSlider: some View {
+        GeometryReader { geometry in
+            Slider(value: scrubberBinding, in: 0...1) { editing in
+                handleScrubEditingChanged(editing)
+            }
+            .disabled(scrubState.durationMs <= 0)
+            .frame(maxHeight: .infinity)
+            #if os(macOS) || os(iOS)
+            .contentShape(Rectangle())
+            .onContinuousHover(coordinateSpace: .local) { phase in
+                handleTimelineHover(phase, trackWidth: geometry.size.width)
+            }
+            #endif
+            .overlay(alignment: .topLeading) {
+                if hoverPreviewTargetMs != nil,
+                   !scrubState.isDragging,
+                   let hoverPreviewX {
+                    trickPlayPreview
+                        .fixedSize()
+                        .position(x: CGFloat(TrickPlayPreviewGeometry.cardCenterX(
+                            pointerX: Double(hoverPreviewX),
+                            trackWidth: Double(geometry.size.width),
+                            cardWidth: 210
+                        )), y: trickPlayProvider == nil ? -18 : -76)
+                        .transition(.opacity)
+                        .zIndex(20)
+                }
+            }
+        }
+        .frame(minWidth: 40, minHeight: 32, idealHeight: 32, maxHeight: 32)
     }
 
     private var skipControls: some View {
@@ -1528,7 +1561,7 @@ struct CustomPlayerChrome: View {
                 scrubState.beginDrag(livePositionMs: controller.currentResumeMs)
             }
             scrubState.updateDrag(fraction: fraction)
-            updateTrickPlayPreview()
+            updateTrickPlayPreview(for: scrubState.draftPositionMs, debounce: false)
         }
     }
 
@@ -1549,21 +1582,67 @@ struct CustomPlayerChrome: View {
             // diverges immediately).
         } else if scrubState.isDragging, let target = scrubState.commit() {
             controller.performUserSeek(toMs: target)
-            clearTrickPlayPreview()
+            refreshPreviewAfterDrag()
             revealChrome()
         } else {
             // No drag ever began in this editing session (thumb touched without movement,
             // or the Slider's post-release session closing) — nothing to seek.
-            clearTrickPlayPreview()
+            refreshPreviewAfterDrag()
             revealChrome()
         }
     }
 
-    private func updateTrickPlayPreview() {
-        guard let provider = trickPlayProvider,
-              scrubState.isDragging,
-              let targetMs = scrubState.draftPositionMs else {
+    #if os(macOS) || os(iOS)
+    private func handleTimelineHover(_ phase: HoverPhase, trackWidth: CGFloat) {
+        #if os(iOS)
+        // `onContinuousHover` is also available to an attached pointer on iPhone, but #237 is
+        // intentionally an iPad pointer enhancement. Touch-only interaction remains untouched.
+        guard UIDevice.current.userInterfaceIdiom == .pad else { return }
+        #endif
+
+        switch phase {
+        case .active(let location):
+            guard let targetMs = TrickPlayPreviewGeometry.targetMs(
+                pointerX: Double(location.x),
+                trackWidth: Double(trackWidth),
+                durationMs: scrubState.durationMs
+            ) else {
+                endHoverPreview()
+                return
+            }
+            hoverPreviewX = min(max(location.x, 0), trackWidth)
+            hoverPreviewTargetMs = targetMs
+            revealChrome(keepVisible: true)
+            guard !scrubState.isDragging else { return }
+            updateTrickPlayPreview(for: targetMs, debounce: true)
+        case .ended:
+            endHoverPreview()
+            if !scrubState.isDragging { scheduleChromeHideIfNeeded() }
+        }
+    }
+    #endif
+
+    private func refreshPreviewAfterDrag() {
+        if let hoverPreviewTargetMs {
+            updateTrickPlayPreview(for: hoverPreviewTargetMs, debounce: true)
+        } else {
             clearTrickPlayPreview()
+        }
+    }
+
+    private func updateTrickPlayPreview(for targetMs: Int?, debounce: Bool) {
+        guard let targetMs else {
+            clearTrickPlayPreview()
+            return
+        }
+
+        trickPlayRequestGeneration &+= 1
+        let generation = trickPlayRequestGeneration
+        trickPlayPreviewTimeMs = targetMs
+        guard let provider = trickPlayProvider else {
+            trickPlayPreviewTask?.cancel()
+            trickPlayPreviewLoading = false
+            trickPlayPreviewImage = nil
             return
         }
 
@@ -1576,14 +1655,18 @@ struct CustomPlayerChrome: View {
         }
 
         trickPlayPreviewLoading = true
-        trickPlayPreviewTimeMs = targetMs
         trickPlayPreviewTask?.cancel()
         trickPlayPreviewTask = Task {
+            if debounce {
+                try? await Task.sleep(for: .milliseconds(60))
+                guard !Task.isCancelled else { return }
+            }
             let thumbnail = await provider.thumbnail(nearMs: targetMs)
             guard !Task.isCancelled else { return }
             let decoded = thumbnail.flatMap { UIImage(data: $0.imageData) }
             await MainActor.run {
-                guard scrubState.isDragging, scrubState.draftPositionMs == targetMs else { return }
+                guard generation == trickPlayRequestGeneration,
+                      activeTrickPlayTargetMs == targetMs else { return }
                 trickPlayPreviewLoading = false
                 guard let thumbnail, let decoded else { return }
                 trickPlayImageCache.insert(decoded, for: thumbnail.timeMs)
@@ -1593,7 +1676,19 @@ struct CustomPlayerChrome: View {
         }
     }
 
+    private var activeTrickPlayTargetMs: Int? {
+        if scrubState.isDragging { return scrubState.draftPositionMs }
+        return hoverPreviewTargetMs
+    }
+
+    private func endHoverPreview() {
+        hoverPreviewTargetMs = nil
+        hoverPreviewX = nil
+        if !scrubState.isDragging { clearTrickPlayPreview() }
+    }
+
     private func clearTrickPlayPreview() {
+        trickPlayRequestGeneration &+= 1
         trickPlayPreviewTask?.cancel()
         trickPlayPreviewLoading = false
         trickPlayPreviewImage = nil
@@ -2007,9 +2102,9 @@ private enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
         #if os(macOS)
         switch self {
         case .screen: CGSize(width: 360, height: 320)
-        case .quality: CGSize(width: 300, height: 270)
-        case .speed: CGSize(width: 270, height: 220)
-        case .subtitles, .audio: CGSize(width: 340, height: 240)
+        case .quality: CGSize(width: 250, height: 228)
+        case .speed: CGSize(width: 230, height: 188)
+        case .subtitles, .audio: CGSize(width: 290, height: 210)
         case .chapters: CGSize(width: 920, height: 210)
         case .stats: CGSize(width: 420, height: 285)
         }
