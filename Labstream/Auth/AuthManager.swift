@@ -396,12 +396,6 @@ final class AuthManager {
         }
     }
 
-    private func loadEmbySessionSnapshot() -> Bool {
-        guard let snapshot = readEmbySessionSnapshot() else { return false }
-        applyEmbySessionSnapshot(snapshot)
-        return true
-    }
-
     private func readEmbySessionSnapshot() -> EmbySessionSnapshot? {
         guard let urlString = keychain.embyServerURLString,
               let server = URL(string: urlString),
