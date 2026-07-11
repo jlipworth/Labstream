@@ -29,7 +29,7 @@ Current status at this checkpoint:
 | 1B | Partial | Existing string attempt tokens, v2 task markers, stale-task rejection, and attempt-bearing held manifests are prior art. A typed `DownloadAttemptID`, schema v3, durable-before-reattach migration, and attempt-conditional store APIs remain. |
 | 1C | Partial | Main now has a final-verdict recheck, attempt-matched held bodies/orphan sweeping, and an Emby ambiguous-create tombstone. A work registry, attempt-scoped finalizing, side-asset staging/ownership, broad post-await guards, and compare-and-clear play-session cleanup remain. |
 | 1D–1F | Complete | Auth/secure-storage, system-media ownership, and player lifecycle generations survived the rebase unchanged. iPad/Mac physical ownership and lifecycle checks passed; iOS TSAN tests remain green. |
-| 2A | Partial | Plex photo coverage, modern Mac decoding, and the MediaSession clock are complete. Error-body sizing still reads the whole file; the old dead-helper inventory must be regenerated against the audited engine. |
+| 2A | Partial | Plex photo coverage, modern Mac decoding, the MediaSession clock, and `PERF-01` (`fe730a0`) are complete. The old dead-helper inventory must still be regenerated against the audited engine. |
 | 2B | Open / higher priority | `store.records` uses grew from 38 to 40 and single-row `first`/`contains` uses from 24 to 26. Only `status(for:)` is narrow today. |
 | 2C | Complete | Latest-rail execution is bounded and order preserving. |
 | 2D | Open | `OfflineLibraryView` remains 776 lines and optimizer item decoding retains the nested `try?`/coalescing cliff. |
@@ -56,6 +56,59 @@ their relationship during the schema-v3 migration.
 6. Add 2B narrow lookups and benchmarks, then land the two 2D compiler fixes as separate measured changes.
 7. Start 3A canonical backend identity with compatibility aliases and legacy row/system-entry fixtures; continue through 3B–3E and Phase 4 only after the release-blocking download work is green.
 8. Move the download portion of 5E ahead of broad platform presentation decomposition, but keep each extraction behavior-neutral and separately reviewed.
+
+### Implementation journal
+
+#### 2026-07-11 — `PERF-01` filesystem-stat boundary
+
+- **Status:** complete.
+- **Commit:** `fe730a0` (`Use file metadata for HTTP error body size`).
+- **Changed boundary:** failed HTTP download diagnostics now obtain the temporary body's logical
+  byte count from filesystem attributes instead of allocating the entire body. HTTP handling,
+  failure transitions, privacy-safe bucketing, raw-body handling, lifecycle ownership, and
+  persisted schemas are unchanged. A stat failure still produces `body_bytes=unknown`.
+- **Regression evidence:** app tests create a 16 GiB sparse file and prove its exact logical size
+  reaches the existing `10GB+` bucket without materializing its contents. Zero-byte, missing,
+  denied, malformed, negative, overflowing, fractional, non-finite, and boolean attribute shapes
+  are also covered.
+- **Validation:** focused stat tests passed 5/5; the complete macOS and iPadOS app plans passed
+  42/42 each, with Thread Sanitizer enabled on iPadOS. Clean Mac, iOS Simulator, and visionOS
+  Simulator builds passed. The clean visionOS product matched the installed UUID, launched into
+  the signed-in Home surface, returned HTTP 200 during startup, and had no crash, assertion, or
+  sanitizer signature in the smoke log. PMSKit passed 1,399 tests across 170 suites, and the
+  repository hygiene gate plus its 20 Python tooling tests passed.
+- **Known remaining boundary:** the post-audit dead-helper/warning inventory remains part of 2A;
+  it is not coupled to this production fix.
+
+#### 2026-07-11 — Phase 1A durability discovery
+
+- **Status:** characterized; implementation open.
+- **Current index boundary:** `DownloadStore.persist()` snapshots under `NSLock`, then encodes and
+  atomically writes outside the lock with no revision, serialization, dirty retry, result,
+  diagnostic, or flush. Eleven mutation paths call it. Subtitle repair writes the index directly
+  and swallows failure, bypassing that path.
+- **Background completion boundary:** `BackgroundDownloadCompletionGate` waits for in-memory
+  range I/O/finalization only. `urlSessionDidFinishEvents` can therefore release the OS handler
+  without proving that the required index revision reached disk.
+- **Adjacent durability boundaries:** held bodies are moved before their manifests mutate, but a
+  successful `persistHeldRangeSegment` currently means only an in-memory mutation; callers cannot
+  know that the manifest committed before replacing an older body. Emby cleanup tombstones use a
+  separate synchronous JSON file under the store lock; add failure is visible, remove failure is
+  silent, and decode failure is currently treated as an empty collection.
+- **Existing evidence/seams:** schema-v2 and legacy/corrupt-row coding have PMSKit coverage, and
+  the completion gate has in-memory tests. There is no index write/encode/replace fault seam or
+  deterministic stale-write, dirty-retry, fresh-store restore, terminal/delete durability, or
+  completion-versus-flush app test.
+- **Next commit boundary:** introduce a fault-injectable, revision-fenced index writer plus app
+  characterization tests, route normal persistence and subtitle repair through it, preserve
+  schema v2, retain the newest failed snapshot as dirty, and expose a bounded internal flush.
+  Background-completion integration, held-manifest tickets, and tombstone semantics remain
+  separate follow-up commits.
+- **Unable to determine without an explicit implementation choice:** whether index and tombstones
+  share one revision domain or aggregate separate tickets; whether held-manifest calls block or
+  return tickets; the exact revision terminal/delete/background completion must await; flush
+  timeout and timeout-handler policy; corrupt tombstone quarantine policy; delete ordering;
+  shutdown handling for dirty revisions; and the public result shape for terminal/delete failures.
 
 The three-run arm64 checkpoint at rebased commit `cf21073` is recorded locally under
 `build/compile-audit/post-main-e757bb1/` (raw logs remain ignored because they contain local
