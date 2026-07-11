@@ -1699,10 +1699,6 @@ public final class DownloadManager {
         refreshRecords()
     }
 
-    private func shouldKeepEmbyServerPrepPollingWhileQueuePaused(_ record: DownloadRecord) -> Bool {
-        ServerPrepRefreshPolicy.shouldPollEmbyServerPrepWhileQueuePaused(record)
-    }
-
     /// #169: auto-resume static byte-range downloads that a hard app kill interrupted mid-transfer.
     ///
     /// `nsurlsessiond` keeps a background range task running while the app is merely suspended, but
