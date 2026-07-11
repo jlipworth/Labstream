@@ -2553,15 +2553,38 @@ public final class DownloadManager {
             metadata.plexOptimizeStartedAtEpochSeconds = optimizeStartedAt
             var updatedRecord = record
             updatedRecord.metadata = metadata
-            store.upsert(updatedRecord)
+            switch store.createAttemptOwnedRecord(updatedRecord, attemptID: key.attemptID) {
+            case .committed(let committed) where committed == key:
+                break
+            case .committed, .rejectedOwnership:
+                recordDownloadDiagnostic("downloads.optimize_resume_stale", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "target": .label(targetName),
+                    "phase": .label("deadline_publish"),
+                ])
+                return
+            case .failed:
+                lastError[ratingKey] = .transferFailed(
+                    "The download could not be saved safely. Check storage and try again.")
+                _ = setAttemptStatus(.failed, for: key, context: "plex_deadline_publish")
+                if store.ownsAttempt(key) { releaseInFlight(ratingKey: ratingKey) }
+                refreshRecords()
+                return
+            }
         }
         do {
+            guard store.ownsAttempt(key) else {
+                throw DownloadLifecycleCancellation.staleOptimizeAttempt
+            }
             try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
                                              metadata: metadata,
                                              targetName: targetName)
             let currentItem = await fetchCurrentMediaItem(ratingKey: ratingKey, server: server,
                                                          token: token, identity: identity)
                 ?? metadata.makeMediaItem()
+            guard store.ownsAttempt(key) else {
+                throw DownloadLifecycleCancellation.staleOptimizeAttempt
+            }
             try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
                                              metadata: metadata,
                                              targetName: targetName)
@@ -2574,6 +2597,9 @@ public final class DownloadManager {
             let backgroundProcessingKey = await bgKeyForPolling(server: server,
                                                                  token: token,
                                                                  identity: identity)
+            guard store.ownsAttempt(key) else {
+                throw DownloadLifecycleCancellation.staleOptimizeAttempt
+            }
             if let backgroundProcessingKey,
                let queueTitle = metadata.optimizeQueueTitle,
                await optimizerQueueStatus(backgroundProcessingKey: backgroundProcessingKey,
@@ -2581,6 +2607,9 @@ public final class DownloadManager {
                                           server: server,
                                           token: token,
                                           identity: identity) == nil {
+                guard store.ownsAttempt(key) else {
+                    throw DownloadLifecycleCancellation.staleOptimizeAttempt
+                }
                 recordDownloadDiagnostic("downloads.optimize_resume_recreate", fields: [
                     "download_id": .identifier(ratingKey),
                     "target": .label(targetName),
@@ -2598,9 +2627,15 @@ public final class DownloadManager {
                         "error": .error(error),
                     ])
                 }
+                guard store.ownsAttempt(key) else {
+                    throw DownloadLifecycleCancellation.staleOptimizeAttempt
+                }
                 try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
                                                  metadata: metadata,
                                                  targetName: targetName)
+            }
+            guard store.ownsAttempt(key) else {
+                throw DownloadLifecycleCancellation.staleOptimizeAttempt
             }
             let sourceHeight = currentItem.media?[safe: metadata.mediaIndex ?? 0]?.height
                 ?? metadata.sourceMediaHeight
@@ -2615,6 +2650,9 @@ public final class DownloadManager {
                                                       server: server,
                                                       token: token,
                                                       identity: identity)
+            guard store.ownsAttempt(key) else {
+                throw DownloadLifecycleCancellation.staleOptimizeAttempt
+            }
             try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
                                              metadata: metadata,
                                              targetName: targetName)
@@ -2634,6 +2672,7 @@ public final class DownloadManager {
             // is safe against newer same-item attempts because Plex queueTitle is the per-attempt
             // identity; never release when the row has already handed off to bytes or another title.
             if let current = store.record(for: ratingKey),
+               current.attemptID == key.attemptID,
                current.status == .queued, current.bytes == 0, current.progress == 0,
                current.metadata?.optimizeTargetName == targetName,
                current.metadata?.optimizeQueueTitle == metadata.optimizeQueueTitle {
@@ -2645,12 +2684,14 @@ public final class DownloadManager {
         } catch DownloadLifecycleCancellation.plexSessionUnavailable {
             // A-1: park for deferred resume — keep the queued server-prep row, drop the in-memory
             // slot/poller, and let the prep scanner reattach once the matching Plex lane returns.
+            guard store.ownsAttempt(key) else { return }
             clearOptimizeProgress(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
             refreshRecords()
             scheduleServerPrepResumeRetries()
         } catch let error as DownloadError {
-            guard resumeOptimizePollerIsCurrent(ratingKey: ratingKey, pollerID: pollerID,
+            guard store.ownsAttempt(key),
+                  resumeOptimizePollerIsCurrent(ratingKey: ratingKey, pollerID: pollerID,
                                                 phase: "resume_error") else { return }
             recordDownloadDiagnostic("downloads.optimize_resume_failed", fields: [
                 "download_id": .identifier(ratingKey),
@@ -2667,13 +2708,15 @@ public final class DownloadManager {
             // began a NEW attempt on the same key (same optimizeQueueTitle). Releasing
             // unconditionally would strip the new attempt's slot/queue-title and cancel its
             // poller — only the still-current poller may tear down.
-            guard resumeOptimizePollerIsCurrent(ratingKey: ratingKey, pollerID: pollerID,
+            guard store.ownsAttempt(key),
+                  resumeOptimizePollerIsCurrent(ratingKey: ratingKey, pollerID: pollerID,
                                                 phase: "resume_cancelled") else { return }
             clearOptimizeProgress(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
             refreshRecords()
         } catch {
-            guard resumeOptimizePollerIsCurrent(ratingKey: ratingKey, pollerID: pollerID,
+            guard store.ownsAttempt(key),
+                  resumeOptimizePollerIsCurrent(ratingKey: ratingKey, pollerID: pollerID,
                                                 phase: "resume_error") else { return }
             recordDownloadDiagnostic("downloads.optimize_resume_failed", fields: [
                 "download_id": .identifier(ratingKey),
