@@ -402,22 +402,35 @@ final class DownloadStore: @unchecked Sendable {
         lock.lock()
         let snapshot = Array(rows.values)
         lock.unlock()
-        let hydrated = snapshot.map { row in
-            let sideAssets = hydratedSideAssets(ratingKey: row.ratingKey, metadata: row.metadata)
-            return DownloadRecord(ratingKey: row.ratingKey,
-                                  title: row.title,
-                                  localURL: baseDirectory.appendingPathComponent(row.relativePath),
-                                  bytes: row.bytes,
-                                  progress: row.progress,
-                                  status: row.status,
-                                  metadata: row.metadata,
-                                  posterURL: sideAssets.posterURL,
-                                  plexBIFURL: sideAssets.plexBIFURL,
-                                  jellyfinTrickPlayPlaylistURL: sideAssets.jellyfinTrickPlayPlaylistURL,
-                                  chapterImageURLs: sideAssets.chapterImageURLs,
-                                  sideAssetBytes: sideAssets.sideAssetBytes)
-        }
+        let hydrated = snapshot.map(hydratedRecord)
         return OfflineDownloadSort.sorted(hydrated)
+    }
+
+    /// Hydrate one indexed row without sorting or touching unrelated rows. Copy the value while
+    /// holding the lock, then resolve its side assets after unlocking just like `records` does.
+    func record(for ratingKey: String) -> DownloadRecord? {
+        lock.lock()
+        let row = rows[ratingKey]
+        lock.unlock()
+        return row.map(hydratedRecord)
+    }
+
+    /// Raw persisted metadata for callers that do not need a hydrated `DownloadRecord`.
+    func metadata(for ratingKey: String) -> OfflineMetadata? {
+        lock.lock(); defer { lock.unlock() }
+        return rows[ratingKey]?.metadata
+    }
+
+    /// Persisted media duration in milliseconds, without hydrating the row.
+    func duration(for ratingKey: String) -> Int? {
+        lock.lock(); defer { lock.unlock() }
+        return rows[ratingKey]?.metadata?.duration
+    }
+
+    /// O(1) row ownership/membership check that does not hydrate or sort the Offline library.
+    func contains(ratingKey: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return rows[ratingKey] != nil
     }
 
     /// The set of indexed ratingKeys, WITHOUT touching the filesystem. Use this when
@@ -434,6 +447,22 @@ final class DownloadStore: @unchecked Sendable {
     func status(for ratingKey: String) -> DownloadStatus? {
         lock.lock(); defer { lock.unlock() }
         return rows[ratingKey]?.status
+    }
+
+    private func hydratedRecord(_ row: Row) -> DownloadRecord {
+        let sideAssets = hydratedSideAssets(ratingKey: row.ratingKey, metadata: row.metadata)
+        return DownloadRecord(ratingKey: row.ratingKey,
+                              title: row.title,
+                              localURL: baseDirectory.appendingPathComponent(row.relativePath),
+                              bytes: row.bytes,
+                              progress: row.progress,
+                              status: row.status,
+                              metadata: row.metadata,
+                              posterURL: sideAssets.posterURL,
+                              plexBIFURL: sideAssets.plexBIFURL,
+                              jellyfinTrickPlayPlaylistURL: sideAssets.jellyfinTrickPlayPlaylistURL,
+                              chapterImageURLs: sideAssets.chapterImageURLs,
+                              sideAssetBytes: sideAssets.sideAssetBytes)
     }
 
     /// Absolute destinations for indexed rows, regardless of status. Used when rebinding
