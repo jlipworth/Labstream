@@ -441,6 +441,48 @@ their relationship during the schema-v3 migration.
   Jellyfin/Emby ActiveEncoding and Emby Convert teardown; then run delete/re-add, force-quit,
   background-redelivery, device, and simulator gates before declaring 1B/1C complete.
 
+#### 2026-07-12 — Phase 1B/1C conditional ownership seams
+
+- **Status:** in progress; these commits establish and exercise the exact-owner primitives, but
+  stable media/side-asset paths and several rating-key-only recovery maps still prevent a Phase 1
+  completion verdict.
+- **Commits:** `4bcc023` (`Add attempt-conditional download store mutations`), `eb8deae`
+  (`Carry exact owners through download session work`), `5db34bf` (`Guard download session
+  mutations by attempt`), `b68b0a2` (`Add attempt-scoped download staging primitives`), `c107669`
+  (`Model durable attempt-scoped cleanup intents`), and `e2ecf85` (`Add durable download cleanup
+  intent journal`).
+- **Conditional row authority:** the Store now exposes exact-attempt record/ownership lookup plus
+  conditional status, progress, metadata, and removal. Stale A mutations cannot affect B. Stable
+  artifact deletion and row removal share the Store lock, with a deterministic blocked-delete/
+  re-add fixture proving B cannot publish into A's deletion window. Persistence failure remains a
+  dirty observable state rather than being reported as success.
+- **Session entries:** opaque transfers, range transfers, retry entries, reattached tasks, and the
+  finalization registry carry `DownloadAttemptKey`. New tasks use one durable-owner snapshot for
+  both their current marker and in-memory entry; reattach/dead-finish adoption requires the typed
+  marker to equal the authoritative top-level owner. Entry-driven progress, status, terminal, and
+  finalizer mutations now use exact-attempt Store APIs, and dependent UI/error/retry work stops on
+  stale ownership or an unproved persistence result.
+- **Staging:** deterministic same-directory staging names contain a full SHA-256 over the
+  length-delimited unsanitized rating key, attempt ID, and stable relative path. Promotion validates
+  the derived path, rechecks the exact row owner under the Store lock, and uses same-directory
+  `rename` so A cannot replace B's stable file. Startup inventory/sweep recognizes only the exact
+  staging filename grammar and preserves current or explicitly-live references. The primitive does
+  not fsync the staged file/directory and does not transactionally couple rename with index commit;
+  callers must preserve the existing dirty-writer recovery boundary.
+- **Cleanup authority:** the versioned, credential-free generic intent supports Jellyfin/Emby
+  ActiveEncoding, known Emby Convert jobs, and Emby's accepted-but-response-lost ambiguous-create
+  identity. It carries exact attempt/backend/server/user/operation authority, excludes Plex, and
+  compare-clears only the exact intent. The standalone journal fails closed on read/decode,
+  duplicate IDs, conflicts, encode, and commit failures; post-replace throws are accepted only when
+  an exact re-read proves add/removal won.
+- **Explicit remaining blast radius:** opaque/range media and all side caches do not yet write to
+  the new staging paths; therefore a narrow check→stable-file-operation alias window remains.
+  Resume data, validators, held manifests/bodies, range checkpoint reset, halt/retry maps, and
+  compare-cancel are still partly rating-key-owned. The cleanup journal is not yet wired into
+  deletion, launch sweep, ActiveEncoding teardown, or the existing Emby Convert tombstone
+  migration. Do not merge or call Phase 1B/1C complete until those consumers are converted and the
+  full force-quit/background/device matrix passes.
+
 #### 2026-07-11 — Phase 2D compiler-cliff removal
 
 - **Status:** complete.
