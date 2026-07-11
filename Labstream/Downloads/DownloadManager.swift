@@ -134,6 +134,10 @@ public final class DownloadManager {
     /// cleanup intent alive for this process and each convert-resume sweep retries persisting
     /// them. Lost on app death — an accepted trade-off versus wedging delete() forever.
     @ObservationIgnored var deferredEmbyCleanupTombstones: [DownloadStore.EmbyConvertCleanupTombstone] = []
+    /// Tombstone ids whose recovery is currently running. Sweeps fire from many lifecycle edges
+    /// (pause, retry ladder, backend-ready) and each spawned a fresh GET /Sync/Jobs (+ racing
+    /// DELETE) per tombstone; this is the tombstone twin of the `activeJobs` row guard.
+    @ObservationIgnored var embyCleanupTombstonesInFlight: Set<UUID> = []
 
     private static let queuePausedDefaultsKey = "downloads.queuePaused"
 
@@ -215,21 +219,27 @@ public final class DownloadManager {
     /// `teardownOrphanedEncodersOnLaunch()`.
     var embyPlaySessionByRatingKey: [String: String] = [:]
     var jellyfinPlaySessionByRatingKey: [String: String] = [:]
-    /// Jellyfin kills idle transcodes when no session progress/ping arrives. Offline downloads
-    /// consume `/Videos/{id}/stream.mp4` as a file transfer, not through the playback controller, so
-    /// keep the server-minted PlaySessionId alive until the transfer reaches a terminal row state.
-    @ObservationIgnored private var jellyfinDownloadKeepaliveTasks: [String: Task<Void, Never>] = [:]
-    /// Emby applies the same ~60-second idle expiry to compatible-remux encoders. This is separate
-    /// bookkeeping because only Emby's `.compatibleRemux` lane is live; its optimize lane is a
-    /// persistent Convert job and must never emit playback keepalives.
-    private struct EmbyKeepaliveTaskHandle {
+    /// Generation-guarded keepalive task handle shared by both backend loops. A task that RETURNS
+    /// (auth-dead, session mismatch, natural exit) must remove itself from its map, or the
+    /// `ensure*Keepalives` gate sees a live entry forever and never restarts the keepalive after
+    /// recovery (re-login) — the server then idle-kills the encoder mid-download.
+    private struct KeepaliveTaskHandle {
         let generation: UUID
         let task: Task<Void, Never>
     }
-    @ObservationIgnored private var embyDownloadKeepaliveTasks: [String: EmbyKeepaliveTaskHandle] = [:]
+
+    /// Jellyfin kills idle transcodes when no session progress/ping arrives. Offline downloads
+    /// consume `/Videos/{id}/stream.mp4` as a file transfer, not through the playback controller, so
+    /// keep the server-minted PlaySessionId alive until the transfer reaches a terminal row state.
+    @ObservationIgnored private var jellyfinDownloadKeepaliveTasks: [String: KeepaliveTaskHandle] = [:]
+    /// Emby applies the same ~60-second idle expiry to compatible-remux encoders. This is separate
+    /// bookkeeping because only Emby's `.compatibleRemux` lane is live; its optimize lane is a
+    /// persistent Convert job and must never emit playback keepalives.
+    @ObservationIgnored private var embyDownloadKeepaliveTasks: [String: KeepaliveTaskHandle] = [:]
     /// Auth-dead tasks exit permanently for the credential generation that received 401/403.
     /// Without this sentinel every `refreshRecords()` would immediately recreate the task and
     /// hammer the server. Values are non-secret stable digests of server+user+token identity.
+    @ObservationIgnored private var jellyfinKeepaliveAuthQuarantine: [String: String] = [:]
     @ObservationIgnored private var embyKeepaliveAuthQuarantine: [String: String] = [:]
 
     /// Last (progress 0…1, time) sample per ratingKey, used to derive `optimizeETA` rate.
@@ -2740,14 +2750,27 @@ public final class DownloadManager {
     }
 
     private func ensureJellyfinDownloadKeepalives(for records: [DownloadRecord]) {
+        // Session and auth generation are loop-invariant: resolve once, not per record per refresh.
+        guard let session = appModel.backendSession(for: .jellyfin),
+              let userId = session.userID else { return }
+        let authGeneration = Self.keepaliveAuthGeneration(session)
         for record in records {
-            guard let candidate = JellyfinDownloadKeepalivePolicy.candidate(
-                    for: record,
-                    hasExistingTask: jellyfinDownloadKeepaliveTasks[record.ratingKey] != nil),
-                  let metadata = record.metadata,
-                  let session = appModel.backendSession(for: .jellyfin),
-                  let userId = session.userID,
+            guard let metadata = record.metadata,
                   session.matchesPersistedServer(metadata)
+            else { continue }
+            switch DownloadKeepaliveLifecyclePolicy.authQuarantineAction(
+                quarantinedGeneration: jellyfinKeepaliveAuthQuarantine[record.ratingKey],
+                currentGeneration: authGeneration) {
+            case .suppress:
+                continue
+            case .clear:
+                jellyfinKeepaliveAuthQuarantine.removeValue(forKey: record.ratingKey)
+            case .none:
+                break
+            }
+            guard let candidate = JellyfinDownloadKeepalivePolicy.candidate(
+                for: record,
+                hasExistingTask: jellyfinDownloadKeepaliveTasks[record.ratingKey] != nil)
             else { continue }
 
             startJellyfinDownloadKeepalive(
@@ -2762,16 +2785,17 @@ public final class DownloadManager {
     }
 
     private func ensureEmbyDownloadKeepalives(for records: [DownloadRecord]) {
+        // Session and auth generation are loop-invariant: resolve once, not per record per refresh.
+        guard let session = appModel.backendSession(for: .emby),
+              let userId = session.userID else { return }
+        let authGeneration = Self.keepaliveAuthGeneration(session)
         for record in records {
             guard let metadata = record.metadata,
-                  let session = appModel.backendSession(for: .emby),
-                  let userId = session.userID,
                   session.matchesPersistedServer(metadata),
                   EmbyDownloadKeepalivePolicy.matchesPersistedUser(
                     metadata.backendUserID, currentUserID: userId)
             else { continue }
-            let authGeneration = Self.embyKeepaliveAuthGeneration(session)
-            switch EmbyDownloadKeepalivePolicy.authQuarantineAction(
+            switch DownloadKeepaliveLifecyclePolicy.authQuarantineAction(
                 quarantinedGeneration: embyKeepaliveAuthQuarantine[record.ratingKey],
                 currentGeneration: authGeneration) {
             case .suppress:
@@ -2793,7 +2817,7 @@ public final class DownloadManager {
         }
     }
 
-    private nonisolated static func embyKeepaliveAuthGeneration(_ session: BackendSession) -> String {
+    private nonisolated static func keepaliveAuthGeneration(_ session: BackendSession) -> String {
         return DiagnosticRedactor.stableIdentifier(
             for: "\(session.serverID ?? "")|\(session.baseURL.absoluteString)|\(session.userID ?? "")|\(session.token)")
     }
@@ -2869,7 +2893,7 @@ public final class DownloadManager {
                     ])
                 case .stopAuthDead(let statusCode):
                     self.embyKeepaliveAuthQuarantine[ratingKey] =
-                        Self.embyKeepaliveAuthGeneration(liveSession)
+                        Self.keepaliveAuthGeneration(liveSession)
                     self.recordDownloadDiagnostic("downloads.emby_keepalive_degraded", fields: [
                         "download_id": .identifier(ratingKey),
                         "reason": .label("auth_dead"),
@@ -2884,8 +2908,8 @@ public final class DownloadManager {
                 } catch { return }
             }
         }
-        embyDownloadKeepaliveTasks[ratingKey] = EmbyKeepaliveTaskHandle(generation: generation,
-                                                                       task: task)
+        embyDownloadKeepaliveTasks[ratingKey] = KeepaliveTaskHandle(generation: generation,
+                                                                    task: task)
         recordDownloadDiagnostic("downloads.emby_keepalive_start", fields: [
             "download_id": .identifier(ratingKey),
         ])
@@ -2898,11 +2922,26 @@ public final class DownloadManager {
                                                  session: BackendSession,
                                                  userId: String,
                                                  durationMs: Int?) {
-        jellyfinDownloadKeepaliveTasks.removeValue(forKey: ratingKey)?.cancel()
+        jellyfinDownloadKeepaliveTasks.removeValue(forKey: ratingKey)?.task.cancel()
         let identity = appModel.identity.jellyfin
         let enqueueUserId = userId
-        jellyfinDownloadKeepaliveTasks[ratingKey] = Task { [weak self] in
+        let generation = UUID()
+        let task = Task { [weak self] in
             guard let self else { return }
+            defer {
+                // Self-remove on ANY exit (auth-dead, session mismatch, natural). Leaving the
+                // entry behind made `ensureJellyfinDownloadKeepalives` see hasExistingTask forever
+                // and never restart the keepalive after re-login — the server then idle-killed the
+                // transcode mid-download.
+                Task { @MainActor [weak self] in
+                    guard let self,
+                          DownloadKeepaliveLifecyclePolicy.shouldRemoveTask(
+                            completingGeneration: generation,
+                            currentGeneration: self.jellyfinDownloadKeepaliveTasks[ratingKey]?.generation)
+                    else { return }
+                    self.jellyfinDownloadKeepaliveTasks.removeValue(forKey: ratingKey)
+                }
+            }
             var sentPlaying = false
             // N2/F2c: report an advancing position, not a stationary one. Forward-only rows have
             // no progress fraction (no Content-Length), so `positionTicks(progress:)` pinned every
@@ -2997,6 +3036,11 @@ public final class DownloadManager {
                         "download_id": .identifier(ratingKey),
                     ])
                 case .stopAuthDead(let statusCode):
+                    // Quarantine THIS credential generation so refreshRecords doesn't immediately
+                    // recreate the task and hammer the server; a re-login mints a new generation
+                    // and the ensure gate clears the sentinel and restarts the keepalive.
+                    self.jellyfinKeepaliveAuthQuarantine[ratingKey] =
+                        Self.keepaliveAuthGeneration(liveSession)
                     self.recordDownloadDiagnostic("downloads.jellyfin_keepalive_degraded", fields: [
                         "download_id": .identifier(ratingKey),
                         "reason": .label("auth_dead"),
@@ -3013,6 +3057,8 @@ public final class DownloadManager {
                 }
             }
         }
+        jellyfinDownloadKeepaliveTasks[ratingKey] = KeepaliveTaskHandle(generation: generation,
+                                                                        task: task)
         recordDownloadDiagnostic("downloads.jellyfin_keepalive_start", fields: [
             "download_id": .identifier(ratingKey),
         ])
@@ -3048,8 +3094,9 @@ public final class DownloadManager {
         clearOptimizeProgress(ratingKey: ratingKey)
         _ = serverPrepAttempts.releaseAll(forRecordKey: ratingKey)
         serverPrepPollerTasks.removeValue(forKey: ratingKey)?.cancel()
-        jellyfinDownloadKeepaliveTasks.removeValue(forKey: ratingKey)?.cancel()
+        jellyfinDownloadKeepaliveTasks.removeValue(forKey: ratingKey)?.task.cancel()
         embyDownloadKeepaliveTasks.removeValue(forKey: ratingKey)?.task.cancel()
+        jellyfinKeepaliveAuthQuarantine.removeValue(forKey: ratingKey)
         embyKeepaliveAuthQuarantine.removeValue(forKey: ratingKey)
         forwardOnlyStallTracker.remove(ratingKey)
         // CLEANUP INVARIANT: a transcoded Emby download leaves a live FFmpeg encoder running on
@@ -3164,15 +3211,14 @@ public final class DownloadManager {
             estimatedTranscodeBytes: DownloadPresetPolicy.estimatedTranscodeBytes(for: record))
     }
 
-    private func liveDisplayBytes(for record: DownloadRecord, now: Date = Date()) -> Int? {
+    private func liveDisplayBytes(for record: DownloadRecord) -> Int? {
         DownloadLiveRangeProgressPolicy.liveDisplayBytes(
             for: record,
-            sample: liveRangeProgress[record.ratingKey],
-            now: now)
+            sample: liveRangeProgress[record.ratingKey])
     }
 
     private func displayBytes(for record: DownloadRecord, now: Date = Date()) -> Int? {
-        let live = liveDisplayBytes(for: record, now: now)
+        let live = liveDisplayBytes(for: record)
         let resumeBytes = record.metadata?.resumeDisplayBytes
         let resumableStatus = record.status == .paused
             || record.status == .downloading

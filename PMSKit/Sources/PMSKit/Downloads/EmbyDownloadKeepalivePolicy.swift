@@ -10,6 +10,32 @@ public struct EmbyDownloadKeepaliveCandidate: Equatable, Sendable {
     }
 }
 
+/// Backend-agnostic lifecycle rules shared by the Jellyfin and Emby download keepalive loops:
+/// generation-guarded self-removal (a returned task must leave the task map or `ensure*` sees a
+/// live entry forever and never restarts it after recovery) and the auth-dead restart quarantine.
+public enum DownloadKeepaliveLifecyclePolicy {
+    /// A naturally exiting task may finish after a replacement was installed for the same row.
+    /// Only the generation that still owns the dictionary slot may remove it.
+    public static func shouldRemoveTask(completingGeneration: UUID,
+                                        currentGeneration: UUID?) -> Bool {
+        currentGeneration == completingGeneration
+    }
+
+    public enum AuthQuarantineAction: Equatable, Sendable {
+        case none
+        /// The same rejected credential/session generation must not be restarted on every refresh.
+        case suppress
+        /// Credentials, user, or server changed; discard the old sentinel and allow a new task.
+        case clear
+    }
+
+    public static func authQuarantineAction(quarantinedGeneration: String?,
+                                            currentGeneration: String) -> AuthQuarantineAction {
+        guard let quarantinedGeneration else { return .none }
+        return quarantinedGeneration == currentGeneration ? .suppress : .clear
+    }
+}
+
 /// Pure eligibility gate for Emby's live compatible-remux keepalive.
 ///
 /// Explicit bitrate presets use persistent Convert jobs and originals/existing versions are static,
@@ -31,25 +57,20 @@ public enum EmbyDownloadKeepalivePolicy {
                                               playSessionID: playSessionID)
     }
 
-    /// A naturally exiting task may finish after a replacement was installed for the same row.
-    /// Only the generation that still owns the dictionary slot may remove it.
+    /// Delegates kept for the existing Emby call sites/tests; the shared implementation lives in
+    /// `DownloadKeepaliveLifecyclePolicy` so the two backend loops cannot drift.
     public static func shouldRemoveTask(completingGeneration: UUID,
                                         currentGeneration: UUID?) -> Bool {
-        currentGeneration == completingGeneration
+        DownloadKeepaliveLifecyclePolicy.shouldRemoveTask(
+            completingGeneration: completingGeneration, currentGeneration: currentGeneration)
     }
 
-    public enum AuthQuarantineAction: Equatable, Sendable {
-        case none
-        /// The same rejected credential/session generation must not be restarted on every refresh.
-        case suppress
-        /// Credentials, user, or server changed; discard the old sentinel and allow a new task.
-        case clear
-    }
+    public typealias AuthQuarantineAction = DownloadKeepaliveLifecyclePolicy.AuthQuarantineAction
 
     public static func authQuarantineAction(quarantinedGeneration: String?,
                                             currentGeneration: String) -> AuthQuarantineAction {
-        guard let quarantinedGeneration else { return .none }
-        return quarantinedGeneration == currentGeneration ? .suppress : .clear
+        DownloadKeepaliveLifecyclePolicy.authQuarantineAction(
+            quarantinedGeneration: quarantinedGeneration, currentGeneration: currentGeneration)
     }
 
     /// A PlaySession belongs to the user who minted it. Legacy rows without a persisted user keep
