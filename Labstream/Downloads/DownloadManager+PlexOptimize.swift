@@ -95,9 +95,25 @@ extension DownloadManager {
             "target": .label(targetName),
         ])
         // Seed a 0% record so the UI shows the job immediately while we set up the optimize.
-        store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
-                                    localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
-                                    bytes: 0, progress: 0, metadata: optimizeMetadata))
+        do {
+            try replacePlexOptimizeRecord(
+                DownloadRecord(ratingKey: ratingKey, attemptID: attemptKey.attemptID,
+                               title: item.title,
+                               localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
+                               bytes: 0, progress: 0, metadata: optimizeMetadata),
+                for: attemptKey)
+        } catch DownloadLifecycleCancellation.staleOptimizeAttempt {
+            return
+        } catch {
+            lastError[ratingKey] = .transferFailed(
+                "The download could not be saved safely. Check storage and try again.")
+            _ = setAttemptStatus(.failed, for: attemptKey, context: "plex_optimize_seed")
+            if store.ownsAttempt(attemptKey) {
+                releaseInFlight(ratingKey: ratingKey)
+            }
+            refreshRecords()
+            return
+        }
         refreshRecords()
 
         do {
@@ -113,7 +129,7 @@ extension DownloadManager {
             serverPrepAttempts.protectQueueTitle(queueTitle, forRecordKey: ratingKey)
             let sourceItem = await fetchCurrentMediaItem(ratingKey: ratingKey, server: server,
                                                          token: token, identity: identity) ?? item
-            try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
+            try assertCurrentOptimizeAttempt(attemptKey: attemptKey,
                                              metadata: optimizeMetadata,
                                              targetName: targetName)
             let sourceMediaIndex = metadata.mediaIndex ?? 0
@@ -121,7 +137,11 @@ extension DownloadManager {
             let refreshedResolutionLabel = DownloadPresetPolicy.displayResolutionLabel(
                 choice: .optimize(targetName: targetName),
                 chosenMedia: sourceItem.media?[safe: sourceMediaIndex])
-            let existingMetadata = records.first { $0.ratingKey == ratingKey }?.metadata
+            guard let existingRow = store.record(for: ratingKey),
+                  existingRow.attemptID == attemptKey.attemptID else {
+                throw DownloadLifecycleCancellation.staleOptimizeAttempt
+            }
+            let existingMetadata = existingRow.metadata
             optimizeMetadata = DownloadOfflineMetadataBuilder.metadata(from: sourceItem,
                                                     resolutionLabel: refreshedResolutionLabel,
                                                     requestedProfileLabel: metadata.requestedProfileLabel,
@@ -147,9 +167,12 @@ extension DownloadManager {
                 mediaIndex: sourceMediaIndex,
                 partIndex: sourcePartIndex
             )
-            store.upsert(DownloadRecord(ratingKey: ratingKey, title: sourceItem.title,
-                                        localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
-                                        bytes: 0, progress: 0, metadata: optimizeMetadata))
+            try replacePlexOptimizeRecord(
+                DownloadRecord(ratingKey: ratingKey, attemptID: attemptKey.attemptID,
+                               title: sourceItem.title,
+                               localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
+                               bytes: 0, progress: 0, metadata: optimizeMetadata),
+                for: attemptKey)
             refreshRecords()
             cacheChapterImages(for: attemptKey, item: sourceItem, backend: .plex,
                                server: server, token: token)
@@ -165,7 +188,7 @@ extension DownloadManager {
             // server-rendered versions may have a lower resolution/bitrate than the user's selected
             // preset (notably Original video quality on a 4K source). If we surface reuse later, it
             // should be an explicit menu item, not an implicit substitute for this request.
-            try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
+            try assertCurrentOptimizeAttempt(attemptKey: attemptKey,
                                              metadata: optimizeMetadata,
                                              targetName: targetName)
             let backgroundProcessingKey = await bgKeyForPolling(server: server,
@@ -187,7 +210,7 @@ extension DownloadManager {
                     "error": .error(error),
                 ])
             }
-            try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
+            try assertCurrentOptimizeAttempt(attemptKey: attemptKey,
                                              metadata: optimizeMetadata,
                                              targetName: targetName)
             let sourceHeight = sourceItem.media?[safe: sourceMediaIndex]?.height
@@ -202,7 +225,7 @@ extension DownloadManager {
                                                       mediaTitle: item.title,
                                                       server: server, token: token,
                                                       identity: identity)
-            try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
+            try assertCurrentOptimizeAttempt(attemptKey: attemptKey,
                                              metadata: optimizeMetadata,
                                              targetName: targetName)
             try startOptimizedPartDownload(attemptKey: attemptKey,
@@ -220,7 +243,7 @@ extension DownloadManager {
             // (the slot was released mid-chain and nothing newer owns the row), remove it —
             // otherwise the server-prep refresh kick sees an unattached queued prep row and
             // reanimates the deleted download.
-            removeAbandonedServerPrepSeedIfAttemptDead(ratingKey: ratingKey,
+            removeAbandonedServerPrepSeedIfAttemptDead(attemptKey: attemptKey,
                                                        queueTitle: queueTitle,
                                                        targetName: targetName)
         } catch DownloadLifecycleCancellation.plexSessionUnavailable {
@@ -286,7 +309,7 @@ extension DownloadManager {
             releaseInFlight(ratingKey: ratingKey)
             throw lastError[ratingKey] ?? DownloadError.storageLimitExceeded("Storage limit exceeded.")
         }
-        try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
+        try assertCurrentOptimizeAttempt(attemptKey: attemptKey,
                                          metadata: metadata,
                                          targetName: targetName)
         var downloadMetadata = metadata
@@ -311,11 +334,13 @@ extension DownloadManager {
             downloadMetadata.chapterImageRelativePaths = store.metadata(for: ratingKey)?
                 .chapterImageRelativePaths
         }
-        store.upsert(DownloadRecord(ratingKey: ratingKey, title: title,
-                                    localURL: destination, bytes: 0, progress: 0,
-                                    metadata: downloadMetadata))
+        try replacePlexOptimizeRecord(
+            DownloadRecord(ratingKey: ratingKey, attemptID: attemptKey.attemptID,
+                           title: title, localURL: destination, bytes: 0, progress: 0,
+                           metadata: downloadMetadata),
+            for: attemptKey)
         refreshRecords()
-        try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
+        try assertCurrentOptimizeAttempt(attemptKey: attemptKey,
                                          metadata: downloadMetadata,
                                          targetName: targetName)
         let url = OptimizeRequest.downloadURL(server: server, token: token, partKey: part.key)
@@ -351,11 +376,13 @@ extension DownloadManager {
     /// touched: the slot must be gone, and the row must still be THIS attempt's seed (same queue
     /// title + target, `.queued`, zero bytes/progress). A row a pause parked is `.paused` and a row
     /// a newer attempt owns carries a different queue title — both are left alone.
-    private func removeAbandonedServerPrepSeedIfAttemptDead(ratingKey: String,
+    private func removeAbandonedServerPrepSeedIfAttemptDead(attemptKey: DownloadAttemptKey,
                                                             queueTitle: String,
                                                             targetName: String) {
+        let ratingKey = attemptKey.ratingKey
         guard !activeJobs.contains(ratingKey),
               let row = store.record(for: ratingKey),
+              row.attemptID == attemptKey.attemptID,
               row.status == .queued, row.bytes == 0, row.progress == 0,
               row.metadata?.optimizeQueueTitle == queueTitle,
               row.metadata?.optimizeTargetName == targetName else { return }
@@ -363,7 +390,7 @@ extension DownloadManager {
             "download_id": .identifier(ratingKey),
             "target": .label(targetName),
         ])
-        store.remove(ratingKey: ratingKey)
+        _ = store.remove(for: attemptKey)
         lastError[ratingKey] = nil
         clearOptimizeProgress(ratingKey: ratingKey)
         refreshRecords()
@@ -376,6 +403,39 @@ extension DownloadManager {
     /// completed Plex Part, and overwrites a newer retry's row or downloads to the same destination.
     /// The queue title is the per-attempt identity; the target check catches stale rows from older
     /// builds that may not have a queue-title mapping.
+    private func assertCurrentOptimizeAttempt(attemptKey: DownloadAttemptKey,
+                                              metadata: OfflineMetadata,
+                                              targetName: String) throws {
+        guard store.ownsAttempt(attemptKey) else {
+            throw DownloadLifecycleCancellation.staleOptimizeAttempt
+        }
+        try assertCurrentOptimizeAttempt(ratingKey: attemptKey.ratingKey,
+                                         metadata: metadata,
+                                         targetName: targetName)
+        guard store.ownsAttempt(attemptKey) else {
+            throw DownloadLifecycleCancellation.staleOptimizeAttempt
+        }
+    }
+
+    /// Same-owner replacement for the successive Plex prep snapshots and rendered-Part handoff.
+    /// The Store performs the owner comparison and full-row write under one lock, so checking A
+    /// before this call can never turn into an upsert over B.
+    private func replacePlexOptimizeRecord(_ record: DownloadRecord,
+                                           for attemptKey: DownloadAttemptKey) throws {
+        guard record.ratingKey == attemptKey.ratingKey else {
+            throw DownloadLifecycleCancellation.staleOptimizeAttempt
+        }
+        switch store.createAttemptOwnedRecord(record, attemptID: attemptKey.attemptID) {
+        case .committed(let committed) where committed == attemptKey:
+            return
+        case .committed, .rejectedOwnership:
+            throw DownloadLifecycleCancellation.staleOptimizeAttempt
+        case .failed:
+            throw DownloadError.transferFailed(
+                "The download could not be saved safely. Check storage and try again.")
+        }
+    }
+
     func assertCurrentOptimizeAttempt(ratingKey: String,
                                               metadata: OfflineMetadata,
                                               targetName: String) throws {

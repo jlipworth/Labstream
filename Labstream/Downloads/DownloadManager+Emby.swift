@@ -53,6 +53,8 @@ extension DownloadManager {
         guard let startAttempt = acquireStartAttempt(ratingKey: ratingKey,
                                                      backend: "Emby",
                                                      allowReplacingExistingActiveRow: allowReplacingExistingActiveRow) else { return }
+        let attemptKey = DownloadAttemptKey(
+            ratingKey: ratingKey, attemptID: startAttempt.attemptID)
         lastError[ratingKey] = nil
         // No `defer { activeJobs.remove }` — same in-flight-lifetime contract as the other lanes:
         // `session.start` only kicks off the transfer, so protection (and the encoder-teardown
@@ -152,7 +154,7 @@ extension DownloadManager {
             ])
             lastError[ratingKey] = (error as? DownloadError) ?? .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
-            store.setStatus(ratingKey: ratingKey, .failed)
+            _ = setEmbyAttemptStatus(.failed, for: attemptKey, context: "playback_info")
             clearStaticRangePendingResume(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
             refreshRecords()
@@ -191,7 +193,7 @@ extension DownloadManager {
             ])
             lastError[ratingKey] = .transferFailed(
                 "The requested server version is no longer available. Choose another version and retry.")
-            store.setStatus(ratingKey: ratingKey, .failed)
+            _ = setEmbyAttemptStatus(.failed, for: attemptKey, context: "source_mismatch")
             clearStaticRangePendingResume(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
             refreshRecords()
@@ -248,6 +250,7 @@ extension DownloadManager {
         case .rerouteConvert(let targetName):
             await triggerConvertAndDownload(item: item, targetName: targetName,
                                             metadata: metadata, session: backendSession,
+                                            attemptKey: attemptKey,
                                             audioStreamIndex: audioStreamIndex)
             return
         case .fail(let reason):
@@ -266,7 +269,7 @@ extension DownloadManager {
             }
             recordDownloadDiagnostic(event, fields: fields)
             lastError[ratingKey] = .transferFailed(reason.userMessage)
-            store.setStatus(ratingKey: ratingKey, .failed)
+            _ = setEmbyAttemptStatus(.failed, for: attemptKey, context: "route_rejected")
             clearStaticRangePendingResume(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
             refreshRecords()
@@ -336,7 +339,7 @@ extension DownloadManager {
             ])
             lastError[ratingKey] = (error as? DownloadError) ?? .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
-            store.setStatus(ratingKey: ratingKey, .failed)
+            _ = setEmbyAttemptStatus(.failed, for: attemptKey, context: "request_build")
             clearStaticRangePendingResume(ratingKey: ratingKey)
             releaseInFlight(ratingKey: ratingKey)
             refreshRecords()
@@ -355,7 +358,6 @@ extension DownloadManager {
         refreshRecords()
         // #102: cache the poster locally (best-effort) so artwork shows offline. The Emby image
         // endpoint needs the authenticated request (token + userId in the header), unlike Plex.
-        let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: startAttempt.attemptID)
         cacheEmbyPoster(for: attemptKey, item: item, server: server,
                         token: token, identity: identity, userId: userId)
         // #88/#89: cache per-chapter images for the offline Chapters rail AND the Emby offline
@@ -375,7 +377,8 @@ extension DownloadManager {
                                server: server, token: token, identity: identity, userId: userId)
 
         if deferStaticStartWhenQueuePaused, isQueuePaused, route == .original {
-            store.setStatus(ratingKey: ratingKey, .paused)
+            guard setEmbyAttemptStatus(
+                .paused, for: attemptKey, context: "queue_paused") else { return }
             lastError[ratingKey] = .interruptedResumable
             releaseInFlight(ratingKey: ratingKey)
             recordDownloadDiagnostic("downloads.start_deferred_queue_paused", fields: [
@@ -421,6 +424,31 @@ extension DownloadManager {
                 // candidate path used when a background task is reattached after process death.
                 refreshRecords()
             }
+        }
+    }
+
+    @discardableResult
+    func setEmbyAttemptStatus(
+        _ status: DownloadStatus,
+        for key: DownloadAttemptKey,
+        context: String
+    ) -> Bool {
+        switch store.setStatus(for: key, status) {
+        case .applied, .noChange:
+            return true
+        case .staleOrMissing:
+            recordDownloadDiagnostic("downloads.emby_status_owner_stale", fields: [
+                "download_id": .identifier(key.ratingKey),
+                "context": .label(context),
+            ])
+            return false
+        case .persistenceFailed(let failure):
+            recordDownloadDiagnostic("downloads.emby_status_persist_failed", fields: [
+                "download_id": .identifier(key.ratingKey),
+                "context": .label(context),
+                "failure": .label(String(describing: failure)),
+            ])
+            return false
         }
     }
 
