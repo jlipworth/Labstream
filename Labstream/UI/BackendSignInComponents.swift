@@ -169,7 +169,16 @@ struct PlexLinkCodeView: View {
     var body: some View {
         VStack(spacing: DS.Space.lg) {
             VStack(spacing: DS.Space.xs) {
-                Text("Enter this code at \(Text("plex.tv/link").fontWeight(.semibold).foregroundStyle(DS.Brand.amber))")
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 4) {
+                        Text("Enter this code at")
+                        plexLink
+                    }
+                    VStack(spacing: 2) {
+                        Text("Enter this code at")
+                        plexLink
+                    }
+                }
                     .font(.title3)
                     .multilineTextAlignment(.center)
                 Text("on your phone, tablet, or computer")
@@ -192,6 +201,13 @@ struct PlexLinkCodeView: View {
                 .controlSize(.regular)
                 #endif
         }
+    }
+
+    private var plexLink: some View {
+        Link("plex.tv/link", destination: URL(string: "https://plex.tv/link")!)
+            .fontWeight(.semibold)
+            .foregroundStyle(DS.Brand.amber)
+            .accessibilityHint("Opens Plex sign-in in your default browser")
     }
 }
 
@@ -218,6 +234,7 @@ struct PlexSignInStartView: View {
                 .multilineTextAlignment(.center)
         }
     }
+
 }
 
 struct PlexRestoreFailureView: View {
@@ -291,7 +308,16 @@ struct EmbyConnectPinCodeView: View {
             fallbackTitle: "Use a server URL instead",
             onFallback: onUseServerURL) {
                 VStack(spacing: DS.Space.xs) {
-                    Text("Enter this code at \(Text("emby.media/pin.html").fontWeight(.semibold).foregroundStyle(DS.Brand.amber))")
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 4) {
+                            Text("Enter this code at")
+                            embyLink
+                        }
+                        VStack(spacing: 2) {
+                            Text("Enter this code at")
+                            embyLink
+                        }
+                    }
                         .font(.title3)
                         .multilineTextAlignment(.center)
                     Text("on your phone, tablet, or computer — sign in to Emby Connect there")
@@ -301,6 +327,13 @@ struct EmbyConnectPinCodeView: View {
                         .frame(maxWidth: BackendAuthMetrics.fieldWidth)
                 }
             }
+    }
+
+    private var embyLink: some View {
+        Link("emby.media/pin.html", destination: URL(string: "https://emby.media/pin.html")!)
+            .fontWeight(.semibold)
+            .foregroundStyle(DS.Brand.amber)
+            .accessibilityHint("Opens Emby Connect sign-in in your default browser")
     }
 }
 
