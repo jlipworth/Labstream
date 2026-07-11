@@ -46,6 +46,56 @@ final class DownloadStore: @unchecked Sendable {
         let metadata: OfflineMetadata
     }
 
+    struct EmbyCleanupPersistence: Sendable {
+        let read: @Sendable (URL) throws -> Data?
+        let encode: @Sendable ([EmbyConvertCleanupTombstone]) throws -> Data
+        let atomicWrite: @Sendable (Data, URL) throws -> Void
+
+        static let live = Self(
+            read: { url in
+                do {
+                    return try Data(contentsOf: url)
+                } catch {
+                    let failure = error as NSError
+                    if failure.domain == NSCocoaErrorDomain,
+                       failure.code == CocoaError.Code.fileReadNoSuchFile.rawValue {
+                        return nil
+                    }
+                    throw error
+                }
+            },
+            encode: { try JSONEncoder().encode($0) },
+            atomicWrite: { data, url in try data.write(to: url, options: .atomic) }
+        )
+    }
+
+    struct EmbyCleanupPersistenceFailure: Error, Sendable, Equatable {
+        enum Stage: String, Sendable, Equatable {
+            case read
+            case decode
+            case encode
+            case commit
+        }
+
+        let stage: Stage
+        let errorType: String
+    }
+
+    enum EmbyCleanupLoadResult: Sendable, Equatable {
+        case loaded([EmbyConvertCleanupTombstone])
+        case failed(EmbyCleanupPersistenceFailure)
+    }
+
+    enum EmbyCleanupAddResult: Sendable, Equatable {
+        case committed(EmbyConvertCleanupTombstone)
+        case failed(EmbyCleanupPersistenceFailure)
+    }
+
+    enum EmbyCleanupRemoveResult: Sendable, Equatable {
+        case committed(removed: Bool)
+        case failed(EmbyCleanupPersistenceFailure)
+    }
+
     struct StaticRangeRecoveryEvidence: Sendable {
         let ratingKey: String
         let status: DownloadStatus
@@ -150,6 +200,7 @@ final class DownloadStore: @unchecked Sendable {
     private let indexURL: URL                        // baseDirectory/index.json
     private let embyCleanupURL: URL                  // durable orphan-prevention queue
     private let fileManager: FileManager
+    private let embyCleanupPersistence: EmbyCleanupPersistence
     private let indexWriter: RevisionedPersistenceWriter<[Row]>
     private var nextPersistenceRevision: UInt64 = 0 // guarded by `lock`
 
@@ -157,8 +208,10 @@ final class DownloadStore: @unchecked Sendable {
     ///   `Application Support/Labstream/Downloads`, created if missing.
     init(baseDirectory: URL? = nil,
          fileManager: FileManager = .default,
-         indexPersistence: IndexPersistence = .live) {
+         indexPersistence: IndexPersistence = .live,
+         embyCleanupPersistence: EmbyCleanupPersistence? = nil) {
         self.fileManager = fileManager
+        self.embyCleanupPersistence = embyCleanupPersistence ?? .live
         let appSupport = (try? fileManager.url(for: .applicationSupportDirectory,
                                                 in: .userDomainMask,
                                                 appropriateFor: nil,
@@ -191,57 +244,140 @@ final class DownloadStore: @unchecked Sendable {
         load()
     }
 
-    var embyConvertCleanupTombstones: [EmbyConvertCleanupTombstone] {
+    /// Missing means an empty queue. Read/decode failures remain distinct so no later mutation can
+    /// mistake an unreadable canonical queue for empty and erase orphan-cleanup intent.
+    func loadEmbyConvertCleanupTombstones() -> EmbyCleanupLoadResult {
         lock.lock(); defer { lock.unlock() }
-        return (try? JSONDecoder().decode(
-            [EmbyConvertCleanupTombstone].self,
-            from: Data(contentsOf: embyCleanupURL))) ?? []
+        return readEmbyCleanupTombstonesLocked()
     }
 
     @discardableResult
     func addEmbyConvertCleanupTombstone(ratingKey: String, metadata: OfflineMetadata)
-        -> EmbyConvertCleanupTombstone? {
-        addEmbyConvertCleanupTombstone(
-            EmbyConvertCleanupTombstone(id: UUID(), ratingKey: ratingKey, metadata: metadata))
+        -> EmbyCleanupAddResult {
+        addEmbyConvertCleanupTombstone(EmbyConvertCleanupTombstone(
+            id: UUID(), ratingKey: ratingKey, metadata: metadata
+        ))
     }
 
     /// Persist an EXISTING tombstone value (same id). Used to retry the durable write for
     /// tombstones that were deferred in memory after a delete()-time persist failure.
     @discardableResult
     func addEmbyConvertCleanupTombstone(_ tombstone: EmbyConvertCleanupTombstone)
-        -> EmbyConvertCleanupTombstone? {
+        -> EmbyCleanupAddResult {
         lock.lock()
-        var values = (try? JSONDecoder().decode(
-            [EmbyConvertCleanupTombstone].self,
-            from: Data(contentsOf: embyCleanupURL))) ?? []
+        var values: [EmbyConvertCleanupTombstone]
+        switch readEmbyCleanupTombstonesLocked() {
+        case .loaded(let loaded):
+            values = loaded
+        case .failed(let failure):
+            lock.unlock()
+            return .failed(failure)
+        }
         guard !values.contains(where: { $0.id == tombstone.id }) else {
             lock.unlock()
-            return tombstone
+            return .committed(tombstone)
         }
         let expectedIDs = EmbyConvertRecoveryPolicy.appendingCleanupTombstoneID(
             tombstone.id, to: values.map(\.id))
         values.append(tombstone)
         assert(values.map(\.id) == expectedIDs)
+        let data: Data
         do {
-            let data = try JSONEncoder().encode(values)
-            try data.write(to: embyCleanupURL, options: .atomic)
-            lock.unlock()
-            return tombstone
+            data = try embyCleanupPersistence.encode(values)
         } catch {
             lock.unlock()
-            return nil
+            return .failed(Self.embyCleanupFailure(stage: .encode, error: error))
+        }
+        do {
+            try embyCleanupPersistence.atomicWrite(data, embyCleanupURL)
+        } catch {
+            // An injected/filesystem commit can throw after the atomic replacement happened.
+            // Re-read while still serialized: this generated UUID is exact proof that add won.
+            if case .loaded(let durable) = readEmbyCleanupTombstonesLocked(),
+               durable.contains(where: { $0.id == tombstone.id }) {
+                lock.unlock()
+                return .committed(tombstone)
+            }
+            lock.unlock()
+            return .failed(Self.embyCleanupFailure(stage: .commit, error: error))
+        }
+        lock.unlock()
+        return .committed(tombstone)
+    }
+
+    @discardableResult
+    func removeEmbyConvertCleanupTombstone(id: UUID) -> EmbyCleanupRemoveResult {
+        lock.lock()
+        var values: [EmbyConvertCleanupTombstone]
+        switch readEmbyCleanupTombstonesLocked() {
+        case .loaded(let loaded):
+            values = loaded
+        case .failed(let failure):
+            lock.unlock()
+            return .failed(failure)
+        }
+        let oldCount = values.count
+        values.removeAll { $0.id == id }
+        guard values.count != oldCount else {
+            lock.unlock()
+            return .committed(removed: false)
+        }
+        let data: Data
+        do {
+            data = try embyCleanupPersistence.encode(values)
+        } catch {
+            lock.unlock()
+            return .failed(Self.embyCleanupFailure(stage: .encode, error: error))
+        }
+        do {
+            try embyCleanupPersistence.atomicWrite(data, embyCleanupURL)
+        } catch {
+            // Likewise, absence of this exact UUID after a thrown replace proves removal won.
+            if case .loaded(let durable) = readEmbyCleanupTombstonesLocked(),
+               !durable.contains(where: { $0.id == id }) {
+                lock.unlock()
+                return .committed(removed: true)
+            }
+            lock.unlock()
+            return .failed(Self.embyCleanupFailure(stage: .commit, error: error))
+        }
+        lock.unlock()
+        return .committed(removed: true)
+    }
+
+    private func readEmbyCleanupTombstonesLocked() -> EmbyCleanupLoadResult {
+        let data: Data
+        do {
+            guard let loaded = try embyCleanupPersistence.read(embyCleanupURL) else {
+                return .loaded([])
+            }
+            data = loaded
+        } catch {
+            return .failed(EmbyCleanupPersistenceFailure(
+                stage: .read,
+                errorType: String(reflecting: type(of: error))
+            ))
+        }
+        do {
+            return .loaded(try JSONDecoder().decode(
+                [EmbyConvertCleanupTombstone].self, from: data
+            ))
+        } catch {
+            return .failed(EmbyCleanupPersistenceFailure(
+                stage: .decode,
+                errorType: String(reflecting: type(of: error))
+            ))
         }
     }
 
-    func removeEmbyConvertCleanupTombstone(id: UUID) {
-        lock.lock()
-        var values = (try? JSONDecoder().decode(
-            [EmbyConvertCleanupTombstone].self,
-            from: Data(contentsOf: embyCleanupURL))) ?? []
-        values.removeAll { $0.id == id }
-        let data = try? JSONEncoder().encode(values)
-        if let data { try? data.write(to: embyCleanupURL, options: .atomic) }
-        lock.unlock()
+    private static func embyCleanupFailure(
+        stage: EmbyCleanupPersistenceFailure.Stage,
+        error: any Error
+    ) -> EmbyCleanupPersistenceFailure {
+        EmbyCleanupPersistenceFailure(
+            stage: stage,
+            errorType: String(reflecting: type(of: error))
+        )
     }
 
     /// The directory media files should be written into.

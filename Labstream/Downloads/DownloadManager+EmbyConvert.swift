@@ -59,7 +59,7 @@ extension DownloadManager {
             case .retainTombstone:
                 return
             case .discardTombstone:
-                discardEmbyCleanupTombstone(id: tombstone.id)
+                _ = removeEmbyConvertCleanupTombstoneDurably(tombstone)
                 return
             case .cancel(let jobId):
                 let deleteRequest = try EmbyConvertRequest.deleteJobRequest(
@@ -68,11 +68,12 @@ extension DownloadManager {
                 guard let deleteHTTP = deleteResponse as? HTTPURLResponse,
                       (200..<300).contains(deleteHTTP.statusCode) || [404, 410].contains(deleteHTTP.statusCode)
                 else { return }
-                discardEmbyCleanupTombstone(id: tombstone.id)
-                recordDownloadDiagnostic("downloads.convert_cleanup_recovered", fields: [
-                    "download_id": .identifier(tombstone.ratingKey),
-                    "job_id": .int(jobId),
-                ])
+                if removeEmbyConvertCleanupTombstoneDurably(tombstone) {
+                    recordDownloadDiagnostic("downloads.convert_cleanup_recovered", fields: [
+                        "download_id": .identifier(tombstone.ratingKey),
+                        "job_id": .int(jobId),
+                    ])
+                }
             }
         } catch {
             // Retain the durable tombstone; a later backend-ready/lifecycle pass retries it.
@@ -82,11 +83,22 @@ extension DownloadManager {
         }
     }
 
-    /// Drop a completed/expired cleanup tombstone from both the durable store queue and the
-    /// in-memory deferred queue (tombstones whose persist failed at delete() time live only there).
-    func discardEmbyCleanupTombstone(id: UUID) {
-        store.removeEmbyConvertCleanupTombstone(id: id)
-        deferredEmbyCleanupTombstones.removeAll { $0.id == id }
+    @discardableResult
+    private func removeEmbyConvertCleanupTombstoneDurably(
+        _ tombstone: DownloadStore.EmbyConvertCleanupTombstone
+    ) -> Bool {
+        switch store.removeEmbyConvertCleanupTombstone(id: tombstone.id) {
+        case .committed:
+            deferredEmbyCleanupTombstones.removeAll { $0.id == tombstone.id }
+            return true
+        case .failed(let failure):
+            recordDownloadDiagnostic("downloads.convert_cleanup_deferred", fields: [
+                "download_id": .identifier(tombstone.ratingKey),
+                "reason": .label("tombstone_\(failure.stage.rawValue)_failed"),
+                "error_type": .label(failure.errorType),
+            ])
+            return false
+        }
     }
 
     func beginEmbyConvertAttempt(ratingKey: String) -> UUID {
