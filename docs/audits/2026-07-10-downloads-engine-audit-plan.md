@@ -894,3 +894,30 @@ no longer add phantom gigabytes to the toolbar total. Offset-mismatch budgets ar
 download plus segment base offset rather than only by download. Parallel sibling segments therefore
 cannot collectively exhaust Flight's whole-row budget; a complete validated held body clears only
 its own offset history, while durable appends retain the existing row-wide forward-progress reset.
+
+## K. DOWNSTREAM REMEDIATION CHECKPOINT (2026-07-12, through `d1ec849`)
+
+This audit remains the characterization/evidence record. The companion
+`docs/research/2026-07-10-codebase-remediation-plan.md` owns the corrective Phase 1 queue and its
+commit-by-commit journal.
+
+The schema-v3 train now carries exact attempt ownership through background-session entries and
+conditional Store mutations. Attempt-keyed side-cache parent-task registration, staged side-cache
+promotion, non-cancellable required-cleanup registration, durable Jellyfin/Emby ActiveEncoding
+intents, and durable known/ambiguous Emby Convert intents have landed. New Convert deletes use the
+generic journal; the legacy tombstone reader/sweep remains for one-train compatibility. Plex
+cleanup behavior is unchanged. Background-session finalizers have exact row ownership but are not
+yet integrated with the manager work registry.
+
+This does **not** close the audit's working-file/recovery risk. Opaque and static-range media still
+use stable row destinations. Store checkpoint/reset/evidence/reconcile and resume/held-body paths
+must move together with any attempt-staged media layout. Existing schema-v3 tasks and partial files
+also require an explicit migration rule. Treat schema v4 (or an equivalent durable working-layout
+marker), live-partial migrate-versus-reset policy, exact resume/checkpoint/held conversions, and the
+physical background-redelivery gates as an unresolved consultation boundary—not follow-up cleanup
+that can safely be split lane by lane.
+
+`d1ec849` added exact-attempt Store primitives for resume data, validators, source sizes, held
+segments, and static checkpoint evidence/reset. Their focused six-test suite plus 31 Store
+fault/persistence/staging regressions passed. Consumer conversion and the working-file layout
+migration remain open; the new primitives alone do not close the boundary above.

@@ -3,7 +3,7 @@
 Status: **active implementation plan**
 
 Audit baseline: original app/PMSKit review through `edf2d27`; latest reconciled `main`
-baseline `5d369c2`
+baseline `5d369c2`; Phase 1 implementation journal reconciled through `d1ec849`
 
 Scope: correctness, concurrency, reliability, performance, Swift idioms, testability,
 backend sharing, platform sharing, conditional compilation, and build cost.
@@ -61,13 +61,13 @@ Current status at this checkpoint:
 | --- | --- | --- |
 | 0A–0B | Complete | Repeatable compile audit plus nonzero macOS/iOS app test plans are on the rebased branch. |
 | 1A | Partial / consultation boundary | The index has a serial revisioned writer, dirty retry, observable failures, bounded background-completion flush, commit-aware held replacement/removal outcomes, fail-closed tombstone persistence, and broad fault/stress coverage (`0bbcb5d` through `24e179c`). Existing mutations preserve synchronous durability. True transactional held-body deletion, cross-domain tombstone/row ordering, a literal bounded hung-write path, and a live explicit temp/rename committer require the larger reviewed design described below. |
-| 1B | In progress / admission closed across intermediate slices | Typed top-level schema-v3 ownership, durable legacy assignment/reset, current task markers, dormant callback admission, and fail-closed attempt seeding have landed. Attempt-bearing in-memory work and conditional mutation conversion remain before `COR-01` can be closed. |
-| 1C | In progress / coupled to 1B | Cleanup-only legacy rows are retained and deletion is fail-closed pending the approved durable journal. The registry, attempt-scoped finalization/staging/side-assets, durable encoder teardown, compare-clear, and startup sweep still span every download lane; partial tail guards remain racy. |
+| 1B | Substantially implemented / verification pending | Typed top-level schema-v3 ownership, durable legacy assignment/reset, current task markers, dormant callback admission, fail-closed attempt seeding, attempt-bearing session entries, and exact-owner callback/finalizer mutations have landed. `COR-01` remains open at the media working-file/checkpoint migration and required device/redelivery gates. |
+| 1C | Partial / explicit media-staging consultation boundary | The attempt work registry, staged side caches, exact-owner promotion, durable ActiveEncoding and Emby Convert cleanup intents, required-cleanup retention, compare-clear, and launch retry are implemented through `a7f6fee`; exact Store checkpoint/resume/held primitives landed in `d1ec849`. Opaque/static media still use stable row paths; schema-v4-or-equivalent working-layout migration and consumer conversion remain unresolved. |
 | 1D–1F | Complete | Auth/secure-storage, system-media ownership, and player lifecycle generations survived the rebase unchanged. iPad/Mac physical ownership and lifecycle checks passed; iOS TSAN tests remain green. |
 | 2A | Complete | Plex photo coverage, modern Mac decoding, the effective MediaSession clock, and `PERF-01` are complete. The regenerated inventory found and mechanically removed exactly the four original definition-only helpers (`2fb3d00`, `5a5f050`, `cf1f919`, `6bff1c8`); no production deprecation remains. |
-| 2B | Complete | Locked record/metadata/duration/presence accessors and the existing ownership accessor now serve every single-key store read (`4fb60a6`, `9fb7b56`, `6c16df5`, `36b992b`). Exactly 11 intentional batch/UI snapshots remain. |
+| 2B | Complete | Locked record/metadata/duration/presence accessors and the existing ownership accessor now serve every single-key store read (`3a86b15`, `22fcf81`, `ff046e9`, `be507d6`). Exactly 12 intentional batch/UI snapshots remain. |
 | 2C | Complete | Latest-rail execution is bounded and order preserving. |
-| 2D | Complete | Optimizer flexible-ID decoding is explicit and the Offline root view is split at behavior-neutral opaque boundaries (`cc516ea`, `43ba92b`). Both cliffs disappeared from the compile audit; extracted Offline boundaries are below 50 ms on all app platforms. |
+| 2D | Complete | Optimizer flexible-ID decoding is explicit and the Offline root view is split at behavior-neutral opaque boundaries (`b33ccea`, `f1bdec1`). Both cliffs disappeared from the compile audit; retained medians improved and the required Offline body threshold is below 300 ms. |
 | 3–4 | Open | Incoming main did not change the MediaBrowser value/request seams or Plex browse execution. Canonical backend work now spans a larger audited download-policy surface. |
 | 5E | Higher priority after correctness | `BackgroundDownloadSession` grew from about 4,994 to 5,755 lines, `DownloadManager` from 3,264 to 3,749, and `DownloadStore` from 1,091 to 1,271. Extract mechanically only after 1A–1C. |
 
@@ -475,13 +475,74 @@ their relationship during the schema-v3 migration.
   compare-clears only the exact intent. The standalone journal fails closed on read/decode,
   duplicate IDs, conflicts, encode, and commit failures; post-replace throws are accepted only when
   an exact re-read proves add/removal won.
-- **Explicit remaining blast radius:** opaque/range media and all side caches do not yet write to
-  the new staging paths; therefore a narrow check→stable-file-operation alias window remains.
-  Resume data, validators, held manifests/bodies, range checkpoint reset, halt/retry maps, and
-  compare-cancel are still partly rating-key-owned. The cleanup journal is not yet wired into
-  deletion, launch sweep, ActiveEncoding teardown, or the existing Emby Convert tombstone
-  migration. Do not merge or call Phase 1B/1C complete until those consumers are converted and the
-  full force-quit/background/device matrix passes.
+- **Remaining blast radius at this earlier checkpoint:** opaque/range media and all side caches did
+  not yet write to the new staging paths; therefore a narrow check→stable-file-operation alias
+  window remained. Resume data, validators, held manifests/bodies, range checkpoint reset,
+  halt/retry maps, and compare-cancel were still partly rating-key-owned. The cleanup journal was
+  not yet wired into deletion, launch sweep, ActiveEncoding teardown, or the existing Emby Convert
+  tombstone migration. The next journal entry records the side-cache and cleanup consumers that
+  subsequently landed; media/checkpoint migration and the full force-quit/background/device matrix
+  remain open.
+
+#### 2026-07-12 — Phase 1C side-cache and required-cleanup integration
+
+- **Status:** side-cache and required server-cleanup ownership are implemented; media working-file
+  migration remains an explicit consultation boundary, so Phase 1C and `COR-01` are not closed.
+- **Commits through this checkpoint:** `343c602` (`Journal conditional download ownership seams`),
+  `6fc70a7` (`Add attempt-keyed download work registry`), `0f11642` (`Stage side assets by download
+  attempt`), `d01f8e4` (`Track side-cache work by download attempt`), `62f59cf` (`Journal required
+  download encoder cleanup`), `66bfc41` (`Retain required cleanup work across cancellation`), and
+  `a7f6fee` (`Migrate Emby Convert cleanup into attempt journal`).
+- **Work registry and side assets:** poster, subtitle, Plex BIF, Jellyfin trickplay, and
+  chapter-image parent tasks are registered against an exact `DownloadAttemptKey`. Replacing or
+  deleting A cancels only A's registered cancellable side-cache work. Side assets write to
+  deterministic attempt staging, promote only while the Store still reports that exact owner, and
+  conditionally publish metadata for the same attempt. Required-cleanup tasks use the registry's
+  non-cancellable kind; the registry entry ends when the exact task naturally finishes, while any
+  unresolved durable intent remains journaled for retry. Session finalizers carry exact ownership
+  and conditional Store mutations, but are not yet integrated with this manager work registry.
+- **Active encoders:** Jellyfin/Emby ActiveEncoding teardown first persists or reuses a
+  credential-free intent containing the exact attempt, backend, server/user authority, and
+  PlaySessionId. Delete fails closed if that intent cannot commit. Execution requires a matching
+  live `BackendSession`; only the existing confirmed-gone stop semantics permit an exact
+  compare-clear of the row handle and exact journal removal. Plex receives no new cleanup behavior.
+- **Emby Convert:** known Sync job IDs and complete ambiguous-create recovery identities now use
+  the same journal. Delete blocks before row/file removal if the exact intent is not durable.
+  Launch migrates cleanup-only row authority before releasing its barrier. Known jobs issue an
+  exact DELETE; ambiguous work uses the existing full-baseline/fingerprint/time-window policy and
+  excludes every job owned by a live row. Transport, truncated-list, multiple-match, user/server
+  mismatch, and unconfirmed DELETE outcomes retain the intent. Confirmed delete/gone or a
+  policy-proven discard conditionally clears only the matching attempt and expected job/recovery
+  identity before compare-removing the journal entry. The legacy tombstone reader/sweep remains for
+  the one-train compatibility window; new deletes do not create legacy tombstones.
+- **Evidence at this checkpoint:** the macOS app build and focused cleanup-journal tests passed;
+  PMSKit's 36-test Emby Convert request/recovery suite passed, including live-row exclusion and
+  retain/cancel/discard policy cases. These are headless correctness gates, not substitutes for the
+  outstanding force-quit, background-redelivery, iPad, and Vision Pro validation.
+- **Exact checkpoint primitives (`d1ec849`):** Store APIs now condition resume blobs, validators,
+  source sizes, held manifests/purge, and static checkpoint reset/evidence on an exact attempt. Their
+  ownership check, mutation, and full-snapshot submission linearize under the Store lock; disk wait
+  remains outside it. A later overlapping full snapshot may subsume an earlier revision, so an
+  accepted mutation is not a lease—dependent file/task work must still perform fresh exact-owner
+  admission. The focused six-test suite and 31 Store fault/persistence/staging regressions passed.
+  Background-session and manager consumers are still being migrated to these primitives.
+- **Unresolved media staging / schema boundary:** routing opaque and static-range media through
+  attempt staging is not a safe `BackgroundDownloadSession`-only edit. Store checkpoint reset,
+  durable-size evidence, reconciliation, resume planning, and recovery still read the row's stable
+  `relativePath`, while the range engine appends and derives offsets from its working destination.
+  Pointing only the session at staging would report zero durable bytes, rebuild from the wrong
+  offset, or operate on the wrong file. Existing schema-v3 background tasks and partials also point
+  at the stable path; silently deriving a new empty staging path on upgrade can discard progress or
+  mismatch an already-issued Range request.
+- **Consultation required before the next production slice:** choose a schema-v4 (or equivalent
+  durable layout/version marker) policy for the attempt working file and for live schema-v3 stable
+  partials: exact-owner migrate-to-stage, or cancel/reset under an explicit compatibility rule.
+  Then convert checkpoint size/reset/evidence/reconcile, opaque resume data, static request offsets,
+  held-body manifest/drain ownership, retry/halt recovery, reattach/dead-finish adoption, final
+  validation/promotion, deletion, and startup sweep as one reviewed train. Store rows must continue
+  to reference stable final URLs; terminal complete/unverified publication may occur only after
+  validation and exact-owner promotion. Until that design lands, do not partially stage only the
+  opaque lane or claim that the stable-file alias race is closed.
 
 #### 2026-07-11 — Phase 2D compiler-cliff removal
 
