@@ -3,7 +3,7 @@
 Status: **active implementation plan**
 
 Audit baseline: original app/PMSKit review through `edf2d27`; latest reconciled `main`
-baseline `5d369c2`; Phase 1 implementation journal reconciled through `d1ec849`
+baseline `5d369c2`; Phase 1 implementation journal reconciled through `a8fa19c`
 
 Scope: correctness, concurrency, reliability, performance, Swift idioms, testability,
 backend sharing, platform sharing, conditional compilation, and build cost.
@@ -62,7 +62,7 @@ Current status at this checkpoint:
 | 0A–0B | Complete | Repeatable compile audit plus nonzero macOS/iOS app test plans are on the rebased branch. |
 | 1A | Partial / consultation boundary | The index has a serial revisioned writer, dirty retry, observable failures, bounded background-completion flush, commit-aware held replacement/removal outcomes, fail-closed tombstone persistence, and broad fault/stress coverage (`0bbcb5d` through `24e179c`). Existing mutations preserve synchronous durability. True transactional held-body deletion, cross-domain tombstone/row ordering, a literal bounded hung-write path, and a live explicit temp/rename committer require the larger reviewed design described below. |
 | 1B | Substantially implemented / verification pending | Typed top-level schema-v3 ownership, durable legacy assignment/reset, current task markers, dormant callback admission, fail-closed attempt seeding, attempt-bearing session entries, and exact-owner callback/finalizer mutations have landed. `COR-01` remains open at the media working-file/checkpoint migration and required device/redelivery gates. |
-| 1C | Partial / explicit media-staging consultation boundary | The attempt work registry, staged side caches, exact-owner promotion, durable ActiveEncoding and Emby Convert cleanup intents, required-cleanup retention, compare-clear, and launch retry are implemented through `a7f6fee`; exact Store checkpoint/resume/held primitives landed in `d1ec849`. Opaque/static media still use stable row paths; schema-v4-or-equivalent working-layout migration and consumer conversion remain unresolved. |
+| 1C | Partial / explicit media-staging consultation boundary | The registry/side-cache/cleanup train is implemented through `a7f6fee`; Store checkpoint APIs and Manager, Session, backend, transfer-start, and offline-playback consumers are exact-attempt through `a8fa19c`. Opaque/static media still use stable row paths; schema-v4-or-equivalent working-layout migration, remaining rating-key retry/halt state, Session-finalizer registry integration, and device gates remain unresolved. |
 | 1D–1F | Complete | Auth/secure-storage, system-media ownership, and player lifecycle generations survived the rebase unchanged. iPad/Mac physical ownership and lifecycle checks passed; iOS TSAN tests remain green. |
 | 2A | Complete | Plex photo coverage, modern Mac decoding, the effective MediaSession clock, and `PERF-01` are complete. The regenerated inventory found and mechanically removed exactly the four original definition-only helpers (`2fb3d00`, `5a5f050`, `cf1f919`, `6bff1c8`); no production deprecation remains. |
 | 2B | Complete | Locked record/metadata/duration/presence accessors and the existing ownership accessor now serve every single-key store read (`3a86b15`, `22fcf81`, `ff046e9`, `be507d6`). Exactly 12 intentional batch/UI snapshots remain. |
@@ -525,7 +525,8 @@ their relationship during the schema-v3 migration.
   remains outside it. A later overlapping full snapshot may subsume an earlier revision, so an
   accepted mutation is not a lease—dependent file/task work must still perform fresh exact-owner
   admission. The focused six-test suite and 31 Store fault/persistence/staging regressions passed.
-  Background-session and manager consumers are still being migrated to these primitives.
+  At this checkpoint, background-session and manager consumers were still being migrated to these
+  primitives; the next journal entry records the completed consumer train.
 - **Unresolved media staging / schema boundary:** routing opaque and static-range media through
   attempt staging is not a safe `BackgroundDownloadSession`-only edit. Store checkpoint reset,
   durable-size evidence, reconciliation, resume planning, and recovery still read the row's stable
@@ -543,6 +544,64 @@ their relationship during the schema-v3 migration.
   to reference stable final URLs; terminal complete/unverified publication may occur only after
   validation and exact-owner promotion. Until that design lands, do not partially stage only the
   opaque lane or claim that the stable-file alias race is closed.
+
+#### 2026-07-12 — Phase 1 exact-attempt consumer train
+
+- **Status:** the available exact-owner Store primitives are now consumed across recovery, status
+  publication, backend preparation, transfer admission, and offline playback. This closes the known
+  row-recapture/publication seams, but not the stable media working-path migration, remaining
+  rating-key in-memory generations, finalizer registration, or physical gates.
+- **Commits:** `d1ec849` (`Add exact download checkpoint mutations`), `e2babfb` (`Use exact attempts
+  for download recovery`), `398f932` (`Scope download recovery state by attempt`), `2c7bd71`
+  (`Publish download state by exact attempt`), `2d4bea9` (`Carry exact ownership through transfer
+  start`), `b765698` (`Scope backend download mutations by attempt`), `052a0e2` (`Make Emby download
+  metadata attempt-owned`), `247e4d3` (`Make Plex download publication attempt-owned`), and
+  `a8fa19c` (`Scope offline playback state by attempt`).
+- **Store checkpoint surface (`d1ec849`):** resume blobs/display watermarks, validators, source
+  sizes, held manifests and purges, and static checkpoint reset/size/evidence now have exact
+  `DownloadAttemptKey` APIs. Owner comparison, mutation, and snapshot submission linearize under
+  the Store lock; persistence waiting stays outside it. The APIs report stale ownership and
+  unproved persistence instead of silently treating either as success.
+- **Manager and Session consumers (`e2babfb`, `398f932`, `2c7bd71`):** Manager recovery, queue
+  deferral, blob resume/clear, incomplete-size audit, and terminal status paths retain the row key
+  they inspected and stop when an exact checkpoint/status mutation is stale or unproved. Session
+  start/pause/resume, held-body persistence/drain/purge, storage failure, retry, and recovery paths
+  carry their entry's key rather than looking up whichever row currently owns the rating key.
+  Finalizing progress, held-drain halt settlement, terminal status, and continuation publication
+  likewise use exact attempt mutation results before dependent work proceeds.
+- **Transfer admission (`2d4bea9`):** `DownloadTransferStartPlan` contains a nonoptional attempt key
+  and derives its rating key from that authority. Plex, Jellyfin, Emby, and Plex Optimize construct
+  it from the already-durable seed. Immediate start failures set `.failed` only for that captured
+  attempt; they never re-read a replacement row to decide which owner to fail. Plex rendered-Part
+  handoff also requires its captured key.
+- **Backend publication (`b765698`, `052a0e2`, `247e4d3`):** Jellyfin and Emby status/publication
+  paths use exact record creation and mutation admission. Emby download and Convert snapshots,
+  job adoption/clearing, recovery identity, PlaySession/media-source selection, and handoff metadata
+  are conditional on the captured owner and expected job/recovery values. Plex Optimize's successive
+  prep/rendered snapshots and abandoned-seed removal are same-owner operations; static Plex
+  publication and resumed optimize-deadline persistence use atomic same-owner record creation.
+  Async Plex poller awaits are bracketed by checks of the originally captured key, so an old chain
+  cannot publish into or terminally release B.
+- **Offline playback (`a8fa19c`):** local position and `.unverified`→`.complete` promotion use the
+  downloaded record's exact key. Compatibility fallbacks are deliberately narrow: only terminal
+  v1/v2 rows that legitimately have no owner may use the ownerless methods. Active ownerless rows
+  are rejected and must pass startup ownership migration; a fallback cannot mutate a schema-v3
+  replacement.
+- **Evidence:** the checkpoint slice added six focused exact-owner cases and ran 31 Store
+  fault/persistence/staging regressions. The offline-playback slice added stale-A/B, active-ownerless
+  rejection, and legacy-terminal compatibility tests. Consumer slices repeatedly passed the Mac
+  build plus focused attempt/start/server-prep, Plex optimize, Store, recovery, and backend policy
+  suites; the transfer/Plex sequence included 17- and 23-test focused runs. These headless gates do
+  not replace background-redelivery or signed-device validation. At `a8fa19c`, the full Mac plan
+  passed 123 tests with zero failures and the full PMSKit run passed 1,424 tests in 172 suites.
+- **Remaining exactness work:** opaque and static media still read/write stable row destinations;
+  the schema-v4-or-equivalent working-layout and live schema-v3 partial migration policy remain the
+  primary blast-radius consultation. Session maps/budgets including range train epochs, halt kinds,
+  retry/truncation/HTTP/blob counters, request-rebuild grace, and `StaticRangeRetryBudget` are still
+  rating-keyed and require an attempt-generation audit before A can influence B through memory-only
+  state. Background-session finalizer tasks carry exact Store authority but are not yet registered
+  in the manager work registry or cooperatively cancellable. Force-quit/background-redelivery,
+  iPad, and Vision Pro gates remain required before Phase 1B/1C or `COR-01` can close.
 
 #### 2026-07-11 — Phase 2D compiler-cliff removal
 
