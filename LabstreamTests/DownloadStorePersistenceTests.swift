@@ -39,7 +39,7 @@ struct DownloadStorePersistenceTests {
         #expect(await waitForSignal(mutationReturned, timeout: 1))
     }
 
-    @Test func freshStoreRestoresWriterBackedIndexWithoutChangingSchema() throws {
+    @Test func freshStoreRestoresWriterBackedIndexAtSchemaV3() throws {
         try withTemporaryDirectory { directory in
             let record = makeRecord(
                 ratingKey: "plex:item-1",
@@ -55,7 +55,7 @@ struct DownloadStorePersistenceTests {
             let index = try #require(
                 JSONSerialization.jsonObject(with: indexData) as? [String: Any]
             )
-            #expect(index["schemaVersion"] as? Int == 2)
+            #expect(index["schemaVersion"] as? Int == 3)
 
             let restored = DownloadStore(baseDirectory: directory)
             let restoredRecord = try #require(
@@ -67,6 +67,185 @@ struct DownloadStorePersistenceTests {
             #expect(restoredRecord.bytes == record.bytes)
             #expect(restoredRecord.status == record.status)
             #expect(restoredRecord.metadata == record.metadata)
+        }
+    }
+
+    @Test func v2NestedAttemptMigratesToDurableTopLevelV3AndSurvivesRelaunchBarrier() throws {
+        try withTemporaryDirectory { directory in
+            let key = "plex:legacy-active"
+            let legacyID = "legacy-attempt"
+            try writeLegacyIndex(
+                schemaVersion: 2,
+                rows: [legacyRow(ratingKey: key, status: "downloading", bytes: 42,
+                                 nestedAttemptID: legacyID)],
+                directory: directory
+            )
+            let store = DownloadStore(baseDirectory: directory)
+            let expectedID = try #require(DownloadAttemptID(rawValue: legacyID))
+            let expectedKey = DownloadAttemptKey(ratingKey: key, attemptID: expectedID)
+            let result = store.commitLegacyAttemptOwnershipMigration()
+            guard case .committed(let plan) = result else {
+                Issue.record("Expected committed v2 migration, got \(result)")
+                return
+            }
+            #expect(plan.taskCancellationAndReset == [expectedKey])
+
+            let relaunched = DownloadStore(baseDirectory: directory)
+            let relaunchedResult = relaunched.commitLegacyAttemptOwnershipMigration()
+            guard case .committed(let relaunchedPlan) = relaunchedResult else {
+                Issue.record("Expected durable reset barrier after relaunch, got \(relaunchedResult)")
+                return
+            }
+            #expect(relaunchedPlan.taskCancellationAndReset == [expectedKey])
+            #expect(relaunched.record(for: key)?.attemptID == expectedID)
+        }
+    }
+
+    @Test func v1CompletedRowIsPreservedWithoutAttemptOwnership() throws {
+        try withTemporaryDirectory { directory in
+            let key = "plex:legacy-complete"
+            try writeLegacyIndex(schemaVersion: nil,
+                                 rows: [legacyRow(ratingKey: key, status: "complete", bytes: 99)],
+                                 directory: directory)
+            let store = DownloadStore(baseDirectory: directory)
+            guard case .committed(let plan) = store.commitLegacyAttemptOwnershipMigration() else {
+                Issue.record("Expected v1 envelope migration")
+                return
+            }
+            #expect(plan.taskCancellationAndReset.isEmpty)
+            #expect(plan.cleanupOnly.isEmpty)
+            #expect(store.record(for: key)?.status == .complete)
+            #expect(store.record(for: key)?.attemptID == nil)
+        }
+    }
+
+    @Test func completedCleanupOnlyOwnershipIsReconstructedAfterRelaunch() throws {
+        try withTemporaryDirectory { directory in
+            let ratingKey = "jellyfin:legacy-cleanup"
+            var row = legacyRow(ratingKey: ratingKey, status: "complete", bytes: 99)
+            var metadata = try #require(row["metadata"] as? [String: Any])
+            metadata["playSessionID"] = "cleanup-session"
+            row["metadata"] = metadata
+            try writeLegacyIndex(schemaVersion: 2, rows: [row], directory: directory)
+            let fixedID = DownloadAttemptID(uuid: UUID(uuidString: "44444444-4444-4444-4444-444444444444")!)
+            let store = DownloadStore(baseDirectory: directory)
+            guard case .committed(let plan) = store.commitLegacyAttemptOwnershipMigration(
+                idFactory: { _ in fixedID }) else {
+                Issue.record("Expected cleanup-only ownership migration")
+                return
+            }
+            let expected = DownloadAttemptKey(ratingKey: ratingKey, attemptID: fixedID)
+            #expect(plan.taskCancellationAndReset.isEmpty)
+            #expect(plan.cleanupOnly == [expected])
+
+            let relaunched = DownloadStore(baseDirectory: directory)
+            guard case .committed(let relaunchedPlan) = relaunched.commitLegacyAttemptOwnershipMigration() else {
+                Issue.record("Expected cleanup-only plan to survive relaunch")
+                return
+            }
+            #expect(relaunchedPlan.taskCancellationAndReset.isEmpty)
+            #expect(relaunchedPlan.cleanupOnly == [expected])
+            #expect(relaunched.record(for: ratingKey)?.status == .complete)
+        }
+    }
+
+    @Test func migrationCommitFailureRetriesSameIDWithoutDeletingPartial() throws {
+        try withTemporaryDirectory { directory in
+            let key = "plex:legacy-failure"
+            let media = directory.appendingPathComponent("legacy.mp4")
+            try Data(repeating: 7, count: 64).write(to: media)
+            var row = legacyRow(ratingKey: key, status: "paused", bytes: 64)
+            row["relativePath"] = media.lastPathComponent
+            try writeLegacyIndex(schemaVersion: 2, rows: [row], directory: directory)
+            let writes = AtomicWriteHarness(failFirstWrite: true)
+            let store = DownloadStore(baseDirectory: directory,
+                                      indexPersistence: .init { data, url in try writes.write(data, to: url) })
+            let fixedID = DownloadAttemptID(uuid: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!)
+            guard case .failed(let firstPlan, _) = store.commitLegacyAttemptOwnershipMigration(
+                idFactory: { _ in fixedID }) else {
+                Issue.record("Expected injected migration failure")
+                return
+            }
+            #expect(firstPlan.taskCancellationAndReset.first?.attemptID == fixedID)
+            #expect(FileManager.default.fileExists(atPath: media.path))
+            guard case .committed(let secondPlan) = store.commitLegacyAttemptOwnershipMigration(
+                idFactory: { _ in .generated() }) else {
+                Issue.record("Expected dirty migration retry to commit")
+                return
+            }
+            #expect(secondPlan.taskCancellationAndReset.first?.attemptID == fixedID)
+            #expect(FileManager.default.fileExists(atPath: media.path))
+        }
+    }
+
+    @Test func v3TopLevelNestedDisagreementFailsClosed() throws {
+        try withTemporaryDirectory { directory in
+            var row = legacyRow(ratingKey: "plex:shadow", status: "downloading", bytes: 1,
+                                nestedAttemptID: "nested")
+            row["attemptID"] = "top-level"
+            try writeLegacyIndex(schemaVersion: 3, rows: [row], directory: directory)
+            let store = DownloadStore(baseDirectory: directory)
+            #expect(store.commitLegacyAttemptOwnershipMigration()
+                == .malformedV3Rows(["plex:shadow"]))
+        }
+    }
+
+    @Test func resetPhaseThreeFailureReloadsDurableCleanupBarrierAndRetries() throws {
+        try withTemporaryDirectory { directory in
+            let ratingKey = "plex:reset-retry"
+            let media = directory.appendingPathComponent("reset-retry.mp4")
+            try Data(repeating: 3, count: 32).write(to: media)
+            var row = legacyRow(ratingKey: ratingKey, status: "paused", bytes: 32)
+            row["relativePath"] = media.lastPathComponent
+            try writeLegacyIndex(schemaVersion: 2, rows: [row], directory: directory)
+            let writes = SelectedAtomicWriteFailureHarness(failingAttempts: [3])
+            let store = DownloadStore(baseDirectory: directory,
+                                      indexPersistence: .init { data, url in try writes.write(data, to: url) })
+            let id = DownloadAttemptID(uuid: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!)
+            guard case .committed(let plan) = store.commitLegacyAttemptOwnershipMigration(
+                idFactory: { _ in id }), let key = plan.taskCancellationAndReset.first else {
+                Issue.record("Expected committed migration plan")
+                return
+            }
+            guard case .failed = store.resetLegacyAttemptAfterTaskCancellation(key) else {
+                Issue.record("Expected injected phase-three persistence failure")
+                return
+            }
+            #expect(!FileManager.default.fileExists(atPath: media.path))
+
+            let relaunched = DownloadStore(baseDirectory: directory)
+            guard case .committed(let retryPlan) = relaunched.commitLegacyAttemptOwnershipMigration(),
+                  retryPlan.taskCancellationAndReset == [key] else {
+                Issue.record("Expected durable reset barrier after phase-three crash")
+                return
+            }
+            #expect(relaunched.resetLegacyAttemptAfterTaskCancellation(key)
+                == .committed(key, cleanupFailureCount: 0))
+            #expect(relaunched.commitLegacyAttemptOwnershipMigration() == .notRequired)
+        }
+    }
+
+    @Test func newAttemptRecordWritesMatchingTopLevelAndNestedShadow() throws {
+        try withTemporaryDirectory { directory in
+            let ratingKey = "plex:new-v3"
+            let id = DownloadAttemptID(uuid: UUID(uuidString: "33333333-3333-3333-3333-333333333333")!)
+            let record = makeRecord(
+                ratingKey: ratingKey,
+                title: "New v3",
+                directory: directory,
+                bytes: 0,
+                metadata: OfflineMetadata(ratingKey: ratingKey, title: "New v3", type: "movie")
+            )
+            #expect(DownloadStore(baseDirectory: directory)
+                .createAttemptOwnedRecord(record, attemptID: id)
+                == .committed(DownloadAttemptKey(ratingKey: ratingKey, attemptID: id)))
+            let data = try Data(contentsOf: directory.appendingPathComponent("index.json"))
+            let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            let rows = try #require(object["rows"] as? [[String: Any]])
+            let row = try #require(rows.first)
+            let metadata = try #require(row["metadata"] as? [String: Any])
+            #expect(row["attemptID"] as? String == id.rawValue)
+            #expect(metadata["downloadAttemptID"] as? String == id.rawValue)
         }
     }
 
@@ -380,6 +559,32 @@ struct DownloadStorePersistenceTests {
         try body(directory)
     }
 
+    private func legacyRow(ratingKey: String, status: String, bytes: Int,
+                           nestedAttemptID: String? = nil) -> [String: Any] {
+        var metadata: [String: Any] = [
+            "ratingKey": ratingKey,
+            "title": "Legacy",
+            "type": "movie",
+        ]
+        if let nestedAttemptID { metadata["downloadAttemptID"] = nestedAttemptID }
+        return [
+            "ratingKey": ratingKey,
+            "title": "Legacy",
+            "relativePath": "legacy.mp4",
+            "bytes": bytes,
+            "progress": status == "complete" ? 1.0 : 0.5,
+            "status": status,
+            "metadata": metadata,
+        ]
+    }
+
+    private func writeLegacyIndex(schemaVersion: Int?, rows: [[String: Any]],
+                                  directory: URL) throws {
+        let object: Any = schemaVersion.map { ["schemaVersion": $0, "rows": rows] } ?? rows
+        try JSONSerialization.data(withJSONObject: object)
+            .write(to: directory.appendingPathComponent("index.json"), options: .atomic)
+    }
+
     private func waitForSignal(_ semaphore: DispatchSemaphore, timeout: TimeInterval) async -> Bool {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
@@ -411,6 +616,20 @@ private final class AtomicWriteHarness: @unchecked Sendable {
             return shouldFailNextWrite
         }
         if shouldFail { throw InjectedAtomicWriteFailure() }
+        try data.write(to: url, options: .atomic)
+    }
+}
+
+private final class SelectedAtomicWriteFailureHarness: @unchecked Sendable {
+    private let lock = NSLock()
+    private let failingAttempts: Set<Int>
+    private var attempts = 0
+
+    init(failingAttempts: Set<Int>) { self.failingAttempts = failingAttempts }
+
+    func write(_ data: Data, to url: URL) throws {
+        let attempt = lock.withLock { attempts += 1; return attempts }
+        if failingAttempts.contains(attempt) { throw InjectedAtomicWriteFailure() }
         try data.write(to: url, options: .atomic)
     }
 }

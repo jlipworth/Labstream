@@ -33,6 +33,43 @@ final class DownloadStore: @unchecked Sendable {
         case committed(revision: UInt64)
         case failed(revision: UInt64, stage: String, errorType: String)
         case timedOut(targetRevision: UInt64, committedRevision: UInt64)
+
+        fileprivate func committed(through ticket: PersistenceTicket) -> Bool {
+            guard case .committed(let revision) = self else { return false }
+            return revision >= ticket.revision
+        }
+    }
+
+    struct LegacyAttemptMigrationPlan: Sendable, Equatable {
+        /// Pre-v3 rows that may still have an OS task or partial artifacts. The coordinator must
+        /// cancel legacy tasks before invoking `resetLegacyAttemptAfterTaskCancellation`.
+        let taskCancellationAndReset: [DownloadAttemptKey]
+        /// Completed/unverified rows retain their media. An ID is assigned only when durable
+        /// cleanup evidence means asynchronous ownership can still exist.
+        let cleanupOnly: [DownloadAttemptKey]
+    }
+
+    enum AttemptOwnershipMigrationResult: Sendable, Equatable {
+        case notRequired
+        case committed(LegacyAttemptMigrationPlan)
+        case failed(LegacyAttemptMigrationPlan, PersistenceFlushResult)
+        /// A v3 active/cleanup-bearing row without top-level ownership is malformed. Never repair
+        /// this as though it were legacy: doing so could bless an unrelated live task.
+        case malformedV3Rows([String])
+    }
+
+    enum AttemptRecordCreateResult: Sendable, Equatable {
+        case committed(DownloadAttemptKey)
+        case rejectedExistingOwner(DownloadAttemptKey?)
+        case failed(DownloadAttemptKey, PersistenceFlushResult)
+    }
+
+    enum LegacyAttemptResetResult: Sendable, Equatable {
+        case committed(DownloadAttemptKey, cleanupFailureCount: Int)
+        case cleanupFailed(DownloadAttemptKey, cleanupFailureCount: Int)
+        case staleOrMissing
+        case notPending
+        case failed(DownloadAttemptKey, PersistenceFlushResult)
     }
 
     private struct PersistenceAttempt {
@@ -143,6 +180,7 @@ final class DownloadStore: @unchecked Sendable {
     /// Codable row as persisted on disk (relative path, not absolute URL).
     private struct Row: Codable, Sendable {
         let ratingKey: String
+        var attemptID: DownloadAttemptID?
         let title: String
         let relativePath: String
         var bytes: Int
@@ -151,6 +189,20 @@ final class DownloadStore: @unchecked Sendable {
         // D5: snapshot of the source item + the locally-cached poster path. Both are
         // optional and decoded with `decodeIfPresent` so rows written before D5 load.
         var metadata: OfflineMetadata?
+        /// Durable migration barrier. While true, legacy OS tasks must be cancelled and this row's
+        /// partial artifacts reset before background callback admission may open.
+        var legacyResetPending: Bool
+        var legacyResetArtifactRelativePaths: [String]?
+        /// Decode-only evidence used to distinguish a valid v3 owner from the nested v2 fallback.
+        /// This field is deliberately absent from CodingKeys.
+        var decodedTopLevelAttemptIDPresent: Bool
+        var decodedAttemptIdentityDisagrees: Bool
+
+        private enum CodingKeys: String, CodingKey {
+            case ratingKey, attemptID, title, relativePath, bytes, progress, status, metadata
+            case legacyResetPending
+            case legacyResetArtifactRelativePaths
+        }
 
         // Backward-compatible decoding: rows written before D2 lack `status`.
         // Infer it from the old progress signal so existing libraries keep
@@ -159,6 +211,7 @@ final class DownloadStore: @unchecked Sendable {
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             ratingKey = try c.decode(String.self, forKey: .ratingKey)
+            let topLevelAttemptID = try c.decodeIfPresent(DownloadAttemptID.self, forKey: .attemptID)
             title = try c.decode(String.self, forKey: .title)
             relativePath = try c.decode(String.self, forKey: .relativePath)
             bytes = try c.decode(Int.self, forKey: .bytes)
@@ -166,18 +219,50 @@ final class DownloadStore: @unchecked Sendable {
             status = try c.decodeIfPresent(DownloadStatus.self, forKey: .status)
                 ?? DownloadStatus.migratedStatus(forLegacyProgress: progress)
             metadata = try c.decodeIfPresent(OfflineMetadata.self, forKey: .metadata)
+            let nestedAttemptID = metadata?.downloadAttemptID.flatMap(DownloadAttemptID.init(rawValue:))
+            attemptID = topLevelAttemptID ?? nestedAttemptID
+            legacyResetPending = try c.decodeIfPresent(Bool.self, forKey: .legacyResetPending) ?? false
+            legacyResetArtifactRelativePaths = try c.decodeIfPresent(
+                [String].self, forKey: .legacyResetArtifactRelativePaths)
+            decodedTopLevelAttemptIDPresent = topLevelAttemptID != nil
+            decodedAttemptIdentityDisagrees = topLevelAttemptID != nil
+                && nestedAttemptID != nil
+                && topLevelAttemptID != nestedAttemptID
         }
 
-        init(ratingKey: String, title: String, relativePath: String,
+        init(ratingKey: String, attemptID: DownloadAttemptID? = nil,
+             title: String, relativePath: String,
              bytes: Int, progress: Double, status: DownloadStatus,
-             metadata: OfflineMetadata? = nil) {
+             metadata: OfflineMetadata? = nil,
+             legacyResetPending: Bool = false,
+             legacyResetArtifactRelativePaths: [String]? = nil) {
             self.ratingKey = ratingKey
+            self.attemptID = attemptID
             self.title = title
             self.relativePath = relativePath
             self.bytes = bytes
             self.progress = progress
             self.status = status
             self.metadata = metadata
+            self.legacyResetPending = legacyResetPending
+            self.legacyResetArtifactRelativePaths = legacyResetArtifactRelativePaths
+            self.decodedTopLevelAttemptIDPresent = attemptID != nil
+            self.decodedAttemptIdentityDisagrees = false
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(ratingKey, forKey: .ratingKey)
+            try c.encodeIfPresent(attemptID, forKey: .attemptID)
+            try c.encode(title, forKey: .title)
+            try c.encode(relativePath, forKey: .relativePath)
+            try c.encode(bytes, forKey: .bytes)
+            try c.encode(progress, forKey: .progress)
+            try c.encode(status, forKey: .status)
+            try c.encodeIfPresent(metadata, forKey: .metadata)
+            if legacyResetPending { try c.encode(true, forKey: .legacyResetPending) }
+            try c.encodeIfPresent(legacyResetArtifactRelativePaths,
+                                  forKey: .legacyResetArtifactRelativePaths)
         }
     }
 
@@ -203,6 +288,9 @@ final class DownloadStore: @unchecked Sendable {
     private let embyCleanupPersistence: EmbyCleanupPersistence
     private let indexWriter: RevisionedPersistenceWriter<[Row]>
     private var nextPersistenceRevision: UInt64 = 0 // guarded by `lock`
+    private var loadedSchemaVersion = DownloadIndexCoding.currentSchemaVersion // guarded by `lock`
+    private var pendingLegacyAttemptResetKeys: Set<DownloadAttemptKey> = [] // guarded by `lock`
+    private var pendingLegacyResetArtifacts: [DownloadAttemptKey: Set<URL>] = [:] // guarded by `lock`
 
     /// - Parameter baseDirectory: where media files + the index live. Defaults to
     ///   `Application Support/Labstream/Downloads`, created if missing.
@@ -638,6 +726,7 @@ final class DownloadStore: @unchecked Sendable {
     private func hydratedRecord(_ row: Row) -> DownloadRecord {
         let sideAssets = hydratedSideAssets(ratingKey: row.ratingKey, metadata: row.metadata)
         return DownloadRecord(ratingKey: row.ratingKey,
+                              attemptID: row.attemptID,
                               title: row.title,
                               localURL: baseDirectory.appendingPathComponent(row.relativePath),
                               bytes: row.bytes,
@@ -861,21 +950,72 @@ final class DownloadStore: @unchecked Sendable {
         lock.lock()
         let rel = record.localURL.lastPathComponent
         let existing = rows[record.ratingKey]
+        let attemptID = record.attemptID ?? existing?.attemptID
         var metadata = record.metadata ?? existing?.metadata
         if var incoming = record.metadata, let previous = existing?.metadata {
             incoming.preserveCachedSideAssets(from: previous)
             metadata = incoming
         }
+        if let attemptID { metadata?.downloadAttemptID = attemptID.rawValue }
         rows[record.ratingKey] = Row(ratingKey: record.ratingKey,
+                                     attemptID: attemptID,
                                      title: record.title,
                                      relativePath: rel,
                                      bytes: record.bytes,
                                      progress: record.progress,
                                      status: record.status,
-                                     metadata: metadata)
+                                     metadata: metadata,
+                                     legacyResetPending: existing?.legacyResetPending ?? false,
+                                     legacyResetArtifactRelativePaths: existing?.legacyResetArtifactRelativePaths)
         sideAssetHydrationCache.removeValue(forKey: record.ratingKey)
         lock.unlock()
         persist()
+    }
+
+    /// Create (or retry persistence of) a row owned by one exact attempt. A different existing
+    /// owner is never overwritten. `.failed` means the in-memory full snapshot remains dirty, but
+    /// the caller must not create/register URLSession work until a later call returns `.committed`.
+    @discardableResult
+    func createAttemptOwnedRecord(
+        _ record: DownloadRecord,
+        attemptID: DownloadAttemptID
+    ) -> AttemptRecordCreateResult {
+        let key = DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
+        lock.lock()
+        if let existing = rows[record.ratingKey], existing.attemptID != attemptID {
+            let existingKey = existing.attemptID.map {
+                DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: $0)
+            }
+            lock.unlock()
+            return .rejectedExistingOwner(existingKey)
+        }
+        let rel = record.localURL.lastPathComponent
+        let previous = rows[record.ratingKey]
+        var metadata = record.metadata ?? previous?.metadata
+        if var incoming = record.metadata, let oldMetadata = previous?.metadata {
+            incoming.preserveCachedSideAssets(from: oldMetadata)
+            metadata = incoming
+        }
+        metadata?.downloadAttemptID = attemptID.rawValue
+        rows[record.ratingKey] = Row(
+            ratingKey: record.ratingKey,
+            attemptID: attemptID,
+            title: record.title,
+            relativePath: rel,
+            bytes: record.bytes,
+            progress: record.progress,
+            status: record.status,
+            metadata: metadata,
+            legacyResetPending: previous?.legacyResetPending ?? false,
+            legacyResetArtifactRelativePaths: previous?.legacyResetArtifactRelativePaths
+        )
+        sideAssetHydrationCache.removeValue(forKey: record.ratingKey)
+        lock.unlock()
+        let persistence = persist()
+        guard persistence.result.committed(through: persistence.ticket) else {
+            return .failed(key, persistence.result)
+        }
+        return .committed(key)
     }
 
     /// Record the locally-cached poster path (relative to the base dir) on a row's
@@ -1088,19 +1228,214 @@ final class DownloadStore: @unchecked Sendable {
     /// The row's current download-attempt token (see `OfflineMetadata.downloadAttemptID`).
     func downloadAttemptID(ratingKey: String) -> String? {
         lock.lock(); defer { lock.unlock() }
-        return rows[ratingKey]?.metadata?.downloadAttemptID
+        return rows[ratingKey]?.attemptID?.rawValue
     }
 
     /// First writer wins: concurrent task-creation paths for one attempt must all end up
     /// stamping the same token.
     func mintDownloadAttemptIDIfMissing(ratingKey: String, _ attemptID: String) {
-        updateMetadata(ratingKey: ratingKey) {
-            if $0.downloadAttemptID == nil { $0.downloadAttemptID = attemptID }
-        }
+        guard let typed = DownloadAttemptID(rawValue: attemptID) else { return }
+        lock.lock()
+        guard var row = rows[ratingKey], row.attemptID == nil else { lock.unlock(); return }
+        row.attemptID = typed
+        row.decodedTopLevelAttemptIDPresent = true
+        row.decodedAttemptIdentityDisagrees = false
+        // Retain the nested rollout field until every callback reader has migrated. Top-level is
+        // authoritative in v3; this mirror exists only for downgrade/dual-read compatibility.
+        if row.metadata?.downloadAttemptID == nil { row.metadata?.downloadAttemptID = typed.rawValue }
+        rows[ratingKey] = row
+        lock.unlock()
+        persist()
     }
 
     func clearDownloadAttemptID(ratingKey: String) {
-        updateMetadata(ratingKey: ratingKey) { $0.downloadAttemptID = nil }
+        lock.lock()
+        guard var row = rows[ratingKey], row.attemptID != nil
+                || row.metadata?.downloadAttemptID != nil else { lock.unlock(); return }
+        row.attemptID = nil
+        row.decodedTopLevelAttemptIDPresent = false
+        row.decodedAttemptIdentityDisagrees = false
+        row.metadata?.downloadAttemptID = nil
+        rows[ratingKey] = row
+        lock.unlock()
+        persist()
+    }
+
+    /// Upgrade a v1/v2 index to v3 without admitting background callbacks. Existing nested tokens
+    /// are preserved verbatim; rows that need ownership but have no token receive one. The whole
+    /// snapshot must commit before the returned keys may be used to cancel legacy OS tasks.
+    @discardableResult
+    func commitLegacyAttemptOwnershipMigration(
+        idFactory: (String) -> DownloadAttemptID = { _ in .generated() }
+    ) -> AttemptOwnershipMigrationResult {
+        lock.lock()
+        let shadowDisagreements = rows.values
+            .filter(\.decodedAttemptIdentityDisagrees)
+            .map(\.ratingKey)
+            .sorted()
+        if !shadowDisagreements.isEmpty {
+            lock.unlock()
+            return .malformedV3Rows(shadowDisagreements)
+        }
+        if loadedSchemaVersion >= DownloadIndexCoding.currentSchemaVersion {
+            let malformed = rows.values
+                .filter {
+                    Self.requiresAttemptOwnership($0) && !$0.decodedTopLevelAttemptIDPresent
+                }
+                .map(\.ratingKey)
+                .sorted()
+            let pending = rows.values.compactMap { row -> DownloadAttemptKey? in
+                guard row.legacyResetPending, let attemptID = row.attemptID else { return nil }
+                return DownloadAttemptKey(ratingKey: row.ratingKey, attemptID: attemptID)
+            }.sorted { $0.ratingKey < $1.ratingKey }
+            let cleanupOnly = rows.values.compactMap { row -> DownloadAttemptKey? in
+                guard (row.status == .complete || row.status == .unverified),
+                      Self.hasAsyncCleanupEvidence(row),
+                      let attemptID = row.attemptID else { return nil }
+                return DownloadAttemptKey(ratingKey: row.ratingKey, attemptID: attemptID)
+            }.sorted { $0.ratingKey < $1.ratingKey }
+            pendingLegacyAttemptResetKeys.formUnion(pending)
+            lock.unlock()
+            if !malformed.isEmpty { return .malformedV3Rows(malformed) }
+            if !pending.isEmpty || !cleanupOnly.isEmpty {
+                return .committed(LegacyAttemptMigrationPlan(
+                    taskCancellationAndReset: pending,
+                    cleanupOnly: cleanupOnly
+                ))
+            }
+            return .notRequired
+        }
+
+        var reset: [DownloadAttemptKey] = []
+        var cleanupOnly: [DownloadAttemptKey] = []
+        for ratingKey in rows.keys.sorted() {
+            guard var row = rows[ratingKey], Self.requiresAttemptOwnership(row) else { continue }
+            if row.attemptID == nil { row.attemptID = idFactory(ratingKey) }
+            guard let attemptID = row.attemptID else { continue }
+            row.decodedTopLevelAttemptIDPresent = true
+            // Mirror only during migration for safe rollback/dual-read. All new v3 authority lives
+            // in `Row.attemptID` and later mutations must compare that typed value.
+            if row.metadata?.downloadAttemptID == nil {
+                row.metadata?.downloadAttemptID = attemptID.rawValue
+            }
+            rows[ratingKey] = row
+            let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+            if row.status == .complete || row.status == .unverified {
+                cleanupOnly.append(key)
+            } else {
+                row.legacyResetPending = true
+                rows[ratingKey] = row
+                reset.append(key)
+            }
+        }
+        let plan = LegacyAttemptMigrationPlan(
+            taskCancellationAndReset: reset,
+            cleanupOnly: cleanupOnly
+        )
+        lock.unlock()
+
+        // Even an empty plan must commit the v3 envelope. Otherwise a completed-only v2 library
+        // would be reclassified as legacy on every launch.
+        let persistence = persist()
+        guard persistence.result.committed(through: persistence.ticket) else {
+            return .failed(plan, persistence.result)
+        }
+        lock.lock()
+        loadedSchemaVersion = DownloadIndexCoding.currentSchemaVersion
+        pendingLegacyAttemptResetKeys.formUnion(reset)
+        lock.unlock()
+        return .committed(plan)
+    }
+
+    /// Complete the approved legacy policy after the coordinator has enumerated and cancelled all
+    /// pre-v3 tasks. The reset is attempt-conditional and the index commit happens before any file
+    /// is deleted, so a persistence failure cannot destroy the only durable checkpoint.
+    @discardableResult
+    func resetLegacyAttemptAfterTaskCancellation(
+        _ key: DownloadAttemptKey
+    ) -> LegacyAttemptResetResult {
+        lock.lock()
+        guard pendingLegacyAttemptResetKeys.contains(key) else {
+            lock.unlock()
+            return .notPending
+        }
+        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID else {
+            lock.unlock()
+            return .staleOrMissing
+        }
+        var relativeArtifacts = Set(row.legacyResetArtifactRelativePaths ?? [])
+        relativeArtifacts.insert(row.relativePath)
+        if let relative = row.metadata?.resumeDataRelativePath,
+           Self.isSafeOneLevelRelativePath(relative) {
+            relativeArtifacts.insert(relative)
+        }
+        for held in row.metadata?.heldRangeSegments ?? []
+            where Self.isSafeOneLevelRelativePath(held.relativePath) {
+            relativeArtifacts.insert(held.relativePath)
+        }
+        let artifacts = Set(relativeArtifacts.filter(Self.isSafeOneLevelRelativePath)
+            .map { baseDirectory.appendingPathComponent($0) })
+        pendingLegacyResetArtifacts[key] = artifacts
+        row.bytes = 0
+        row.progress = 0
+        row.status = .failed
+        row.metadata?.resumeDataRelativePath = nil
+        row.metadata?.resumeDisplayBytes = nil
+        row.metadata?.heldRangeSegments = nil
+        row.metadata?.rangeValidator = nil
+        row.legacyResetPending = true
+        row.legacyResetArtifactRelativePaths = relativeArtifacts.sorted()
+        rows[key.ratingKey] = row
+        sideAssetHydrationCache.removeValue(forKey: key.ratingKey)
+        lock.unlock()
+
+        let persistence = persist()
+        guard persistence.result.committed(through: persistence.ticket) else {
+            return .failed(key, persistence.result)
+        }
+
+        var failureCount = 0
+        for url in artifacts {
+            do { try fileManager.removeItem(at: url) }
+            catch where fileManager.fileExists(atPath: url.path) { failureCount += 1 }
+            catch {}
+        }
+        guard failureCount == 0 else {
+            return .cleanupFailed(key, cleanupFailureCount: failureCount)
+        }
+
+        lock.lock()
+        guard var committedRow = rows[key.ratingKey], committedRow.attemptID == key.attemptID else {
+            lock.unlock()
+            return .staleOrMissing
+        }
+        committedRow.legacyResetPending = false
+        committedRow.legacyResetArtifactRelativePaths = nil
+        rows[key.ratingKey] = committedRow
+        lock.unlock()
+        let cleanupPersistence = persist()
+        guard cleanupPersistence.result.committed(through: cleanupPersistence.ticket) else {
+            return .failed(key, cleanupPersistence.result)
+        }
+        lock.lock()
+        pendingLegacyResetArtifacts.removeValue(forKey: key)
+        pendingLegacyAttemptResetKeys.remove(key)
+        lock.unlock()
+        return .committed(key, cleanupFailureCount: 0)
+    }
+
+    private static func requiresAttemptOwnership(_ row: Row) -> Bool {
+        if row.status != .complete && row.status != .unverified { return true }
+        return hasAsyncCleanupEvidence(row)
+    }
+
+    private static func hasAsyncCleanupEvidence(_ row: Row) -> Bool {
+        guard let metadata = row.metadata else { return false }
+        return metadata.playSessionID?.isEmpty == false
+            || metadata.embyConvertJobID != nil
+            || metadata.hasEmbyConvertCrashWindowIdentity
+            || metadata.resumeDataRelativePath?.isEmpty == false
+            || !(metadata.heldRangeSegments?.isEmpty ?? true)
     }
 
     /// #169: reset persisted static byte-range progress to the bytes that are actually durable in
@@ -1495,6 +1830,7 @@ final class DownloadStore: @unchecked Sendable {
         // `decode([Row].self)` did exactly that). A non-zero skip is logged rather than
         // swallowed — silent truncation is the failure mode this guards against.
         let result = DownloadIndexCoding.decode(Row.self, from: data)
+        loadedSchemaVersion = result.schemaVersion
         if result.skippedRowCount > 0 {
             NSLog("DownloadStore: skipped %d corrupt offline-index row(s) on load (schemaVersion %d); %d row(s) preserved",
                   result.skippedRowCount, result.schemaVersion, result.rows.count)
