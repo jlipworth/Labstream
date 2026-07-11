@@ -648,6 +648,14 @@ their relationship during the schema-v3 migration.
   `build/compile-audit/phase2d-43ba92b/summary.md` records clean medians of 14.85 s Mac, 12.29 s
   mobile, 12.21 s visionOS, and 5.16 s PMSKit. Against the same-machine pre-fix checkpoint these are
   improvements of roughly 11%, 13%, 21%, and 26%, so no clean-build regression was introduced.
+- **Current-head recheck (`86000d6`):** all 18 scenarios in the single-run audit at
+  `build/compile-audit/phase2-current-20260711T234818Z/summary.md` passed. This is a smoke recheck,
+  not a replacement for the retained three-run medians. Standard 300 ms probes emitted no
+  `OfflineLibraryView` warning on Mac, mobile, or visionOS. Supplemental 50 ms probes measured only
+  `row(for:)` at 81/90/81 ms, confirming the required threshold while disproving any blanket
+  sub-50 ms claim. `OptimizeRequest` emitted no warning even at 50 ms, freshly supporting its
+  preferred target. Single clean observations were 15.12 s Mac, 12.59 s mobile, 14.00 s visionOS,
+  and 6.69 s PMSKit cold; they are not comparable medians.
 - **Validation:** PMSKit passed 1,404 tests across 170 suites. Complete macOS and iPadOS app plans
   passed 62/62, with Thread Sanitizer enabled on iPadOS. A clean visionOS build matched the installed
   UUID, launched to the signed-in populated Home surface, and produced no crash/assertion/sanitizer
