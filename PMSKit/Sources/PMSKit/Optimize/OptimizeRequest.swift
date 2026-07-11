@@ -342,8 +342,13 @@ public struct BackgroundProcessingItems: Decodable, Sendable, Equatable {
         public init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             // id may arrive as a String or an Int.
-            self.id = ((try? c.decodeIfPresent(String.self, forKey: .id)) ?? nil)
-                ?? ((try? c.decodeIfPresent(Int.self, forKey: .id)) ?? nil).map(String.init)
+            if let stringID = try? c.decode(String.self, forKey: .id) {
+                self.id = stringID
+            } else if let integerID = try? c.decode(Int.self, forKey: .id) {
+                self.id = String(integerID)
+            } else {
+                self.id = nil
+            }
             self.title = (try? c.decodeIfPresent(String.self, forKey: .title)) ?? nil
             let status = (try? c.decodeIfPresent(StatusBox.self, forKey: .status)) ?? nil
             self.state = status?.state

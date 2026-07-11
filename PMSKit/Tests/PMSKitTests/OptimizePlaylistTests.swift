@@ -168,6 +168,19 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream",
     #expect(q.items.isEmpty)
 }
 
+@Test func backgroundItemFlexibleIdTreatsNullMalformedAndMissingAsNil() throws {
+    let json = """
+    {"MediaContainer":{"Item":[
+      {"id":null,"title":"Null"},
+      {"id":{"unexpected":1},"title":"Malformed"},
+      {"title":"Missing"}
+    ]}}
+    """.data(using: .utf8)!
+    let q = try JSONDecoder().decode(BackgroundProcessingItems.self, from: json)
+    #expect(q.items.map(\.title) == ["Null", "Malformed", "Missing"])
+    #expect(q.items.map(\.id) == [nil, nil, nil])
+}
+
 @Test func staleItemIDsOnlyOurMarkedUnprotectedItems() throws {
     let json = """
     {"MediaContainer":{"Item":[
