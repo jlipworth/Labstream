@@ -32,7 +32,7 @@ Current status at this checkpoint:
 | 2A | Partial | Plex photo coverage, modern Mac decoding, the MediaSession clock, and `PERF-01` (`3378211`) are complete. The old dead-helper inventory must still be regenerated against the audited engine. |
 | 2B | Open / higher priority | `store.records` uses grew from 38 to 40 and single-row `first`/`contains` uses from 24 to 26. Only `status(for:)` is narrow today. |
 | 2C | Complete | Latest-rail execution is bounded and order preserving. |
-| 2D | Open | `OfflineLibraryView` remains 776 lines and optimizer item decoding retains the nested `try?`/coalescing cliff. |
+| 2D | Complete | Optimizer flexible-ID decoding is explicit and the Offline root view is split at behavior-neutral opaque boundaries (`cc516ea`, `43ba92b`). Both cliffs disappeared from the compile audit; extracted Offline boundaries are below 50 ms on all app platforms. |
 | 3–4 | Open | Incoming main did not change the MediaBrowser value/request seams or Plex browse execution. Canonical backend work now spans a larger audited download-policy surface. |
 | 5E | Higher priority after correctness | `BackgroundDownloadSession` grew from about 4,994 to 5,755 lines, `DownloadManager` from 3,264 to 3,749, and `DownloadStore` from 1,091 to 1,271. Extract mechanically only after 1A–1C. |
 
@@ -251,6 +251,31 @@ their relationship during the schema-v3 migration.
 - **Next 1A boundary:** make held-manifest remove/take results commit-aware, then resolve Emby
   tombstone corruption/removal ordering and add explicit temp-write/replace crash seams. If those
   require broad mutation API conversion, leave the remainder incomplete for consultation.
+
+#### 2026-07-11 — Phase 2D compiler-cliff removal
+
+- **Status:** complete.
+- **Commits:** `cc516ea` (`Simplify optimizer item ID decoding`) and `43ba92b`
+  (`Split Offline library view type-check boundaries`).
+- **Optimizer boundary:** replaced the nested throwing optional/coalescing expression with explicit
+  String-then-Int decoding while preserving nil for null, malformed, and missing IDs. The flexible
+  ID fixture covers every accepted/rejected shape. A clean PMSKit build with 50 ms thresholds emits
+  no `OptimizeRequest.Item` expression or initializer warning, down from about 2,084/2,090 ms.
+- **Offline boundary:** split rows/empty state, scroll/navigation behavior, platform presentation,
+  row actions, and deletion confirmation into opaque helper boundaries without moving state or
+  changing modifier order. Independent review found navigation, toolbar, focus, row identity,
+  swipe/delete, Mac presentation, full-screen cover, and dialog behavior unchanged. Clean Mac,
+  iOS, and visionOS builds with 50 ms thresholds report no extracted boundary over 50 ms; only the
+  pre-existing row renderer reports 73–81 ms, below the 300 ms acceptance target. The old root body
+  measured about 2,073 ms.
+- **Build evidence:** the three-run arm64 audit at
+  `build/compile-audit/phase2d-43ba92b/summary.md` records clean medians of 14.85 s Mac, 12.29 s
+  mobile, 12.21 s visionOS, and 5.16 s PMSKit. Against the same-machine pre-fix checkpoint these are
+  improvements of roughly 11%, 13%, 21%, and 26%, so no clean-build regression was introduced.
+- **Validation:** PMSKit passed 1,404 tests across 170 suites. Complete macOS and iPadOS app plans
+  passed 62/62, with Thread Sanitizer enabled on iPadOS. A clean visionOS build matched the installed
+  UUID, launched to the signed-in populated Home surface, and produced no crash/assertion/sanitizer
+  signature in its smoke log.
 
 The three-run arm64 checkpoint at rebased commit `cf21073` is recorded locally under
 `build/compile-audit/post-main-e757bb1/` (raw logs remain ignored because they contain local
