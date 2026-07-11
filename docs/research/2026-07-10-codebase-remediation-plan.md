@@ -110,6 +110,28 @@ their relationship during the schema-v3 migration.
   timeout and timeout-handler policy; corrupt tombstone quarantine policy; delete ordering;
   shutdown handling for dirty revisions; and the public result shape for terminal/delete failures.
 
+#### 2026-07-11 — Phase 1A revisioned-writer primitive
+
+- **Status:** primitive complete; production integration open.
+- **Commit:** `7a599d1` (`Add revisioned persistence writer primitive`).
+- **Changed boundary:** added a generic internal full-snapshot writer with synchronous revision
+  acceptance, one serial encode/atomic-commit worker, pending-snapshot coalescing, dirty retention,
+  later-mutation/flush retry, privacy-safe encode-versus-commit failures, and bounded async flush.
+  It is deliberately not wired into `DownloadStore` yet, so this commit cannot weaken the current
+  synchronous index-write or background-completion behavior by itself.
+- **Regression evidence:** deterministic tests cover coalescing while an older encode is suspended,
+  late obsolete submission, commit and encode failure, dirty retry, newer-snapshot supersession,
+  timeout without abandonment, and invalid timeout values. The focused seven-test suite passed
+  repeatedly on macOS and passed under Thread Sanitizer on iPadOS.
+- **Reviewed invariant:** a revision superseded before its opaque atomic commit is skipped. If a
+  newer revision arrives only after an atomic commit has begun, the older operation may finish,
+  but the single worker guarantees the newer accepted snapshot is the final replacement.
+- **Next commit boundary:** add the app-level index I/O seam, assign revisions with the store lock,
+  route all index persistence and subtitle repair through this writer while retaining synchronous
+  durability at existing call sites, and prove fresh-store restore plus schema-v2 compatibility.
+  Only after that characterization is green should ordinary mutations become asynchronous and
+  explicit terminal/delete/background-completion tickets own the required flushes.
+
 The three-run arm64 checkpoint at rebased commit `cf21073` is recorded locally under
 `build/compile-audit/post-main-e757bb1/` (raw logs remain ignored because they contain local
 paths). Median clean builds were 15.37 s visionOS, 14.10 s mobile, 16.73 s Mac, and 7.02 s
