@@ -1549,12 +1549,55 @@ public final class DownloadManager {
                 && record.metadata?.resolvedDownloadLane() == .optimize
                 && !activeJobs.contains(record.ratingKey)
         }
-        // Re-attempt the durable persist for tombstones whose write failed at delete() time; the
-        // ones that persist move to the store list, the rest stay in-memory and are still swept.
-        deferredEmbyCleanupTombstones.removeAll { tombstone in
-            store.addEmbyConvertCleanupTombstone(tombstone) != nil
+        // First prove the canonical queue is readable. Treating read/decode failure as empty could
+        // resume a row whose delete intent is hidden in that queue.
+        switch store.loadEmbyConvertCleanupTombstones() {
+        case .loaded:
+            break
+        case .failed(let failure):
+            recordDownloadDiagnostic("downloads.convert_cleanup_deferred", fields: [
+                "reason": .label("tombstone_\(failure.stage.rawValue)_failed"),
+                "error_type": .label(failure.errorType),
+            ])
+            refreshRecords()
+            return
         }
-        let cleanupTombstones = store.embyConvertCleanupTombstones + deferredEmbyCleanupTombstones
+
+        // Re-attempt exact-ID tombstones whose durable write failed at delete time. Keep failed
+        // values in memory, but include the pre-retry snapshot in this sweep even if persistence
+        // succeeds so cleanup is not delayed until another lifecycle edge.
+        let deferredForSweep = deferredEmbyCleanupTombstones
+        var committedDeferredIDs = Set<UUID>()
+        for tombstone in deferredForSweep {
+            switch store.addEmbyConvertCleanupTombstone(tombstone) {
+            case .committed:
+                committedDeferredIDs.insert(tombstone.id)
+            case .failed(let failure):
+                recordDownloadDiagnostic("downloads.convert_cleanup_deferred", fields: [
+                    "download_id": .identifier(tombstone.ratingKey),
+                    "reason": .label("tombstone_\(failure.stage.rawValue)_failed"),
+                    "error_type": .label(failure.errorType),
+                ])
+            }
+        }
+        deferredEmbyCleanupTombstones.removeAll { committedDeferredIDs.contains($0.id) }
+
+        let durableTombstones: [DownloadStore.EmbyConvertCleanupTombstone]
+        switch store.loadEmbyConvertCleanupTombstones() {
+        case .loaded(let values):
+            durableTombstones = values
+        case .failed(let failure):
+            recordDownloadDiagnostic("downloads.convert_cleanup_deferred", fields: [
+                "reason": .label("tombstone_\(failure.stage.rawValue)_failed"),
+                "error_type": .label(failure.errorType),
+            ])
+            refreshRecords()
+            return
+        }
+        var seenCleanupIDs = Set<UUID>()
+        let cleanupTombstones = (durableTombstones + deferredForSweep).filter {
+            seenCleanupIDs.insert($0.id).inserted
+        }
         guard !embyPreparing.isEmpty || !cleanupTombstones.isEmpty else {
             refreshRecords()
             return
@@ -1677,16 +1720,23 @@ public final class DownloadManager {
                     "download_id": .identifier(record.ratingKey),
                     "phase": .label("recovery_expired"),
                 ])
-                if let tombstone = store.addEmbyConvertCleanupTombstone(
-                    ratingKey: record.ratingKey, metadata: metadata) {
+                let cleanupCandidate = DownloadStore.EmbyConvertCleanupTombstone(
+                    id: UUID(), ratingKey: record.ratingKey, metadata: metadata
+                )
+                switch store.addEmbyConvertCleanupTombstone(cleanupCandidate) {
+                case .committed(let tombstone):
                     Task { [weak self] in
                         await self?.recoverAndCancelEmbyConvertTombstone(
                             tombstone, server: server, token: token, identity: identity,
                             currentUserID: userId)
                     }
-                } else {
-                    deferredEmbyCleanupTombstones.append(DownloadStore.EmbyConvertCleanupTombstone(
-                        id: UUID(), ratingKey: record.ratingKey, metadata: metadata))
+                case .failed(let failure):
+                    deferredEmbyCleanupTombstones.append(cleanupCandidate)
+                    recordDownloadDiagnostic("downloads.convert_cleanup_deferred", fields: [
+                        "download_id": .identifier(record.ratingKey),
+                        "reason": .label("tombstone_\(failure.stage.rawValue)_failed"),
+                        "error_type": .label(failure.errorType),
+                    ])
                 }
                 store.clearEmbyConvertRecovery(ratingKey: record.ratingKey)
                 lastError[record.ratingKey] = .transferFailed(
@@ -2120,21 +2170,23 @@ public final class DownloadManager {
             // Persist cleanup intent BEFORE removing the visible row. If POST was accepted during
             // the crash window, deleting the UI row must not erase the only evidence able to find
             // and cancel that server job.
-            if let tombstone = store.addEmbyConvertCleanupTombstone(
-                ratingKey: ratingKey, metadata: metadata) {
+            let candidate = DownloadStore.EmbyConvertCleanupTombstone(
+                id: UUID(), ratingKey: ratingKey, metadata: metadata
+            )
+            switch store.addEmbyConvertCleanupTombstone(candidate) {
+            case .committed(let tombstone):
                 embyCleanupTombstone = tombstone
-            } else {
+            case .failed(let failure):
                 // Persist failed (disk full — exactly when users delete to free space). The user's
                 // delete MUST still complete: keep the cleanup intent alive in memory, where this
                 // launch's sweeps retry both the persist and the server-side cancel. Early-returning
                 // here made Delete a silent permanent no-op.
-                let deferred = DownloadStore.EmbyConvertCleanupTombstone(
-                    id: UUID(), ratingKey: ratingKey, metadata: metadata)
-                deferredEmbyCleanupTombstones.append(deferred)
-                embyCleanupTombstone = deferred
+                deferredEmbyCleanupTombstones.append(candidate)
+                embyCleanupTombstone = candidate
                 recordDownloadDiagnostic("downloads.convert_cleanup_deferred", fields: [
                     "download_id": .identifier(ratingKey),
-                    "reason": .label("tombstone_persist_failed"),
+                    "reason": .label("tombstone_\(failure.stage.rawValue)_failed"),
+                    "error_type": .label(failure.errorType),
                 ])
             }
         }
