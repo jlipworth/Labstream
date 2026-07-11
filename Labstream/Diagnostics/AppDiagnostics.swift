@@ -12,6 +12,10 @@ enum AppDiagnostics {
     static let maxReportEvents = 80
 
     private static let subsystem = "com.jlipworth.Labstream"
+    /// Per-process correlation token. `.identifier` hashes it before persistence, so exported
+    /// diagnostics can join lifecycle/download events across one launch without exposing a UUID.
+    private static let processRunID = UUID().uuidString
+    private static let processIdentifier = Int(ProcessInfo.processInfo.processIdentifier)
     private static let store = DiagnosticLogStore(
         capacity: 300,
         enabled: UserDefaults.standard.bool(forKey: enabledDefaultsKey)
@@ -50,7 +54,10 @@ enum AppDiagnostics {
     static func record(_ category: DiagnosticCategory,
                        _ name: String,
                        fields: [String: DiagnosticFieldValue] = [:]) -> DiagnosticEvent? {
-        guard let event = store.record(category: category, name: name, fields: fields) else {
+        var contextualFields = fields
+        contextualFields["process_run_id"] = .identifier(processRunID)
+        contextualFields["process_id"] = .int(processIdentifier)
+        guard let event = store.record(category: category, name: name, fields: contextualFields) else {
             return nil
         }
         logger(for: category).debug("\(event.summaryLine, privacy: .public)")

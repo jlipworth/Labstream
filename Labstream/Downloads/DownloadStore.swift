@@ -17,6 +17,17 @@ import PMSKit
 /// `URLSession` delegate can call in from a delegate queue, so writes are locked.
 final class DownloadStore: @unchecked Sendable {
 
+    struct StaticRangeRecoveryEvidence: Sendable {
+        let ratingKey: String
+        let status: DownloadStatus
+        let durableBytes: Int
+        let resumeManifestRecorded: Bool
+        let resumeBlobPresent: Bool
+        let resumeBlobBytes: Int
+        let heldBodyCount: Int
+        let heldBodyBytes: Int
+    }
+
     /// Codable row as persisted on disk (relative path, not absolute URL).
     private struct Row: Codable {
         let ratingKey: String
@@ -831,6 +842,35 @@ final class DownloadStore: @unchecked Sendable {
             guard row.status == .downloading || row.status == .queued,
                   row.metadata?.resolvedResumeMode(ratingKey: row.ratingKey) == .staticByteRange else { return nil }
             return row.ratingKey
+        }
+    }
+
+    /// Launch/device-test evidence for every nonterminal static row. This reads file metadata only;
+    /// it never opens the potentially large resume/held bodies.
+    func staticRangeRecoveryEvidence() -> [StaticRangeRecoveryEvidence] {
+        lock.lock()
+        let snapshot = Array(rows.values)
+        lock.unlock()
+        return snapshot.compactMap { row in
+            guard row.metadata?.resolvedResumeMode(ratingKey: row.ratingKey) == .staticByteRange,
+                  row.status != .complete, row.status != .unverified else { return nil }
+            let resumeRelative = row.metadata?.resumeDataRelativePath
+            let resumeURL = resumeRelative.flatMap { relative in
+                Self.isSafeOneLevelRelativePath(relative)
+                    ? baseDirectory.appendingPathComponent(relative) : nil
+            }
+            let resumeBytes = resumeURL.flatMap(fileSize(at:)) ?? 0
+            let held = row.metadata?.heldRangeSegments ?? []
+            return StaticRangeRecoveryEvidence(
+                ratingKey: row.ratingKey,
+                status: row.status,
+                durableBytes: fileSize(relativePath: row.relativePath) ?? 0,
+                resumeManifestRecorded: resumeRelative?.isEmpty == false,
+                resumeBlobPresent: resumeURL.map { fileManager.fileExists(atPath: $0.path) } ?? false,
+                resumeBlobBytes: resumeBytes,
+                heldBodyCount: held.count,
+                heldBodyBytes: held.reduce(0) { $0 + max(0, $1.length) }
+            )
         }
     }
 
