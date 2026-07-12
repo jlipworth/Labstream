@@ -286,15 +286,20 @@ public final class DownloadManager {
     /// failure only on server truth (metadata/background queue status), not elapsed time.
     let optimizePollInterval: TimeInterval = 5
 
-    init(appModel: AppModel) {
+    init(appModel: AppModel,
+         store injectedStore: DownloadStore? = nil,
+         session injectedSession: BackgroundDownloadSession? = nil,
+         cleanupIntentJournal injectedCleanupIntentJournal: DownloadCleanupIntentJournal? = nil,
+         registerForBackgroundEvents: Bool = true) {
         self.appModel = appModel
-        let store = DownloadStore()
+        let store = injectedStore ?? DownloadStore()
         // Commit typed row ownership before the background session can be constructed/activated.
         // A failure remains explicit and leaves session admission dormant.
         let migrationResult = store.commitLegacyAttemptOwnershipMigration()
         self.store = store
-        self.session = BackgroundDownloadSession(store: store)
-        self.cleanupIntentJournal = DownloadCleanupIntentJournal(directory: store.directory)
+        self.session = injectedSession ?? BackgroundDownloadSession(store: store)
+        self.cleanupIntentJournal = injectedCleanupIntentJournal
+            ?? DownloadCleanupIntentJournal(directory: store.directory)
         self.records = store.records
         self.offlineLibrarySnapshot = makeOfflineLibrarySnapshot(from: self.records)
         // Reattach to any transfers that survived a relaunch + receive progress.
@@ -308,6 +313,10 @@ public final class DownloadManager {
             Task { @MainActor in
                 guard let self, let session else {
                     session?.abandonFinalizerRequest(request)
+                    return
+                }
+                guard !self.store.isDeletionPending(for: request.attemptKey) else {
+                    session.abandonFinalizerRequest(request)
                     return
                 }
                 guard self.downloadWorkRegistry.startIfAbsent(
@@ -371,7 +380,9 @@ public final class DownloadManager {
         // Register only after callbacks exist, but while the session is still dormant. If the app
         // delegate already holds a background completion handler, registration records it in the
         // session's completion gate before activation constructs URLSession and events can arrive.
-        BackgroundDownloadCompletionRegistry.shared.register(self.session)
+        if registerForBackgroundEvents {
+            BackgroundDownloadCompletionRegistry.shared.register(self.session)
+        }
         continueStartupRecovery(with: migrationResult)
     }
 
@@ -535,6 +546,10 @@ public final class DownloadManager {
             Task { @MainActor in
                 guard let self else { return }
                 self.refreshRecords()
+                // Pending deletion is the first recovery concern after publishing the reconciled
+                // snapshot. It must migrate (or fail closed and halt A) before finalization,
+                // revalidation, server-prep polling, or static auto-resume scans can run.
+                self.migrateAndRetryActiveEncodingCleanupOnLaunch()
                 self.finalizeCompletedStaticRangeDownloads(reason: "launch_recovered")
                 self.revalidateUnverifiedDownloads(reason: "launch_recovered")
                 if !self.isQueuePaused {
@@ -544,7 +559,6 @@ public final class DownloadManager {
                         liveKeys: liveKeys
                     )
                 }
-                self.migrateAndRetryActiveEncodingCleanupOnLaunch()
             }
         }
     }
@@ -1396,6 +1410,11 @@ public final class DownloadManager {
         return DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
     }
 
+    private func isDeletionPending(_ record: DownloadRecord) -> Bool {
+        guard let key = attemptKey(for: record) else { return false }
+        return store.isDeletionPending(for: key)
+    }
+
     /// Exact Store checkpoint mutations can fail because the row was replaced/reset or because
     /// the resulting full snapshot did not commit. Both outcomes halt the caller before it creates
     /// dependent transfer work; a later refresh/retry will acquire a fresh row owner.
@@ -1538,6 +1557,7 @@ public final class DownloadManager {
     private func finalizeCompletedStaticRangeIfNeeded(record: DownloadRecord, reason: String) -> Bool {
         let ratingKey = record.ratingKey
         guard let key = attemptKey(for: record),
+              !store.isDeletionPending(for: key),
               let checkpointBytes = store.durableStaticRangeCheckpointSize(for: key) else {
             return false
         }
@@ -1627,6 +1647,11 @@ public final class DownloadManager {
             return
         }
         guard let key = attemptKey(for: record) else { return }
+        guard !store.isDeletionPending(for: key) else {
+            staticRangeRecovery.removePendingResume(ratingKey)
+            staticRangeRecovery.unmarkFinalizing(ratingKey)
+            return
+        }
         if record.status == .complete || record.status == .unverified {
             staticRangeRecovery.removePendingResume(ratingKey)
             staticRangeRecovery.unmarkFinalizing(ratingKey)
@@ -1702,6 +1727,8 @@ public final class DownloadManager {
         }
         guard !retryState.isRetrying(ratingKey),
               let record = records.first(where: { $0.ratingKey == ratingKey }) else { return }
+        guard let currentKey = attemptKey(for: record),
+              !store.isDeletionPending(for: currentKey) else { return }
         guard record.status != .complete, record.status != .unverified else { return }
         let shouldPromotePausedStatic = StaticRangeRecoveryPolicy.shouldMarkPausedRowInactiveBeforeBackendRetry(record)
         let shouldReplacePersistedActiveStatic = allowReplacingExistingActiveRow
@@ -2252,6 +2279,7 @@ public final class DownloadManager {
         // mutate the store and then call this immediately; reading stale published rows can skip the
         // just-promoted `.preparing` record and strand it until another lifecycle edge.
         let embyPreparing = store.records.filter { record in
+            guard !isDeletionPending(record) else { return false }
             let backend = record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
                 ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
             let hasCrashWindowIdentity = record.metadata?.hasEmbyConvertCrashWindowIdentity == true
@@ -2480,8 +2508,10 @@ public final class DownloadManager {
     /// continuing) and skipped.
     private func resumeInterruptedStaticByteRangeDownloads(candidateKeys: [String], liveKeys: Set<String>) {
         for ratingKey in candidateKeys.sorted() where !liveKeys.contains(ratingKey) {
-            guard let status = records.first(where: { $0.ratingKey == ratingKey })?.status,
-                  status == .paused || status == .failed else { continue }
+            guard let record = records.first(where: { $0.ratingKey == ratingKey }),
+                  let key = attemptKey(for: record),
+                  !store.isDeletionPending(for: key),
+                  record.status == .paused || record.status == .failed else { continue }
             recordDownloadDiagnostic("downloads.range_auto_resume", fields: [
                 "download_id": .identifier(ratingKey),
                 "reason": .label("launch_interrupted"),
@@ -2509,7 +2539,9 @@ public final class DownloadManager {
         // when the app launched into Jellyfin/Emby — but never against a different Plex server.
         // Same current-store rule as Emby: callers often set the row queued/preparing immediately
         // before asking the prep scanner to attach a poller.
-        let serverPrepRows = store.records.filter(DownloadRetryPolicy.isPlexServerPrepResumeCandidate)
+        let serverPrepRows = store.records
+            .filter(DownloadRetryPolicy.isPlexServerPrepResumeCandidate)
+            .filter { !isDeletionPending($0) }
         let candidates = serverPrepRows.filter {
             guard let key = attemptKey(for: $0) else { return false }
             return !serverPrepAttempts.hasPlexPoller(for: key)
@@ -3253,6 +3285,7 @@ public final class DownloadManager {
         var demotedAny = false
         for record in store.records where record.status == .complete || record.status == .unverified {
             guard let key = attemptKey(for: record),
+                  !store.isDeletionPending(for: key),
                   let expected = store.sourceExactBytes(for: key),
                   let durable = store.durableStaticRangeCheckpointSize(for: key) else { continue }
             guard DownloadCompletionValidation.isIncomplete(downloadedBytes: durable,
@@ -3280,6 +3313,7 @@ public final class DownloadManager {
         guard !candidates.isEmpty else { return }
         for record in candidates {
             guard let key = attemptKey(for: record),
+                  !store.isDeletionPending(for: key),
                   !unverifiedRevalidationKeys.contains(key) else { continue }
             unverifiedRevalidationKeys.insert(key)
             recordDownloadDiagnostic("downloads.unverified_revalidate_start", fields: [
@@ -3331,7 +3365,8 @@ public final class DownloadManager {
         let now = Date()
         var fresh = store.records
         let staleQueuedStaticPartials = fresh.filter { record in
-            DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(
+            guard !isDeletionPending(record) else { return false }
+            return DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(
                 record,
                 isActive: session.isTrackingTransfer(ratingKey: record.ratingKey),
                 // #210: a backend-unavailable static Range resume is intentionally preserved as a
@@ -3403,11 +3438,12 @@ public final class DownloadManager {
             fresh = store.records
         }
         let serverPrepKickIsRecent = lastServerPrepRefreshKickAt.map { now.timeIntervalSince($0) < 5 } ?? false
-        let serverPrepKeysByRatingKey = Dictionary(uniqueKeysWithValues: fresh.compactMap { record in
+        let recoveryEligibleFresh = fresh.filter { !isDeletionPending($0) }
+        let serverPrepKeysByRatingKey = Dictionary(uniqueKeysWithValues: recoveryEligibleFresh.compactMap { record in
             attemptKey(for: record).map { (record.ratingKey, $0) }
         })
         let serverPrepRefreshPlan = ServerPrepRefreshPolicy.refreshPlan(
-            records: fresh,
+            records: recoveryEligibleFresh,
             isQueuePaused: isQueuePaused,
             refreshKickScheduled: serverPrepRefreshKickScheduled,
             refreshKickRecent: serverPrepKickIsRecent,
@@ -3470,7 +3506,7 @@ public final class DownloadManager {
                 }
             }
         }
-        for record in fresh where retryState.isRetryHandoff(record.ratingKey) {
+        for record in recoveryEligibleFresh where retryState.isRetryHandoff(record.ratingKey) {
             if staticRangeRecovery.hasPendingResume(record.ratingKey),
                record.status.isActiveWork,
                !session.isTrackingTransfer(ratingKey: record.ratingKey) {
@@ -3484,10 +3520,11 @@ public final class DownloadManager {
                 markRetryReplacementSeeded(ratingKey: record.ratingKey)
             }
         }
-        let finalizedRecoveryKeys = StaticRangeRefreshCleanupPolicy.finalizingTerminalKeys(records: fresh)
+        let finalizedRecoveryKeys = StaticRangeRefreshCleanupPolicy.finalizingTerminalKeys(
+            records: recoveryEligibleFresh)
         staticRangeRecovery.subtractFinalizing(finalizedRecoveryKeys)
         let manualResumeTerminalKeys = StaticRangeRefreshCleanupPolicy.manualQueueResumeTerminalKeys(
-            records: fresh,
+            records: recoveryEligibleFresh,
             retryHandoffKeys: retryState.handoffKeys,
             retryingKeys: retryState.retryingKeys
         )
@@ -3539,13 +3576,14 @@ public final class DownloadManager {
             downloadETA[record.ratingKey] = estimator.eta(expectedTotal: expectedTotal)
             rateEstimators[record.ratingKey] = estimator
         }
-        let forwardOnlyRestarts = detectForwardOnlyStreamStalls(in: fresh, now: now)
+        let forwardOnlyRestarts = detectForwardOnlyStreamStalls(
+            in: recoveryEligibleFresh, now: now)
         // Drop estimators/derived values for rows no longer downloading (complete / failed / removed).
         rateEstimators = rateEstimators.filter { activeKeys.contains($0.key) }
         rateEstimatorForegroundGraceUntil = rateEstimatorForegroundGraceUntil.filter { activeKeys.contains($0.key) }
         downloadSpeed = downloadSpeed.filter { activeKeys.contains($0.key) }
         downloadETA = downloadETA.filter { activeKeys.contains($0.key) }
-        updateDownloadWatchdog(for: fresh)
+        updateDownloadWatchdog(for: recoveryEligibleFresh)
         recordDownloadHealthSnapshotIfNeeded(records: fresh, now: now)
 
         // Release the in-flight protection for any job whose download has reached a terminal
@@ -3559,7 +3597,7 @@ public final class DownloadManager {
         // releases too — its slot is re-acquired by `retry()` on resume, and releasing also fires
         // any encoder teardown should a transcoded row ever land here.
         let terminalKeys = DownloadTerminalReleasePolicy.terminalReleaseKeys(
-            records: fresh,
+            records: recoveryEligibleFresh,
             retryHandoffKeys: retryState.handoffKeys,
             retryingKeys: retryState.retryingKeys)
         let terminalRecordsByKey = Dictionary(uniqueKeysWithValues: fresh.map { ($0.ratingKey, $0) })
@@ -3586,8 +3624,8 @@ public final class DownloadManager {
             case .embyConvert: executeEmbyConvertCleanupIntent(intent)
             }
         }
-        ensureJellyfinDownloadKeepalives(for: fresh)
-        ensureEmbyDownloadKeepalives(for: fresh)
+        ensureJellyfinDownloadKeepalives(for: recoveryEligibleFresh)
+        ensureEmbyDownloadKeepalives(for: recoveryEligibleFresh)
         for restart in forwardOnlyRestarts {
             Task { @MainActor [weak self] in
                 self?.restartStalledForwardOnlyStream(restart)
@@ -3605,6 +3643,8 @@ public final class DownloadManager {
     private func restartStalledForwardOnlyStream(_ restart: DownloadForwardOnlyStallRestart) {
         let ratingKey = restart.record.ratingKey
         guard let current = store.record(for: ratingKey),
+              let key = attemptKey(for: current),
+              !store.isDeletionPending(for: key),
               DownloadStallRecoveryPolicy.isForwardOnlyMediaBrowserStream(current) else { return }
         let backend = DownloadJobSnapshot(record: current).backend
         recordDownloadDiagnostic("downloads.forward_stream_stall_restart", fields: [
@@ -3621,8 +3661,7 @@ public final class DownloadManager {
         clearRetryHandoff(ratingKey: ratingKey)
         lastError[ratingKey] = .transferFailed(
             "Network stalled; restarting this forward-only stream from the beginning.")
-        guard let key = attemptKey(for: current),
-              setAttemptStatus(.failed, for: key, context: "stream_stall") else { return }
+        guard setAttemptStatus(.failed, for: key, context: "stream_stall") else { return }
         releaseInFlight(for: key)
         // `releaseInFlight` wipes the stall tracker entry, including the attempt count
         // `detectRestarts` just incremented — without re-seeding it the 2-restart cap never binds

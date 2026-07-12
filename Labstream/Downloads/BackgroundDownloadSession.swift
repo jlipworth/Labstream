@@ -820,7 +820,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
 
     private func stillOwnsAttempt(_ key: DownloadAttemptKey, phase: String) -> Bool {
-        guard store.ownsAttempt(key) else {
+        guard store.ownsAttempt(key), !store.isDeletionPending(for: key) else {
             AppDiagnostics.record(.downloads, "downloads.stale_attempt_callback_dropped", fields: [
                 "download_id": .identifier(key.ratingKey),
                 "phase": .label(phase),
@@ -1024,6 +1024,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             for record in self.store.records {
                 guard let attemptID = record.attemptID else { continue }
                 let key = DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
+                guard !self.store.isDeletionPending(for: key) else { continue }
                 if case .promoted(_, let bytes, let status) =
                     self.store.recoverPendingValidatedPromotion(for: key) {
                     AppDiagnostics.record(.downloads, "downloads.pending_promotion_recovered", fields: [
@@ -1071,6 +1072,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     continue
                 }
                 let record = recordsByKey[ratingKey]
+                if let record, let attemptID = record.attemptID,
+                   self.store.isDeletionPending(for: DownloadAttemptKey(
+                    ratingKey: ratingKey, attemptID: attemptID)) {
+                    self.supersededRangeTaskIdentifiers.insert(task.taskIdentifier)
+                    rangeTaskIdentifiersToCancel.append(task.taskIdentifier)
+                    continue
+                }
                 // A terminal row must not readopt straggler tasks: adoption below force-writes
                 // `.downloading`, flipping a completed/failed/unverified row live again, and a later
                 // finish could replace the published file. Cancel instead; the row stays terminal.
@@ -1375,9 +1383,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         var restoredCount = 0
         var restoredBytes = 0
         for (ratingKey, record) in recordsByKey {
-            guard let manifests = record.metadata?.heldRangeSegments, !manifests.isEmpty else { continue }
             guard let attemptID = record.attemptID else { continue }
             let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+            guard !store.isDeletionPending(for: attemptKey) else { continue }
+            guard let manifests = record.metadata?.heldRangeSegments, !manifests.isEmpty else { continue }
             let isActiveStatic = StaticRangeRecoveryPolicy.isStaticRangeRecord(record)
                 && (record.status == .queued || record.status == .downloading || record.status == .paused)
             guard let workingURL = store.attemptWorkingFileURL(for: attemptKey) else { continue }

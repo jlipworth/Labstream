@@ -204,6 +204,88 @@ struct DownloadCleanupOrderingTests {
         }
     }
 
+    @Test @MainActor
+    func relaunchWithJournalStillFailingPreservesAllArtifactsAndAdmitsNoRecovery() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "download-cleanup-relaunch-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let key = attemptKey("attempt-A")
+        let initial = DownloadStore(baseDirectory: directory)
+        let mediaURL = initial.destinationURL(ratingKey: key.ratingKey, ext: "mp4")
+        let row = DownloadRecord(
+            ratingKey: key.ratingKey,
+            attemptID: key.attemptID,
+            title: "Pending range",
+            localURL: mediaURL,
+            bytes: 13,
+            progress: 0.25,
+            status: .downloading,
+            metadata: OfflineMetadata(
+                ratingKey: key.ratingKey,
+                title: "Pending range",
+                type: "movie",
+                sourcePartSize: 52,
+                backendKind: .emby,
+                backendBaseURLString: "https://emby.example",
+                backendServerID: "server-1",
+                backendUserID: "user-1",
+                playSessionID: "session-A",
+                resumeMode: .staticByteRange))
+        #expect(initial.createAttemptOwnedRecord(row, attemptID: key.attemptID) == .committed(key))
+        try Data("published-main".utf8).write(to: mediaURL)
+        let workingURL = try #require(initial.attemptWorkingFileURL(for: key))
+        try Data("durable-partial".utf8).write(to: workingURL)
+        #expect(initial.setResumeData(
+            for: key, Data("resume-blob".utf8), displayBytes: 13) == .applied)
+        let resumeRelative = try #require(initial.metadata(for: key.ratingKey)?.resumeDataRelativePath)
+        let resumeURL = directory.appendingPathComponent(resumeRelative)
+        let held = OfflineHeldRangeSegment(
+            offset: 26, length: 10, relativePath: "held-relaunch-A.body")
+        let heldURL = directory.appendingPathComponent(held.relativePath)
+        try Data("ahead-body".utf8).write(to: heldURL)
+        guard case .accepted = initial.persistHeldRangeSegment(for: key, segment: held) else {
+            Issue.record("Expected held manifest persistence"); return
+        }
+        let candidate = try intent(key: key, session: "session-A")
+        #expect(initial.markDeletionPending(for: key, cleanupIntents: [candidate]) == .applied)
+
+        let relaunched = DownloadStore(baseDirectory: directory)
+        let session = BackgroundDownloadSession(store: relaunched, protocolClasses: [])
+        defer { session.invalidateInjectedSessionForTesting() }
+        let failedJournal = DownloadCleanupIntentJournal(
+            directory: directory, persistence: failingJournalPersistence())
+        let manager = DownloadManager(
+            appModel: AppModel(identity: PlatformClientIdentity.make(
+                clientIdentifier: "pending-relaunch"), activeBackend: .emby),
+            store: relaunched,
+            session: session,
+            cleanupIntentJournal: failedJournal,
+            registerForBackgroundEvents: false)
+
+        for _ in 0..<100 {
+            if manager.startupRecoveryState == .ready,
+               manager.lastError[key.ratingKey] != nil { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+
+        #expect(manager.startupRecoveryState == .ready)
+        #expect(relaunched.isDeletionPending(for: key))
+        #expect(relaunched.record(for: key)?.status == .downloading)
+        #expect(relaunched.metadata(for: key.ratingKey)?.heldRangeSegments == [held])
+        #expect(FileManager.default.fileExists(atPath: mediaURL.path))
+        #expect(FileManager.default.fileExists(atPath: workingURL.path))
+        #expect(FileManager.default.fileExists(atPath: heldURL.path))
+        #expect(FileManager.default.fileExists(atPath: resumeURL.path))
+        #expect(manager.activeJobs.isEmpty)
+        #expect(manager.downloadWorkRegistry.snapshot().totalCount == 0)
+        let sessionSnapshot = session.diagnosticSnapshot()
+        #expect(sessionSnapshot.opaqueInflightCount == 0)
+        #expect(sessionSnapshot.rangeInflightCount == 0)
+        #expect(sessionSnapshot.finalizingRatingKeyCount == 0)
+    }
+
     private func attemptKey(_ attempt: String) -> DownloadAttemptKey {
         DownloadAttemptKey(
             ratingKey: "emby:item",
