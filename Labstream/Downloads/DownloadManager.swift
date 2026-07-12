@@ -436,7 +436,6 @@ public final class DownloadManager {
         case .failed(let plan, let persistence):
             startupCleanupOnlyKeys = Set(plan.cleanupOnly)
             let affected = Set((plan.taskCancellationAndReset + plan.cleanupOnly).map(\.ratingKey))
-            session.releaseBackgroundCompletionAfterStartupFailure()
             blockDownloadStartup(
                 affectedRatingKeys: affected,
                 message: "Download recovery could not be saved. Free storage if needed, then retry.",
@@ -489,6 +488,9 @@ public final class DownloadManager {
         message: String,
         reason: String
     ) {
+        // Every terminal startup block leaves session admission dormant. No finish-events callback
+        // is then guaranteed, so release a stored OS wake after the failure has been observed.
+        session.releaseBackgroundCompletionAfterStartupFailure()
         startupRecoveryInFlight = false
         startupRecoveryState = .blocked(message: message)
         startupRecoveryErrorKeys = affectedRatingKeys
@@ -501,7 +503,7 @@ public final class DownloadManager {
                     identifier: BackgroundDownloadSession.identifier
                 )
             ),
-            "action": .label("retain_handler_and_retry_explicitly"),
+            "action": .label("release_handler_and_retry_explicitly"),
         ])
     }
 
