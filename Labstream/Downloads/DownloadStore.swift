@@ -1267,9 +1267,10 @@ final class DownloadStore: @unchecked Sendable {
             return .invalidPath
         }
         lock.lock(); defer { lock.unlock() }
-        guard rows[key.ratingKey]?.attemptID == key.attemptID else {
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else {
             return .staleOrMissingOwner
         }
+        guard !Self.hasPendingRowDeletion(row) else { return .staleOrMissingOwner }
         guard fileManager.fileExists(atPath: stagingURL.path) else { return .sourceMissing }
         let result = stagingURL.withUnsafeFileSystemRepresentation { source in
             stableURL.withUnsafeFileSystemRepresentation { destination in
@@ -1456,7 +1457,8 @@ final class DownloadStore: @unchecked Sendable {
         guard Self.isSafeOneLevelRelativePath(segment.relativePath),
               segment.offset >= 0, segment.length > 0 else { return (false, false, nil) }
         lock.lock()
-        guard var row = rows[ratingKey], var metadata = row.metadata else {
+        guard var row = rows[ratingKey], !Self.hasPendingRowDeletion(row),
+              var metadata = row.metadata else {
             lock.unlock()
             return (false, false, nil)
         }
@@ -1495,6 +1497,7 @@ final class DownloadStore: @unchecked Sendable {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
               !row.legacyResetPending, !row.deletionPending,
+              !Self.hasPendingRowDeletion(row),
               row.pendingValidatedPromotionStatus == nil,
               reservedHeldBodyDeletionPaths[segment.relativePath] == nil,
               reservedArtifactDeletionPaths[segment.relativePath] == nil,
@@ -1533,6 +1536,7 @@ final class DownloadStore: @unchecked Sendable {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
               !row.legacyResetPending, !row.deletionPending,
+              !Self.hasPendingRowDeletion(row),
               row.pendingValidatedPromotionStatus == nil,
               reservedHeldBodyDeletionPaths[segment.relativePath] == nil,
               reservedArtifactDeletionPaths[segment.relativePath] == nil,
@@ -1572,6 +1576,7 @@ final class DownloadStore: @unchecked Sendable {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
               !row.legacyResetPending, !row.deletionPending,
+              !Self.hasPendingRowDeletion(row),
               row.pendingValidatedPromotionStatus == nil,
               var metadata = row.metadata else {
             lock.unlock(); return .staleOrMissing
@@ -1786,6 +1791,7 @@ final class DownloadStore: @unchecked Sendable {
         for (ratingKey, original) in Array(rows) {
             guard let attemptID = original.attemptID,
                   !original.heldRangeBodyDeletionIntents.isEmpty,
+                  !Self.hasPendingRowDeletion(original),
                   !original.pendingArtifactIntents.contains(where: {
                     if case .heldBodyDeletion = $0.operation { return true }
                     return false
@@ -1868,6 +1874,7 @@ final class DownloadStore: @unchecked Sendable {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
               !row.legacyResetPending, !row.deletionPending,
+              !Self.hasPendingRowDeletion(row),
               row.pendingValidatedPromotionStatus == nil,
               var metadata = row.metadata else {
             lock.unlock()
@@ -2941,7 +2948,9 @@ final class DownloadStore: @unchecked Sendable {
         // BEFORE writing when there's nothing to record it on — resume was already
         // unavailable for such a row, so this only avoids the leak, it changes no behavior.
         lock.lock()
-        let canRecordPath = rows[ratingKey]?.metadata != nil
+        let canRecordPath = rows[ratingKey].map {
+            $0.metadata != nil && !Self.hasPendingRowDeletion($0)
+        } ?? false
         lock.unlock()
         guard canRecordPath else {
             NSLog("DownloadStore: skipping resume-data persist for %@ — row has no metadata to record its path on",
@@ -2992,6 +3001,7 @@ final class DownloadStore: @unchecked Sendable {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
               !row.legacyResetPending, !row.deletionPending,
+              !Self.hasPendingRowDeletion(row),
               row.pendingValidatedPromotionStatus == nil,
               row.metadata != nil else {
             lock.unlock()
@@ -3159,6 +3169,7 @@ final class DownloadStore: @unchecked Sendable {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
               !row.legacyResetPending, !row.deletionPending,
+              !Self.hasPendingRowDeletion(row),
               row.pendingValidatedPromotionStatus == nil,
               let metadata = row.metadata else {
             lock.unlock()
@@ -3995,6 +4006,16 @@ final class DownloadStore: @unchecked Sendable {
         return result
     }
 
+    /// Row deletion is a terminal queue barrier: no successor artifact or newly-referenced path can
+    /// be admitted behind it because successful execution removes the row rather than advancing to
+    /// a successor. Only another deletion submission may join/retry that exact terminal intent.
+    private static func hasPendingRowDeletion(_ row: Row) -> Bool {
+        row.pendingArtifactIntents.contains { intent in
+            if case .rowDeletion = intent.operation { return true }
+            return false
+        }
+    }
+
     private func executeLegacyResetDeletion(
         ticket: DownloadArtifactLifecycleCoordinator.Ticket,
         intent: Row.ArtifactIntent
@@ -4166,6 +4187,7 @@ final class DownloadStore: @unchecked Sendable {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
               !row.legacyResetPending, !row.deletionPending,
+              !Self.hasPendingRowDeletion(row),
               row.pendingValidatedPromotionStatus == nil else {
             lock.unlock(); return .staleOrMissing
         }
@@ -4478,7 +4500,8 @@ final class DownloadStore: @unchecked Sendable {
 
     private func updateMetadata(ratingKey: String, mutate: (inout OfflineMetadata) -> Void) {
         lock.lock()
-        guard var row = rows[ratingKey], var meta = row.metadata else { lock.unlock(); return }
+        guard var row = rows[ratingKey], !Self.hasPendingRowDeletion(row),
+              var meta = row.metadata else { lock.unlock(); return }
         let oldMeta = meta
         mutate(&meta)
         guard meta != oldMeta else { lock.unlock(); return }
@@ -4515,7 +4538,8 @@ final class DownloadStore: @unchecked Sendable {
     ) -> AttemptMutationSubmission {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending, var metadata = row.metadata else {
+              !row.legacyResetPending, !Self.hasPendingRowDeletion(row),
+              var metadata = row.metadata else {
             lock.unlock()
             return .staleOrMissing
         }

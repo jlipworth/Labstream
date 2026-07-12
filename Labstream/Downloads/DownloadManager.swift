@@ -765,10 +765,12 @@ public final class DownloadManager {
                     // the deletion-pending reservation exists.
                     session.cancel(ratingKey: key.ratingKey)
                     let submission = store.submitCompletePendingDeletion(for: key)
+                    if case .accepted = submission {
+                        _ = downloadWorkRegistry.cancelCancellableWork(for: key)
+                    }
                     Task { [weak self] in
                         guard let self,
                               case .removed = await store.resolveRowDeletion(submission) else { return }
-                        _ = downloadWorkRegistry.cancelCancellableWork(for: key)
                         for intent in durable {
                             deferredCleanupIntents[intent.id] = intent
                             switch intent.operation {
@@ -3332,6 +3334,12 @@ public final class DownloadManager {
             session.cancel(ratingKey: ratingKey)
             deletionSubmission = store.submitOwnerlessTerminalRemoval(ratingKey: ratingKey)
         }
+        if let deletedAttemptKey, case .accepted = deletionSubmission {
+            // The durable terminal barrier now rejects every tail publication. Cancel side caches,
+            // finalizers, and other exact cancellable work immediately so they cannot create new
+            // unlisted staging bytes while the off-lock deletion worker is still running.
+            _ = downloadWorkRegistry.cancelCancellableWork(for: deletedAttemptKey)
+        }
         // The prepared row-deletion recipe is submitted synchronously, but filesystem work and
         // terminal persistence run on the artifact worker. Keep the main actor responsive and do
         // not release attempt state until exact removal is proven complete.
@@ -3343,9 +3351,6 @@ public final class DownloadManager {
                     "Deletion could not finish safely. Free storage if needed, then tap Delete to retry.")
                 refreshRecords()
                 return
-            }
-            if let deletedAttemptKey {
-                _ = downloadWorkRegistry.cancelCancellableWork(for: deletedAttemptKey)
             }
             for intent in cleanupIntentsToExecute {
                 deferredCleanupIntents[intent.id] = intent
