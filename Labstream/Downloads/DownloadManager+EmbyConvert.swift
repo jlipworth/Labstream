@@ -110,6 +110,7 @@ extension DownloadManager {
         guard let key = inFlightAttempts.owner(forRatingKey: ratingKey),
               activeJobs.contains(ratingKey),
               serverPrepAttempts.isCurrentEmbyConvertAttempt(for: key, id: attemptID),
+              !store.isDeletionPending(for: key),
               let row = store.record(for: ratingKey),
               row.status == .preparing else { return false }
         if let targetName, row.metadata?.optimizeTargetName != targetName { return false }
