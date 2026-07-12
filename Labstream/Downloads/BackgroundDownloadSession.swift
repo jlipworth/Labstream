@@ -5450,6 +5450,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
 
         if let rangeEntry {
+            // Deletion can become pending after the delegate entry passed `rejectTaskCallback`
+            // but before this completion owns its extracted Range entry. Re-check exact ownership
+            // and the sealed-row barrier before choosing any disposition: the branches below can
+            // purge held bodies, replace resume data, change status, or start replacement tasks.
+            guard stillOwnsAttempt(
+                rangeEntry.attemptKey, phase: "range_error_completion") else { return }
             let rangeDisposition = BackgroundRangeCompletionPolicy.disposition(
                 hasError: error != nil,
                 errorCode: error.map { ($0 as NSError).code },

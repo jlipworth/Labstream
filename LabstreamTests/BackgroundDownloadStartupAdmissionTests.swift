@@ -106,6 +106,81 @@ struct BackgroundDownloadStartupAdmissionTests {
         }
     }
 
+    @Test func rangeErrorCompletionAfterDeletionReservationCannotMutateOrPurge() async throws {
+        try await withTemporaryDirectory { directory in
+            let gate = HeldRangeFailureGate()
+            HeldRangeFailureURLProtocol.configure(gate)
+            defer { HeldRangeFailureURLProtocol.configure(nil) }
+            let store = DownloadStore(baseDirectory: directory)
+            let session = BackgroundDownloadSession(
+                store: store, protocolClasses: [HeldRangeFailureURLProtocol.self])
+            defer { session.invalidateInjectedSessionForTesting() }
+            #expect(await activate(session, resetKeys: []) == .activated(
+                cancelledTaskCount: 0, resetKeyCount: 0))
+
+            let attemptID = try #require(DownloadAttemptID(rawValue: "pending-range-error-a"))
+            let key = DownloadAttemptKey(ratingKey: "emby:pending-range", attemptID: attemptID)
+            let stable = store.destinationURL(ratingKey: key.ratingKey, ext: "mp4")
+            let record = DownloadRecord(
+                ratingKey: key.ratingKey, attemptID: attemptID, title: "Pending Range",
+                localURL: stable, bytes: 15, progress: 0.15, status: .downloading,
+                metadata: OfflineMetadata(
+                    ratingKey: key.ratingKey, title: "Pending Range", type: "movie",
+                    sourcePartSize: 100,
+                    backendKind: .emby,
+                    backendBaseURLString: "https://emby.example",
+                    backendServerID: "server-1",
+                    backendUserID: "user-1",
+                    playSessionID: "session-A",
+                    resumeMode: .staticByteRange))
+            #expect(store.createAttemptOwnedRecord(record, attemptID: attemptID) == .committed(key))
+            let working = try #require(store.attemptWorkingFileURL(for: key))
+            let workingBytes = Data(repeating: 0xA5, count: 15)
+            try workingBytes.write(to: working)
+            #expect(store.setResumeData(
+                for: key, Data("original-resume".utf8), displayBytes: 15) == .applied)
+            let held = OfflineHeldRangeSegment(
+                offset: 30, length: 4, relativePath: "pending-held.body")
+            let heldURL = directory.appendingPathComponent(held.relativePath)
+            try Data([1, 2, 3, 4]).write(to: heldURL)
+            guard case .accepted = store.persistHeldRangeSegment(for: key, segment: held) else {
+                Issue.record("Expected held manifest persistence"); return
+            }
+
+            try session.start(
+                ratingKey: key.ratingKey,
+                from: URL(string: "https://example.invalid/pending-range.mp4")!,
+                to: stable,
+                expectedBytes: 100,
+                byteRangeCheckpoint: true)
+            #expect(await gate.waitUntilStarted())
+
+            let server = try #require(DurableDownloadCleanupIntent.ServerIdentity(
+                baseURL: URL(string: "https://emby.example")!,
+                serverID: "server-1", userID: "user-1"))
+            let intent = try #require(DurableDownloadCleanupIntent(
+                attemptKey: key, backend: .emby, server: server,
+                operation: .activeEncoding(playSessionID: "session-A")))
+            #expect(store.markDeletionPending(for: key, cleanupIntents: [intent]) == .applied)
+
+            gate.fail(NSError(
+                domain: NSCocoaErrorDomain,
+                code: CocoaError.fileWriteOutOfSpace.rawValue))
+            #expect(await gate.waitUntilFinished())
+            for _ in 0..<100 where session.isTrackingTransfer(ratingKey: key.ratingKey) {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+
+            #expect(!session.isTrackingTransfer(ratingKey: key.ratingKey))
+            #expect(store.isDeletionPending(for: key))
+            #expect(store.record(for: key)?.status == .downloading)
+            #expect(store.resumeData(for: key) == Data("original-resume".utf8))
+            #expect(store.metadata(for: key.ratingKey)?.heldRangeSegments == [held])
+            #expect(try Data(contentsOf: working) == workingBytes)
+            #expect(FileManager.default.fileExists(atPath: heldURL.path))
+        }
+    }
+
     @Test func reattachSweepsOnlyUnreferencedAttemptStaging() async throws {
         try await withTemporaryDirectory { directory in
             let store = DownloadStore(baseDirectory: directory)
@@ -341,4 +416,62 @@ private final class ActivationWaiter: @unchecked Sendable {
         lock.unlock()
         continuation?.resume(returning: result)
     }
+}
+
+private final class HeldRangeFailureGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var failure: ((Error) -> Void)?
+    private var didStart = false
+    private var didFinish = false
+
+    func install(_ failure: @escaping (Error) -> Void) {
+        lock.withLock {
+            self.failure = failure
+            didStart = true
+        }
+    }
+
+    func fail(_ error: Error) {
+        let callback = lock.withLock { failure }
+        callback?(error)
+        lock.withLock { didFinish = true }
+    }
+
+    func waitUntilStarted() async -> Bool {
+        await waitUntil { self.lock.withLock { self.didStart } }
+    }
+
+    func waitUntilFinished() async -> Bool {
+        await waitUntil { self.lock.withLock { self.didFinish } }
+    }
+
+    private func waitUntil(_ predicate: @escaping @Sendable () -> Bool) async -> Bool {
+        for _ in 0..<100 {
+            if predicate() { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return predicate()
+    }
+}
+
+private final class HeldRangeFailureURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var configuredGate: HeldRangeFailureGate?
+
+    static func configure(_ gate: HeldRangeFailureGate?) {
+        lock.withLock { configuredGate = gate }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let gate = Self.lock.withLock { Self.configuredGate }
+        gate?.install { [weak self] error in
+            guard let self else { return }
+            client?.urlProtocol(self, didFailWithError: error)
+        }
+    }
+
+    override func stopLoading() {}
 }
