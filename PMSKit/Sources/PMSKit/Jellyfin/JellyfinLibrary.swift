@@ -369,14 +369,10 @@ public enum JellyfinLibrary {
             deviceId: identity.deviceId,
             itemId: itemId,
             maxStreamingBitrate: maxStreamingBitrate,
-            containers: musicDirectPlayContainers
+            containers: MediaBrowserAudioStreamFacts.directPlayContainers
         )
         return try url(server: server, shape: shape)
     }
-
-    /// Containers AVPlayer decodes natively — passed to the `universal` endpoint so a
-    /// matching source direct-plays and only the exotic ones transcode. Shared with Emby.
-    static let musicDirectPlayContainers = "mp3,aac,m4a,m4b,flac,alac,wav,ogg,oga,opus,webma"
 
     public static func imageURL(server: URL,
                                 itemId: String,

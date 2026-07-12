@@ -59,6 +59,11 @@ struct EmbyLibraryTests {
                                                  identity: identity,
                                                  userId: "user-9",
                                                  itemId: "track-9")
+        let expectedURL = "https://emby.example.test/emby/Audio/track-9/universal"
+            + "?UserId=user-9&DeviceId=device-123&MaxStreamingBitrate=140000000"
+            + "&Container=mp3,aac,m4a,m4b,flac,alac,wav,ogg,oga,opus,webma"
+            + "&TranscodingContainer=ts&TranscodingProtocol=hls&AudioCodec=aac"
+        #expect(url.absoluteString == expectedURL)
         let comps = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
         let q = Dictionary(uniqueKeysWithValues: (comps.queryItems ?? []).map { ($0.name, $0.value ?? "") })
 
@@ -68,7 +73,7 @@ struct EmbyLibraryTests {
         #expect(q["DeviceId"] == "device-123")
         #expect(q["MaxStreamingBitrate"] == "140000000")
         #expect(q["AudioCodec"] == "aac")
-        #expect(q["Container"]?.contains("flac") == true)
+        #expect(q["Container"] == MediaBrowserAudioStreamFacts.directPlayContainers)
         // No token / api_key baked into the stream URL — auth rides in the asset header.
         #expect(q["api_key"] == nil)
         #expect(url.absoluteString.lowercased().contains("token") == false)
