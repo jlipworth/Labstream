@@ -396,27 +396,6 @@ extension DownloadManager {
         refreshRecords()
     }
 
-    /// Ensure an async Plex optimize poller still owns the visible row before it mutates the store
-    /// or starts a file transfer.
-    ///
-    /// This closes the delete/retry race where an old poller survives row deletion, later observes a
-    /// completed Plex Part, and overwrites a newer retry's row or downloads to the same destination.
-    /// The queue title is the per-attempt identity; the target check catches stale rows from older
-    /// builds that may not have a queue-title mapping.
-    private func assertCurrentOptimizeAttempt(attemptKey: DownloadAttemptKey,
-                                              metadata: OfflineMetadata,
-                                              targetName: String) throws {
-        guard store.ownsAttempt(attemptKey) else {
-            throw DownloadLifecycleCancellation.staleOptimizeAttempt
-        }
-        try assertCurrentOptimizeAttempt(attemptKey: attemptKey,
-                                         metadata: metadata,
-                                         targetName: targetName)
-        guard store.ownsAttempt(attemptKey) else {
-            throw DownloadLifecycleCancellation.staleOptimizeAttempt
-        }
-    }
-
     /// Same-owner replacement for the successive Plex prep snapshots and rendered-Part handoff.
     /// The Store performs the owner comparison and full-row write under one lock, so checking A
     /// before this call can never turn into an upsert over B.
