@@ -16,8 +16,8 @@ cd "$repo_root"
 
 env_file="${EMBY_LIVE_ENV:-scripts/emby-live.env}"
 if [[ ! -f "$env_file" ]]; then
-  echo "ERROR: $env_file not found. Fill it in with your Emby server / token / user id / item id." >&2
-  exit 1
+  echo ">>> EMBY VERDICT: SKIP — $env_file is absent; fill in an ignored Emby live env file."
+  exit 0
 fi
 
 # Refuse to run if the creds file is somehow tracked — it must never be committed.
@@ -31,6 +31,12 @@ set -a
 source "$env_file"
 set +a
 
+if [[ -z "${EMBY_LIVE_SERVER:-}" || -z "${EMBY_LIVE_TOKEN:-}" ||
+      -z "${EMBY_LIVE_USER_ID:-}" || -z "${EMBY_LIVE_ITEM_ID:-}" ]]; then
+  echo ">>> EMBY VERDICT: SKIP — EMBY_LIVE_SERVER / EMBY_LIVE_TOKEN / EMBY_LIVE_USER_ID / EMBY_LIVE_ITEM_ID are required."
+  exit 0
+fi
+
 cd PMSKit
 # --filter matches the test type; grep keeps output focused on the >>> LIVE dump lines.
-../scripts/live-test-filter.sh '^>>> LIVE|error:|warning: .*Live|Test run' swift test --filter LiveEmbyProbe
+../scripts/live-test-filter.sh '^>>> (LIVE|EMBY)|error:|warning: .*Live|Test run' swift test --filter LiveEmbyProbe
