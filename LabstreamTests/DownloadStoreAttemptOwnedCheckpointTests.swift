@@ -204,6 +204,13 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             #expect(DownloadStore(baseDirectory: directory)
                 .record(for: owner)?.metadata?.heldRangeSegments == [segment])
 
+            guard case .purged(let refused) = store.completeDeferredHeldRangeBodyDeletions(
+                for: owner, removal: failed.removal) else {
+                Issue.record("Expected fail-closed completion result"); return
+            }
+            #expect(refused.removedRelativePaths.isEmpty)
+            #expect(FileManager.default.fileExists(atPath: body.path))
+
             guard case .purged(let retry) =
                     store.retryDeferredHeldRangeBodyDeletions(for: owner) else {
                 Issue.record("Expected deferred deletion retry")
@@ -344,6 +351,46 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             #expect(relaunched.ownsAttempt(owner))
             #expect(relaunched.deferredHeldRangeBodyDeletionRelativePaths(for: owner) == [])
             #expect(!FileManager.default.fileExists(atPath: body.path))
+        }
+    }
+
+    @Test func deferredDeletionNeverTouchesBodyReferencedByAnotherRowManifest() throws {
+        try withStore { store, directory in
+            let a = key("plex:shared-held-a", "attempt-a")
+            let b = key("plex:shared-held-b", "attempt-b")
+            let mediaA = directory.appendingPathComponent("shared-held-a.mp4")
+            let mediaB = directory.appendingPathComponent("shared-held-b.mp4")
+            #expect(created(store, key: a, media: mediaA))
+            #expect(created(store, key: b, media: mediaB))
+            let shared = OfflineHeldRangeSegment(
+                offset: 64, length: 4, relativePath: "pathologically-shared-held.body")
+            let body = directory.appendingPathComponent(shared.relativePath)
+            try Data([3, 3, 3, 3]).write(to: body)
+            guard case .accepted = store.persistHeldRangeSegment(for: a, segment: shared),
+                  case .accepted = store.persistHeldRangeSegment(for: b, segment: shared) else {
+                Issue.record("Expected both characterized manifests"); return
+            }
+
+            guard case .accepted(let staged) = store.removeHeldRangeSegments(
+                for: a, offsets: [shared.offset],
+                deletingRelativePaths: [shared.relativePath]) else {
+                Issue.record("Expected A staged removal"); return
+            }
+            #expect(staged.committed)
+            guard case .purged(let completed) = store.completeDeferredHeldRangeBodyDeletions(
+                for: a, removal: staged) else {
+                Issue.record("Expected A completion"); return
+            }
+            #expect(completed.failedRelativePaths.isEmpty)
+            #expect(completed.removedRelativePaths.isEmpty)
+            #expect(store.deferredHeldRangeBodyDeletionRelativePaths(for: a) == [])
+            #expect(FileManager.default.fileExists(atPath: body.path))
+            #expect(store.record(for: b)?.metadata?.heldRangeSegments == [shared])
+
+            let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(FileManager.default.fileExists(atPath: body.path))
+            #expect(relaunched.record(for: b)?.metadata?.heldRangeSegments == [shared])
+            #expect(relaunched.deferredHeldRangeBodyDeletionRelativePaths(for: a) == [])
         }
     }
 
