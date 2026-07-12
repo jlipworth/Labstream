@@ -74,6 +74,8 @@ protocol MediaBrowserBrowseCoreAdapter: Sendable {
     associatedtype Flavor: MediaBrowserFlavor
     associatedtype Identity: Sendable
 
+    var backendID: MediaBackendID { get }
+
     func userViewsRequest(_ context: MediaBrowserBrowseContext<Identity>) throws -> URLRequest
     func itemsRequest(_ context: MediaBrowserBrowseContext<Identity>,
                       query: MediaBrowserItemsQuery) throws -> URLRequest
@@ -149,6 +151,27 @@ struct MediaBrowserBrowseCore<Adapter: MediaBrowserBrowseCoreAdapter> {
         return map(response.items)
     }
 
+    func searchResults(query: String, limitPerLibrary: Int) async throws -> SearchResults {
+        let views = try await userViewLinks()
+        return try await MediaBrowserSearchFanout.search(
+            views: views,
+            query: query,
+            limitPerLibrary: limitPerLibrary,
+            backendID: adapter.backendID
+        ) { view, query, limit, itemTypes in
+            try await items(MediaBrowserItemsQuery(
+                parentID: view.id,
+                recursive: true,
+                limit: limit,
+                searchTerm: query,
+                sortBy: "SortName",
+                sortOrder: "Ascending",
+                includeItemTypes: itemTypes,
+                fields: MediaBrowserLibraryFields.fullItem
+            ))
+        }
+    }
+
     func resumeItems(parentID: String? = nil, limit: Int) async throws -> [MediaItem] {
         try await resumeItemsPage(parentID: parentID, startIndex: 0, limit: limit).items
     }
@@ -210,9 +233,62 @@ struct MediaBrowserBrowseCore<Adapter: MediaBrowserBrowseCoreAdapter> {
     }
 }
 
+/// Concurrent per-library MediaBrowser search. Successful empty libraries degrade to no group,
+/// while any request failure preserves the existing all-or-error facade contract. Results are
+/// reconstructed in server view order rather than task completion order.
+@MainActor
+enum MediaBrowserSearchFanout {
+    typealias FetchItems = @MainActor @Sendable (
+        _ view: MediaBrowserLibraryLink,
+        _ query: String,
+        _ limit: Int,
+        _ includeItemTypes: String
+    ) async throws -> [MediaItem]
+
+    static func search(views: [MediaBrowserLibraryLink],
+                       query: String,
+                       limitPerLibrary: Int,
+                       backendID: MediaBackendID,
+                       fetchItems: @escaping FetchItems) async throws -> SearchResults {
+        let groupsByIndex = try await withThrowingTaskGroup(
+            of: (Int, SearchResultGroup?).self,
+            returning: [Int: SearchResultGroup].self
+        ) { taskGroup in
+            for (index, view) in views.enumerated() {
+                taskGroup.addTask {
+                    try Task.checkCancellation()
+                    let items = try await fetchItems(
+                        view,
+                        query,
+                        limitPerLibrary,
+                        mediaBrowserSearchItemTypes(forCollectionType: view.collectionType)
+                    )
+                    try Task.checkCancellation()
+                    return (index, SearchResultGroup.mediaBrowserLibrary(
+                        backendID: backendID,
+                        libraryID: view.id,
+                        title: view.title,
+                        items: items
+                    ))
+                }
+            }
+
+            var groupsByIndex: [Int: SearchResultGroup] = [:]
+            for try await (index, group) in taskGroup {
+                if let group { groupsByIndex[index] = group }
+            }
+            return groupsByIndex
+        }
+
+        return SearchResults(groups: views.indices.compactMap { groupsByIndex[$0] })
+    }
+}
+
 struct JellyfinBrowseCoreAdapter: MediaBrowserBrowseCoreAdapter {
     typealias Flavor = JellyfinFlavor
     typealias Identity = JellyfinClientIdentity
+
+    let backendID: MediaBackendID = .jellyfin
 
     func userViewsRequest(_ c: MediaBrowserBrowseContext<Identity>) throws -> URLRequest {
         try JellyfinLibrary.userViewsRequest(server: c.server, token: c.token,
@@ -283,6 +359,8 @@ struct JellyfinBrowseCoreAdapter: MediaBrowserBrowseCoreAdapter {
 struct EmbyBrowseCoreAdapter: MediaBrowserBrowseCoreAdapter {
     typealias Flavor = EmbyFlavor
     typealias Identity = EmbyClientIdentity
+
+    let backendID: MediaBackendID = .emby
 
     func userViewsRequest(_ c: MediaBrowserBrowseContext<Identity>) throws -> URLRequest {
         try EmbyLibrary.userViewsRequest(server: c.server, token: c.token,
