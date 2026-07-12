@@ -182,6 +182,118 @@ struct DownloadWorkRegistryTests {
         await waitUntil { registry.snapshot().totalCount == 0 }
     }
 
+    /// Exercises the exact production commit boundary shared by poster, subtitle, BIF,
+    /// Jellyfin trick-play, and chapter-image tails. The old tail is deliberately allowed to
+    /// ignore cooperative cancellation: delete/re-add replaces A with B while it is suspended,
+    /// then releasing A must fail both the file promotion and its asset-specific metadata write.
+    @Test(arguments: SuspendedSideAssetCase.allCases)
+    func suspendedOldSideAssetCannotPublishIntoReaddedAttempt(
+        asset: SuspendedSideAssetCase
+    ) async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "download-side-tail-\(asset.rawValue)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = DownloadStore(baseDirectory: directory)
+        let old = key("plex:side-tail", "attempt-A")
+        let replacement = key("plex:side-tail", "attempt-B")
+        #expect(createRecord(store: store, key: old))
+        let stable = asset.destination(store: store, ratingKey: old.ratingKey)
+        let staging = try #require(store.attemptStagingURL(for: old, stableURL: stable))
+        try Data("old-attempt-body".utf8).write(to: staging)
+
+        let gate = AsyncWorkGate()
+        let oldTail = Task { () -> Bool in
+            await gate.wait()
+            guard DownloadManager.promoteSideAsset(
+                store: store, key: old, stagingURL: staging, stableURL: stable
+            ) else { return false }
+            return store.updateMetadata(for: old) {
+                asset.publish(into: &$0, relative: stable.lastPathComponent)
+            } == .applied
+        }
+        await gate.waitUntilEntered()
+
+        #expect(createRecord(store: store, key: replacement, replacing: old.attemptID))
+        try Data("replacement-body".utf8).write(to: stable)
+        await gate.open()
+
+        #expect(await oldTail.value == false)
+        #expect(!FileManager.default.fileExists(atPath: staging.path))
+        #expect(String(decoding: try Data(contentsOf: stable), as: UTF8.self)
+                == "replacement-body")
+        #expect(!asset.isPublished(in: store.record(for: replacement.ratingKey)?.metadata))
+    }
+
+    /// A finalizer can be inside a non-preemptible validation call when delete cancels it. The
+    /// production terminal publication API must therefore reject A after B owns the row even if
+    /// the old task reaches the Store after replacement.
+    @Test func suspendedOldFinalizerCannotPromoteReaddedAttempt() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "download-finalizer-tail-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = DownloadStore(baseDirectory: directory)
+        let registry = DownloadWorkRegistry()
+        let old = key("plex:finalizer-tail", "attempt-A")
+        let replacement = key("plex:finalizer-tail", "attempt-B")
+        #expect(createRecord(store: store, key: old))
+        let oldWorking = try #require(store.attemptWorkingFileURL(for: old))
+        try Data("old-validated-body".utf8).write(to: oldWorking)
+        let gate = AsyncWorkGate()
+        #expect(registry.startIfAbsent(for: old, kind: .finalizer) {
+            await gate.wait()
+            _ = store.promoteValidatedAttempt(for: old, terminalStatus: .complete)
+        } != nil)
+        await gate.waitUntilEntered()
+
+        #expect(createRecord(store: store, key: replacement, replacing: old.attemptID))
+        let stable = store.destinationURL(ratingKey: replacement.ratingKey, ext: "mp4")
+        try Data("replacement-body".utf8).write(to: stable)
+        await gate.open()
+        await waitUntil { registry.snapshot().totalCount == 0 }
+
+        #expect(store.record(for: replacement.ratingKey)?.attemptID == replacement.attemptID)
+        #expect(store.record(for: replacement.ratingKey)?.status == .queued)
+        #expect(String(decoding: try Data(contentsOf: stable), as: UTF8.self)
+                == "replacement-body")
+    }
+
+    /// Required cleanup intentionally survives ordinary attempt cancellation. When its delayed
+    /// response arrives after delete/re-add, the production compare-clear must target both A's
+    /// attempt and A's exact server handle and leave B untouched.
+    @Test func suspendedRequiredCleanupCannotClearReaddedAttemptsSession() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "download-cleanup-tail-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = DownloadStore(baseDirectory: directory)
+        let registry = DownloadWorkRegistry()
+        let old = key("emby:cleanup-tail", "attempt-A")
+        let replacement = key("emby:cleanup-tail", "attempt-B")
+        #expect(createRecord(store: store, key: old))
+        #expect(store.updateMetadata(for: old) { $0.playSessionID = "session-A" } == .applied)
+        let gate = AsyncWorkGate()
+        let cleanupToken = registry.start(for: old, kind: .requiredCleanup) {
+            await gate.wait()
+            _ = store.clearPlaySessionID(for: old, expectedPlaySessionID: "session-A")
+        }
+        await gate.waitUntilEntered()
+
+        #expect(registry.cancelCancellableWork(for: old).isEmpty)
+        #expect(registry.snapshot().attempts.first?.entries.first?.token == cleanupToken)
+        #expect(createRecord(store: store, key: replacement, replacing: old.attemptID))
+        #expect(store.updateMetadata(for: replacement) { $0.playSessionID = "session-B" }
+                == .applied)
+        await gate.open()
+        await waitUntil { registry.snapshot().totalCount == 0 }
+
+        #expect(store.record(for: replacement.ratingKey)?.metadata?.playSessionID == "session-B")
+    }
+
     private func key(_ ratingKey: String, _ attempt: String) -> DownloadAttemptKey {
         DownloadAttemptKey(
             ratingKey: ratingKey,
@@ -196,6 +308,83 @@ struct DownloadWorkRegistryTests {
 
     private func pendingTask() -> Task<Void, Never> {
         Task { try? await Task.sleep(for: .seconds(3_600)) }
+    }
+
+    private func createRecord(
+        store: DownloadStore,
+        key: DownloadAttemptKey,
+        replacing: DownloadAttemptID? = nil
+    ) -> Bool {
+        let stable = store.destinationURL(ratingKey: key.ratingKey, ext: "mp4")
+        let record = DownloadRecord(
+            ratingKey: key.ratingKey,
+            attemptID: key.attemptID,
+            title: "Item",
+            localURL: stable,
+            status: .queued,
+            metadata: OfflineMetadata(
+                ratingKey: key.ratingKey, title: "Item", type: "movie"))
+        guard case .committed(let actual) = store.createAttemptOwnedRecord(
+            record, attemptID: key.attemptID, replacing: replacing
+        ) else { return false }
+        return actual == key
+    }
+}
+
+enum SuspendedSideAssetCase: String, CaseIterable, Sendable {
+    case poster
+    case textSubtitles
+    case plexBIF
+    case jellyfinTrickPlay
+    case chapterImages
+
+    func destination(store: DownloadStore, ratingKey: String) -> URL {
+        switch self {
+        case .poster:
+            store.posterDestinationURL(ratingKey: ratingKey)
+        case .textSubtitles:
+            store.textSubtitleDestinationURL(ratingKey: ratingKey, streamID: 7, ext: "vtt")
+        case .plexBIF:
+            store.plexBIFDestinationURL(ratingKey: ratingKey)
+        case .jellyfinTrickPlay:
+            store.jellyfinTrickPlayPlaylistDestinationURL(ratingKey: ratingKey)
+        case .chapterImages:
+            store.chapterImageDestinationURL(ratingKey: ratingKey, index: 0)
+        }
+    }
+
+    func publish(into metadata: inout OfflineMetadata, relative: String) {
+        switch self {
+        case .poster:
+            metadata.posterRelativePath = relative
+        case .textSubtitles:
+            metadata.offlineTextSubtitles = [OfflineTextSubtitleTrack(
+                id: 7, displayName: "English", codec: "vtt", relativePath: relative)]
+        case .plexBIF:
+            metadata.plexBIFRelativePath = relative
+        case .jellyfinTrickPlay:
+            metadata.jellyfinTrickPlayPlaylistRelativePath = relative
+            metadata.jellyfinTrickPlayTileRelativePaths = [relative]
+        case .chapterImages:
+            metadata.chapterImageRelativePaths = [0: relative]
+        }
+    }
+
+    func isPublished(in metadata: OfflineMetadata?) -> Bool {
+        guard let metadata else { return false }
+        return switch self {
+        case .poster:
+            metadata.posterRelativePath != nil
+        case .textSubtitles:
+            !(metadata.offlineTextSubtitles?.isEmpty ?? true)
+        case .plexBIF:
+            metadata.plexBIFRelativePath != nil
+        case .jellyfinTrickPlay:
+            metadata.jellyfinTrickPlayPlaylistRelativePath != nil
+                || !(metadata.jellyfinTrickPlayTileRelativePaths?.isEmpty ?? true)
+        case .chapterImages:
+            !(metadata.chapterImageRelativePaths?.isEmpty ?? true)
+        }
     }
 }
 
