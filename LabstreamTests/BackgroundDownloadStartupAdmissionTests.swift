@@ -656,6 +656,89 @@ private final class StartupSelectiveRemovalFailureFileManager: FileManager, @unc
 }
 
 struct UnverifiedRevalidationLifecycleTests {
+    @Test func coordinatorGateDrainOvertakeReDrivesAfterClaimReleaseExactlyOnce() throws {
+        let key = try coordinatorKey("gate")
+        var state = UnverifiedRevalidationCoordinator()
+        let began = state.begin(key, preservesOvertakenRequest: false)
+        #expect(began)
+        _ = state.started(key)
+        state.gateDrained([key])
+        // Drain can overtake finalizer release. The release consumes the desired edge once.
+        let firstFinish = state.finished(key, cancelled: false, remainsUnverified: true)
+        let duplicateFinish = state.finished(key, cancelled: false, remainsUnverified: true)
+        #expect(firstFinish == .soon)
+        #expect(duplicateFinish == nil)
+    }
+
+    @Test func coordinatorBrokerRejectionRetriesPromptly() throws {
+        let key = try coordinatorKey("broker")
+        var state = UnverifiedRevalidationCoordinator()
+        let began = state.begin(key, preservesOvertakenRequest: true)
+        #expect(began)
+        _ = state.started(key)
+        let retry = state.finished(key, cancelled: true, remainsUnverified: true)
+        #expect(retry == .soon)
+    }
+
+    @Test func coordinatorInconclusiveProbeGetsOnlyOneDelayedAutomaticRetry() throws {
+        let key = try coordinatorKey("inconclusive")
+        var state = UnverifiedRevalidationCoordinator()
+        let firstBegin = state.begin(key, preservesOvertakenRequest: false)
+        #expect(firstBegin)
+        _ = state.started(key)
+        let firstFinish = state.finished(key, cancelled: false, remainsUnverified: true)
+        #expect(firstFinish == .delayed)
+        let secondBegin = state.begin(key, preservesOvertakenRequest: false)
+        #expect(secondBegin)
+        _ = state.started(key)
+        let secondFinish = state.finished(key, cancelled: false, remainsUnverified: true)
+        #expect(secondFinish == nil)
+    }
+
+    @Test func coordinatorWatchdogRequeuesRatherThanOnlyClearing() throws {
+        let key = try coordinatorKey("watchdog")
+        var state = UnverifiedRevalidationCoordinator()
+        let began = state.begin(key, preservesOvertakenRequest: false)
+        #expect(began)
+        let token = state.started(key)
+        let fired = state.timerFired(for: key, token: token, remainsUnverified: true)
+        #expect(fired)
+        #expect(state.desired.contains(key))
+        let retryBegan = state.begin(key, preservesOvertakenRequest: true)
+        #expect(retryBegan)
+    }
+
+    @Test func coordinatorCancelRetriesButReplacementRejectsStaleCompletion() throws {
+        let key = try coordinatorKey("cancel")
+        var state = UnverifiedRevalidationCoordinator()
+        let firstBegin = state.begin(key, preservesOvertakenRequest: false)
+        #expect(firstBegin)
+        _ = state.started(key)
+        let cancelled = state.finished(key, cancelled: true, remainsUnverified: true)
+        #expect(cancelled == .soon)
+
+        let replacementBegin = state.begin(key, preservesOvertakenRequest: false)
+        #expect(replacementBegin)
+        _ = state.started(key)
+        let staleFinish = state.finished(key, cancelled: true, remainsUnverified: false)
+        #expect(staleFinish == nil)
+        #expect(!state.inFlight.contains(key))
+        #expect(!state.desired.contains(key))
+    }
+
+    @Test func coordinatorStaleTimerCannotTouchReplacementAttempt() throws {
+        let old = try coordinatorKey("old")
+        var state = UnverifiedRevalidationCoordinator()
+        let began = state.begin(old, preservesOvertakenRequest: false)
+        #expect(began)
+        let token = state.started(old)
+        let staleFire = state.timerFired(for: old, token: token, remainsUnverified: false)
+        #expect(!staleFire)
+        #expect(!state.inFlight.contains(old))
+        let duplicateFire = state.timerFired(for: old, token: token, remainsUnverified: true)
+        #expect(!duplicateFire)
+    }
+
     @Test func pendingBackgroundHandlerDefersWithoutClaimingProbeAndDrainPublishesExactKeysOnce() throws {
         try withDirectory { directory in
             let store = DownloadStore(baseDirectory: directory)
@@ -727,6 +810,12 @@ struct UnverifiedRevalidationLifecycleTests {
             localURL: localURL, bytes: 11, progress: 1, status: .unverified)
         #expect(store.createAttemptOwnedRecord(record, attemptID: attemptID) == .committed(key))
         return key
+    }
+
+    private func coordinatorKey(_ suffix: String) throws -> DownloadAttemptKey {
+        DownloadAttemptKey(
+            ratingKey: "plex:\(suffix)",
+            attemptID: try #require(DownloadAttemptID(rawValue: "attempt-\(suffix)")))
     }
 
     private func withDirectory(_ body: (URL) throws -> Void) throws {
