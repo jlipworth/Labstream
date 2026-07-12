@@ -40,6 +40,11 @@ final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
     private struct Entry {
         let intentID: UUID
         var outcome: Outcome
+        /// The intent is permanently dead (retired failed head, deleted row, resolved one-shot
+        /// barrier) and will never be re-registered. Ticket waits still observe the recorded
+        /// outcome; boundary waits must stop gating on it or one abandonment poisons every
+        /// subsequent boundary for the rest of the process.
+        var abandoned = false
     }
     private var entries: [UInt64: Entry] = [:]
 
@@ -86,9 +91,39 @@ final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
             condition.unlock()
             return
         }
-        entry.outcome = outcome
-        entries[ticket.sequence] = entry
+        if case .completed = outcome {
+            // A completed newest attempt can never gate a boundary, and every older attempt for
+            // the same intent is superseded by it, so the whole chain is prunable. Ticket waits
+            // treat a pruned entry as completed. This keeps the entry table bounded by pending
+            // and unresolved-failed work instead of growing per registration forever.
+            for (sequence, candidate) in entries
+            where candidate.intentID == ticket.intentID && sequence <= ticket.sequence {
+                entries.removeValue(forKey: sequence)
+            }
+        } else {
+            entry.outcome = outcome
+            entries[ticket.sequence] = entry
+        }
         condition.broadcast()
+        condition.unlock()
+    }
+
+    /// Mark every attempt for a permanently abandoned intent as boundary-exempt. Abandonment is
+    /// the store's durable statement that no retry will ever re-register this intentID (its failed
+    /// head was retired ahead of a queued row deletion, its row was removed, or it was a resolved
+    /// one-shot persistence barrier), so boundaries must not report its stale outcome — and must
+    /// not wait on it — for the rest of the process. The entries stay so ticket-scoped waiters can
+    /// still observe the recorded failure.
+    func abandonIntent(_ intentID: UUID) {
+        condition.lock()
+        var changed = false
+        for (sequence, entry) in entries where entry.intentID == intentID && !entry.abandoned {
+            var abandoned = entry
+            abandoned.abandoned = true
+            entries[sequence] = abandoned
+            changed = true
+        }
+        if changed { condition.broadcast() }
         condition.unlock()
     }
 
@@ -143,8 +178,10 @@ final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
 
     /// A boundary observes the newest process attempt for each durable intent at or below its
     /// immutable watermark. Registering a retry supersedes only the older attempt for that same
-    /// intent; unrelated failures remain visible. Outcomes are never destructively consumed, so
-    /// concurrent waiters over one watermark receive the same result.
+    /// intent; unrelated failures remain visible. Outcomes are not destructively consumed by
+    /// waiters, so concurrent waiters over one watermark receive the same result — though a
+    /// completed retry or an explicit abandonment may upgrade what a still-blocked waiter
+    /// eventually observes, because the underlying intent is then durably resolved or dead.
     private func blockingBoundaryWait(
         through watermark: Watermark,
         timeout: TimeInterval?
@@ -153,7 +190,7 @@ final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
         let deadline = timeout.map { Date().addingTimeInterval($0) }
         while true {
             let candidates = entries
-                .filter { $0.key <= watermark.sequence }
+                .filter { $0.key <= watermark.sequence && !$0.value.abandoned }
             var latestByIntent: [UUID: (sequence: UInt64, outcome: Outcome)] = [:]
             for (sequence, entry) in candidates {
                 if sequence > (latestByIntent[entry.intentID]?.sequence ?? 0) {

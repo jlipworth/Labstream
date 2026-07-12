@@ -651,6 +651,51 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         defer { lock.unlock() }
         return backgroundDeferredRevalidationKeys
     }
+
+    /// D6 regression seam: the consecutive-truncation budget is only mutated inside
+    /// `finalizeTransferredFile` (an AVPlayer-validated finalize that is impractical to drive from a
+    /// unit test), so expose read/seed access — guarded by the same `finalizationStateQueue` — to
+    /// prove `halt()` clears the count when the row is cancelled/deleted.
+    func truncationFailureCountForTesting(ratingKey: String) -> Int {
+        finalizationStateQueue.sync { truncationFailureCounts[ratingKey] ?? 0 }
+    }
+
+    func seedTruncationFailureCountForTesting(_ count: Int, ratingKey: String) {
+        finalizationStateQueue.sync { truncationFailureCounts[ratingKey] = count }
+    }
+
+    /// #212 regression seam: run the production off-head finished-body flow — the caller's
+    /// background-completion gate operation wrapping `applyFinishedRangeBody` on `rangeIOQueue`,
+    /// exactly as `finishRangeRemainder`'s `.append` dispatch does — for a synthesized held
+    /// segment (durable bytes < `baseOffset`, closed `segmentLength`). Tests use it to prove the
+    /// gate cannot hit zero between this call returning and the held-lifecycle completion
+    /// re-establishing the train slot / rebuild-grace hold.
+    func applyFinishedHeldRangeBodyForTesting(
+        attemptKey: DownloadAttemptKey,
+        workingURL: URL,
+        expectedBytes: Int?,
+        baseOffset: Int,
+        segmentLength: Int,
+        stash: URL,
+        contentRangeStart: Int?,
+        onApplied: (@Sendable () -> Void)? = nil
+    ) {
+        let entry = RangeTransfer(
+            ratingKey: attemptKey.ratingKey, attemptID: attemptKey.attemptID, request: nil,
+            destination: workingURL, expectedBytes: expectedBytes, baseOffset: baseOffset,
+            segmentLength: segmentLength, responseStatus: 206, bodyBytesWritten: 0,
+            remainderReason: nil)
+        beginPendingBackgroundCompletionOperation()
+        rangeIOQueue.async { [self] in
+            applyFinishedRangeBody(entry: entry, write: .append, stash: stash,
+                                   validator: nil, contentRangeStart: contentRangeStart,
+                                   contentRangeTotal: nil,
+                                   responseContentLength: segmentLength,
+                                   bodyTrainEpoch: 0)
+            endPendingBackgroundCompletionOperation()
+            onApplied?()
+        }
+    }
     #endif
 
     /// Explicit schema-v3 startup barrier. This is the ONLY API that may create the underlying
@@ -1190,6 +1235,46 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             onReattached?([])
             return
         }
+        // D5: the pending-promotion recovery below can F_FULLFSYNC a potentially multi-GB working
+        // file, rename it, sync the directory, and wait synchronously for persistence. Running that
+        // on the URLSession delegate queue (where the getAllTasks completion lands) would block the
+        // queue through the background-wake window — the commit that reworked activation dropped the
+        // comment that warned against exactly this. The recovery only reads store rows (never the
+        // task list), so — mirroring how the legacy-reset FS work was moved off the delegate queue
+        // in `purgeLegacyTasks` — run it on a utility queue BEFORE re-enumerating tasks. Ordering is
+        // preserved: recovery still finishes terminal rows before classification sees them (so a
+        // straggler task is cancelled, not re-adopted) and before onReattached drives reconcile.
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { onReattached?([]); return }
+            self.finalizePendingValidatedPromotions()
+            self.reattachToResumedTasks(onReattached: onReattached)
+        }
+    }
+
+    /// Finish any exact-attempt promotion whose validated intent committed before a hard kill.
+    /// Split out of `reattach` and run OFF the URLSession delegate queue (see the D5 note there)
+    /// because it can F_FULLFSYNC a multi-GB working file; it only reads store rows, so it is safe
+    /// to run ahead of the task re-enumeration that depends on the restored terminal rows.
+    private func finalizePendingValidatedPromotions() {
+        for record in self.store.records {
+            guard let attemptID = record.attemptID else { continue }
+            let key = DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
+            guard !self.store.isDeletionPending(for: key) else { continue }
+            if case .promoted(_, let bytes, let status) =
+                self.store.recoverPendingValidatedPromotion(for: key) {
+                AppDiagnostics.record(.downloads, "downloads.pending_promotion_recovered", fields: [
+                    "download_id": .identifier(key.ratingKey),
+                    "bytes": .bytes(bytes),
+                    "status": .label(status.rawValue),
+                ])
+            }
+        }
+    }
+
+    /// Rebind the delegate to tasks the OS resumed after relaunch. Kept on the delegate queue (the
+    /// getAllTasks completion) so classification stays serialized with redelivered progress/finish
+    /// callbacks; the FS-heavy promotion recovery already ran off-queue (see `reattach`).
+    private func reattachToResumedTasks(onReattached: (@Sendable (Set<String>) -> Void)? = nil) {
         urlSession.getAllTasks { [weak self] tasks in
             guard let self else { onReattached?([]); return }
             // Rebuild the taskIdentifier -> (ratingKey, destination) map for any
@@ -1197,22 +1282,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // `path` query param (the metadataKey), which is stable per item; if we
             // can't match we still leave the task running and rely on the store row.
             var liveKeys: Set<String> = []
-            // Finish any exact-attempt promotion whose validated intent committed before a hard
-            // kill. Do this before task classification so a straggler task sees the restored
-            // terminal row and is cancelled rather than re-adopted as downloading work.
-            for record in self.store.records {
-                guard let attemptID = record.attemptID else { continue }
-                let key = DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
-                guard !self.store.isDeletionPending(for: key) else { continue }
-                if case .promoted(_, let bytes, let status) =
-                    self.store.recoverPendingValidatedPromotion(for: key) {
-                    AppDiagnostics.record(.downloads, "downloads.pending_promotion_recovered", fields: [
-                        "download_id": .identifier(key.ratingKey),
-                        "bytes": .bytes(bytes),
-                        "status": .label(status.rawValue),
-                    ])
-                }
-            }
             let stagingSweep = self.store.sweepUnreferencedAttemptStaging()
             if !stagingSweep.removedRelativePaths.isEmpty
                 || !stagingSweep.failedRelativePaths.isEmpty {
@@ -2672,6 +2741,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         rangeHTTPRehydrateCounts.removeValue(forKey: attemptKey)
         rangeBlobResumeCounts.removeValue(forKey: attemptKey)
         lock.unlock()
+        // D6: the consecutive-truncation parking budget is keyed by ratingKey and guarded by
+        // `finalizationStateQueue` (not `lock`), so it can't be cleared inside the block above.
+        // Clear it here for the same M-7 reason: the row is being cancelled/deleted, so a
+        // re-download of the same item must start clean instead of inheriting a stale truncation
+        // count that would park it immediately. `.complete` is the only other clear site.
+        finalizationStateQueue.sync { _ = truncationFailureCounts.removeValue(forKey: ratingKey) }
         endRangeRequestRebuildGrace(for: attemptKey, reason: "cancelled")
         // Keep the durable owner on the row. Delete removes the whole row immediately; restart
         // paths need the old owner so the replacement can perform an exact A → B compare/swap.
@@ -3802,8 +3877,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                         continueRangeAfterBody(entry: entry, partialSize: durableBytesBeforeAppend)
                         return
                     }
+                    // #212 (the decisive half of the off-head stall): the caller's gate operation
+                    // ends when `applyFinishedRangeBody` returns, but the train slot is refilled
+                    // (or the rebuild-grace hold established) only inside the async lifecycle
+                    // completion below. Begin a nested gate operation NOW — while the outer one is
+                    // still open — and end it inside the completion on every branch, so the gate
+                    // can never hit zero (letting the OS suspend a background wake) in between.
+                    beginPendingBackgroundCompletionOperation()
                     resolveHeldLifecycle(accepted.ticket) { [weak self] outcome in
                         guard let self else { return }
+                        defer { self.endPendingBackgroundCompletionOperation() }
                         switch outcome {
                         case .completed:
                             self.lock.lock()

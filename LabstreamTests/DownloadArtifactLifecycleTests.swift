@@ -68,6 +68,62 @@ struct DownloadArtifactLifecycleTests {
                 == .failed(.artifact(errorType: "Earlier")))
     }
 
+    @Test func abandonedFailureIsBoundaryExemptButTicketVisible() async throws {
+        let coordinator = DownloadArtifactLifecycleCoordinator()
+        let id = try #require(DownloadAttemptID(rawValue: "a"))
+        let key = DownloadAttemptKey(ratingKey: "plex:abandoned", attemptID: id)
+        let dead = coordinator.register(
+            key: key, generation: 1, intentID: UUID(),
+            preparedRevision: .init(revision: 1))
+        coordinator.failArtifact(dead, errorType: "Injected")
+        guard case .failed = await coordinator.flush(
+            through: .init(sequence: dead.sequence), timeout: 0.1) else {
+            Issue.record("expected pre-abandonment boundary failure")
+            return
+        }
+        coordinator.abandonIntent(dead.intentID)
+        // The dead intent is never re-registered; boundaries must stop reporting it.
+        #expect(await coordinator.flush(
+            through: .init(sequence: dead.sequence), timeout: 0.1) == .completed)
+        #expect(await coordinator.flush(
+            through: coordinator.currentWatermark, timeout: 0.1) == .completed)
+        // Ticket-scoped waiters still observe the recorded outcome.
+        #expect(coordinator.waitSynchronously(for: dead)
+                == .failed(.artifact(errorType: "Injected")))
+    }
+
+    @Test func abandonedPendingEntryDoesNotStallBoundary() async throws {
+        let coordinator = DownloadArtifactLifecycleCoordinator()
+        let id = try #require(DownloadAttemptID(rawValue: "a"))
+        let key = DownloadAttemptKey(ratingKey: "plex:abandoned-pending", attemptID: id)
+        let orphan = coordinator.register(
+            key: key, generation: 1, intentID: UUID(),
+            preparedRevision: .init(revision: 1))
+        coordinator.abandonIntent(orphan.intentID)
+        #expect(await coordinator.flush(
+            through: .init(sequence: orphan.sequence), timeout: 0.1) == .completed)
+    }
+
+    @Test func completedRetryPrunesSupersededFailureFromOldWatermark() async throws {
+        let coordinator = DownloadArtifactLifecycleCoordinator()
+        let id = try #require(DownloadAttemptID(rawValue: "a"))
+        let key = DownloadAttemptKey(ratingKey: "plex:pruned", attemptID: id)
+        let first = coordinator.register(
+            key: key, generation: 1, intentID: UUID(),
+            preparedRevision: .init(revision: 1))
+        coordinator.fail(first, .failed(
+            revision: 1, stage: "commit", errorType: "Injected"))
+        let retry = coordinator.register(
+            key: key, generation: 1, intentID: first.intentID,
+            preparedRevision: .init(revision: 2))
+        coordinator.complete(retry)
+        // The completed retry durably resolves the intent, so even a boundary that predates the
+        // retry's registration observes the whole pruned chain as completed.
+        #expect(await coordinator.flush(
+            through: .init(sequence: first.sequence), timeout: 0.1) == .completed)
+        #expect(coordinator.waitSynchronously(for: retry) == .completed)
+    }
+
     @Test func resumeSubmissionReturnsBeforeArtifactWriteAndUsesPrivateSafeName() async throws {
         try await withDirectory { directory in
             let writeStarted = DispatchSemaphore(value: 0)
@@ -161,6 +217,53 @@ struct DownloadArtifactLifecycleTests {
                 store.record(for: key)?.metadata?.resumeDataRelativePath)
             #expect(try Data(contentsOf: directory.appendingPathComponent(relative))
                     == Data("blob".utf8))
+        }
+    }
+
+    @Test func resumeSubmissionRestartsFailedInactiveHead() async throws {
+        try await withDirectory { directory in
+            let seam = FailOnceThenSignalResumeWrite()
+            let store = try seededStore(directory: directory, failure: seam.failure)
+            let key = try resumeKey()
+            guard case .artifactWriteFailed = store.setResumeData(
+                for: key, Data("first".utf8)) else {
+                Issue.record("expected injected write failure"); return
+            }
+            // The failed head stays durably queued but inactive. The successor submission is the
+            // event that must rediscover and restart it (D1) — nothing else is running here.
+            guard case .accepted(let second) = store.submitResumeData(
+                for: key, Data("second".utf8)) else {
+                Issue.record("second submission rejected"); return
+            }
+            guard await signal(seam.retried, timeout: 2) else {
+                Issue.record("successor submission never restarted the failed head"); return
+            }
+            #expect(store.resolveSynchronously(.accepted(ticket: second)) == .applied)
+            let relative = try #require(
+                store.record(for: key)?.metadata?.resumeDataRelativePath)
+            #expect(try Data(contentsOf: directory.appendingPathComponent(relative))
+                    == Data("second".utf8))
+        }
+    }
+
+    @Test func clearSubmissionRestartsFailedInactiveHead() async throws {
+        try await withDirectory { directory in
+            let seam = FailOnceThenSignalResumeWrite()
+            let store = try seededStore(directory: directory, failure: seam.failure)
+            let key = try resumeKey()
+            guard case .artifactWriteFailed = store.setResumeData(
+                for: key, Data("first".utf8)) else {
+                Issue.record("expected injected write failure"); return
+            }
+            guard case .accepted(_, let clear) = store.submitClearResumeData(for: key) else {
+                Issue.record("clear submission rejected"); return
+            }
+            guard await signal(seam.retried, timeout: 2) else {
+                Issue.record("clear submission never restarted the failed head"); return
+            }
+            #expect(store.resolveArtifactSynchronously(clear) == .completed)
+            #expect(store.record(for: key)?.metadata?.resumeDataRelativePath == nil)
+            #expect(resumeArtifacts(in: directory).isEmpty)
         }
     }
 
@@ -587,6 +690,21 @@ private final class FailFirstResumeWriteGate: @unchecked Sendable {
         },
         removeItem: { url, fm in try fm.removeItem(at: url) },
         fileExists: { url, fm in fm.fileExists(atPath: url.path) })
+}
+
+/// First auth-artifact write throws; every later write commits normally and the second attempt
+/// signals `retried`. Models a transient filesystem fault that leaves a failed-but-queued
+/// inactive head for a successor submission to restart.
+private final class FailOnceThenSignalResumeWrite: @unchecked Sendable {
+    let retried = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var attempts = 0
+    lazy var failure = ResumeFilesystemFailure(writeOverride: { [self] data, url in
+        let attempt = lock.withLock { attempts += 1; return attempts }
+        if attempt == 1 { throw InjectedArtifactFailure() }
+        try DownloadArtifactFileCommitter().commit(data, to: url)
+        if attempt == 2 { retried.signal() }
+    })
 }
 
 private final class ArmableTerminalIndexFailure: @unchecked Sendable {

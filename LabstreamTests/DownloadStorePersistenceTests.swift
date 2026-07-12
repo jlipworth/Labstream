@@ -732,6 +732,33 @@ struct DownloadStorePersistenceTests {
                 }
             }
             #expect(store.record(for: key) == nil)
+            // D3: the retired failed head (and the deleted row) are permanently abandoned —
+            // their coordinator entries must not poison every later lifecycle boundary.
+            #expect(store.resolveArtifactSynchronouslyForTests(
+                through: store.currentArtifactLifecycleWatermark()) == .completed)
+        }
+    }
+
+    @Test func failedNoChangeResumeClearBarrierDoesNotPoisonLaterBoundaries() throws {
+        try withTemporaryDirectory { directory in
+            let id = DownloadAttemptID(uuid: UUID())
+            let key = DownloadAttemptKey(ratingKey: "plex:clear-noop-barrier", attemptID: id)
+            let record = makeRecord(ratingKey: key.ratingKey, title: "Clear", directory: directory,
+                                    bytes: 1, metadata: OfflineMetadata(
+                                        ratingKey: key.ratingKey, title: "Clear", type: "movie"))
+            try Data([1]).write(to: record.localURL)
+            let writes = SelectedAtomicWriteFailureHarness(failingAttempts: [2])
+            let store = DownloadStore(baseDirectory: directory,
+                indexPersistence: .init { data, url in try writes.write(data, to: url) })
+            #expect(store.createAttemptOwnedRecord(record, attemptID: id) == .committed(key))
+            // No resume blob exists, so the clear takes the no-change branch: a one-shot
+            // persistence barrier under a random intentID that is never re-registered.
+            guard case .persistenceFailed = store.clearResumeData(for: key) else {
+                Issue.record("expected one-shot barrier persistence failure"); return
+            }
+            // D3: the abandoned one-shot failure must not poison every later boundary.
+            #expect(store.resolveArtifactSynchronouslyForTests(
+                through: store.currentArtifactLifecycleWatermark()) == .completed)
         }
     }
 
