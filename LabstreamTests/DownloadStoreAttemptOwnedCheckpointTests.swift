@@ -394,6 +394,58 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
         }
     }
 
+    @Test func delayedCommittedRemovalCannotPublishOrDeleteLaterFailedRemoval() throws {
+        try withStore { initial, directory in
+            let owner = key("plex:held-revision-race", "attempt-a")
+            let media = directory.appendingPathComponent("held-revision-race.mp4")
+            #expect(created(initial, key: owner, media: media))
+            let x = OfflineHeldRangeSegment(
+                offset: 64, length: 2, relativePath: "held-r1-x.body")
+            let y = OfflineHeldRangeSegment(
+                offset: 128, length: 2, relativePath: "held-r2-y.body")
+            let bodyX = directory.appendingPathComponent(x.relativePath)
+            let bodyY = directory.appendingPathComponent(y.relativePath)
+            try Data([1, 1]).write(to: bodyX)
+            try Data([2, 2]).write(to: bodyY)
+            guard case .accepted = initial.persistHeldRangeSegment(for: owner, segment: x),
+                  case .accepted = initial.persistHeldRangeSegment(for: owner, segment: y) else {
+                Issue.record("Expected initial manifests"); return
+            }
+
+            let writes = FailNthIndexWrite(2)
+            let store = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init { data, url in try writes.write(data, to: url) })
+            guard case .accepted(let r1) = store.removeHeldRangeSegments(
+                for: owner, offsets: [x.offset], deletingRelativePaths: [x.relativePath]) else {
+                Issue.record("Expected R1"); return
+            }
+            #expect(r1.committed)
+            guard case .accepted(let r2) = store.removeHeldRangeSegments(
+                for: owner, offsets: [y.offset], deletingRelativePaths: [y.relativePath]) else {
+                Issue.record("Expected R2"); return
+            }
+            #expect(!r2.committed)
+            #expect(writes.count == 2)
+
+            // R1 is delayed until after failed R2 changed the in-memory full snapshot. It must not
+            // delete Y or submit a cleanup snapshot that silently publishes R2's manifest removal.
+            guard case .purged(let delayed) = store.completeDeferredHeldRangeBodyDeletions(
+                for: owner, removal: r1) else {
+                Issue.record("Expected deferred R1 completion"); return
+            }
+            #expect(delayed.removedRelativePaths.isEmpty)
+            #expect(writes.count == 2)
+            #expect(FileManager.default.fileExists(atPath: bodyY.path))
+
+            let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(relaunched.record(for: owner)?.metadata?.heldRangeSegments == [y])
+            #expect(FileManager.default.fileExists(atPath: bodyY.path))
+            // R1 itself was durable, so relaunch may idempotently finish X only.
+            #expect(!FileManager.default.fileExists(atPath: bodyX.path))
+        }
+    }
+
     @Test func checkpointResetReportsFaultWithoutBlessingStaleOwner() throws {
         try withStore { initial, directory in
             let owner = key("plex:reset-fault", "attempt-a")
