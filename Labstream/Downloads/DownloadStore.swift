@@ -51,6 +51,15 @@ final class DownloadStore: @unchecked Sendable {
         let cleanupOnly: [DownloadAttemptKey]
     }
 
+    /// Durable file layout for the media body owned by one download attempt. `stableURL` is the
+    /// URL published by `DownloadRecord`; transfer callbacks must write/checkpoint `workingURL`
+    /// and promote it only after re-validating exact ownership.
+    struct AttemptWorkingFileLayout: Sendable, Equatable {
+        let key: DownloadAttemptKey
+        let stableURL: URL
+        let workingURL: URL
+    }
+
     enum AttemptOwnershipMigrationResult: Sendable, Equatable {
         case notRequired
         case committed(LegacyAttemptMigrationPlan)
@@ -107,6 +116,17 @@ final class DownloadStore: @unchecked Sendable {
         case invalidPath
         case sourceMissing
         case failed(errorType: String)
+    }
+
+    enum AttemptValidatedPromotionResult: Sendable, Equatable {
+        case promoted(DownloadAttemptKey, bytes: Int, status: DownloadStatus)
+        case staleOrMissingOwner
+        case resetPending
+        case invalidWorkingLayout
+        case sourceMissing
+        case invalidTerminalStatus
+        case renameFailed(errorType: String)
+        case persistenceFailed(DownloadAttemptKey, PersistenceFlushResult)
     }
 
     struct AttemptStagingSweepResult: Sendable, Equatable {
@@ -274,6 +294,9 @@ final class DownloadStore: @unchecked Sendable {
         var attemptID: DownloadAttemptID?
         let title: String
         let relativePath: String
+        /// Exact attempt-owned media body. This is deliberately separate from `relativePath`:
+        /// readers always see the stable publication URL while in-flight evidence stays private.
+        var attemptWorkingRelativePath: String?
         var bytes: Int
         var progress: Double
         var status: DownloadStatus
@@ -290,7 +313,8 @@ final class DownloadStore: @unchecked Sendable {
         var decodedAttemptIdentityDisagrees: Bool
 
         private enum CodingKeys: String, CodingKey {
-            case ratingKey, attemptID, title, relativePath, bytes, progress, status, metadata
+            case ratingKey, attemptID, title, relativePath, attemptWorkingRelativePath
+            case bytes, progress, status, metadata
             case legacyResetPending
             case legacyResetArtifactRelativePaths
         }
@@ -305,6 +329,8 @@ final class DownloadStore: @unchecked Sendable {
             let topLevelAttemptID = try c.decodeIfPresent(DownloadAttemptID.self, forKey: .attemptID)
             title = try c.decode(String.self, forKey: .title)
             relativePath = try c.decode(String.self, forKey: .relativePath)
+            attemptWorkingRelativePath = try c.decodeIfPresent(
+                String.self, forKey: .attemptWorkingRelativePath)
             bytes = try c.decode(Int.self, forKey: .bytes)
             progress = try c.decode(Double.self, forKey: .progress)
             status = try c.decodeIfPresent(DownloadStatus.self, forKey: .status)
@@ -323,6 +349,7 @@ final class DownloadStore: @unchecked Sendable {
 
         init(ratingKey: String, attemptID: DownloadAttemptID? = nil,
              title: String, relativePath: String,
+             attemptWorkingRelativePath: String? = nil,
              bytes: Int, progress: Double, status: DownloadStatus,
              metadata: OfflineMetadata? = nil,
              legacyResetPending: Bool = false,
@@ -331,6 +358,7 @@ final class DownloadStore: @unchecked Sendable {
             self.attemptID = attemptID
             self.title = title
             self.relativePath = relativePath
+            self.attemptWorkingRelativePath = attemptWorkingRelativePath
             self.bytes = bytes
             self.progress = progress
             self.status = status
@@ -347,6 +375,7 @@ final class DownloadStore: @unchecked Sendable {
             try c.encodeIfPresent(attemptID, forKey: .attemptID)
             try c.encode(title, forKey: .title)
             try c.encode(relativePath, forKey: .relativePath)
+            try c.encodeIfPresent(attemptWorkingRelativePath, forKey: .attemptWorkingRelativePath)
             try c.encode(bytes, forKey: .bytes)
             try c.encode(progress, forKey: .progress)
             try c.encode(status, forKey: .status)
@@ -576,6 +605,94 @@ final class DownloadStore: @unchecked Sendable {
         guard let stableRelativePath = stableRelativePath(for: stableURL) else { return nil }
         return baseDirectory.appendingPathComponent(
             Self.attemptStagingRelativePath(for: key, stableRelativePath: stableRelativePath))
+    }
+
+    /// Return the persisted media layout only for the exact current owner. Unlike
+    /// `attemptStagingURL(for:stableURL:)`, this does not derive authority from caller input.
+    /// It is therefore the API background-session checkpoint/evidence/reconcile paths should use.
+    func attemptWorkingFileLayout(for key: DownloadAttemptKey) -> AttemptWorkingFileLayout? {
+        lock.lock(); defer { lock.unlock() }
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
+              !row.legacyResetPending,
+              row.status != .complete, row.status != .unverified,
+              let working = row.attemptWorkingRelativePath,
+              Self.isSafeOneLevelRelativePath(row.relativePath),
+              working == Self.attemptStagingRelativePath(
+                for: key, stableRelativePath: row.relativePath) else { return nil }
+        return AttemptWorkingFileLayout(
+            key: key,
+            stableURL: baseDirectory.appendingPathComponent(row.relativePath),
+            workingURL: baseDirectory.appendingPathComponent(working)
+        )
+    }
+
+    func attemptWorkingFileURL(for key: DownloadAttemptKey) -> URL? {
+        attemptWorkingFileLayout(for: key)?.workingURL
+    }
+
+    /// Publish a caller-validated media body as one linearized Store operation. Rename, terminal
+    /// row mutation, and snapshot submission all occur under the ownership lock; replacement B
+    /// cannot enter between A's filesystem publication and A's terminal snapshot.
+    @discardableResult
+    func promoteValidatedAttempt(
+        for key: DownloadAttemptKey,
+        terminalStatus: DownloadStatus
+    ) -> AttemptValidatedPromotionResult {
+        guard terminalStatus == .complete || terminalStatus == .unverified else {
+            return .invalidTerminalStatus
+        }
+        lock.lock()
+        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID else {
+            lock.unlock()
+            return .staleOrMissingOwner
+        }
+        guard !row.legacyResetPending else {
+            lock.unlock()
+            return .resetPending
+        }
+        guard let workingRelative = workingRelativePath(for: row, key: key) else {
+            lock.unlock()
+            return .invalidWorkingLayout
+        }
+        let workingURL = baseDirectory.appendingPathComponent(workingRelative)
+        let stableURL = baseDirectory.appendingPathComponent(row.relativePath)
+        guard let bytes = fileSize(at: workingURL) else {
+            lock.unlock()
+            return .sourceMissing
+        }
+        let renameResult = workingURL.withUnsafeFileSystemRepresentation { source in
+            stableURL.withUnsafeFileSystemRepresentation { destination in
+                guard let source, let destination else { return -1 }
+                return Int(Darwin.rename(source, destination))
+            }
+        }
+        guard renameResult == 0 else {
+            let error = POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            lock.unlock()
+            return .renameFailed(errorType: String(reflecting: error))
+        }
+        row.bytes = bytes
+        row.progress = 1
+        row.status = terminalStatus
+        // A terminal row publishes only the stable file. Dropping the now-consumed private path
+        // keeps staging inventory honest and prevents a later caller from treating a missing
+        // working body as terminal evidence.
+        row.attemptWorkingRelativePath = nil
+        rows[key.ratingKey] = row
+        let ticket = enqueueAttemptPersistenceLocked()
+        lock.unlock()
+        let persistence = waitForPersistence(through: ticket)
+        guard persistence.result.committed(through: persistence.ticket) else {
+            return .persistenceFailed(key, persistence.result)
+        }
+        return .promoted(key, bytes: bytes, status: terminalStatus)
+    }
+
+    private func workingRelativePath(for row: Row, key: DownloadAttemptKey) -> String? {
+        guard Self.isSafeOneLevelRelativePath(row.relativePath) else { return nil }
+        let expected = Self.attemptStagingRelativePath(
+            for: key, stableRelativePath: row.relativePath)
+        return row.attemptWorkingRelativePath == expected ? expected : nil
     }
 
     /// Atomically promote only while `key` is still the exact row owner. The ownership check and
@@ -1365,6 +1482,12 @@ final class DownloadStore: @unchecked Sendable {
                                      attemptID: attemptID,
                                      title: record.title,
                                      relativePath: rel,
+                                     attemptWorkingRelativePath: (record.status == .complete
+                                        || record.status == .unverified) ? nil : attemptID.map {
+                                        Self.attemptStagingRelativePath(
+                                            for: DownloadAttemptKey(
+                                                ratingKey: record.ratingKey, attemptID: $0),
+                                            stableRelativePath: rel) },
                                      bytes: record.bytes,
                                      progress: record.progress,
                                      status: record.status,
@@ -1438,6 +1561,8 @@ final class DownloadStore: @unchecked Sendable {
             attemptID: attemptID,
             title: record.title,
             relativePath: rel,
+            attemptWorkingRelativePath: Self.attemptStagingRelativePath(
+                for: key, stableRelativePath: rel),
             bytes: record.bytes,
             progress: record.progress,
             status: record.status,
@@ -1916,7 +2041,7 @@ final class DownloadStore: @unchecked Sendable {
         persist()
     }
 
-    /// Upgrade a v1/v2 index to v3 without admitting background callbacks. Existing nested tokens
+    /// Upgrade a pre-v4 index without admitting background callbacks. Existing tokens
     /// are preserved verbatim; rows that need ownership but have no token receive one. The whole
     /// snapshot must commit before the returned keys may be used to cancel legacy OS tasks.
     @discardableResult
@@ -1935,7 +2060,13 @@ final class DownloadStore: @unchecked Sendable {
         if loadedSchemaVersion >= DownloadIndexCoding.currentSchemaVersion {
             let malformed = rows.values
                 .filter {
-                    Self.requiresAttemptOwnership($0) && !$0.decodedTopLevelAttemptIDPresent
+                    guard Self.requiresAttemptOwnership($0) else { return false }
+                    guard $0.decodedTopLevelAttemptIDPresent else { return true }
+                    guard $0.status != .complete && $0.status != .unverified else { return false }
+                    guard let attemptID = $0.attemptID else { return true }
+                    return $0.attemptWorkingRelativePath != Self.attemptStagingRelativePath(
+                        for: DownloadAttemptKey(ratingKey: $0.ratingKey, attemptID: attemptID),
+                        stableRelativePath: $0.relativePath)
                 }
                 .map(\.ratingKey)
                 .sorted()
@@ -1968,10 +2099,18 @@ final class DownloadStore: @unchecked Sendable {
             if row.attemptID == nil { row.attemptID = idFactory(ratingKey) }
             guard let attemptID = row.attemptID else { continue }
             row.decodedTopLevelAttemptIDPresent = true
-            // Mirror only during migration for safe rollback/dual-read. All new v3 authority lives
+            // Mirror only during migration for safe rollback/dual-read. Top-level authority lives
             // in `Row.attemptID` and later mutations must compare that typed value.
             if row.metadata?.downloadAttemptID == nil {
                 row.metadata?.downloadAttemptID = attemptID.rawValue
+            }
+            // Schema v4 makes the private media body durable and addressable without trusting a
+            // callback-supplied URL. It is written in the same migration barrier that closes
+            // admission for every nonterminal schema-v3 partial.
+            if row.status != .complete && row.status != .unverified {
+                row.attemptWorkingRelativePath = Self.attemptStagingRelativePath(
+                    for: DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID),
+                    stableRelativePath: row.relativePath)
             }
             rows[ratingKey] = row
             let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
@@ -1989,7 +2128,7 @@ final class DownloadStore: @unchecked Sendable {
         )
         lock.unlock()
 
-        // Even an empty plan must commit the v3 envelope. Otherwise a completed-only v2 library
+        // Even an empty plan must commit the v4 envelope. Otherwise a completed-only old library
         // would be reclassified as legacy on every launch.
         let persistence = persist()
         guard persistence.result.committed(through: persistence.ticket) else {
@@ -2003,7 +2142,7 @@ final class DownloadStore: @unchecked Sendable {
     }
 
     /// Complete the approved legacy policy after the coordinator has enumerated and cancelled all
-    /// pre-v3 tasks. The reset is attempt-conditional and the index commit happens before any file
+    /// pre-v4 tasks. The reset is attempt-conditional and the index commit happens before any file
     /// is deleted, so a persistence failure cannot destroy the only durable checkpoint.
     @discardableResult
     func resetLegacyAttemptAfterTaskCancellation(
@@ -2020,6 +2159,18 @@ final class DownloadStore: @unchecked Sendable {
         }
         var relativeArtifacts = Set(row.legacyResetArtifactRelativePaths ?? [])
         relativeArtifacts.insert(row.relativePath)
+        if let relative = row.attemptWorkingRelativePath,
+           Self.isAttemptStagingRelativePath(relative) {
+            relativeArtifacts.insert(relative)
+        }
+        // Schema-v3 staging was derived rather than persisted. Reconstruct every recognized
+        // media/side-asset staging name while the old owner is still known so none remains
+        // artificially "referenced" by this failed row after migration.
+        for stablePath in ([row.relativePath] + sideAssetRelativePaths(for: row.metadata))
+            where Self.isSafeOneLevelRelativePath(stablePath) {
+            relativeArtifacts.insert(Self.attemptStagingRelativePath(
+                for: key, stableRelativePath: stablePath))
+        }
         if let relative = row.metadata?.resumeDataRelativePath,
            Self.isSafeOneLevelRelativePath(relative) {
             relativeArtifacts.insert(relative)
@@ -2166,8 +2317,12 @@ final class DownloadStore: @unchecked Sendable {
             lock.unlock()
             return .notStatic(bytes: bytes)
         }
-        // Keep ownership stable through the stat: replacement attempts share the stable filename.
-        let durableBytes = fileSize(relativePath: row.relativePath) ?? 0
+        guard let workingRelative = workingRelativePath(for: row, key: key) else {
+            lock.unlock()
+            return .staleOrMissing
+        }
+        // Keep ownership stable through the stat of the exact attempt-private body.
+        let durableBytes = fileSize(relativePath: workingRelative) ?? 0
         let expectedBytes = explicitExpectedBytes ?? Self.expectedBytesEstimate(row: row)
         let progress = Self.progressForDurableBytes(durableBytes, expectedBytes: expectedBytes)
         var changed = false
@@ -2216,7 +2371,8 @@ final class DownloadStore: @unchecked Sendable {
               row.metadata?.resolvedResumeMode(ratingKey: row.ratingKey) == .staticByteRange else {
             return nil
         }
-        return fileSize(relativePath: row.relativePath) ?? 0
+        guard let workingRelative = workingRelativePath(for: row, key: key) else { return nil }
+        return fileSize(relativePath: workingRelative) ?? 0
     }
 
     /// #169: ratingKeys for static byte-range rows that were ACTIVELY transferring (`.downloading`/
@@ -2244,7 +2400,10 @@ final class DownloadStore: @unchecked Sendable {
         lock.unlock()
         return snapshot.compactMap { row in
             guard row.metadata?.resolvedResumeMode(ratingKey: row.ratingKey) == .staticByteRange,
-                  row.status != .complete, row.status != .unverified else { return nil }
+                  row.status != .complete, row.status != .unverified,
+                  let attemptID = row.attemptID else { return nil }
+            let key = DownloadAttemptKey(ratingKey: row.ratingKey, attemptID: attemptID)
+            guard let workingRelative = workingRelativePath(for: row, key: key) else { return nil }
             let resumeRelative = row.metadata?.resumeDataRelativePath
             let resumeURL = resumeRelative.flatMap { relative in
                 Self.isSafeOneLevelRelativePath(relative)
@@ -2255,7 +2414,7 @@ final class DownloadStore: @unchecked Sendable {
             return StaticRangeRecoveryEvidence(
                 ratingKey: row.ratingKey,
                 status: row.status,
-                durableBytes: fileSize(relativePath: row.relativePath) ?? 0,
+                durableBytes: fileSize(relativePath: workingRelative) ?? 0,
                 resumeManifestRecorded: resumeRelative?.isEmpty == false,
                 resumeBlobPresent: resumeURL.map { fileManager.fileExists(atPath: $0.path) } ?? false,
                 resumeBlobBytes: resumeBytes,
@@ -2279,10 +2438,11 @@ final class DownloadStore: @unchecked Sendable {
                 ? baseDirectory.appendingPathComponent(relative) : nil
         }
         let held = row.metadata?.heldRangeSegments ?? []
+        guard let workingRelative = workingRelativePath(for: row, key: key) else { return nil }
         return StaticRangeRecoveryEvidence(
             ratingKey: row.ratingKey,
             status: row.status,
-            durableBytes: fileSize(relativePath: row.relativePath) ?? 0,
+            durableBytes: fileSize(relativePath: workingRelative) ?? 0,
             resumeManifestRecorded: resumeRelative?.isEmpty == false,
             resumeBlobPresent: resumeURL.map { fileManager.fileExists(atPath: $0.path) } ?? false,
             resumeBlobBytes: resumeURL.flatMap(fileSize(at:)) ?? 0,
@@ -2579,9 +2739,20 @@ final class DownloadStore: @unchecked Sendable {
             guard DownloadStatus.reconcileEligible(ratingKey: key,
                                                    snapshotRatingKeys: snapshotRatingKeys) else { continue }
             let hasLiveTask = liveRatingKeys.contains(key)
-            let fileURL = baseDirectory.appendingPathComponent(row.relativePath)
-            let partialBytes = fileSize(at: fileURL) ?? 0
-            let fileExists = partialBytes > 0 || fileManager.fileExists(atPath: fileURL.path)
+            let isTerminal = row.status == .complete || row.status == .unverified
+            let evidenceURL: URL? = {
+                if isTerminal { return baseDirectory.appendingPathComponent(row.relativePath) }
+                guard let attemptID = row.attemptID,
+                      let working = workingRelativePath(
+                        for: row,
+                        key: DownloadAttemptKey(ratingKey: row.ratingKey, attemptID: attemptID))
+                else { return nil }
+                return baseDirectory.appendingPathComponent(working)
+            }()
+            let partialBytes = evidenceURL.flatMap(fileSize(at:)) ?? 0
+            let fileExists = evidenceURL.map {
+                partialBytes > 0 || fileManager.fileExists(atPath: $0.path)
+            } ?? false
             // #95: does a persisted resume blob survive for this row? A `.paused` row stays
             // resumable only while it does (checked WITHOUT reading the blob).
             let resumeRelative = row.metadata?.resumeDataRelativePath
@@ -2658,8 +2829,7 @@ final class DownloadStore: @unchecked Sendable {
             let isStayingResumable = (newStatus == .paused)
             if (row.status == .queued || row.status == .downloading || row.status == .paused)
                 && !hasLiveTask && !isStayingResumable {
-                try? fileManager.removeItem(
-                    at: baseDirectory.appendingPathComponent(row.relativePath))
+                if let evidenceURL { try? fileManager.removeItem(at: evidenceURL) }
                 if resumeRelative?.isEmpty == false {
                     try? fileManager.removeItem(
                         at: baseDirectory.appendingPathComponent(resumeRelative!))
@@ -2786,7 +2956,11 @@ final class DownloadStore: @unchecked Sendable {
             }
             return (repaired.ratingKey, repaired)
         })
-        if repairedSubtitleRows > 0 {
+        // Never let a best-effort cache repair stamp a pre-v4 snapshot as v4 before the startup
+        // migration has durably closed admission and marked every nonterminal partial for reset.
+        // The repaired values are already in memory and ride along with the migration snapshot.
+        if repairedSubtitleRows > 0,
+           loadedSchemaVersion >= DownloadIndexCoding.currentSchemaVersion {
             lock.unlock()
             persist()
             lock.lock()

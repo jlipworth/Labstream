@@ -39,7 +39,7 @@ struct DownloadStorePersistenceTests {
         #expect(await waitForSignal(mutationReturned, timeout: 1))
     }
 
-    @Test func freshStoreRestoresWriterBackedIndexAtSchemaV3() throws {
+    @Test func freshStoreRestoresWriterBackedIndexAtSchemaV4() throws {
         try withTemporaryDirectory { directory in
             let record = makeRecord(
                 ratingKey: "plex:item-1",
@@ -55,7 +55,7 @@ struct DownloadStorePersistenceTests {
             let index = try #require(
                 JSONSerialization.jsonObject(with: indexData) as? [String: Any]
             )
-            #expect(index["schemaVersion"] as? Int == 3)
+            #expect(index["schemaVersion"] as? Int == 4)
 
             let restored = DownloadStore(baseDirectory: directory)
             let restoredRecord = try #require(
@@ -187,6 +187,61 @@ struct DownloadStorePersistenceTests {
             let store = DownloadStore(baseDirectory: directory)
             #expect(store.commitLegacyAttemptOwnershipMigration()
                 == .malformedV3Rows(["plex:shadow"]))
+        }
+    }
+
+    @Test func schemaV3NonterminalResetDiscardsStableResumeHeldAndWorkingButKeepsTerminalMedia() throws {
+        try withTemporaryDirectory { directory in
+            let activeKey = "plex:v3-partial"
+            let completeKey = "plex:v3-complete"
+            let attempt = "v3-attempt"
+            let stable = directory.appendingPathComponent("partial.mp4")
+            let resume = directory.appendingPathComponent("partial.resume")
+            let held = directory.appendingPathComponent("partial.held")
+            let completed = directory.appendingPathComponent("complete.mp4")
+            for url in [stable, resume, held, completed] { try Data([1, 2, 3]).write(to: url) }
+            var active = legacyRow(ratingKey: activeKey, status: "paused", bytes: 3,
+                                   nestedAttemptID: attempt)
+            active["attemptID"] = attempt
+            active["relativePath"] = stable.lastPathComponent
+            var metadata = try #require(active["metadata"] as? [String: Any])
+            metadata["resumeDataRelativePath"] = resume.lastPathComponent
+            metadata["heldRangeSegments"] = [[
+                "offset": 0, "length": 3, "relativePath": held.lastPathComponent
+            ]]
+            active["metadata"] = metadata
+            var complete = legacyRow(ratingKey: completeKey, status: "complete", bytes: 3)
+            complete["relativePath"] = completed.lastPathComponent
+            try writeLegacyIndex(schemaVersion: 3, rows: [active, complete], directory: directory)
+
+            let store = DownloadStore(baseDirectory: directory)
+            let id = try #require(DownloadAttemptID(rawValue: attempt))
+            let key = DownloadAttemptKey(ratingKey: activeKey, attemptID: id)
+            guard case .committed(let plan) = store.commitLegacyAttemptOwnershipMigration() else {
+                Issue.record("Expected schema-v4 migration barrier")
+                return
+            }
+            #expect(plan.taskCancellationAndReset == [key])
+            // The durable working path exists in the row, but admission stays closed until reset.
+            #expect(store.attemptWorkingFileLayout(for: key) == nil)
+            let index = try #require(JSONSerialization.jsonObject(
+                with: Data(contentsOf: directory.appendingPathComponent("index.json")))
+                as? [String: Any])
+            #expect(index["schemaVersion"] as? Int == 4)
+            let rows = try #require(index["rows"] as? [[String: Any]])
+            let activeOnDisk = try #require(rows.first { $0["ratingKey"] as? String == activeKey })
+            let workingName = try #require(activeOnDisk["attemptWorkingRelativePath"] as? String)
+            let working = directory.appendingPathComponent(workingName)
+            try Data([4, 5, 6]).write(to: working)
+
+            #expect(store.resetLegacyAttemptAfterTaskCancellation(key)
+                == .committed(key, cleanupFailureCount: 0))
+            for url in [stable, resume, held, working] {
+                #expect(!FileManager.default.fileExists(atPath: url.path))
+            }
+            #expect(FileManager.default.fileExists(atPath: completed.path))
+            #expect(store.record(for: completeKey)?.status == .complete)
+            #expect(store.commitLegacyAttemptOwnershipMigration() == .notRequired)
         }
     }
 

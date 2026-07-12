@@ -25,7 +25,7 @@ public enum DownloadIndexCoding {
     /// Schema version stamped on every new write. Bump when the on-disk row shape
     /// changes in a way a loader must branch on; `1` is reserved for the legacy
     /// bare-array format that predates the envelope.
-    public static let currentSchemaVersion = 3
+    public static let currentSchemaVersion = 4
 
     /// Outcome of a resilient load: the rows that decoded, the schema version the
     /// payload was written with (`1` for a legacy bare array), and how many rows were
