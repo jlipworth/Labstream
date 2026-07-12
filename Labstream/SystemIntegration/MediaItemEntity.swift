@@ -100,10 +100,9 @@ struct MediaItemEntityQuery: EntityStringQuery {
         let matches: [MediaItem]
         switch ctx.backend {
         case .plex:
-            let req = BrowseAPI.search(server: ctx.server, token: ctx.token,
-                                       identity: ctx.identity, query: string)
-            guard let resp = try? await ctx.client.send(req, as: HubsResponse.self) else { return [] }
-            matches = resp.mediaContainer.hub.flatMap(\.metadata)
+            guard let service = plexBrowseService(context: ctx),
+                  let hubs = try? await service.search(query: string) else { return [] }
+            matches = hubs.flatMap(\.metadata)
         case .jellyfin:
             let results = try? await JellyfinBrowseService(appModel: appModel).searchResults(query: string, limitPerLibrary: 15)
             matches = results?.groups.flatMap(\.hubs).flatMap(\.metadata) ?? []
@@ -129,9 +128,9 @@ struct MediaItemEntityQuery: EntityStringQuery {
         let suggestions: [MediaItem]
         switch ctx.backend {
         case .plex:
-            let req = BrowseAPI.onDeck(server: ctx.server, token: ctx.token, identity: ctx.identity)
-            guard let resp = try? await ctx.client.send(req, as: MetadataResponse.self) else { return [] }
-            suggestions = resp.mediaContainer.metadata
+            guard let service = plexBrowseService(context: ctx),
+                  let items = try? await service.onDeck() else { return [] }
+            suggestions = items
         case .jellyfin:
             let service = JellyfinBrowseService(appModel: appModel)
             let resume = (try? await service.resumeItems(limit: 10)) ?? []
@@ -146,4 +145,13 @@ struct MediaItemEntityQuery: EntityStringQuery {
             .prefix(10)
             .map { MediaItemEntity(item: $0, backend: ctx.backend, server: ctx.server) }
     }
+}
+
+@MainActor
+private func plexBrowseService(context: SystemEntryRouter.BrowseContext) -> PlexBrowseService? {
+    try? PlexBrowseService(
+        session: BackendSession(kind: .plex, baseURL: context.server, token: context.token),
+        identity: context.identity,
+        client: context.client
+    )
 }

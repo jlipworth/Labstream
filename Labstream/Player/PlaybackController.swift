@@ -931,11 +931,10 @@ final class PlaybackController {
         let needStreams = streamingPart?.audioStreams.isEmpty ?? true
         guard isStreaming, needChapters || needStreams, let server, let token else { return false }
         let browseSession = BackendSession(kind: .plex, baseURL: server, token: token)
-        let browseClient = client
         guard let service = try? PlexBrowseService(
             session: browseSession,
             identity: identity,
-            send: { request in try await browseClient.send(request) }
+            client: client
         ), let full = try? await service.metadata(ratingKey: item.ratingKey) else { return false }
         refreshedItem = full
         if let markers = full.markers, !markers.isEmpty {

@@ -103,14 +103,74 @@ struct PlexBrowseServiceTests {
         #expect(pagingQuery.contains("sort=titleSort"))
     }
 
+    @Test func hubsSearchOnDeckAndBatchMetadataKeepServerOrdering() async throws {
+        let transport = PlexBrowseTransport { request in
+            switch request.url?.path {
+            case "/root/hubs":
+                return Self.hubsJSON(ids: ["home-2", "home-1"])
+            case "/root/hubs/search":
+                return Self.hubsJSON(ids: ["match-2", "match-1"])
+            case "/root/library/onDeck":
+                return Self.metadataJSON(ids: ["resume-2", "resume-1"])
+            case "/root/library/metadata/a,b":
+                return Self.metadataJSON(ids: ["b", "a"])
+            default:
+                throw PlexBrowseTestFailure.unexpectedRequest
+            }
+        }
+        let service = try PlexBrowseService(
+            session: BackendSession(kind: .plex,
+                                    baseURL: try #require(URL(string: "https://plex.example.test/root")),
+                                    token: "token"),
+            identity: Self.identity(),
+            send: { try await transport.send($0) })
+
+        #expect(try await service.hubs().flatMap(\.metadata).map(\.ratingKey) == ["home-2", "home-1"])
+        #expect(try await service.search(query: "A & B").flatMap(\.metadata).map(\.ratingKey) == ["match-2", "match-1"])
+        #expect(try await service.onDeck().map(\.ratingKey) == ["resume-2", "resume-1"])
+        #expect(try await service.metadataItems(ratingKeys: "a,b").map(\.ratingKey) == ["b", "a"])
+
+        let requests = await transport.requests
+        #expect(requests[1].url?.query?.contains("query=A%20%26%20B") == true)
+    }
+
+    @Test func musicPlaylistCapabilitiesPreserveOrderAndDuplicateEntries() async throws {
+        let transport = PlexBrowseTransport { request in
+            switch request.url?.path {
+            case "/root/playlists":
+                return Self.metadataJSON(ids: ["playlist"], type: "playlist")
+            case "/root/playlists/playlist/items":
+                return Self.metadataJSON(ids: ["track-2", "track-1", "track-2"], type: "track")
+            default:
+                throw PlexBrowseTestFailure.unexpectedRequest
+            }
+        }
+        let service = try PlexBrowseService(
+            session: BackendSession(kind: .plex,
+                                    baseURL: try #require(URL(string: "https://plex.example.test/root")),
+                                    token: "token"),
+            identity: Self.identity(),
+            send: { try await transport.send($0) })
+
+        #expect(try await service.musicPlaylists().map(\.ratingKey) == ["playlist"])
+        #expect(try await service.playlistTracks(ratingKey: "playlist").map(\.ratingKey)
+                == ["track-2", "track-1", "track-2"])
+    }
+
     nonisolated private static func identity() -> ClientIdentity {
         ClientIdentity(clientIdentifier: "device", product: "Labstream", version: "1", deviceName: "Mac")
     }
 
-    nonisolated private static func metadataJSON(ids: [String]) -> Data {
-        let rows = ids.map { "{\"ratingKey\":\"\($0)\",\"title\":\"\($0)\",\"type\":\"movie\"}" }
+    nonisolated private static func metadataJSON(ids: [String], type: String = "movie") -> Data {
+        let rows = ids.map { "{\"ratingKey\":\"\($0)\",\"title\":\"\($0)\",\"type\":\"\(type)\"}" }
             .joined(separator: ",")
         return Data("{\"MediaContainer\":{\"size\":\(ids.count),\"Metadata\":[\(rows)]}}".utf8)
+    }
+
+    nonisolated private static func hubsJSON(ids: [String]) -> Data {
+        let rows = ids.map { "{\"ratingKey\":\"\($0)\",\"title\":\"\($0)\",\"type\":\"movie\"}" }
+            .joined(separator: ",")
+        return Data("{\"MediaContainer\":{\"Hub\":[{\"title\":\"Hub\",\"Metadata\":[\(rows)]}]}}".utf8)
     }
 }
 
