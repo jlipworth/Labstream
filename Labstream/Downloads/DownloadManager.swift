@@ -749,7 +749,6 @@ public final class DownloadManager {
     func migrateAndRetryActiveEncodingCleanupOnLaunch() {
         guard startupRecoveryState == .ready else { return }
 
-        var finalizedPendingDeletion = false
         for record in records {
             guard let attemptID = record.attemptID else { continue }
             let key = DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
@@ -765,23 +764,21 @@ public final class DownloadManager {
                     // exact ownership before starting cleanup; a replacement B is rejected while
                     // the deletion-pending reservation exists.
                     session.cancel(ratingKey: key.ratingKey)
-                    let removal = store.completePendingDeletion(for: key)
-                    switch removal {
-                    case .applied, .persistenceFailed:
-                        break
-                    case .noChange, .staleOrMissing:
-                        continue
-                    }
-                    _ = downloadWorkRegistry.cancelCancellableWork(for: key)
-                    for intent in durable {
-                        deferredCleanupIntents[intent.id] = intent
-                        switch intent.operation {
-                        case .activeEncoding: executeActiveEncodingCleanupIntent(intent)
-                        case .embyConvert: executeEmbyConvertCleanupIntent(intent)
+                    let submission = store.submitCompletePendingDeletion(for: key)
+                    Task { [weak self] in
+                        guard let self,
+                              case .removed = await store.resolveRowDeletion(submission) else { return }
+                        _ = downloadWorkRegistry.cancelCancellableWork(for: key)
+                        for intent in durable {
+                            deferredCleanupIntents[intent.id] = intent
+                            switch intent.operation {
+                            case .activeEncoding: executeActiveEncodingCleanupIntent(intent)
+                            case .embyConvert: executeEmbyConvertCleanupIntent(intent)
+                            }
                         }
+                        lastError[key.ratingKey] = nil
+                        refreshRecords()
                     }
-                    lastError[key.ratingKey] = nil
-                    finalizedPendingDeletion = true
                 case .deletionPending:
                     haltManagerOwnedWorkForPendingDeletion(key)
                     lastError[key.ratingKey] = .transferFailed(
@@ -842,7 +839,6 @@ public final class DownloadManager {
             }
         }
 
-        if finalizedPendingDeletion { refreshRecords() }
 
         guard case .loaded(let intents) = cleanupIntentJournal.load() else {
             recordDownloadDiagnostic("downloads.cleanup_intent_load_failed")
@@ -1653,9 +1649,9 @@ public final class DownloadManager {
         }
     }
 
-    private func removeAttempt(_ key: DownloadAttemptKey, context: String) -> Bool {
-        switch store.remove(for: key) {
-        case .applied, .noChange:
+    private func removeAttempt(_ key: DownloadAttemptKey, context: String) async -> Bool {
+        switch await store.resolveRowDeletion(store.submitRemove(for: key)) {
+        case .removed:
             return true
         case .staleOrMissing:
             recordDownloadDiagnostic("downloads.remove_owner_stale", fields: [
@@ -1663,11 +1659,18 @@ public final class DownloadManager {
                 "context": .label(context),
             ])
             return false
-        case .persistenceFailed(let failure):
+        case .persistenceFailed(_, let failure):
             recordDownloadDiagnostic("downloads.remove_persist_failed", fields: [
                 "download_id": .identifier(key.ratingKey),
                 "context": .label(context),
                 "failure": .label(Self.startupPersistenceFailureLabel(failure)),
+            ])
+            return false
+        case .cleanupFailed(_, let count):
+            recordDownloadDiagnostic("downloads.remove_artifact_failed", fields: [
+                "download_id": .identifier(key.ratingKey),
+                "context": .label(context),
+                "failure_count": .int(count),
             ])
             return false
         }
@@ -2183,7 +2186,7 @@ public final class DownloadManager {
             guard self.retryAttemptCanContinue(for: retryAttemptKey, token: retryToken) else { return }
             self.releaseInFlight(for: retryAttemptKey)
             if !DownloadRetryPolicy.shouldPromotePausedStaticPartial(record) {
-                guard self.removeAttempt(retryAttemptKey, context: "retry_replace") else { return }
+                guard await self.removeAttempt(retryAttemptKey, context: "retry_replace") else { return }
             }
             await self.download(currentItem, choice: choice, mediaIndex: mediaIndex, partIndex: partIndex,
                                 allowReplacingExistingActiveRow: allowActiveRowReplacement)
@@ -2309,7 +2312,7 @@ public final class DownloadManager {
             ])
             self.releaseInFlight(for: key)
             if !DownloadRetryPolicy.shouldPromotePausedStaticPartial(record) {
-                guard self.removeAttempt(key, context: "plex_optimize_replace") else { return }
+                guard await self.removeAttempt(key, context: "plex_optimize_replace") else { return }
             }
             await self.download(currentItem, choice: .optimize(targetName: targetName),
                                 mediaIndex: mediaIndex, partIndex: partIndex)
@@ -3313,17 +3316,12 @@ public final class DownloadManager {
             ])
         }
         let deletedAttemptKey = rowAttemptKey
+        let deletionSubmission: DownloadStore.RowDeletionSubmission
         if let key = deletedAttemptKey {
             session.cancel(ratingKey: ratingKey)
-            // Remove A's row/files before cancelling A's finalizer. Cancellation is cooperative;
-            // making ownership absent first means a finalizer already between cancellation checks
-            // still fails every exact Store mutation instead of publishing after delete.
-            if wasDeletionPending {
-                _ = store.completePendingDeletion(for: key)
-            } else {
-                _ = store.remove(for: key)
-            }
-            _ = downloadWorkRegistry.cancelCancellableWork(for: key)
+            deletionSubmission = wasDeletionPending
+                ? store.submitCompletePendingDeletion(for: key)
+                : store.submitRemove(for: key)
         } else {
             // Deliberate migration compatibility: v1/v2 completed rows without asynchronous
             // cleanup evidence remain ownerless after the v3 migration and can only be deleted by
@@ -3332,21 +3330,36 @@ public final class DownloadManager {
                 return
             }
             session.cancel(ratingKey: ratingKey)
-            store.remove(ratingKey: ratingKey)
+            deletionSubmission = store.submitOwnerlessTerminalRemoval(ratingKey: ratingKey)
         }
-        for intent in cleanupIntentsToExecute {
-            deferredCleanupIntents[intent.id] = intent
-            switch intent.operation {
-            case .activeEncoding: executeActiveEncodingCleanupIntent(intent)
-            case .embyConvert: executeEmbyConvertCleanupIntent(intent)
+        // The prepared row-deletion recipe is submitted synchronously, but filesystem work and
+        // terminal persistence run on the artifact worker. Keep the main actor responsive and do
+        // not release attempt state until exact removal is proven complete.
+        Task { [weak self] in
+            guard let self else { return }
+            let outcome = await store.resolveRowDeletion(deletionSubmission)
+            guard case .removed = outcome else {
+                lastError[ratingKey] = .transferFailed(
+                    "Deletion could not finish safely. Free storage if needed, then tap Delete to retry.")
+                refreshRecords()
+                return
             }
-        }
-        lastError[ratingKey] = nil
+            if let deletedAttemptKey {
+                _ = downloadWorkRegistry.cancelCancellableWork(for: deletedAttemptKey)
+            }
+            for intent in cleanupIntentsToExecute {
+                deferredCleanupIntents[intent.id] = intent
+                switch intent.operation {
+                case .activeEncoding: executeActiveEncodingCleanupIntent(intent)
+                case .embyConvert: executeEmbyConvertCleanupIntent(intent)
+                }
+            }
+            lastError[ratingKey] = nil
         // Drop server-prep progress state too, or re-downloading the same item resurfaces the
         // deleted row's stale "Preparing on server… N%" caption and seeds the ETA estimator with
         // dead samples. (`releaseInFlight` below also clears it — kept explicit here because the
         // leak was delete-shaped.)
-        clearOptimizeProgress(ratingKey: ratingKey)
+            clearOptimizeProgress(ratingKey: ratingKey)
         // Releasing the in-flight protection here matters because the row is now GONE, so the
         // terminal-status sweep in `refreshRecords` (which keys off `.complete`/`.failed` rows)
         // can no longer find it to release — without this, a cancelled/deleted job would leak
@@ -3354,12 +3367,13 @@ public final class DownloadManager {
         // Pass the pre-removal snapshot: the store row no longer exists, so without it the
         // Jellyfin/Emby encoder-teardown server-match guard would see nil metadata and silently
         // dead-end the persisted-psid branch during this teardown.
-        if let deletedAttemptKey {
-            releaseInFlight(for: deletedAttemptKey, rowSnapshot: rowToDelete)
-        } else {
-            repairUnownedInFlightState(ratingKey: ratingKey, reason: "legacy_delete")
+            if let deletedAttemptKey {
+                releaseInFlight(for: deletedAttemptKey, rowSnapshot: rowToDelete)
+            } else {
+                repairUnownedInFlightState(ratingKey: ratingKey, reason: "legacy_delete")
+            }
+            refreshRecords()
         }
-        refreshRecords()
     }
 
     func recordDownloadDiagnostic(_ name: String,

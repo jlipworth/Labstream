@@ -177,6 +177,18 @@ final class DownloadStore: @unchecked Sendable {
         case immediate(LegacyAttemptResetResult)
     }
 
+    enum RowDeletionResult: Sendable, Equatable {
+        case removed(DownloadAttemptKey)
+        case staleOrMissing
+        case cleanupFailed(DownloadAttemptKey, cleanupFailureCount: Int)
+        case persistenceFailed(DownloadAttemptKey, PersistenceFlushResult)
+    }
+
+    enum RowDeletionSubmission: Sendable, Equatable {
+        case accepted(ticket: DownloadArtifactLifecycleCoordinator.Ticket)
+        case immediate(RowDeletionResult)
+    }
+
     private struct PersistenceAttempt {
         let ticket: PersistenceTicket
         let result: PersistenceFlushResult
@@ -456,6 +468,11 @@ final class DownloadStore: @unchecked Sendable {
                 sourceBytes: Int?
             )
             case legacyResetDeletion(relativePaths: [String])
+            case rowDeletion(
+                relativePaths: [String],
+                requiresDeletionPending: Bool,
+                adoptedOwnerlessTerminal: Bool
+            )
         }
 
         struct ArtifactIntent: Codable, Sendable, Equatable {
@@ -680,6 +697,8 @@ final class DownloadStore: @unchecked Sendable {
     private var promotionAwaitingResultIDs: Set<UUID> = []
     private var legacyResetOutcomes: [UUID: LegacyAttemptResetResult] = [:]
     private var legacyResetAwaitingResultIDs: Set<UUID> = []
+    private var rowDeletionOutcomes: [UUID: RowDeletionResult] = [:]
+    private var rowDeletionAwaitingResultIDs: Set<UUID> = []
 
     /// - Parameter baseDirectory: where media files + the index live. Defaults to
     ///   `Application Support/Labstream/Downloads`, created if missing.
@@ -1644,6 +1663,8 @@ final class DownloadStore: @unchecked Sendable {
                 self.executeValidatedPromotion(ticket: ticket, intent: intent)
             case .legacyResetDeletion:
                 self.executeLegacyResetDeletion(ticket: ticket, intent: intent)
+            case .rowDeletion:
+                self.executeRowDeletion(ticket: ticket, intent: intent)
             }
         }
     }
@@ -3956,6 +3977,8 @@ final class DownloadStore: @unchecked Sendable {
                 if let temporary { result.insert(temporary) }
             case .validatedPromotion(let working, let stable, _, _):
                 result.insert(working); result.insert(stable)
+            case .rowDeletion(let paths, _, _):
+                result.formUnion(paths)
             }
         }
         return result
@@ -4886,48 +4909,19 @@ final class DownloadStore: @unchecked Sendable {
         if changed { persist() }
     }
 
-    /// Remove a record and delete its backing file.
+    /// Compatibility deletion for the only rows intentionally left ownerless by migration:
+    /// terminal rows with no asynchronous cleanup authority. The lifecycle adopts a private exact
+    /// owner in the prepared snapshot so crash recovery never relies on rating-key-only authority.
     func remove(ratingKey: String) {
-        lock.lock()
-        guard rows[ratingKey]?.pendingValidatedPromotionStatus == nil,
-              rows[ratingKey]?.deletionPending != true,
-              rows[ratingKey]?.heldRangeBodyDeletionIntents.isEmpty != false else {
-            lock.unlock()
-            return
-        }
-        let row = rows.removeValue(forKey: ratingKey)
-        sideAssetHydrationCache.removeValue(forKey: ratingKey)
-        lock.unlock()
-        if let row {
-            let url = baseDirectory.appendingPathComponent(row.relativePath)
-            // The row is already gone from the index, so a failed delete would
-            // permanently orphan the file — log it rather than vanish silently.
-            do { try fileManager.removeItem(at: url) }
-            catch where fileManager.fileExists(atPath: url.path) {
-                NSLog("DownloadStore: failed to delete media for %@ (%@); local file orphaned",
-                      ratingKey, DiagnosticRedactor.safeErrorSummary(error))
-            } catch {} // already absent — nothing to clean up
-            // D5/#78: also delete cached side assets so a removed download leaves nothing behind.
-            var assets = [row.metadata?.posterRelativePath,
-                          row.metadata?.plexBIFRelativePath,
-                          row.metadata?.jellyfinTrickPlayPlaylistRelativePath,
-                          row.metadata?.resumeDataRelativePath].compactMap { $0 }
-            assets.append(contentsOf: row.metadata?.jellyfinTrickPlayTileRelativePaths ?? [])
-            assets.append(contentsOf: Array(row.metadata?.chapterImageRelativePaths?.values ?? Dictionary<Int, String>().values))
-            assets.append(contentsOf: row.metadata?.offlineTextSubtitles?.map(\.relativePath) ?? [])
-            assets.append(contentsOf: row.metadata?.heldRangeSegments?.map(\.relativePath) ?? [])
-            for asset in assets where Self.isSafeOneLevelRelativePath(asset) {
-                try? fileManager.removeItem(at: baseDirectory.appendingPathComponent(asset))
-            }
-        }
-        persist()
+        _ = resolveRowDeletionSynchronously(submitOwnerlessTerminalRemoval(ratingKey: ratingKey))
     }
 
     /// Attempt-conditional removal. A stale finalizer/delete for attempt A cannot remove attempt B
     /// or any of B's files, even when both attempts reuse the same rating key and stable paths.
     @discardableResult
     func remove(for key: DownloadAttemptKey) -> AttemptMutationResult {
-        remove(for: key, requiresDeletionPending: false)
+        rowDeletionMutationResult(resolveRowDeletionSynchronously(
+            submitRemove(for: key, requiresDeletionPending: false)))
     }
 
     /// Destructive half of the cleanup-ordering protocol. Only the Manager calls this after every
@@ -4935,7 +4929,8 @@ final class DownloadStore: @unchecked Sendable {
     /// finalizer, and abandoned-seed removal APIs cannot bypass a deletion reservation.
     @discardableResult
     func completePendingDeletion(for key: DownloadAttemptKey) -> AttemptMutationResult {
-        remove(for: key, requiresDeletionPending: true)
+        rowDeletionMutationResult(resolveRowDeletionSynchronously(
+            submitRemove(for: key, requiresDeletionPending: true)))
     }
 
     /// Nonblocking destructive half. This is legal only after the independent cleanup journal is
@@ -4943,64 +4938,239 @@ final class DownloadStore: @unchecked Sendable {
     @discardableResult
     func submitCompletePendingDeletion(
         for key: DownloadAttemptKey
-    ) -> AttemptMutationSubmission {
+    ) -> RowDeletionSubmission {
         submitRemove(for: key, requiresDeletionPending: true)
     }
 
-    private func remove(
-        for key: DownloadAttemptKey,
-        requiresDeletionPending: Bool
-    ) -> AttemptMutationResult {
-        awaitAttemptMutationSubmission(
-            submitRemove(for: key, requiresDeletionPending: requiresDeletionPending)
-        )
+    func submitRemove(for key: DownloadAttemptKey) -> RowDeletionSubmission {
+        submitRemove(for: key, requiresDeletionPending: false)
     }
 
     private func submitRemove(
         for key: DownloadAttemptKey,
         requiresDeletionPending: Bool
-    ) -> AttemptMutationSubmission {
+    ) -> RowDeletionSubmission {
         lock.lock()
-        guard let existing = rows[key.ratingKey], existing.attemptID == key.attemptID,
+        guard var existing = rows[key.ratingKey], existing.attemptID == key.attemptID,
               !existing.legacyResetPending,
               existing.pendingValidatedPromotionStatus == nil,
               existing.deletionPending == requiresDeletionPending,
-              existing.pendingArtifactIntents.isEmpty,
               (requiresDeletionPending || existing.heldRangeBodyDeletionIntents.isEmpty) else {
             lock.unlock()
-            return .staleOrMissing
+            return .immediate(.staleOrMissing)
         }
-        // Keep ownership and stable-path deletion in one critical section. If the row were removed
-        // and the lock released first, attempt B could seed/write the same stable paths before A's
-        // delayed cleanup ran, letting A delete B's file despite the initial ID check.
-        deleteArtifacts(for: existing)
-        _ = rows.removeValue(forKey: key.ratingKey)
-        sideAssetHydrationCache.removeValue(forKey: key.ratingKey)
-        let ticket = enqueueAttemptPersistenceLocked()
-        lock.unlock()
-        return .accepted(change: .applied, ticket: ticket)
+        if let head = existing.pendingArtifactIntents.first,
+           case .rowDeletion(_, let pendingRequired, _) = head.operation,
+           pendingRequired == requiresDeletionPending {
+            if activeArtifactIntentIDs.contains(head.id),
+               let ticket = artifactLifecycleTickets[head.id] {
+                rowDeletionAwaitingResultIDs.insert(head.id)
+                lock.unlock(); return .accepted(ticket: ticket)
+            }
+            guard !activeArtifactIntentIDs.contains(head.id) else {
+                lock.unlock(); return .immediate(.staleOrMissing)
+            }
+            let prepared = enqueueAttemptPersistenceLocked()
+            let ticket = artifactLifecycle.register(key: key, generation: head.generation,
+                intentID: head.id, preparedRevision: prepared)
+            artifactLifecycleTickets[head.id] = ticket
+            rowDeletionAwaitingResultIDs.insert(head.id)
+            activeArtifactIntentIDs.insert(head.id)
+            lock.unlock(); scheduleArtifactLifecycle(ticket: ticket, intent: head)
+            return .accepted(ticket: ticket)
+        }
+        guard existing.pendingArtifactIntents.isEmpty else {
+            lock.unlock(); return .immediate(.staleOrMissing)
+        }
+        return stageRowDeletionLocked(row: &existing, key: key,
+                                      requiresDeletionPending: requiresDeletionPending,
+                                      adoptedOwnerlessTerminal: false)
     }
 
-    private func deleteArtifacts(for row: Row) {
-        let url = baseDirectory.appendingPathComponent(row.relativePath)
-        do { try fileManager.removeItem(at: url) }
-        catch where fileManager.fileExists(atPath: url.path) {
-            NSLog("DownloadStore: failed to delete media for %@ (%@); local file orphaned",
-                  row.ratingKey, DiagnosticRedactor.safeErrorSummary(error))
-        } catch {}
-        var assets = [row.metadata?.posterRelativePath,
-                      row.metadata?.plexBIFRelativePath,
-                      row.metadata?.jellyfinTrickPlayPlaylistRelativePath,
-                      row.metadata?.resumeDataRelativePath].compactMap { $0 }
-        assets.append(contentsOf: row.metadata?.jellyfinTrickPlayTileRelativePaths ?? [])
-        assets.append(contentsOf: Array(
-            row.metadata?.chapterImageRelativePaths?.values ?? Dictionary<Int, String>().values))
-        assets.append(contentsOf: row.metadata?.offlineTextSubtitles?.map(\.relativePath) ?? [])
-        assets.append(contentsOf: row.metadata?.heldRangeSegments?.map(\.relativePath) ?? [])
-        assets.append(contentsOf: row.heldRangeBodyDeletionIntents)
-        for asset in assets where Self.isSafeOneLevelRelativePath(asset) {
-            try? fileManager.removeItem(at: baseDirectory.appendingPathComponent(asset))
+    func submitOwnerlessTerminalRemoval(ratingKey: String) -> RowDeletionSubmission {
+        lock.lock()
+        guard var row = rows[ratingKey] else {
+            lock.unlock(); return .immediate(.staleOrMissing)
         }
+        if let head = row.pendingArtifactIntents.first,
+           case .rowDeletion(_, false, true) = head.operation,
+           let attemptID = row.attemptID, head.attemptID == attemptID {
+            let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+            if activeArtifactIntentIDs.contains(head.id),
+               let ticket = artifactLifecycleTickets[head.id] {
+                rowDeletionAwaitingResultIDs.insert(head.id)
+                lock.unlock(); return .accepted(ticket: ticket)
+            }
+            guard !activeArtifactIntentIDs.contains(head.id) else {
+                lock.unlock(); return .immediate(.staleOrMissing)
+            }
+            let prepared = enqueueAttemptPersistenceLocked()
+            let ticket = artifactLifecycle.register(key: key, generation: head.generation,
+                intentID: head.id, preparedRevision: prepared)
+            artifactLifecycleTickets[head.id] = ticket
+            rowDeletionAwaitingResultIDs.insert(head.id)
+            activeArtifactIntentIDs.insert(head.id)
+            lock.unlock(); scheduleArtifactLifecycle(ticket: ticket, intent: head)
+            return .accepted(ticket: ticket)
+        }
+        guard row.attemptID == nil,
+              row.status == .complete || row.status == .unverified,
+              !Self.hasAsyncCleanupEvidence(row), !row.deletionPending,
+              row.pendingArtifactIntents.isEmpty else {
+            lock.unlock(); return .immediate(.staleOrMissing)
+        }
+        let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: .generated())
+        row.attemptID = key.attemptID
+        row.metadata?.downloadAttemptID = key.attemptID.rawValue
+        return stageRowDeletionLocked(row: &row, key: key, requiresDeletionPending: false,
+                                      adoptedOwnerlessTerminal: true)
+    }
+
+    private func stageRowDeletionLocked(row: inout Row, key: DownloadAttemptKey,
+                                        requiresDeletionPending: Bool,
+                                        adoptedOwnerlessTerminal: Bool) -> RowDeletionSubmission {
+        var paths = artifactPathsReferenced(by: row)
+        let stable = [row.relativePath] + sideAssetRelativePaths(for: row.metadata)
+        for path in stable where Self.isSafeOneLevelRelativePath(path) {
+            paths.insert(Self.attemptStagingRelativePath(for: key, stableRelativePath: path))
+        }
+        let safe = paths.filter(Self.isSafeOneLevelRelativePath).sorted()
+        row.artifactGeneration += 1
+        let intent = Row.ArtifactIntent(id: UUID(), attemptID: key.attemptID,
+            generation: row.artifactGeneration, phase: .prepared,
+            operation: .rowDeletion(relativePaths: safe,
+                                    requiresDeletionPending: requiresDeletionPending,
+                                    adoptedOwnerlessTerminal: adoptedOwnerlessTerminal))
+        row.pendingArtifactIntents.append(intent)
+        rows[key.ratingKey] = row
+        let prepared = enqueueAttemptPersistenceLocked()
+        let ticket = artifactLifecycle.register(key: key, generation: intent.generation,
+            intentID: intent.id, preparedRevision: prepared)
+        artifactLifecycleTickets[intent.id] = ticket
+        rowDeletionAwaitingResultIDs.insert(intent.id)
+        activeArtifactIntentIDs.insert(intent.id)
+        lock.unlock(); scheduleArtifactLifecycle(ticket: ticket, intent: intent)
+        return .accepted(ticket: ticket)
+    }
+
+    func resolveRowDeletionSynchronously(_ submission: RowDeletionSubmission) -> RowDeletionResult {
+        switch submission {
+        case .immediate(let result): return result
+        case .accepted(let ticket):
+            let lifecycle = artifactLifecycle.waitSynchronously(for: ticket)
+            if let result = lock.withLock({ () -> RowDeletionResult? in
+                rowDeletionAwaitingResultIDs.remove(ticket.intentID)
+                return rowDeletionOutcomes.removeValue(forKey: ticket.intentID)
+            }) { return result }
+            switch lifecycle {
+            case .completed: return .staleOrMissing
+            case .failed(.persistence(let failure)):
+                return .persistenceFailed(ticket.key, failure)
+            case .failed(.artifact):
+                return .cleanupFailed(ticket.key, cleanupFailureCount: 1)
+            case .timedOut: return .staleOrMissing
+            }
+        }
+    }
+
+    func resolveRowDeletion(_ submission: RowDeletionSubmission) async -> RowDeletionResult {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async { [self] in
+                continuation.resume(returning: resolveRowDeletionSynchronously(submission))
+            }
+        }
+    }
+
+    private func rowDeletionMutationResult(_ result: RowDeletionResult) -> AttemptMutationResult {
+        switch result {
+        case .removed: return .applied
+        case .staleOrMissing: return .staleOrMissing
+        case .persistenceFailed(_, let failure): return .persistenceFailed(failure)
+        case .cleanupFailed(_, let count):
+            return .persistenceFailed(.failed(revision: 0, stage: "artifact",
+                errorType: "rowDeletionCleanupFailed_\(count)"))
+        }
+    }
+
+    private func executeRowDeletion(ticket: DownloadArtifactLifecycleCoordinator.Ticket,
+                                    intent: Row.ArtifactIntent) {
+        guard case .rowDeletion(let paths, let requiresPending, _) = intent.operation,
+              paths.allSatisfy(Self.isSafeOneLevelRelativePath) else {
+            failArtifactLifecycle(ticket, errorType: "invalidRowDeletionIntent"); return
+        }
+        let prepared = waitForPersistence(through: ticket.preparedRevision)
+        guard prepared.result.committed(through: ticket.preparedRevision) else {
+            failArtifactLifecycle(ticket, prepared.result); return
+        }
+        let candidates = lock.withLock { () -> [String]? in
+            guard let row = rows[ticket.key.ratingKey], row.attemptID == ticket.key.attemptID,
+                  row.deletionPending == requiresPending,
+                  row.pendingArtifactIntents.first?.id == intent.id else { return nil }
+            var others: Set<String> = []
+            for other in rows.values where other.ratingKey != ticket.key.ratingKey {
+                others.formUnion(artifactPathsReferenced(by: other))
+            }
+            let selected = paths.filter { !others.contains($0) }
+            guard selected.allSatisfy({ reservedArtifactDeletionPaths[$0] == nil }) else {
+                return nil
+            }
+            for path in selected { reservedArtifactDeletionPaths[path] = intent.id }
+            return selected
+        }
+        guard let candidates else {
+            failArtifactLifecycle(ticket, errorType: "rowDeletionReservationFailed"); return
+        }
+        let release = {
+            self.lock.withLock {
+                for path in candidates where self.reservedArtifactDeletionPaths[path] == intent.id {
+                    self.reservedArtifactDeletionPaths.removeValue(forKey: path)
+                }
+            }
+        }
+        var failures = 0
+        for path in candidates {
+            let url = baseDirectory.appendingPathComponent(path)
+            do { try artifactFilesystem.removeItem(url, fileManager) }
+            catch where artifactFilesystem.fileExists(url, fileManager) { failures += 1 }
+            catch {}
+        }
+        guard failures == 0 else {
+            lock.withLock {
+                if rowDeletionAwaitingResultIDs.contains(intent.id) {
+                    rowDeletionOutcomes[intent.id] = .cleanupFailed(
+                        ticket.key, cleanupFailureCount: failures)
+                }
+            }
+            release(); failArtifactLifecycle(ticket, errorType: "rowDeletionCleanupFailed"); return
+        }
+        lock.lock()
+        guard let row = rows[ticket.key.ratingKey], row.attemptID == ticket.key.attemptID,
+              row.pendingArtifactIntents.first?.id == intent.id else {
+            lock.unlock(); release(); completeArtifactLifecycle(ticket); return
+        }
+        artifactRetirementKeys.insert(ticket.key)
+        let removed = rows.removeValue(forKey: ticket.key.ratingKey)!
+        sideAssetHydrationCache.removeValue(forKey: ticket.key.ratingKey)
+        let terminal = enqueueAttemptPersistenceLocked()
+        lock.unlock()
+        let outcome = waitForPersistence(through: terminal)
+        guard outcome.result.committed(through: terminal) else {
+            lock.lock()
+            if rows[ticket.key.ratingKey] == nil { rows[ticket.key.ratingKey] = removed }
+            artifactRetirementKeys.remove(ticket.key)
+            _ = enqueueAttemptPersistenceLocked()
+            if rowDeletionAwaitingResultIDs.contains(intent.id) {
+                rowDeletionOutcomes[intent.id] = .persistenceFailed(ticket.key, outcome.result)
+            }
+            lock.unlock(); release(); failArtifactLifecycle(ticket, outcome.result); return
+        }
+        lock.withLock {
+            artifactRetirementKeys.remove(ticket.key)
+            if rowDeletionAwaitingResultIDs.contains(intent.id) {
+                rowDeletionOutcomes[intent.id] = .removed(ticket.key)
+            }
+        }
+        release(); completeArtifactLifecycle(ticket)
     }
 
     // MARK: - Persistence

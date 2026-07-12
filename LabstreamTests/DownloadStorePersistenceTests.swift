@@ -516,6 +516,96 @@ struct DownloadStorePersistenceTests {
         }
     }
 
+    @Test func rowDeletionPreparedFailurePreservesRowAndFileThenExactRetryRemovesBoth() throws {
+        try withTemporaryDirectory { directory in
+            let id = DownloadAttemptID(uuid: UUID())
+            let key = DownloadAttemptKey(ratingKey: "plex:row-delete-prepared", attemptID: id)
+            let record = makeRecord(ratingKey: key.ratingKey, title: "Delete", directory: directory,
+                                    bytes: 4, metadata: OfflineMetadata(
+                                        ratingKey: key.ratingKey, title: "Delete", type: "movie"))
+            try Data([1, 2, 3, 4]).write(to: record.localURL)
+            let writes = SelectedAtomicWriteFailureHarness(failingAttempts: [2])
+            let store = DownloadStore(baseDirectory: directory,
+                indexPersistence: .init { data, url in try writes.write(data, to: url) })
+            #expect(store.createAttemptOwnedRecord(record, attemptID: id) == .committed(key))
+            guard case .persistenceFailed = store.remove(for: key) else {
+                Issue.record("expected prepared deletion persistence failure"); return
+            }
+            #expect(store.record(for: key) != nil)
+            #expect(FileManager.default.fileExists(atPath: record.localURL.path))
+            #expect(store.remove(for: key) == .applied)
+            #expect(store.record(for: key) == nil)
+            #expect(!FileManager.default.fileExists(atPath: record.localURL.path))
+        }
+    }
+
+    @Test func rowDeletionFailureRetainsDurableIntentAndRelaunchRetries() throws {
+        try withTemporaryDirectory { directory in
+            let id = DownloadAttemptID(uuid: UUID())
+            let key = DownloadAttemptKey(ratingKey: "plex:row-delete-retry", attemptID: id)
+            let record = makeRecord(ratingKey: key.ratingKey, title: "Delete", directory: directory,
+                                    bytes: 2, metadata: OfflineMetadata(
+                                        ratingKey: key.ratingKey, title: "Delete", type: "movie"))
+            try Data([5, 6]).write(to: record.localURL)
+            let deletes = FailOneLegacyResetDelete(name: record.localURL.lastPathComponent)
+            let live = DownloadArtifactFilesystem.live
+            let store = DownloadStore(baseDirectory: directory, artifactFilesystem: .init(
+                writeAuthArtifact: live.writeAuthArtifact,
+                removeItem: { url, fm in try deletes.remove(url, fm: fm) },
+                fileExists: live.fileExists))
+            #expect(store.createAttemptOwnedRecord(record, attemptID: id) == .committed(key))
+            guard case .persistenceFailed = store.remove(for: key) else {
+                Issue.record("expected artifact failure mapping"); return
+            }
+            #expect(store.record(for: key) != nil)
+            let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(relaunched.resolveArtifactSynchronouslyForTests(
+                through: relaunched.currentArtifactLifecycleWatermark()) == .completed)
+            #expect(relaunched.record(for: key) == nil)
+            #expect(!FileManager.default.fileExists(atPath: record.localURL.path))
+        }
+    }
+
+    @Test func ownerlessTerminalDeletionUsesDurableLifecycleAndPreservesSharedArtifact() throws {
+        try withTemporaryDirectory { directory in
+            let shared = directory.appendingPathComponent("ownerless-shared.mp4")
+            try Data([9]).write(to: shared)
+            var ownerless = legacyRow(ratingKey: "plex:ownerless-delete", status: "complete", bytes: 1)
+            ownerless["relativePath"] = shared.lastPathComponent
+            var other = legacyRow(ratingKey: "plex:ownerless-other", status: "complete", bytes: 1)
+            other["relativePath"] = shared.lastPathComponent
+            try writeLegacyIndex(schemaVersion: 4, rows: [ownerless, other], directory: directory)
+            let store = DownloadStore(baseDirectory: directory)
+            store.remove(ratingKey: "plex:ownerless-delete")
+            #expect(store.record(for: "plex:ownerless-delete") == nil)
+            #expect(store.record(for: "plex:ownerless-other") != nil)
+            #expect(FileManager.default.fileExists(atPath: shared.path))
+        }
+    }
+
+    @Test func ownerlessTerminalPreparedFailureCanRetryInSameProcess() throws {
+        try withTemporaryDirectory { directory in
+            let media = directory.appendingPathComponent("ownerless-retry.mp4")
+            try Data([1]).write(to: media)
+            var row = legacyRow(ratingKey: "plex:ownerless-retry", status: "complete", bytes: 1)
+            row["relativePath"] = media.lastPathComponent
+            try writeLegacyIndex(schemaVersion: 4, rows: [row], directory: directory)
+            let writes = SelectedAtomicWriteFailureHarness(failingAttempts: [1])
+            let store = DownloadStore(baseDirectory: directory,
+                indexPersistence: .init { data, url in try writes.write(data, to: url) })
+            guard case .persistenceFailed = store.resolveRowDeletionSynchronously(
+                store.submitOwnerlessTerminalRemoval(ratingKey: "plex:ownerless-retry")) else {
+                Issue.record("expected prepared failure"); return
+            }
+            #expect(FileManager.default.fileExists(atPath: media.path))
+            #expect(store.resolveRowDeletionSynchronously(
+                store.submitOwnerlessTerminalRemoval(ratingKey: "plex:ownerless-retry"))
+                != .staleOrMissing)
+            #expect(store.record(for: "plex:ownerless-retry") == nil)
+            #expect(!FileManager.default.fileExists(atPath: media.path))
+        }
+    }
+
     @Test func newAttemptRecordWritesMatchingTopLevelAndNestedShadow() throws {
         try withTemporaryDirectory { directory in
             let ratingKey = "plex:new-v3"
