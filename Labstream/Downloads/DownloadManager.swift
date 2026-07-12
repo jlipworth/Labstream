@@ -1,6 +1,98 @@
 import Foundation
 import Observation
 import PMSKit
+
+/// Pure exact-attempt state machine for local playback revalidation. Wall-clock tasks live in the
+/// manager; this type only issues/validates opaque timer tokens, so every overtaking order is
+/// deterministic in tests.
+struct UnverifiedRevalidationCoordinator: Sendable {
+    enum Retry: Sendable, Equatable { case soon, delayed }
+
+    private(set) var inFlight: Set<DownloadAttemptKey> = []
+    private(set) var desired: Set<DownloadAttemptKey> = []
+    private(set) var timerTokens: [DownloadAttemptKey: UUID] = [:]
+    private var automaticRetryCounts: [DownloadAttemptKey: Int] = [:]
+
+    mutating func begin(_ key: DownloadAttemptKey, preservesOvertakenRequest: Bool) -> Bool {
+        guard !inFlight.contains(key) else {
+            if preservesOvertakenRequest { desired.insert(key) }
+            return false
+        }
+        inFlight.insert(key)
+        return true
+    }
+
+    mutating func started(_ key: DownloadAttemptKey) -> UUID {
+        desired.remove(key)
+        return armTimer(for: key)
+    }
+
+    mutating func deferred(_ key: DownloadAttemptKey) {
+        inFlight.remove(key)
+        desired.insert(key)
+        timerTokens.removeValue(forKey: key)
+    }
+
+    mutating func alreadyFinalizing(_ key: DownloadAttemptKey) { deferred(key) }
+
+    mutating func unavailable(_ key: DownloadAttemptKey) -> Retry? {
+        inFlight.remove(key)
+        timerTokens.removeValue(forKey: key)
+        return desired.contains(key) ? .soon : nil
+    }
+
+    mutating func gateDrained(_ keys: Set<DownloadAttemptKey>) {
+        inFlight.subtract(keys)
+        desired.formUnion(keys)
+        for key in keys {
+            timerTokens.removeValue(forKey: key)
+            automaticRetryCounts[key] = 0
+        }
+    }
+
+    mutating func finished(
+        _ key: DownloadAttemptKey, cancelled: Bool, remainsUnverified: Bool
+    ) -> Retry? {
+        let ownedClaim = inFlight.remove(key) != nil
+        let hadDesiredEdge = desired.contains(key)
+        timerTokens.removeValue(forKey: key)
+        guard ownedClaim || hadDesiredEdge else { return nil }
+        guard remainsUnverified else {
+            desired.remove(key)
+            automaticRetryCounts.removeValue(forKey: key)
+            return nil
+        }
+        if cancelled || desired.remove(key) != nil { return .soon }
+        guard automaticRetryCounts[key, default: 0] < 1 else { return nil }
+        automaticRetryCounts[key, default: 0] += 1
+        return .delayed
+    }
+
+    mutating func armTimer(for key: DownloadAttemptKey) -> UUID {
+        let token = UUID()
+        timerTokens[key] = token
+        return token
+    }
+
+    mutating func timerFired(
+        for key: DownloadAttemptKey, token: UUID, remainsUnverified: Bool
+    ) -> Bool {
+        guard timerTokens[key] == token else { return false }
+        timerTokens.removeValue(forKey: key)
+        guard remainsUnverified else {
+            inFlight.remove(key)
+            desired.remove(key)
+            automaticRetryCounts.removeValue(forKey: key)
+            return false
+        }
+        if inFlight.remove(key) != nil { desired.insert(key) }
+        return true
+    }
+
+    mutating func resetAutomaticRetryBudget(_ keys: Set<DownloadAttemptKey>) {
+        for key in keys { automaticRetryCounts[key] = 0 }
+    }
+}
 import AVFoundation   // D1: AVURLAsset playability probe on a finished download
 import os
 
@@ -143,14 +235,7 @@ public final class DownloadManager {
     /// Reentrancy depth of `resumeStaticRangeWhenReady`, which deliberately dispatches
     /// synchronously with `refreshRecords`. Guards against the #210 recursion family.
     private var staticResumeReentryDepth = 0
-    @ObservationIgnored private var unverifiedRevalidationKeys: Set<DownloadAttemptKey> = []
-    /// A lifecycle edge asked for another probe while the exact finalizer was still claimed.
-    /// Consumed only after that claim releases; prevents gate-drain/scene-active overtaking.
-    @ObservationIgnored private var desiredUnverifiedRevalidationKeys: Set<DownloadAttemptKey> = []
-    @ObservationIgnored private var unverifiedRevalidationTimeoutTokens:
-        [DownloadAttemptKey: UUID] = [:]
-    @ObservationIgnored private var unverifiedAutomaticRetryCounts:
-        [DownloadAttemptKey: Int] = [:]
+    @ObservationIgnored private var unverifiedRevalidation = UnverifiedRevalidationCoordinator()
     @ObservationIgnored private var downloadWatchdogTask: Task<Void, Never>?
     @ObservationIgnored private var forwardOnlyStallTracker = DownloadForwardOnlyStallTracker()
     @ObservationIgnored private var lastDownloadHealthDiagnosticAt: Date?
@@ -344,25 +429,18 @@ public final class DownloadManager {
             Task { @MainActor in
                 // `started` meant only that a finalizer was claimed; the session discovered the
                 // global wake gate before touching AVFoundation. This is not an in-flight probe.
-                self?.unverifiedRevalidationKeys.remove(key)
+                self?.unverifiedRevalidation.deferred(key)
             }
         }
         self.session.onRevalidationRequestFinished = { [weak self] key, outcome in
             Task { @MainActor in
                 guard let self else { return }
-                self.unverifiedRevalidationKeys.remove(key)
-                self.unverifiedRevalidationTimeoutTokens.removeValue(forKey: key)
-                if outcome == .cancelled
-                    || self.desiredUnverifiedRevalidationKeys.remove(key) != nil {
-                    self.scheduleUnverifiedRevalidationRetry(for: key, delay: .seconds(1))
-                } else if self.store.record(for: key)?.status == .unverified,
-                          self.unverifiedAutomaticRetryCounts[key, default: 0] < 1 {
-                    // The probe already contains an 8s pass, 15s retry, and decode fallback. Give
-                    // a busy headset one delayed retry, then wait for a new lifecycle edge.
-                    self.unverifiedAutomaticRetryCounts[key, default: 0] += 1
-                    self.scheduleUnverifiedRevalidationRetry(for: key, delay: .seconds(90))
-                } else if self.store.record(for: key)?.status != .unverified {
-                    self.unverifiedAutomaticRetryCounts.removeValue(forKey: key)
+                let retry = self.unverifiedRevalidation.finished(
+                    key, cancelled: outcome == .cancelled,
+                    remainsUnverified: self.store.record(for: key)?.status == .unverified)
+                if let retry {
+                    self.scheduleUnverifiedRevalidationRetry(
+                        for: key, delay: retry == .soon ? .seconds(1) : .seconds(90))
                 }
             }
         }
@@ -371,9 +449,7 @@ public final class DownloadManager {
                 guard let self else { return }
                 // Force-clear the exact keys delivered by the session. This also makes ordering
                 // safe if the gate-drain callback overtakes the per-request deferred callback.
-                self.unverifiedRevalidationKeys.subtract(deferredKeys)
-                self.desiredUnverifiedRevalidationKeys.formUnion(deferredKeys)
-                for key in deferredKeys { self.unverifiedAutomaticRetryCounts[key] = 0 }
+                self.unverifiedRevalidation.gateDrained(deferredKeys)
                 self.revalidateUnverifiedDownloads(reason: "background_gate_drained")
             }
         }
@@ -3423,14 +3499,10 @@ public final class DownloadManager {
         for record in candidates {
             guard let key = attemptKey(for: record),
                   !store.isDeletionPending(for: key) else { continue }
-            if unverifiedRevalidationKeys.contains(key) {
-                if reason == "scene_active" || reason == "background_gate_drained"
-                    || reason == "timeout_retry" {
-                    desiredUnverifiedRevalidationKeys.insert(key)
-                }
-                continue
-            }
-            unverifiedRevalidationKeys.insert(key)
+            let preservesOvertakenRequest = reason == "scene_active"
+                || reason == "background_gate_drained" || reason == "timeout_retry"
+            guard unverifiedRevalidation.begin(
+                key, preservesOvertakenRequest: preservesOvertakenRequest) else { continue }
             recordDownloadDiagnostic("downloads.unverified_revalidate_start", fields: [
                 "download_id": .identifier(record.ratingKey),
                 "reason": .label(reason),
@@ -3442,21 +3514,17 @@ public final class DownloadManager {
                 validationLabel: BackgroundFinalizationResultPolicy.unverifiedResultLabel(reason: reason))
             switch admission {
             case .deferredForBackgroundWake:
-                unverifiedRevalidationKeys.remove(key)
-                desiredUnverifiedRevalidationKeys.insert(key)
+                unverifiedRevalidation.deferred(key)
             case .alreadyFinalizing:
-                unverifiedRevalidationKeys.remove(key)
-                desiredUnverifiedRevalidationKeys.insert(key)
+                unverifiedRevalidation.alreadyFinalizing(key)
             case .unavailable:
-                unverifiedRevalidationKeys.remove(key)
-                // A competing finalizer can release between request rejection and classification.
-                // Preserve a lifecycle-requested retry once; the exact row/file guards run again.
-                if desiredUnverifiedRevalidationKeys.contains(key) {
+                if unverifiedRevalidation.unavailable(key) != nil {
                     scheduleUnverifiedRevalidationRetry(for: key, delay: .seconds(1))
                 }
             case .started:
-                desiredUnverifiedRevalidationKeys.remove(key)
-                scheduleUnverifiedRevalidationRetry(for: key, delay: .seconds(90))
+                scheduleUnverifiedRevalidationRetry(
+                    for: key, delay: .seconds(90),
+                    token: unverifiedRevalidation.started(key))
             }
         }
     }
@@ -3464,30 +3532,24 @@ public final class DownloadManager {
     /// A timeout is a recovery edge, not merely permission for some unrelated future UI event to
     /// try again. The exact-attempt check prevents a delayed timer from touching a replacement.
     private func scheduleUnverifiedRevalidationRetry(
-        for key: DownloadAttemptKey, delay: Duration
+        for key: DownloadAttemptKey, delay: Duration, token suppliedToken: UUID? = nil
     ) {
-        let token = UUID()
-        unverifiedRevalidationTimeoutTokens[key] = token
+        let token = suppliedToken ?? unverifiedRevalidation.armTimer(for: key)
         Task { [weak self] in
             do { try await Task.sleep(for: delay) } catch { return }
             await MainActor.run {
-                guard let self,
-                      self.unverifiedRevalidationTimeoutTokens[key] == token,
-                      self.store.record(for: key)?.status == .unverified else { return }
-                self.unverifiedRevalidationTimeoutTokens.removeValue(forKey: key)
-                if self.unverifiedRevalidationKeys.contains(key) {
-                    self.unverifiedRevalidationKeys.remove(key)
-                    self.desiredUnverifiedRevalidationKeys.insert(key)
-                }
+                guard let self, self.unverifiedRevalidation.timerFired(
+                    for: key, token: token,
+                    remainsUnverified: self.store.record(for: key)?.status == .unverified
+                ) else { return }
                 self.revalidateUnverifiedDownloads(reason: "timeout_retry")
             }
         }
     }
 
     private func resetUnverifiedAutomaticRetryBudget() {
-        for record in store.records where record.status == .unverified {
-            if let key = attemptKey(for: record) { unverifiedAutomaticRetryCounts[key] = 0 }
-        }
+        unverifiedRevalidation.resetAutomaticRetryBudget(Set(
+            store.records.filter { $0.status == .unverified }.compactMap { attemptKey(for: $0) }))
     }
 
     private func clearRetryHandoff(ratingKey: String) {
