@@ -343,7 +343,7 @@ extension DownloadManager {
             }
             if let mediaSourceID = resolvedJellyfinMediaSourceID,
                let userID = backendSession.userID, !userID.isEmpty {
-                startJellyfinDownloadKeepalive(ratingKey: ratingKey,
+                startJellyfinDownloadKeepalive(attemptKey: attemptKey,
                                                itemId: itemId,
                                                mediaSourceId: mediaSourceID,
                                                playSessionId: mintedPlaySessionId,

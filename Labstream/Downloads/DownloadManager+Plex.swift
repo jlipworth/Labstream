@@ -194,6 +194,7 @@ extension DownloadManager {
                                              attemptID: DownloadAttemptID,
                                              choice: DownloadChoice, mediaIndex: Int, partIndex: Int,
                                              server: URL, token: String) {
+        let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
         let expectedBytes = estimatedBytes(for: item, choice: choice,
                                            mediaIndex: mediaIndex,
                                            partIndex: partIndex,
@@ -205,7 +206,6 @@ extension DownloadManager {
         let ext = part.container ?? (part.file as NSString?)?.pathExtension ?? "mp4"
         let destination = store.destinationURL(ratingKey: ratingKey,
                                                ext: ext.isEmpty ? "mp4" : ext)
-        let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
         // Publish the 0% row only while this exact seeded attempt still owns the key. A stale
         // preflight must never upsert over a delete/re-download B before side-cache or URLSession
         // work starts.
