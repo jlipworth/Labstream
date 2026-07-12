@@ -496,6 +496,17 @@ public final class DownloadManager {
         }
     }
 
+    private static func cleanupOrderingFailureLabel(
+        _ failure: DownloadCleanupOrdering.JournalFailure
+    ) -> String {
+        switch failure {
+        case .conflictingID:
+            return "cleanup_journal_conflicting_id"
+        case .persistence(let failure):
+            return "cleanup_journal_\(failure.stage.rawValue)_failed"
+        }
+    }
+
     /// The manager is the sole owner of initial reattach/reconcile. Registry registration and
     /// app-delegate handler storage never invoke this path, preventing duplicate launch snapshots.
     private func performInitialStartupReattachIfNeeded() {
@@ -555,9 +566,50 @@ public final class DownloadManager {
     func migrateAndRetryActiveEncodingCleanupOnLaunch() {
         guard startupRecoveryState == .ready else { return }
 
+        var finalizedPendingDeletion = false
         for record in records {
             guard let attemptID = record.attemptID, let metadata = record.metadata else { continue }
             let key = DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
+            if let pending = store.deletionPendingCleanupIntents(for: key) {
+                switch DownloadCleanupOrdering.prepareForDestructiveDeletion(
+                    candidates: pending,
+                    key: key,
+                    journal: cleanupIntentJournal,
+                    store: store
+                ) {
+                case .ready(let durable):
+                    // Every cleanup operation is now independent of row lifetime. Remove A under
+                    // exact ownership before starting cleanup; a replacement B is rejected while
+                    // the deletion-pending reservation exists.
+                    session.cancel(ratingKey: key.ratingKey)
+                    let removal = store.completePendingDeletion(for: key)
+                    switch removal {
+                    case .applied, .persistenceFailed:
+                        break
+                    case .noChange, .staleOrMissing:
+                        continue
+                    }
+                    _ = downloadWorkRegistry.cancelCancellableWork(for: key)
+                    for intent in durable {
+                        deferredCleanupIntents[intent.id] = intent
+                        switch intent.operation {
+                        case .activeEncoding: executeActiveEncodingCleanupIntent(intent)
+                        case .embyConvert: executeEmbyConvertCleanupIntent(intent)
+                        }
+                    }
+                    lastError[key.ratingKey] = nil
+                    finalizedPendingDeletion = true
+                case .deletionPending:
+                    lastError[key.ratingKey] = .transferFailed(
+                        "Deletion is pending until server cleanup can be saved. Tap Delete to retry.")
+                case .indexPersistenceFailed:
+                    lastError[key.ratingKey] = .transferFailed(
+                        "Deletion could not be saved. Free storage if needed, then tap Delete to retry.")
+                case .staleOrMissing:
+                    break
+                }
+                continue
+            }
             let cleanupOnly = startupCleanupOnlyKeys.contains(key)
             let terminal = record.status == .failed || record.status == .complete
                 || record.status == .unverified
@@ -605,6 +657,8 @@ public final class DownloadManager {
             }
         }
 
+        if finalizedPendingDeletion { refreshRecords() }
+
         guard case .loaded(let intents) = cleanupIntentJournal.load() else {
             recordDownloadDiagnostic("downloads.cleanup_intent_load_failed")
             return
@@ -628,14 +682,7 @@ public final class DownloadManager {
         guard let candidate = Self.makeActiveEncodingCleanupIntent(
             attemptKey: attemptKey, metadata: metadata, playSessionID: playSessionID
         ) else { return nil }
-        guard case .loaded(let existing) = cleanupIntentJournal.load() else { return nil }
-        if let durable = existing.first(where: {
-            $0.attemptKey == candidate.attemptKey && $0.backend == candidate.backend
-                && $0.server == candidate.server && $0.operation == candidate.operation
-        }) {
-            return durable
-        }
-        switch cleanupIntentJournal.add(candidate) {
+        switch cleanupIntentJournal.ensure(candidate) {
         case .committed(let durable): return durable
         case .conflictingID, .failed: return nil
         }
@@ -669,14 +716,7 @@ public final class DownloadManager {
         guard let candidate = Self.makeEmbyConvertCleanupIntent(
             attemptKey: attemptKey, metadata: metadata
         ) else { return nil }
-        guard case .loaded(let existing) = cleanupIntentJournal.load() else { return nil }
-        if let durable = existing.first(where: {
-            $0.attemptKey == candidate.attemptKey && $0.backend == candidate.backend
-                && $0.server == candidate.server && $0.operation == candidate.operation
-        }) {
-            return durable
-        }
-        switch cleanupIntentJournal.add(candidate) {
+        switch cleanupIntentJournal.ensure(candidate) {
         case .committed(let durable): return durable
         case .conflictingID, .failed: return nil
         }
@@ -2884,8 +2924,11 @@ public final class DownloadManager {
         let rowAttemptKey = rowToDelete?.attemptID.map {
             DownloadAttemptKey(ratingKey: ratingKey, attemptID: $0)
         }
-        var cleanupIntentsToExecute: [DurableDownloadCleanupIntent] = []
-        if let metadata = rowToDelete?.metadata {
+        let wasDeletionPending = rowAttemptKey.map { store.isDeletionPending(for: $0) } ?? false
+        var cleanupIntentsToExecute = rowAttemptKey.flatMap {
+            store.deletionPendingCleanupIntents(for: $0)
+        } ?? []
+        if cleanupIntentsToExecute.isEmpty, let metadata = rowToDelete?.metadata {
             let backend = metadata.resolvedBackendKind(ratingKey: ratingKey)
             let transientPlaySessionID: String? = switch backend {
             case .emby: rowAttemptKey.flatMap { embyPlaySessionByAttempt[$0] }
@@ -2897,9 +2940,7 @@ public final class DownloadManager {
                !playSessionID.isEmpty {
                 if let attemptID = rowToDelete?.attemptID {
                     let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
-                    if let intent = persistActiveEncodingCleanupIntent(
-                        attemptKey: key, metadata: metadata, playSessionID: playSessionID
-                    ) ?? Self.makeActiveEncodingCleanupIntent(
+                    if let intent = Self.makeActiveEncodingCleanupIntent(
                         attemptKey: key, metadata: metadata, playSessionID: playSessionID
                     ) {
                         cleanupIntentsToExecute.append(intent)
@@ -2919,9 +2960,8 @@ public final class DownloadManager {
             if Self.hasEmbyConvertCleanupAuthority(metadata) {
                 if let attemptID = rowToDelete?.attemptID {
                     let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
-                    if let intent = persistEmbyConvertCleanupIntent(
-                        attemptKey: key, metadata: metadata
-                    ) ?? Self.makeEmbyConvertCleanupIntent(attemptKey: key, metadata: metadata) {
+                    if let intent = Self.makeEmbyConvertCleanupIntent(
+                        attemptKey: key, metadata: metadata) {
                         cleanupIntentsToExecute.append(intent)
                     } else {
                         lastError[ratingKey] = .transferFailed(
@@ -2933,6 +2973,50 @@ public final class DownloadManager {
                         "reason": .label("convert_cleanup_attempt_owner_missing"),
                     ])
                 }
+            }
+        }
+        if let rowAttemptKey, !cleanupIntentsToExecute.isEmpty {
+            // Journal first, destructive local deletion second. If the standalone queue is
+            // unavailable, reserve every exact operation (including transient PlaySessionId) in
+            // the index and return with the row/files intact. A retry or relaunch can then migrate
+            // the reservation without inventing authority from whichever attempt is current.
+            switch DownloadCleanupOrdering.prepareForDestructiveDeletion(
+                candidates: cleanupIntentsToExecute,
+                key: rowAttemptKey,
+                journal: cleanupIntentJournal,
+                store: store
+            ) {
+            case .ready(let durable):
+                cleanupIntentsToExecute = durable
+            case .deletionPending(_, let failure):
+                session.cancel(ratingKey: ratingKey)
+                _ = downloadWorkRegistry.cancelCancellableWork(for: rowAttemptKey)
+                lastError[ratingKey] = .transferFailed(
+                    "Deletion is pending until server cleanup can be saved. Tap Delete to retry.")
+                recordDownloadDiagnostic("downloads.delete_deferred", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "reason": .label(Self.cleanupOrderingFailureLabel(failure)),
+                    "authority": .label("index_deletion_pending"),
+                ])
+                refreshRecords()
+                return
+            case .indexPersistenceFailed(_, let persistence):
+                lastError[ratingKey] = .transferFailed(
+                    "Deletion could not be saved. Free storage if needed, then tap Delete to retry.")
+                recordDownloadDiagnostic("downloads.delete_deferred", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "reason": .label(Self.startupPersistenceFailureLabel(persistence)),
+                    "authority": .label("existing_row_unchanged"),
+                ])
+                refreshRecords()
+                return
+            case .staleOrMissing:
+                recordDownloadDiagnostic("downloads.delete_deferred", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "reason": .label("cleanup_owner_changed"),
+                ])
+                refreshRecords()
+                return
             }
         }
         recordDownloadDiagnostic("downloads.cancel_or_delete", fields: [
@@ -2985,7 +3069,11 @@ public final class DownloadManager {
             // Remove A's row/files before cancelling A's finalizer. Cancellation is cooperative;
             // making ownership absent first means a finalizer already between cancellation checks
             // still fails every exact Store mutation instead of publishing after delete.
-            _ = store.remove(for: key)
+            if wasDeletionPending {
+                _ = store.completePendingDeletion(for: key)
+            } else {
+                _ = store.remove(for: key)
+            }
             _ = downloadWorkRegistry.cancelCancellableWork(for: key)
         } else {
             // Deliberate migration compatibility: v1/v2 completed rows without asynchronous

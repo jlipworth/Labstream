@@ -801,6 +801,25 @@ their relationship during the schema-v3 migration.
   browse execution core proceed in isolated worktrees from `160e001`. Phase 1's bounded lifecycle
   tickets and held-body transaction remain subsequent correctness slices.
 
+#### 2026-07-12 — Phase 1 cleanup/index deletion ordering
+
+- **Boundary:** required Jellyfin/Emby cleanup is journaled before destructive row/file deletion.
+  If that queue cannot commit, the exact credential-free operations are persisted on attempt A's
+  index row with a deletion-pending reservation; live transfer/finalizer/side-cache work is cancelled,
+  but the row and files remain until retry or relaunch moves every operation into the journal.
+- **Crash/ownership invariant:** the reservation captures transient PlaySession authority as well as
+  row metadata, rejects attempt-B replacement and ordinary removal, and can be destructively completed
+  only through the dedicated post-journal Store API. A partially committed multi-operation journal is
+  idempotently completed without duplicate operations. If both journal and index writes fail, no local
+  destruction occurs and the previously durable row remains the retry authority.
+- **Schema and rollback:** schema v4 gains only optional row keys (`deletionPending` and
+  `deletionPendingCleanupIntents`); old rows decode unchanged and new readers default absent keys to
+  false/empty. Unknown-key tolerance keeps decoding backward compatible, but an operational rollback
+  must retain the deletion-pending replacement/removal guards, or first migrate every pending operation
+  to the cleanup journal. A blind older binary can otherwise ignore the reservation and is unsafe.
+- **Remaining Phase 1A boundary:** this closes cleanup/index ordering only. Held-body deferred deletion
+  and bounded lifecycle mutation tickets remain separate incomplete slices.
+
 #### 2026-07-11 — Phase 2D compiler-cliff removal
 
 - **Status:** complete.

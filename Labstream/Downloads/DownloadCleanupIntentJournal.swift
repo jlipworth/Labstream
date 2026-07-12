@@ -75,6 +75,27 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
         return readLocked()
     }
 
+    /// Return an existing exact operation or durably append the proposed authority. UUID is the
+    /// queue identity, not the operation identity: a retry after an earlier partial success must
+    /// reuse the already-durable value rather than append a duplicate operation with a fresh UUID.
+    @discardableResult
+    func ensure(_ proposed: DurableDownloadCleanupIntent) -> AddResult {
+        switch load() {
+        case .failed(let failure):
+            return .failed(failure)
+        case .loaded(let values):
+            if let existing = values.first(where: {
+                $0.attemptKey == proposed.attemptKey
+                    && $0.backend == proposed.backend
+                    && $0.server == proposed.server
+                    && $0.operation == proposed.operation
+            }) {
+                return .committed(existing)
+            }
+            return add(proposed)
+        }
+    }
+
     @discardableResult
     func add(_ intent: DurableDownloadCleanupIntent) -> AddResult {
         lock.lock()
