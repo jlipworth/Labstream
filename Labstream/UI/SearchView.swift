@@ -178,9 +178,9 @@ struct SearchView: View {
         }
     }
 
-    private func plexSearchSections() async -> [PlexSection] {
-        guard let service = try? PlexBrowseService(appModel: appModel) else { return [] }
-        return (try? await service.libraries()) ?? []
+    private var currentSearchAuthorityKey: String {
+        let currentQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "\(appModel.activeBrowseSessionKey):\(currentQuery)"
     }
 
     private func runSearch() async {
@@ -196,7 +196,9 @@ struct SearchView: View {
         if searchKey == loadedQuery, case .loaded = loadState { return }
         // Light debounce so we don't fire a request per keystroke.
         try? await Task.sleep(for: .milliseconds(300))
-        if Task.isCancelled { return }
+        guard SearchRequestAuthority.accepts(capturedKey: searchKey,
+                                             currentKey: currentSearchAuthorityKey,
+                                             isCancelled: Task.isCancelled) else { return }
 
         if appModel.activeBackend == .jellyfin {
             loadState = .loading
@@ -236,18 +238,25 @@ struct SearchView: View {
         }
         loadState = .loading
         do {
-            async let searchHubs = service.search(query: trimmed)
-            async let sections = plexSearchSections()
-            let hubs = try await searchHubs
-            let plexSections = await sections
-            if Task.isCancelled { return }
-            results = .plexNativeHubs(hubs, sections: plexSections)
+            let snapshot = try await service.searchWithLibraries(query: trimmed)
+            guard SearchRequestAuthority.accepts(capturedKey: searchKey,
+                                                 currentKey: currentSearchAuthorityKey,
+                                                 isCancelled: Task.isCancelled) else { return }
+            results = .plexNativeHubs(snapshot.hubs, sections: snapshot.libraries)
             loadedQuery = searchKey
             loadState = .loaded
         } catch {
-            if Task.isCancelled { return }
+            guard SearchRequestAuthority.accepts(capturedKey: searchKey,
+                                                 currentKey: currentSearchAuthorityKey,
+                                                 isCancelled: Task.isCancelled) else { return }
             loadState = .failed(friendlyMessage(error))
         }
+    }
+}
+
+enum SearchRequestAuthority {
+    static func accepts(capturedKey: String, currentKey: String, isCancelled: Bool) -> Bool {
+        !isCancelled && capturedKey == currentKey
     }
 }
 
