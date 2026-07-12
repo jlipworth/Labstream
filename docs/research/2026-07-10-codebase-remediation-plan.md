@@ -942,6 +942,37 @@ their relationship during the schema-v3 migration.
   concurrent-probe dedupe; make timeout/cancel/failure requeue rather than silently erase. Add
   deterministic global-handler, gate-drain, multi-download, concurrency, and Play-promotion tests.
 
+#### 2026-07-12 — Phase 1 legacy-reset deletion lifecycle
+
+- **Commits:** `92a290df` stages legacy-reset deletion behind the artifact lifecycle; `563ffb08`
+  closes recovered-head admission and cross-row path-reservation races.
+- **Ordering:** startup first enumerates and cancels every pre-v4 task. Only the post-cancellation
+  submission can durably write `.legacyResetDeletion`, reset the row to the approved failed/zero-byte
+  policy, and record the complete deletion recipe. The worker waits for prepared durability, deletes
+  off the Store lock, then clears the legacy barrier and retires the intent only behind terminal
+  persistence. Startup callback admission remains closed until the exact lifecycle ticket completes.
+- **Relaunch:** Store startup may begin recovery before URLSession task cancellation finishes. The
+  post-cancellation submission now joins an already-active recovered head and awaits its actual
+  result rather than treating it as `.notPending`; success and failure races therefore cannot open
+  admission early. Prepared, partial-cleanup, and terminal failures keep exact durable retry
+  authority, and deletion-before-terminal crashes replay idempotently.
+- **Path safety:** candidate paths are filtered against every other row's published and pending-
+  intent authority, then reserved atomically under the Store lock across filesystem deletion and
+  terminal persistence. Record creation/replacement, metadata and side-asset publication, held
+  manifest adoption, checkpoint, and promotion APIs reject reserved paths. Shared/corrupt legacy
+  references are preserved for the surviving row.
+- **Evidence:** deterministic tests cover prepared failure with zero deletion, partial failure and
+  exact retry, blocked deletion with responsive Store reads and relaunch, terminal failure/relaunch,
+  active recovered-head joining while startup remains barred, concurrent held-path adoption
+  rejection, shared-path preservation, and the completed/current-partial migration policy.
+  Adversarial review is clean.
+- **Gates:** focused persistence passed 33/33 before reservation amendments; combined startup and
+  persistence passed 41/41; PMSKit passed 1,487/1,487; focused reservation/join tests and Mac build
+  passed after review fixes. Whole-plan runs reached all slice suites clean but encountered the
+  separately tracked MediaBrowser reverse-completion timing flake.
+- **Remaining Phase 1A artifact boundary:** whole-row and post-journal pending-deletion artifact
+  removal remain incomplete.
+
 #### 2026-07-11 — Phase 2D compiler-cliff removal
 
 - **Status:** complete.
