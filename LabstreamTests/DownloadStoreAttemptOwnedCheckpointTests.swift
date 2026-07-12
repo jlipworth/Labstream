@@ -5,6 +5,99 @@ import Testing
 
 @Suite("DownloadStore attempt-owned checkpoints")
 struct DownloadStoreAttemptOwnedCheckpointTests {
+    @Test func heldSuccessorRestartsFailedResumeQueueHeadWithOperationDispatcher() async throws {
+        try await withStoreAsync { initial, directory in
+            let owner = key("plex:mixed-artifact-retry", "attempt-a")
+            let media = directory.appendingPathComponent("mixed-artifact-retry.mp4")
+            #expect(created(initial, key: owner, media: media))
+            let writes = FailFirstIndexWrite()
+            let store = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init { data, url in try writes.write(data, to: url) })
+
+            guard case .accepted(let failedResume) = store.submitResumeData(
+                for: owner, Data("resume-after-retry".utf8), displayBytes: 18) else {
+                Issue.record("resume submission rejected"); return
+            }
+            guard case .failed(.persistence) = store.resolveArtifactSynchronously(failedResume) else {
+                Issue.record("expected prepared resume persistence failure"); return
+            }
+
+            let segment = OfflineHeldRangeSegment(
+                offset: 32, length: 3, relativePath: "mixed-artifact-held.body")
+            try Data([7, 8, 9]).write(
+                to: directory.appendingPathComponent(segment.relativePath))
+            guard case .accepted = store.submitHeldRangeSegment(for: owner, segment: segment) else {
+                Issue.record("held successor rejected"); return
+            }
+
+            let watermark = store.currentArtifactLifecycleWatermark()
+            guard case .committed = await store.flushLifecycleAndPersistence(
+                through: store.currentPersistenceTicket(),
+                artifactWatermark: watermark,
+                timeout: 1) else {
+                Issue.record("mixed queue did not drain after successor submission"); return
+            }
+            #expect(store.resumeData(for: owner) == Data("resume-after-retry".utf8))
+            #expect(store.record(for: owner)?.metadata?.heldRangeSegments == [segment])
+        }
+    }
+
+    @Test func heldReplanRestartsHeadAfterTerminalRetirementFailure() async throws {
+        try await withStoreAsync { initial, directory in
+            let owner = key("plex:held-terminal-replan", "attempt-a")
+            let media = directory.appendingPathComponent("held-terminal-replan.mp4")
+            #expect(created(initial, key: owner, media: media))
+            let old = OfflineHeldRangeSegment(
+                offset: 64, length: 2, relativePath: "held-terminal-old.body")
+            try Data([1, 2]).write(to: directory.appendingPathComponent(old.relativePath))
+            guard case .accepted = initial.persistHeldRangeSegment(for: owner, segment: old) else {
+                Issue.record("old seed failed"); return
+            }
+
+            // R1 prepares the replacement; R2 is its terminal intent retirement and fails.
+            let writes = FailNthIndexWrite(2)
+            let store = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init { data, url in try writes.write(data, to: url) })
+            let first = OfflineHeldRangeSegment(
+                offset: 64, length: 2, relativePath: "held-terminal-first.body")
+            try Data([3, 4]).write(to: directory.appendingPathComponent(first.relativePath))
+            guard case .accepted(let failed) = store.submitHeldRangeSegment(
+                for: owner, segment: first) else {
+                Issue.record("first replacement rejected"); return
+            }
+            guard case .failed(.persistence) = store.resolveArtifactSynchronously(failed.ticket) else {
+                Issue.record("expected terminal retirement persistence failure"); return
+            }
+
+            // This is the production replan shape: append a newer manifest revision. It must
+            // restart the restored inactive head before the successor can run.
+            let replanned = OfflineHeldRangeSegment(
+                offset: 64, length: 2, relativePath: "held-terminal-replanned.body")
+            try Data([5, 6]).write(
+                to: directory.appendingPathComponent(replanned.relativePath))
+            guard case .accepted = store.submitHeldRangeSegment(for: owner, segment: replanned) else {
+                Issue.record("replanned replacement rejected"); return
+            }
+
+            let watermark = store.currentArtifactLifecycleWatermark()
+            guard case .committed = await store.flushLifecycleAndPersistence(
+                through: store.currentPersistenceTicket(),
+                artifactWatermark: watermark,
+                timeout: 1) else {
+                Issue.record("terminal-failed held queue did not drain after replan"); return
+            }
+            #expect(store.record(for: owner)?.metadata?.heldRangeSegments == [replanned])
+            #expect(!FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent(old.relativePath).path))
+            #expect(!FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent(first.relativePath).path))
+            #expect(FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent(replanned.relativePath).path))
+        }
+    }
+
     @Test func heldReplacementLifecycleReturnsBeforePreparedCommitAndCoversTerminalClear() async throws {
         try await withStoreAsync { initial, directory in
             let owner = key("plex:held-ticket", "attempt-a")
