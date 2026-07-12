@@ -104,6 +104,106 @@ struct DownloadCleanupOrderingTests {
         }
     }
 
+    @Test func pendingDeletionHaltPreservesHeldManifestAndBodyUntilJournaledDeletion() throws {
+        try withDirectory { directory in
+            let key = attemptKey("attempt-A")
+            let store = DownloadStore(baseDirectory: directory)
+            #expect(createRecord(store: store, key: key, persistedSession: "session-A"))
+            let mediaURL = store.destinationURL(ratingKey: key.ratingKey, ext: "mp4")
+            try Data("partial-media".utf8).write(to: mediaURL)
+            let heldRelativePath = "held-pending-A.body"
+            let heldURL = directory.appendingPathComponent(heldRelativePath)
+            try Data("ahead-range".utf8).write(to: heldURL)
+            let manifest = OfflineHeldRangeSegment(
+                offset: 64, length: 11, relativePath: heldRelativePath)
+            guard case .accepted = store.persistHeldRangeSegment(for: key, segment: manifest) else {
+                Issue.record("Expected held manifest persistence"); return
+            }
+            let candidate = try intent(key: key, session: "session-A")
+            let failedJournal = DownloadCleanupIntentJournal(
+                directory: directory, persistence: failingJournalPersistence())
+            guard case .deletionPending =
+                    DownloadCleanupOrdering.prepareForDestructiveDeletion(
+                        candidates: [candidate], key: key,
+                        journal: failedJournal, store: store) else {
+                Issue.record("Expected deletion-pending reservation"); return
+            }
+
+            let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+            defer { session.invalidateInjectedSessionForTesting() }
+            session.haltForPendingDeletion(ratingKey: key.ratingKey)
+
+            #expect(store.metadata(for: key.ratingKey)?.heldRangeSegments == [manifest])
+            #expect(FileManager.default.fileExists(atPath: heldURL.path))
+            #expect(FileManager.default.fileExists(atPath: mediaURL.path))
+
+            let healthy = DownloadCleanupIntentJournal(directory: directory)
+            guard case .ready = DownloadCleanupOrdering.prepareForDestructiveDeletion(
+                candidates: [candidate], key: key, journal: healthy, store: store) else {
+                Issue.record("Expected pending authority to reach journal"); return
+            }
+            session.cancel(ratingKey: key.ratingKey)
+            #expect(store.completePendingDeletion(for: key) == .applied)
+            #expect(!FileManager.default.fileExists(atPath: heldURL.path))
+            #expect(!FileManager.default.fileExists(atPath: mediaURL.path))
+        }
+    }
+
+    @Test func legacyRatingKeyRemovalCannotBypassDeletionReservation() throws {
+        try withDirectory { directory in
+            let key = attemptKey("attempt-A")
+            let store = DownloadStore(baseDirectory: directory)
+            #expect(createRecord(store: store, key: key, persistedSession: "session-A"))
+            let mediaURL = store.destinationURL(ratingKey: key.ratingKey, ext: "mp4")
+            try Data("owned-media".utf8).write(to: mediaURL)
+            let candidate = try intent(key: key, session: "session-A")
+            #expect(store.markDeletionPending(for: key, cleanupIntents: [candidate]) == .applied)
+
+            store.remove(ratingKey: key.ratingKey)
+
+            #expect(store.isDeletionPending(for: key))
+            #expect(store.deletionPendingCleanupIntents(for: key) == [candidate])
+            #expect(FileManager.default.fileExists(atPath: mediaURL.path))
+            let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(relaunched.isDeletionPending(for: key))
+        }
+    }
+
+    @Test func embeddedPendingIntentsRecoverWithoutRowMetadata() throws {
+        try withDirectory { directory in
+            let key = attemptKey("attempt-A")
+            let store = DownloadStore(baseDirectory: directory)
+            let row = DownloadRecord(
+                ratingKey: key.ratingKey,
+                attemptID: key.attemptID,
+                title: "Legacy item",
+                localURL: store.destinationURL(ratingKey: key.ratingKey, ext: "mp4"),
+                status: .failed,
+                metadata: nil)
+            #expect(store.createAttemptOwnedRecord(row, attemptID: key.attemptID) == .committed(key))
+            let candidate = try intent(key: key, session: "transient-session-A")
+            let failedJournal = DownloadCleanupIntentJournal(
+                directory: directory, persistence: failingJournalPersistence())
+            guard case .deletionPending = DownloadCleanupOrdering.prepareForDestructiveDeletion(
+                candidates: [candidate], key: key, journal: failedJournal, store: store) else {
+                Issue.record("Expected embedded pending authority"); return
+            }
+
+            let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(relaunched.record(for: key.ratingKey)?.metadata == nil)
+            let embedded = try #require(relaunched.deletionPendingCleanupIntents(for: key))
+            guard case .ready(let durable) = DownloadCleanupOrdering.prepareForDestructiveDeletion(
+                candidates: embedded,
+                key: key,
+                journal: DownloadCleanupIntentJournal(directory: directory),
+                store: relaunched) else {
+                Issue.record("Expected metadata-free recovery from embedded intents"); return
+            }
+            #expect(durable == [candidate])
+            #expect(relaunched.completePendingDeletion(for: key) == .applied)
+        }
+    }
+
     private func attemptKey(_ attempt: String) -> DownloadAttemptKey {
         DownloadAttemptKey(
             ratingKey: "emby:item",

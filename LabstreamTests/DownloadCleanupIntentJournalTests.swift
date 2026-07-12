@@ -122,6 +122,31 @@ struct DownloadCleanupIntentJournalTests {
         }
     }
 
+    @Test func concurrentSemanticEnsureCommitsExactlyOneAuthority() throws {
+        try withTemporaryDirectory { directory in
+            let persistence = SlowReadJournalPersistence().persistence
+            let journal = DownloadCleanupIntentJournal(
+                directory: directory, persistence: persistence)
+            let proposed = try (0..<32).map { index in
+                try intent(
+                    id: UUID(), attempt: "attempt-A", session: "shared-session-\(index / 32)")
+            }
+            let collector = JournalResultCollector()
+
+            DispatchQueue.concurrentPerform(iterations: proposed.count) { index in
+                let result = journal.ensure(proposed[index])
+                collector.append(result)
+            }
+
+            let durable = try loaded(journal)
+            let only = try #require(durable.first)
+            let results = collector.values
+            #expect(durable.count == 1)
+            #expect(results.count == proposed.count)
+            #expect(results.allSatisfy { $0 == .committed(only) })
+        }
+    }
+
     @Test func persistedDuplicateUUIDsAreCorruptionEvenWhenValuesAreIdentical() throws {
         try withTemporaryDirectory { directory in
             let value = try intent(id: UUID(), attempt: "attempt-A", session: "session-A")
@@ -322,3 +347,31 @@ struct DownloadCleanupIntentJournalTests {
 }
 
 private struct InjectedCleanupJournalFailure: Error {}
+
+private final class SlowReadJournalPersistence: @unchecked Sendable {
+    var persistence: DownloadCleanupIntentJournal.Persistence {
+        .init(
+            read: { url in
+                // Widen the old load/unlock/add race. The corrected ensure holds one lock from
+                // this read through semantic lookup, UUID validation, and durable replacement.
+                Thread.sleep(forTimeInterval: 0.002)
+                guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+                return try Data(contentsOf: url)
+            },
+            encode: { try JSONEncoder().encode($0) },
+            atomicWrite: { data, url in try data.write(to: url, options: .atomic) })
+    }
+}
+
+private final class JournalResultCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [DownloadCleanupIntentJournal.AddResult] = []
+
+    func append(_ value: DownloadCleanupIntentJournal.AddResult) {
+        lock.withLock { storage.append(value) }
+    }
+
+    var values: [DownloadCleanupIntentJournal.AddResult] {
+        lock.withLock { storage }
+    }
+}

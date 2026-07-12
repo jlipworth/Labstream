@@ -2450,6 +2450,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     /// Cancel any in-flight transfer for a ratingKey.
     func cancel(ratingKey: String) {
+        halt(ratingKey: ratingKey, preserveHeldRangeSegments: false)
+    }
+
+    /// Stop attempt A after destructive deletion was durably deferred. The row and every local
+    /// artifact remain recovery authority until its cleanup operations reach the journal, so this
+    /// halt differs from ordinary Cancel only by retaining persisted held manifests and bodies.
+    func haltForPendingDeletion(ratingKey: String) {
+        halt(ratingKey: ratingKey, preserveHeldRangeSegments: true)
+    }
+
+    private func halt(ratingKey: String, preserveHeldRangeSegments: Bool) {
         guard let attemptID = currentAttemptIdentity(ratingKey: ratingKey) else { return }
         let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
         guard store.ownsAttempt(attemptKey) else { return }
@@ -2480,8 +2491,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // paths need the old owner so the replacement can perform an exact A → B compare/swap.
         // Clearing only the token would leave a schema-v3 row malformed across relaunch and would
         // make a legitimate Retry look like an unsafe attempt to adopt an unowned row.
-        // C2: the caller is about to delete/reset this row — held segment stashes must not survive.
-        purgeHeldRangeSegments(for: attemptKey)
+        // Ordinary Cancel is destructive and abandons the row. A deletion-pending halt cannot
+        // purge these files yet: their manifests remain part of the exact recoverable row until
+        // journal-first deletion resumes successfully.
+        if !preserveHeldRangeSegments {
+            purgeHeldRangeSegments(for: attemptKey)
+        }
 
         // A dormant session must remain inert: touching the lazy URLSession here would construct
         // it outside the startup migration/admission boundary. There cannot be admitted task IDs
