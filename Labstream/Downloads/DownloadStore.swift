@@ -1560,7 +1560,7 @@ final class DownloadStore: @unchecked Sendable {
             .union(previous.map { [$0.relativePath] } ?? [])
             .filter(Self.isSafeOneLevelRelativePath).sorted()
         row.heldRangeBodyDeletionIntents = paths
-        let (intent, ticket, start) = appendHeldLifecycleIntentLocked(
+        let (_, ticket, start) = appendHeldLifecycleIntentLocked(
             row: &row, key: key, relativePaths: paths)
         rows[key.ratingKey] = row
         lock.unlock()
@@ -1600,7 +1600,7 @@ final class DownloadStore: @unchecked Sendable {
             .union(removed.map(\.relativePath).filter(Self.isSafeOneLevelRelativePath))
             .sorted()
         row.heldRangeBodyDeletionIntents = paths
-        let (intent, ticket, start) = appendHeldLifecycleIntentLocked(
+        let (_, ticket, start) = appendHeldLifecycleIntentLocked(
             row: &row, key: key, relativePaths: paths)
         rows[key.ratingKey] = row
         lock.unlock()
