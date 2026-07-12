@@ -1,5 +1,6 @@
 #if os(iOS)
 import UIKit
+import PMSKit
 
 /// Applies a player-only landscape policy on iPhone without constraining iPad or the
 /// rest of the mobile app. The previous scene orientation is restored when playback
@@ -22,17 +23,26 @@ final class MobilePlayerOrientationCoordinator {
     }
 
     func restoreIfNeeded() {
-        guard isActive else { return }
-        isActive = false
+        guard let restoration = beginRestoration() else { return }
+        request(restoration.mask, in: restoration.scene, context: "restore_on_disappear")
+    }
 
-        AppDelegate.supportedInterfaceOrientations = .allButUpsideDown
-        let scene = activeScene ?? foregroundWindowScene
-        let previousMask = orientationMask(for: previousOrientation)
-        activeScene = nil
-        previousOrientation = nil
+    /// Explicit-close path for #241. Keep the full-screen player covering the browse UI until
+    /// UIKit has had a chance to apply the restored geometry, rather than revealing Detail in
+    /// landscape and hoping `.onDisappear` wins the race afterward.
+    func restoreBeforeDismissal() async {
+        guard let restoration = beginRestoration() else { return }
+        request(restoration.mask, in: restoration.scene, context: "restore_before_dismissal")
 
-        guard let scene, let previousMask else { return }
-        request(previousMask, in: scene, context: "restore")
+        // `requestGeometryUpdate` has only an error callback, not a success completion. Poll the
+        // scene briefly and yield even on timeout; the request remains active after dismissal.
+        for _ in 0..<20 {
+            if matches(restoration.mask,
+                       orientation: restoration.scene.effectiveGeometry.interfaceOrientation) {
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
     }
 
     private var foregroundWindowScene: UIWindowScene? {
@@ -42,14 +52,47 @@ final class MobilePlayerOrientationCoordinator {
             ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
     }
 
-    private func orientationMask(for orientation: UIInterfaceOrientation?) -> UIInterfaceOrientationMask? {
+    private func beginRestoration() -> (scene: UIWindowScene, mask: UIInterfaceOrientationMask)? {
+        guard isActive else { return nil }
+        isActive = false
+
+        AppDelegate.supportedInterfaceOrientations = .allButUpsideDown
+        let scene = activeScene ?? foregroundWindowScene
+        let target = MobilePlayerOrientationRestorePolicy.target(after: policyOrientation(previousOrientation))
+        activeScene = nil
+        previousOrientation = nil
+
+        guard let scene else { return nil }
+        scene.windows.first?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+        return (scene, orientationMask(for: target))
+    }
+
+    private func policyOrientation(_ orientation: UIInterfaceOrientation?) -> MobilePlayerOrientationRestorePolicy.Orientation {
         switch orientation {
-        case .portrait: .portrait
-        case .portraitUpsideDown: .portrait
+        case .portrait, .portraitUpsideDown: .portrait
         case .landscapeLeft: .landscapeLeft
         case .landscapeRight: .landscapeRight
-        case .unknown, nil: nil
-        @unknown default: nil
+        case .unknown, nil: .unknown
+        @unknown default: .unknown
+        }
+    }
+
+    private func orientationMask(for orientation: MobilePlayerOrientationRestorePolicy.Orientation) -> UIInterfaceOrientationMask {
+        switch orientation {
+        case .portrait, .unknown: .portrait
+        case .landscapeLeft: .landscapeLeft
+        case .landscapeRight: .landscapeRight
+        }
+    }
+
+    private func matches(_ mask: UIInterfaceOrientationMask,
+                         orientation: UIInterfaceOrientation) -> Bool {
+        switch orientation {
+        case .portrait: mask == .portrait
+        case .landscapeLeft: mask == .landscapeLeft
+        case .landscapeRight: mask == .landscapeRight
+        case .portraitUpsideDown, .unknown: false
+        @unknown default: false
         }
     }
 

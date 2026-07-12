@@ -140,7 +140,7 @@ struct CustomPlayerView: View {
                                        mobileVideoDisplayMode: mobileVideoDisplayModeBinding,
                                        mobileSystemCoordinator: mobileSystemCoordinator,
                                        onRetry: { controller.retry() },
-                                       onClose: onClose,
+                                       onClose: onClose == nil ? nil : { requestPlayerClose() },
                                        allowsRealityTheater: allowsRealityTheater)
                     #else
                     CustomPlayerChrome(controller: controller,
@@ -201,7 +201,7 @@ struct CustomPlayerView: View {
         await MainActor.run {
             let playback = controllerFactory()
             playback.onAdvanceToNext = onRequestPlay
-            playback.onPlaybackEnded = onClose
+            playback.onPlaybackEnded = onClose == nil ? nil : { requestPlayerClose() }
             controller = playback
             #if os(iOS)
             // Keep playing into the PiP window or an active AirPlay route when the app
@@ -258,6 +258,18 @@ struct CustomPlayerView: View {
     @MainActor
     private func refreshScrubberClock(from controller: PlaybackController) {
         tickCustomScrubberClock(&scrubState, from: controller, fallbackDurationMs: item.duration ?? 0)
+    }
+
+    @MainActor
+    private func requestPlayerClose() {
+        #if os(iOS)
+        Task { @MainActor in
+            await mobileOrientationCoordinator.restoreBeforeDismissal()
+            onClose?()
+        }
+        #else
+        onClose?()
+        #endif
     }
 }
 
