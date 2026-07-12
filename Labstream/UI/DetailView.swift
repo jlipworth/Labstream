@@ -63,6 +63,7 @@ struct DetailView: View {
     @State private var isTogglingWatched = false
     @State private var metadataLoadingRatingKey: String?
     @State private var playbackRequestID: UUID?
+    @State private var mobilePlayerOrientationCoordinator = MobilePlayerOrientationCoordinator()
     @AppStorage(PlaybackPreferences.Keys.remoteQualityKbps) private var remoteMaxVideoBitrateKbps = PlaybackPreferences.defaultRemoteQualityKbps
     @AppStorage(PlaybackPreferences.Keys.homeQualityKbps) private var homeMaxVideoBitrateKbps = PlaybackPreferences.defaultHomeQualityKbps
     @AppStorage(PlaybackPreferences.Keys.resumeRewindSeconds) private var resumeRewindSeconds = 0
@@ -444,7 +445,7 @@ struct DetailView: View {
                !detailed.isMusic {
                 musicPlayer.pauseForVideo()
                 playingItem = DetailPlaybackLauncher.itemWithResumeRewind(detailed, resumeRewindSeconds: resumeRewindSeconds)
-                presentingPlayer = true
+                await presentResolvedPlayer()
             }
         }
         // Resolve the collapsed versions' resolution/codec labels for the chooser (#108).
@@ -582,6 +583,7 @@ struct DetailView: View {
                          offlineTextSubtitles: request.offlineTextSubtitles,
                          offlineChapterImageURLs: request.chapterImageURLs,
                          cinemaOrigin: .offline(ratingKey: request.downloadRatingKey),
+                         mobileOrientationCoordinator: mobilePlayerOrientationCoordinator,
                          onClose: { localPlaybackRequest = nil })
     }
 
@@ -732,14 +734,15 @@ struct DetailView: View {
                 embyRemotePlayback = nil
                 playingItem = nil
                 presentingPlayer = false
-                localPlaybackRequest = LocalPlaybackRequest(url: local,
-                                                            item: DetailPlaybackLauncher.itemWithResumeRewind(offlineItem, resumeRewindSeconds: resumeRewindSeconds),
-                                                            trickPlayURL: trickPlayURL,
-                                                            trickPlayKind: trickPlayKind,
-                                                            chapterImageURLs: chapterImageURLs,
-                                                            offlineChapters: record?.metadata?.chapters ?? [],
-                                                            offlineTextSubtitles: record?.metadata?.offlineTextSubtitles ?? [],
-                                                            downloadRatingKey: key)
+                let request = LocalPlaybackRequest(url: local,
+                                                   item: DetailPlaybackLauncher.itemWithResumeRewind(offlineItem, resumeRewindSeconds: resumeRewindSeconds),
+                                                   trickPlayURL: trickPlayURL,
+                                                   trickPlayKind: trickPlayKind,
+                                                   chapterImageURLs: chapterImageURLs,
+                                                   offlineChapters: record?.metadata?.chapters ?? [],
+                                                   offlineTextSubtitles: record?.metadata?.offlineTextSubtitles ?? [],
+                                                   downloadRatingKey: key)
+                Task { await presentLocalPlayer(request) }
             } label: {
                 Label("Play Offline", systemImage: "arrow.down.circle.fill")
                     .font(.title3)
@@ -859,6 +862,7 @@ struct DetailView: View {
                                 identity: appModel.identity.jellyfin),
                              cinemaOrigin: onlineCinemaOrigin,
                              onClose: { presentingPlayer = false },
+                             mobileOrientationCoordinator: mobilePlayerOrientationCoordinator,
                              allowsRealityTheater: false)
                 .id(remote.id)
                 .ignoresSafeArea()
@@ -883,6 +887,7 @@ struct DetailView: View {
                                 userId: appModel.embyUserID),
                              cinemaOrigin: onlineCinemaOrigin,
                              onClose: { presentingPlayer = false },
+                             mobileOrientationCoordinator: mobilePlayerOrientationCoordinator,
                              allowsRealityTheater: false)
                 .id(remote.id)
                 .ignoresSafeArea()
@@ -923,6 +928,7 @@ struct DetailView: View {
                                  cinemaOrigin: onlineCinemaOrigin,
                                  onClose: { presentingPlayer = false },
                                  onRequestPlay: playNext,
+                                 mobileOrientationCoordinator: mobilePlayerOrientationCoordinator,
                                  allowsRealityTheater: true)
             }
             // Rebuild the player + its PlaybackController cleanly whenever the playing
@@ -993,7 +999,7 @@ struct DetailView: View {
         case .plex:
             remotePlayback = nil
             embyRemotePlayback = nil
-            presentingPlayer = true
+            await presentResolvedPlayer()
             span.end(fields: ["path_mode": "plex_stream"])
         case .jellyfin:
             embyRemotePlayback = nil
@@ -1016,7 +1022,7 @@ struct DetailView: View {
                       actionBackend == launchBackend,
                       detailed.ratingKey == launchRatingKey else { return }
                 remotePlayback = opened.playback
-                presentingPlayer = true
+                await presentResolvedPlayer()
                 span.end(fields: [
                     "path_mode": "remote_stream",
                     "play_method": opened.playMethod,
@@ -1046,7 +1052,7 @@ struct DetailView: View {
                       actionBackend == launchBackend,
                       detailed.ratingKey == launchRatingKey else { return }
                 embyRemotePlayback = opened.playback
-                presentingPlayer = true
+                await presentResolvedPlayer()
                 span.end(fields: [
                     "path_mode": "remote_stream",
                     "play_method": opened.playMethod,
@@ -1056,6 +1062,18 @@ struct DetailView: View {
                 playbackErrorMessage = friendlyMessage(error)
             }
         }
+    }
+
+    @MainActor
+    private func presentResolvedPlayer() async {
+        await mobilePlayerOrientationCoordinator.enterLandscapeBeforePresentationIfNeeded()
+        presentingPlayer = true
+    }
+
+    @MainActor
+    private func presentLocalPlayer(_ request: LocalPlaybackRequest) async {
+        await mobilePlayerOrientationCoordinator.enterLandscapeBeforePresentationIfNeeded()
+        localPlaybackRequest = request
     }
 
     // MARK: - Derived state

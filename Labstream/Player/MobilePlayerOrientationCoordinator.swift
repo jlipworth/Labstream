@@ -22,6 +22,18 @@ final class MobilePlayerOrientationCoordinator {
         request(.landscape, in: scene, context: "enter")
     }
 
+    /// Preflight used by the presenting detail view. Rotate the scene while Detail is still the
+    /// visible surface so the full-screen player is introduced once, already in landscape,
+    /// instead of presenting a portrait player and rotating it a frame later.
+    func enterLandscapeBeforePresentationIfNeeded() async {
+        enterLandscapeIfNeeded()
+        guard isActive, let scene = activeScene else { return }
+        for _ in 0..<20 {
+            if scene.effectiveGeometry.interfaceOrientation.isLandscape { return }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+    }
+
     func restoreIfNeeded() {
         guard let restoration = beginRestoration() else { return }
         request(restoration.mask, in: restoration.scene, context: "restore_on_disappear")
@@ -106,5 +118,14 @@ final class MobilePlayerOrientationCoordinator {
             ])
         }
     }
+}
+#else
+/// Non-iOS no-op keeps player construction source-compatible across shared targets.
+@MainActor
+final class MobilePlayerOrientationCoordinator {
+    func enterLandscapeIfNeeded() {}
+    func enterLandscapeBeforePresentationIfNeeded() async {}
+    func restoreIfNeeded() {}
+    func restoreBeforeDismissal() async {}
 }
 #endif

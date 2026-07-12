@@ -39,9 +39,9 @@ struct CustomPlayerView: View {
     @State private var controller: PlaybackController?
     @State private var scrubState: PlaybackScrubState
     @State private var clockTaskID = UUID()
+    private let mobileOrientationCoordinator: MobilePlayerOrientationCoordinator
     #if os(iOS)
     @State private var mobileSystemCoordinator = MobilePlayerSystemCoordinator()
-    @State private var mobileOrientationCoordinator = MobilePlayerOrientationCoordinator()
     @AppStorage(PlaybackPreferences.Keys.mobileVideoDisplayMode)
     private var mobileVideoDisplayModeRaw = MobileVideoDisplayMode.fit.rawValue
     #endif
@@ -55,6 +55,7 @@ struct CustomPlayerView: View {
          cinemaOrigin: CinemaOrigin = .systemEntry,
          onClose: (() -> Void)? = nil,
          onRequestPlay: ((MediaItem) -> Void)? = nil,
+         mobileOrientationCoordinator: MobilePlayerOrientationCoordinator? = nil,
          allowsRealityTheater: Bool = false) {
         self.item = item
         self.controllerFactory = controllerFactory
@@ -62,6 +63,7 @@ struct CustomPlayerView: View {
         self.cinemaOrigin = cinemaOrigin
         self.onClose = onClose
         self.onRequestPlay = onRequestPlay
+        self.mobileOrientationCoordinator = mobileOrientationCoordinator ?? MobilePlayerOrientationCoordinator()
         self.allowsRealityTheater = allowsRealityTheater
         _scrubState = State(initialValue: PlaybackScrubState(durationMs: item.duration ?? 0,
                                                             livePositionMs: item.viewOffset ?? 0))
@@ -81,6 +83,7 @@ struct CustomPlayerView: View {
          offlineChapterImageURLs: [Int: URL] = [:],
          cinemaOrigin: CinemaOrigin? = nil,
          onLocalPlaybackProgress: ((Int, Int?) -> Void)? = nil,
+         mobileOrientationCoordinator: MobilePlayerOrientationCoordinator? = nil,
          onClose: (() -> Void)? = nil) {
         // Version comes from the bundle (#26) so the offline X-Plex-Version can't drift
         // from the marketing version — same source of truth as the main identity.
@@ -102,6 +105,7 @@ struct CustomPlayerView: View {
                   cinemaOrigin: cinemaOrigin ?? .offline(ratingKey: item.ratingKey),
                   onClose: onClose,
                   onRequestPlay: nil,
+                  mobileOrientationCoordinator: mobileOrientationCoordinator,
                   allowsRealityTheater: true)
     }
 
