@@ -92,7 +92,20 @@ gitignored. `live-test-filter.sh` is the shared output/exit-status filter used b
 
 ### Emby
 
-- `live-emby-probe.sh` — Emby auth/browse/playback request builders and live response decoding.
+- `live-emby-probe.sh` — Emby auth/browse/playback request builders, shared progress-plan 2xx
+  proof, and live response decoding. Copy `emby-live.env.example`; the optional timeline offset
+  performs resume readback and restores the original value on a test account.
+
+### Jellyfin
+
+- `live-jellyfin-browse-timeline-probe.sh` — authoritative shared browse wrappers plus all four
+  shared progress events. Copy `jellyfin-live.env.example`; the optional timeline offset performs
+  resume readback and restores the original value on a test account.
+
+The browse/timeline wrappers print an explicit `VERDICT: SKIP` and exit successfully when their
+ignored credential file or required values are absent. A hermetic test pass containing that
+verdict is readiness evidence only, never live acceptance; acceptance requires a recorded
+`VERDICT: PASS` from a credentialed run.
 
 Before adding a live probe, document every required environment key, fail or skip safely when
 configuration is absent, clean up any server-side mutation, and ensure output redacts tokens,

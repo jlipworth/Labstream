@@ -12,9 +12,9 @@ import FoundationNetworking
 /// token, section key and show key all arrive via the environment, so no secret is ever committed.
 ///
 /// Why this faithfully reproduces the app: the sections list (`GET /library/sections`), a section's
-/// item grid (`GET /library/sections/{key}/all`) and the TV `/children` traversal are sent through
-/// a bare `URLSession.shared.data(for:)` with `PlexHeaders.standard` — the exact wire shape the
-/// app's browse layer produces. The `/children` request uses the real `ChildrenRequest` builder.
+/// item grid (`GET /library/sections/{key}/all`) and the TV `/children` traversal are built by
+/// `PlexBrowseRequest` and sent through a bare `URLSession.shared.data(for:)` — the exact PMSKit
+/// builder + transport boundary used by the app's browse layer.
 /// Decoding the live bodies here proves the PMSKit decoders (`SectionsResponse`, `MetadataResponse`)
 /// match the live wire, and the hierarchy assertions prove ids/types are coherent (a season's
 /// `grandparentRatingKey` chains back to its show; an episode's `parentRatingKey`/
@@ -70,24 +70,24 @@ struct LivePlexBrowseProbeTests {
         return (data, (response as? HTTPURLResponse)?.statusCode ?? -1)
     }
 
-    /// `GET /library/sections` — the same request the app's library picker loads. Built directly as
-    /// a `PlexRequest` (PMSKit exposes no dedicated sections builder; the wire shape is a bare GET
-    /// with the standard identity headers), decoded with the real `SectionsResponse`.
+    /// `GET /library/sections` — the same authoritative PMSKit builder that the app's forwarding
+    /// `BrowseAPI` facade uses.
     private func sectionsRequest(_ cfg: Config) -> PlexRequest {
-        PlexRequest(url: cfg.server.appendingPathComponent("/library/sections"),
-                    method: "GET",
-                    headers: PlexHeaders.standard(identity: cfg.identity, token: cfg.token))
+        PlexBrowseRequest.sections(server: cfg.server,
+                                   token: cfg.token,
+                                   identity: cfg.identity)
     }
 
     /// `GET /library/sections/{key}/all` — a section's item grid, paged with the same
-    /// `X-Plex-Container-Start/-Size` headers the app's grid uses. Decoded with `MetadataResponse`.
+    /// `X-Plex-Container-Start/-Size` query items the app's grid uses. Decoded with
+    /// `MetadataResponse`.
     private func sectionGridRequest(_ cfg: Config, start: Int, size: Int) -> PlexRequest {
-        var headers = PlexHeaders.standard(identity: cfg.identity, token: cfg.token)
-        headers["X-Plex-Container-Start"] = String(start)
-        headers["X-Plex-Container-Size"] = String(size)
-        return PlexRequest(url: cfg.server.appendingPathComponent("/library/sections/\(cfg.sectionKey)/all"),
-                           method: "GET",
-                           headers: headers)
+        PlexBrowseRequest.sectionItems(server: cfg.server,
+                                       token: cfg.token,
+                                       identity: cfg.identity,
+                                       sectionKey: cfg.sectionKey,
+                                       containerStart: start,
+                                       containerSize: size)
     }
 
     /// Fetch `req`, require HTTP 200, and decode leniently. nil (with a diagnostic) on non-200 or an
@@ -105,7 +105,7 @@ struct LivePlexBrowseProbeTests {
 
     @Test func livePlexBrowseProbe() async throws {
         guard let cfg = Config() else {
-            print(">>> BROWSE skipped: set PLEX_LIVE_SERVER / PLEX_LIVE_TOKEN / PLEX_LIVE_SECTION_KEY / PLEX_LIVE_SHOW_METADATA_KEY to run.")
+            print(">>> BROWSE VERDICT: SKIP — set PLEX_LIVE_SERVER / PLEX_LIVE_TOKEN / PLEX_LIVE_SECTION_KEY / PLEX_LIVE_SHOW_METADATA_KEY to run.")
             return
         }
 
@@ -120,10 +120,13 @@ struct LivePlexBrowseProbeTests {
                 return
             }
             let sections = decoded.mediaContainer.directory
-            print(">>> BROWSE [sections] decoded \(sections.count) section(s); keys=\(sections.map(\.key)) types=\(Set(sections.map(\.type)).sorted())")
+            print(">>> BROWSE [sections] decoded \(sections.count) section(s); types=\(Set(sections.map(\.type)).sorted()) configuredSectionPresent=\(sections.contains { $0.key == cfg.sectionKey })")
             #expect(!sections.isEmpty, "library should expose at least one section")
             #expect(sections.contains { $0.key == cfg.sectionKey },
-                    "PLEX_LIVE_SECTION_KEY=\(cfg.sectionKey) was not in the live sections list")
+                    "configured section key was not in the live sections list")
+            guard !sections.isEmpty, sections.contains(where: { $0.key == cfg.sectionKey }) else {
+                throw URLError(.resourceUnavailable)
+            }
         }
 
         // (b) Section item grid (first page). Proves MetadataResponse parses a real listing and that
@@ -136,11 +139,14 @@ struct LivePlexBrowseProbeTests {
         print(">>> BROWSE [grid] decoded \(gridItems.count) item(s) (page size 20); totalSize=\(grid.totalSize.map(String.init) ?? "nil") types=\(Set(gridItems.map(\.type)).sorted())")
         #expect(!gridItems.isEmpty, "section grid should return items")
         #expect(gridItems.allSatisfy { !$0.ratingKey.isEmpty }, "every grid item should carry a ratingKey")
+        guard !gridItems.isEmpty, gridItems.allSatisfy({ !$0.ratingKey.isEmpty }) else {
+            throw URLError(.cannotDecodeContentData)
+        }
 
         // (c) TV hierarchy: show → seasons → episodes, via the REAL ChildrenRequest builder.
         //     Asserts parent/grandparent ids chain back coherently.
-        let showReq = ChildrenRequest.children(server: cfg.server, token: cfg.token,
-                                               identity: cfg.identity, ratingKey: cfg.showRatingKey)
+        let showReq = PlexBrowseRequest.children(server: cfg.server, token: cfg.token,
+                                                 identity: cfg.identity, ratingKey: cfg.showRatingKey)
         guard let seasonContainer = try await fetchMetadata("seasons", showReq) else {
             Issue.record("show children leg failed — cannot traverse the TV hierarchy.")
             return
@@ -148,6 +154,7 @@ struct LivePlexBrowseProbeTests {
         let seasons = seasonContainer.metadata
         print(">>> BROWSE [seasons] decoded \(seasons.count) child(ren); types=\(Set(seasons.map(\.type)).sorted())")
         #expect(!seasons.isEmpty, "show should have at least one season")
+        guard !seasons.isEmpty else { throw URLError(.resourceUnavailable) }
 
         // Pick the first real season (skip non-season rows like "All episodes" specials if any).
         guard let season = seasons.first(where: { $0.type == "season" }) ?? seasons.first else {
@@ -155,15 +162,16 @@ struct LivePlexBrowseProbeTests {
         }
         // The season's grandparent (its show) must point back at the show we queried.
         if let gp = season.grandparentRatingKey {
-            print(">>> BROWSE [seasons] season ratingKey=\(season.ratingKey) grandparentRatingKey=\(gp) (show=\(cfg.showRatingKey))")
+            print(">>> BROWSE [seasons] season id=<set> grandparentMatchesShow=\(gp == cfg.showRatingKey)")
             #expect(gp == cfg.showRatingKey,
-                    "season.grandparentRatingKey (\(gp)) should equal the queried show (\(cfg.showRatingKey))")
+                    "season grandparent should equal the queried show")
+            guard gp == cfg.showRatingKey else { throw URLError(.cannotParseResponse) }
         } else {
-            print(">>> BROWSE [seasons] season ratingKey=\(season.ratingKey) has no grandparentRatingKey (PMS omitted it on season rows).")
+            print(">>> BROWSE [seasons] season id=<set> has no grandparentRatingKey (PMS omitted it on season rows).")
         }
 
-        let episodeReq = ChildrenRequest.children(server: cfg.server, token: cfg.token,
-                                                  identity: cfg.identity, ratingKey: season.ratingKey)
+        let episodeReq = PlexBrowseRequest.children(server: cfg.server, token: cfg.token,
+                                                    identity: cfg.identity, ratingKey: season.ratingKey)
         guard let episodeContainer = try await fetchMetadata("episodes", episodeReq) else {
             Issue.record("season children leg failed — cannot validate episodes.")
             return
@@ -172,19 +180,22 @@ struct LivePlexBrowseProbeTests {
         let realEpisodes = episodes.filter { $0.type == "episode" }
         print(">>> BROWSE [episodes] decoded \(episodes.count) child(ren), \(realEpisodes.count) episode(s); indices=\(realEpisodes.compactMap(\.index).prefix(8).map(String.init))")
         #expect(!realEpisodes.isEmpty, "season should contain episodes")
+        guard !realEpisodes.isEmpty else { throw URLError(.resourceUnavailable) }
 
         // Each episode must chain back: parentRatingKey == season, grandparentRatingKey == show.
         if let ep = realEpisodes.first {
-            print(">>> BROWSE [episodes] first episode ratingKey=\(ep.ratingKey) parent=\(ep.parentRatingKey ?? "nil") grandparent=\(ep.grandparentRatingKey ?? "nil") index=\(ep.index.map(String.init) ?? "nil")")
+            print(">>> BROWSE [episodes] first episode id=<set> parent=<\(ep.parentRatingKey == nil ? "nil" : "set")> grandparent=<\(ep.grandparentRatingKey == nil ? "nil" : "set")> index=\(ep.index.map(String.init) ?? "nil")")
             if let parent = ep.parentRatingKey {
                 #expect(parent == season.ratingKey,
-                        "episode.parentRatingKey (\(parent)) should equal its season (\(season.ratingKey))")
+                        "episode parent should equal its season")
+                guard parent == season.ratingKey else { throw URLError(.cannotParseResponse) }
             }
             if let grand = ep.grandparentRatingKey {
                 #expect(grand == cfg.showRatingKey,
-                        "episode.grandparentRatingKey (\(grand)) should equal the show (\(cfg.showRatingKey))")
+                        "episode grandparent should equal the queried show")
+                guard grand == cfg.showRatingKey else { throw URLError(.cannotParseResponse) }
             }
         }
-        print(">>> BROWSE VERDICT: OK — sections + grid + TV hierarchy (show→season→episode) all decode and chain coherently against the live server.")
+        print(">>> BROWSE VERDICT: PASS — authoritative sections + grid + children builders decode and chain coherently against the live server.")
     }
 }
