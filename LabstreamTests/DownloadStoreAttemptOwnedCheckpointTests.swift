@@ -40,6 +40,43 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             #expect(store.deferredHeldRangeBodyDeletionRelativePaths(for: owner)?.isEmpty == true)
         }
     }
+
+    @Test func ownerlessLegacyHeldCleanupStagesAfterOwnershipMigration() throws {
+        try withStore { _, directory in
+            let ratingKey = "plex:legacy-held-ownerless"
+            let bodyName = "legacy-held-ownerless.body"
+            try Data([9]).write(to: directory.appendingPathComponent(bodyName))
+            let object: [String: Any] = [
+                "schemaVersion": 2,
+                "rows": [[
+                    "ratingKey": ratingKey,
+                    "title": "Legacy",
+                    "relativePath": "legacy.mp4",
+                    "bytes": 0,
+                    "progress": 0,
+                    "status": "downloading",
+                    "metadata": [
+                        "ratingKey": ratingKey, "title": "Legacy", "type": "movie",
+                        "resumeMode": "staticByteRange",
+                    ],
+                    "heldRangeBodyDeletionIntents": [bodyName],
+                ]],
+            ]
+            try JSONSerialization.data(withJSONObject: object).write(
+                to: directory.appendingPathComponent("index.json"), options: .atomic)
+            let store = DownloadStore(baseDirectory: directory)
+            #expect(FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent(bodyName).path))
+            guard case .committed = store.commitLegacyAttemptOwnershipMigration() else {
+                Issue.record("ownership migration failed"); return
+            }
+            store.stageLegacyHeldBodyDeletionJobs()
+            _ = store.resolveArtifactSynchronouslyForTests(
+                through: store.currentArtifactLifecycleWatermark())
+            #expect(!FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent(bodyName).path))
+        }
+    }
     @Test func staleAttemptCannotReadOrMutateReplacementCheckpointState() throws {
         try withStore { store, directory in
             let a = key("plex:checkpoint", "attempt-a")

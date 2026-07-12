@@ -429,9 +429,13 @@ public final class DownloadManager {
         guard !startupRecoveryInFlight else { return }
         switch migrationResult {
         case .notRequired:
+            store.stageLegacyHeldBodyDeletionJobs()
             activateDownloadsAfterMigration(resetKeys: [])
         case .committed(let plan):
             startupCleanupOnlyKeys = Set(plan.cleanupOnly)
+            // Ownerless legacy rows could not receive an exact held-cleanup lifecycle job during
+            // Store init. Stage them only after ownership migration is durable, before admission.
+            store.stageLegacyHeldBodyDeletionJobs()
             activateDownloadsAfterMigration(resetKeys: Set(plan.taskCancellationAndReset))
         case .failed(let plan, let persistence):
             startupCleanupOnlyKeys = Set(plan.cleanupOnly)
