@@ -213,6 +213,8 @@ struct BackgroundDownloadStartupAdmissionTests {
             await withCheckedContinuation { continuation in
                 session.reattach { _ in continuation.resume() }
             }
+            _ = store.resolveArtifactSynchronouslyForTests(
+                through: store.currentArtifactLifecycleWatermark())
 
             #expect(FileManager.default.fileExists(atPath: ownedStage.path))
             #expect(!FileManager.default.fileExists(atPath: orphanStage.path))
@@ -302,6 +304,8 @@ struct BackgroundDownloadStartupAdmissionTests {
             #expect(FileManager.default.fileExists(atPath: body.path))
 
             let healthyRelaunch = DownloadStore(baseDirectory: directory)
+            _ = healthyRelaunch.resolveArtifactSynchronouslyForTests(
+                through: healthyRelaunch.currentArtifactLifecycleWatermark())
             #expect(healthyRelaunch.deferredHeldRangeBodyDeletionRelativePaths(for: key) == [])
             #expect(!FileManager.default.fileExists(atPath: body.path))
         }
