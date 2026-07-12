@@ -40,6 +40,13 @@ final class DownloadWorkRegistry {
         }
     }
 
+    enum AttemptCancellationMode: Sendable, Equatable {
+        case allCancellable
+        /// Terminal refresh releases network/server ownership while allowing the finalizer that
+        /// published that terminal row to finish its callback and accounting defers.
+        case preservingFinalizer
+    }
+
     struct EntrySnapshot: Equatable, Sendable {
         let token: Token
         let kind: Kind
@@ -103,6 +110,21 @@ final class DownloadWorkRegistry {
         return token
     }
 
+    /// Atomically admit one work item of `kind` for an exact attempt. Finalization uses this
+    /// instead of a check-then-start pair: duplicate delegate/recovery callbacks cannot create two
+    /// validators for the same attempt, even when both reach the main actor in one run-loop turn.
+    @discardableResult
+    func startIfAbsent(
+        for key: DownloadAttemptKey,
+        kind: Kind,
+        operation: @escaping @MainActor @Sendable () async -> Void
+    ) -> Token? {
+        guard entriesByAttempt[key]?.values.contains(where: { $0.kind == kind }) != true else {
+            return nil
+        }
+        return start(for: key, kind: kind, operation: operation)
+    }
+
     /// Compare-remove exactly one task. A delayed completion from an old token is a no-op.
     @discardableResult
     func complete(key: DownloadAttemptKey, token: Token) -> Bool {
@@ -114,10 +136,16 @@ final class DownloadWorkRegistry {
     /// Cancel and unregister finalizer/side-cache work for one exact attempt. Required cleanup is
     /// deliberately retained and not cancelled; it removes itself only after confirmed completion.
     @discardableResult
-    func cancelCancellableWork(for key: DownloadAttemptKey) -> [Token] {
+    func cancelCancellableWork(
+        for key: DownloadAttemptKey,
+        mode: AttemptCancellationMode = .allCancellable
+    ) -> [Token] {
         guard var entries = entriesByAttempt[key] else { return [] }
         let cancellable = entries.values
-            .filter { $0.kind.isCancellableWithAttempt }
+            .filter {
+                $0.kind.isCancellableWithAttempt
+                    && !(mode == .preservingFinalizer && $0.kind == .finalizer)
+            }
             .sorted { $0.token.id.uuidString < $1.token.id.uuidString }
         for entry in cancellable {
             entries.removeValue(forKey: entry.token)
