@@ -80,4 +80,19 @@ struct BackgroundDownloadCompletionGateTests {
         #expect(gate.finishEvents(identifier: "session") == ["session"])
         #expect(!gate.hasPendingHandler)
     }
+
+    @Test("Observable startup failure aborts stored and deferred handlers exactly once")
+    func startupFailureAbort() {
+        var gate = BackgroundDownloadCompletionGate()
+        gate.storeHandler(identifier: "waiting")
+        gate.storeHandler(identifier: "deferred")
+        gate.beginOperation()
+        #expect(gate.finishEvents(identifier: "deferred").isEmpty)
+
+        #expect(gate.abortAwaitingHandlers() == ["deferred", "waiting"])
+        #expect(!gate.hasPendingHandler)
+        #expect(gate.pendingOperationCount == 0)
+        #expect(gate.abortAwaitingHandlers().isEmpty)
+        #expect(gate.finishEvents(identifier: "waiting").isEmpty)
+    }
 }

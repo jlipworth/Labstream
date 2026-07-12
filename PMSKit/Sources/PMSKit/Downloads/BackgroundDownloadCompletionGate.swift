@@ -55,4 +55,16 @@ public struct BackgroundDownloadCompletionGate: Sendable, Equatable {
         }
         return [identifier]
     }
+
+    /// Fail-closed startup may be unable to instantiate/admit the background session, so no
+    /// `urlSessionDidFinishEvents` callback can arrive. After the startup durability attempt has
+    /// failed or timed out observably, release every stored handler rather than retaining an OS
+    /// wake indefinitely. This is deliberately destructive and only for terminal startup failure.
+    public mutating func abortAwaitingHandlers() -> [String] {
+        let identifiers = Array(awaitingFinishIdentifiers.union(deferredIdentifiers)).sorted()
+        awaitingFinishIdentifiers.removeAll()
+        deferredIdentifiers.removeAll()
+        pendingOperations = 0
+        return identifiers
+    }
 }
