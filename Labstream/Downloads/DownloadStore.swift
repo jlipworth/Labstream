@@ -615,6 +615,7 @@ final class DownloadStore: @unchecked Sendable {
     private var activeArtifactIntentIDs: Set<UUID> = [] // guarded by `lock`
     private var pendingResumeArtifactData: [UUID: Data] = [:] // guarded by `lock`
     private var artifactLifecycleTickets: [UUID: DownloadArtifactLifecycleCoordinator.Ticket] = [:]
+    private var startupArtifactCleanupIntentIDs: Set<UUID> = [] // guarded by `lock`
 
     /// - Parameter baseDirectory: where media files + the index live. Defaults to
     ///   `Application Support/Labstream/Downloads`, created if missing.
@@ -661,7 +662,12 @@ final class DownloadStore: @unchecked Sendable {
         try? DownloadIndexFileCommitter.cleanupAbandonedTemps(
             for: indexURL,
             fileManager: fileManager)
+        try? DownloadArtifactFileCommitter.cleanupAbandonedResumeTemps(
+            in: dir,
+            fileManager: fileManager)
         load()
+        startupArtifactCleanupIntentIDs = Set(
+            rows.values.flatMap { $0.pendingArtifactIntents.map(\.id) })
         recoverDeferredHeldRangeBodyDeletions()
         recoverPendingArtifactIntents()
     }
@@ -2674,6 +2680,13 @@ final class DownloadStore: @unchecked Sendable {
         lock.unlock()
 
         let newURL = baseDirectory.appendingPathComponent(newRelative)
+        let shouldCleanupStartupTemps = lock.withLock {
+            startupArtifactCleanupIntentIDs.remove(ticket.intentID) != nil
+        }
+        if shouldCleanupStartupTemps {
+            // Startup-only and age-gated: never unlink a fresh sibling a live writer may own.
+            try? DownloadIndexFileCommitter.cleanupAbandonedTemps(for: newURL)
+        }
         if !artifactFilesystem.fileExists(newURL, fileManager) {
             if intent.phase == .publishedAwaitingPriorDeletion {
                 rollbackMissingPublishedResume(
@@ -2782,14 +2795,16 @@ final class DownloadStore: @unchecked Sendable {
             if restoredRelative == nil { metadata.resumeDisplayBytes = nil }
             row.metadata = metadata
         }
-        row.pendingArtifactIntents.removeFirst()
+        let retiringIntent = row.pendingArtifactIntents.removeFirst()
         rows[ticket.key.ratingKey] = row
         let rollbackTicket = enqueueAttemptPersistenceLocked()
         lock.unlock()
         let rollback = waitForPersistence(through: rollbackTicket)
-        rollback.result.committed(through: rollbackTicket)
-            ? completeArtifactLifecycle(ticket)
-            : failArtifactLifecycle(ticket, rollback.result)
+        finishOrRestoreArtifactIntent(
+            ticket: ticket,
+            retiringIntent: retiringIntent,
+            terminalTicket: rollbackTicket,
+            outcome: rollback.result)
     }
 
     private func executeResumeClear(ticket: DownloadArtifactLifecycleCoordinator.Ticket) {
@@ -2867,14 +2882,16 @@ final class DownloadStore: @unchecked Sendable {
             metadata.downloadAttemptID = ticket.key.attemptID.rawValue
             clearing.metadata = metadata
         }
-        clearing.pendingArtifactIntents.removeFirst()
+        let retiringIntent = clearing.pendingArtifactIntents.removeFirst()
         rows[ticket.key.ratingKey] = clearing
         let terminal = enqueueAttemptPersistenceLocked()
         lock.unlock()
         let outcome = waitForPersistence(through: terminal)
-        outcome.result.committed(through: terminal)
-            ? completeArtifactLifecycle(ticket)
-            : failArtifactLifecycle(ticket, outcome.result)
+        finishOrRestoreArtifactIntent(
+            ticket: ticket,
+            retiringIntent: retiringIntent,
+            terminalTicket: terminal,
+            outcome: outcome.result)
     }
 
     private func finishArtifactIntent(_ ticket: DownloadArtifactLifecycleCoordinator.Ticket) {
@@ -2887,14 +2904,41 @@ final class DownloadStore: @unchecked Sendable {
             completeArtifactLifecycle(ticket)
             return
         }
-        row.pendingArtifactIntents.removeFirst()
+        let retiringIntent = row.pendingArtifactIntents.removeFirst()
         rows[ticket.key.ratingKey] = row
         let terminal = enqueueAttemptPersistenceLocked()
         lock.unlock()
         let outcome = waitForPersistence(through: terminal)
-        outcome.result.committed(through: terminal)
-            ? completeArtifactLifecycle(ticket)
-            : failArtifactLifecycle(ticket, outcome.result)
+        finishOrRestoreArtifactIntent(
+            ticket: ticket,
+            retiringIntent: retiringIntent,
+            terminalTicket: terminal,
+            outcome: outcome.result)
+    }
+
+    private func finishOrRestoreArtifactIntent(
+        ticket: DownloadArtifactLifecycleCoordinator.Ticket,
+        retiringIntent: Row.ArtifactIntent,
+        terminalTicket: PersistenceTicket,
+        outcome: PersistenceFlushResult
+    ) {
+        guard outcome.committed(through: terminalTicket) else {
+            // The terminal snapshot may have failed before or after replacement. Keep the exact
+            // intent as current in-memory retry authority and submit a restoring snapshot; a later
+            // same-intent coordinator attempt then supersedes this reported process failure.
+            lock.lock()
+            if var row = rows[ticket.key.ratingKey],
+               row.attemptID == ticket.key.attemptID,
+               !row.pendingArtifactIntents.contains(where: { $0.id == retiringIntent.id }) {
+                row.pendingArtifactIntents.insert(retiringIntent, at: 0)
+                rows[ticket.key.ratingKey] = row
+                _ = enqueueAttemptPersistenceLocked()
+            }
+            lock.unlock()
+            failArtifactLifecycle(ticket, outcome)
+            return
+        }
+        completeArtifactLifecycle(ticket)
     }
 
     private func completeArtifactLifecycle(

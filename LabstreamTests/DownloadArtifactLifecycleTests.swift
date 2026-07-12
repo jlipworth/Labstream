@@ -249,6 +249,125 @@ struct DownloadArtifactLifecycleTests {
         }
     }
 
+    @Test func replaceTerminalIndexFailureRestoresHeadThenDrainsQueuedSuccessor() async throws {
+        try await withDirectory { directory in
+            let index = ArmableTerminalIndexFailure()
+            let seed = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init { data, url in try index.write(data, to: url) })
+            let key = try resumeKey()
+            let record = DownloadRecord(
+                ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Resume",
+                localURL: directory.appendingPathComponent("terminal.mp4"), status: .paused,
+                metadata: OfflineMetadata(
+                    ratingKey: key.ratingKey, title: "Resume", type: "movie",
+                    resumeMode: .staticByteRange))
+            guard case .committed = seed.createAttemptOwnedRecord(record, attemptID: key.attemptID) else {
+                Issue.record("seed failed"); return
+            }
+            #expect(seed.setResumeData(for: key, Data("old".utf8)) == .applied)
+            let old = try #require(seed.record(for: key)?.metadata?.resumeDataRelativePath)
+            let removal = TerminalRemovalGate(target: old, index: index)
+            let store = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init { data, url in try index.write(data, to: url) },
+                artifactFilesystem: removal.filesystem)
+            guard case .accepted(let first) = store.submitResumeData(
+                for: key, Data("first".utf8)) else {
+                Issue.record("first submission failed"); return
+            }
+            #expect(await signal(removal.started, timeout: 1))
+            guard case .accepted = store.submitResumeData(for: key, Data("second".utf8)) else {
+                Issue.record("successor submission failed"); return
+            }
+            guard case .committed = await store.flushPersistence(
+                through: store.currentPersistenceTicket(), timeout: 1) else {
+                Issue.record("successor preparation did not commit"); return
+            }
+            removal.release.signal()
+            let firstResult = store.resolveSynchronously(.accepted(ticket: first))
+            guard case .persistenceFailed = firstResult else {
+                Issue.record("expected terminal index failure, got \(firstResult)"); return
+            }
+            let watermark = store.currentArtifactLifecycleWatermark()
+            guard case .committed = await store.flushLifecycleAndPersistence(
+                through: store.currentPersistenceTicket(), artifactWatermark: watermark,
+                timeout: 1) else {
+                Issue.record("restored replace did not drain"); return
+            }
+            #expect(store.resumeData(for: key) == Data("second".utf8))
+            #expect(resumeArtifacts(in: directory).count == 1)
+        }
+    }
+
+    @Test func clearTerminalIndexFailureRestoresSameIntentForLaterWatermark() async throws {
+        try await withDirectory { directory in
+            let index = ArmableTerminalIndexFailure()
+            let seed = try seededStore(directory: directory)
+            let key = try resumeKey()
+            #expect(seed.setResumeData(for: key, Data("old".utf8)) == .applied)
+            let old = try #require(seed.record(for: key)?.metadata?.resumeDataRelativePath)
+            let removal = TerminalRemovalGate(target: old, index: index)
+            let store = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init { data, url in try index.write(data, to: url) },
+                artifactFilesystem: removal.filesystem)
+            guard case .accepted(_, let clear) = store.submitClearResumeData(for: key) else {
+                Issue.record("clear submission failed"); return
+            }
+            #expect(await signal(removal.started, timeout: 1))
+            removal.release.signal()
+            guard case .failed(.persistence) = store.resolveArtifactSynchronously(clear) else {
+                Issue.record("expected terminal clear failure"); return
+            }
+            let watermark = store.currentArtifactLifecycleWatermark()
+            guard case .committed = await store.flushLifecycleAndPersistence(
+                through: store.currentPersistenceTicket(), artifactWatermark: watermark,
+                timeout: 1) else {
+                Issue.record("restored clear did not drain"); return
+            }
+            #expect(store.record(for: key)?.metadata?.resumeDataRelativePath == nil)
+        }
+    }
+
+    @Test func startupCleansOnlyAgedGenerationSiblingTemps() throws {
+        try withDirectorySync { directory in
+            let capture = CaptureFailingResumeWrite()
+            do {
+                let store = try seededStore(directory: directory, failure: capture.failure)
+                let key = try resumeKey()
+                guard case .artifactWriteFailed = store.setResumeData(
+                    for: key, Data("blob".utf8)) else {
+                    Issue.record("expected captured write failure"); return
+                }
+            }
+            let destination = try #require(capture.destination)
+            let oldTemp = directory.appendingPathComponent(
+                ".\(destination.lastPathComponent).commit-\(UUID().uuidString)")
+            let freshTemp = directory.appendingPathComponent(
+                ".\(destination.lastPathComponent).commit-\(UUID().uuidString)")
+            let unrelatedOld = directory.appendingPathComponent(
+                ".not-a-resume.commit-\(UUID().uuidString)")
+            try Data("old".utf8).write(to: oldTemp)
+            try Data("fresh".utf8).write(to: freshTemp)
+            try Data("unrelated".utf8).write(to: unrelatedOld)
+            let firstRelaunch = DownloadStore(baseDirectory: directory)
+            _ = firstRelaunch.resolveArtifactSynchronouslyForTests(
+                through: firstRelaunch.currentArtifactLifecycleWatermark())
+            #expect(FileManager.default.fileExists(atPath: oldTemp.path))
+            #expect(FileManager.default.fileExists(atPath: freshTemp.path))
+            for url in [oldTemp, unrelatedOld] {
+                try FileManager.default.setAttributes(
+                    [.modificationDate: Date().addingTimeInterval(-7_200)],
+                    ofItemAtPath: url.path)
+            }
+            _ = DownloadStore(baseDirectory: directory)
+            #expect(!FileManager.default.fileExists(atPath: oldTemp.path))
+            #expect(FileManager.default.fileExists(atPath: freshTemp.path))
+            #expect(FileManager.default.fileExists(atPath: unrelatedOld.path))
+        }
+    }
+
     @Test func reinitPreparedMissingGenerationPreservesPreviousAuthority() throws {
         try withDirectorySync { directory in
             let key = try resumeKey()
@@ -381,11 +500,16 @@ private final class ResumeWriteGate: @unchecked Sendable {
 private final class ResumeFilesystemFailure: @unchecked Sendable {
     let failWrite: Bool
     let failRemovalOf: String?
-    init(failWrite: Bool = false, failRemovalOf: String? = nil) {
-        self.failWrite = failWrite; self.failRemovalOf = failRemovalOf
+    let writeOverride: (@Sendable (Data, URL) throws -> Void)?
+    init(failWrite: Bool = false, failRemovalOf: String? = nil,
+         writeOverride: (@Sendable (Data, URL) throws -> Void)? = nil) {
+        self.failWrite = failWrite
+        self.failRemovalOf = failRemovalOf
+        self.writeOverride = writeOverride
     }
     lazy var filesystem = DownloadArtifactFilesystem(
         writeAuthArtifact: { [self] data, url, _ in
+            if let writeOverride { try writeOverride(data, url); return }
             if failWrite { throw InjectedArtifactFailure() }
             try DownloadArtifactFileCommitter().commit(data, to: url)
         },
@@ -412,4 +536,58 @@ private final class FailFirstResumeWriteGate: @unchecked Sendable {
         },
         removeItem: { url, fm in try fm.removeItem(at: url) },
         fileExists: { url, fm in fm.fileExists(atPath: url.path) })
+}
+
+private final class ArmableTerminalIndexFailure: @unchecked Sendable {
+    private let lock = NSLock()
+    private var armed = false
+    private var hasFailed = false
+    func armOnce() { lock.withLock { armed = true } }
+    func write(_ data: Data, to url: URL) throws {
+        let fail = lock.withLock {
+            guard armed, !hasFailed else { return false }
+            hasFailed = true
+            return true
+        }
+        if fail { throw InjectedArtifactFailure() }
+        try DownloadIndexFileCommitter().commit(data, to: url)
+    }
+}
+
+private final class TerminalRemovalGate: @unchecked Sendable {
+    let started = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    private let target: String
+    private let index: ArmableTerminalIndexFailure
+    private let lock = NSLock()
+    private var blocked = false
+    init(target: String, index: ArmableTerminalIndexFailure) {
+        self.target = target; self.index = index
+    }
+    lazy var filesystem = DownloadArtifactFilesystem(
+        writeAuthArtifact: { data, url, _ in
+            try DownloadArtifactFileCommitter().commit(data, to: url)
+        },
+        removeItem: { [self] url, fm in
+            let shouldBlock = lock.withLock {
+                guard url.lastPathComponent == target, !blocked else { return false }
+                blocked = true
+                return true
+            }
+            if shouldBlock {
+                started.signal(); release.wait(); index.armOnce()
+            }
+            try fm.removeItem(at: url)
+        },
+        fileExists: { url, fm in fm.fileExists(atPath: url.path) })
+}
+
+private final class CaptureFailingResumeWrite: @unchecked Sendable {
+    private let lock = NSLock()
+    private var captured: URL?
+    var destination: URL? { lock.withLock { captured } }
+    lazy var failure = ResumeFilesystemFailure(writeOverride: { [self] _, url in
+        lock.withLock { captured = url }
+        throw InjectedArtifactFailure()
+    })
 }
