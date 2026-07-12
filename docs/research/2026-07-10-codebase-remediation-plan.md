@@ -1675,12 +1675,44 @@ Incrementally extract along existing seams, not as rewrites:
 
 Every extraction is a mechanical move followed by separately reviewed behavior changes.
 
+### 5F. Audit diagnostics comprehensiveness after decomposition
+
+Run the full diagnostics audit only after 5A–5E stabilize presentation and coordinator ownership;
+an exhaustive call-site inventory before those moves would immediately become stale. Before and
+during the mechanical extractions, preserve existing event names, categories, fields, severity,
+privacy behavior, and critical failure/recovery coverage. Treat diagnostic removal, renaming, or
+semantic changes as separately reviewed behavior changes rather than hiding them inside file moves.
+
+At the stabilized Phase 5 boundary:
+
+- inventory production diagnostic events and their owning call sites;
+- map critical auth, download, playback, browse, and media-ownership state machines across success,
+  failure, parked/deferred, cancellation, retry, recovery, and terminal transitions;
+- identify silent or overwritten failures, missing recovery evidence, duplicate/noisy events, and
+  inconsistencies between user-visible errors and internal diagnostics;
+- verify Plex, Jellyfin, and Emby use coherent categories, severities, and privacy-safe fields while
+  retaining backend-specific failure meaning;
+- enforce bounded-cardinality fields and the existing prohibition on hosts, tokens, titles,
+  filenames, paths, and raw device IDs;
+- add deterministic sink/report tests proving that background/off-head failures survive long enough
+  to diagnose artifact replay, stalled transfers, playback revalidation, auth races, and media-owner
+  conflicts; and
+- record intentional non-events so later work does not turn expected cancellation or degradation
+  into support-log noise.
+
+Keep diagnostic implementation with the coordinator or platform responsibility that owns the
+event. The audit may improve diagnostics after the mechanical moves, but those behavior changes
+must remain independently reviewable and preserve report/redaction compatibility.
+
 ### Phase 5 acceptance
 
 - visionOS, iPhone, iPad, and Mac builds/smokes pass.
 - Player layout, menus, scrub, Cinema, PiP/AirPlay, keyboard/fullscreen, and media ownership
   keep explicit platform validation.
 - Conditional density and representative incremental-build fanout improve measurably.
+- The post-decomposition diagnostics inventory and state-machine coverage matrix are complete;
+  critical silent/parked/retry/recovery gaps have deterministic report-level coverage, and privacy,
+  cardinality, naming, severity, and user-error consistency checks pass.
 
 ## Phase 6 — optional PMSKit/module decomposition
 
