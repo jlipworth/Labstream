@@ -603,6 +603,45 @@ struct DownloadStorePersistenceTests {
         }
     }
 
+    @Test func rowDeletionRetryEpochDoesNotOverwriteUnresolvedFailure() async throws {
+        try await withTemporaryDirectory { directory in
+            let id = DownloadAttemptID(uuid: UUID())
+            let key = DownloadAttemptKey(ratingKey: "plex:row-delete-retry-epoch", attemptID: id)
+            let record = makeRecord(ratingKey: key.ratingKey, title: "Retry epoch",
+                                    directory: directory, bytes: 1, metadata: OfflineMetadata(
+                                        ratingKey: key.ratingKey, title: "Retry epoch", type: "movie"))
+            try Data([1]).write(to: record.localURL)
+            let blocker = BlockingFailOnceArtifactDelete(path: record.localURL.path)
+            let live = DownloadArtifactFilesystem.live
+            let store = DownloadStore(baseDirectory: directory, artifactFilesystem: .init(
+                writeAuthArtifact: live.writeAuthArtifact,
+                removeItem: { url, fm in try blocker.remove(url, fm: fm) },
+                fileExists: live.fileExists))
+            #expect(store.createAttemptOwnedRecord(record, attemptID: id) == .committed(key))
+            let failedAttempt = store.submitRemove(for: key)
+            #expect(await waitForSignal(blocker.started, timeout: 1))
+            let failedBoundary = store.currentArtifactLifecycleWatermark()
+            blocker.release.signal()
+            guard case .failed(.artifact) = store.resolveArtifactSynchronouslyForTests(
+                through: failedBoundary) else {
+                Issue.record("expected first lifecycle attempt to fail"); return
+            }
+
+            let retryAttempt = store.submitRemove(for: key)
+            guard case .accepted(let failedTicket) = failedAttempt,
+                  case .accepted(let retryTicket) = retryAttempt else {
+                Issue.record("expected both lifecycle attempts"); return
+            }
+            #expect(failedTicket.intentID == retryTicket.intentID)
+            #expect(failedTicket.preparedRevision != retryTicket.preparedRevision)
+
+            // Resolve in reverse epoch order: success B must not overwrite unresolved failure A.
+            #expect(await store.resolveRowDeletion(retryAttempt) == .removed(key))
+            #expect(await store.resolveRowDeletion(failedAttempt)
+                == .cleanupFailed(key, cleanupFailureCount: 1))
+        }
+    }
+
     @Test func rowDeletionFailureRetainsDurableIntentAndRelaunchRetries() throws {
         try withTemporaryDirectory { directory in
             let id = DownloadAttemptID(uuid: UUID())
@@ -1529,6 +1568,26 @@ private final class BlockingFailingArtifactDelete: @unchecked Sendable {
     init(path: String) { self.path = path }
     func remove(_ url: URL, fm: FileManager) throws {
         if url.path == path {
+            started.signal(); release.wait()
+            throw CocoaError(.fileWriteOutOfSpace)
+        }
+        try fm.removeItem(at: url)
+    }
+}
+
+private final class BlockingFailOnceArtifactDelete: @unchecked Sendable {
+    let started = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private let path: String
+    private var failed = false
+    init(path: String) { self.path = path }
+    func remove(_ url: URL, fm: FileManager) throws {
+        let shouldFail = lock.withLock { () -> Bool in
+            guard url.path == path, !failed else { return false }
+            failed = true; return true
+        }
+        if shouldFail {
             started.signal(); release.wait()
             throw CocoaError(.fileWriteOutOfSpace)
         }
