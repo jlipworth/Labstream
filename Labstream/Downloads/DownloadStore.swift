@@ -1312,11 +1312,11 @@ final class DownloadStore: @unchecked Sendable {
             .union(previous.map { [$0.relativePath] } ?? [])
             .filter(Self.isSafeOneLevelRelativePath).sorted()
         row.heldRangeBodyDeletionIntents = paths
-        let (intent, ticket, shouldStart) = appendHeldLifecycleIntentLocked(
+        let (intent, ticket, start) = appendHeldLifecycleIntentLocked(
             row: &row, key: key, relativePaths: paths)
         rows[key.ratingKey] = row
         lock.unlock()
-        if shouldStart { scheduleHeldLifecycle(ticket: ticket, intent: intent) }
+        if let start { scheduleArtifactLifecycle(ticket: start.1, intent: start.0) }
         return .accepted(.init(
             previous: previous, removed: [], deferredRelativePaths: paths, ticket: ticket))
     }
@@ -1351,11 +1351,11 @@ final class DownloadStore: @unchecked Sendable {
             .union(removed.map(\.relativePath).filter(Self.isSafeOneLevelRelativePath))
             .sorted()
         row.heldRangeBodyDeletionIntents = paths
-        let (intent, ticket, shouldStart) = appendHeldLifecycleIntentLocked(
+        let (intent, ticket, start) = appendHeldLifecycleIntentLocked(
             row: &row, key: key, relativePaths: paths)
         rows[key.ratingKey] = row
         lock.unlock()
-        if shouldStart { scheduleHeldLifecycle(ticket: ticket, intent: intent) }
+        if let start { scheduleArtifactLifecycle(ticket: start.1, intent: start.0) }
         return .accepted(.init(
             previous: nil, removed: removed, deferredRelativePaths: paths, ticket: ticket))
     }
@@ -1364,7 +1364,11 @@ final class DownloadStore: @unchecked Sendable {
         row: inout Row,
         key: DownloadAttemptKey,
         relativePaths: [String]
-    ) -> (Row.ArtifactIntent, DownloadArtifactLifecycleCoordinator.Ticket, Bool) {
+    ) -> (
+        Row.ArtifactIntent,
+        DownloadArtifactLifecycleCoordinator.Ticket,
+        (Row.ArtifactIntent, DownloadArtifactLifecycleCoordinator.Ticket)?
+    ) {
         row.artifactGeneration += 1
         let intent = Row.ArtifactIntent(
             id: UUID(), attemptID: key.attemptID,
@@ -1377,17 +1381,42 @@ final class DownloadStore: @unchecked Sendable {
             key: key, generation: intent.generation, intentID: intent.id,
             preparedRevision: prepared)
         artifactLifecycleTickets[intent.id] = ticket
-        let shouldStart = row.pendingArtifactIntents.count == 1
-        if shouldStart { activeArtifactIntentIDs.insert(intent.id) }
-        return (intent, ticket, shouldStart)
+        var start: (Row.ArtifactIntent, DownloadArtifactLifecycleCoordinator.Ticket)?
+        if let head = row.pendingArtifactIntents.first,
+           !activeArtifactIntentIDs.contains(head.id) {
+            let headTicket: DownloadArtifactLifecycleCoordinator.Ticket
+            if head.id == intent.id {
+                headTicket = ticket
+            } else {
+                headTicket = artifactLifecycle.register(
+                    key: key, generation: head.generation, intentID: head.id,
+                    preparedRevision: .init(revision: 0))
+                artifactLifecycleTickets[head.id] = headTicket
+            }
+            activeArtifactIntentIDs.insert(head.id)
+            start = (head, headTicket)
+        }
+        return (intent, ticket, start)
     }
 
-    private func scheduleHeldLifecycle(
+    /// Schedule a durable queue head according to its operation. Successor submissions can be the
+    /// event that discovers an inactive predecessor after a failed lifecycle attempt, so they must
+    /// restart that predecessor rather than assuming the newly appended operation owns the head.
+    private func scheduleArtifactLifecycle(
         ticket: DownloadArtifactLifecycleCoordinator.Ticket,
         intent: Row.ArtifactIntent
     ) {
         artifactWorkerQueue.async { [weak self] in
-            self?.executeHeldLifecycle(ticket: ticket, intent: intent)
+            guard let self else { return }
+            switch intent.operation {
+            case .replaceResumeBlob:
+                let data = self.lock.withLock { self.pendingResumeArtifactData[intent.id] }
+                self.executeResumeReplacement(ticket: ticket, data: data)
+            case .clearResumeBlob:
+                self.executeResumeClear(ticket: ticket)
+            case .heldBodyDeletion:
+                self.executeHeldLifecycle(ticket: ticket, intent: intent)
+            }
         }
     }
 
@@ -1507,10 +1536,12 @@ final class DownloadStore: @unchecked Sendable {
             let tuple = appendHeldLifecycleIntentLocked(
                 row: &row, key: key, relativePaths: paths)
             rows[ratingKey] = row
-            if tuple.2 { staged.append((key, tuple.0, tuple.1)) }
+            if let start = tuple.2 { staged.append((key, start.0, start.1)) }
         }
         lock.unlock()
-        for (_, intent, ticket) in staged { scheduleHeldLifecycle(ticket: ticket, intent: intent) }
+        for (_, intent, ticket) in staged {
+            scheduleArtifactLifecycle(ticket: ticket, intent: intent)
+        }
     }
 
     @discardableResult
@@ -3253,20 +3284,7 @@ final class DownloadStore: @unchecked Sendable {
         }
         lock.unlock()
         for (_, intent, ticket) in scheduled {
-            artifactWorkerQueue.async { [weak self] in
-                guard let self else { return }
-                switch intent.operation {
-                case .replaceResumeBlob:
-                    let data = self.lock.withLock {
-                        self.pendingResumeArtifactData[intent.id]
-                    }
-                    self.executeResumeReplacement(ticket: ticket, data: data)
-                case .clearResumeBlob:
-                    self.executeResumeClear(ticket: ticket)
-                case .heldBodyDeletion:
-                    self.executeHeldLifecycle(ticket: ticket, intent: intent)
-                }
-            }
+            scheduleArtifactLifecycle(ticket: ticket, intent: intent)
         }
     }
 
