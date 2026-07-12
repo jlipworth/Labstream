@@ -2,17 +2,36 @@ import Foundation
 import AVFoundation
 import PMSKit
 
-private actor DownloadPlaybackValidationLimiter {
+actor DownloadPlaybackValidationLimiter {
     private var busy = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+    private var waiters: [Waiter] = []
 
-    func wait() async {
+    func wait() async throws {
+        try Task.checkCancellation()
         if !busy {
             busy = true
             return
         }
-        await withCheckedContinuation { continuation in
-            waiters.append(continuation)
+        let id = UUID()
+        let admitted = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume(returning: false)
+                } else {
+                    waiters.append(Waiter(id: id, continuation: continuation))
+                }
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(id) }
+        }
+        guard admitted else { throw CancellationError() }
+        if Task.isCancelled {
+            signal()
+            throw CancellationError()
         }
     }
 
@@ -20,9 +39,18 @@ private actor DownloadPlaybackValidationLimiter {
         if waiters.isEmpty {
             busy = false
         } else {
-            waiters.removeFirst().resume()
+            waiters.removeFirst().continuation.resume(returning: true)
         }
     }
+
+    private func cancelWaiter(_ id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        waiters.remove(at: index).continuation.resume(returning: false)
+    }
+
+    #if DEBUG
+    var queuedWaiterCountForTesting: Int { waiters.count }
+    #endif
 }
 
 struct BackgroundDownloadSessionDiagnosticSnapshot: Sendable {
@@ -44,6 +72,17 @@ struct BackgroundDownloadSessionDiagnosticSnapshot: Sendable {
 /// Delegate callbacks land off the main actor; we hop to `@MainActor` for record
 /// updates via `onChange`. The store itself is internally locked.
 final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+
+    struct FinalizerRequest: Sendable {
+        fileprivate let id: UUID
+        let attemptKey: DownloadAttemptKey
+        fileprivate let destination: URL
+        fileprivate let bytes: Int
+        fileprivate let validationLabel: String
+        fileprivate let expectedExactBytes: Int?
+        fileprivate let publishesWorkingFile: Bool
+        fileprivate let holdsBackgroundCompletion: Bool
+    }
 
     enum StartupActivationResult: Sendable, Equatable {
         case activated(cancelledTaskCount: Int, resetKeyCount: Int)
@@ -148,7 +187,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// Exact attempts currently inside post-transfer finalization. A duplicated URLSession/adoption
     /// callback must not launch a second AVPlayer validation for the same finished file, while a
     /// replacement attempt with the same rating key must not be suppressed by the older finalizer.
-    private var finalizingAttemptKeys: Set<DownloadAttemptKey> = []
+    private var finalizerRequestIDsByAttempt: [DownloadAttemptKey: UUID] = [:]
     private let finalizationStateQueue = DispatchQueue(label: "com.labstream.downloads.finalization-state")
     /// Last UI refresh across the whole downloads screen; progress callbacks can arrive many
     /// times per second per task, so per-row throttling still scales linearly with concurrent
@@ -382,6 +421,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// for durable/resumable accounting; DownloadManager uses these samples for active speed/ETA.
     var onRangeLiveProgress: ((_ ratingKey: String, _ liveBytes: Int, _ expectedBytes: Int?) -> Void)?
 
+    /// Finalization is owned by DownloadManager's exact-attempt work registry. This callback only
+    /// brokers an already synchronously admitted request; it must either register the request or
+    /// call `abandonFinalizerRequest` so the session's admission/background accounting balances.
+    var onFinalizerRequest: ((_ request: FinalizerRequest) -> Void)?
+
     /// True when this process currently owns an opaque or Range URLSession task for the row.
     /// `DownloadManager.activeJobs` is intentionally broader app-level bookkeeping and can survive
     /// a relaunch-adopted task; stale active slots must not make a queued static partial
@@ -408,7 +452,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let deferredBackgroundCompletionIdentifierCount = backgroundCompletionGate.deferredIdentifierCount
         let backgroundCompletionHandlerCount = backgroundCompletionGate.awaitingFinishIdentifierCount
         lock.unlock()
-        let finalizingRatingKeyCount = finalizationStateQueue.sync { finalizingAttemptKeys.count }
+        let finalizingRatingKeyCount = finalizationStateQueue.sync {
+            finalizerRequestIDsByAttempt.count
+        }
         return BackgroundDownloadSessionDiagnosticSnapshot(
             opaqueInflightCount: opaqueInflightCount,
             rangeInflightCount: rangeInflightCount,
@@ -2828,14 +2874,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // are shared with the byte-range pipeline via `finalizeTransferredFile` so a static download
         // is validated identically no matter how its bytes arrived (this opaque path historically
         // ran them; the range path skipped them — #127 black-screen / H1–H3).
-        beginPendingBackgroundCompletionOperation()
-        Task { [self] in
-            defer { endPendingBackgroundCompletionOperation() }
-            await finalizeTransferredFile(attemptKey: entry.attemptKey,
-                                          destination: destination,
-                                          bytes: bytes,
-                                          validationLabel: "local_playback")
-        }
+        _ = requestFinalization(
+            attemptKey: entry.attemptKey, destination: destination, bytes: bytes,
+            validationLabel: "local_playback", holdsBackgroundCompletion: true)
     }
 
     /// JF-F4: adopt a finished OPAQUE (forward-only) background task that this session is tracking
@@ -4410,6 +4451,82 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
 
 
+    /// Synchronously claims the exact attempt before any Task is scheduled. The manager then
+    /// installs the one registry lease that owns execution/cancellation. A missing broker is an
+    /// immediate abandon, not a leaked finalizing/background-completion count.
+    @discardableResult
+    private func requestFinalization(
+        attemptKey: DownloadAttemptKey,
+        destination: URL,
+        bytes: Int,
+        validationLabel: String,
+        expectedExactBytes: Int? = nil,
+        publishesWorkingFile: Bool = true,
+        holdsBackgroundCompletion: Bool
+    ) -> Bool {
+        guard stillOwnsAttempt(attemptKey, phase: "finalize_admission") else { return false }
+        let requestID = UUID()
+        let admitted = finalizationStateQueue.sync { () -> Bool in
+            guard finalizerRequestIDsByAttempt[attemptKey] == nil else { return false }
+            finalizerRequestIDsByAttempt[attemptKey] = requestID
+            return true
+        }
+        guard admitted else {
+            AppDiagnostics.record(.downloads, "downloads.finalize_duplicate_ignored", fields: [
+                "download_id": .identifier(attemptKey.ratingKey),
+                "bytes": .bytes(bytes),
+                "validation": .label(validationLabel),
+            ])
+            return false
+        }
+        if holdsBackgroundCompletion { beginPendingBackgroundCompletionOperation() }
+        let request = FinalizerRequest(
+            id: requestID,
+            attemptKey: attemptKey,
+            destination: destination,
+            bytes: bytes,
+            validationLabel: validationLabel,
+            expectedExactBytes: expectedExactBytes,
+            publishesWorkingFile: publishesWorkingFile,
+            holdsBackgroundCompletion: holdsBackgroundCompletion)
+        guard let onFinalizerRequest else {
+            abandonFinalizerRequest(request)
+            return false
+        }
+        onFinalizerRequest(request)
+        return true
+    }
+
+    /// Called by DownloadManager when registry admission loses to an existing exact finalizer (or
+    /// when a broker is being torn down). Safe and idempotent for a request no longer admitted.
+    func abandonFinalizerRequest(_ request: FinalizerRequest) {
+        let removed = finalizationStateQueue.sync {
+            guard finalizerRequestIDsByAttempt[request.attemptKey] == request.id else {
+                return false
+            }
+            finalizerRequestIDsByAttempt.removeValue(forKey: request.attemptKey)
+            return true
+        }
+        if removed && request.holdsBackgroundCompletion {
+            endPendingBackgroundCompletionOperation()
+        }
+    }
+
+    /// Execute only after DownloadManager has installed the exact `.finalizer` registry lease.
+    func executeFinalizerRequest(_ request: FinalizerRequest) async {
+        defer { abandonFinalizerRequest(request) }
+        guard finalizationStateQueue.sync(execute: {
+            finalizerRequestIDsByAttempt[request.attemptKey] == request.id
+        }), !Task.isCancelled else { return }
+        await finalizeTransferredFile(
+            attemptKey: request.attemptKey,
+            destination: request.destination,
+            bytes: request.bytes,
+            validationLabel: request.validationLabel,
+            expectedExactBytes: request.expectedExactBytes,
+            publishesWorkingFile: request.publishesWorkingFile)
+    }
+
     @discardableResult
     func finalizeCompletedStaticRangeFile(ratingKey: String, validationLabel: String) -> Bool {
         guard isStartupAdmissionActive else { return false }
@@ -4428,18 +4545,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "validation": .label(validationLabel),
         ])
         guard publishTransferFinalizing(for: attemptKey, bytes: bytes) else { return false }
-        beginPendingBackgroundCompletionOperation()
         let expectedExactBytes = store.sourceExactBytes(for: attemptKey)
-        Task { [self] in
-            defer { endPendingBackgroundCompletionOperation() }
-            await finalizeTransferredFile(
-                attemptKey: attemptKey,
-                                          destination: destination,
-                                          bytes: bytes,
-                                          validationLabel: validationLabel,
-                                          expectedExactBytes: expectedExactBytes)
-        }
-        return true
+        return requestFinalization(
+            attemptKey: attemptKey, destination: destination, bytes: bytes,
+            validationLabel: validationLabel, expectedExactBytes: expectedExactBytes,
+            holdsBackgroundCompletion: true)
     }
 
     /// Re-run the same bounded local playability probe for a byte-complete row that was previously
@@ -4516,16 +4626,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             ])
             return false
         }
-        Task { [self] in
-            await finalizeTransferredFile(
-                attemptKey: key,
-                                          destination: destination,
-                                          bytes: bytes,
-                                          validationLabel: validationLabel,
-                                          expectedExactBytes: store.sourceExactBytes(for: key),
-                                          publishesWorkingFile: false)
-        }
-        return true
+        return requestFinalization(
+            attemptKey: key, destination: destination, bytes: bytes,
+            validationLabel: validationLabel,
+            expectedExactBytes: store.sourceExactBytes(for: key),
+            publishesWorkingFile: false, holdsBackgroundCompletion: false)
     }
 
     /// The durable partial now holds the whole file: validate it through the SAME finalize pipeline as
@@ -4537,20 +4642,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         purgeHeldRangeSegments(for: entry.attemptKey)
         let bytes = fileSize(at: entry.workingURL) ?? entry.totalBytes
         guard publishTransferFinalizing(for: entry.attemptKey, bytes: bytes) else { return }
-        beginPendingBackgroundCompletionOperation()
         let destination = entry.workingURL
         // The range lane knows the source's exact size; the finalize byte-completeness guard
         // depends on it (headset evidence: a 416'd legacy bounded response finalized a truncated
         // 5.9 GB file straight to `.complete` because the moov-led MP4 passed the probe).
         let expectedExactBytes = entry.expectedBytes ?? store.sourceExactBytes(for: entry.attemptKey)
-        Task { [self] in
-            defer { endPendingBackgroundCompletionOperation() }
-            await finalizeTransferredFile(attemptKey: entry.attemptKey,
-                                          destination: destination,
-                                          bytes: bytes,
-                                          validationLabel: "range_checkpoint",
-                                          expectedExactBytes: expectedExactBytes)
-        }
+        _ = requestFinalization(
+            attemptKey: entry.attemptKey, destination: destination, bytes: bytes,
+            validationLabel: "range_checkpoint", expectedExactBytes: expectedExactBytes,
+            holdsBackgroundCompletion: true)
     }
 
     /// Shared handoff from byte transfer to local finalization for both URLSession pipelines.
@@ -4744,25 +4844,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                          expectedExactBytes: Int? = nil,
                                          publishesWorkingFile: Bool = true) async {
         let ratingKey = attemptKey.ratingKey
-        guard stillOwnsAttempt(attemptKey, phase: "finalize_entry") else { return }
-        let shouldFinalize = finalizationStateQueue.sync { () -> Bool in
-            guard !finalizingAttemptKeys.contains(attemptKey) else { return false }
-            finalizingAttemptKeys.insert(attemptKey)
-            return true
-        }
-        guard shouldFinalize else {
-            AppDiagnostics.record(.downloads, "downloads.finalize_duplicate_ignored", fields: [
-                "download_id": .identifier(ratingKey),
-                "bytes": .bytes(bytes),
-                "validation": .label(validationLabel),
-            ])
-            return
-        }
-        defer {
-            finalizationStateQueue.sync {
-                _ = finalizingAttemptKeys.remove(attemptKey)
-            }
-        }
+        guard stillOwnsAttempt(attemptKey, phase: "finalize_entry"), !Task.isCancelled else { return }
 
         // Lens 5 F3: the probe below can run 2–45s, and a delete + re-download of the same key
         // during it swaps the row AND the destination file under this finalize. Snapshot the
@@ -4775,6 +4857,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "bytes": .bytes(bytes),
             "validation": .label(validationLabel),
         ])
+
+        guard !Task.isCancelled else { return }
 
         // #83/#127: rewrite a stream-copied HEVC MP4 from `hev1` to `hvc1` (AVFoundation black-screens
         // on `hev1`) BEFORE the playability probe. Gated on the CONTAINER, not the lane — any
@@ -4796,6 +4880,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 ])
             }
         }
+        guard !Task.isCancelled else { return }
 
         // Lens 4 F4: while the app is background-launched (the app-delegate completion handler is
         // pending), the muted AVPlayer probe cannot advance — every file would burn the full
@@ -4818,9 +4903,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // device busy right after a heavy transcode+download, AVFoundation can transiently fail
             // to open/advance a COMPLETE file that a later attempt on the same bytes plays fine.
             // Retry with progressively longer timeouts before deciding.
-            await Self.playbackValidationLimiter.wait()
+            do {
+                try await Self.playbackValidationLimiter.wait()
+            } catch {
+                return
+            }
             defer { Task { await Self.playbackValidationLimiter.signal() } }
             validation = await Self.validateLocalPlayback(destination)
+            guard !Task.isCancelled else { return }
             if !validation.played {
                 // #187: keep headset-idle finalization bounded. Multiple long AVPlayer probes in
                 // parallel are a plausible source of the observed idle gray/freeze/crash while
@@ -4829,8 +4919,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 // repeatedly burning foreground resources.
                 for extraTimeout in [15.0] {
                     downloadLog.notice("playback-probe retry ratingKey=\(ratingKey, privacy: .public) reason=\(validation.reason, privacy: .public) nextTimeout=\(extraTimeout, privacy: .public)")
-                    try? await Task.sleep(for: .seconds(2))
+                    do { try await Task.sleep(for: .seconds(2)) } catch { return }
                     validation = await Self.validateLocalPlayback(destination, timeoutSecondsOverride: extraTimeout)
+                    guard !Task.isCancelled else { return }
                     if validation.played { break }
                 }
             }
@@ -4840,6 +4931,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // early — or a static download the server cut short while still returning 2xx — can play its
         // first fraction of a second and pass the probe. A decoded duration far under the source's is
         // truncated, not complete. Legitimate short clips compare against their own short duration.
+        guard !Task.isCancelled else { return }
         let finalizeRecord = store.record(for: ratingKey)
         // Lens 5 F3: apply the verdict only to the attempt it was probed for. A delete (row gone)
         // or delete + re-download (attempt token changed) during the probe means `destination` and
@@ -4861,6 +4953,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // either duration is unknown.
         let forwardOnly = finalizeRecord?.metadata?
             .resolvedResumeMode(ratingKey: ratingKey) == .liveForwardOnly
+        guard !Task.isCancelled else { return }
         let outcome = DownloadCompletionValidation.outcome(played: validation.played,
                                                            probeReason: validation.reason,
                                                            expectedDurationMs: expectedDurationMs,
@@ -4868,7 +4961,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                                            downloadedBytes: bytes,
                                                            expectedExactBytes: expectedExactBytes,
                                                            forwardOnly: forwardOnly)
-        let truncationFailures: Int = finalizationStateQueue.sync {
+        guard !Task.isCancelled else { return }
+        let truncationFailures: Int? = finalizationStateQueue.sync {
+            guard !Task.isCancelled else { return nil }
             switch outcome {
             case .truncated:
                 let next = truncationFailureCounts[attemptKey, default: 0] + 1
@@ -4881,10 +4976,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 return truncationFailureCounts[attemptKey] ?? 0
             }
         }
+        guard let truncationFailures else { return }
         let finalizationResult = BackgroundFinalizationResultPolicy.result(
             for: outcome,
             consecutiveTruncationFailures: truncationFailures)
         let finalizationDurationMs = max(0, Int(Date().timeIntervalSince(finalizeStarted) * 1000))
+        guard !Task.isCancelled else { return }
         switch outcome {
         case .emptyFile:
             downloadLog.error("empty-download ratingKey=\(ratingKey, privacy: .public) bytes=\(bytes, privacy: .public)")
@@ -4894,16 +4991,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "bytes": .bytes(bytes),
                 "preserved": .bool(false),
             ])
+            guard !Task.isCancelled else { return }
             clearRetryCount(for: attemptKey)
             guard acceptedAttemptMutation(
                 store.setStatus(for: attemptKey, finalizationResult.status),
                 key: attemptKey, phase: "finalize_empty_status"
             ) else { return }
             if finalizationResult.shouldDeleteFile,
+               !Task.isCancelled,
                stillOwnsAttempt(attemptKey, phase: "finalize_empty_delete") {
                 try? fileManager.removeItem(at: destination)
             }
-            guard stillOwnsAttempt(attemptKey, phase: "finalize_empty_publish") else { return }
+            guard !Task.isCancelled,
+                  stillOwnsAttempt(attemptKey, phase: "finalize_empty_publish") else { return }
             onError?(ratingKey, .transferFailed(finalizationResult.userFacingErrorMessage ?? "Downloaded file is empty."))
             recordFinalizeFinished(ratingKey: ratingKey,
                                    result: finalizationResult.resultLabel,
@@ -4922,17 +5022,20 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // Keep the partial as the resume checkpoint (shouldDeleteFile is false) and pull the
             // published 100% "finalizing" progress back to the durable byte count so the row shows
             // its real position again.
+            guard !Task.isCancelled else { return }
             clearRetryCount(for: attemptKey)
             guard acceptedAttemptMutation(
                 store.setStatus(for: attemptKey, finalizationResult.status),
                 key: attemptKey, phase: "finalize_incomplete_status"
             ) else { return }
-            if stillOwnsAttempt(attemptKey, phase: "finalize_incomplete_reset") {
+            if !Task.isCancelled,
+               stillOwnsAttempt(attemptKey, phase: "finalize_incomplete_reset") {
                 guard resetStaticRangeProgressToDurableCheckpoint(
                     for: attemptKey, expectedBytes: expectedTotalBytes,
                     context: "finalize_incomplete") != nil else { return }
             }
-            guard stillOwnsAttempt(attemptKey, phase: "finalize_incomplete_publish") else { return }
+            guard !Task.isCancelled,
+                  stillOwnsAttempt(attemptKey, phase: "finalize_incomplete_publish") else { return }
             onError?(ratingKey, .transferFailed(finalizationResult.userFacingErrorMessage ?? "Download is incomplete."))
             recordFinalizeFinished(ratingKey: ratingKey,
                                    result: finalizationResult.resultLabel,
@@ -4949,16 +5052,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "consecutive_failures": .int(truncationFailures),
                 "preserved": .bool(!finalizationResult.shouldDeleteFile),
             ])
+            guard !Task.isCancelled else { return }
             clearRetryCount(for: attemptKey)
             guard acceptedAttemptMutation(
                 store.setStatus(for: attemptKey, finalizationResult.status),
                 key: attemptKey, phase: "finalize_truncated_status"
             ) else { return }
             if finalizationResult.shouldDeleteFile,
+               !Task.isCancelled,
                stillOwnsAttempt(attemptKey, phase: "finalize_truncated_delete") {
                 try? fileManager.removeItem(at: destination)
             }
-            guard stillOwnsAttempt(attemptKey, phase: "finalize_truncated_publish") else { return }
+            guard !Task.isCancelled,
+                  stillOwnsAttempt(attemptKey, phase: "finalize_truncated_publish") else { return }
             onError?(ratingKey, .invalidDownload(finalizationResult.userFacingErrorMessage ?? "Downloaded file is truncated."))
             recordFinalizeFinished(ratingKey: ratingKey,
                                    result: finalizationResult.resultLabel,
@@ -4973,6 +5079,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "bytes": .bytes(bytes),
                 "validation": .label(validationLabel),
             ])
+            guard !Task.isCancelled else { return }
             clearRetryCount(for: attemptKey)
             if publishesWorkingFile {
                 guard promoteValidatedWorkingFile(for: attemptKey, status: .complete,
@@ -4986,7 +5093,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     key: attemptKey, phase: "revalidate_complete_status"
                 ) else { return }
             }
-            guard stillOwnsAttempt(attemptKey, phase: "finalize_complete_publish") else { return }
+            guard !Task.isCancelled,
+                  stillOwnsAttempt(attemptKey, phase: "finalize_complete_publish") else { return }
             recordFinalizeFinished(ratingKey: ratingKey,
                                    result: finalizationResult.resultLabel,
                                    validationLabel: validationLabel,
@@ -5005,6 +5113,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "bytes": .bytes(bytes),
                 "preserved": .bool(true),
             ])
+            guard !Task.isCancelled else { return }
             clearRetryCount(for: attemptKey)
             if publishesWorkingFile {
                 guard promoteValidatedWorkingFile(for: attemptKey, status: .unverified,
@@ -5015,13 +5124,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     key: attemptKey, phase: "revalidate_unverified_status"
                 ) else { return }
             }
-            guard stillOwnsAttempt(attemptKey, phase: "finalize_unverified_publish") else { return }
+            guard !Task.isCancelled,
+                  stillOwnsAttempt(attemptKey, phase: "finalize_unverified_publish") else { return }
             recordFinalizeFinished(ratingKey: ratingKey,
                                    result: finalizationResult.resultLabel,
                                    validationLabel: validationLabel,
                                    durationMs: finalizationDurationMs,
                                    bytes: bytes)
         }
+        guard !Task.isCancelled else { return }
         onChange?()
     }
 
@@ -5100,6 +5211,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         var sawReady = false
         var stalledReadyItem: AVPlayerItem?
         while ContinuousClock.now < deadline {
+            guard !Task.isCancelled else {
+                return (false, "cancelled", durationMs, nil)
+            }
             switch item.status {
             case .failed:
                 return (false, "item_failed", durationMs,
@@ -5120,7 +5234,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             if sawReady, seconds.isFinite, seconds >= policy.requiredPlaybackSeconds {
                 return (true, "played", durationMs, nil)
             }
-            try? await Task.sleep(for: .milliseconds(policy.pollIntervalMilliseconds))
+            do {
+                try await Task.sleep(for: .milliseconds(policy.pollIntervalMilliseconds))
+            } catch {
+                return (false, "cancelled", durationMs, nil)
+            }
         }
 
         // A hidden muted AVPlayer can occasionally reach `.readyToPlay` but never advance wall-clock
@@ -5129,8 +5247,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // download. If AVPlayer says the local item is ready but realtime playback did not tick,
         // fall back to bounded AVFoundation asset/decode checks before preserving as `.unverified`.
         if sawReady {
+            guard !Task.isCancelled else {
+                return (false, "cancelled", durationMs, nil)
+            }
             let fallback = await validateReadyLocalAsset(asset, readyItem: stalledReadyItem,
                                                          knownDurationMs: durationMs)
+            guard !Task.isCancelled else {
+                return (false, "cancelled", durationMs, nil)
+            }
             if fallback.played {
                 return fallback
             }

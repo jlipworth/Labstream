@@ -138,7 +138,7 @@ public final class DownloadManager {
     /// Reentrancy depth of `resumeStaticRangeWhenReady`, which deliberately dispatches
     /// synchronously with `refreshRecords`. Guards against the #210 recursion family.
     private var staticResumeReentryDepth = 0
-    @ObservationIgnored private var unverifiedRevalidationKeys: Set<String> = []
+    @ObservationIgnored private var unverifiedRevalidationKeys: Set<DownloadAttemptKey> = []
     @ObservationIgnored private var downloadWatchdogTask: Task<Void, Never>?
     @ObservationIgnored private var forwardOnlyStallTracker = DownloadForwardOnlyStallTracker()
     @ObservationIgnored private var lastDownloadHealthDiagnosticAt: Date?
@@ -296,6 +296,23 @@ public final class DownloadManager {
             Task { @MainActor in
                 self?.scheduleRefreshRecords(reason: "session_change")
                 self?.revalidateUnverifiedDownloads(reason: "session_change")
+            }
+        }
+        self.session.onFinalizerRequest = { [weak self, weak session] request in
+            Task { @MainActor in
+                guard let self, let session else {
+                    session?.abandonFinalizerRequest(request)
+                    return
+                }
+                guard self.downloadWorkRegistry.startIfAbsent(
+                    for: request.attemptKey, kind: .finalizer,
+                    operation: { [weak session] in
+                        guard let session else { return }
+                        await session.executeFinalizerRequest(request)
+                    }) != nil else {
+                    session.abandonFinalizerRequest(request)
+                    return
+                }
             }
         }
         // D3: surface background-delegate failures instead of silently dropping the
@@ -2924,9 +2941,12 @@ public final class DownloadManager {
         }
         let deletedAttemptKey = rowAttemptKey
         if let key = deletedAttemptKey {
-            _ = downloadWorkRegistry.cancelCancellableWork(for: key)
             session.cancel(ratingKey: ratingKey)
+            // Remove A's row/files before cancelling A's finalizer. Cancellation is cooperative;
+            // making ownership absent first means a finalizer already between cancellation checks
+            // still fails every exact Store mutation instead of publishing after delete.
             _ = store.remove(for: key)
+            _ = downloadWorkRegistry.cancelCancellableWork(for: key)
         } else {
             // Deliberate migration compatibility: v1/v2 completed rows without asynchronous
             // cleanup evidence remain ownerless after the v3 migration and can only be deleted by
@@ -3121,8 +3141,10 @@ public final class DownloadManager {
         demoteIncompleteCompletedStaticRows(reason: reason)
         let candidates = store.records.filter { $0.status == .unverified }
         guard !candidates.isEmpty else { return }
-        for record in candidates where !unverifiedRevalidationKeys.contains(record.ratingKey) {
-            unverifiedRevalidationKeys.insert(record.ratingKey)
+        for record in candidates {
+            guard let key = attemptKey(for: record),
+                  !unverifiedRevalidationKeys.contains(key) else { continue }
+            unverifiedRevalidationKeys.insert(key)
             recordDownloadDiagnostic("downloads.unverified_revalidate_start", fields: [
                 "download_id": .identifier(record.ratingKey),
                 "reason": .label(reason),
@@ -3133,13 +3155,13 @@ public final class DownloadManager {
                 ratingKey: record.ratingKey,
                 validationLabel: BackgroundFinalizationResultPolicy.unverifiedResultLabel(reason: reason))
             if !started {
-                unverifiedRevalidationKeys.remove(record.ratingKey)
+                unverifiedRevalidationKeys.remove(key)
             } else {
-                let key = record.ratingKey
+                let revalidationKey = key
                 Task { [weak self] in
                     try? await Task.sleep(for: .seconds(90))
                     await MainActor.run {
-                        _ = self?.unverifiedRevalidationKeys.remove(key)
+                        _ = self?.unverifiedRevalidationKeys.remove(revalidationKey)
                     }
                 }
             }
@@ -3406,7 +3428,10 @@ public final class DownloadManager {
         let terminalRecordsByKey = Dictionary(uniqueKeysWithValues: fresh.map { ($0.ratingKey, $0) })
         for ratingKey in terminalKeys {
             if let record = terminalRecordsByKey[ratingKey], let key = attemptKey(for: record) {
-                releaseInFlight(for: key)
+                // A terminal status can be published by the finalizer immediately before its
+                // `onChange`. Release transfer/server ownership, but do not self-cancel the exact
+                // finalizer before its final callback/accounting defer runs.
+                releaseInFlight(for: key, cancellationMode: .preservingFinalizer)
             } else {
                 repairUnownedInFlightState(ratingKey: ratingKey, reason: "legacy_terminal")
             }
@@ -3850,13 +3875,18 @@ public final class DownloadManager {
     /// `rowSnapshot` is the caller's pre-removal copy of the row for the delete path, where the
     /// store row is already gone by the time this runs: without it the encoder-teardown
     /// server-match guards below would read nil metadata and skip the persisted-psid branch.
-    func releaseInFlight(for attemptKey: DownloadAttemptKey, rowSnapshot: DownloadRecord? = nil) {
+    func releaseInFlight(
+        for attemptKey: DownloadAttemptKey,
+        rowSnapshot: DownloadRecord? = nil,
+        cancellationMode: DownloadWorkRegistry.AttemptCancellationMode = .allCancellable
+    ) {
         let ratingKey = attemptKey.ratingKey
         let releasePlan = DownloadAttemptReleasePolicy.plan(
             releasing: attemptKey,
             currentOwner: inFlightAttempts.owner(forRatingKey: ratingKey))
         transcodeSourcedDownloads.remove(attemptKey)
-        _ = downloadWorkRegistry.cancelCancellableWork(for: attemptKey)
+        _ = downloadWorkRegistry.cancelCancellableWork(
+            for: attemptKey, mode: cancellationMode)
         _ = serverPrepAttempts.releaseAll(for: attemptKey)
         serverPrepPollerTasks.removeValue(forKey: attemptKey)?.cancel()
         jellyfinDownloadKeepaliveTasks.removeValue(forKey: attemptKey)?.task.cancel()

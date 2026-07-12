@@ -104,6 +104,37 @@ struct DownloadWorkRegistryTests {
                 == [.finalizer, .sideCache(.chapterImages)])
     }
 
+    @Test func exactFinalizerStartIfAbsentIsAtomic() async {
+        let registry = DownloadWorkRegistry()
+        let attempt = key("plex:finalize", "attempt-A")
+        let gate = AsyncWorkGate()
+        let first = registry.startIfAbsent(for: attempt, kind: .finalizer) {
+            await gate.wait()
+        }
+        #expect(first != nil)
+        #expect(registry.startIfAbsent(for: attempt, kind: .finalizer) {} == nil)
+        await gate.waitUntilEntered()
+        #expect(registry.snapshot().attempts.first?.entries.map(\.kind) == [.finalizer])
+        await gate.open()
+        await waitUntil { registry.snapshot().totalCount == 0 }
+    }
+
+    @Test func terminalReleaseCanPreserveRunningFinalizerOnly() {
+        let registry = DownloadWorkRegistry()
+        let attempt = key("plex:terminal", "attempt-A")
+        let finalizer = pendingTask()
+        let poster = pendingTask()
+        defer { finalizer.cancel(); poster.cancel() }
+        let finalizerToken = registry.register(finalizer, for: attempt, kind: .finalizer)
+        let posterToken = registry.register(poster, for: attempt, kind: .sideCache(.poster))
+
+        #expect(registry.cancelCancellableWork(
+            for: attempt, mode: .preservingFinalizer) == [posterToken])
+        #expect(!finalizer.isCancelled)
+        #expect(poster.isCancelled)
+        #expect(registry.snapshot().attempts.first?.entries.map(\.token) == [finalizerToken])
+    }
+
     @Test func cancelledOldSideCacheCompletionCannotRemoveReaddedAttemptsWork() async {
         let registry = DownloadWorkRegistry()
         let old = key("plex:readd", "attempt-A")
@@ -146,6 +177,30 @@ struct DownloadWorkRegistryTests {
 
     private func pendingTask() -> Task<Void, Never> {
         Task { try? await Task.sleep(for: .seconds(3_600)) }
+    }
+}
+
+struct DownloadPlaybackValidationLimiterTests {
+    @Test func cancelledWaiterIsRemovedAndDoesNotConsumePermit() async throws {
+        let limiter = DownloadPlaybackValidationLimiter()
+        try await limiter.wait()
+
+        let cancelled = Task { () -> Bool in
+            do {
+                try await limiter.wait()
+                return true
+            } catch {
+                return false
+            }
+        }
+        while await limiter.queuedWaiterCountForTesting == 0 { await Task.yield() }
+        cancelled.cancel()
+        #expect(await cancelled.value == false)
+        #expect(await limiter.queuedWaiterCountForTesting == 0)
+
+        await limiter.signal()
+        try await limiter.wait()
+        await limiter.signal()
     }
 }
 

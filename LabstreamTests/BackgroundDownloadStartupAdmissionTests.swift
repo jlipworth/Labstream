@@ -116,6 +116,44 @@ struct BackgroundDownloadStartupAdmissionTests {
         }
     }
 
+    @Test func finalizerAdmissionRejectsDuplicateAndAbandonBalancesGate() async throws {
+        try await withTemporaryDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+            defer { session.invalidateInjectedSessionForTesting() }
+            #expect(await activate(session, resetKeys: []) == .activated(
+                cancelledTaskCount: 0, resetKeyCount: 0))
+
+            let attemptID = try #require(DownloadAttemptID(rawValue: "attempt-finalizer-a"))
+            let key = DownloadAttemptKey(ratingKey: "plex:finalizer", attemptID: attemptID)
+            let stable = store.destinationURL(ratingKey: key.ratingKey, ext: "mp4")
+            let record = DownloadRecord(
+                ratingKey: key.ratingKey, attemptID: attemptID, title: "Finalizer",
+                localURL: stable, status: .downloading,
+                metadata: OfflineMetadata(
+                    ratingKey: key.ratingKey, title: "Finalizer", type: "movie",
+                    resumeMode: .staticByteRange))
+            #expect(store.createAttemptOwnedRecord(record, attemptID: attemptID) == .committed(key))
+            let working = try #require(store.attemptWorkingFileURL(for: key))
+            try Data(repeating: 0xA5, count: 512).write(to: working)
+
+            let requestBox = FinalizerRequestBox()
+            session.onFinalizerRequest = { requestBox.store($0) }
+            #expect(session.finalizeCompletedStaticRangeFile(
+                ratingKey: key.ratingKey, validationLabel: "test"))
+            #expect(!session.finalizeCompletedStaticRangeFile(
+                ratingKey: key.ratingKey, validationLabel: "duplicate"))
+            var snapshot = session.diagnosticSnapshot()
+            #expect(snapshot.finalizingRatingKeyCount == 1)
+            #expect(snapshot.pendingBackgroundCompletionOperationCount == 1)
+
+            session.abandonFinalizerRequest(try #require(requestBox.load()))
+            snapshot = session.diagnosticSnapshot()
+            #expect(snapshot.finalizingRatingKeyCount == 0)
+            #expect(snapshot.pendingBackgroundCompletionOperationCount == 0)
+        }
+    }
+
     @Test func migratedPausedRowIsDurablyResetBeforeAdmission() async throws {
         try await withTemporaryDirectory { directory in
             let ratingKey = "plex:legacy-paused"
@@ -227,6 +265,21 @@ struct BackgroundDownloadStartupAdmissionTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         try await body(directory)
+    }
+}
+
+private final class FinalizerRequestBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var request: BackgroundDownloadSession.FinalizerRequest?
+
+    func store(_ request: BackgroundDownloadSession.FinalizerRequest) {
+        lock.lock(); defer { lock.unlock() }
+        self.request = request
+    }
+
+    func load() -> BackgroundDownloadSession.FinalizerRequest? {
+        lock.lock(); defer { lock.unlock() }
+        return request
     }
 }
 
