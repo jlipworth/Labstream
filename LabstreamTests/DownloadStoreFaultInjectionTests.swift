@@ -89,9 +89,17 @@ struct DownloadStoreFaultInjectionTests {
     @Test func concurrentDisjointMutationsRestoreOneCoherentFullSnapshot() async throws {
         try await withTemporaryDirectory { directory in
             let store = DownloadStore(baseDirectory: directory)
+            var attemptKeys: [Int: DownloadAttemptKey] = [:]
             for index in 0..<21 {
-                store.upsert(Self.record(Self.key(index), directory: directory, bytes: index))
+                let id = DownloadAttemptID(uuid: UUID())
+                guard case .committed(let key) = store.createAttemptOwnedRecord(
+                    Self.record(Self.key(index), directory: directory, bytes: index),
+                    attemptID: id) else {
+                    Issue.record("seed must commit"); return
+                }
+                attemptKeys[index] = key
             }
+            let seededAttemptKeys = attemptKeys
 
             await withTaskGroup(of: Void.self) { group in
                 for index in 0..<20 {
@@ -108,7 +116,7 @@ struct DownloadStoreFaultInjectionTests {
                                 ratingKey: Self.key(index), "poster-\(index).jpg"
                             )
                         default:
-                            store.remove(ratingKey: Self.key(index))
+                            if let key = seededAttemptKeys[index] { _ = store.remove(for: key) }
                         }
                     }
                 }
@@ -194,7 +202,7 @@ struct DownloadStoreFaultInjectionTests {
         }
     }
 
-    @Test func mediaRemovalFailureCannotResurrectTheDurablyDeletedRow() throws {
+    @Test func mediaRemovalFailureRetainsDurableIntentUntilRelaunchRetries() throws {
         try withTemporaryDirectory { directory in
             let mediaURL = directory.appendingPathComponent("owned.mp4")
             try Data([1, 2, 3]).write(to: mediaURL)
@@ -213,7 +221,12 @@ struct DownloadStoreFaultInjectionTests {
             store.remove(ratingKey: "plex:owned")
 
             #expect(FileManager.default.fileExists(atPath: mediaURL.path))
-            #expect(!DownloadStore(baseDirectory: directory).contains(ratingKey: "plex:owned"))
+            #expect(store.contains(ratingKey: "plex:owned"))
+            let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(relaunched.resolveArtifactSynchronouslyForTests(
+                through: relaunched.currentArtifactLifecycleWatermark()) == .completed)
+            #expect(!relaunched.contains(ratingKey: "plex:owned"))
+            #expect(!FileManager.default.fileExists(atPath: mediaURL.path))
         }
     }
 

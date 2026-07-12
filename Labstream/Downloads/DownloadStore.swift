@@ -698,7 +698,10 @@ final class DownloadStore: @unchecked Sendable {
     private var legacyResetOutcomes: [UUID: LegacyAttemptResetResult] = [:]
     private var legacyResetAwaitingResultIDs: Set<UUID> = []
     private var rowDeletionOutcomes: [UUID: RowDeletionResult] = [:]
-    private var rowDeletionAwaitingResultIDs: Set<UUID> = []
+    /// Accepted deletion submissions are independently resolvable even when several callers join
+    /// one active lifecycle ticket (double-tap Delete, coalesced startup recovery). Retain the
+    /// broadcast outcome until every accepted waiter has consumed it.
+    private var rowDeletionWaiterCounts: [UUID: Int] = [:]
 
     /// - Parameter baseDirectory: where media files + the index live. Defaults to
     ///   `Application Support/Labstream/Downloads`, created if missing.
@@ -4964,7 +4967,7 @@ final class DownloadStore: @unchecked Sendable {
            pendingRequired == requiresDeletionPending {
             if activeArtifactIntentIDs.contains(head.id),
                let ticket = artifactLifecycleTickets[head.id] {
-                rowDeletionAwaitingResultIDs.insert(head.id)
+                rowDeletionWaiterCounts[head.id, default: 0] += 1
                 lock.unlock(); return .accepted(ticket: ticket)
             }
             guard !activeArtifactIntentIDs.contains(head.id) else {
@@ -4974,7 +4977,7 @@ final class DownloadStore: @unchecked Sendable {
             let ticket = artifactLifecycle.register(key: key, generation: head.generation,
                 intentID: head.id, preparedRevision: prepared)
             artifactLifecycleTickets[head.id] = ticket
-            rowDeletionAwaitingResultIDs.insert(head.id)
+            rowDeletionWaiterCounts[head.id, default: 0] += 1
             activeArtifactIntentIDs.insert(head.id)
             lock.unlock(); scheduleArtifactLifecycle(ticket: ticket, intent: head)
             return .accepted(ticket: ticket)
@@ -4998,7 +5001,7 @@ final class DownloadStore: @unchecked Sendable {
             let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
             if activeArtifactIntentIDs.contains(head.id),
                let ticket = artifactLifecycleTickets[head.id] {
-                rowDeletionAwaitingResultIDs.insert(head.id)
+                rowDeletionWaiterCounts[head.id, default: 0] += 1
                 lock.unlock(); return .accepted(ticket: ticket)
             }
             guard !activeArtifactIntentIDs.contains(head.id) else {
@@ -5008,7 +5011,7 @@ final class DownloadStore: @unchecked Sendable {
             let ticket = artifactLifecycle.register(key: key, generation: head.generation,
                 intentID: head.id, preparedRevision: prepared)
             artifactLifecycleTickets[head.id] = ticket
-            rowDeletionAwaitingResultIDs.insert(head.id)
+            rowDeletionWaiterCounts[head.id, default: 0] += 1
             activeArtifactIntentIDs.insert(head.id)
             lock.unlock(); scheduleArtifactLifecycle(ticket: ticket, intent: head)
             return .accepted(ticket: ticket)
@@ -5047,7 +5050,7 @@ final class DownloadStore: @unchecked Sendable {
         let ticket = artifactLifecycle.register(key: key, generation: intent.generation,
             intentID: intent.id, preparedRevision: prepared)
         artifactLifecycleTickets[intent.id] = ticket
-        rowDeletionAwaitingResultIDs.insert(intent.id)
+        rowDeletionWaiterCounts[intent.id, default: 0] += 1
         activeArtifactIntentIDs.insert(intent.id)
         lock.unlock(); scheduleArtifactLifecycle(ticket: ticket, intent: intent)
         return .accepted(ticket: ticket)
@@ -5058,10 +5061,18 @@ final class DownloadStore: @unchecked Sendable {
         case .immediate(let result): return result
         case .accepted(let ticket):
             let lifecycle = artifactLifecycle.waitSynchronously(for: ticket)
-            if let result = lock.withLock({ () -> RowDeletionResult? in
-                rowDeletionAwaitingResultIDs.remove(ticket.intentID)
-                return rowDeletionOutcomes.removeValue(forKey: ticket.intentID)
-            }) { return result }
+            let stored = lock.withLock { () -> RowDeletionResult? in
+                let result = rowDeletionOutcomes[ticket.intentID]
+                let remaining = max(0, (rowDeletionWaiterCounts[ticket.intentID] ?? 1) - 1)
+                if remaining == 0 {
+                    rowDeletionWaiterCounts.removeValue(forKey: ticket.intentID)
+                    rowDeletionOutcomes.removeValue(forKey: ticket.intentID)
+                } else {
+                    rowDeletionWaiterCounts[ticket.intentID] = remaining
+                }
+                return result
+            }
+            if let stored { return stored }
             switch lifecycle {
             case .completed: return .staleOrMissing
             case .failed(.persistence(let failure)):
@@ -5136,7 +5147,7 @@ final class DownloadStore: @unchecked Sendable {
         }
         guard failures == 0 else {
             lock.withLock {
-                if rowDeletionAwaitingResultIDs.contains(intent.id) {
+                if (rowDeletionWaiterCounts[intent.id] ?? 0) > 0 {
                     rowDeletionOutcomes[intent.id] = .cleanupFailed(
                         ticket.key, cleanupFailureCount: failures)
                 }
@@ -5159,14 +5170,14 @@ final class DownloadStore: @unchecked Sendable {
             if rows[ticket.key.ratingKey] == nil { rows[ticket.key.ratingKey] = removed }
             artifactRetirementKeys.remove(ticket.key)
             _ = enqueueAttemptPersistenceLocked()
-            if rowDeletionAwaitingResultIDs.contains(intent.id) {
+            if (rowDeletionWaiterCounts[intent.id] ?? 0) > 0 {
                 rowDeletionOutcomes[intent.id] = .persistenceFailed(ticket.key, outcome.result)
             }
             lock.unlock(); release(); failArtifactLifecycle(ticket, outcome.result); return
         }
         lock.withLock {
             artifactRetirementKeys.remove(ticket.key)
-            if rowDeletionAwaitingResultIDs.contains(intent.id) {
+            if (rowDeletionWaiterCounts[intent.id] ?? 0) > 0 {
                 rowDeletionOutcomes[intent.id] = .removed(ticket.key)
             }
         }
