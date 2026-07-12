@@ -69,6 +69,16 @@ final class DownloadStore: @unchecked Sendable {
         case malformedV3Rows([String])
     }
 
+    enum AttemptOwnershipMigrationSubmission: Sendable, Equatable {
+        case immediate(AttemptOwnershipMigrationResult)
+        case accepted(
+            plan: LegacyAttemptMigrationPlan,
+            ticket: PersistenceTicket,
+            pendingResetKeys: [DownloadAttemptKey],
+            advancesSchema: Bool
+        )
+    }
+
     enum AttemptRecordCreateResult: Sendable, Equatable {
         case committed(DownloadAttemptKey)
         case rejectedOwnership(
@@ -2542,6 +2552,13 @@ final class DownloadStore: @unchecked Sendable {
     func commitLegacyAttemptOwnershipMigration(
         idFactory: (String) -> DownloadAttemptID = { _ in .generated() }
     ) -> AttemptOwnershipMigrationResult {
+        resolveSynchronously(submitLegacyAttemptOwnershipMigration(idFactory: idFactory))
+    }
+
+    @discardableResult
+    func submitLegacyAttemptOwnershipMigration(
+        idFactory: (String) -> DownloadAttemptID = { _ in .generated() }
+    ) -> AttemptOwnershipMigrationSubmission {
         lock.lock()
         let shadowDisagreements = rows.values
             .filter(\.decodedAttemptIdentityDisagrees)
@@ -2549,7 +2566,7 @@ final class DownloadStore: @unchecked Sendable {
             .sorted()
         if !shadowDisagreements.isEmpty {
             lock.unlock()
-            return .malformedV3Rows(shadowDisagreements)
+            return .immediate(.malformedV3Rows(shadowDisagreements))
         }
         if loadedSchemaVersion >= DownloadIndexCoding.currentSchemaVersion {
             // `reconcile` may legitimately demote a legacy ownerless terminal row after its stable
@@ -2585,14 +2602,9 @@ final class DownloadStore: @unchecked Sendable {
                     cleanupOnly: adoptedCleanupOnly)
                 let ticket = enqueueAttemptPersistenceLocked()
                 lock.unlock()
-                let persistence = waitForPersistence(through: ticket)
-                guard persistence.result.committed(through: persistence.ticket) else {
-                    return .failed(plan, persistence.result)
-                }
-                lock.lock()
-                pendingLegacyAttemptResetKeys.formUnion(adoptedReset)
-                lock.unlock()
-                return .committed(plan)
+                return .accepted(
+                    plan: plan, ticket: ticket,
+                    pendingResetKeys: adoptedReset, advancesSchema: false)
             }
             let malformed = rows.values
                 .filter {
@@ -2618,14 +2630,14 @@ final class DownloadStore: @unchecked Sendable {
             }.sorted { $0.ratingKey < $1.ratingKey }
             pendingLegacyAttemptResetKeys.formUnion(pending)
             lock.unlock()
-            if !malformed.isEmpty { return .malformedV3Rows(malformed) }
+            if !malformed.isEmpty { return .immediate(.malformedV3Rows(malformed)) }
             if !pending.isEmpty || !cleanupOnly.isEmpty {
-                return .committed(LegacyAttemptMigrationPlan(
+                return .immediate(.committed(LegacyAttemptMigrationPlan(
                     taskCancellationAndReset: pending,
                     cleanupOnly: cleanupOnly
-                ))
+                )))
             }
-            return .notRequired
+            return .immediate(.notRequired)
         }
 
         var reset: [DownloadAttemptKey] = []
@@ -2662,19 +2674,52 @@ final class DownloadStore: @unchecked Sendable {
             taskCancellationAndReset: reset,
             cleanupOnly: cleanupOnly
         )
-        lock.unlock()
-
         // Even an empty plan must commit the v4 envelope. Otherwise a completed-only old library
         // would be reclassified as legacy on every launch.
-        let persistence = persist()
-        guard persistence.result.committed(through: persistence.ticket) else {
-            return .failed(plan, persistence.result)
-        }
-        lock.lock()
-        loadedSchemaVersion = DownloadIndexCoding.currentSchemaVersion
-        pendingLegacyAttemptResetKeys.formUnion(reset)
+        let ticket = enqueueAttemptPersistenceLocked()
         lock.unlock()
-        return .committed(plan)
+        return .accepted(
+            plan: plan, ticket: ticket,
+            pendingResetKeys: reset, advancesSchema: true)
+    }
+
+    func resolveSynchronously(
+        _ submission: AttemptOwnershipMigrationSubmission
+    ) -> AttemptOwnershipMigrationResult {
+        switch submission {
+        case .immediate(let result):
+            return result
+        case .accepted(let plan, let ticket, let pendingResetKeys, let advancesSchema):
+            let persistence = waitForPersistence(through: ticket)
+            guard persistence.result.committed(through: ticket) else {
+                return .failed(plan, persistence.result)
+            }
+            lock.withLock {
+                if advancesSchema { loadedSchemaVersion = DownloadIndexCoding.currentSchemaVersion }
+                pendingLegacyAttemptResetKeys.formUnion(pendingResetKeys)
+            }
+            return .committed(plan)
+        }
+    }
+
+    func resolve(
+        _ submission: AttemptOwnershipMigrationSubmission,
+        timeout: TimeInterval
+    ) async -> AttemptOwnershipMigrationResult {
+        switch submission {
+        case .immediate(let result):
+            return result
+        case .accepted(let plan, let ticket, let pendingResetKeys, let advancesSchema):
+            let persistence = await flushPersistence(through: ticket, timeout: timeout)
+            guard persistence.committed(through: ticket) else {
+                return .failed(plan, persistence)
+            }
+            lock.withLock {
+                if advancesSchema { loadedSchemaVersion = DownloadIndexCoding.currentSchemaVersion }
+                pendingLegacyAttemptResetKeys.formUnion(pendingResetKeys)
+            }
+            return .committed(plan)
+        }
     }
 
     /// Complete the approved legacy policy after the coordinator has enumerated and cancelled all

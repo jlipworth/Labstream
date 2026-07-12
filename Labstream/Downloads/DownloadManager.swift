@@ -295,7 +295,7 @@ public final class DownloadManager {
         let store = injectedStore ?? DownloadStore()
         // Commit typed row ownership before the background session can be constructed/activated.
         // A failure remains explicit and leaves session admission dormant.
-        let migrationResult = store.commitLegacyAttemptOwnershipMigration()
+        let migrationSubmission = store.submitLegacyAttemptOwnershipMigration()
         self.store = store
         self.session = injectedSession ?? BackgroundDownloadSession(store: store)
         self.cleanupIntentJournal = injectedCleanupIntentJournal
@@ -383,7 +383,7 @@ public final class DownloadManager {
         if registerForBackgroundEvents {
             BackgroundDownloadCompletionRegistry.shared.register(self.session)
         }
-        continueStartupRecovery(with: migrationResult)
+        resolveStartupMigration(migrationSubmission)
     }
 
     /// Explicit retry hook for a prior persistence/activation failure. It is intentionally not an
@@ -395,7 +395,7 @@ public final class DownloadManager {
         startupRecoveryRetryTask?.cancel()
         startupRecoveryRetryTask = nil
         startupRecoveryState = .preparing
-        continueStartupRecovery(with: store.commitLegacyAttemptOwnershipMigration())
+        resolveStartupMigration(store.submitLegacyAttemptOwnershipMigration())
     }
 
     private func scheduleTransientStartupRecoveryRetry() {
@@ -409,7 +409,17 @@ public final class DownloadManager {
             self.startupRecoveryRetryTask = nil
             guard self.startupRecoveryState != .ready, !self.startupRecoveryInFlight else { return }
             self.startupRecoveryState = .preparing
-            self.continueStartupRecovery(with: self.store.commitLegacyAttemptOwnershipMigration())
+            self.resolveStartupMigration(self.store.submitLegacyAttemptOwnershipMigration())
+        }
+    }
+
+    private func resolveStartupMigration(
+        _ submission: DownloadStore.AttemptOwnershipMigrationSubmission
+    ) {
+        Task { [weak self] in
+            guard let self else { return }
+            let result = await self.store.resolve(submission, timeout: 5)
+            self.continueStartupRecovery(with: result)
         }
     }
 
@@ -426,6 +436,7 @@ public final class DownloadManager {
         case .failed(let plan, let persistence):
             startupCleanupOnlyKeys = Set(plan.cleanupOnly)
             let affected = Set((plan.taskCancellationAndReset + plan.cleanupOnly).map(\.ratingKey))
+            session.releaseBackgroundCompletionAfterStartupFailure()
             blockDownloadStartup(
                 affectedRatingKeys: affected,
                 message: "Download recovery could not be saved. Free storage if needed, then retry.",

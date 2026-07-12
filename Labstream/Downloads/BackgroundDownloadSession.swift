@@ -950,6 +950,21 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lock.unlock()
     }
 
+    /// Startup persistence failed/timed out before URLSession could be safely activated, so its
+    /// finish-events callback cannot be awaited. The failure has already been observed by the
+    /// manager; release the OS wake explicitly and leave admission dormant.
+    func releaseBackgroundCompletionAfterStartupFailure() {
+        lock.lock()
+        let identifiers = backgroundCompletionGate.abortAwaitingHandlers()
+        lock.unlock()
+        guard !identifiers.isEmpty else { return }
+        Task { @MainActor in
+            for identifier in identifiers {
+                BackgroundDownloadCompletionRegistry.shared.fireCompletion(for: identifier)
+            }
+        }
+    }
+
     private func fireBackgroundCompletionWhenFinalizationIsSafe(identifier: String) {
         lock.lock()
         let identifiers = backgroundCompletionGate.finishEvents(identifier: identifier)
