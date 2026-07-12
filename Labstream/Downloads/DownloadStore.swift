@@ -1483,7 +1483,7 @@ final class DownloadStore: @unchecked Sendable {
         completeArtifactLifecycle(ticket)
     }
 
-    private func stageLegacyHeldBodyDeletionJobs() {
+    func stageLegacyHeldBodyDeletionJobs() {
         lock.lock()
         var staged: [(DownloadAttemptKey, Row.ArtifactIntent, DownloadArtifactLifecycleCoordinator.Ticket)] = []
         for (ratingKey, original) in Array(rows) {

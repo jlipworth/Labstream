@@ -928,6 +928,21 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         return submission
     }
 
+    /// Held-body submissions must return to the URLSession/range queue before any index wait or
+    /// delete. The Store worker owns filesystem progress; this detached waiter only delivers the
+    /// terminal lifecycle result back onto the serialized range-processing queue.
+    private func resolveHeldLifecycle(
+        _ ticket: DownloadArtifactLifecycleCoordinator.Ticket,
+        completion: @escaping @Sendable (DownloadArtifactLifecycleCoordinator.FlushResult) -> Void
+    ) {
+        let store = self.store
+        let queue = rangeIOQueue
+        DispatchQueue.global(qos: .utility).async {
+            let outcome = store.resolveArtifactSynchronously(ticket)
+            queue.async { completion(outcome) }
+        }
+    }
+
     private func fileSize(at url: URL) -> Int? {
         DownloadFileStat.logicalSize(at: url, attributesOfItem: fileManager.attributesOfItem(atPath:))
     }
@@ -1509,32 +1524,22 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 }
             }
             if !invalidManifests.isEmpty {
-                guard case .accepted(let removal) = store.removeHeldRangeSegments(
+                guard case .accepted(let removal) = store.submitHeldRangeSegmentsRemoval(
                     for: attemptKey,
                     offsets: invalidManifests.map(\.offset),
                     deletingRelativePaths: invalidManifests.compactMap { $0.url?.lastPathComponent }
                 ) else { continue }
-                guard removal.committed else {
-                    recordUncommittedHeldManifestRemoval(
-                        ratingKey: ratingKey,
-                        operation: "restore_discard",
-                        persistence: removal.persistence
-                    )
-                    continue
-                }
-                guard case .purged(let cleanup) = store.completeDeferredHeldRangeBodyDeletions(
-                    for: attemptKey, removal: removal) else { continue }
-                for invalid in invalidManifests {
-                    AppDiagnostics.record(.downloads, "downloads.range_held_manifest_discarded", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "base_offset": .int(invalid.offset),
-                        "manifest_length": .int(invalid.length),
-                        "actual_length": .int(invalid.actualLength ?? -1),
-                        "body_delete_deferred": .bool(
-                            invalid.url.map {
-                                cleanup.failedRelativePaths.contains($0.lastPathComponent)
-                            } ?? false),
-                    ])
+                let invalidSnapshot = invalidManifests
+                resolveHeldLifecycle(removal.ticket) { outcome in
+                    for invalid in invalidSnapshot {
+                        AppDiagnostics.record(.downloads, "downloads.range_held_manifest_discarded", fields: [
+                            "download_id": .identifier(ratingKey),
+                            "base_offset": .int(invalid.offset),
+                            "manifest_length": .int(invalid.length),
+                            "actual_length": .int(invalid.actualLength ?? -1),
+                            "body_delete_deferred": .bool(outcome != .completed),
+                        ])
+                    }
                 }
             }
         }
@@ -3693,97 +3698,74 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                         relativePath: durableStash.lastPathComponent,
                         attemptID: entry.attemptID.rawValue
                     )
-                    let persistResult = store.persistHeldRangeSegment(
-                        for: entry.attemptKey, segment: manifest)
-                    guard case .accepted(let previous, let ticket, let persistOutcome) = persistResult else {
+                    lock.lock()
+                    var predecessorURLs = Set<URL>()
+                    if let current = heldRangeSegments[entry.attemptKey]?[entry.baseOffset]?.url {
+                        predecessorURLs.insert(current)
+                    }
+                    predecessorURLs.formUnion(
+                        heldRangeRetainedPredecessorURLs[entry.attemptKey]?[entry.baseOffset] ?? [])
+                    lock.unlock()
+                    let submission = store.submitHeldRangeSegment(
+                        for: entry.attemptKey,
+                        segment: manifest,
+                        deletingRelativePaths: predecessorURLs.map(\.lastPathComponent))
+                    guard case .accepted(let accepted) = submission else {
                         try? fileManager.removeItem(at: durableStash)
                         AppDiagnostics.record(.downloads, "downloads.range_held_persist_failed", fields: [
                             "download_id": .identifier(entry.ratingKey),
                             "base_offset": .int(entry.baseOffset),
-                            "stage": .label("manifest"),
+                            "stage": .label("manifest_submission"),
                         ])
                         continueRangeAfterBody(entry: entry, partialSize: durableBytesBeforeAppend)
                         return
                     }
-                    let committed: Bool
-                    if case .committed(let revision) = persistOutcome {
-                        committed = revision >= ticket.revision
-                    } else {
-                        committed = false
-                    }
-                    let persistence = (committed: committed, previous: previous)
-                    let previousPersistedURL = persistence.previous.flatMap {
-                        store.heldRangeSegmentURL(relativePath: $0.relativePath)
-                    }
-                    lock.lock()
-                    let haltAfterPersistence = rangeHaltKinds[entry.attemptKey]
-                    let previousInMemory = heldRangeSegments[entry.attemptKey]?[entry.baseOffset]
-                    var predecessorURLs = Set<URL>()
-                    if let previousInMemory { predecessorURLs.insert(previousInMemory.url) }
-                    if let previousPersistedURL { predecessorURLs.insert(previousPersistedURL) }
-                    let alreadyRetained = heldRangeRetainedPredecessorURLs[entry.attemptKey]?[entry.baseOffset] ?? []
-                    let ownership = HeldRangeBodyOwnershipPolicy.replacementPlan(
-                        haltKind: haltAfterPersistence,
-                        manifestCommitted: persistence.committed,
-                        newBody: durableStash,
-                        predecessors: predecessorURLs,
-                        alreadyRetained: alreadyRetained
-                    )
-                    guard ownership.installNewBody else {
-                        lock.unlock()
-                        // Cancel/purge may have completed while the synchronous manifest attempt
-                        // was in flight. Supersede any accepted dirty manifest and own the new body;
-                        // never reinstall a cancelled row into the live map.
-                        removeHeldRangeSegment(
-                            for: entry.attemptKey,
-                            offset: entry.baseOffset,
-                            fallbackURLs: ownership.deleteBodies
-                        )
-                        return
-                    }
-                    heldRangeSegments[entry.attemptKey, default: [:]][entry.baseOffset] =
-                        (url: durableStash, length: stashLen, validator: validator)
-                    // This exact offset produced a complete, validated body. Clear only its own
-                    // mismatch history; sibling segment retries remain independent.
-                    staticRangeRetryBudget.resetOffsetMismatch(
-                        key: staticRangeRetryKey(for: entry.attemptKey),
-                        segmentOffset: entry.baseOffset)
-                    // M3: a replacement uses a new filename. Delete both the prior live-map and
-                    // prior persisted-manifest file only after the new manifest/map are installed
-                    // AND the replacement manifest is durable. On failure the writer retains a
-                    // dirty snapshot that may commit later, so both bodies must remain valid.
-                    if ownership.retainPredecessors.isEmpty {
-                        heldRangeRetainedPredecessorURLs[entry.attemptKey]?.removeValue(
-                            forKey: entry.baseOffset
-                        )
-                        if heldRangeRetainedPredecessorURLs[entry.attemptKey]?.isEmpty == true {
-                            heldRangeRetainedPredecessorURLs.removeValue(forKey: entry.attemptKey)
+                    resolveHeldLifecycle(accepted.ticket) { [weak self] outcome in
+                        guard let self else { return }
+                        switch outcome {
+                        case .completed:
+                            self.lock.lock()
+                            let halt = self.rangeHaltKinds[entry.attemptKey]
+                            guard halt == nil, self.store.ownsAttempt(entry.attemptKey) else {
+                                self.lock.unlock()
+                                _ = self.store.submitHeldRangeSegmentsRemoval(
+                                    for: entry.attemptKey,
+                                    offsets: [entry.baseOffset],
+                                    deletingRelativePaths: [durableStash.lastPathComponent])
+                                return
+                            }
+                            self.heldRangeSegments[entry.attemptKey, default: [:]][entry.baseOffset] =
+                                (url: durableStash, length: stashLen, validator: validator)
+                            self.heldRangeRetainedPredecessorURLs[entry.attemptKey]?.removeValue(
+                                forKey: entry.baseOffset)
+                            self.staticRangeRetryBudget.resetOffsetMismatch(
+                                key: self.staticRangeRetryKey(for: entry.attemptKey),
+                                segmentOffset: entry.baseOffset)
+                            self.lock.unlock()
+                            AppDiagnostics.record(.downloads, "downloads.range_segment_held", fields: [
+                                "download_id": .identifier(entry.ratingKey),
+                                "base_offset": .int(entry.baseOffset),
+                                "durable_bytes": .int(durableBytesBeforeAppend),
+                                "body_bytes": .int(stashLen),
+                                "manifest_committed": .bool(true),
+                            ])
+                            self.onChange?()
+                            self.continueRangeAfterBody(
+                                entry: entry, partialSize: durableBytesBeforeAppend)
+                        case .failed, .timedOut:
+                            AppDiagnostics.record(.downloads, "downloads.range_held_persist_failed", fields: [
+                                "download_id": .identifier(entry.ratingKey),
+                                "base_offset": .int(entry.baseOffset),
+                                "stage": .label("manifest_lifecycle"),
+                            ])
+                            self.onChange?()
+                            // The task slot is free even though durability remains retryable. Replan
+                            // from the unchanged durable checkpoint rather than silently consuming
+                            // the slot forever; duplicate work is attempt-scoped and bounded.
+                            self.continueRangeAfterBody(
+                                entry: entry, partialSize: durableBytesBeforeAppend)
                         }
-                    } else {
-                        heldRangeRetainedPredecessorURLs[entry.attemptKey, default: [:]][
-                            entry.baseOffset
-                        ] = ownership.retainPredecessors
                     }
-                    lock.unlock()
-                    for url in ownership.deleteBodies { try? fileManager.removeItem(at: url) }
-                    if !persistence.committed {
-                        AppDiagnostics.record(.downloads, "downloads.range_held_persist_failed", fields: [
-                            "download_id": .identifier(entry.ratingKey),
-                            "base_offset": .int(entry.baseOffset),
-                            "stage": .label("manifest_commit"),
-                            "retained_previous_body_count": .int(ownership.retainPredecessors.count),
-                        ])
-                    }
-                    AppDiagnostics.record(.downloads, "downloads.range_segment_held", fields: [
-                        "download_id": .identifier(entry.ratingKey),
-                        "base_offset": .int(entry.baseOffset),
-                        "durable_bytes": .int(durableBytesBeforeAppend),
-                        "body_bytes": .int(stashLen),
-                        "manifest_committed": .bool(persistence.committed),
-                    ])
-                    onChange?()
-                    // A task slot freed — top the train up (reuses continuation's halt/grace logic).
-                    continueRangeAfterBody(entry: entry, partialSize: durableBytesBeforeAppend)
                     return
                 }
                 try? fileManager.removeItem(at: stash)
@@ -4080,30 +4062,31 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             candidateURLs.formUnion(fallbackURLsByOffset[segment.offset] ?? [])
         }
         lock.unlock()
-        guard case .accepted(let removal) = store.removeHeldRangeSegments(
+        guard case .accepted(let removal) = store.submitHeldRangeSegmentsRemoval(
             for: key,
             offsets: segments.map(\.offset),
             deletingRelativePaths: candidateURLs.map(\.lastPathComponent)) else { return false }
-        guard removal.committed else {
-            recordUncommittedHeldManifestRemoval(
-                ratingKey: key.ratingKey,
-                operation: "remove",
-                persistence: removal.persistence
-            )
-            return false
+        resolveHeldLifecycle(removal.ticket) { [weak self] outcome in
+            guard let self, outcome == .completed else { return }
+            self.lock.lock()
+            for segment in segments {
+                self.heldRangeSegments[key]?.removeValue(forKey: segment.offset)
+                self.heldRangeRetainedPredecessorURLs[key]?.removeValue(forKey: segment.offset)
+            }
+            if self.heldRangeRetainedPredecessorURLs[key]?.isEmpty == true {
+                self.heldRangeRetainedPredecessorURLs.removeValue(forKey: key)
+            }
+            self.lock.unlock()
+            if let destination = self.store.attemptWorkingFileURL(for: key) {
+                _ = self.drainHeldRangeSegments(
+                    for: key,
+                    destination: destination,
+                    expectedBytes: self.store.sourceExactBytes(for: key))
+            }
         }
-        guard case .purged(let cleanup) = store.completeDeferredHeldRangeBodyDeletions(
-            for: key, removal: removal), cleanup.failedRelativePaths.isEmpty else { return false }
-        lock.lock()
-        for segment in segments {
-            heldRangeSegments[key]?.removeValue(forKey: segment.offset)
-            heldRangeRetainedPredecessorURLs[key]?.removeValue(forKey: segment.offset)
-        }
-        if heldRangeRetainedPredecessorURLs[key]?.isEmpty == true {
-            heldRangeRetainedPredecessorURLs.removeValue(forKey: key)
-        }
-        lock.unlock()
-        return true
+        // The caller must stop this synchronous drain pass; a later range event/retry observes the
+        // terminally-cleared map. Returning true would append/delete ahead of lifecycle durability.
+        return false
     }
 
     private func recordUncommittedHeldManifestRemoval(
@@ -4334,25 +4317,21 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let currentURLs = heldRangeSegments[key]?.values.map(\.url) ?? []
         let retainedURLs = heldRangeRetainedPredecessorURLs[key]?.values.flatMap { $0 } ?? []
         lock.unlock()
-        guard case .accepted(let take) = store.takeHeldRangeSegments(
+        guard case .accepted(let take) = store.submitHeldRangeSegmentsRemoval(
             for: key,
+            offsets: nil,
             deletingRelativePaths: (currentURLs + retainedURLs).map(\.lastPathComponent)) else { return }
-        guard take.committed else {
-            recordUncommittedHeldManifestRemoval(
-                ratingKey: ratingKey, operation: "purge", persistence: take.persistence)
-            return
+        resolveHeldLifecycle(take.ticket) { [weak self] outcome in
+            guard let self, outcome == .completed else { return }
+            self.lock.lock()
+            self.heldRangeSegments.removeValue(forKey: key)
+            self.heldRangeRetainedPredecessorURLs.removeValue(forKey: key)
+            self.lock.unlock()
+            AppDiagnostics.record(.downloads, "downloads.range_held_segments_purged", fields: [
+                "download_id": .identifier(ratingKey),
+                "purged_count": .int(take.removed.count),
+            ])
         }
-        guard case .purged(let cleanup) = store.completeDeferredHeldRangeBodyDeletions(
-            for: key, removal: take), cleanup.failedRelativePaths.isEmpty else { return }
-        lock.lock()
-        heldRangeSegments.removeValue(forKey: key)
-        heldRangeRetainedPredecessorURLs.removeValue(forKey: key)
-        lock.unlock()
-        guard !cleanup.removedRelativePaths.isEmpty || !take.removed.isEmpty else { return }
-        AppDiagnostics.record(.downloads, "downloads.range_held_segments_purged", fields: [
-            "download_id": .identifier(ratingKey),
-            "purged_count": .int(cleanup.removedRelativePaths.count),
-        ])
     }
 
     private func expectedRangeBodyBytes(entry: RangeTransfer) -> Int? {
