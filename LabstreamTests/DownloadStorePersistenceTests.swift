@@ -542,6 +542,67 @@ struct DownloadStorePersistenceTests {
         }
     }
 
+    @Test func joinedRowDeletionWaitersReceiveSameSuccessOutcome() async throws {
+        try await withTemporaryDirectory { directory in
+            let id = DownloadAttemptID(uuid: UUID())
+            let key = DownloadAttemptKey(ratingKey: "plex:row-delete-joined", attemptID: id)
+            let record = makeRecord(ratingKey: key.ratingKey, title: "Joined", directory: directory,
+                                    bytes: 1, metadata: OfflineMetadata(
+                                        ratingKey: key.ratingKey, title: "Joined", type: "movie"))
+            try Data([1]).write(to: record.localURL)
+            let blocker = BlockingArtifactDelete(path: record.localURL.path)
+            let live = DownloadArtifactFilesystem.live
+            let store = DownloadStore(baseDirectory: directory, artifactFilesystem: .init(
+                writeAuthArtifact: live.writeAuthArtifact,
+                removeItem: { url, fm in try blocker.remove(url, fm: fm) },
+                fileExists: live.fileExists))
+            #expect(store.createAttemptOwnedRecord(record, attemptID: id) == .committed(key))
+            let first = store.submitRemove(for: key)
+            #expect(await waitForSignal(blocker.started, timeout: 1))
+            let second = store.submitRemove(for: key)
+            guard case .accepted(let firstTicket) = first,
+                  case .accepted(let secondTicket) = second else {
+                blocker.release.signal(); Issue.record("expected joined deletion tickets"); return
+            }
+            #expect(firstTicket == secondTicket)
+            blocker.release.signal()
+            async let a = store.resolveRowDeletion(first)
+            async let b = store.resolveRowDeletion(second)
+            let outcomes = await [a, b]
+            #expect(outcomes == [.removed(key), .removed(key)])
+        }
+    }
+
+    @Test func joinedRowDeletionWaitersReceiveSameArtifactFailure() async throws {
+        try await withTemporaryDirectory { directory in
+            let id = DownloadAttemptID(uuid: UUID())
+            let key = DownloadAttemptKey(ratingKey: "plex:row-delete-joined-failure", attemptID: id)
+            let record = makeRecord(ratingKey: key.ratingKey, title: "Joined", directory: directory,
+                                    bytes: 1, metadata: OfflineMetadata(
+                                        ratingKey: key.ratingKey, title: "Joined", type: "movie"))
+            try Data([1]).write(to: record.localURL)
+            let blocker = BlockingFailingArtifactDelete(path: record.localURL.path)
+            let live = DownloadArtifactFilesystem.live
+            let store = DownloadStore(baseDirectory: directory, artifactFilesystem: .init(
+                writeAuthArtifact: live.writeAuthArtifact,
+                removeItem: { url, fm in try blocker.remove(url, fm: fm) },
+                fileExists: live.fileExists))
+            #expect(store.createAttemptOwnedRecord(record, attemptID: id) == .committed(key))
+            let first = store.submitRemove(for: key)
+            #expect(await waitForSignal(blocker.started, timeout: 1))
+            let second = store.submitRemove(for: key)
+            blocker.release.signal()
+            async let a = store.resolveRowDeletion(first)
+            async let b = store.resolveRowDeletion(second)
+            let outcomes = await [a, b]
+            #expect(outcomes == [
+                .cleanupFailed(key, cleanupFailureCount: 1),
+                .cleanupFailed(key, cleanupFailureCount: 1),
+            ])
+            #expect(store.record(for: key) != nil)
+        }
+    }
+
     @Test func rowDeletionFailureRetainsDurableIntentAndRelaunchRetries() throws {
         try withTemporaryDirectory { directory in
             let id = DownloadAttemptID(uuid: UUID())
@@ -1457,6 +1518,20 @@ private final class BlockingArtifactDelete: @unchecked Sendable {
     init(path: String) { self.path = path }
     func remove(_ url: URL, fm: FileManager) throws {
         if url.path == path { started.signal(); release.wait() }
+        try fm.removeItem(at: url)
+    }
+}
+
+private final class BlockingFailingArtifactDelete: @unchecked Sendable {
+    let started = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    private let path: String
+    init(path: String) { self.path = path }
+    func remove(_ url: URL, fm: FileManager) throws {
+        if url.path == path {
+            started.signal(); release.wait()
+            throw CocoaError(.fileWriteOutOfSpace)
+        }
         try fm.removeItem(at: url)
     }
 }
