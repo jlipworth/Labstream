@@ -332,6 +332,19 @@ final class DownloadStore: @unchecked Sendable {
         case staleOrMissing
     }
 
+    struct AttemptHeldRangeLifecycleSubmission: Sendable, Equatable {
+        let previous: OfflineHeldRangeSegment?
+        let removed: [OfflineHeldRangeSegment]
+        let deferredRelativePaths: [String]
+        let ticket: DownloadArtifactLifecycleCoordinator.Ticket
+    }
+
+    enum AttemptHeldRangeLifecycleSubmissionResult: Sendable, Equatable {
+        case accepted(AttemptHeldRangeLifecycleSubmission)
+        case invalidSegment
+        case staleOrMissing
+    }
+
     enum AttemptHeldRangeSegmentsRemovalResult: Sendable, Equatable {
         case accepted(HeldRangeSegmentsRemovalResult)
         case staleOrMissing
@@ -407,6 +420,7 @@ final class DownloadStore: @unchecked Sendable {
                 displayBytes: Int?
             )
             case clearResumeBlob(relativePath: String?, clearDisplayBytes: Bool)
+            case heldBodyDeletion(relativePaths: [String])
         }
 
         struct ArtifactIntent: Codable, Sendable, Equatable {
@@ -619,6 +633,7 @@ final class DownloadStore: @unchecked Sendable {
     /// Exact rows between in-memory intent retirement and its terminal index outcome. Recovery
     /// must not schedule the successor until success, or until failure restores the retired head.
     private var artifactRetirementKeys: Set<DownloadAttemptKey> = [] // guarded by `lock`
+    private var reservedHeldBodyDeletionPaths: [String: UUID] = [:] // guarded by `lock`
 
     /// - Parameter baseDirectory: where media files + the index live. Defaults to
     ///   `Application Support/Labstream/Downloads`, created if missing.
@@ -671,7 +686,7 @@ final class DownloadStore: @unchecked Sendable {
         load()
         startupArtifactCleanupIntentIDs = Set(
             rows.values.flatMap { $0.pendingArtifactIntents.map(\.id) })
-        recoverDeferredHeldRangeBodyDeletions()
+        stageLegacyHeldBodyDeletionJobs()
         recoverPendingArtifactIntents()
     }
 
@@ -1207,6 +1222,10 @@ final class DownloadStore: @unchecked Sendable {
             lock.unlock()
             return (false, false, nil)
         }
+        guard reservedHeldBodyDeletionPaths[segment.relativePath] == nil else {
+            lock.unlock()
+            return (false, false, nil)
+        }
         var segments = metadata.heldRangeSegments ?? []
         let previous = segments.first { $0.offset == segment.offset }
         segments.removeAll { $0.offset == segment.offset }
@@ -1236,6 +1255,7 @@ final class DownloadStore: @unchecked Sendable {
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
               !row.legacyResetPending, !row.deletionPending,
               row.pendingValidatedPromotionStatus == nil,
+              reservedHeldBodyDeletionPaths[segment.relativePath] == nil,
               var metadata = row.metadata else {
             lock.unlock()
             return .staleOrMissing
@@ -1261,6 +1281,228 @@ final class DownloadStore: @unchecked Sendable {
             ticket: persistence.ticket,
             persistence: persistence.result
         )
+    }
+
+    func submitHeldRangeSegment(
+        for key: DownloadAttemptKey,
+        segment: OfflineHeldRangeSegment,
+        deletingRelativePaths candidates: [String] = []
+    ) -> AttemptHeldRangeLifecycleSubmissionResult {
+        lock.lock()
+        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
+              !row.legacyResetPending, !row.deletionPending,
+              row.pendingValidatedPromotionStatus == nil,
+              reservedHeldBodyDeletionPaths[segment.relativePath] == nil,
+              var metadata = row.metadata else {
+            lock.unlock(); return .staleOrMissing
+        }
+        guard Self.isSafeOneLevelRelativePath(segment.relativePath),
+              segment.offset >= 0, segment.length > 0 else {
+            lock.unlock(); return .invalidSegment
+        }
+        var segments = metadata.heldRangeSegments ?? []
+        let previous = segments.first { $0.offset == segment.offset }
+        segments.removeAll { $0.offset == segment.offset }
+        segments.append(segment)
+        metadata.heldRangeSegments = segments.sorted { $0.offset < $1.offset }
+        metadata.downloadAttemptID = key.attemptID.rawValue
+        row.metadata = metadata
+        let paths = Set(row.heldRangeBodyDeletionIntents)
+            .union(candidates.filter(Self.isSafeOneLevelRelativePath))
+            .union(previous.map { [$0.relativePath] } ?? [])
+            .filter(Self.isSafeOneLevelRelativePath).sorted()
+        row.heldRangeBodyDeletionIntents = paths
+        let (intent, ticket, shouldStart) = appendHeldLifecycleIntentLocked(
+            row: &row, key: key, relativePaths: paths)
+        rows[key.ratingKey] = row
+        lock.unlock()
+        if shouldStart { scheduleHeldLifecycle(ticket: ticket, intent: intent) }
+        return .accepted(.init(
+            previous: previous, removed: [], deferredRelativePaths: paths, ticket: ticket))
+    }
+
+    func submitHeldRangeSegmentsRemoval(
+        for key: DownloadAttemptKey,
+        offsets: [Int]?,
+        deletingRelativePaths candidates: [String] = []
+    ) -> AttemptHeldRangeLifecycleSubmissionResult {
+        lock.lock()
+        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
+              !row.legacyResetPending, !row.deletionPending,
+              row.pendingValidatedPromotionStatus == nil,
+              var metadata = row.metadata else {
+            lock.unlock(); return .staleOrMissing
+        }
+        let existing = metadata.heldRangeSegments ?? []
+        let removed: [OfflineHeldRangeSegment]
+        if let offsets {
+            let set = Set(offsets)
+            removed = existing.filter { set.contains($0.offset) }
+            let remaining = existing.filter { !set.contains($0.offset) }
+            metadata.heldRangeSegments = remaining.isEmpty ? nil : remaining
+        } else {
+            removed = existing
+            metadata.heldRangeSegments = nil
+        }
+        metadata.downloadAttemptID = key.attemptID.rawValue
+        row.metadata = metadata
+        let paths = Set(row.heldRangeBodyDeletionIntents)
+            .union(candidates.filter(Self.isSafeOneLevelRelativePath))
+            .union(removed.map(\.relativePath).filter(Self.isSafeOneLevelRelativePath))
+            .sorted()
+        row.heldRangeBodyDeletionIntents = paths
+        let (intent, ticket, shouldStart) = appendHeldLifecycleIntentLocked(
+            row: &row, key: key, relativePaths: paths)
+        rows[key.ratingKey] = row
+        lock.unlock()
+        if shouldStart { scheduleHeldLifecycle(ticket: ticket, intent: intent) }
+        return .accepted(.init(
+            previous: nil, removed: removed, deferredRelativePaths: paths, ticket: ticket))
+    }
+
+    private func appendHeldLifecycleIntentLocked(
+        row: inout Row,
+        key: DownloadAttemptKey,
+        relativePaths: [String]
+    ) -> (Row.ArtifactIntent, DownloadArtifactLifecycleCoordinator.Ticket, Bool) {
+        row.artifactGeneration += 1
+        let intent = Row.ArtifactIntent(
+            id: UUID(), attemptID: key.attemptID,
+            generation: row.artifactGeneration, phase: .prepared,
+            operation: .heldBodyDeletion(relativePaths: relativePaths))
+        row.pendingArtifactIntents.append(intent)
+        rows[key.ratingKey] = row
+        let prepared = enqueueAttemptPersistenceLocked()
+        let ticket = artifactLifecycle.register(
+            key: key, generation: intent.generation, intentID: intent.id,
+            preparedRevision: prepared)
+        artifactLifecycleTickets[intent.id] = ticket
+        let shouldStart = row.pendingArtifactIntents.count == 1
+        if shouldStart { activeArtifactIntentIDs.insert(intent.id) }
+        return (intent, ticket, shouldStart)
+    }
+
+    private func scheduleHeldLifecycle(
+        ticket: DownloadArtifactLifecycleCoordinator.Ticket,
+        intent: Row.ArtifactIntent
+    ) {
+        artifactWorkerQueue.async { [weak self] in
+            self?.executeHeldLifecycle(ticket: ticket, intent: intent)
+        }
+    }
+
+    private func executeHeldLifecycle(
+        ticket: DownloadArtifactLifecycleCoordinator.Ticket,
+        intent: Row.ArtifactIntent
+    ) {
+        let prepared = waitForPersistence(through: ticket.preparedRevision)
+        guard prepared.result.committed(through: ticket.preparedRevision) else {
+            failArtifactLifecycle(ticket, prepared.result); return
+        }
+        // Observe, but never submit, later R2. A terminal clear may carry current memory only after
+        // every already-submitted revision through this point is independently durable.
+        let latest = currentPersistenceTicket()
+        let latestOutcome = waitForPersistence(through: latest)
+        guard latestOutcome.result.committed(through: latest) else {
+            failArtifactLifecycle(ticket, latestOutcome.result); return
+        }
+        guard case .heldBodyDeletion(let provenPaths) = intent.operation else {
+            failArtifactLifecycle(ticket, errorType: "invalidHeldLifecycleIntent"); return
+        }
+        lock.lock()
+        guard let row = rows[ticket.key.ratingKey], row.attemptID == ticket.key.attemptID,
+              row.pendingArtifactIntents.first?.id == intent.id else {
+            lock.unlock(); completeArtifactLifecycle(ticket); return
+        }
+        let referenced = heldRangeManifestRelativePathsLocked()
+        let proven = Set(provenPaths)
+        let protected = Set(row.heldRangeBodyDeletionIntents)
+            .intersection(proven).intersection(referenced)
+        let candidates = row.heldRangeBodyDeletionIntents
+            .filter { proven.contains($0) && Self.isSafeOneLevelRelativePath($0) }
+            .filter { !referenced.contains($0) }
+        guard candidates.allSatisfy({ reservedHeldBodyDeletionPaths[$0] == nil }) else {
+            lock.unlock()
+            failArtifactLifecycle(ticket, errorType: "heldPathReserved")
+            return
+        }
+        for path in candidates { reservedHeldBodyDeletionPaths[path] = intent.id }
+        lock.unlock()
+
+        var deleted = Set<String>()
+        var deletionError: String?
+        for path in candidates {
+            let url = baseDirectory.appendingPathComponent(path)
+            do {
+                if artifactFilesystem.fileExists(url, fileManager) {
+                    try artifactFilesystem.removeItem(url, fileManager)
+                }
+                deleted.insert(path)
+            } catch {
+                deletionError = String(reflecting: type(of: error))
+            }
+        }
+
+        lock.lock()
+        for path in candidates where reservedHeldBodyDeletionPaths[path] == intent.id {
+            reservedHeldBodyDeletionPaths.removeValue(forKey: path)
+        }
+        guard deletionError == nil,
+              var terminalRow = rows[ticket.key.ratingKey],
+              terminalRow.attemptID == ticket.key.attemptID,
+              terminalRow.pendingArtifactIntents.first?.id == intent.id else {
+            lock.unlock()
+            if let deletionError { failArtifactLifecycle(ticket, errorType: deletionError) }
+            else { completeArtifactLifecycle(ticket) }
+            return
+        }
+        let completed = deleted.union(protected)
+        terminalRow.heldRangeBodyDeletionIntents.removeAll { completed.contains($0) }
+        artifactRetirementKeys.insert(ticket.key)
+        let retiringIntent = terminalRow.pendingArtifactIntents.removeFirst()
+        rows[ticket.key.ratingKey] = terminalRow
+        let terminalTicket = enqueueAttemptPersistenceLocked()
+        lock.unlock()
+        let terminal = waitForPersistence(through: terminalTicket)
+        guard terminal.result.committed(through: terminalTicket) else {
+            lock.lock()
+            if var restored = rows[ticket.key.ratingKey],
+               restored.attemptID == ticket.key.attemptID {
+                restored.pendingArtifactIntents.insert(retiringIntent, at: 0)
+                restored.heldRangeBodyDeletionIntents = Set(
+                    restored.heldRangeBodyDeletionIntents).union(completed).sorted()
+                rows[ticket.key.ratingKey] = restored
+                _ = enqueueAttemptPersistenceLocked()
+            }
+            artifactRetirementKeys.remove(ticket.key)
+            lock.unlock()
+            failArtifactLifecycle(ticket, terminal.result)
+            return
+        }
+        _ = lock.withLock { artifactRetirementKeys.remove(ticket.key) }
+        completeArtifactLifecycle(ticket)
+    }
+
+    private func stageLegacyHeldBodyDeletionJobs() {
+        lock.lock()
+        var staged: [(DownloadAttemptKey, Row.ArtifactIntent, DownloadArtifactLifecycleCoordinator.Ticket)] = []
+        for (ratingKey, original) in Array(rows) {
+            guard let attemptID = original.attemptID,
+                  !original.heldRangeBodyDeletionIntents.isEmpty,
+                  !original.pendingArtifactIntents.contains(where: {
+                    if case .heldBodyDeletion = $0.operation { return true }
+                    return false
+                  }) else { continue }
+            var row = original
+            let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+            let paths = row.heldRangeBodyDeletionIntents
+            let tuple = appendHeldLifecycleIntentLocked(
+                row: &row, key: key, relativePaths: paths)
+            rows[ratingKey] = row
+            if tuple.2 { staged.append((key, tuple.0, tuple.1)) }
+        }
+        lock.unlock()
+        for (_, intent, ticket) in staged { scheduleHeldLifecycle(ticket: ticket, intent: intent) }
     }
 
     @discardableResult
@@ -3013,6 +3255,8 @@ final class DownloadStore: @unchecked Sendable {
                     self.executeResumeReplacement(ticket: ticket, data: data)
                 case .clearResumeBlob:
                     self.executeResumeClear(ticket: ticket)
+                case .heldBodyDeletion:
+                    self.executeHeldLifecycle(ticket: ticket, intent: intent)
                 }
             }
         }
