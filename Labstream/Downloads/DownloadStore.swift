@@ -670,6 +670,10 @@ final class DownloadStore: @unchecked Sendable {
     /// must not schedule the successor until success, or until failure restores the retired head.
     private var artifactRetirementKeys: Set<DownloadAttemptKey> = [] // guarded by `lock`
     private var reservedHeldBodyDeletionPaths: [String: UUID] = [:] // guarded by `lock`
+    /// Paths selected for an off-lock destructive lifecycle step. Keeping this reservation under
+    /// the store lock closes the snapshot/delete race where another row could adopt a path after
+    /// cross-row references were inspected but before the filesystem operation ran.
+    private var reservedArtifactDeletionPaths: [String: UUID] = [:] // guarded by `lock`
     private var staticCheckpointOutcomes: [UUID: AttemptStaticRangeCheckpointResetResult] = [:]
     private var staticCheckpointAwaitingResultIDs: Set<UUID> = []
     private var promotionOutcomes: [UUID: AttemptValidatedPromotionResult] = [:]
@@ -964,6 +968,10 @@ final class DownloadStore: @unchecked Sendable {
         }
         guard Self.isSafeOneLevelRelativePath(row.relativePath) else {
             lock.unlock(); return .immediate(.invalidWorkingLayout)
+        }
+        guard reservedArtifactDeletionPaths[working] == nil,
+              reservedArtifactDeletionPaths[row.relativePath] == nil else {
+            lock.unlock(); return .immediate(.resetPending)
         }
         row.artifactGeneration += 1
         let intent = Row.ArtifactIntent(
@@ -1426,6 +1434,9 @@ final class DownloadStore: @unchecked Sendable {
             lock.unlock()
             return (false, false, nil)
         }
+        guard reservedArtifactDeletionPaths[segment.relativePath] == nil else {
+            lock.unlock(); return (false, false, nil)
+        }
         var segments = metadata.heldRangeSegments ?? []
         let previous = segments.first { $0.offset == segment.offset }
         segments.removeAll { $0.offset == segment.offset }
@@ -1456,6 +1467,7 @@ final class DownloadStore: @unchecked Sendable {
               !row.legacyResetPending, !row.deletionPending,
               row.pendingValidatedPromotionStatus == nil,
               reservedHeldBodyDeletionPaths[segment.relativePath] == nil,
+              reservedArtifactDeletionPaths[segment.relativePath] == nil,
               var metadata = row.metadata else {
             lock.unlock()
             return .staleOrMissing
@@ -1493,6 +1505,7 @@ final class DownloadStore: @unchecked Sendable {
               !row.legacyResetPending, !row.deletionPending,
               row.pendingValidatedPromotionStatus == nil,
               reservedHeldBodyDeletionPaths[segment.relativePath] == nil,
+              reservedArtifactDeletionPaths[segment.relativePath] == nil,
               var metadata = row.metadata else {
             lock.unlock(); return .staleOrMissing
         }
@@ -2427,13 +2440,25 @@ final class DownloadStore: @unchecked Sendable {
         lock.lock()
         let rel = record.localURL.lastPathComponent
         let existing = rows[record.ratingKey]
+        let incomingAttemptID = record.attemptID ?? existing?.attemptID
+        var incomingPaths: Set<String> = [rel]
+        incomingPaths.formUnion(sideAssetRelativePaths(for: record.metadata))
+        if let resume = record.metadata?.resumeDataRelativePath { incomingPaths.insert(resume) }
+        incomingPaths.formUnion((record.metadata?.heldRangeSegments ?? []).map(\.relativePath))
+        if record.status != .complete && record.status != .unverified,
+           let incomingAttemptID {
+            incomingPaths.insert(Self.attemptStagingRelativePath(
+                for: DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: incomingAttemptID),
+                stableRelativePath: rel))
+        }
         // Legacy/unconditional writers may not erase a validated-publication or deletion
         // reservation. A deletion-pending row is the only durable cleanup authority when the
         // standalone journal is unavailable.
         guard existing?.pendingValidatedPromotionStatus == nil,
               existing?.deletionPending != true,
               existing?.heldRangeBodyDeletionIntents.isEmpty != false,
-              existing?.pendingArtifactIntents.isEmpty != false else {
+              existing?.pendingArtifactIntents.isEmpty != false,
+              incomingPaths.allSatisfy({ reservedArtifactDeletionPaths[$0] == nil }) else {
             lock.unlock()
             return
         }
@@ -2483,6 +2508,21 @@ final class DownloadStore: @unchecked Sendable {
         }
         let existingKey = existing?.attemptID.map {
             DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: $0)
+        }
+        let relativePath = record.localURL.lastPathComponent
+        var incomingPaths: Set<String> = [relativePath]
+        incomingPaths.insert(Self.attemptStagingRelativePath(
+            for: key, stableRelativePath: relativePath))
+        incomingPaths.formUnion(sideAssetRelativePaths(for: record.metadata))
+        if let resume = record.metadata?.resumeDataRelativePath { incomingPaths.insert(resume) }
+        incomingPaths.formUnion((record.metadata?.heldRangeSegments ?? []).map(\.relativePath))
+        if !incomingPaths.allSatisfy({ reservedArtifactDeletionPaths[$0] == nil }) {
+            lock.unlock()
+            return .rejectedOwnership(
+                expectedPreviousOwner: expectedKey,
+                actualOwner: existingKey,
+                reason: .artifactLifecyclePending
+            )
         }
         if existing?.legacyResetPending == true {
             lock.unlock()
@@ -3794,9 +3834,22 @@ final class DownloadStore: @unchecked Sendable {
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID else {
             lock.unlock(); return .immediate(.staleOrMissing)
         }
+        guard row.legacyResetPending else {
+            pendingLegacyAttemptResetKeys.remove(key)
+            lock.unlock(); return .immediate(.notPending)
+        }
         if let head = row.pendingArtifactIntents.first,
-           case .legacyResetDeletion = head.operation,
-           !activeArtifactIntentIDs.contains(head.id) {
+           case .legacyResetDeletion = head.operation {
+            if activeArtifactIntentIDs.contains(head.id) {
+                if let ticket = artifactLifecycleTickets[head.id] {
+                    legacyResetAwaitingResultIDs.insert(head.id)
+                    lock.unlock(); return .accepted(ticket: ticket)
+                }
+                assertionFailure("active legacy reset intent is missing its lifecycle ticket")
+                // Recover the bookkeeping invariant instead of registering a second coordinator
+                // worker while the intent still appears active.
+                activeArtifactIntentIDs.remove(head.id)
+            }
             let prepared = enqueueAttemptPersistenceLocked()
             let ticket = artifactLifecycle.register(
                 key: key, generation: head.generation, intentID: head.id,
@@ -3877,6 +3930,37 @@ final class DownloadStore: @unchecked Sendable {
         }
     }
 
+    /// Every local path for which a row still has durable ownership or lifecycle authority.
+    /// Destructive workers use this for cross-row exclusion; notably this includes paths captured
+    /// only by a pending intent, not just paths currently published in ordinary row metadata.
+    private func artifactPathsReferenced(by row: Row) -> Set<String> {
+        var result: Set<String> = [row.relativePath]
+        if let working = row.attemptWorkingRelativePath { result.insert(working) }
+        result.formUnion(sideAssetRelativePaths(for: row.metadata))
+        if let resume = row.metadata?.resumeDataRelativePath { result.insert(resume) }
+        result.formUnion((row.metadata?.heldRangeSegments ?? []).map(\.relativePath))
+        result.formUnion(row.heldRangeBodyDeletionIntents)
+        result.formUnion(row.legacyResetArtifactRelativePaths ?? [])
+        for intent in row.pendingArtifactIntents {
+            switch intent.operation {
+            case .replaceResumeBlob(let new, let previous, _):
+                result.insert(new)
+                if let previous { result.insert(previous) }
+            case .clearResumeBlob(let relative, _):
+                if let relative { result.insert(relative) }
+            case .heldBodyDeletion(let paths), .legacyResetDeletion(let paths):
+                result.formUnion(paths)
+            case .staticCheckpoint(let working, let stable, let temporary, _, _):
+                result.insert(working)
+                if let stable { result.insert(stable) }
+                if let temporary { result.insert(temporary) }
+            case .validatedPromotion(let working, let stable, _, _):
+                result.insert(working); result.insert(stable)
+            }
+        }
+        return result
+    }
+
     private func executeLegacyResetDeletion(
         ticket: DownloadArtifactLifecycleCoordinator.Ticket,
         intent: Row.ArtifactIntent
@@ -3889,20 +3973,32 @@ final class DownloadStore: @unchecked Sendable {
         guard prepared.result.committed(through: ticket.preparedRevision) else {
             failArtifactLifecycle(ticket, prepared.result); return
         }
-        let referencedElsewhere = lock.withLock { () -> Set<String> in
+        let candidates = lock.withLock { () -> [String]? in
+            guard let row = rows[ticket.key.ratingKey], row.attemptID == ticket.key.attemptID,
+                  row.pendingArtifactIntents.first?.id == intent.id else { return nil }
             var result: Set<String> = []
             for row in rows.values where row.ratingKey != ticket.key.ratingKey {
-                result.insert(row.relativePath)
-                if let working = row.attemptWorkingRelativePath { result.insert(working) }
-                result.formUnion(sideAssetRelativePaths(for: row.metadata))
-                if let resume = row.metadata?.resumeDataRelativePath { result.insert(resume) }
-                result.formUnion((row.metadata?.heldRangeSegments ?? []).map(\.relativePath))
-                result.formUnion(row.legacyResetArtifactRelativePaths ?? [])
+                result.formUnion(artifactPathsReferenced(by: row))
             }
-            return result
+            let selected = paths.filter { !result.contains($0) }
+            guard selected.allSatisfy({ reservedArtifactDeletionPaths[$0] == nil }) else {
+                return nil
+            }
+            for path in selected { reservedArtifactDeletionPaths[path] = intent.id }
+            return selected
+        }
+        guard let candidates else {
+            failArtifactLifecycle(ticket, errorType: "legacyResetReservationFailed"); return
+        }
+        let releaseReservations = {
+            self.lock.withLock {
+                for path in candidates where self.reservedArtifactDeletionPaths[path] == intent.id {
+                    self.reservedArtifactDeletionPaths.removeValue(forKey: path)
+                }
+            }
         }
         var failures = 0
-        for path in paths where !referencedElsewhere.contains(path) {
+        for path in candidates {
             let url = baseDirectory.appendingPathComponent(path)
             do { try artifactFilesystem.removeItem(url, fileManager) }
             catch where artifactFilesystem.fileExists(url, fileManager) { failures += 1 }
@@ -3915,12 +4011,13 @@ final class DownloadStore: @unchecked Sendable {
                         ticket.key, cleanupFailureCount: failures)
                 }
             }
+            releaseReservations()
             failArtifactLifecycle(ticket, errorType: "legacyResetCleanupFailed"); return
         }
         lock.lock()
         guard var row = rows[ticket.key.ratingKey], row.attemptID == ticket.key.attemptID,
               row.pendingArtifactIntents.first?.id == intent.id else {
-            lock.unlock(); completeArtifactLifecycle(ticket); return
+            lock.unlock(); releaseReservations(); completeArtifactLifecycle(ticket); return
         }
         artifactRetirementKeys.insert(ticket.key)
         let retiring = row.pendingArtifactIntents.removeFirst()
@@ -3943,7 +4040,7 @@ final class DownloadStore: @unchecked Sendable {
             if legacyResetAwaitingResultIDs.contains(intent.id) {
                 legacyResetOutcomes[intent.id] = .failed(ticket.key, outcome.result)
             }
-            lock.unlock(); failArtifactLifecycle(ticket, outcome.result); return
+            lock.unlock(); releaseReservations(); failArtifactLifecycle(ticket, outcome.result); return
         }
         lock.withLock {
             artifactRetirementKeys.remove(ticket.key)
@@ -3952,6 +4049,7 @@ final class DownloadStore: @unchecked Sendable {
                 legacyResetOutcomes[intent.id] = .committed(ticket.key, cleanupFailureCount: 0)
             }
         }
+        releaseReservations()
         completeArtifactLifecycle(ticket)
     }
 
@@ -4065,6 +4163,10 @@ final class DownloadStore: @unchecked Sendable {
                 lock.unlock(); return .staleOrMissing
             }
             working = existing; stable = nil; temporary = nil
+        }
+        let lifecyclePaths = [working, stable, temporary].compactMap { $0 }
+        guard lifecyclePaths.allSatisfy({ reservedArtifactDeletionPaths[$0] == nil }) else {
+            lock.unlock(); return .staleOrMissing
         }
         row.artifactGeneration += 1
         let intent = Row.ArtifactIntent(
@@ -4346,6 +4448,13 @@ final class DownloadStore: @unchecked Sendable {
         let oldMeta = meta
         mutate(&meta)
         guard meta != oldMeta else { lock.unlock(); return }
+        var proposed = row
+        proposed.metadata = meta
+        let newlyReferenced = artifactPathsReferenced(by: proposed)
+            .subtracting(artifactPathsReferenced(by: row))
+        guard newlyReferenced.allSatisfy({ reservedArtifactDeletionPaths[$0] == nil }) else {
+            lock.unlock(); return
+        }
         row.metadata = meta
         rows[ratingKey] = row
         sideAssetHydrationCache.removeValue(forKey: ratingKey)
@@ -4383,6 +4492,13 @@ final class DownloadStore: @unchecked Sendable {
             let ticket = enqueueAttemptPersistenceLocked()
             lock.unlock()
             return .accepted(change: .noChange, ticket: ticket)
+        }
+        var proposed = row
+        proposed.metadata = metadata
+        let newlyReferenced = artifactPathsReferenced(by: proposed)
+            .subtracting(artifactPathsReferenced(by: row))
+        guard newlyReferenced.allSatisfy({ reservedArtifactDeletionPaths[$0] == nil }) else {
+            lock.unlock(); return .staleOrMissing
         }
         row.metadata = metadata
         rows[key.ratingKey] = row
