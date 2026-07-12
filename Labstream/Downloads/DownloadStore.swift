@@ -1444,13 +1444,13 @@ final class DownloadStore: @unchecked Sendable {
         }
 
         lock.lock()
-        for path in candidates where reservedHeldBodyDeletionPaths[path] == intent.id {
-            reservedHeldBodyDeletionPaths.removeValue(forKey: path)
-        }
         guard deletionError == nil,
               var terminalRow = rows[ticket.key.ratingKey],
               terminalRow.attemptID == ticket.key.attemptID,
               terminalRow.pendingArtifactIntents.first?.id == intent.id else {
+            for path in candidates where reservedHeldBodyDeletionPaths[path] == intent.id {
+                reservedHeldBodyDeletionPaths.removeValue(forKey: path)
+            }
             lock.unlock()
             if let deletionError { failArtifactLifecycle(ticket, errorType: deletionError) }
             else { completeArtifactLifecycle(ticket) }
@@ -1474,12 +1474,20 @@ final class DownloadStore: @unchecked Sendable {
                 rows[ticket.key.ratingKey] = restored
                 _ = enqueueAttemptPersistenceLocked()
             }
+            for path in candidates where reservedHeldBodyDeletionPaths[path] == intent.id {
+                reservedHeldBodyDeletionPaths.removeValue(forKey: path)
+            }
             artifactRetirementKeys.remove(ticket.key)
             lock.unlock()
             failArtifactLifecycle(ticket, terminal.result)
             return
         }
-        _ = lock.withLock { artifactRetirementKeys.remove(ticket.key) }
+        lock.withLock {
+            for path in candidates where reservedHeldBodyDeletionPaths[path] == intent.id {
+                reservedHeldBodyDeletionPaths.removeValue(forKey: path)
+            }
+            artifactRetirementKeys.remove(ticket.key)
+        }
         completeArtifactLifecycle(ticket)
     }
 
