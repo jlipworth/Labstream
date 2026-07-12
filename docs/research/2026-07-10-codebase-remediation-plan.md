@@ -919,7 +919,7 @@ their relationship during the schema-v3 migration.
 - **Remaining Phase 1A artifact boundary:** legacy-reset deletion and whole-row/pending-deletion
   artifact removal remain incomplete.
 
-#### 2026-07-12 — open Phase 1 foreground revalidation liveness defect
+#### 2026-07-12 — Phase 1 foreground revalidation liveness correction
 
 - **Observed symptom:** a download completed while the headset is off can remain
   `.unverified`/“Playback not verified” after wear/foreground and become `.complete` only after the
@@ -936,11 +936,30 @@ their relationship during the schema-v3 migration.
 - **Expected local timing:** one item uses an 8-second local probe, a 2-second delay and 15-second
   retry, plus an optional 4-second local asset/frame fallback. Probes are serialized, so several
   items may queue, but no media-server round trip is required.
-- **Required correction (now queued):** distinguish “probe actually admitted/ran” from “background
-  gate deferred”; never retain a deferred attempt in the in-flight suppression set; trigger an exact-
-  attempt retry when the background completion gate drains; preserve scene-active retries and true
-  concurrent-probe dedupe; make timeout/cancel/failure requeue rather than silently erase. Add
-  deterministic global-handler, gate-drain, multi-download, concurrency, and Play-promotion tests.
+- **Commits:** `8838e2a6` distinguishes gate deferral from real admission and delivers exact drain/
+  finish callbacks; `99a9b8c5` adds the deterministic retry/dedupe coordinator; `3b9e18cd` gates every
+  new retry on a known-active scene and carries request generations; `60a0b90d` cancels an already-
+  running revalidation probe when the scene becomes inactive without touching publishing finalizers.
+- **Corrected behavior:** background gate deferral never enters the true in-flight suppression state.
+  Deferred exact attempts are delivered once when the global gate drains, but remain parked while the
+  scene is inactive. `scene_active` consumes the desired edge and starts the local probe. Gate-drain,
+  broker rejection, cancellation, finalizer completion, and watchdog callbacks carry exact attempt,
+  request ID, and opaque timer tokens, so an old completion cannot clear a newer request. A completed
+  inconclusive probe receives one delayed automatic retry per foreground activation; cancellation and
+  overtaken lifecycle edges retry promptly; the watchdog requeues instead of merely erasing state.
+- **Background budget:** revalidation and publishing now have distinct work-registry kinds. On
+  active→inactive, only `.revalidationFinalizer` tasks are parked/cancelled; publishing finalizers
+  continue to reach durable `.unverified` and release the OS wake. A queued broker hop rechecks scene
+  state, closing admission→inactive overtaking. AVFoundation polling and fallback paths observe task
+  cancellation before any terminal verdict/status mutation.
+- **Evidence:** 15 coordinator/session/Manager tests first proved inactive drain/session-change,
+  active-before/after-drain, broker rejection, multi-download global gating, exact dedupe, stale
+  generations/timers, bounded inconclusive retry, cancellation, and Play promotion. Final tests add
+  held-probe active→inactive cancellation, inactive-before-broker registration, publishing-finalizer
+  preservation, and active exactly-once retry. Full Mac passed 262 tests before the final cancellation
+  amendment; the final serial full app gate and focused suites passed. PMSKit passed 1,487 tests across
+  188 suites. Parallel runs exposed only the separately tracked MediaBrowser reverse-completion
+  timing flake, which passed focused and in the serial full run. Final adversarial review is clean.
 
 #### 2026-07-12 — Phase 1 legacy-reset deletion lifecycle
 
