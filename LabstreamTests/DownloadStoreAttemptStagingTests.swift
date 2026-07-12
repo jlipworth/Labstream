@@ -91,6 +91,49 @@ struct DownloadStoreAttemptStagingTests {
         }
     }
 
+    @Test func durableValidatedIntentRecoversRenameToTerminalCommitCrashWindow() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("download-promotion-recovery-\(UUID().uuidString)",
+                                    isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let writes = LockedFaultBox(0)
+        let owner = key("plex:promotion-crash", "attempt-a")
+        let store = DownloadStore(
+            baseDirectory: directory,
+            indexPersistence: .init { data, url in
+                let count = writes.withValue { value in value += 1; return value }
+                if count == 3 { throw CocoaError(.fileWriteOutOfSpace) }
+                try data.write(to: url, options: .atomic)
+            })
+        let stable = store.destinationURL(ratingKey: owner.ratingKey, ext: "mp4")
+        try Data("old-owner".utf8).write(to: stable)
+        #expect(created(store, key: owner, stable: stable)) // write 1: row
+        let working = try #require(store.attemptWorkingFileURL(for: owner))
+        try Data("validated-owner-a".utf8).write(to: working)
+
+        // Write 2 durably records the validated intent; rename succeeds; write 3 fails before the
+        // terminal row can replace that intent on disk.
+        guard case .persistenceFailed(let failedKey, _) = store.promoteValidatedAttempt(
+            for: owner, terminalStatus: .complete) else {
+            Issue.record("Expected injected terminal snapshot failure")
+            return
+        }
+        #expect(failedKey == owner)
+        #expect(!FileManager.default.fileExists(atPath: working.path))
+        #expect(String(decoding: try Data(contentsOf: stable), as: UTF8.self)
+                == "validated-owner-a")
+
+        let relaunched = DownloadStore(baseDirectory: directory)
+        #expect(relaunched.record(for: owner)?.status == .queued)
+        #expect(relaunched.recoverPendingValidatedPromotion(for: owner)
+                == .promoted(owner, bytes: 17, status: .complete))
+        let verified = DownloadStore(baseDirectory: directory)
+        #expect(verified.record(for: owner)?.status == .complete)
+        #expect(verified.record(for: owner)?.bytes == 17)
+        #expect(verified.attemptWorkingFileLayout(for: owner) == nil)
+    }
+
     @Test func genericUpsertDerivesNewOwnersWorkingPathInsteadOfInheritingOldOwner() throws {
         try withStore { store, _ in
             let a = key("plex:upsert-owner", "attempt-a")
@@ -117,8 +160,21 @@ struct DownloadStoreAttemptStagingTests {
             #expect(created(store, key: owned, stable: ownedStable))
             let ownedStage = try #require(store.attemptStagingURL(for: owned, stableURL: ownedStable))
             let orphanStage = try #require(store.attemptStagingURL(for: orphan, stableURL: orphanStable))
+            let heldStable = store.heldRangeSegmentDestinationURL(
+                ratingKey: owned.ratingKey, offset: 512)
+            let heldStage = try #require(store.attemptStagingURL(for: owned, stableURL: heldStable))
             try Data("owned".utf8).write(to: ownedStage)
             try Data("orphan".utf8).write(to: orphanStage)
+            try Data("held".utf8).write(to: heldStage)
+            guard case .accepted = store.persistHeldRangeSegment(
+                for: owned,
+                segment: OfflineHeldRangeSegment(
+                    offset: 512, length: 4, validator: nil,
+                    relativePath: heldStage.lastPathComponent,
+                    attemptID: owned.attemptID.rawValue)) else {
+                Issue.record("Expected held manifest persistence")
+                return
+            }
             let unrelated = directory.appendingPathComponent(".attempt-stage-v1-not-a-digest.stage")
             try Data("unrelated".utf8).write(to: unrelated)
 
@@ -132,6 +188,7 @@ struct DownloadStoreAttemptStagingTests {
             #expect(result.removedRelativePaths == [orphanStage.lastPathComponent])
             #expect(result.failedRelativePaths.isEmpty)
             #expect(FileManager.default.fileExists(atPath: ownedStage.path))
+            #expect(FileManager.default.fileExists(atPath: heldStage.path))
             #expect(FileManager.default.fileExists(atPath: unrelated.path))
             #expect(!FileManager.default.fileExists(atPath: orphanStage.path))
         }
