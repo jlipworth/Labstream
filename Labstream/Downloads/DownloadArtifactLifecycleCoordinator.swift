@@ -1,5 +1,6 @@
 import Foundation
 import PMSKit
+import Darwin
 
 /// Cheap, synchronous registration plus bounded waiting for filesystem-backed download
 /// mutations. Registration always precedes filesystem work; the worker reports the terminal
@@ -194,12 +195,33 @@ struct DownloadArtifactFilesystem: Sendable {
     let writeAuthArtifact: @Sendable (Data, URL, FileManager) throws -> Void
     let removeItem: @Sendable (URL, FileManager) throws -> Void
     let fileExists: @Sendable (URL, FileManager) -> Bool
+    let syncParentDirectory: @Sendable (URL) throws -> Void
+
+    init(
+        writeAuthArtifact: @escaping @Sendable (Data, URL, FileManager) throws -> Void,
+        removeItem: @escaping @Sendable (URL, FileManager) throws -> Void,
+        fileExists: @escaping @Sendable (URL, FileManager) -> Bool,
+        syncParentDirectory: @escaping @Sendable (URL) throws -> Void = Self.liveDirectorySync
+    ) {
+        self.writeAuthArtifact = writeAuthArtifact
+        self.removeItem = removeItem
+        self.fileExists = fileExists
+        self.syncParentDirectory = syncParentDirectory
+    }
+
+    private static let liveDirectorySync: @Sendable (URL) throws -> Void = { child in
+        let descriptor = Darwin.open(child.deletingLastPathComponent().path, O_RDONLY)
+        guard descriptor >= 0 else { throw POSIXError(.EIO) }
+        defer { Darwin.close(descriptor) }
+        guard Darwin.fsync(descriptor) == 0 else { throw POSIXError(.EIO) }
+    }
 
     static let live = Self(
         writeAuthArtifact: { data, url, fileManager in
             try DownloadArtifactFileCommitter().commit(data, to: url)
         },
         removeItem: { url, fileManager in try fileManager.removeItem(at: url) },
-        fileExists: { url, fileManager in fileManager.fileExists(atPath: url.path) }
+        fileExists: { url, fileManager in fileManager.fileExists(atPath: url.path) },
+        syncParentDirectory: liveDirectorySync
     )
 }

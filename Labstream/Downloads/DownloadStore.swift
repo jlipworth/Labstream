@@ -1737,6 +1737,11 @@ final class DownloadStore: @unchecked Sendable {
                 deletionError = String(reflecting: type(of: error))
             }
         }
+        if deletionError == nil, !candidates.isEmpty {
+            do { try artifactFilesystem.syncParentDirectory(
+                baseDirectory.appendingPathComponent(candidates[0])) }
+            catch { deletionError = String(reflecting: type(of: error)) }
+        }
 
         lock.lock()
         guard deletionError == nil,
@@ -2130,7 +2135,8 @@ final class DownloadStore: @unchecked Sendable {
 
     func ownsAttempt(_ key: DownloadAttemptKey) -> Bool {
         lock.lock(); defer { lock.unlock() }
-        return rows[key.ratingKey]?.attemptID == key.attemptID
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else { return false }
+        return !Self.hasPendingRowDeletion(row)
     }
 
     func isDeletionPending(for key: DownloadAttemptKey) -> Bool {
@@ -3337,9 +3343,12 @@ final class DownloadStore: @unchecked Sendable {
            Self.isSafeOneLevelRelativePath(predecessor) {
             let oldURL = baseDirectory.appendingPathComponent(predecessor)
             do {
+                var removed = false
                 if artifactFilesystem.fileExists(oldURL, fileManager) {
                     try artifactFilesystem.removeItem(oldURL, fileManager)
+                    removed = true
                 }
+                if removed { try artifactFilesystem.syncParentDirectory(oldURL) }
             } catch {
                 failArtifactLifecycle(
                     ticket, errorType: String(reflecting: type(of: error)))
@@ -3443,9 +3452,12 @@ final class DownloadStore: @unchecked Sendable {
         if let capturedRelative, Self.isSafeOneLevelRelativePath(capturedRelative) {
             let url = baseDirectory.appendingPathComponent(capturedRelative)
             do {
+                var removed = false
                 if artifactFilesystem.fileExists(url, fileManager) {
                     try artifactFilesystem.removeItem(url, fileManager)
+                    removed = true
                 }
+                if removed { try artifactFilesystem.syncParentDirectory(url) }
             } catch {
                 failArtifactLifecycle(
                     ticket, errorType: String(reflecting: type(of: error)))
@@ -3551,17 +3563,20 @@ final class DownloadStore: @unchecked Sendable {
         _ ticket: DownloadArtifactLifecycleCoordinator.Ticket,
         _ failure: PersistenceFlushResult
     ) {
+        let advanceDeletion = retireFailedHeadBeforeQueuedRowDeletion(ticket)
         lock.withLock {
             activeArtifactIntentIDs.remove(ticket.intentID)
             artifactLifecycleTickets.removeValue(forKey: ticket.intentID)
         }
         artifactLifecycle.fail(ticket, failure)
+        if advanceDeletion { recoverPendingArtifactIntents() }
     }
 
     private func failArtifactLifecycle(
         _ ticket: DownloadArtifactLifecycleCoordinator.Ticket,
         errorType: String
     ) {
+        let advanceDeletion = retireFailedHeadBeforeQueuedRowDeletion(ticket)
         lock.withLock {
             activeArtifactIntentIDs.remove(ticket.intentID)
             artifactLifecycleTickets.removeValue(forKey: ticket.intentID)
@@ -3569,6 +3584,64 @@ final class DownloadStore: @unchecked Sendable {
             staticCheckpointOutcomes.removeValue(forKey: ticket.intentID)
         }
         artifactLifecycle.failArtifact(ticket, errorType: errorType)
+        if advanceDeletion { recoverPendingArtifactIntents() }
+    }
+
+    /// A queued row deletion safely supersedes a failed predecessor: its durable recipe captured
+    /// every predecessor path, and no later successor can be admitted. Commit removal of the failed
+    /// head before activating the terminal intent so a hard kill observes one unambiguous head.
+    private func retireFailedHeadBeforeQueuedRowDeletion(
+        _ ticket: DownloadArtifactLifecycleCoordinator.Ticket
+    ) -> Bool {
+        lock.lock()
+        guard var row = rows[ticket.key.ratingKey], row.attemptID == ticket.key.attemptID,
+              row.pendingArtifactIntents.first?.id == ticket.intentID,
+              row.pendingArtifactIntents.dropFirst().contains(where: {
+                  if case .rowDeletion = $0.operation { return true }
+                  return false
+              }) else {
+            lock.unlock(); return false
+        }
+        artifactRetirementKeys.insert(ticket.key)
+        let failed = row.pendingArtifactIntents.removeFirst()
+        rows[ticket.key.ratingKey] = row
+        let transition = enqueueAttemptPersistenceLocked()
+        lock.unlock()
+        let outcome = waitForPersistence(through: transition)
+        guard outcome.result.committed(through: transition) else {
+            lock.lock()
+            if var restored = rows[ticket.key.ratingKey],
+               restored.attemptID == ticket.key.attemptID,
+               !restored.pendingArtifactIntents.contains(where: { $0.id == failed.id }) {
+                restored.pendingArtifactIntents.insert(failed, at: 0)
+                rows[ticket.key.ratingKey] = restored
+                _ = enqueueAttemptPersistenceLocked()
+            }
+            artifactRetirementKeys.remove(ticket.key)
+            let deletionIntent = rows[ticket.key.ratingKey]?.pendingArtifactIntents.first(where: {
+                if case .rowDeletion = $0.operation { return true }
+                return false
+            })
+            let deletionTicket = deletionIntent.flatMap { artifactLifecycleTickets[$0.id] }
+            if let deletionTicket {
+                let epoch = RowDeletionTicketEpoch(deletionTicket)
+                if (rowDeletionWaiterCounts[epoch] ?? 0) > 0 {
+                    rowDeletionOutcomes[epoch] = .persistenceFailed(
+                        deletionTicket.key, outcome.result)
+                }
+                artifactLifecycleTickets.removeValue(forKey: deletionTicket.intentID)
+                activeArtifactIntentIDs.remove(deletionTicket.intentID)
+            }
+            lock.unlock()
+            if let deletionTicket { artifactLifecycle.fail(deletionTicket, outcome.result) }
+            return false
+        }
+        lock.withLock {
+            artifactRetirementKeys.remove(ticket.key)
+            pendingResumeArtifactData.removeValue(forKey: failed.id)
+            startupArtifactCleanupIntentIDs.remove(failed.id)
+        }
+        return true
     }
 
     private func recoverPendingArtifactIntents() {
@@ -4062,6 +4135,11 @@ final class DownloadStore: @unchecked Sendable {
             do { try artifactFilesystem.removeItem(url, fileManager) }
             catch where artifactFilesystem.fileExists(url, fileManager) { failures += 1 }
             catch {}
+        }
+        if failures == 0, !candidates.isEmpty {
+            do { try artifactFilesystem.syncParentDirectory(
+                baseDirectory.appendingPathComponent(candidates[0])) }
+            catch { failures = 1 }
         }
         guard failures == 0 else {
             lock.withLock {
@@ -4993,33 +5071,28 @@ final class DownloadStore: @unchecked Sendable {
         guard var existing = rows[key.ratingKey], existing.attemptID == key.attemptID,
               !existing.legacyResetPending,
               existing.pendingValidatedPromotionStatus == nil,
-              existing.deletionPending == requiresDeletionPending,
-              (requiresDeletionPending || existing.heldRangeBodyDeletionIntents.isEmpty) else {
+              existing.deletionPending == requiresDeletionPending else {
             lock.unlock()
             return .immediate(.staleOrMissing)
         }
-        if let head = existing.pendingArtifactIntents.first,
-           case .rowDeletion(_, let pendingRequired, _) = head.operation,
-           pendingRequired == requiresDeletionPending {
-            if activeArtifactIntentIDs.contains(head.id),
-               let ticket = artifactLifecycleTickets[head.id] {
+        if let deletion = existing.pendingArtifactIntents.first(where: {
+            guard case .rowDeletion(_, let pendingRequired, _) = $0.operation else { return false }
+            return pendingRequired == requiresDeletionPending
+        }) {
+            if let ticket = artifactLifecycleTickets[deletion.id] {
                 rowDeletionWaiterCounts[RowDeletionTicketEpoch(ticket), default: 0] += 1
                 lock.unlock(); return .accepted(ticket: ticket)
             }
-            guard !activeArtifactIntentIDs.contains(head.id) else {
-                lock.unlock(); return .immediate(.staleOrMissing)
-            }
             let prepared = enqueueAttemptPersistenceLocked()
-            let ticket = artifactLifecycle.register(key: key, generation: head.generation,
-                intentID: head.id, preparedRevision: prepared)
-            artifactLifecycleTickets[head.id] = ticket
+            let ticket = artifactLifecycle.register(key: key, generation: deletion.generation,
+                intentID: deletion.id, preparedRevision: prepared)
+            artifactLifecycleTickets[deletion.id] = ticket
             rowDeletionWaiterCounts[RowDeletionTicketEpoch(ticket), default: 0] += 1
-            activeArtifactIntentIDs.insert(head.id)
-            lock.unlock(); scheduleArtifactLifecycle(ticket: ticket, intent: head)
+            let start = activateArtifactHeadLocked(
+                row: existing, key: key, appendedIntent: deletion, appendedTicket: ticket)
+            lock.unlock()
+            if let start { scheduleArtifactLifecycle(ticket: start.1, intent: start.0) }
             return .accepted(ticket: ticket)
-        }
-        guard existing.pendingArtifactIntents.isEmpty else {
-            lock.unlock(); return .immediate(.staleOrMissing)
         }
         return stageRowDeletionLocked(row: &existing, key: key,
                                       requiresDeletionPending: requiresDeletionPending,
@@ -5087,8 +5160,10 @@ final class DownloadStore: @unchecked Sendable {
             intentID: intent.id, preparedRevision: prepared)
         artifactLifecycleTickets[intent.id] = ticket
         rowDeletionWaiterCounts[RowDeletionTicketEpoch(ticket), default: 0] += 1
-        activeArtifactIntentIDs.insert(intent.id)
-        lock.unlock(); scheduleArtifactLifecycle(ticket: ticket, intent: intent)
+        let start = activateArtifactHeadLocked(
+            row: row, key: key, appendedIntent: intent, appendedTicket: ticket)
+        lock.unlock()
+        if let start { scheduleArtifactLifecycle(ticket: start.1, intent: start.0) }
         return .accepted(ticket: ticket)
     }
 
@@ -5181,6 +5256,11 @@ final class DownloadStore: @unchecked Sendable {
             do { try artifactFilesystem.removeItem(url, fileManager) }
             catch where artifactFilesystem.fileExists(url, fileManager) { failures += 1 }
             catch {}
+        }
+        if failures == 0, !candidates.isEmpty {
+            do { try artifactFilesystem.syncParentDirectory(
+                baseDirectory.appendingPathComponent(candidates[0])) }
+            catch { failures = 1 }
         }
         guard failures == 0 else {
             let epoch = RowDeletionTicketEpoch(ticket)
