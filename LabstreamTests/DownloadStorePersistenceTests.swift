@@ -662,11 +662,14 @@ struct DownloadStorePersistenceTests {
             #expect(await waitForSignal(blocker.started, timeout: 1))
             let terminalWatermark = store.currentArtifactLifecycleWatermark()
 
+            #expect(store.attemptWorkingFileLayout(for: key) == nil)
+            #expect(store.attemptWorkingFileURL(for: key) == nil)
             #expect(store.submitResumeData(for: key, Data([2])) == .staleOrMissing)
             #expect(store.submitClearResumeData(for: key) == .staleOrMissing)
             let held = OfflineHeldRangeSegment(offset: 0, length: 1, relativePath: "late-held.body")
             #expect(store.submitHeldRangeSegment(for: key, segment: held) == .staleOrMissing)
             #expect(store.submitHeldRangeSegmentsRemoval(for: key, offsets: nil) == .staleOrMissing)
+            #expect(store.takeHeldRangeSegments(for: key) == .staleOrMissing)
             #expect(store.submitStaticRangeCheckpointReset(for: key) == .staleOrMissing)
             #expect(store.submitMetadata(for: key) { $0.posterRelativePath = "late-poster.jpg" }
                 == .staleOrMissing)
