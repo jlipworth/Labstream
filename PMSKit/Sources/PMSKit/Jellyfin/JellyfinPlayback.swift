@@ -598,77 +598,19 @@ public enum JellyfinPlayback {
         var profile: [String: Any] = [
             "Name": "Labstream",
             "MaxStreamingBitrate": maxStreamingBitrate,
-            "DirectPlayProfiles": [
-                ["Type": "Video", "Container": "mp4,m4v,mov", "VideoCodec": "h264,hevc", "AudioCodec": "aac,ac3,eac3"],
-                ["Type": "Video", "Container": "mpegts", "VideoCodec": "h264", "AudioCodec": "aac,ac3,eac3"],
-            ],
-            "TranscodingProfiles": [
-                [
-                    "Type": "Video",
-                    "Container": "ts",
-                    "Protocol": "hls",
-                    // h264 first: it stays the encode target when a real transcode is
-                    // needed. hevc's presence is what permits VIDEO COPY (remux) of HEVC
-                    // sources in non-direct-play containers (MKV remuxes) — without it
-                    // every 4K HEVC MKV re-encodes to h264 at source bitrate, which live
-                    // testing showed starving AVPlayer into -12889 (GH #196 retest).
-                    "VideoCodec": "h264,hevc",
-                    // aac,ac3 mirrors the Emby streaming profile: ac3's presence lets an
-                    // uncapped transcode keep 5.1 surround (audio copy or ac3 re-encode)
-                    // instead of forcing an AAC downmix. Capped rungs still force AAC via
-                    // the appendTranscodeOverrides URL params.
-                    "AudioCodec": "aac,ac3",
-                    "Context": "Streaming",
-                    "MinSegments": 2,
-                    "BreakOnNonKeyFrames": false,
-                    "EnableSubtitlesInManifest": subtitlesInManifest,
-                ],
-            ],
+            "DirectPlayProfiles": MediaBrowserDeviceProfileFacts.directPlayProfiles,
+            "TranscodingProfiles": MediaBrowserDeviceProfileFacts.streamingHLSTranscodingProfiles(
+                subtitlePolicy: .jellyfinManifest(enabled: subtitlesInManifest)),
         ]
         if advertiseDolbyVision {
-            profile["CodecProfiles"] = dolbyVisionCodecProfiles
+            profile["CodecProfiles"] = MediaBrowserDeviceProfileFacts.dolbyVisionCodecProfiles
         }
         return profile
     }
 
-    /// GH #196 spike (a): declaring supported `VideoRangeType`s including the DOVI* values
-    /// is the signal Jellyfin uses to keep `dvcC`/RPU boxes on remux instead of stripping
-    /// them (the Swiftfin finding). Experimental, default-off, device-unverified.
-    static var dolbyVisionCodecProfiles: [[String: Any]] { [
-        [
-            "Type": "Video",
-            "Codec": "hevc",
-            "Conditions": [
-                [
-                    "Condition": "EqualsAny",
-                    "Property": "VideoRangeType",
-                    "Value": "SDR|HDR10|HLG|HDR10Plus|DOVI|DOVIWithHDR10|DOVIWithHLG|DOVIWithSDR|DOVIWithHDR10Plus",
-                    "IsRequired": false,
-                ],
-            ],
-        ],
-    ] }
-
     static func compatibleRemuxDownloadDeviceProfile(maxStaticBitrate: Int) -> [String: Any] {
-        [
-            "Name": "Labstream-Compatible-Download",
-            "MaxStaticBitrate": maxStaticBitrate,
-            "MaxStreamingBitrate": maxStaticBitrate,
-            "DirectPlayProfiles": [
-                ["Type": "Video", "Container": "mp4,m4v,mov", "VideoCodec": "h264,hevc", "AudioCodec": "aac,ac3,eac3"],
-            ],
-            "TranscodingProfiles": [
-                [
-                    "Type": "Video",
-                    "Container": "mp4",
-                    "Protocol": "http",
-                    "VideoCodec": "h264,hevc",
-                    "AudioCodec": "aac",
-                    "Context": "Static",
-                    "BreakOnNonKeyFrames": false,
-                ],
-            ],
-        ]
+        MediaBrowserDeviceProfileFacts.compatibleRemuxDownloadProfile(
+            maxStaticBitrate: maxStaticBitrate)
     }
 
     static func jellyfinURL(server: URL, path: String) throws -> URL {
