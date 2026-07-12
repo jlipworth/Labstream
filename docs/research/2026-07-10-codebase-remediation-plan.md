@@ -61,9 +61,9 @@ Current status at this checkpoint:
 | Slice | Status | Evidence / remaining boundary |
 | --- | --- | --- |
 | 0A–0B | Complete | Repeatable compile audit plus nonzero macOS/iOS app test plans are on the rebased branch. |
-| 1A | Incomplete / active closure boundary | The index has a serial revisioned writer, dirty retry, observable failures, bounded background-completion flush, commit-aware held replacement/removal outcomes, fail-closed tombstone persistence, and broad fault/stress coverage (`0bbcb5d` through `24e179c`). Ordinary lifecycle mutations can still block before the bounded barrier; held-body deletion and cleanup/index ordering are not one recoverable transaction; production still uses an opaque Foundation atomic write rather than the required explicit staged committer. |
+| 1A | Incomplete / active closure boundary | The index has a serial revisioned writer, dirty retry, observable failures, bounded background-completion flush, commit-aware held replacement/removal outcomes, fail-closed tombstone persistence, broad fault/stress coverage, and an explicit protected/full-sync/rename/directory-sync committer through `6ed8b00`. Ordinary lifecycle mutations can still block before the bounded barrier; held-body deletion and cleanup/index ordering are not yet one recoverable transaction. |
 | 1B | Headless-complete / device verification pending | Typed ownership, durable reset admission, current-task callback survival, private media working paths, retry checkpoint handoff, validated-intent publication, and exact callback/finalizer mutations are implemented through `f165daf`. Schema v4 intentionally resets pre-v4 nonterminal partials. `COR-01` remains open only for physical background-redelivery and cancel/delete/re-add gates. |
-| 1C | Implementation mostly present / tests and device verification pending | Registry/side-cache/cleanup work, exact Store/Manager/Session consumers, attempt-private media and held bodies, exact in-flight release, launch-inventory staging sweep, and registry-owned finalizers are implemented through `f165daf`. Production-wired suspended A→delete/re-add B coverage is still missing for every side-cache kind, and the volatile cleanup-intent fallback conflicts with the durable-cleanup contract. Required physical-device gates remain. |
+| 1C | Headless coverage expanded / durability and device verification pending | Registry/side-cache/cleanup work, exact Store/Manager/Session consumers, attempt-private media and held bodies, exact in-flight release, launch-inventory staging sweep, and registry-owned finalizers are implemented. `fa49de2` covers suspended A→delete/re-add B publication for every side-cache kind plus finalizer and compare-clear cleanup boundaries. The volatile cleanup-intent fallback still conflicts with the durable-cleanup contract, and required physical-device gates remain. |
 | 1D | Complete | Unified auth authority and fail-closed secure/runtime commits are covered by deterministic held-response and stale-attempt tests. |
 | 1E | Headless-complete / physical verification pending | Media ownership leases, target ownership, stale artwork rejection, and interruption authority are covered headlessly. Physical iPad and Mac Control Center/lock-screen/media-key/route/interruption validation remains required. |
 | 1F | Headless-complete / hardware verification pending | Callback generations and reconnect/interruption-specific authority are covered headlessly; affected-hardware checks can share the 1E physical matrix. |
@@ -73,12 +73,12 @@ Current status at this checkpoint:
 | 2D | Complete | Optimizer flexible-ID decoding is explicit and the Offline root view is split at behavior-neutral opaque boundaries (`b33ccea`, `f1bdec1`). Both cliffs disappeared from the compile audit; retained medians improved and the required Offline body threshold is below 300 ms. |
 | 3A | Complete | Canonical `MediaBackendID` plus compatibility aliases and legacy identity fixtures landed in `25b7548`. |
 | 3B | Complete | Shared MediaBrowser client identity, authenticated user/result, validated server URL, origin, and auth-header primitives landed in `1779a5f`; backend schemes and token placement remain explicit. |
-| 3C | Open | Neutral Jellyfin/Emby playback results and the single app-facing remote-playback state have not been migrated. This is the next broad Phase 3 blast-radius boundary. |
-| 3D | Headless-complete / live probe missing | Shared backend-dialect progress request plans and app dispatch landed in `2aa19e9`, with backend × event golden tests. Existing playback probes do not assert timeline HTTP acceptance or resume readback; a secret-gated Jellyfin/Emby Playing→Progress→Paused→Stopped probe is still required. |
+| 3C | Resolver seam complete / app migration open | `91f0642` makes neutral play method/source metadata authoritative and adds neutral Jellyfin/Emby resolvers with source-compatible wrappers. The single backend-tagged app remote-playback value and unified Detail launch/reopen/state path remain open. |
+| 3D | Headless-complete / credentialed live PASS pending | Shared backend-dialect progress request plans and app dispatch landed in `2aa19e9`, with backend × event goldens. `0f5d0ae`/`20738e0`/`160e001` add test-account-gated real PlaybackInfo timeline/readback/verified-restore probes; missing credentials still mean SKIP rather than acceptance. |
 | 3E | Open | Shared MediaBrowser device-profile facts and subtitle-policy parameterization have not started. This remains download-adjacent and requires consultation before changing wire profiles. |
-| 4A | Headless-complete / live probes pending | Shared Jellyfin/Emby library request shapes, identity/auth application, URL joining, and public wrapper delegation landed in `7ebbe77` and `1779a5f`, with dialect and request-factory goldens. Live browse probes remain. |
+| 4A | Headless-complete / credentialed live PASS pending | Shared Jellyfin/Emby library request shapes, identity/auth application, URL joining, and public wrapper delegation landed in `7ebbe77` and `1779a5f`, with dialect/request goldens. The hardened Emby/Jellyfin browse probes are executable but have not produced credentialed PASS evidence. |
 | 4B | Open | Shared decoding/mapping/page/search core has not started. |
-| 4C | Headless-complete / authoritative live probe pending | Pure Plex sections/paging/characters/hubs/On Deck/search/children/metadata builders moved to PMSKit in `1d577b7`; the app wrapper forwards and request-equivalence tests pass. The current live browse probe hand-builds sections/page requests, so it must be routed through `PlexBrowseRequest` before it proves this slice. |
+| 4C | Headless-complete / credentialed live PASS pending | Pure Plex sections/paging/characters/hubs/On Deck/search/children/metadata builders moved to PMSKit in `1d577b7`; the app wrapper forwards and request-equivalence tests pass. `0f5d0ae`/`20738e0` route all eight moved lanes through authoritative builders with privacy-safe PASS/SKIP handling; credentials are still absent. |
 | 4D | Open / consultation boundary | The Plex browse service, direct-send migration, and narrow UI capabilities have not started. The current acceptance-scope inventory is 35 direct `client.send` sites in 15 files and 26 call-site `BrowseAPI` references, excluding Debug probes. |
 | 5E | Higher priority after correctness | `BackgroundDownloadSession` grew from about 4,994 to 5,755 lines, `DownloadManager` from 3,264 to 3,749, and `DownloadStore` from 1,091 to 1,271. Extract mechanically only after 1A–1C. |
 
@@ -766,6 +766,40 @@ their relationship during the schema-v3 migration.
 - **Fan-out boundaries:** isolated branches from `5043ede` own Phase 1 suspended-race tests, the first
   3C neutral-resolver slice, and live-probe readiness. Simulator work remains serialized by the lead;
   these initial slices are hermetic and must not boot a simulator.
+
+#### 2026-07-12 — first scoped resumption implementation wave
+
+- **Phase 1 tail evidence (`fa49de2`):** deterministic suspended A→replacement B tests now cross
+  the production side-asset promotion and attempt-conditional metadata boundaries for poster, text
+  subtitle, Plex BIF, Jellyfin trick-play, and chapter images. Separate cases cover delayed validated
+  finalization and exact PlaySession compare-clear. The focused registry suite passed 15 parameterized
+  runs and the full Mac app plan passed 165 runs. These tests do not replace physical background
+  redelivery, real encoder DELETE, hard-kill, or device delete/re-add evidence.
+- **Phase 1 explicit index committer (`6ed8b00`):** live index persistence now writes a unique
+  same-directory `0600` temp, applies background-safe protection and backup exclusion, performs
+  `F_FULLFSYNC`, atomically renames, and syncs the directory. Aged temp cleanup runs only before Store
+  load; live commits never sweep a sibling writer. Fault seams cover full-sync/directory-sync and
+  pre/post-replace ambiguity, and a Store integration case proves a post-replace failure stays dirty
+  and commits on bounded retry. Focused persistence/fault tests passed 41 cases; the full Mac plan
+  passed 159 tests, targeted iPad Simulator TSAN passed 8/8, PMSKit passed 1,450 tests, hygiene passed,
+  and a full-clean visionOS product installed with matching UUID and reached signed-in Home without
+  fatal/assertion/sanitizer/crash evidence. Physical protection readback remains part of the device
+  gate. Bounded lifecycle tickets, held-body deferred deletion, and cleanup/index ordering remain 1A.
+- **Phase 3 neutral resolver seam (`91f0642`):** neutral play method/source metadata are canonical
+  aliases and both backends now resolve directly to `MediaBrowserPlaybackOpenResult`; compatibility
+  wrappers retain every public signature and exact header/source/encoding-cleanup field. Full PMSKit
+  passed 1,453 tests after adversarial review. The app still has duplicate remote-playback state and
+  launch/reopen paths; those are the next 3C slice.
+- **Live evidence readiness (`0f5d0ae`, `20738e0`, `160e001`):** the Plex probe now calls all eight
+  authoritative moved builders. Jellyfin and Emby probes use real PlaybackInfo sessions and shared
+  browse/timeline builders; timeline acceptance requires explicit test-account mutation opt-in,
+  exact readback, verified restoration, and observable target-session stop cleanup. Assertions and
+  logs retain only privacy-safe booleans/counts/statuses. Full PMSKit passed 1,452 tests after the
+  review fixes. All three live lanes currently report credential-missing SKIP, so 3D/4A/4C live
+  acceptance remains open.
+- **Next fan-out:** cleanup/index deletion ordering, the remaining 3C app migration, and 4B's shared
+  browse execution core proceed in isolated worktrees from `160e001`. Phase 1's bounded lifecycle
+  tickets and held-body transaction remain subsequent correctness slices.
 
 #### 2026-07-11 — Phase 2D compiler-cliff removal
 
