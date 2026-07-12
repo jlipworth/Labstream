@@ -216,10 +216,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// callbacks for every other exact owner are safe to adopt while the background session is
     /// reconnecting; rejecting them would destroy healthy force-quit survivors.
     private var startupResetKeys: Set<DownloadAttemptKey> = []
-    private let startupResetQueue = DispatchQueue(
-        label: "com.labstream.downloads.startup-reset",
-        qos: .utility
-    )
     /// Cancellation completion can race a late body/progress callback. Once purge claims an ID it
     /// is rejected for the rest of this session object's life, even after admission opens.
     private var permanentlyRejectedTaskIdentifiers: Set<Int> = []
@@ -688,15 +684,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 return
             }
 
-            // Store reset synchronously waits for its persistence outcome. Never do that on
-            // URLSession's getAllTasks callback queue: it trips the Thread Performance Checker and
-            // can delay background delegate delivery. One serial utility queue owns reset+open.
-            self.startupResetQueue.async {
+            // Cancellation has been proven above. Submit each durable reset recipe in order, but
+            // await lifecycle completion asynchronously so neither URLSession nor the reset queue
+            // is occupied by filesystem deletion/persistence waits.
+            Task.detached(priority: .utility) {
                 for key in resetKeys.sorted(by: {
                     if $0.ratingKey != $1.ratingKey { return $0.ratingKey < $1.ratingKey }
                     return $0.attemptID.rawValue < $1.attemptID.rawValue
                 }) {
-                    switch self.store.resetLegacyAttemptAfterTaskCancellation(key) {
+                    let submission = self.store.submitLegacyResetAfterTaskCancellation(key)
+                    switch await self.store.resolveLegacyReset(submission) {
                     case .committed:
                         continue
                     case .cleanupFailed(_, let failureCount):
@@ -722,15 +719,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     }
                 }
 
-                self.lock.lock()
-                guard self.startupAdmissionState == .legacyPurge else {
-                    self.lock.unlock()
+                let opened = self.lock.withLock { () -> Bool in
+                    guard self.startupAdmissionState == .legacyPurge else { return false }
+                    self.startupAdmissionState = .active
+                    self.startupResetKeys.removeAll()
+                    return true
+                }
+                guard opened else {
                     completion(.failed(reason: "admission_state_changed"))
                     return
                 }
-                self.startupAdmissionState = .active
-                self.startupResetKeys.removeAll()
-                self.lock.unlock()
                 AppDiagnostics.record(.downloads, "downloads.startup_admission_opened", fields: [
                     "cancelled_task_count": .int(cancelledTaskIdentifiers.count),
                     "reset_key_count": .int(resetKeys.count),

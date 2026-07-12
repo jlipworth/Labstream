@@ -172,6 +172,11 @@ final class DownloadStore: @unchecked Sendable {
         case failed(DownloadAttemptKey, PersistenceFlushResult)
     }
 
+    enum LegacyAttemptResetSubmission: Sendable, Equatable {
+        case accepted(ticket: DownloadArtifactLifecycleCoordinator.Ticket)
+        case immediate(LegacyAttemptResetResult)
+    }
+
     private struct PersistenceAttempt {
         let ticket: PersistenceTicket
         let result: PersistenceFlushResult
@@ -450,6 +455,7 @@ final class DownloadStore: @unchecked Sendable {
                 terminalStatus: DownloadStatus,
                 sourceBytes: Int?
             )
+            case legacyResetDeletion(relativePaths: [String])
         }
 
         struct ArtifactIntent: Codable, Sendable, Equatable {
@@ -656,7 +662,6 @@ final class DownloadStore: @unchecked Sendable {
     private var nextPersistenceRevision: UInt64 = 0 // guarded by `lock`
     private var loadedSchemaVersion = DownloadIndexCoding.currentSchemaVersion // guarded by `lock`
     private var pendingLegacyAttemptResetKeys: Set<DownloadAttemptKey> = [] // guarded by `lock`
-    private var pendingLegacyResetArtifacts: [DownloadAttemptKey: Set<URL>] = [:] // guarded by `lock`
     private var activeArtifactIntentIDs: Set<UUID> = [] // guarded by `lock`
     private var pendingResumeArtifactData: [UUID: Data] = [:] // guarded by `lock`
     private var artifactLifecycleTickets: [UUID: DownloadArtifactLifecycleCoordinator.Ticket] = [:]
@@ -669,6 +674,8 @@ final class DownloadStore: @unchecked Sendable {
     private var staticCheckpointAwaitingResultIDs: Set<UUID> = []
     private var promotionOutcomes: [UUID: AttemptValidatedPromotionResult] = [:]
     private var promotionAwaitingResultIDs: Set<UUID> = []
+    private var legacyResetOutcomes: [UUID: LegacyAttemptResetResult] = [:]
+    private var legacyResetAwaitingResultIDs: Set<UUID> = []
 
     /// - Parameter baseDirectory: where media files + the index live. Defaults to
     ///   `Application Support/Labstream/Downloads`, created if missing.
@@ -1622,6 +1629,8 @@ final class DownloadStore: @unchecked Sendable {
                 self.executeStaticCheckpoint(ticket: ticket, intent: intent)
             case .validatedPromotion:
                 self.executeValidatedPromotion(ticket: ticket, intent: intent)
+            case .legacyResetDeletion:
+                self.executeLegacyResetDeletion(ticket: ticket, intent: intent)
             }
         }
     }
@@ -3766,95 +3775,184 @@ final class DownloadStore: @unchecked Sendable {
         }
     }
 
-    /// Complete the approved legacy policy after the coordinator has enumerated and cancelled all
-    /// pre-v4 tasks. The reset is attempt-conditional and the index commit happens before any file
-    /// is deleted, so a persistence failure cannot destroy the only durable checkpoint.
+    /// Complete the approved legacy policy only after the coordinator has cancelled every old
+    /// task. Submission durably records the exact reset + deletion recipe before filesystem work.
     @discardableResult
     func resetLegacyAttemptAfterTaskCancellation(
         _ key: DownloadAttemptKey
     ) -> LegacyAttemptResetResult {
+        resolveLegacyResetSynchronously(submitLegacyResetAfterTaskCancellation(key))
+    }
+
+    func submitLegacyResetAfterTaskCancellation(
+        _ key: DownloadAttemptKey
+    ) -> LegacyAttemptResetSubmission {
         lock.lock()
         guard pendingLegacyAttemptResetKeys.contains(key) else {
-            lock.unlock()
-            return .notPending
+            lock.unlock(); return .immediate(.notPending)
         }
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID else {
-            lock.unlock()
-            return .staleOrMissing
+            lock.unlock(); return .immediate(.staleOrMissing)
         }
-        var relativeArtifacts = Set(row.legacyResetArtifactRelativePaths ?? [])
-        relativeArtifacts.insert(row.relativePath)
-        if let relative = row.attemptWorkingRelativePath,
-           Self.isAttemptStagingRelativePath(relative) {
-            relativeArtifacts.insert(relative)
+        if let head = row.pendingArtifactIntents.first,
+           case .legacyResetDeletion = head.operation,
+           !activeArtifactIntentIDs.contains(head.id) {
+            let prepared = enqueueAttemptPersistenceLocked()
+            let ticket = artifactLifecycle.register(
+                key: key, generation: head.generation, intentID: head.id,
+                preparedRevision: prepared)
+            artifactLifecycleTickets[head.id] = ticket
+            legacyResetAwaitingResultIDs.insert(head.id)
+            activeArtifactIntentIDs.insert(head.id)
+            lock.unlock(); scheduleArtifactLifecycle(ticket: ticket, intent: head)
+            return .accepted(ticket: ticket)
         }
-        // Schema-v3 staging was derived rather than persisted. Reconstruct every recognized
-        // media/side-asset staging name while the old owner is still known so none remains
-        // artificially "referenced" by this failed row after migration.
-        for stablePath in ([row.relativePath] + sideAssetRelativePaths(for: row.metadata))
-            where Self.isSafeOneLevelRelativePath(stablePath) {
-            relativeArtifacts.insert(Self.attemptStagingRelativePath(
-                for: key, stableRelativePath: stablePath))
+        guard row.pendingArtifactIntents.isEmpty else {
+            lock.unlock(); return .immediate(.notPending)
         }
-        if let relative = row.metadata?.resumeDataRelativePath,
-           Self.isSafeOneLevelRelativePath(relative) {
-            relativeArtifacts.insert(relative)
+        var relative = Set(row.legacyResetArtifactRelativePaths ?? [])
+        relative.insert(row.relativePath)
+        if let working = row.attemptWorkingRelativePath,
+           Self.isAttemptStagingRelativePath(working) { relative.insert(working) }
+        for stable in ([row.relativePath] + sideAssetRelativePaths(for: row.metadata))
+            where Self.isSafeOneLevelRelativePath(stable) {
+            relative.insert(Self.attemptStagingRelativePath(
+                for: key, stableRelativePath: stable))
         }
+        if let resume = row.metadata?.resumeDataRelativePath,
+           Self.isSafeOneLevelRelativePath(resume) { relative.insert(resume) }
         for held in row.metadata?.heldRangeSegments ?? []
-            where Self.isSafeOneLevelRelativePath(held.relativePath) {
-            relativeArtifacts.insert(held.relativePath)
-        }
-        let artifacts = Set(relativeArtifacts.filter(Self.isSafeOneLevelRelativePath)
-            .map { baseDirectory.appendingPathComponent($0) })
-        pendingLegacyResetArtifacts[key] = artifacts
-        row.bytes = 0
-        row.progress = 0
-        row.status = .failed
+            where Self.isSafeOneLevelRelativePath(held.relativePath) { relative.insert(held.relativePath) }
+        let paths = relative.filter(Self.isSafeOneLevelRelativePath).sorted()
+        row.bytes = 0; row.progress = 0; row.status = .failed
         row.metadata?.resumeDataRelativePath = nil
         row.metadata?.resumeDisplayBytes = nil
         row.metadata?.heldRangeSegments = nil
         row.metadata?.rangeValidator = nil
         row.legacyResetPending = true
-        row.legacyResetArtifactRelativePaths = relativeArtifacts.sorted()
+        row.legacyResetArtifactRelativePaths = paths
+        row.artifactGeneration += 1
+        let intent = Row.ArtifactIntent(
+            id: UUID(), attemptID: key.attemptID, generation: row.artifactGeneration,
+            phase: .prepared, operation: .legacyResetDeletion(relativePaths: paths))
+        row.pendingArtifactIntents.append(intent)
         rows[key.ratingKey] = row
         sideAssetHydrationCache.removeValue(forKey: key.ratingKey)
-        let ticket = enqueueAttemptPersistenceLocked()
-        lock.unlock()
+        let prepared = enqueueAttemptPersistenceLocked()
+        let ticket = artifactLifecycle.register(
+            key: key, generation: intent.generation, intentID: intent.id,
+            preparedRevision: prepared)
+        artifactLifecycleTickets[intent.id] = ticket
+        legacyResetAwaitingResultIDs.insert(intent.id)
+        activeArtifactIntentIDs.insert(intent.id)
+        lock.unlock(); scheduleArtifactLifecycle(ticket: ticket, intent: intent)
+        return .accepted(ticket: ticket)
+    }
 
-        let persistence = waitForPersistence(through: ticket)
-        guard persistence.result.committed(through: persistence.ticket) else {
-            return .failed(key, persistence.result)
+    func resolveLegacyResetSynchronously(
+        _ submission: LegacyAttemptResetSubmission
+    ) -> LegacyAttemptResetResult {
+        switch submission {
+        case .immediate(let result): return result
+        case .accepted(let ticket):
+            let lifecycle = artifactLifecycle.waitSynchronously(for: ticket)
+            if let result = lock.withLock({ () -> LegacyAttemptResetResult? in
+                legacyResetAwaitingResultIDs.remove(ticket.intentID)
+                return legacyResetOutcomes.removeValue(forKey: ticket.intentID)
+            }) { return result }
+            switch lifecycle {
+            case .completed: return .staleOrMissing
+            case .failed(.persistence(let failure)): return .failed(ticket.key, failure)
+            case .failed(.artifact): return .cleanupFailed(ticket.key, cleanupFailureCount: 1)
+            case .timedOut: return .staleOrMissing
+            }
         }
+    }
 
-        var failureCount = 0
-        for url in artifacts {
-            do { try fileManager.removeItem(at: url) }
-            catch where fileManager.fileExists(atPath: url.path) { failureCount += 1 }
+    func resolveLegacyReset(_ submission: LegacyAttemptResetSubmission) async -> LegacyAttemptResetResult {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async { [self] in
+                continuation.resume(returning: resolveLegacyResetSynchronously(submission))
+            }
+        }
+    }
+
+    private func executeLegacyResetDeletion(
+        ticket: DownloadArtifactLifecycleCoordinator.Ticket,
+        intent: Row.ArtifactIntent
+    ) {
+        guard case .legacyResetDeletion(let paths) = intent.operation,
+              paths.allSatisfy(Self.isSafeOneLevelRelativePath) else {
+            failArtifactLifecycle(ticket, errorType: "invalidLegacyResetIntent"); return
+        }
+        let prepared = waitForPersistence(through: ticket.preparedRevision)
+        guard prepared.result.committed(through: ticket.preparedRevision) else {
+            failArtifactLifecycle(ticket, prepared.result); return
+        }
+        let referencedElsewhere = lock.withLock { () -> Set<String> in
+            var result: Set<String> = []
+            for row in rows.values where row.ratingKey != ticket.key.ratingKey {
+                result.insert(row.relativePath)
+                if let working = row.attemptWorkingRelativePath { result.insert(working) }
+                result.formUnion(sideAssetRelativePaths(for: row.metadata))
+                if let resume = row.metadata?.resumeDataRelativePath { result.insert(resume) }
+                result.formUnion((row.metadata?.heldRangeSegments ?? []).map(\.relativePath))
+                result.formUnion(row.legacyResetArtifactRelativePaths ?? [])
+            }
+            return result
+        }
+        var failures = 0
+        for path in paths where !referencedElsewhere.contains(path) {
+            let url = baseDirectory.appendingPathComponent(path)
+            do { try artifactFilesystem.removeItem(url, fileManager) }
+            catch where artifactFilesystem.fileExists(url, fileManager) { failures += 1 }
             catch {}
         }
-        guard failureCount == 0 else {
-            return .cleanupFailed(key, cleanupFailureCount: failureCount)
-        }
-
-        lock.lock()
-        guard var committedRow = rows[key.ratingKey], committedRow.attemptID == key.attemptID else {
-            lock.unlock()
-            return .staleOrMissing
-        }
-        committedRow.legacyResetPending = false
-        committedRow.legacyResetArtifactRelativePaths = nil
-        rows[key.ratingKey] = committedRow
-        let cleanupTicket = enqueueAttemptPersistenceLocked()
-        lock.unlock()
-        let cleanupPersistence = waitForPersistence(through: cleanupTicket)
-        guard cleanupPersistence.result.committed(through: cleanupPersistence.ticket) else {
-            return .failed(key, cleanupPersistence.result)
+        guard failures == 0 else {
+            lock.withLock {
+                if legacyResetAwaitingResultIDs.contains(intent.id) {
+                    legacyResetOutcomes[intent.id] = .cleanupFailed(
+                        ticket.key, cleanupFailureCount: failures)
+                }
+            }
+            failArtifactLifecycle(ticket, errorType: "legacyResetCleanupFailed"); return
         }
         lock.lock()
-        pendingLegacyResetArtifacts.removeValue(forKey: key)
-        pendingLegacyAttemptResetKeys.remove(key)
+        guard var row = rows[ticket.key.ratingKey], row.attemptID == ticket.key.attemptID,
+              row.pendingArtifactIntents.first?.id == intent.id else {
+            lock.unlock(); completeArtifactLifecycle(ticket); return
+        }
+        artifactRetirementKeys.insert(ticket.key)
+        let retiring = row.pendingArtifactIntents.removeFirst()
+        row.legacyResetPending = false
+        row.legacyResetArtifactRelativePaths = nil
+        rows[ticket.key.ratingKey] = row
+        let terminal = enqueueAttemptPersistenceLocked()
         lock.unlock()
-        return .committed(key, cleanupFailureCount: 0)
+        let outcome = waitForPersistence(through: terminal)
+        guard outcome.result.committed(through: terminal) else {
+            lock.lock()
+            if var restored = rows[ticket.key.ratingKey], restored.attemptID == ticket.key.attemptID {
+                restored.pendingArtifactIntents.insert(retiring, at: 0)
+                restored.legacyResetPending = true
+                restored.legacyResetArtifactRelativePaths = paths
+                rows[ticket.key.ratingKey] = restored
+                _ = enqueueAttemptPersistenceLocked()
+            }
+            artifactRetirementKeys.remove(ticket.key)
+            if legacyResetAwaitingResultIDs.contains(intent.id) {
+                legacyResetOutcomes[intent.id] = .failed(ticket.key, outcome.result)
+            }
+            lock.unlock(); failArtifactLifecycle(ticket, outcome.result); return
+        }
+        lock.withLock {
+            artifactRetirementKeys.remove(ticket.key)
+            pendingLegacyAttemptResetKeys.remove(ticket.key)
+            if legacyResetAwaitingResultIDs.contains(intent.id) {
+                legacyResetOutcomes[intent.id] = .committed(ticket.key, cleanupFailureCount: 0)
+            }
+        }
+        completeArtifactLifecycle(ticket)
     }
 
     private static func requiresAttemptOwnership(_ row: Row) -> Bool {
