@@ -653,7 +653,6 @@ final class DownloadStore: @unchecked Sendable {
     private var artifactRetirementKeys: Set<DownloadAttemptKey> = [] // guarded by `lock`
     private var reservedHeldBodyDeletionPaths: [String: UUID] = [:] // guarded by `lock`
     private var staticCheckpointOutcomes: [UUID: AttemptStaticRangeCheckpointResetResult] = [:]
-    private var staticCheckpointOutcomeOrder: [UUID] = [] // bounded live-resolver results
     private var staticCheckpointAwaitingResultIDs: Set<UUID> = []
 
     /// - Parameter baseDirectory: where media files + the index live. Defaults to
@@ -3298,7 +3297,6 @@ final class DownloadStore: @unchecked Sendable {
             activeArtifactIntentIDs.remove(ticket.intentID)
             artifactLifecycleTickets.removeValue(forKey: ticket.intentID)
             staticCheckpointAwaitingResultIDs.remove(ticket.intentID)
-            staticCheckpointOutcomeOrder.removeAll { $0 == ticket.intentID }
             staticCheckpointOutcomes.removeValue(forKey: ticket.intentID)
         }
         artifactLifecycle.failArtifact(ticket, errorType: errorType)
@@ -3826,7 +3824,6 @@ final class DownloadStore: @unchecked Sendable {
             let outcome = artifactLifecycle.waitSynchronously(for: ticket)
             if let result = lock.withLock({ () -> AttemptStaticRangeCheckpointResetResult? in
                 staticCheckpointAwaitingResultIDs.remove(ticket.intentID)
-                staticCheckpointOutcomeOrder.removeAll { $0 == ticket.intentID }
                 return staticCheckpointOutcomes.removeValue(forKey: ticket.intentID)
             }) {
                 return result
@@ -3856,13 +3853,6 @@ final class DownloadStore: @unchecked Sendable {
     ) {
         guard staticCheckpointAwaitingResultIDs.contains(intentID) else { return }
         staticCheckpointOutcomes[intentID] = result
-        staticCheckpointOutcomeOrder.removeAll { $0 == intentID }
-        staticCheckpointOutcomeOrder.append(intentID)
-        while staticCheckpointOutcomeOrder.count > 128 {
-            let evicted = staticCheckpointOutcomeOrder.removeFirst()
-            staticCheckpointOutcomes.removeValue(forKey: evicted)
-            staticCheckpointAwaitingResultIDs.remove(evicted)
-        }
     }
 
     func staticCheckpointOutcomeCountForTests() -> Int {
