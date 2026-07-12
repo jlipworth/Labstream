@@ -33,6 +33,41 @@ struct DownloadArtifactLifecycleTests {
             through: .init(sequence: retry.sequence), timeout: 0.1) == .completed)
     }
 
+    @Test func concurrentBoundaryWaitersObserveSameFailure() async throws {
+        let coordinator = DownloadArtifactLifecycleCoordinator()
+        let id = try #require(DownloadAttemptID(rawValue: "a"))
+        let key = DownloadAttemptKey(ratingKey: "plex:concurrent", attemptID: id)
+        let ticket = coordinator.register(
+            key: key, generation: 1, intentID: UUID(),
+            preparedRevision: .init(revision: 1))
+        let watermark = coordinator.currentWatermark
+        async let first = coordinator.flush(through: watermark, timeout: 1)
+        async let second = coordinator.flush(through: watermark, timeout: 1)
+        try await Task.sleep(for: .milliseconds(10))
+        coordinator.failArtifact(ticket, errorType: "Injected")
+        let results = await [first, second]
+        #expect(results.allSatisfy {
+            $0 == .failed(.artifact(errorType: "Injected"))
+        })
+    }
+
+    @Test func ticketWaitIsNotMisattributedEarlierFailure() throws {
+        let coordinator = DownloadArtifactLifecycleCoordinator()
+        let id = try #require(DownloadAttemptID(rawValue: "a"))
+        let key = DownloadAttemptKey(ratingKey: "plex:tickets", attemptID: id)
+        let failed = coordinator.register(
+            key: key, generation: 1, intentID: UUID(),
+            preparedRevision: .init(revision: 1))
+        coordinator.failArtifact(failed, errorType: "Earlier")
+        let later = coordinator.register(
+            key: key, generation: 2, intentID: UUID(),
+            preparedRevision: .init(revision: 2))
+        coordinator.complete(later)
+        #expect(coordinator.waitSynchronously(for: later) == .completed)
+        #expect(coordinator.waitSynchronously(for: failed)
+                == .failed(.artifact(errorType: "Earlier")))
+    }
+
     @Test func resumeSubmissionReturnsBeforeArtifactWriteAndUsesPrivateSafeName() async throws {
         try await withDirectory { directory in
             let writeStarted = DispatchSemaphore(value: 0)
