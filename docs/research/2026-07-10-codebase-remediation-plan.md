@@ -61,9 +61,9 @@ Current status at this checkpoint:
 | Slice | Status | Evidence / remaining boundary |
 | --- | --- | --- |
 | 0A–0B | Complete | Repeatable compile audit plus nonzero macOS/iOS app test plans are on the rebased branch. |
-| 1A | Incomplete / active closure boundary | The index has a serial revisioned writer, dirty retry, observable failures, bounded background-completion flush, commit-aware held replacement/removal outcomes, fail-closed tombstone persistence, broad fault/stress coverage, and an explicit protected/full-sync/rename/directory-sync committer through `6ed8b00`. Ordinary lifecycle mutations can still block before the bounded barrier; held-body deletion and cleanup/index ordering are not yet one recoverable transaction. |
+| 1A | Implementation-complete / physical verification pending | The revisioned index committer and every destructive resume, held-body, checkpoint, promotion, legacy-reset, and whole-row artifact lifecycle are durable, nonblocking, replayable, and reviewed through `6266994c`. Current combined simulator/host gates pass; physical background-redelivery, migration/reattach, and lock/off-head transfer remain mandatory. |
 | 1B | Headless-complete / device verification pending | Typed ownership, durable reset admission, current-task callback survival, private media working paths, retry checkpoint handoff, validated-intent publication, and exact callback/finalizer mutations are implemented through `f165daf`. Schema v4 intentionally resets pre-v4 nonterminal partials. `COR-01` remains open only for physical background-redelivery and cancel/delete/re-add gates. |
-| 1C | Headless coverage expanded / durability and device verification pending | Registry/side-cache/cleanup work, exact Store/Manager/Session consumers, attempt-private media and held bodies, exact in-flight release, launch-inventory staging sweep, and registry-owned finalizers are implemented. `fa49de2` covers suspended A→delete/re-add B publication for every side-cache kind plus finalizer and compare-clear cleanup boundaries. The volatile cleanup-intent fallback still conflicts with the durable-cleanup contract, and required physical-device gates remain. |
+| 1C | Implementation-complete / physical verification pending | Exact work ownership, attempt-private publication, durable required-cleanup ordering, side-cache/finalizer fencing, and terminal row deletion are implemented and adversarially reviewed. Suspended delete/re-add and hard-kill/relaunch are covered headlessly; physical iPad/Vision Pro background and migration races remain mandatory. |
 | 1D | Complete | Unified auth authority and fail-closed secure/runtime commits are covered by deterministic held-response and stale-attempt tests. |
 | 1E | Headless-complete / physical verification pending | Media ownership leases, target ownership, stale artwork rejection, and interruption authority are covered headlessly. Physical iPad and Mac Control Center/lock-screen/media-key/route/interruption validation remains required. |
 | 1F | Headless-complete / hardware verification pending | Callback generations and reconnect/interruption-specific authority are covered headlessly; affected-hardware checks can share the 1E physical matrix. |
@@ -73,13 +73,13 @@ Current status at this checkpoint:
 | 2D | Complete | Optimizer flexible-ID decoding is explicit and the Offline root view is split at behavior-neutral opaque boundaries (`b33ccea`, `f1bdec1`). Both cliffs disappeared from the compile audit; retained medians improved and the required Offline body threshold is below 300 ms. |
 | 3A | Complete | Canonical `MediaBackendID` plus compatibility aliases and legacy identity fixtures landed in `25b7548`. |
 | 3B | Complete | Shared MediaBrowser client identity, authenticated user/result, validated server URL, origin, and auth-header primitives landed in `1779a5f`; backend schemes and token placement remain explicit. |
-| 3C | Resolver seam complete / app migration open | `91f0642` makes neutral play method/source metadata authoritative and adds neutral Jellyfin/Emby resolvers with source-compatible wrappers. The single backend-tagged app remote-playback value and unified Detail launch/reopen/state path remain open. |
+| 3C | Implementation-complete | `91f0642` makes neutral results authoritative; `57582e9e` adds one backend-tagged app remote-playback value and unified Detail launch/reopen/cleanup path while retaining compatibility wrappers. |
 | 3D | Headless-complete / credentialed live PASS pending | Shared backend-dialect progress request plans and app dispatch landed in `2aa19e9`, with backend × event goldens. `0f5d0ae`/`20738e0`/`160e001` add test-account-gated real PlaybackInfo timeline/readback/verified-restore probes; missing credentials still mean SKIP rather than acceptance. |
-| 3E | Open | Shared MediaBrowser device-profile facts and subtitle-policy parameterization have not started. This remains download-adjacent and requires consultation before changing wire profiles. |
+| 3E | Implementation-complete | `147ce6af` and `6ad0cc53` share direct-play, HLS, remux, Dolby Vision, subtitle-policy, and audio-stream facts while preserving Emby static-download restrictions. Golden fixtures cover the retained backend deltas. |
 | 4A | Headless-complete / credentialed live PASS pending | Shared Jellyfin/Emby library request shapes, identity/auth application, URL joining, and public wrapper delegation landed in `7ebbe77` and `1779a5f`, with dialect/request goldens. The hardened Emby/Jellyfin browse probes are executable but have not produced credentialed PASS evidence. |
-| 4B | Open | Shared decoding/mapping/page/search core has not started. |
-| 4C | Headless-complete / credentialed live PASS pending | Pure Plex sections/paging/characters/hubs/On Deck/search/children/metadata builders moved to PMSKit in `1d577b7`; the app wrapper forwards and request-equivalence tests pass. `0f5d0ae`/`20738e0` route all eight moved lanes through authoritative builders with privacy-safe PASS/SKIP handling; credentials are still absent. |
-| 4D | Open / consultation boundary | The Plex browse service, direct-send migration, and narrow UI capabilities have not started. The current acceptance-scope inventory is 35 direct `client.send` sites in 15 files and 26 call-site `BrowseAPI` references, excluding Debug probes. |
+| 4B | Implementation-complete | `36a9dcee` and `bbc89166` share execution, decode/map/page, metadata/watched, and order-preserving search fanout behind thin Jellyfin/Emby adapters. |
+| 4C | Implementation-complete / live evidence partial | Pure Plex builders live in PMSKit with equivalence tests. A signed-in privacy-safe in-app probe passes the authoritative browse service lanes; credential-file Jellyfin/Emby live PASS evidence remains absent. |
+| 4D | Implementation-complete / live evidence partial | The narrow `PlexBrowseService` owns browse execution across UI, paging, intents, system entry, Home/search, and music. `d19f6222` removes the last rail-paging escape; the scoped zero-direct-send scan passes. Signed-in Plex browse passes, while Jellyfin/Emby credentialed live PASS remains open. |
 | 5E | Higher priority after correctness | `BackgroundDownloadSession` grew from about 4,994 to 5,755 lines, `DownloadManager` from 3,264 to 3,749, and `DownloadStore` from 1,091 to 1,271. Extract mechanically only after 1A–1C. |
 
 The audited engine added two durability domains that 1A–1C must model explicitly:
@@ -1042,6 +1042,58 @@ their relationship during the schema-v3 migration.
 - **Phase 1A implementation status:** the planned resume, held, checkpoint, promotion, legacy-reset,
   and whole-row destructive artifact lifecycles are implementation-complete. Combined concurrency,
   simulator/device, background-redelivery, and migration acceptance gates remain below.
+
+#### 2026-07-12 — Phase 1/3/4 combined closeout evidence
+
+- **Scope and status:** implementation for Phases 1, 3, and 4 is complete on the remediation
+  branch through `fd1abcb5`; Phase 2 remains unchanged. This is not acceptance completion: the
+  credentialed Jellyfin/Emby live lanes and the required physical Phase 1 matrix remain open and
+  cannot be replaced by hermetic or simulator evidence.
+- **Phase 4 terminal escape (`d19f6222`):** the last acceptance-scoped direct Plex execution,
+  recently-added rail paging, now runs through the immutable-session `PlexBrowseService`. Its focused
+  test preserves path, ordered start/size/type query items, decoding, and reported total. A scoped
+  scan of `Labstream/UI`, `Labstream/Backend/Paging`, `Labstream/SystemIntegration`, and
+  `Labstream/Music` finds zero `appModel.client.send`/equivalent direct executions and no executable
+  `BrowseAPI` call (one documentation comment remains). Playback, authentication, downloads, and
+  intentional Debug/live probes remain outside the browse-service acceptance scope.
+- **Combined tests:** the current iPad Simulator app plan passed 287/287 with Thread Sanitizer
+  enabled. The serialized full Mac plan passed 287 tests and 299 parameterized executions. PMSKit
+  passed 1,487 tests across 188 suites. `43753710` removes the artifact-lifecycle Swift concurrency
+  warnings exposed by the combined build; the subsequent affected builds and test lanes were green.
+- **Compile evidence:** the three-run arm64 audit at
+  `build/compile-audit/remediation-final/summary.md` records medians of 16.01 s Mac clean, 12.86 s
+  mobile clean, 13.43 s visionOS clean, and 5.09 s PMSKit cold. Against the retained Phase 2 medians
+  (14.85/12.29/12.21/5.16 s), these are approximately +7.8%, +4.6%, +10.0%, and -1.4%; no clean lane
+  exceeds the Phase 0 10% review threshold. Representative incremental medians are 4.02/1.77/4.00 s
+  on Mac, 4.26/1.77/4.25 s on mobile, and 4.03/1.74/4.00 s on visionOS. The audit still reports
+  type-check review triggers in pre-existing large playback/UI expressions; it does not disguise
+  those triggers as warning-free type checking.
+- **Build and smoke matrix:** `scripts/validate-macos-228.sh` passed its PMSKit diagnostic, Mac,
+  visionOS Simulator, iOS Simulator, and bounded Mac-host lanes. Separate current-head iPhone and
+  iPad Simulator builds installed and launched with retained screenshots/logs, and the clean
+  visionOS Simulator product installed and launched to the signed-in app. All simulator use was
+  serialized and the worktree simulators were shut down after capture.
+- **Live evidence:** the signed-in visionOS privacy-safe `PlexBrowseService` probe reports PASS for
+  libraries/paging, ordering/identity, alphabet counts, hubs, search, On Deck, metadata/children,
+  and applicable music capabilities without logging server identity or credentials. The ignored
+  Jellyfin and Emby credential files are absent, so their browse and playback/timeline probes remain
+  **SKIP, not proof**. Phase 3's Jellyfin/Emby timeline acceptance and Phase 4's corresponding live
+  browse acceptance therefore remain open.
+- **Physical acceptance still open:** `devicectl` sees the paired iPad and Vision Pro but both are
+  unavailable. Before enabling/merging the unguarded lifecycle train, physical iPad and Vision Pro
+  must pass schema/marker migration, exact-task reattach, force-quit/background completion
+  redelivery, cancel/delete/re-add, and lock/off-head transfer. Physical iPad and Mac must also pass
+  the media-owner matrix: Control Center/lock screen, headphones/media keys, route/interruption, and
+  background/foreground transitions; affected hardware must cover stale player/audio callbacks.
+  Protection-class readback and existing-completed/current-partial migration survival remain part of
+  that device exercise.
+- **Rollback boundary:** schema-v4 `deletionPending` and artifact intents, including
+  `.staticCheckpoint`, `.validatedPromotion`, `.legacyResetDeletion`, and `.rowDeletion`, make a
+  blind downgrade unsafe. A rollback build must retain the v4 decoder, attempt-marker dual readers,
+  deletion/path guards, and cleanup journal semantics, or first quiesce and reconcile new-format
+  background tasks, drain every pending artifact intent, and migrate every pending cleanup operation.
+  Reverting Phase 3/4 service/value slices remains independently possible only while retaining the
+  compatibility wrappers and regression fixtures.
 
 #### 2026-07-11 — Phase 2D compiler-cliff removal
 
