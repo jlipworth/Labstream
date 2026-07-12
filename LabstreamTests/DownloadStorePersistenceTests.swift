@@ -688,6 +688,202 @@ struct DownloadStorePersistenceTests {
         }
     }
 
+    @Test(arguments: [false, true])
+    func rowDeletionQueuedBehindResumePredecessorAdvancesAfterSuccessOrFailure(
+        predecessorFails: Bool
+    ) async throws {
+        try await withTemporaryDirectory { directory in
+            let id = DownloadAttemptID(uuid: UUID())
+            let key = DownloadAttemptKey(ratingKey: "plex:delete-behind-resume-\(predecessorFails)",
+                                         attemptID: id)
+            let record = makeRecord(ratingKey: key.ratingKey, title: "Queued delete",
+                                    directory: directory, bytes: 1, metadata: OfflineMetadata(
+                                        ratingKey: key.ratingKey, title: "Queued delete", type: "movie"))
+            try Data([1]).write(to: record.localURL)
+            let blocker = BlockingArtifactWrite(shouldFail: predecessorFails)
+            let live = DownloadArtifactFilesystem.live
+            let store = DownloadStore(baseDirectory: directory, artifactFilesystem: .init(
+                writeAuthArtifact: { data, url, fm in try blocker.write(data, url: url, fm: fm) },
+                removeItem: live.removeItem, fileExists: live.fileExists,
+                syncParentDirectory: live.syncParentDirectory))
+            #expect(store.createAttemptOwnedRecord(record, attemptID: id) == .committed(key))
+            let predecessor = store.submitResumeData(for: key, Data([4, 5]))
+            #expect(await waitForSignal(blocker.started, timeout: 1))
+            let deletion = store.submitRemove(for: key)
+            guard case .accepted = deletion else {
+                blocker.release.signal(); Issue.record("terminal deletion must queue"); return
+            }
+            let joinedDeletion = store.submitRemove(for: key)
+            guard case .accepted(let firstDeletionTicket) = deletion,
+                  case .accepted(let joinedDeletionTicket) = joinedDeletion else {
+                blocker.release.signal(); Issue.record("repeat delete must join terminal tail"); return
+            }
+            #expect(firstDeletionTicket == joinedDeletionTicket)
+            #expect(!store.ownsAttempt(key))
+            #expect(store.submitResumeData(for: key, Data([6])) == .staleOrMissing)
+            blocker.release.signal()
+            async let firstOutcome = store.resolveRowDeletion(deletion)
+            async let joinedOutcome = store.resolveRowDeletion(joinedDeletion)
+            #expect(await [firstOutcome, joinedOutcome] == [.removed(key), .removed(key)])
+            if predecessorFails {
+                guard case .accepted(let ticket) = predecessor else { return }
+                guard case .failed(.artifact) = store.resolveArtifactSynchronously(ticket) else {
+                    Issue.record("expected predecessor artifact failure"); return
+                }
+            }
+            #expect(store.record(for: key) == nil)
+        }
+    }
+
+    @Test func rowDeletionDirectorySyncFailureRetainsIntentForRelaunch() throws {
+        try withTemporaryDirectory { directory in
+            let id = DownloadAttemptID(uuid: UUID())
+            let key = DownloadAttemptKey(ratingKey: "plex:delete-dir-sync", attemptID: id)
+            let record = makeRecord(ratingKey: key.ratingKey, title: "Sync", directory: directory,
+                                    bytes: 1, metadata: OfflineMetadata(
+                                        ratingKey: key.ratingKey, title: "Sync", type: "movie"))
+            try Data([1]).write(to: record.localURL)
+            let live = DownloadArtifactFilesystem.live
+            let store = DownloadStore(baseDirectory: directory, artifactFilesystem: .init(
+                writeAuthArtifact: live.writeAuthArtifact, removeItem: live.removeItem,
+                fileExists: live.fileExists,
+                syncParentDirectory: { _ in throw CocoaError(.fileWriteOutOfSpace) }))
+            #expect(store.createAttemptOwnedRecord(record, attemptID: id) == .committed(key))
+            guard case .cleanupFailed = store.resolveRowDeletionSynchronously(
+                store.submitRemove(for: key)) else {
+                Issue.record("directory sync must fail deletion lifecycle"); return
+            }
+            #expect(store.record(for: key) != nil)
+            #expect(!FileManager.default.fileExists(atPath: record.localURL.path))
+            let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(relaunched.resolveArtifactSynchronouslyForTests(
+                through: relaunched.currentArtifactLifecycleWatermark()) == .completed)
+            #expect(relaunched.record(for: key) == nil)
+        }
+    }
+
+    @Test func rowDeletionTransitionFailureIsObservableAndRetryRestartsPredecessor() async throws {
+        try await withTemporaryDirectory { directory in
+            let id = DownloadAttemptID(uuid: UUID())
+            let key = DownloadAttemptKey(ratingKey: "plex:delete-transition-retry", attemptID: id)
+            let record = makeRecord(ratingKey: key.ratingKey, title: "Transition",
+                                    directory: directory, bytes: 1, metadata: OfflineMetadata(
+                                        ratingKey: key.ratingKey, title: "Transition", type: "movie"))
+            try Data([1]).write(to: record.localURL)
+            let writes = SelectedAtomicWriteFailureHarness(failingAttempts: [4])
+            let artifactWrite = BlockingFailOnceArtifactWrite()
+            let live = DownloadArtifactFilesystem.live
+            let store = DownloadStore(baseDirectory: directory,
+                indexPersistence: .init { data, url in try writes.write(data, to: url) },
+                artifactFilesystem: .init(
+                    writeAuthArtifact: { data, url, fm in
+                        try artifactWrite.write(data, url: url, fm: fm)
+                    }, removeItem: live.removeItem, fileExists: live.fileExists,
+                    syncParentDirectory: live.syncParentDirectory))
+            #expect(store.createAttemptOwnedRecord(record, attemptID: id) == .committed(key))
+            _ = store.submitResumeData(for: key, Data([8]))
+            #expect(await waitForSignal(artifactWrite.started, timeout: 1))
+            let deletion = store.submitRemove(for: key)
+            artifactWrite.release.signal()
+            guard case .persistenceFailed = await store.resolveRowDeletion(deletion) else {
+                Issue.record("terminal waiter must observe failed head transition"); return
+            }
+            let retry = store.submitRemove(for: key)
+            #expect(await store.resolveRowDeletion(retry) == .removed(key))
+            #expect(store.record(for: key) == nil)
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func rowDeletionQueuedBehindHeldPredecessorAdvances(predecessorFails: Bool) async throws {
+        try await withTemporaryDirectory { directory in
+            let id = DownloadAttemptID(uuid: UUID())
+            let key = DownloadAttemptKey(ratingKey: "plex:delete-behind-held-\(predecessorFails)",
+                                         attemptID: id)
+            let record = makeRecord(ratingKey: key.ratingKey, title: "Held", directory: directory,
+                                    bytes: 1, metadata: OfflineMetadata(
+                                        ratingKey: key.ratingKey, title: "Held", type: "movie"))
+            try Data([1]).write(to: record.localURL)
+            let heldURL = directory.appendingPathComponent("queued-held.body")
+            try Data([2]).write(to: heldURL)
+            let blocker = BlockingFailOnceArtifactDelete(path: heldURL.path,
+                                                         shouldFail: predecessorFails)
+            let live = DownloadArtifactFilesystem.live
+            let store = DownloadStore(baseDirectory: directory, artifactFilesystem: .init(
+                writeAuthArtifact: live.writeAuthArtifact,
+                removeItem: { url, fm in try blocker.remove(url, fm: fm) },
+                fileExists: live.fileExists, syncParentDirectory: live.syncParentDirectory))
+            #expect(store.createAttemptOwnedRecord(record, attemptID: id) == .committed(key))
+            let segment = OfflineHeldRangeSegment(offset: 0, length: 1,
+                                                  relativePath: heldURL.lastPathComponent)
+            guard case .accepted = store.persistHeldRangeSegment(for: key, segment: segment) else { return }
+            _ = store.submitHeldRangeSegmentsRemoval(for: key, offsets: nil)
+            #expect(await waitForSignal(blocker.started, timeout: 1))
+            let deletion = store.submitRemove(for: key)
+            blocker.release.signal()
+            #expect(await store.resolveRowDeletion(deletion) == .removed(key))
+        }
+    }
+
+    @Test func heldBodyDirectorySyncFailureRetainsIntentForRelaunch() throws {
+        try withTemporaryDirectory { directory in
+            let id = DownloadAttemptID(uuid: UUID())
+            let key = DownloadAttemptKey(ratingKey: "plex:held-dir-sync", attemptID: id)
+            let record = makeRecord(ratingKey: key.ratingKey, title: "Held sync", directory: directory,
+                                    bytes: 1, metadata: OfflineMetadata(
+                                        ratingKey: key.ratingKey, title: "Held sync", type: "movie"))
+            let heldURL = directory.appendingPathComponent("held-dir-sync.body")
+            try Data([1]).write(to: heldURL)
+            let live = DownloadArtifactFilesystem.live
+            let store = DownloadStore(baseDirectory: directory, artifactFilesystem: .init(
+                writeAuthArtifact: live.writeAuthArtifact, removeItem: live.removeItem,
+                fileExists: live.fileExists,
+                syncParentDirectory: { _ in throw CocoaError(.fileWriteOutOfSpace) }))
+            #expect(store.createAttemptOwnedRecord(record, attemptID: id) == .committed(key))
+            let segment = OfflineHeldRangeSegment(offset: 0, length: 1,
+                                                  relativePath: heldURL.lastPathComponent)
+            guard case .accepted = store.persistHeldRangeSegment(for: key, segment: segment) else { return }
+            _ = store.submitHeldRangeSegmentsRemoval(for: key, offsets: nil)
+            guard case .failed(.artifact) = store.resolveArtifactSynchronouslyForTests(
+                through: store.currentArtifactLifecycleWatermark()) else {
+                Issue.record("held deletion must fail closed on directory sync"); return
+            }
+            #expect(store.deferredHeldRangeBodyDeletionRelativePaths(for: key) == [heldURL.lastPathComponent])
+            let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(relaunched.resolveArtifactSynchronouslyForTests(
+                through: relaunched.currentArtifactLifecycleWatermark()) == .completed)
+            #expect(relaunched.deferredHeldRangeBodyDeletionRelativePaths(for: key) == [])
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func rowDeletionQueuedBehindStaticPredecessorAdvances(predecessorFails: Bool) async throws {
+        try await withTemporaryDirectory { directory in
+            let id = DownloadAttemptID(uuid: UUID())
+            let key = DownloadAttemptKey(ratingKey: "plex:delete-behind-static-\(predecessorFails)",
+                                         attemptID: id)
+            var record = makeRecord(ratingKey: key.ratingKey, title: "Static", directory: directory,
+                                    bytes: 1, metadata: OfflineMetadata(
+                                        ratingKey: key.ratingKey, title: "Static", type: "movie",
+                                        resumeMode: .staticByteRange))
+            record.status = .complete; record.progress = 1
+            try Data([1]).write(to: record.localURL)
+            let copy = BlockingCheckpointCopy(shouldFail: predecessorFails)
+            let liveCheckpoint = DownloadStaticCheckpointFilesystem.live
+            let store = DownloadStore(baseDirectory: directory, checkpointFilesystem: .init(
+                exists: liveCheckpoint.exists, size: liveCheckpoint.size,
+                durableCopy: { source, destination, temporary in
+                    try copy.copy(source, destination, temporary)
+                }))
+            #expect(store.createAttemptOwnedRecord(record, attemptID: id) == .committed(key))
+            _ = store.submitStaticRangeCheckpointReset(for: key)
+            #expect(await waitForSignal(copy.started, timeout: 1))
+            let deletion = store.submitRemove(for: key)
+            copy.release.signal()
+            #expect(await store.resolveRowDeletion(deletion) == .removed(key))
+        }
+    }
+
     @Test func rowDeletionFailureRetainsDurableIntentAndRelaunchRetries() throws {
         try withTemporaryDirectory { directory in
             let id = DownloadAttemptID(uuid: UUID())
@@ -1626,8 +1822,11 @@ private final class BlockingFailOnceArtifactDelete: @unchecked Sendable {
     let release = DispatchSemaphore(value: 0)
     private let lock = NSLock()
     private let path: String
+    private let injectFailure: Bool
     private var failed = false
-    init(path: String) { self.path = path }
+    init(path: String, shouldFail: Bool = true) {
+        self.path = path; self.injectFailure = shouldFail
+    }
     func remove(_ url: URL, fm: FileManager) throws {
         let shouldFail = lock.withLock { () -> Bool in
             guard url.path == path, !failed else { return false }
@@ -1635,8 +1834,50 @@ private final class BlockingFailOnceArtifactDelete: @unchecked Sendable {
         }
         if shouldFail {
             started.signal(); release.wait()
-            throw CocoaError(.fileWriteOutOfSpace)
+            if injectFailure { throw CocoaError(.fileWriteOutOfSpace) }
         }
         try fm.removeItem(at: url)
+    }
+}
+
+private final class BlockingCheckpointCopy: @unchecked Sendable {
+    let started = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    private let shouldFail: Bool
+    init(shouldFail: Bool) { self.shouldFail = shouldFail }
+    func copy(_ source: URL, _ destination: URL, _ temporary: URL) throws {
+        started.signal(); release.wait()
+        if shouldFail { throw CocoaError(.fileWriteOutOfSpace) }
+        try DownloadStaticCheckpointFilesystem.live.durableCopy(source, destination, temporary)
+    }
+}
+
+private final class BlockingArtifactWrite: @unchecked Sendable {
+    let started = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    private let shouldFail: Bool
+    init(shouldFail: Bool) { self.shouldFail = shouldFail }
+    func write(_ data: Data, url: URL, fm: FileManager) throws {
+        started.signal(); release.wait()
+        if shouldFail { throw CocoaError(.fileWriteOutOfSpace) }
+        try DownloadArtifactFilesystem.live.writeAuthArtifact(data, url, fm)
+    }
+}
+
+private final class BlockingFailOnceArtifactWrite: @unchecked Sendable {
+    let started = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var failed = false
+    func write(_ data: Data, url: URL, fm: FileManager) throws {
+        let shouldFail = lock.withLock { () -> Bool in
+            guard !failed else { return false }
+            failed = true; return true
+        }
+        if shouldFail {
+            started.signal(); release.wait()
+            throw CocoaError(.fileWriteOutOfSpace)
+        }
+        try DownloadArtifactFilesystem.live.writeAuthArtifact(data, url, fm)
     }
 }
