@@ -372,7 +372,7 @@ public enum EmbyLibrary {
             deviceId: identity.deviceId,
             itemId: itemId,
             maxStreamingBitrate: maxStreamingBitrate,
-            containers: JellyfinLibrary.musicDirectPlayContainers
+            containers: MediaBrowserAudioStreamFacts.directPlayContainers
         )
         return try url(server: server, shape: shape)
     }
