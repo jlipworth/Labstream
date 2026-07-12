@@ -1,27 +1,15 @@
 import Foundation
 
-/// Identifies which backend a download belongs to. Mirrors `MediaBackendKind`
-/// (app layer) / `MediaBackendChoice` (PMSKit) but is OWNED by the download
-/// subsystem and persisted on each row, so backend is no longer inferred only
-/// from the ratingKey prefix.
-public enum DownloadBackendKind: String, Codable, Sendable, Equatable, CaseIterable {
-    case plex
-    case jellyfin
-    case emby
+/// Source-compatible download-domain name for the canonical backend identifier.
+/// Existing persisted raw values remain byte-for-byte unchanged.
+public typealias DownloadBackendKind = MediaBackendID
 
-    public var displayName: String {
-        switch self {
-        case .plex: return "Plex"
-        case .jellyfin: return "Jellyfin"
-        case .emby: return "Emby"
-        }
-    }
-
+public extension MediaBackendID {
     /// Canonical migration fallback: infer the backend from a download's ratingKey prefix
     /// (`jellyfin:` / `emby:` / bare = Plex). The single source of truth for prefix-based
     /// resolution — `OfflineMetadata.resolvedBackendKind` and any caller without stored
     /// `backendKind` (e.g. a nil-metadata row) must route through here so they never disagree.
-    public init(ratingKeyPrefix ratingKey: String) {
+    init(ratingKeyPrefix ratingKey: String) {
         self = DownloadRecordIdentity.backendKind(forRecordKey: ratingKey)
     }
 }

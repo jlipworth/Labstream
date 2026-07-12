@@ -1,10 +1,27 @@
 import Foundation
 
-public enum MediaBackendChoice: String, Sendable, Equatable, Hashable, Codable {
+/// Canonical identity for every media-server backend supported by Labstream.
+///
+/// The raw values are persisted in credentials, download metadata, and system-entry
+/// identifiers. They are therefore a wire-format contract and must remain stable.
+public enum MediaBackendID: String, Sendable, Equatable, Hashable, Codable, CaseIterable, Identifiable {
     case plex
     case jellyfin
     case emby
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .plex: return "Plex"
+        case .jellyfin: return "Jellyfin"
+        case .emby: return "Emby"
+        }
+    }
 }
+
+/// Source-compatible name retained for callers that describe a backend UI choice.
+public typealias MediaBackendChoice = MediaBackendID
 
 public struct MediaBackendCredentialSnapshot: Sendable, Equatable {
     public let plexToken: String?

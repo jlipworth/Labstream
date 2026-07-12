@@ -2,21 +2,8 @@ import Foundation
 import Observation
 import PMSKit
 
-enum MediaBackendKind: String, Codable, CaseIterable, Identifiable {
-    case plex
-    case jellyfin
-    case emby
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .plex: return "Plex"
-        case .jellyfin: return "Jellyfin"
-        case .emby: return "Emby"
-        }
-    }
-}
+/// App-domain compatibility name for PMSKit's canonical backend identifier.
+typealias MediaBackendKind = MediaBackendID
 
 /// Central app state, observed by SwiftUI.
 ///
@@ -280,27 +267,15 @@ final class AppModel {
 
 extension MediaBackendKind {
     var downloadBackendKind: DownloadBackendKind {
-        switch self {
-        case .plex:     return .plex
-        case .jellyfin: return .jellyfin
-        case .emby:     return .emby
-        }
+        self
     }
 
     /// Bridge to PMSKit's backend enum (used by the pure backend-resolution helpers, #100).
     var backendChoice: MediaBackendChoice {
-        switch self {
-        case .plex:     return .plex
-        case .jellyfin: return .jellyfin
-        case .emby:     return .emby
-        }
+        self
     }
 
     init(_ choice: MediaBackendChoice) {
-        switch choice {
-        case .plex:     self = .plex
-        case .jellyfin: self = .jellyfin
-        case .emby:     self = .emby
-        }
+        self = choice
     }
 }
