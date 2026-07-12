@@ -61,10 +61,12 @@ Current status at this checkpoint:
 | Slice | Status | Evidence / remaining boundary |
 | --- | --- | --- |
 | 0A–0B | Complete | Repeatable compile audit plus nonzero macOS/iOS app test plans are on the rebased branch. |
-| 1A | Partial / consultation boundary | The index has a serial revisioned writer, dirty retry, observable failures, bounded background-completion flush, commit-aware held replacement/removal outcomes, fail-closed tombstone persistence, and broad fault/stress coverage (`0bbcb5d` through `24e179c`). Existing mutations preserve synchronous durability. True transactional held-body deletion, cross-domain tombstone/row ordering, a literal bounded hung-write path, and a live explicit temp/rename committer require the larger reviewed design described below. |
+| 1A | Incomplete / active closure boundary | The index has a serial revisioned writer, dirty retry, observable failures, bounded background-completion flush, commit-aware held replacement/removal outcomes, fail-closed tombstone persistence, and broad fault/stress coverage (`0bbcb5d` through `24e179c`). Ordinary lifecycle mutations can still block before the bounded barrier; held-body deletion and cleanup/index ordering are not one recoverable transaction; production still uses an opaque Foundation atomic write rather than the required explicit staged committer. |
 | 1B | Headless-complete / device verification pending | Typed ownership, durable reset admission, current-task callback survival, private media working paths, retry checkpoint handoff, validated-intent publication, and exact callback/finalizer mutations are implemented through `f165daf`. Schema v4 intentionally resets pre-v4 nonterminal partials. `COR-01` remains open only for physical background-redelivery and cancel/delete/re-add gates. |
-| 1C | Headless-complete / device verification pending | Registry/side-cache/cleanup work, exact Store/Manager/Session consumers, attempt-private media and held bodies, exact in-flight release, launch-inventory staging sweep, and registry-owned finalizers are implemented through `f165daf`. Required physical-device gates remain. |
-| 1D–1F | Complete | The July 12 review fixes preserve authorized Plex account continuity, make recovery UI reachable, retain media artwork/interruption authority correctly, and separate reconnect-watchdog authority from per-item generations. Full Mac/iPad TSAN plans remain green. |
+| 1C | Implementation mostly present / tests and device verification pending | Registry/side-cache/cleanup work, exact Store/Manager/Session consumers, attempt-private media and held bodies, exact in-flight release, launch-inventory staging sweep, and registry-owned finalizers are implemented through `f165daf`. Production-wired suspended A→delete/re-add B coverage is still missing for every side-cache kind, and the volatile cleanup-intent fallback conflicts with the durable-cleanup contract. Required physical-device gates remain. |
+| 1D | Complete | Unified auth authority and fail-closed secure/runtime commits are covered by deterministic held-response and stale-attempt tests. |
+| 1E | Headless-complete / physical verification pending | Media ownership leases, target ownership, stale artwork rejection, and interruption authority are covered headlessly. Physical iPad and Mac Control Center/lock-screen/media-key/route/interruption validation remains required. |
+| 1F | Headless-complete / hardware verification pending | Callback generations and reconnect/interruption-specific authority are covered headlessly; affected-hardware checks can share the 1E physical matrix. |
 | 2A | Complete | Plex photo coverage, modern Mac decoding, the effective MediaSession clock, and `PERF-01` are complete. The regenerated inventory found and mechanically removed exactly the four original definition-only helpers (`2fb3d00`, `5a5f050`, `cf1f919`, `6bff1c8`); no production deprecation remains. |
 | 2B | Complete | Locked record/metadata/duration/presence accessors and the existing ownership accessor now serve every single-key store read (`3a86b15`, `22fcf81`, `ff046e9`, `be507d6`). Exactly 12 intentional batch/UI snapshots remain. |
 | 2C | Complete | Latest-rail execution is bounded and order preserving. |
@@ -72,12 +74,12 @@ Current status at this checkpoint:
 | 3A | Complete | Canonical `MediaBackendID` plus compatibility aliases and legacy identity fixtures landed in `25b7548`. |
 | 3B | Complete | Shared MediaBrowser client identity, authenticated user/result, validated server URL, origin, and auth-header primitives landed in `1779a5f`; backend schemes and token placement remain explicit. |
 | 3C | Open | Neutral Jellyfin/Emby playback results and the single app-facing remote-playback state have not been migrated. This is the next broad Phase 3 blast-radius boundary. |
-| 3D | Headless-complete / live probes pending | Shared backend-dialect progress request plans and app dispatch landed in `2aa19e9`, with backend × event golden tests. Secret-gated Jellyfin/Emby timeline probes remain acceptance evidence, not yet claimed. |
+| 3D | Headless-complete / live probe missing | Shared backend-dialect progress request plans and app dispatch landed in `2aa19e9`, with backend × event golden tests. Existing playback probes do not assert timeline HTTP acceptance or resume readback; a secret-gated Jellyfin/Emby Playing→Progress→Paused→Stopped probe is still required. |
 | 3E | Open | Shared MediaBrowser device-profile facts and subtitle-policy parameterization have not started. This remains download-adjacent and requires consultation before changing wire profiles. |
 | 4A | Headless-complete / live probes pending | Shared Jellyfin/Emby library request shapes, identity/auth application, URL joining, and public wrapper delegation landed in `7ebbe77` and `1779a5f`, with dialect and request-factory goldens. Live browse probes remain. |
 | 4B | Open | Shared decoding/mapping/page/search core has not started. |
-| 4C | Headless-complete / live probes pending | Pure Plex sections/paging/characters/hubs/On Deck/search/children/metadata builders moved to PMSKit in `1d577b7`; the app wrapper forwards and request-equivalence tests pass. Live Plex browse evidence remains. |
-| 4D | Open / consultation boundary | The Plex browse service, direct-send migration, and narrow UI capabilities have not started. |
+| 4C | Headless-complete / authoritative live probe pending | Pure Plex sections/paging/characters/hubs/On Deck/search/children/metadata builders moved to PMSKit in `1d577b7`; the app wrapper forwards and request-equivalence tests pass. The current live browse probe hand-builds sections/page requests, so it must be routed through `PlexBrowseRequest` before it proves this slice. |
+| 4D | Open / consultation boundary | The Plex browse service, direct-send migration, and narrow UI capabilities have not started. The current acceptance-scope inventory is 35 direct `client.send` sites in 15 files and 26 call-site `BrowseAPI` references, excluding Debug probes. |
 | 5E | Higher priority after correctness | `BackgroundDownloadSession` grew from about 4,994 to 5,755 lines, `DownloadManager` from 3,264 to 3,749, and `DownloadStore` from 1,091 to 1,271. Extract mechanically only after 1A–1C. |
 
 The audited engine added two durability domains that 1A–1C must model explicitly:
@@ -733,6 +735,37 @@ their relationship during the schema-v3 migration.
   facts, 4B shared decode/map/page/search core, and 4D Plex service/direct-send migration. These are
   intentionally not represented as started; consult on their UI, download-profile, and execution
   blast radii before editing.
+
+#### 2026-07-12 — scoped Phase 1/3/4 resumption audit
+
+- **Scope decision:** finish Phases 1, 3, and 4. Phase 2 remains closed unless a regression gate
+  contradicts its recorded evidence. Checkpoint `5043ede` remains the clean integration base.
+- **Phase 1 correction:** 1A is incomplete rather than a documentation-only consultation item.
+  Completion requires an explicit staged index committer, a bounded lifecycle-ticket protocol that
+  cannot wedge before the background-completion barrier, recoverable held-body deferred deletion,
+  and durable cleanup/index ordering. The `f165daf` process-only cleanup fallback is not sufficient:
+  a crash after local deletion can lose the last server-cleanup authority. 1C also still needs
+  production-wired suspended delete/re-add coverage for poster, text subtitle, Plex BIF, Jellyfin
+  trick-play, and chapter-image tails. 1B/1C physical background-redelivery gates and the 1E/1F
+  physical media-ownership matrix remain open.
+- **Phase 3 correction:** 3A/3B were reverified with focused compatibility tests. 3C's neutral
+  carriers exist but are still conversion-only; backend resolvers, two app remote-playback values,
+  and duplicate Detail launch/reopen/state paths remain. Land the neutral resolver seam, then the
+  single backend-tagged app value/UI path. Do 3E afterward because it edits the same playback files;
+  share only direct-play/HLS/remux/Dolby Vision facts and keep Emby's stricter static-download profile
+  separate. The existing DEBUG playback probes do not close 3D's live timeline acceptance gate.
+- **Phase 4 correction:** shared DTO mapping already exists, but Jellyfin/Emby service execution,
+  paging, and search orchestration remain duplicated for 4B. Implement the common browse core in
+  characterized vertical slices that explicitly exclude playback/download/active-encoding deltas.
+  For 4D, migrate metadata/watched/children, libraries/paging, search/system entry, native Plex Home,
+  and music as separate capabilities; finish with a static zero-direct-send gate. The current scoped
+  baseline is 35 direct sends across 15 files plus 26 `BrowseAPI` call-site references.
+- **Evidence readiness:** update the Plex live browse test to call the authoritative PMSKit builders;
+  add Jellyfin browse/timeline coverage; extend Emby browse/timeline coverage; require real PASS rather
+  than credential-missing SKIP before closing 3D/4A/4C.
+- **Fan-out boundaries:** isolated branches from `5043ede` own Phase 1 suspended-race tests, the first
+  3C neutral-resolver slice, and live-probe readiness. Simulator work remains serialized by the lead;
+  these initial slices are hermetic and must not boot a simulator.
 
 #### 2026-07-11 — Phase 2D compiler-cliff removal
 
