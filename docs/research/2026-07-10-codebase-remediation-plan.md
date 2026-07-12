@@ -1683,6 +1683,13 @@ during the mechanical extractions, preserve existing event names, categories, fi
 privacy behavior, and critical failure/recovery coverage. Treat diagnostic removal, renaming, or
 semantic changes as separately reviewed behavior changes rather than hiding them inside file moves.
 
+**Before 5A–5E begin** (this is the one 5F piece that must not wait): land a mechanical
+rename/removal guard in `scripts/ci-hygiene.sh` that inventories production diagnostic event
+names against a checked-in allowlist. The preservation rule above otherwise relies on reviewer
+discipline across hundreds of moved call sites; the gate is small, needs no stabilized ownership,
+and makes an accidentally dropped or renamed event a hygiene failure instead of a review escape.
+Intentional changes update the allowlist in the same reviewed commit.
+
 At the stabilized Phase 5 boundary:
 
 - inventory production diagnostic events and their owning call sites;
@@ -1690,15 +1697,42 @@ At the stabilized Phase 5 boundary:
   failure, parked/deferred, cancellation, retry, recovery, and terminal transitions;
 - identify silent or overwritten failures, missing recovery evidence, duplicate/noisy events, and
   inconsistencies between user-visible errors and internal diagnostics;
+- audit the user-visible error channel itself for clobber races, not just internal events:
+  enumerate every write and every clear of shared error state (`lastError`-style slots), define
+  precedence so disclosure-class messages survive unrelated success-path clears, and test the
+  set-then-cleared race directly (the D8 encoder-leak disclosure was set correctly and then wiped
+  moments later by the deletion success path — a missing-event inventory would never catch it);
+- require a correlation-key contract on downloads events: every event carries the hashed
+  ratingKey plus attemptID, artifact intentID, and retry/deletion epoch where applicable, so one
+  row's lifecycle across DownloadStore, BackgroundDownloadSession, and DownloadManager is
+  reconstructable from `app-diagnostics.jsonl` alone (both remediation reviews had to hand-trace
+  which epoch/attempt an outcome belonged to). Name the FNV-1a hashed `download_id` scheme and
+  its `scripts/` lookup tooling as a compatibility surface the audit must keep in sync;
 - verify Plex, Jellyfin, and Emby use coherent categories, severities, and privacy-safe fields while
   retaining backend-specific failure meaning;
 - enforce bounded-cardinality fields and the existing prohibition on hosts, tokens, titles,
   filenames, paths, and raw device IDs;
+- bound event *rate*, not just field cardinality: retry loops and per-epoch outcomes can storm
+  the log during exactly the incident being debugged, so per-retry/per-epoch event classes need a
+  coalescing or sampling policy with the drop count recorded;
+- record monotonic time alongside wall-clock on background-wake events — suspension makes
+  wall-clock deltas lie about stall durations;
+- treat diagnostics durability as its own hard-kill problem: the failures most worth diagnosing
+  (suspension or hard kill inside a commit window) are the ones where memory-buffered events are
+  lost, so critical terminal/lifecycle events need an append-durable sink whose flush participates
+  in (or precedes) the background-completion barrier, plus a hard-kill replay test proving the
+  *evidence* survives, not just the state — and, the flip side, diagnostics flushes must never run
+  on the URLSession delegate queue;
 - add deterministic sink/report tests proving that background/off-head failures survive long enough
   to diagnose artifact replay, stalled transfers, playback revalidation, auth races, and media-owner
   conflicts; and
 - record intentional non-events so later work does not turn expected cancellation or degradation
-  into support-log noise.
+  into support-log noise. Seed the list with the intentionally quiet states this branch already
+  created: reconcile skipping rows with pending artifact intents, retired-failure FIFO eviction in
+  the lifecycle coordinator (cap 512; an evicted ticket later reads completed), abandoned-intent
+  retirement, and startup intent-replay outcomes. A once-per-launch summary event with counts
+  (replayed/abandoned/skipped/evicted) is bounded-cardinality and covers these without per-item
+  noise.
 
 Keep diagnostic implementation with the coordinator or platform responsibility that owns the
 event. The audit may improve diagnostics after the mechanical moves, but those behavior changes
@@ -1710,9 +1744,12 @@ must remain independently reviewable and preserve report/redaction compatibility
 - Player layout, menus, scrub, Cinema, PiP/AirPlay, keyboard/fullscreen, and media ownership
   keep explicit platform validation.
 - Conditional density and representative incremental-build fanout improve measurably.
+- The diagnostic event-name allowlist gate is in `scripts/ci-hygiene.sh` before the first 5A–5E
+  extraction lands, and stays green through the moves.
 - The post-decomposition diagnostics inventory and state-machine coverage matrix are complete;
   critical silent/parked/retry/recovery gaps have deterministic report-level coverage, and privacy,
-  cardinality, naming, severity, and user-error consistency checks pass.
+  cardinality, naming, severity, user-error clobber, correlation-key, and rate-bound consistency
+  checks pass, and diagnostics-durability hard-kill evidence tests pass.
 
 ## Phase 6 — optional PMSKit/module decomposition
 
