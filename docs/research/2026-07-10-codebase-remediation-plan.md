@@ -3,7 +3,7 @@
 Status: **active implementation plan**
 
 Audit baseline: original app/PMSKit review through `edf2d27`; latest reconciled `main`
-baseline `5d369c2`; Phase 1 implementation journal reconciled through `fab440c`
+baseline `5d369c2`; Phase 1 implementation journal reconciled through `813254f`
 
 Scope: correctness, concurrency, reliability, performance, Swift idioms, testability,
 backend sharing, platform sharing, conditional compilation, and build cost.
@@ -61,8 +61,8 @@ Current status at this checkpoint:
 | --- | --- | --- |
 | 0A–0B | Complete | Repeatable compile audit plus nonzero macOS/iOS app test plans are on the rebased branch. |
 | 1A | Partial / consultation boundary | The index has a serial revisioned writer, dirty retry, observable failures, bounded background-completion flush, commit-aware held replacement/removal outcomes, fail-closed tombstone persistence, and broad fault/stress coverage (`0bbcb5d` through `24e179c`). Existing mutations preserve synchronous durability. True transactional held-body deletion, cross-domain tombstone/row ordering, a literal bounded hung-write path, and a live explicit temp/rename committer require the larger reviewed design described below. |
-| 1B | Substantially implemented / verification pending | Typed top-level ownership, durable legacy assignment/reset, current task markers, dormant callback admission, fail-closed attempt seeding, attempt-bearing session entries, and exact-owner callback/finalizer mutations have landed. Schema v4 now resets pre-v4 nonterminal partials behind the admission barrier and gives new attempts private media working paths. `COR-01` remains open at finalizer integration and required redelivery/device gates. |
-| 1C | Substantially implemented / verification pending | The registry/side-cache/cleanup train is implemented through `a7f6fee`; exact Store/Manager/Session consumers, attempt-private media and held bodies, validated-intent publication, exact in-flight release, and startup staging ownership are implemented through `fab440c`. Session finalizers are not yet registered in the work registry; startup sweep wiring and device gates remain unresolved. |
+| 1B | Headless-complete / device verification pending | Typed top-level ownership, durable reset admission, task markers, fail-closed seeding, attempt-bearing session entries, private media working paths, validated-intent publication, and exact callback/finalizer mutations have landed. Schema v4 intentionally resets pre-v4 nonterminal partials. `COR-01` remains open only for background-redelivery and physical-device gates. |
+| 1C | Headless-complete / device verification pending | Registry/side-cache/cleanup work, exact Store/Manager/Session consumers, attempt-private media and held bodies, exact in-flight release, startup staging sweep, and registry-owned cooperatively cancellable finalizers are implemented through `813254f`. Required background-redelivery and physical-device gates remain. |
 | 1D–1F | Complete | Auth/secure-storage, system-media ownership, and player lifecycle generations survived the rebase unchanged. iPad/Mac physical ownership and lifecycle checks passed; iOS TSAN tests remain green. |
 | 2A | Complete | Plex photo coverage, modern Mac decoding, the effective MediaSession clock, and `PERF-01` are complete. The regenerated inventory found and mechanically removed exactly the four original definition-only helpers (`2fb3d00`, `5a5f050`, `cf1f919`, `6bff1c8`); no production deprecation remains. |
 | 2B | Complete | Locked record/metadata/duration/presence accessors and the existing ownership accessor now serve every single-key store read (`3a86b15`, `22fcf81`, `ff046e9`, `be507d6`). Exactly 12 intentional batch/UI snapshots remain. |
@@ -654,6 +654,32 @@ their relationship during the schema-v3 migration.
   The shared app schemes currently expose the test target to build-for-testing but not to the test
   action, so executable focused Store tests remain part of the Phase 1 gate rather than being
   misreported as run. No simulator was left booted.
+
+#### 2026-07-12 — Phase 1 finalizer registry and headless closeout
+
+- **Commits:** `7b1e88d` (`Sweep orphaned attempt staging on reattach`), `ba583b9` (`Harden
+  attempt staging regression tests`), and `813254f` (`Register download finalizers by attempt`).
+- Reattach now sweeps only unreferenced attempt staging after recovering any exact validated
+  promotion. Media finalization synchronously claims one exact request before scheduling, then the
+  Manager admits one `.finalizer` registry lease. Duplicate delegate/recovery/revalidation requests
+  cannot create parallel probes; execute or abandon balances the background-completion gate once.
+- Delete removes A's exact row/files before cooperative finalizer cancellation, so a task already
+  between cancellation checks still fails every Store mutation. Terminal refresh preserves its own
+  finalizer lease while cancelling side-cache work; retry/replacement/delete cancel all cancellable
+  A work without reaching B. Unverified revalidation suppression is exact-attempt keyed.
+- The validation limiter removes cancelled waiters without leaking its permit. Finalizers check
+  cancellation at admission, limiter/sleep/AV await boundaries, after HEVC fixup, and immediately
+  before verdict, file, Store, retry-state, and callback effects. Synchronous AVFoundation/HEVC
+  calls cannot be preempted mid-call, but no cancelled verdict can publish afterward.
+- **Headless evidence at `813254f`:** finalizer/registry/limiter/startup suites passed 14 tests in
+  three suites; the complete Mac plan passed 133 tests in 20 suites; the complete iPad simulator
+  plan passed the same 133 tests with Thread Sanitizer enabled; PMSKit passed 1,441 tests in 176
+  suites after the concurrent Phase 3A/4A slices. A full-clean visionOS build installed with matching
+  UUID, launched to the signed-in populated Home surface, returned successful server responses, and
+  had no fatal/assertion/sanitizer/crash match. Both worktree simulators were shut down.
+- **Remaining Phase 1 gates:** background-session completion/redelivery and cancel/delete/re-add
+  races on physical iPad and Vision Pro remain the user's post-headless validation half. Until they
+  pass, Phase 1 and `COR-01` stay verification-pending rather than complete.
 
 #### 2026-07-11 — Phase 2D compiler-cliff removal
 
