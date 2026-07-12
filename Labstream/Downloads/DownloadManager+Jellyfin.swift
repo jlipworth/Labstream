@@ -36,6 +36,14 @@ extension DownloadManager {
         }
         let server = backendSession.baseURL
         let token = backendSession.token
+        // Capture continuity before the attempt seed replaces the visible row. Retry payloads may
+        // omit media/part arrays; the prior original-lane extension is then the only trustworthy
+        // container and request shape.
+        let existingOriginalPath = store.record(for: ratingKey).flatMap { record in
+            record.metadata?.resolvedDownloadLane() == .original
+                ? record.localURL.lastPathComponent
+                : nil
+        }
         guard let startAttempt = acquireStartAttempt(ratingKey: ratingKey,
                                                      backend: "Jellyfin",
                                                      allowReplacingExistingActiveRow: allowReplacingExistingActiveRow) else { return }
@@ -113,11 +121,6 @@ extension DownloadManager {
                 // alone would collapse to ".mp4" and abandon an in-progress non-MP4 partial (its
                 // checkpoint reads 0 against the new destination). The existing ORIGINAL-lane row's
                 // on-disk extension is authoritative for what this transfer already wrote.
-                let existingOriginalPath = store.record(for: attemptKey).flatMap { record in
-                    record.metadata?.resolvedDownloadLane() == .original
-                        ? record.localURL.lastPathComponent
-                        : nil
-                }
                 let ext = DownloadMediaSelectionPolicy.containerExtension(
                     selection: selection, existingRelativePath: existingOriginalPath)
                 destination = store.destinationURL(ratingKey: ratingKey, ext: ext)

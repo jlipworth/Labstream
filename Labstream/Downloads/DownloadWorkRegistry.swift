@@ -45,6 +45,12 @@ final class DownloadWorkRegistry {
         /// Terminal refresh releases network/server ownership while allowing the finalizer that
         /// published that terminal row to finish its callback and accounting defers.
         case preservingFinalizer
+        /// User pause releases the transfer slot but does not invalidate independent artwork,
+        /// subtitle, chapter, BIF, or trick-play hydration already in flight.
+        case preservingSideCache
+        /// Successful publication releases transfer/server ownership while both the publishing
+        /// finalizer and independent side assets finish their exact-attempt work.
+        case preservingFinalizerAndSideCache
     }
 
     struct EntrySnapshot: Equatable, Sendable {
@@ -143,8 +149,16 @@ final class DownloadWorkRegistry {
         guard var entries = entriesByAttempt[key] else { return [] }
         let cancellable = entries.values
             .filter {
-                $0.kind.isCancellableWithAttempt
-                    && !(mode == .preservingFinalizer && $0.kind == .finalizer)
+                guard $0.kind.isCancellableWithAttempt else { return false }
+                switch (mode, $0.kind) {
+                case (.preservingFinalizer, .finalizer),
+                     (.preservingSideCache, .sideCache(_)),
+                     (.preservingFinalizerAndSideCache, .finalizer),
+                     (.preservingFinalizerAndSideCache, .sideCache(_)):
+                    return false
+                default:
+                    return true
+                }
             }
             .sorted { $0.token.id.uuidString < $1.token.id.uuidString }
         for entry in cancellable {

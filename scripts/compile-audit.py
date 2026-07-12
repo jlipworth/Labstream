@@ -19,7 +19,12 @@ EDIT_FILES = (
     "Labstream/UI/ProgressSliver.swift",
     "Labstream/Player/PlaybackController.swift",
 )
-TYPECHECK_RE = re.compile(r"(?P<kind>function|expression).*?(?P<ms>[0-9]+(?:\.[0-9]+)?)ms", re.I)
+TYPECHECK_RE = re.compile(
+    r"(?P<kind>instance\s+method|class\s+method|static\s+method|operator\s+function|"
+    r"function|expression|getter|setter|initializer|deinitializer|subscript|closure)"
+    r"(?:\s+[^\r\n]*?)?\s+took\s+(?P<ms>[0-9]+(?:\.[0-9]+)?)ms\b",
+    re.I,
+)
 RSS_RE = re.compile(r"(?P<n>[0-9]+)\s+maximum resident set size")
 REAL_RE = re.compile(r"^real\s+(?P<n>[0-9]+(?:\.[0-9]+)?)$", re.M)
 

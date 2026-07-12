@@ -121,9 +121,13 @@ final class VideoNowPlayingCore {
             guard let data = await Self.fetchArtworkData(request: request),
                   let image = UIImage(data: data), !Task.isCancelled else { return }
             await MainActor.run {
-                guard let self, self.mediaLease === lease, lease?.isCurrent == true else { return }
+                guard let self, self.mediaLease === lease else { return }
                 self.artworkImage = image
-                self.updateNowPlayingInfo()
+                // Keep the result while another owner is momentarily current. The lease's
+                // didBecomeCurrent hook republishes it when video regains ownership.
+                if lease?.isCurrent == true {
+                    self.updateNowPlayingInfo()
+                }
             }
         }
     }

@@ -43,6 +43,19 @@ class CompileAuditTests(unittest.TestCase):
         self.assertEqual(match.group("kind"), "function")
         self.assertEqual(match.group("ms"), "451")
 
+    def test_typecheck_warning_parser_accepts_swift_declaration_kinds(self):
+        warnings = {
+            "instance method 'render()' took 812ms to type-check": ("instance method", "812"),
+            "getter for property 'body' took 301.5ms to type-check": ("getter", "301.5"),
+            "initializer 'init(value:)' took 777ms to type-check": ("initializer", "777"),
+            "closure took 499ms to type-check": ("closure", "499"),
+        }
+        for warning, expected in warnings.items():
+            with self.subTest(warning=warning):
+                match = audit.TYPECHECK_RE.search(warning)
+                self.assertIsNotNone(match)
+                self.assertEqual((match.group("kind"), match.group("ms")), expected)
+
     def test_machine_label_omits_hostname(self):
         label = audit.machine_label()
         self.assertIn("macOS", label)

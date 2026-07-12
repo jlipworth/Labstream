@@ -173,6 +173,16 @@ final class AuthManager {
         return selectedRestored
     }
 
+    /// Background/system entry points may need to restore before a scene connects, but must not
+    /// steal the unified auth authority from a login code the user is actively completing.
+    /// Returning `nil` means admission was declined and leaves that attempt untouched; the caller
+    /// can keep waiting for it. A non-nil value is the admitted restore's ordinary success result.
+    @discardableResult
+    func restoreSessionIfNoAuthorizationInProgress() async -> Bool? {
+        guard activeAuthAttempt == nil else { return nil }
+        return await restoreSession()
+    }
+
     /// Hydrate non-selected backend lanes for downloads without taking over the UI state. Jellyfin
     /// and Emby can restore directly from their saved base URL + token + user id; Plex still needs
     /// discovery to recover the current PMS connection and server-scoped token.
@@ -205,14 +215,20 @@ final class AuthManager {
             recordAuthDiagnostic("auth.plex.restore.missing_token", fields: restoreFields)
             return false
         }
+        // A saved account token is a valid authenticated milestone even before a PMS connection
+        // is resolved. Publish it before suspension so discovery failure reaches the signed-in
+        // Retry UI instead of presenting a fresh-login screen.
+        appModel.token = saved
+        clearResolvedPlexServerState()
         recordAuthDiagnostic("auth.plex.restore.start", fields: restoreFields)
         do {
             let discovery = try await loadPlexSessionDiscovery(token: saved, attemptID: attemptID)
             guard isCurrentAuthAttempt(attemptID) else { return false }
-            guard keychain.savePlexSession(token: saved,
-                                           selectedServerID: discovery.selectedServer.clientIdentifier) else {
-                if updateState { state = .failed("Couldn’t securely save the Plex session.") }
-                return false
+            // The account token is already durable. A transient inability to update the preferred
+            // server must not invalidate an otherwise healthy restored session.
+            if !keychain.saveSelectedPlexServerID(discovery.selectedServer.clientIdentifier) {
+                recordAuthDiagnostic("auth.plex.restore.preferred_server_write_failed",
+                                     fields: restoreFields)
             }
             applyPlexSession(discovery, token: saved)
             if updateState { state = .authenticated }
@@ -485,16 +501,22 @@ final class AuthManager {
     /// Persist the token, update the model, and discover servers.
     private func finishLogin(token: String, attemptID: AuthAttemptID) async {
         guard isCurrentAuthAttempt(attemptID) else { return }
+        // Authorization and server discovery are separate milestones. Preserve the account token
+        // as soon as Plex authorizes the PIN so a transient discovery outage exposes Retry rather
+        // than throwing away a sign-in the user just completed.
+        guard keychain.saveToken(token) else {
+            activePinIDs = []
+            pollTask = nil
+            finishAuthAttempt(attemptID)
+            state = .failed("Couldn’t securely save the Plex session.")
+            return
+        }
+        appModel.token = token
         do {
             let discovery = try await loadPlexSessionDiscovery(token: token, attemptID: attemptID)
             guard isCurrentAuthAttempt(attemptID) else { return }
-            guard keychain.savePlexSession(token: token,
-                                           selectedServerID: discovery.selectedServer.clientIdentifier) else {
-                activePinIDs = []
-                pollTask = nil
-                finishAuthAttempt(attemptID)
-                state = .failed("Couldn’t securely save the Plex session.")
-                return
+            if !keychain.saveSelectedPlexServerID(discovery.selectedServer.clientIdentifier) {
+                recordAuthDiagnostic("auth.plex.login.preferred_server_write_failed")
             }
             applyPlexSession(discovery, token: token)
             activePinIDs = []
@@ -1244,11 +1266,19 @@ final class AuthManager {
         guard let accountToken = appModel.token else { throw PlexError.unauthorized }
         let generation = plexSessionGeneration
         let discovery: PlexSessionDiscovery
-        if let plexSessionDiscoverer {
-            discovery = try await plexSessionDiscoverer(accountToken)
-        } else {
-            discovery = try await discoverPlexSession(token: accountToken,
-                                                       sessionGeneration: generation)
+        do {
+            if let plexSessionDiscoverer {
+                discovery = try await plexSessionDiscoverer(accountToken)
+            } else {
+                discovery = try await discoverPlexSession(token: accountToken,
+                                                           sessionGeneration: generation)
+            }
+        } catch {
+            guard isCurrentPlexSession(token: accountToken, generation: generation) else {
+                throw CancellationError()
+            }
+            clearResolvedPlexServerState()
+            throw error
         }
         guard isCurrentPlexSession(token: accountToken, generation: generation) else {
             throw CancellationError()
@@ -1257,6 +1287,17 @@ final class AuthManager {
             throw AuthCoordinationError.secureStorageFailed
         }
         applyPlexSession(discovery, token: accountToken)
+    }
+
+    /// Clear only the server-scoped portion of Plex runtime state. The account token remains
+    /// available for retry/sign-out UI, while `isBrowseReady` honestly reports that discovery
+    /// did not produce a usable server.
+    private func clearResolvedPlexServerState() {
+        appModel.serverToken = nil
+        appModel.selectedServer = nil
+        appModel.plexServers = []
+        appModel.serverBaseURL = nil
+        appModel.selectedServerConnectionIsLocal = false
     }
 
     /// Performs all suspension-prone Plex work without touching runtime or secure state.

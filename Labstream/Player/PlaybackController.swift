@@ -254,6 +254,7 @@ final class PlaybackController {
     private lazy var dvGuardWatchdogObservers = PlayerObserverBag()
     private var dvGuardProgressBaseline: StallProgressSignature?
     private var reconnectWatchdogTask: Task<Void, Never>?
+    private let reconnectWatchdogAuthority = PlaybackReconnectWatchdogAuthority()
     private var reconnectInProgress = false
     private var hasObservedPlayback = false
     private var currentTimeControlStatus: AVPlayer.TimeControlStatus = .paused
@@ -3281,8 +3282,7 @@ final class PlaybackController {
         audioSession.activate()
         // Reinstall for every item so the observer closures capture this item's authority.
         // Removal alone cannot retract a notification whose MainActor continuation is queued.
-        audioSession.removeObservers()
-        audioSession.installObservers { [weak self] in
+        audioSession.reinstallObservers { [weak self] in
             self?.isCurrentPlaybackLifecycle(observedPlaybackGeneration) == true
         }
         // Forward-buffer tuning (#21 / #43 / #175). Normal remote-HLS VOD playback should keep
@@ -3878,6 +3878,7 @@ final class PlaybackController {
     private func finishReconnectStatus() {
         guard reconnectInProgress || reconnectWatchdogTask != nil else { return }
         reconnectInProgress = false
+        reconnectWatchdogAuthority.end()
         reconnectWatchdogTask?.cancel()
         reconnectWatchdogTask = nil
         updateTransportStatus()
@@ -3885,6 +3886,7 @@ final class PlaybackController {
 
     private func endReconnectStatus() {
         reconnectInProgress = false
+        reconnectWatchdogAuthority.end()
         reconnectWatchdogTask?.cancel()
         reconnectWatchdogTask = nil
         updateTransportStatus()
@@ -3892,11 +3894,13 @@ final class PlaybackController {
 
     private func armReconnectWatchdog() {
         reconnectWatchdogTask?.cancel()
-        let observedPlaybackGeneration = playbackGeneration
+        // Recovery deliberately replaces the player item after this deadline is armed,
+        // so its authority must span playbackGeneration changes.
+        let token = reconnectWatchdogAuthority.arm()
         reconnectWatchdogTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(20))
             guard let self,
-                  self.isCurrentPlaybackLifecycle(observedPlaybackGeneration),
+                  self.reconnectWatchdogAuthority.accepts(token),
                   self.reconnectInProgress else { return }
             self.surfaceReconnectTimeout()
         }

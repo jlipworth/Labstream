@@ -40,9 +40,10 @@ struct DownloadStoreAttemptStagingTests {
             #expect(store.promoteAttemptStagingFile(for: a, stagingURL: stageA, to: stable)
                     == .staleOrMissingOwner)
             #expect(String(decoding: try Data(contentsOf: stable), as: UTF8.self) == "stable-before")
-            #expect(FileManager.default.fileExists(atPath: stageA.path))
+            #expect(!FileManager.default.fileExists(atPath: stageA.path))
 
             let stageB = try #require(store.attemptStagingURL(for: b, stableURL: stable))
+            #expect(String(decoding: try Data(contentsOf: stageB), as: UTF8.self) == "attempt-a")
             try Data("attempt-b".utf8).write(to: stageB)
             #expect(store.promoteAttemptStagingFile(for: b, stagingURL: stageB, to: stable)
                     == .promoted)
@@ -194,6 +195,60 @@ struct DownloadStoreAttemptStagingTests {
         }
     }
 
+    @Test func startupSweepDefersStagingBornDuringCurrentStoreLifetime() throws {
+        try withStore { store, directory in
+            let orphan = key("plex:late-side-write", "attempt-a")
+            let stable = store.posterDestinationURL(ratingKey: orphan.ratingKey)
+            let staging = try #require(store.attemptStagingURL(for: orphan, stableURL: stable))
+            try Data("writer-in-flight".utf8).write(to: staging)
+
+            #expect(store.sweepUnreferencedAttemptStaging().removedRelativePaths.isEmpty)
+            #expect(FileManager.default.fileExists(atPath: staging.path))
+
+            // A subsequent launch has a later cutoff and can prove the unadopted file predates all
+            // writers in that process.
+            Thread.sleep(forTimeInterval: 0.01)
+            let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(relaunched.sweepUnreferencedAttemptStaging().removedRelativePaths
+                == [staging.lastPathComponent])
+            #expect(!FileManager.default.fileExists(atPath: staging.path))
+        }
+    }
+
+    @Test func validatedPromotionDurabilityWaitDoesNotBlockUnrelatedStoreReaders() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("download-promotion-lock-\(UUID().uuidString)",
+                                    isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let writes = BlockingPromotionWriter()
+        let owner = key("plex:promotion-reader", "attempt-a")
+        let store = DownloadStore(
+            baseDirectory: directory,
+            indexPersistence: .init { data, url in try writes.write(data, to: url) })
+        let stable = store.destinationURL(ratingKey: owner.ratingKey, ext: "mp4")
+        #expect(created(store, key: owner, stable: stable))
+        let working = try #require(store.attemptWorkingFileURL(for: owner))
+        try Data("validated".utf8).write(to: working)
+
+        let promotionReturned = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .utility).async {
+            _ = store.promoteValidatedAttempt(for: owner, terminalStatus: .complete)
+            promotionReturned.signal()
+        }
+        #expect(await wait(writes.blocked, timeout: 1))
+
+        let readReturned = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .utility).async {
+            _ = store.records
+            readReturned.signal()
+        }
+        #expect(await wait(readReturned, timeout: 0.2))
+        writes.release.signal()
+        #expect(await wait(promotionReturned, timeout: 1))
+        #expect(store.record(for: owner)?.status == .complete)
+    }
+
     @Test func sideCacheTailDeletesOnlyStaleAttemptsStaging() throws {
         try withStore { store, _ in
             let a = key("plex:side-cache", "attempt-a")
@@ -240,6 +295,15 @@ struct DownloadStoreAttemptStagingTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         try body(DownloadStore(baseDirectory: directory), directory)
     }
+
+    private func wait(_ semaphore: DispatchSemaphore, timeout: TimeInterval) async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning:
+                    semaphore.wait(timeout: .now() + timeout) == .success)
+            }
+        }
+    }
 }
 
 private final class PromotionWriteCounter: @unchecked Sendable {
@@ -251,5 +315,24 @@ private final class PromotionWriteCounter: @unchecked Sendable {
             value += 1
             return value
         }
+    }
+}
+
+private final class BlockingPromotionWriter: @unchecked Sendable {
+    let blocked = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var count = 0
+
+    func write(_ data: Data, to url: URL) throws {
+        let shouldBlock = lock.withLock {
+            count += 1
+            return count == 2
+        }
+        if shouldBlock {
+            blocked.signal()
+            release.wait()
+        }
+        try data.write(to: url, options: .atomic)
     }
 }

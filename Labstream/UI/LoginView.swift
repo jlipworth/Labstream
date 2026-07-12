@@ -376,13 +376,11 @@ struct LoginView: View {
             guard selectingEmbyConnectServerID == nil else { return }
             selectingEmbyConnectServerID = server.id
             working = true
-            await authManager.selectEmbyConnectServer(id: server.id)
-            guard !Task.isCancelled else { return }
-            if case .authenticated = authManager.state {
-                return
+            defer {
+                selectingEmbyConnectServerID = nil
+                working = false
             }
-            selectingEmbyConnectServerID = nil
-            working = false
+            await authManager.selectEmbyConnectServer(id: server.id)
         }
     }
 

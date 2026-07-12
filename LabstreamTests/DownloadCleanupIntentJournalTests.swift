@@ -186,6 +186,38 @@ struct DownloadCleanupIntentJournalTests {
         }
     }
 
+    @Test func oneUndecodableElementIsQuarantinedWithoutWedgingValidCleanup() throws {
+        try withTemporaryDirectory { directory in
+            let first = try intent(id: UUID(), attempt: "attempt-A", session: "session-A")
+            let second = try intent(id: UUID(), attempt: "attempt-B", session: "session-B")
+            let validObject = try #require(JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(first)) as? [String: Any])
+            let badObject: [String: Any] = [
+                "id": UUID().uuidString,
+                "attemptKey": ["ratingKey": "emby:bad"],
+                "operation": ["unknownFutureOperation": true],
+            ]
+            let original = try JSONSerialization.data(withJSONObject: [validObject, badObject])
+            let canonical = directory.appendingPathComponent("download-cleanup-intents.json")
+            try original.write(to: canonical)
+
+            let journal = DownloadCleanupIntentJournal(directory: directory)
+            #expect(try loaded(journal) == [first])
+            #expect(journal.add(second) == .committed(second))
+            #expect(try loaded(journal) == [first, second])
+            #expect(journal.remove(
+                id: first.id, attemptKey: first.attemptKey, operation: first.operation)
+                == .committed(removed: true))
+
+            let quarantines = try FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: nil)
+                .filter { $0.lastPathComponent.hasPrefix(
+                    "download-cleanup-intents-quarantine-") }
+            #expect(quarantines.count == 1)
+            #expect(try Data(contentsOf: #require(quarantines.first)) == original)
+        }
+    }
+
     @Test func encodeAndPreReplaceFailuresAreObservableAndPreserveCanonicalQueue() throws {
         try withTemporaryDirectory { directory in
             let initial = DownloadCleanupIntentJournal(directory: directory)

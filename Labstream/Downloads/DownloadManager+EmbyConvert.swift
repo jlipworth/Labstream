@@ -179,7 +179,10 @@ extension DownloadManager {
                            localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
                            bytes: 0, progress: 0, status: .preparing,
                            metadata: convertMetadata),
-            for: storeAttemptKey, context: "convert_seed") else { return }
+            for: storeAttemptKey, context: "convert_seed") else {
+            failCurrentEmbyConvertPersistence(for: storeAttemptKey, context: "convert_seed")
+            return
+        }
         optimizeState[ratingKey] = DownloadOptimizeStateLabel.queued
         refreshRecords()
 
@@ -344,7 +347,10 @@ extension DownloadManager {
                            localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
                            bytes: 0, progress: 0, status: .preparing,
                            metadata: convertMetadata),
-            for: storeAttemptKey, context: "convert_snapshot") else { return }
+            for: storeAttemptKey, context: "convert_snapshot") else {
+            failCurrentEmbyConvertPersistence(for: storeAttemptKey, context: "convert_snapshot")
+            return
+        }
         refreshRecords()
 
         // 1. Create the convert job.
@@ -365,7 +371,10 @@ extension DownloadManager {
                 ratingKey: ratingKey, attemptID: storeAttemptKey.attemptID, title: item.title,
                 localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
                 bytes: 0, progress: 0, status: .preparing, metadata: convertMetadata),
-                for: storeAttemptKey, context: "convert_dispatch") else { return }
+                for: storeAttemptKey, context: "convert_dispatch") else {
+                failCurrentEmbyConvertPersistence(for: storeAttemptKey, context: "convert_dispatch")
+                return
+            }
             refreshRecords()
             postWasDispatched = true
             let (data, response) = try await URLSession.shared.data(for: req)
@@ -421,7 +430,10 @@ extension DownloadManager {
                            localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
                            bytes: 0, progress: 0, status: .preparing,
                            metadata: convertMetadata),
-            for: storeAttemptKey, context: "convert_job") else { return }
+            for: storeAttemptKey, context: "convert_job") else {
+            failCurrentEmbyConvertPersistence(for: storeAttemptKey, context: "convert_job")
+            return
+        }
         refreshRecords()
 
         await pollAndDownloadEmbyConvertJob(item: item, ratingKey: ratingKey, jobId: job.id,
@@ -505,7 +517,10 @@ extension DownloadManager {
         metadata.adoptEmbyConvertJobID(jobId)
         row.metadata = metadata
         guard persistEmbyAttemptRecord(
-            row, for: storeAttemptKey, context: "convert_recovery") else { return }
+            row, for: storeAttemptKey, context: "convert_recovery") else {
+            failCurrentEmbyConvertPersistence(for: storeAttemptKey, context: "convert_recovery")
+            return
+        }
         refreshRecords()
         recordDownloadDiagnostic("downloads.convert_resume", fields: [
             "download_id": .identifier(ratingKey),
@@ -743,14 +758,35 @@ extension DownloadManager {
     /// keeping this helper Emby-local rather than folding both lanes into one shared finalizer.
     /// `clearOptimizeProgress`/`setStatus` are no-ops when no row/progress exists yet, so the
     /// pre-seed `notAuthenticated` site can use this too.
+    private func failCurrentEmbyConvertPersistence(
+        for key: DownloadAttemptKey,
+        context: String
+    ) {
+        // Persistence can fail after Store memory accepted the exact-owner mutation. Do not leave
+        // that `.preparing` row holding an active slot with no poller. A stale/replaced owner is a
+        // no-op so this tail cannot surface an error on a newer attempt.
+        guard store.ownsAttempt(key) else { return }
+        lastError[key.ratingKey] = .transferFailed(
+            "Download preparation could not be saved. Free storage if needed, then retry.")
+        _ = store.setStatus(for: key, .failed)
+        clearOptimizeProgress(ratingKey: key.ratingKey)
+        releaseInFlight(for: key)
+        recordDownloadDiagnostic("downloads.convert_persistence_failed", fields: [
+            "download_id": .identifier(key.ratingKey),
+            "context": .label(context),
+        ])
+        refreshRecords()
+    }
+
     private func failEmbyConvert(for key: DownloadAttemptKey, _ error: DownloadError) {
+        guard store.ownsAttempt(key) else { return }
         lastError[key.ratingKey] = error
         // Do not blanket-clear the pre-POST baseline/fingerprint here. An ambiguous dispatched
         // POST or a zero/multiple/list-error recovery must retain ownership evidence so Relaunch/
         // Retry re-enters recovery rather than creating and orphaning another server job. The
         // definitive pre-dispatch/non-2xx create branch clears explicitly; exact adoption clears
         // atomically with persisting the recovered job id.
-        guard setEmbyAttemptStatus(.failed, for: key, context: "convert_failure") else { return }
+        _ = setEmbyAttemptStatus(.failed, for: key, context: "convert_failure")
         clearOptimizeProgress(ratingKey: key.ratingKey)
         releaseInFlight(for: key)
         refreshRecords()

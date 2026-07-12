@@ -3,6 +3,18 @@ import Testing
 
 @MainActor
 struct MusicPlaybackLifecycleTests {
+    @Test func artworkAuthoritySurvivesObserverGenerationChangeButNotReplacement() {
+        let lifecycle = MusicPlaybackLifecycle()
+        let artwork = PlaybackArtworkRequestAuthority()
+        let request = artwork.begin()
+
+        _ = lifecycle.advance() // pauseForVideo invalidates observer callbacks only
+        #expect(artwork.accepts(request))
+
+        _ = artwork.begin() // selecting/fetching another track invalidates old art
+        #expect(!artwork.accepts(request))
+    }
+
     @Test func itemReplacementRejectsQueuedOldItemCallbacks() {
         let lifecycle = MusicPlaybackLifecycle()
         let oldItem = lifecycle.advance()
