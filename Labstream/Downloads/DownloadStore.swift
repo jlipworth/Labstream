@@ -375,6 +375,11 @@ final class DownloadStore: @unchecked Sendable {
         case staleOrMissing
     }
 
+    enum AttemptValidatedPromotionSubmission: Sendable, Equatable {
+        case accepted(ticket: DownloadArtifactLifecycleCoordinator.Ticket)
+        case immediate(AttemptValidatedPromotionResult)
+    }
+
     struct HeldRangeSegmentRemovalResult: Sendable, Equatable {
         let removed: OfflineHeldRangeSegment?
         let ticket: PersistenceTicket
@@ -417,11 +422,12 @@ final class DownloadStore: @unchecked Sendable {
             case prepared
             case publishedAwaitingPriorDeletion
             case clearTargetCaptured
+            case promotionSourceCaptured
         }
 
         enum ArtifactIntentOperation: Codable, Sendable, Equatable {
             // Operational rollback boundary: an older binary whose exhaustive Codable enum lacks
-            // this case cannot read an index while a static checkpoint intent is pending. Release
+            // newer cases cannot read an index while such an artifact intent is pending. Release
             // rollback must therefore drain artifact lifecycle tickets before installing that
             // binary; the terminal snapshot removes the case from the persisted row.
             case replaceResumeBlob(
@@ -437,6 +443,12 @@ final class DownloadStore: @unchecked Sendable {
                 copyTempRelativePath: String?,
                 expectedBytes: Int?,
                 reconstructedTerminal: Bool
+            )
+            case validatedPromotion(
+                workingRelativePath: String,
+                stableRelativePath: String,
+                terminalStatus: DownloadStatus,
+                sourceBytes: Int?
             )
         }
 
@@ -637,6 +649,7 @@ final class DownloadStore: @unchecked Sendable {
     private let indexWriter: RevisionedPersistenceWriter<[Row]>
     private let artifactFilesystem: DownloadArtifactFilesystem
     private let checkpointFilesystem: DownloadStaticCheckpointFilesystem
+    private let promotionFilesystem: DownloadPromotionFilesystem
     private let artifactLifecycle = DownloadArtifactLifecycleCoordinator()
     private let artifactWorkerQueue = DispatchQueue(
         label: "com.visionplay.download-artifact-lifecycle", qos: .utility)
@@ -654,6 +667,8 @@ final class DownloadStore: @unchecked Sendable {
     private var reservedHeldBodyDeletionPaths: [String: UUID] = [:] // guarded by `lock`
     private var staticCheckpointOutcomes: [UUID: AttemptStaticRangeCheckpointResetResult] = [:]
     private var staticCheckpointAwaitingResultIDs: Set<UUID> = []
+    private var promotionOutcomes: [UUID: AttemptValidatedPromotionResult] = [:]
+    private var promotionAwaitingResultIDs: Set<UUID> = []
 
     /// - Parameter baseDirectory: where media files + the index live. Defaults to
     ///   `Application Support/Labstream/Downloads`, created if missing.
@@ -662,11 +677,13 @@ final class DownloadStore: @unchecked Sendable {
          indexPersistence: IndexPersistence = .live,
          embyCleanupPersistence: EmbyCleanupPersistence? = nil,
          artifactFilesystem: DownloadArtifactFilesystem = .live,
-         checkpointFilesystem: DownloadStaticCheckpointFilesystem = .live) {
+         checkpointFilesystem: DownloadStaticCheckpointFilesystem = .live,
+         promotionFilesystem: DownloadPromotionFilesystem = .live) {
         self.fileManager = fileManager
         self.embyCleanupPersistence = embyCleanupPersistence ?? .live
         self.artifactFilesystem = artifactFilesystem
         self.checkpointFilesystem = checkpointFilesystem
+        self.promotionFilesystem = promotionFilesystem
         let appSupport = (try? fileManager.url(for: .applicationSupportDirectory,
                                                 in: .userDomainMask,
                                                 appropriateFor: nil,
@@ -890,85 +907,226 @@ final class DownloadStore: @unchecked Sendable {
         attemptWorkingFileLayout(for: key)?.workingURL
     }
 
-    /// Publish a caller-validated media body as one linearized Store operation. A validated intent
-    /// is committed before rename, then rename, terminal row mutation, and terminal snapshot
-    /// submission occur under the ownership lock. The intent is the durable proof used after a
-    /// hard kill; arbitrary pre-existing bytes at the stable path are never inferred to belong to A.
+    /// Publish a caller-validated body through the durable artifact queue. Validation remains the
+    /// caller's authority; this operation only publishes the already-validated exact-attempt file.
     @discardableResult
     func promoteValidatedAttempt(
         for key: DownloadAttemptKey,
         terminalStatus: DownloadStatus
     ) -> AttemptValidatedPromotionResult {
+        resolveValidatedPromotionSynchronously(submitValidatedPromotion(
+            for: key, terminalStatus: terminalStatus))
+    }
+
+    func submitValidatedPromotion(
+        for key: DownloadAttemptKey,
+        terminalStatus: DownloadStatus
+    ) -> AttemptValidatedPromotionSubmission {
         guard terminalStatus == .complete || terminalStatus == .unverified else {
-            return .invalidTerminalStatus
+            return .immediate(.invalidTerminalStatus)
         }
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID else {
-            lock.unlock()
-            return .staleOrMissingOwner
+            lock.unlock(); return .immediate(.staleOrMissingOwner)
         }
-        guard !row.legacyResetPending else {
-            lock.unlock()
-            return .resetPending
+        guard !row.legacyResetPending, !row.deletionPending else {
+            lock.unlock(); return .immediate(.resetPending)
         }
-        guard row.pendingArtifactIntents.isEmpty else {
+        if let head = row.pendingArtifactIntents.first,
+           case .validatedPromotion(_, _, let pendingStatus, _) = head.operation,
+           pendingStatus == terminalStatus,
+           !activeArtifactIntentIDs.contains(head.id),
+           !artifactRetirementKeys.contains(key) {
+            let prepared = enqueueAttemptPersistenceLocked()
+            let ticket = artifactLifecycle.register(
+                key: key, generation: head.generation, intentID: head.id,
+                preparedRevision: prepared)
+            artifactLifecycleTickets[head.id] = ticket
+            promotionAwaitingResultIDs.insert(head.id)
+            activeArtifactIntentIDs.insert(head.id)
             lock.unlock()
-            return .resetPending
+            scheduleArtifactLifecycle(ticket: ticket, intent: head)
+            return .accepted(ticket: ticket)
         }
-        guard row.pendingValidatedPromotionStatus == nil
-                || row.pendingValidatedPromotionStatus == terminalStatus else {
-            lock.unlock()
-            return .invalidTerminalStatus
+        guard row.pendingArtifactIntents.isEmpty,
+              row.pendingValidatedPromotionStatus == nil else {
+            lock.unlock(); return .immediate(.resetPending)
         }
-        guard let workingRelative = workingRelativePath(for: row, key: key) else {
-            lock.unlock()
-            return .invalidWorkingLayout
+        guard let working = workingRelativePath(for: row, key: key) else {
+            lock.unlock(); return .immediate(.invalidWorkingLayout)
         }
-        let workingURL = baseDirectory.appendingPathComponent(workingRelative)
-        let stableURL = baseDirectory.appendingPathComponent(row.relativePath)
-        guard let bytes = fileSize(at: workingURL) else {
-            lock.unlock()
-            return .sourceMissing
+        guard Self.isSafeOneLevelRelativePath(row.relativePath) else {
+            lock.unlock(); return .immediate(.invalidWorkingLayout)
         }
-        // The pending intent is also an in-memory ownership reservation. Replacement/delete paths
-        // refuse it, allowing the slow durability wait and rename to happen without blocking every
-        // unrelated Store reader behind NSLock.
-        row.pendingValidatedPromotionStatus = terminalStatus
+        row.artifactGeneration += 1
+        let intent = Row.ArtifactIntent(
+            id: UUID(), attemptID: key.attemptID, generation: row.artifactGeneration,
+            phase: .prepared,
+            operation: .validatedPromotion(
+                workingRelativePath: working,
+                stableRelativePath: row.relativePath,
+                terminalStatus: terminalStatus,
+                sourceBytes: nil))
+        row.pendingArtifactIntents.append(intent)
         rows[key.ratingKey] = row
-        let intentTicket = enqueueAttemptPersistenceLocked()
+        let prepared = enqueueAttemptPersistenceLocked()
+        let ticket = artifactLifecycle.register(
+            key: key, generation: intent.generation, intentID: intent.id,
+            preparedRevision: prepared)
+        artifactLifecycleTickets[intent.id] = ticket
+        promotionAwaitingResultIDs.insert(intent.id)
+        activeArtifactIntentIDs.insert(intent.id)
         lock.unlock()
-        let intentPersistence = waitForPersistence(through: intentTicket)
-        guard intentPersistence.result.committed(through: intentPersistence.ticket) else {
-            return .persistenceFailed(key, intentPersistence.result)
+        scheduleArtifactLifecycle(ticket: ticket, intent: intent)
+        return .accepted(ticket: ticket)
+    }
+
+    func resolveValidatedPromotionSynchronously(
+        _ submission: AttemptValidatedPromotionSubmission
+    ) -> AttemptValidatedPromotionResult {
+        switch submission {
+        case .immediate(let result): return result
+        case .accepted(let ticket):
+            let lifecycle = artifactLifecycle.waitSynchronously(for: ticket)
+            if let result = lock.withLock({ () -> AttemptValidatedPromotionResult? in
+                promotionAwaitingResultIDs.remove(ticket.intentID)
+                return promotionOutcomes.removeValue(forKey: ticket.intentID)
+            }) {
+                return result
+            }
+            switch lifecycle {
+            case .completed: return .staleOrMissingOwner
+            case .failed(.persistence(let failure)): return .persistenceFailed(ticket.key, failure)
+            case .failed(.artifact(let errorType)): return .renameFailed(errorType: errorType)
+            case .timedOut: return .staleOrMissingOwner
+            }
         }
-        if let renameError = renameReplacing(source: workingURL, destination: stableURL) {
-            return .renameFailed(errorType: renameError)
+    }
+
+    func resolveValidatedPromotion(
+        _ submission: AttemptValidatedPromotionSubmission
+    ) async -> AttemptValidatedPromotionResult {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async { [self] in
+                continuation.resume(returning: resolveValidatedPromotionSynchronously(submission))
+            }
+        }
+    }
+
+    private func recordPromotionOutcomeLocked(
+        _ result: AttemptValidatedPromotionResult,
+        intentID: UUID
+    ) {
+        guard promotionAwaitingResultIDs.contains(intentID) else { return }
+        promotionOutcomes[intentID] = result
+    }
+
+    private func executeValidatedPromotion(
+        ticket: DownloadArtifactLifecycleCoordinator.Ticket,
+        intent: Row.ArtifactIntent
+    ) {
+        guard case .validatedPromotion(
+            let working, let stable, let terminalStatus, let capturedBytes) = intent.operation,
+              Self.isSafeOneLevelRelativePath(working),
+              Self.isSafeOneLevelRelativePath(stable),
+              terminalStatus == .complete || terminalStatus == .unverified else {
+            failArtifactLifecycle(ticket, errorType: "invalidValidatedPromotionIntent"); return
+        }
+        let prepared = waitForPersistence(through: ticket.preparedRevision)
+        guard prepared.result.committed(through: ticket.preparedRevision) else {
+            failArtifactLifecycle(ticket, prepared.result); return
         }
         lock.lock()
-        guard var committedRow = rows[key.ratingKey],
-              committedRow.attemptID == key.attemptID,
-              committedRow.pendingValidatedPromotionStatus == terminalStatus else {
-            lock.unlock()
-            // The reservation should make this unreachable. Preserve the durable intent so launch
-            // recovery, rather than an ownership guess, decides what may publish.
-            return .staleOrMissingOwner
+        guard let current = rows[ticket.key.ratingKey],
+              current.attemptID == ticket.key.attemptID,
+              current.pendingArtifactIntents.first?.id == intent.id,
+              current.relativePath == stable else {
+            lock.unlock(); completeArtifactLifecycle(ticket); return
         }
-        committedRow.bytes = bytes
-        committedRow.progress = 1
-        committedRow.status = terminalStatus
-        // A terminal row publishes only the stable file. Dropping the now-consumed private path
-        // keeps staging inventory honest and prevents a later caller from treating a missing
-        // working body as terminal evidence.
-        committedRow.attemptWorkingRelativePath = nil
-        committedRow.pendingValidatedPromotionStatus = nil
-        rows[key.ratingKey] = committedRow
-        let ticket = enqueueAttemptPersistenceLocked()
         lock.unlock()
-        let persistence = waitForPersistence(through: ticket)
-        guard persistence.result.committed(through: persistence.ticket) else {
-            return .persistenceFailed(key, persistence.result)
+
+        let workingURL = baseDirectory.appendingPathComponent(working)
+        let stableURL = baseDirectory.appendingPathComponent(stable)
+        let provenBytes: Int
+        if let capturedBytes {
+            provenBytes = capturedBytes
+        } else {
+            guard let bytes = promotionFilesystem.size(workingURL), bytes > 0 else {
+                lock.withLock { recordPromotionOutcomeLocked(.sourceMissing, intentID: intent.id) }
+                failArtifactLifecycle(ticket, errorType: "promotionSourceMissing"); return
+            }
+            lock.lock()
+            guard var capturing = rows[ticket.key.ratingKey],
+                  capturing.attemptID == ticket.key.attemptID,
+                  capturing.pendingArtifactIntents.first?.id == intent.id else {
+                lock.unlock(); completeArtifactLifecycle(ticket); return
+            }
+            capturing.pendingArtifactIntents[0].phase = .promotionSourceCaptured
+            capturing.pendingArtifactIntents[0].operation = .validatedPromotion(
+                workingRelativePath: working, stableRelativePath: stable,
+                terminalStatus: terminalStatus, sourceBytes: bytes)
+            rows[ticket.key.ratingKey] = capturing
+            let captured = enqueueAttemptPersistenceLocked()
+            lock.unlock()
+            let capturedOutcome = waitForPersistence(through: captured)
+            guard capturedOutcome.result.committed(through: captured) else {
+                failArtifactLifecycle(ticket, capturedOutcome.result); return
+            }
+            provenBytes = bytes
         }
-        return .promoted(key, bytes: bytes, status: terminalStatus)
+        if promotionFilesystem.exists(workingURL) {
+            do {
+                try promotionFilesystem.fullSyncSource(workingURL)
+                try promotionFilesystem.renameReplacing(workingURL, stableURL)
+                try promotionFilesystem.syncParentDirectory(stableURL)
+            }
+            catch {
+                lock.withLock {
+                    recordPromotionOutcomeLocked(.renameFailed(
+                        errorType: String(reflecting: type(of: error))), intentID: intent.id)
+                }
+                failArtifactLifecycle(ticket, errorType: String(reflecting: type(of: error))); return
+            }
+        }
+        guard let bytes = promotionFilesystem.size(stableURL), bytes == provenBytes else {
+            lock.withLock { recordPromotionOutcomeLocked(.sourceMissing, intentID: intent.id) }
+            failArtifactLifecycle(ticket, errorType: "promotionSourceMissing"); return
+        }
+
+        lock.lock()
+        guard var row = rows[ticket.key.ratingKey], row.attemptID == ticket.key.attemptID,
+              row.pendingArtifactIntents.first?.id == intent.id else {
+            lock.unlock(); completeArtifactLifecycle(ticket); return
+        }
+        row.bytes = bytes
+        row.progress = 1
+        row.status = terminalStatus
+        row.attemptWorkingRelativePath = nil
+        artifactRetirementKeys.insert(ticket.key)
+        let retiring = row.pendingArtifactIntents.removeFirst()
+        rows[ticket.key.ratingKey] = row
+        let terminal = enqueueAttemptPersistenceLocked()
+        lock.unlock()
+        let terminalOutcome = waitForPersistence(through: terminal)
+        guard terminalOutcome.result.committed(through: terminal) else {
+            lock.lock()
+            if var restored = rows[ticket.key.ratingKey], restored.attemptID == ticket.key.attemptID {
+                restored.pendingArtifactIntents.insert(retiring, at: 0)
+                rows[ticket.key.ratingKey] = restored
+                _ = enqueueAttemptPersistenceLocked()
+            }
+            artifactRetirementKeys.remove(ticket.key)
+            recordPromotionOutcomeLocked(
+                .persistenceFailed(ticket.key, terminalOutcome.result), intentID: intent.id)
+            lock.unlock()
+            failArtifactLifecycle(ticket, terminalOutcome.result); return
+        }
+        lock.withLock {
+            artifactRetirementKeys.remove(ticket.key)
+            recordPromotionOutcomeLocked(.promoted(
+                ticket.key, bytes: bytes, status: terminalStatus), intentID: intent.id)
+        }
+        completeArtifactLifecycle(ticket)
     }
 
     /// Finish a promotion proven by a durable validated intent after a hard kill. If the working
@@ -979,37 +1137,47 @@ final class DownloadStore: @unchecked Sendable {
         for key: DownloadAttemptKey
     ) -> AttemptValidatedPromotionResult {
         lock.lock()
-        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID else {
-            lock.unlock()
-            return .staleOrMissingOwner
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else {
+            lock.unlock(); return .staleOrMissingOwner
         }
         guard !row.legacyResetPending else {
-            lock.unlock()
-            return .resetPending
+            lock.unlock(); return .resetPending
         }
         guard let terminalStatus = row.pendingValidatedPromotionStatus,
               terminalStatus == .complete || terminalStatus == .unverified,
               let workingRelative = workingRelativePath(for: row, key: key) else {
-            lock.unlock()
-            return .invalidWorkingLayout
+            lock.unlock(); return .invalidWorkingLayout
         }
+        let stableRelative = row.relativePath
+        lock.unlock()
+
         let workingURL = baseDirectory.appendingPathComponent(workingRelative)
-        let stableURL = baseDirectory.appendingPathComponent(row.relativePath)
-        if fileManager.fileExists(atPath: workingURL.path),
-           let renameError = renameReplacing(source: workingURL, destination: stableURL) {
-            lock.unlock()
-            return .renameFailed(errorType: renameError)
+        let stableURL = baseDirectory.appendingPathComponent(stableRelative)
+        if promotionFilesystem.exists(workingURL) {
+            do {
+                try promotionFilesystem.fullSyncSource(workingURL)
+                try promotionFilesystem.renameReplacing(workingURL, stableURL)
+                try promotionFilesystem.syncParentDirectory(stableURL)
+            } catch {
+                return .renameFailed(errorType: String(reflecting: type(of: error)))
+            }
         }
-        guard let bytes = fileSize(at: stableURL), bytes > 0 else {
-            lock.unlock()
+        guard let bytes = promotionFilesystem.size(stableURL), bytes > 0 else {
             return .sourceMissing
         }
-        row.bytes = bytes
-        row.progress = 1
-        row.status = terminalStatus
-        row.attemptWorkingRelativePath = nil
-        row.pendingValidatedPromotionStatus = nil
-        rows[key.ratingKey] = row
+        lock.lock()
+        guard var current = rows[key.ratingKey], current.attemptID == key.attemptID,
+              current.pendingValidatedPromotionStatus == terminalStatus,
+              current.attemptWorkingRelativePath == workingRelative,
+              current.relativePath == stableRelative else {
+            lock.unlock(); return .staleOrMissingOwner
+        }
+        current.bytes = bytes
+        current.progress = 1
+        current.status = terminalStatus
+        current.attemptWorkingRelativePath = nil
+        current.pendingValidatedPromotionStatus = nil
+        rows[key.ratingKey] = current
         let ticket = enqueueAttemptPersistenceLocked()
         lock.unlock()
         let persistence = waitForPersistence(through: ticket)
@@ -1017,18 +1185,6 @@ final class DownloadStore: @unchecked Sendable {
             return .persistenceFailed(key, persistence.result)
         }
         return .promoted(key, bytes: bytes, status: terminalStatus)
-    }
-
-    /// `nil` means success; otherwise the returned value is a privacy-safe error type.
-    private func renameReplacing(source: URL, destination: URL) -> String? {
-        let result = source.withUnsafeFileSystemRepresentation { sourcePath in
-            destination.withUnsafeFileSystemRepresentation { destinationPath in
-                guard let sourcePath, let destinationPath else { return -1 }
-                return Int(Darwin.rename(sourcePath, destinationPath))
-            }
-        }
-        guard result != 0 else { return nil }
-        return String(reflecting: POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO))
     }
 
     private func workingRelativePath(for row: Row, key: DownloadAttemptKey) -> String? {
@@ -1449,6 +1605,8 @@ final class DownloadStore: @unchecked Sendable {
                 self.executeHeldLifecycle(ticket: ticket, intent: intent)
             case .staticCheckpoint:
                 self.executeStaticCheckpoint(ticket: ticket, intent: intent)
+            case .validatedPromotion:
+                self.executeValidatedPromotion(ticket: ticket, intent: intent)
             }
         }
     }
@@ -3764,6 +3922,12 @@ final class DownloadStore: @unchecked Sendable {
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
               !row.legacyResetPending, !row.deletionPending,
               row.pendingValidatedPromotionStatus == nil else {
+            lock.unlock(); return .staleOrMissing
+        }
+        guard !row.pendingArtifactIntents.contains(where: {
+            if case .validatedPromotion = $0.operation { return true }
+            return false
+        }) else {
             lock.unlock(); return .staleOrMissing
         }
         let backend = row.metadata?.resolvedBackendKind(ratingKey: row.ratingKey)

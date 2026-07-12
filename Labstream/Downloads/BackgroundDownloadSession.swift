@@ -5229,8 +5229,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             guard !Task.isCancelled else { return }
             clearRetryCount(for: attemptKey)
             if publishesWorkingFile {
-                guard promoteValidatedWorkingFile(for: attemptKey, status: .complete,
-                                                  phase: "finalize_complete_promote") else { return }
+                guard await promoteValidatedWorkingFile(
+                    for: attemptKey, status: .complete,
+                    phase: "finalize_complete_promote") else { return }
             } else {
                 guard acceptedAttemptSubmission(
                     resolveLifecycleSubmission(store.submitProgress(for: attemptKey, bytes: bytes, progress: 1)),
@@ -5263,8 +5264,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             guard !Task.isCancelled else { return }
             clearRetryCount(for: attemptKey)
             if publishesWorkingFile {
-                guard promoteValidatedWorkingFile(for: attemptKey, status: .unverified,
-                                                  phase: "finalize_unverified_promote") else { return }
+                guard await promoteValidatedWorkingFile(
+                    for: attemptKey, status: .unverified,
+                    phase: "finalize_unverified_promote") else { return }
             } else {
                 guard acceptedAttemptSubmission(
                     resolveLifecycleSubmission(store.submitStatus(for: attemptKey, finalizationResult.status)),
@@ -5285,10 +5287,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     private func promoteValidatedWorkingFile(for key: DownloadAttemptKey,
                                                 status: DownloadStatus,
-                                                phase: String) -> Bool {
+                                                phase: String) async -> Bool {
         var shouldSurfaceFailure = true
         var shouldMarkFailed = true
-        switch store.promoteValidatedAttempt(for: key, terminalStatus: status) {
+        let submission = store.submitValidatedPromotion(for: key, terminalStatus: status)
+        switch await store.resolveValidatedPromotion(submission) {
         case .promoted:
             return true
         case .staleOrMissingOwner:
