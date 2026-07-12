@@ -28,7 +28,7 @@ struct PlexBrowseServiceTests {
         }
         let service = try PlexBrowseService(
             session: BackendSession(kind: .plex,
-                                    baseURL: #require(URL(string: "https://plex.example.test/root")),
+                                    baseURL: try #require(URL(string: "https://plex.example.test/root")),
                                     token: "token",
                                     serverID: "server"),
             identity: Self.identity(),
@@ -65,6 +65,42 @@ struct PlexBrowseServiceTests {
         await #expect(throws: PlexError.self) {
             _ = try await malformed.children(ratingKey: "show")
         }
+    }
+
+    @Test func librariesPagingAndAlphabetPreserveNativePlexShapes() async throws {
+        let transport = PlexBrowseTransport { request in
+            switch request.url?.path {
+            case "/root/library/sections":
+                return Data(#"{"MediaContainer":{"Directory":[{"key":"2","title":"TV","type":"show"},{"key":"1","title":"Movies","type":"movie"}]}}"#.utf8)
+            case "/root/library/sections/1/all":
+                return Data(#"{"MediaContainer":{"totalSize":41,"Metadata":[{"ratingKey":"m20","title":"Twenty","type":"movie"}]}}"#.utf8)
+            case "/root/library/sections/1/firstCharacter":
+                return Data(#"{"MediaContainer":{"Directory":[{"key":"A","title":"A","size":3},{"key":"B","title":"B","count":2}]}}"#.utf8)
+            default:
+                throw PlexBrowseTestFailure.unexpectedRequest
+            }
+        }
+        let service = try PlexBrowseService(
+            session: BackendSession(kind: .plex,
+                                    baseURL: try #require(URL(string: "https://plex.example.test/root")),
+                                    token: "token"),
+            identity: Self.identity(),
+            send: { try await transport.send($0) })
+
+        #expect(try await service.libraries().map(\.key) == ["2", "1"])
+        let page = try await service.sectionPage(sectionKey: "1", startIndex: 20, limit: 10,
+                                                 sort: "titleSort")
+        #expect(page.items.map(\.ratingKey) == ["m20"])
+        #expect(page.total == 41)
+        let counts = try await service.alphabetCounts(sectionKey: "1")
+        #expect(counts.map(\.display) == ["A", "B"])
+        #expect(counts.map(\.count) == [3, 2])
+
+        let requests = await transport.requests
+        let pagingQuery = requests[1].url?.query ?? ""
+        #expect(pagingQuery.contains("X-Plex-Container-Start=20"))
+        #expect(pagingQuery.contains("X-Plex-Container-Size=10"))
+        #expect(pagingQuery.contains("sort=titleSort"))
     }
 
     nonisolated private static func identity() -> ClientIdentity {

@@ -104,16 +104,15 @@ struct MusicLibraryView: View {
         if !force, loadedIdentity == activeIdentity, case .loaded = loadState { return }
         loadGeneration += 1
         let generation = loadGeneration
-        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
+        guard let service = try? PlexBrowseService(appModel: appModel) else {
             loadState = .failed("No reachable Plex server selected.")
             return
         }
         if case .loaded = loadState {} else { loadState = .loading }
-        let req = BrowseAPI.sections(server: server, token: token, identity: appModel.identity)
         do {
-            let resp = try await appModel.client.send(req, as: SectionsResponse.self)
+            let libraries = try await service.libraries()
             guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
-            sections = resp.mediaContainer.directory.filter(\.isMusic)
+            sections = libraries.filter(\.isMusic)
             if selectedSectionKey == nil { selectedSectionKey = sections.first?.key }
             loadedIdentity = activeIdentity
             loadState = .loaded
