@@ -391,6 +391,9 @@ extension DownloadManager {
             "target": .label(targetName),
         ])
         let submission = store.submitRemove(for: attemptKey)
+        if case .accepted = submission {
+            _ = downloadWorkRegistry.cancelCancellableWork(for: attemptKey)
+        }
         Task { [weak self] in
             guard let self,
                   case .removed = await store.resolveRowDeletion(submission) else { return }

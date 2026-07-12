@@ -642,6 +642,49 @@ struct DownloadStorePersistenceTests {
         }
     }
 
+    @Test func pendingRowDeletionRejectsEveryArtifactSuccessorAndPathAdoption() async throws {
+        try await withTemporaryDirectory { directory in
+            let id = DownloadAttemptID(uuid: UUID())
+            let key = DownloadAttemptKey(ratingKey: "plex:row-delete-terminal-barrier", attemptID: id)
+            let metadata = OfflineMetadata(ratingKey: key.ratingKey, title: "Barrier", type: "movie",
+                                           resumeMode: .staticByteRange)
+            let record = makeRecord(ratingKey: key.ratingKey, title: "Barrier", directory: directory,
+                                    bytes: 1, metadata: metadata)
+            try Data([1]).write(to: record.localURL)
+            let blocker = BlockingArtifactDelete(path: record.localURL.path)
+            let live = DownloadArtifactFilesystem.live
+            let store = DownloadStore(baseDirectory: directory, artifactFilesystem: .init(
+                writeAuthArtifact: live.writeAuthArtifact,
+                removeItem: { url, fm in try blocker.remove(url, fm: fm) },
+                fileExists: live.fileExists))
+            #expect(store.createAttemptOwnedRecord(record, attemptID: id) == .committed(key))
+            let deletion = store.submitRemove(for: key)
+            #expect(await waitForSignal(blocker.started, timeout: 1))
+            let terminalWatermark = store.currentArtifactLifecycleWatermark()
+
+            #expect(store.submitResumeData(for: key, Data([2])) == .staleOrMissing)
+            #expect(store.submitClearResumeData(for: key) == .staleOrMissing)
+            let held = OfflineHeldRangeSegment(offset: 0, length: 1, relativePath: "late-held.body")
+            #expect(store.submitHeldRangeSegment(for: key, segment: held) == .staleOrMissing)
+            #expect(store.submitHeldRangeSegmentsRemoval(for: key, offsets: nil) == .staleOrMissing)
+            #expect(store.submitStaticRangeCheckpointReset(for: key) == .staleOrMissing)
+            #expect(store.submitMetadata(for: key) { $0.posterRelativePath = "late-poster.jpg" }
+                == .staleOrMissing)
+            let stable = directory.appendingPathComponent("late-side.jpg")
+            let staging = try #require(store.attemptStagingURL(for: key, stableURL: stable))
+            try Data([3]).write(to: staging)
+            #expect(store.promoteAttemptStagingFile(for: key, stagingURL: staging, to: stable)
+                == .staleOrMissingOwner)
+            try? FileManager.default.removeItem(at: staging) // production promotion owns this defer
+
+            #expect(store.currentArtifactLifecycleWatermark() == terminalWatermark)
+            #expect(store.metadata(for: key.ratingKey)?.posterRelativePath == nil)
+            #expect(!FileManager.default.fileExists(atPath: stable.path))
+            blocker.release.signal()
+            #expect(await store.resolveRowDeletion(deletion) == .removed(key))
+        }
+    }
+
     @Test func rowDeletionFailureRetainsDurableIntentAndRelaunchRetries() throws {
         try withTemporaryDirectory { directory in
             let id = DownloadAttemptID(uuid: UUID())
