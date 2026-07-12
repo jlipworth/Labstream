@@ -614,8 +614,7 @@ public final class DownloadManager {
                     lastError[key.ratingKey] = nil
                     finalizedPendingDeletion = true
                 case .deletionPending:
-                    session.haltForPendingDeletion(ratingKey: key.ratingKey)
-                    _ = downloadWorkRegistry.cancelCancellableWork(for: key)
+                    haltManagerOwnedWorkForPendingDeletion(key)
                     lastError[key.ratingKey] = .transferFailed(
                         "Deletion is pending until server cleanup can be saved. Tap Delete to retry.")
                 case .indexPersistenceFailed:
@@ -2399,14 +2398,16 @@ public final class DownloadManager {
                     "download_id": .identifier(ratingKey),
                     "job_id": .int(jobId),
                 ])
-                Task { [weak self] in
-                    await self?.pollAndDownloadEmbyConvertJob(
+                let task = Task { [weak self] in
+                    guard let self else { return }
+                    await self.pollAndDownloadEmbyConvertJob(
                         item: item, ratingKey: ratingKey, jobId: jobId,
                         snapshotIds: resumeSnapshot, targetName: targetName, server: server,
                         token: token, identity: identity, userId: userId,
                         audioStreamIndex: metadata.audioStreamIndex,
                         attemptKey: key, attemptID: attemptID)
                 }
+                registerServerPrepPollerTask(task, for: key)
             case .recover(let baseline, let fingerprint, let startedAt, let recoveryPhase):
                 guard EmbyConvertRecoveryPolicy.publicUserMatches(
                     currentSessionUserID: userId,
@@ -2429,8 +2430,9 @@ public final class DownloadManager {
                     "download_id": .identifier(ratingKey),
                     "baseline_count": .int(baseline.count),
                 ])
-                Task { [weak self] in
-                    await self?.recoverAndResumeEmbyConvertJob(
+                let task = Task { [weak self] in
+                    guard let self else { return }
+                    await self.recoverAndResumeEmbyConvertJob(
                         item: item, ratingKey: ratingKey, baselineJobIDs: Set(baseline),
                         fingerprint: fingerprint, attemptStartedAtEpochSeconds: startedAt,
                         recoveryPhase: recoveryPhase, snapshotIds: resumeSnapshot,
@@ -2438,6 +2440,7 @@ public final class DownloadManager {
                         userId: userId, audioStreamIndex: metadata.audioStreamIndex,
                         attemptKey: key, attemptID: attemptID)
                 }
+                registerServerPrepPollerTask(task, for: key)
             case .failMissingIdentity:
                 recordDownloadDiagnostic("downloads.convert_failed", fields: [
                     "download_id": .identifier(record.ratingKey),
@@ -2633,6 +2636,33 @@ public final class DownloadManager {
     func registerServerPrepPollerTask(_ task: Task<Void, Never>, for key: DownloadAttemptKey) {
         serverPrepPollerTasks[key] = task
     }
+
+    /// Stop only process-owned work after the row became deletion-pending. Do not call
+    /// `releaseInFlight`: it also executes/clears external encoder authority, which must remain in
+    /// the sealed row until every cleanup intent is independently durable in the journal.
+    private func haltManagerOwnedWorkForPendingDeletion(_ key: DownloadAttemptKey) {
+        session.haltForPendingDeletion(ratingKey: key.ratingKey)
+        _ = downloadWorkRegistry.cancelCancellableWork(for: key)
+        _ = serverPrepAttempts.releaseAll(for: key)
+        serverPrepPollerTasks.removeValue(forKey: key)?.cancel()
+        jellyfinDownloadKeepaliveTasks.removeValue(forKey: key)?.task.cancel()
+        embyDownloadKeepaliveTasks.removeValue(forKey: key)?.task.cancel()
+    }
+
+    #if DEBUG
+    func registerKeepaliveTaskForTesting(
+        _ task: Task<Void, Never>,
+        for key: DownloadAttemptKey,
+        backend: DownloadBackendKind
+    ) {
+        let handle = KeepaliveTaskHandle(generation: UUID(), task: task)
+        switch backend {
+        case .jellyfin: jellyfinDownloadKeepaliveTasks[key] = handle
+        case .emby: embyDownloadKeepaliveTasks[key] = handle
+        case .plex: break
+        }
+    }
+    #endif
 
     func beginServerPrepPoller(for key: DownloadAttemptKey, source: String) -> UUID? {
         let ratingKey = key.ratingKey
@@ -3024,8 +3054,7 @@ public final class DownloadManager {
             case .ready(let durable):
                 cleanupIntentsToExecute = durable
             case .deletionPending(_, let failure):
-                session.haltForPendingDeletion(ratingKey: ratingKey)
-                _ = downloadWorkRegistry.cancelCancellableWork(for: rowAttemptKey)
+                haltManagerOwnedWorkForPendingDeletion(rowAttemptKey)
                 lastError[ratingKey] = .transferFailed(
                     "Deletion is pending until server cleanup can be saved. Tap Delete to retry.")
                 recordDownloadDiagnostic("downloads.delete_deferred", fields: [
@@ -3823,7 +3852,8 @@ public final class DownloadManager {
             }
             var lastTickOutcome: JellyfinKeepaliveTickOutcome?
             while !Task.isCancelled {
-                guard let record = self.store.record(for: attemptKey),
+                guard !self.store.isDeletionPending(for: attemptKey),
+                      let record = self.store.record(for: attemptKey),
                       EmbyDownloadKeepalivePolicy.candidate(for: record, hasExistingTask: false) != nil
                 else { return }
                 // Re-resolve every tick so token rotation, sign-out, or server replacement stops
@@ -3850,6 +3880,7 @@ public final class DownloadManager {
                     let ping = try EmbyPlayback.pingRequest(
                         server: server, token: token, identity: identity,
                         userId: liveUserId, playSessionId: playSessionId)
+                    guard !self.store.isDeletionPending(for: attemptKey) else { return }
                     statuses.append(await Self.controlPlaneRequestStatus(ping))
                 } catch {
                     self.recordDownloadDiagnostic("downloads.emby_keepalive_failed", fields: [
@@ -3934,7 +3965,8 @@ public final class DownloadManager {
             var lastReportedTicks = 0
             var lastTickOutcome: JellyfinKeepaliveTickOutcome?
             while !Task.isCancelled {
-                guard let record = self.store.record(for: attemptKey),
+                guard !self.store.isDeletionPending(for: attemptKey),
+                      let record = self.store.record(for: attemptKey),
                       record.status == .queued || record.status == .downloading else { return }
                 // A-2 (audit lens 8): re-resolve the Jellyfin lane per tick — token rotation or a
                 // re-login mid-download must not keep pinging with the enqueue-time snapshot (the
@@ -3973,6 +4005,7 @@ public final class DownloadManager {
                             playSessionId: playSessionId,
                             playMethod: .transcode,
                             positionTicks: positionTicks)
+                        guard !self.store.isDeletionPending(for: attemptKey) else { return }
                         let status = await Self.controlPlaneRequestStatus(playing)
                         statuses.append(status)
                         // Only mark the session opened once the server actually accepted it, so a
@@ -3990,11 +4023,13 @@ public final class DownloadManager {
                         playMethod: .transcode,
                         positionTicks: positionTicks,
                         isPaused: false)
+                    guard !self.store.isDeletionPending(for: attemptKey) else { return }
                     statuses.append(await Self.controlPlaneRequestStatus(progressReq))
                     let ping = try JellyfinPlayback.pingRequest(server: server,
                                                                 token: token,
                                                                 identity: identity,
                                                                 playSessionId: playSessionId)
+                    guard !self.store.isDeletionPending(for: attemptKey) else { return }
                     statuses.append(await Self.controlPlaneRequestStatus(ping))
                 } catch {
                     recordDownloadDiagnostic("downloads.jellyfin_keepalive_failed", fields: [
