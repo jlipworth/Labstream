@@ -102,6 +102,42 @@ struct DownloadArtifactLifecycleTests {
         coordinator.abandonIntent(orphan.intentID)
         #expect(await coordinator.flush(
             through: .init(sequence: orphan.sequence), timeout: 0.1) == .completed)
+        // The abandoned intent can never finish, so a ticket-scoped waiter must resolve to a
+        // terminal failure instead of waiting forever on the dead pending attempt.
+        #expect(coordinator.waitSynchronously(for: orphan)
+                == .failed(.artifact(errorType: "intentAbandoned")))
+    }
+
+    @Test func abandonmentUnblocksInFlightTicketWaiter() async throws {
+        let coordinator = DownloadArtifactLifecycleCoordinator()
+        let id = try #require(DownloadAttemptID(rawValue: "a"))
+        let key = DownloadAttemptKey(ratingKey: "plex:abandoned-waiter", attemptID: id)
+        let orphan = coordinator.register(
+            key: key, generation: 1, intentID: UUID(),
+            preparedRevision: .init(revision: 1))
+        let waiter = Task.detached {
+            coordinator.waitSynchronously(for: orphan)
+        }
+        try await Task.sleep(for: .milliseconds(10))
+        coordinator.abandonIntent(orphan.intentID)
+        #expect(await waiter.value == .failed(.artifact(errorType: "intentAbandoned")))
+    }
+
+    @Test func retirementBoundsLiveEntriesAndRetiredFailures() throws {
+        let coordinator = DownloadArtifactLifecycleCoordinator()
+        let id = try #require(DownloadAttemptID(rawValue: "a"))
+        let key = DownloadAttemptKey(ratingKey: "plex:retired-growth", attemptID: id)
+        // Repeated abandoned failures must not accumulate in the live table (boundary scan cost)
+        // and the retired store must stay within its FIFO cap.
+        for round in 0..<600 {
+            let dead = coordinator.register(
+                key: key, generation: UInt64(round), intentID: UUID(),
+                preparedRevision: .init(revision: UInt64(round)))
+            coordinator.failArtifact(dead, errorType: "Injected")
+            coordinator.abandonIntent(dead.intentID)
+        }
+        #expect(coordinator.liveEntryCountForTesting == 0)
+        #expect(coordinator.retiredFailureCountForTesting <= 512)
     }
 
     @Test func completedRetryPrunesSupersededFailureFromOldWatermark() async throws {
@@ -122,6 +158,11 @@ struct DownloadArtifactLifecycleTests {
         #expect(await coordinator.flush(
             through: .init(sequence: first.sequence), timeout: 0.1) == .completed)
         #expect(coordinator.waitSynchronously(for: retry) == .completed)
+        // But the superseded attempt's OWN ticket keeps its exact failure: a delayed waiter must
+        // not inherit the retry's success (the retry may have carried different payload).
+        #expect(coordinator.waitSynchronously(for: first)
+                == .failed(.persistence(.failed(
+                    revision: 1, stage: "commit", errorType: "Injected"))))
     }
 
     @Test func resumeSubmissionReturnsBeforeArtifactWriteAndUsesPrivateSafeName() async throws {
