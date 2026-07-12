@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Secret-gated Jellyfin browse + playback-progress proof for remediation Phases 4A and 3D.
-# The optional timeline offset writes a resume point on a TEST ACCOUNT and restores it.
+# Timeline acceptance MUTATES a TEST ACCOUNT resume point and requires explicit write opt-in; the
+# probe verifies both the requested offset and restoration before it can report PASS.
 set -euo pipefail
 
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "ERROR: not in a git repo" >&2; exit 1; }
@@ -25,6 +26,11 @@ if [[ -z "${JELLYFIN_SERVER_URL:-}" || -z "${JELLYFIN_ACCESS_TOKEN:-}" ||
       -z "${JELLYFIN_USER_ID:-}" || -z "${JELLYFIN_LIVE_ITEM_ID:-}" ]]; then
   echo ">>> JELLYFIN VERDICT: SKIP — JELLYFIN_SERVER_URL / JELLYFIN_ACCESS_TOKEN / JELLYFIN_USER_ID / JELLYFIN_LIVE_ITEM_ID are required."
   exit 0
+fi
+
+if [[ "${JELLYFIN_LIVE_ALLOW_TIMELINE_WRITE:-}" != "1" ||
+      -z "${JELLYFIN_LIVE_TIMELINE_OFFSET_SECONDS:-}" ]]; then
+  echo ">>> JELLYFIN TIMELINE: SKIP — browse proof will run, but timeline acceptance mutates a TEST ACCOUNT and requires JELLYFIN_LIVE_ALLOW_TIMELINE_WRITE=1 plus a distinct offset."
 fi
 
 cd PMSKit

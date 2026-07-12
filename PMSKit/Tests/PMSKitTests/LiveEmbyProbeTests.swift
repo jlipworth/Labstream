@@ -26,8 +26,13 @@ import FoundationNetworking
 ///   set -a; source scripts/emby-live.env; set +a
 ///   cd PMSKit && swift test --filter LiveEmbyProbe
 ///
+/// Timeline acceptance MUTATES a TEST ACCOUNT resume point and requires both
+/// `EMBY_LIVE_ALLOW_TIMELINE_WRITE=1` and a distinct `EMBY_LIVE_TIMELINE_OFFSET_SECONDS`.
+/// PASS is emitted only after readback and verified restoration.
+///
 /// SECURITY: this NEVER prints the token, api_key, or any `X-Emby-Token` value — every URL and
 /// header set is redacted before logging.
+@Suite(.serialized)
 struct LiveEmbyProbeTests {
 
     /// Required env inputs. Returns nil (→ test is a no-op) when any are absent.
@@ -38,6 +43,7 @@ struct LiveEmbyProbeTests {
         let itemId: String
         let maxStreamingBitrate: Int
         let timelineOffsetTicks: Int?
+        let allowsTimelineWrite: Bool
         let identity: EmbyClientIdentity
 
         init?() {
@@ -56,6 +62,7 @@ struct LiveEmbyProbeTests {
             self.timelineOffsetTicks = env["EMBY_LIVE_TIMELINE_OFFSET_SECONDS"]
                 .flatMap(Int.init)
                 .map { max(0, $0) * 10_000_000 }
+            self.allowsTimelineWrite = env["EMBY_LIVE_ALLOW_TIMELINE_WRITE"] == "1"
             self.identity = EmbyClientIdentity(
                 client: "Labstream",
                 device: "Apple Vision Pro",
@@ -236,71 +243,99 @@ struct LiveEmbyProbeTests {
         }
     }
 
-    /// Phase 3D/4A readiness proof through the public Emby wrappers that delegate to the shared
-    /// MediaBrowser request factory and progress-plan implementations. A distinct resume mutation
-    /// is opt-in and restored before the probe returns.
+    /// Phase 3D/4A proof through the public shared request wrappers. Timeline acceptance MUTATES a
+    /// TEST ACCOUNT and cannot pass until the distinct offset is read back and the original offset
+    /// is restored and read back. Playback identity comes from real PlaybackInfo negotiation.
     @Test func liveEmbySharedBrowseAndTimeline() async throws {
         guard let cfg = LiveConfig() else {
             print(">>> EMBY-SHARED VERDICT: SKIP — set EMBY_LIVE_SERVER / EMBY_LIVE_TOKEN / EMBY_LIVE_USER_ID / EMBY_LIVE_ITEM_ID to run.")
             return
         }
 
+        try await proveSharedBrowse(cfg)
+        print(">>> EMBY-SHARED [browse] VERDICT: PASS — shared views/items/metadata wrappers decoded live responses.")
+        let originalItem = try await fetchTimelineItem(cfg)
+        let originalTicks = originalItem.userData?.playbackPositionTicks ?? 0
+        guard cfg.allowsTimelineWrite, let targetTicks = cfg.timelineOffsetTicks else {
+            print(">>> EMBY-SHARED VERDICT: SKIP — timeline acceptance mutates a TEST ACCOUNT; set EMBY_LIVE_ALLOW_TIMELINE_WRITE=1 and EMBY_LIVE_TIMELINE_OFFSET_SECONDS.")
+            return
+        }
+        guard targetTicks != originalTicks,
+              let duration = originalItem.runTimeTicks,
+              targetTicks >= 30 * 10_000_000,
+              targetTicks < duration * 8 / 10 else {
+            Issue.record("Emby timeline offset must be distinct, at least 30 seconds, and below 80% of the configured test item")
+            throw URLError(.badURL)
+        }
+
+        let targetPlayback = try await negotiateTimelinePlayback(cfg, startTimeTicks: targetTicks)
+        var primaryError: (any Error)?
+        do {
+            try await reportTimeline(positionTicks: targetTicks,
+                                     playback: targetPlayback,
+                                     cfg: cfg)
+            let observed = try await waitForTimelinePosition(targetTicks, cfg: cfg)
+            let readbackMatched = observed == targetTicks
+            #expect(readbackMatched, "Emby resume readback did not observe the requested test offset")
+            if !readbackMatched { throw URLError(.cannotParseResponse) }
+        } catch {
+            primaryError = error
+        }
+
+        // Never suppress restoration failure. If any target leg failed, restoration still runs and
+        // is verified before the original error is rethrown.
+        do {
+            let restorePlayback = try await negotiateTimelinePlayback(cfg, startTimeTicks: originalTicks)
+            try await reportTimeline(positionTicks: originalTicks,
+                                     playback: restorePlayback,
+                                     cfg: cfg,
+                                     label: "restore")
+            let restored = try await waitForTimelinePosition(originalTicks, cfg: cfg)
+            let restoreMatched = restored == originalTicks
+            #expect(restoreMatched, "Emby probe did not restore the original resume offset")
+            if !restoreMatched { throw URLError(.cannotParseResponse) }
+        } catch {
+            Issue.record("Emby TEST ACCOUNT resume restoration failed; manual verification is required")
+            throw URLError(.cannotWriteToFile)
+        }
+
+        if let primaryError { throw primaryError }
+        print(">>> EMBY-SHARED VERDICT: PASS — shared browse and real-PlaybackInfo timeline requests passed 2xx, resume readback, and verified restoration.")
+    }
+
+    private func proveSharedBrowse(_ cfg: LiveConfig) async throws {
         let viewsRequest = try EmbyLibrary.userViewsRequest(server: cfg.server,
                                                             token: cfg.token,
                                                             identity: cfg.identity,
                                                             userId: cfg.userId)
         let (viewsData, viewsStatus) = try await transport.send(viewsRequest)
         print(">>> EMBY-SHARED [views] HTTP \(viewsStatus), \(viewsData.count) bytes")
-        #expect((200..<300).contains(viewsStatus), "Emby views expected 2xx, got \(viewsStatus)")
-        guard (200..<300).contains(viewsStatus) else { throw URLError(.badServerResponse) }
+        let views2xx = (200..<300).contains(viewsStatus)
+        #expect(views2xx, "Emby views expected 2xx")
+        guard views2xx else { throw URLError(.badServerResponse) }
         let views = try JSONDecoder().decode(EmbyUserViewsResponse.self, from: viewsData)
-        #expect(!views.items.isEmpty, "Emby account should expose at least one user view")
-        guard !views.items.isEmpty else { throw URLError(.resourceUnavailable) }
+        let hasViews = !views.items.isEmpty
+        #expect(hasViews, "Emby test account should expose at least one user view")
+        guard hasViews else { throw URLError(.resourceUnavailable) }
 
-        let originalItem = try await fetchTimelineItem(cfg)
-        guard let mediaSourceID = originalItem.mediaSources.first?.id, !mediaSourceID.isEmpty else {
-            Issue.record("Configured Emby item has no media-source id; timeline proof cannot run")
-            return
-        }
-        let originalTicks = originalItem.userData?.playbackPositionTicks ?? 0
-        let targetTicks = cfg.timelineOffsetTicks ?? originalTicks
+        let itemsRequest = try EmbyLibrary.itemsRequest(server: cfg.server,
+                                                        token: cfg.token,
+                                                        identity: cfg.identity,
+                                                        userId: cfg.userId,
+                                                        recursive: true,
+                                                        limit: 5,
+                                                        includeItemTypes: "Movie,Episode,Video")
+        let (itemsData, itemsStatus) = try await transport.send(itemsRequest)
+        print(">>> EMBY-SHARED [items] HTTP \(itemsStatus), \(itemsData.count) bytes")
+        let items2xx = (200..<300).contains(itemsStatus)
+        #expect(items2xx, "Emby items expected 2xx")
+        guard items2xx else { throw URLError(.badServerResponse) }
+        let page = try EmbyItemsResponse.decode(from: itemsData)
+        let mappingComplete = !page.items.isEmpty && page.items.compactMap { $0.toMediaItem() }.count == page.items.count
+        #expect(mappingComplete, "Emby requested video rows should all map to MediaItem")
+        guard mappingComplete else { throw URLError(.cannotDecodeContentData) }
 
-        do {
-            try await reportTimeline(positionTicks: targetTicks,
-                                     mediaSourceID: mediaSourceID,
-                                     playSessionID: UUID().uuidString,
-                                     cfg: cfg)
-            if cfg.timelineOffsetTicks != nil {
-                let observed = try await waitForTimelinePosition(targetTicks, cfg: cfg)
-                #expect(observed == targetTicks,
-                        "Emby resume readback did not observe the explicitly requested offset")
-                guard observed == targetTicks else { throw URLError(.cannotParseResponse) }
-            } else {
-                print(">>> EMBY-SHARED [timeline] READBACK SKIP — set EMBY_LIVE_TIMELINE_OFFSET_SECONDS on a test account for mutation proof.")
-            }
-        } catch {
-            if targetTicks != originalTicks {
-                try? await reportTimeline(positionTicks: originalTicks,
-                                          mediaSourceID: mediaSourceID,
-                                          playSessionID: UUID().uuidString,
-                                          cfg: cfg,
-                                          label: "restore")
-            }
-            throw error
-        }
-
-        if targetTicks != originalTicks {
-            try await reportTimeline(positionTicks: originalTicks,
-                                     mediaSourceID: mediaSourceID,
-                                     playSessionID: UUID().uuidString,
-                                     cfg: cfg,
-                                     label: "restore")
-            let restored = try await waitForTimelinePosition(originalTicks, cfg: cfg)
-            #expect(restored == originalTicks, "Emby probe did not restore the original resume offset")
-            guard restored == originalTicks else { throw URLError(.cannotParseResponse) }
-        }
-
-        print(">>> EMBY-SHARED VERDICT: PASS — shared browse wrappers decoded live responses and timeline wrappers returned 2xx\(cfg.timelineOffsetTicks == nil ? "; resume readback not requested" : "; resume readback + restore passed").")
+        _ = try await fetchTimelineItem(cfg)
     }
 
     private func fetchTimelineItem(_ cfg: LiveConfig) async throws -> EmbyBaseItemDto {
@@ -311,42 +346,70 @@ struct LiveEmbyProbeTests {
                                                   itemId: cfg.itemId)
         let (data, status) = try await transport.send(request)
         print(">>> EMBY-SHARED [metadata] HTTP \(status), \(data.count) bytes")
-        #expect((200..<300).contains(status), "Emby metadata expected 2xx, got \(status)")
-        guard (200..<300).contains(status) else { throw URLError(.badServerResponse) }
+        let succeeded = (200..<300).contains(status)
+        #expect(succeeded, "Emby metadata expected 2xx")
+        guard succeeded else { throw URLError(.badServerResponse) }
         return try JSONDecoder().decode(EmbyBaseItemDto.self, from: data)
     }
 
+    private func negotiateTimelinePlayback(_ cfg: LiveConfig,
+                                           startTimeTicks: Int) async throws -> EmbyPlaybackOpenResult {
+        let request = try EmbyPlayback.playbackInfoRequest(server: cfg.server,
+                                                           token: cfg.token,
+                                                           identity: cfg.identity,
+                                                           userId: cfg.userId,
+                                                           itemId: cfg.itemId,
+                                                           startTimeTicks: startTimeTicks,
+                                                           maxStreamingBitrate: cfg.maxStreamingBitrate)
+        let (data, status) = try await transport.send(request)
+        print(">>> EMBY-SHARED [playbackInfo] HTTP \(status), \(data.count) bytes")
+        let succeeded = (200..<300).contains(status)
+        #expect(succeeded, "Emby PlaybackInfo expected 2xx")
+        guard succeeded else { throw URLError(.badServerResponse) }
+        let response = try EmbyPlaybackInfoResponse.decode(from: data)
+        return try EmbyPlayback.resolveStream(response: response,
+                                              server: cfg.server,
+                                              identity: cfg.identity,
+                                              token: cfg.token,
+                                              userId: cfg.userId,
+                                              itemId: cfg.itemId,
+                                              startTimeTicks: startTimeTicks,
+                                              maxVideoBitrate: cfg.maxStreamingBitrate)
+    }
+
     private func reportTimeline(positionTicks: Int,
-                                mediaSourceID: String,
-                                playSessionID: String,
+                                playback: EmbyPlaybackOpenResult,
                                 cfg: LiveConfig,
                                 label: String = "timeline") async throws {
         let requests = try [
             ("playing", EmbyPlayback.playingRequest(
                 server: cfg.server, token: cfg.token, identity: cfg.identity,
-                userId: cfg.userId, itemId: cfg.itemId, mediaSourceId: mediaSourceID,
-                playSessionId: playSessionID, playMethod: .directPlay, positionTicks: positionTicks)),
+                userId: cfg.userId, itemId: cfg.itemId, mediaSourceId: playback.mediaSourceId,
+                playSessionId: playback.playSessionId, playMethod: playback.playMethod,
+                positionTicks: positionTicks)),
             ("progress", EmbyPlayback.progressRequest(
                 server: cfg.server, token: cfg.token, identity: cfg.identity,
-                userId: cfg.userId, itemId: cfg.itemId, mediaSourceId: mediaSourceID,
-                playSessionId: playSessionID, playMethod: .directPlay,
+                userId: cfg.userId, itemId: cfg.itemId, mediaSourceId: playback.mediaSourceId,
+                playSessionId: playback.playSessionId, playMethod: playback.playMethod,
                 positionTicks: positionTicks, isPaused: false)),
             ("paused", EmbyPlayback.progressRequest(
                 server: cfg.server, token: cfg.token, identity: cfg.identity,
-                userId: cfg.userId, itemId: cfg.itemId, mediaSourceId: mediaSourceID,
-                playSessionId: playSessionID, playMethod: .directPlay,
+                userId: cfg.userId, itemId: cfg.itemId, mediaSourceId: playback.mediaSourceId,
+                playSessionId: playback.playSessionId, playMethod: playback.playMethod,
                 positionTicks: positionTicks, isPaused: true)),
             ("stopped", EmbyPlayback.stoppedRequest(
                 server: cfg.server, token: cfg.token, identity: cfg.identity,
-                userId: cfg.userId, itemId: cfg.itemId, mediaSourceId: mediaSourceID,
-                playSessionId: playSessionID, playMethod: .directPlay, positionTicks: positionTicks)),
+                userId: cfg.userId, itemId: cfg.itemId, mediaSourceId: playback.mediaSourceId,
+                playSessionId: playback.playSessionId, playMethod: playback.playMethod,
+                positionTicks: positionTicks)),
         ]
 
         for (event, request) in requests {
             let (_, status) = try await transport.send(request)
             print(">>> EMBY-SHARED [\(label).\(event)] HTTP \(status)")
-            #expect((200..<300).contains(status), "Emby \(event) expected 2xx, got \(status)")
-            guard (200..<300).contains(status) else { throw URLError(.badServerResponse) }
+            let succeeded = (200..<300).contains(status)
+            #expect(succeeded, "Emby timeline event expected 2xx")
+            guard succeeded else { throw URLError(.badServerResponse) }
         }
     }
 

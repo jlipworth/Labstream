@@ -7,15 +7,10 @@ import Testing
 
 /// Secret-gated Phase 3D/4A proof against a real Jellyfin server.
 ///
-/// The browse legs execute the public Jellyfin wrappers that delegate to the shared
-/// `MediaBrowserLibraryRequestFactory`. The timeline legs execute the public wrappers that
-/// delegate to `MediaBrowserPlaybackProgressRequestPlan`. Missing credentials are reported as an
-/// explicit SKIP verdict and never touch the network.
-///
-/// Set `JELLYFIN_LIVE_TIMELINE_OFFSET_SECONDS` only for a test account when a distinct resume
-/// write/readback is desired. The probe restores the original offset before returning. Without
-/// that opt-in it still proves all four timeline requests receive 2xx, but does not claim a resume
-/// mutation round trip.
+/// Timeline acceptance MUTATES a TEST ACCOUNT resume point. A PASS requires explicit write opt-in,
+/// a distinct safe offset, successful readback, and verified restoration of the original offset.
+/// The timeline uses the source id, session id, and play method negotiated by real PlaybackInfo;
+/// it never fabricates playback identity merely to make the progress endpoints accept a request.
 struct LiveJellyfinBrowseTimelineProbeTests {
     private struct Config {
         let server: URL
@@ -23,6 +18,7 @@ struct LiveJellyfinBrowseTimelineProbeTests {
         let userID: String
         let itemID: String
         let timelineOffsetTicks: Int?
+        let allowsTimelineWrite: Bool
         let identity: JellyfinClientIdentity
 
         init?(_ env: [String: String] = ProcessInfo.processInfo.environment) {
@@ -40,6 +36,7 @@ struct LiveJellyfinBrowseTimelineProbeTests {
             self.timelineOffsetTicks = env["JELLYFIN_LIVE_TIMELINE_OFFSET_SECONDS"]
                 .flatMap(Int.init)
                 .map { max(0, $0) * 10_000_000 }
+            self.allowsTimelineWrite = env["JELLYFIN_LIVE_ALLOW_TIMELINE_WRITE"] == "1"
             self.identity = JellyfinClientIdentity(
                 client: "Labstream",
                 device: "Apple Vision Pro",
@@ -47,6 +44,13 @@ struct LiveJellyfinBrowseTimelineProbeTests {
                 version: "0.1.0"
             )
         }
+    }
+
+    private enum ProbeFailure: Error {
+        case badHTTP
+        case invalidFixture
+        case resumeReadback
+        case restoration
     }
 
     private let transport = LiveProbeTransport()
@@ -57,86 +61,89 @@ struct LiveJellyfinBrowseTimelineProbeTests {
             return
         }
 
-        let viewsRequest = try JellyfinLibrary.userViewsRequest(
-            server: cfg.server,
-            token: cfg.token,
-            identity: cfg.identity,
-            userId: cfg.userID
-        )
-        let (viewsData, viewsStatus) = try await transport.send(viewsRequest)
-        print(">>> JELLYFIN [views] HTTP \(viewsStatus), \(viewsData.count) bytes")
-        #expect((200..<300).contains(viewsStatus), "Jellyfin views expected 2xx, got \(viewsStatus)")
-        guard (200..<300).contains(viewsStatus) else { throw URLError(.badServerResponse) }
-        let views = try JSONDecoder().decode(JellyfinUserViewsResponse.self, from: viewsData)
-        #expect(!views.items.isEmpty, "Jellyfin account should expose at least one user view")
-        guard !views.items.isEmpty else { throw URLError(.resourceUnavailable) }
-
-        let itemsRequest = try JellyfinLibrary.itemsRequest(
-            server: cfg.server,
-            token: cfg.token,
-            identity: cfg.identity,
-            userId: cfg.userID,
-            recursive: true,
-            limit: 5,
-            includeItemTypes: "Movie,Episode,Video"
-        )
-        let (itemsData, itemsStatus) = try await transport.send(itemsRequest)
-        print(">>> JELLYFIN [items] HTTP \(itemsStatus), \(itemsData.count) bytes")
-        #expect((200..<300).contains(itemsStatus), "Jellyfin items expected 2xx, got \(itemsStatus)")
-        guard (200..<300).contains(itemsStatus) else { throw URLError(.badServerResponse) }
-        let page = try JellyfinItemsResponse.decode(from: itemsData)
-        #expect(!page.items.isEmpty, "Jellyfin browse page should contain an item")
-        guard !page.items.isEmpty else { throw URLError(.resourceUnavailable) }
-        #expect(page.items.compactMap { $0.toMediaItem() }.count == page.items.count,
-                "Every requested video row should map to MediaItem")
-        guard page.items.compactMap({ $0.toMediaItem() }).count == page.items.count else {
-            throw URLError(.cannotDecodeContentData)
-        }
+        try await proveBrowse(cfg)
+        print(">>> JELLYFIN [browse] VERDICT: PASS — shared views/items/metadata wrappers decoded live responses.")
 
         let originalItem = try await fetchItem(cfg)
-        guard let mediaSourceID = originalItem.mediaSources.first?.id, !mediaSourceID.isEmpty else {
-            Issue.record("Configured Jellyfin item has no media-source id; timeline proof cannot run")
+        let originalTicks = originalItem.userData?.playbackPositionTicks ?? 0
+        guard cfg.allowsTimelineWrite, let targetTicks = cfg.timelineOffsetTicks else {
+            print(">>> JELLYFIN VERDICT: SKIP — timeline acceptance mutates a TEST ACCOUNT; set JELLYFIN_LIVE_ALLOW_TIMELINE_WRITE=1 and JELLYFIN_LIVE_TIMELINE_OFFSET_SECONDS.")
             return
         }
-        let originalTicks = originalItem.userData?.playbackPositionTicks ?? 0
-        let targetTicks = cfg.timelineOffsetTicks ?? originalTicks
-        let playSessionID = UUID().uuidString
-
-        do {
-            try await reportTimeline(positionTicks: targetTicks,
-                                     mediaSourceID: mediaSourceID,
-                                     playSessionID: playSessionID,
-                                     cfg: cfg)
-            if cfg.timelineOffsetTicks != nil {
-                let observed = try await waitForPosition(targetTicks, cfg: cfg)
-                #expect(observed == targetTicks,
-                        "Jellyfin resume readback did not observe the explicitly requested offset")
-                guard observed == targetTicks else { throw URLError(.cannotParseResponse) }
-            } else {
-                print(">>> JELLYFIN [timeline] READBACK SKIP — set JELLYFIN_LIVE_TIMELINE_OFFSET_SECONDS on a test account for mutation proof.")
-            }
-        } catch {
-            if targetTicks != originalTicks {
-                try? await reportTimeline(positionTicks: originalTicks,
-                                          mediaSourceID: mediaSourceID,
-                                          playSessionID: UUID().uuidString,
-                                          cfg: cfg)
-            }
-            throw error
+        guard targetTicks != originalTicks,
+              let duration = originalItem.runTimeTicks,
+              targetTicks >= 30 * 10_000_000,
+              targetTicks < duration * 8 / 10 else {
+            Issue.record("Jellyfin timeline offset must be distinct, at least 30 seconds, and below 80% of the configured test item")
+            throw ProbeFailure.invalidFixture
         }
 
-        if targetTicks != originalTicks {
+        let targetPlayback = try await negotiatePlayback(cfg, startTimeTicks: targetTicks)
+        var primaryError: (any Error)?
+        do {
+            try await reportTimeline(positionTicks: targetTicks, playback: targetPlayback, cfg: cfg)
+            let observed = try await waitForPosition(targetTicks, cfg: cfg)
+            let readbackMatched = observed == targetTicks
+            #expect(readbackMatched, "Jellyfin resume readback did not observe the requested test offset")
+            if !readbackMatched { throw ProbeFailure.resumeReadback }
+        } catch {
+            primaryError = error
+        }
+
+        // Restoration is mandatory even when the target request or readback failed. Never suppress
+        // a restoration error: the operator must know the TEST ACCOUNT may retain the probe offset.
+        do {
+            let restorePlayback = try await negotiatePlayback(cfg, startTimeTicks: originalTicks)
             try await reportTimeline(positionTicks: originalTicks,
-                                     mediaSourceID: mediaSourceID,
-                                     playSessionID: UUID().uuidString,
+                                     playback: restorePlayback,
                                      cfg: cfg,
                                      label: "restore")
             let restored = try await waitForPosition(originalTicks, cfg: cfg)
-            #expect(restored == originalTicks, "Jellyfin probe did not restore the original resume offset")
-            guard restored == originalTicks else { throw URLError(.cannotParseResponse) }
+            let restoreMatched = restored == originalTicks
+            #expect(restoreMatched, "Jellyfin probe did not restore the original resume offset")
+            if !restoreMatched { throw ProbeFailure.restoration }
+        } catch {
+            Issue.record("Jellyfin TEST ACCOUNT resume restoration failed; manual verification is required")
+            throw ProbeFailure.restoration
         }
 
-        print(">>> JELLYFIN VERDICT: PASS — shared browse wrappers decoded live responses and timeline wrappers returned 2xx\(cfg.timelineOffsetTicks == nil ? "; resume readback not requested" : "; resume readback + restore passed").")
+        if let primaryError { throw primaryError }
+        print(">>> JELLYFIN VERDICT: PASS — shared browse and real-PlaybackInfo timeline requests passed 2xx, resume readback, and verified restoration.")
+    }
+
+    private func proveBrowse(_ cfg: Config) async throws {
+        let viewsRequest = try JellyfinLibrary.userViewsRequest(server: cfg.server,
+                                                                token: cfg.token,
+                                                                identity: cfg.identity,
+                                                                userId: cfg.userID)
+        let (viewsData, viewsStatus) = try await transport.send(viewsRequest)
+        print(">>> JELLYFIN [views] HTTP \(viewsStatus), \(viewsData.count) bytes")
+        let views2xx = (200..<300).contains(viewsStatus)
+        #expect(views2xx, "Jellyfin views expected 2xx")
+        guard views2xx else { throw ProbeFailure.badHTTP }
+        let views = try JSONDecoder().decode(JellyfinUserViewsResponse.self, from: viewsData)
+        let hasViews = !views.items.isEmpty
+        #expect(hasViews, "Jellyfin test account should expose at least one user view")
+        guard hasViews else { throw ProbeFailure.invalidFixture }
+
+        let itemsRequest = try JellyfinLibrary.itemsRequest(server: cfg.server,
+                                                            token: cfg.token,
+                                                            identity: cfg.identity,
+                                                            userId: cfg.userID,
+                                                            recursive: true,
+                                                            limit: 5,
+                                                            includeItemTypes: "Movie,Episode,Video")
+        let (itemsData, itemsStatus) = try await transport.send(itemsRequest)
+        print(">>> JELLYFIN [items] HTTP \(itemsStatus), \(itemsData.count) bytes")
+        let items2xx = (200..<300).contains(itemsStatus)
+        #expect(items2xx, "Jellyfin items expected 2xx")
+        guard items2xx else { throw ProbeFailure.badHTTP }
+        let page = try JellyfinItemsResponse.decode(from: itemsData)
+        let mappingComplete = !page.items.isEmpty && page.items.compactMap { $0.toMediaItem() }.count == page.items.count
+        #expect(mappingComplete, "Jellyfin requested video rows should all map to MediaItem")
+        guard mappingComplete else { throw ProbeFailure.invalidFixture }
+
+        _ = try await fetchItem(cfg)
     }
 
     private func fetchItem(_ cfg: Config) async throws -> JellyfinBaseItemDto {
@@ -147,43 +154,71 @@ struct LiveJellyfinBrowseTimelineProbeTests {
                                                       itemId: cfg.itemID)
         let (data, status) = try await transport.send(request)
         print(">>> JELLYFIN [metadata] HTTP \(status), \(data.count) bytes")
-        #expect((200..<300).contains(status), "Jellyfin metadata expected 2xx, got \(status)")
-        guard (200..<300).contains(status) else { throw URLError(.badServerResponse) }
+        let succeeded = (200..<300).contains(status)
+        #expect(succeeded, "Jellyfin metadata expected 2xx")
+        guard succeeded else { throw ProbeFailure.badHTTP }
         return try JSONDecoder().decode(JellyfinBaseItemDto.self, from: data)
     }
 
+    private func negotiatePlayback(_ cfg: Config,
+                                   startTimeTicks: Int) async throws -> JellyfinPlaybackOpenResult {
+        let request = try JellyfinPlayback.playbackInfoRequest(
+            server: cfg.server,
+            token: cfg.token,
+            identity: cfg.identity,
+            itemId: cfg.itemID,
+            userId: cfg.userID,
+            startTimeTicks: startTimeTicks,
+            maxStreamingBitrate: 200_000_000
+        )
+        let (data, status) = try await transport.send(request)
+        print(">>> JELLYFIN [playbackInfo] HTTP \(status), \(data.count) bytes")
+        let succeeded = (200..<300).contains(status)
+        #expect(succeeded, "Jellyfin PlaybackInfo expected 2xx")
+        guard succeeded else { throw ProbeFailure.badHTTP }
+        let response = try JellyfinPlaybackInfoResponse.decode(from: data)
+        return try JellyfinPlayback.resolveStream(response: response,
+                                                   server: cfg.server,
+                                                   identity: cfg.identity,
+                                                   token: cfg.token,
+                                                   itemId: cfg.itemID,
+                                                   startTimeTicks: startTimeTicks,
+                                                   maxVideoBitrate: 200_000_000)
+    }
+
     private func reportTimeline(positionTicks: Int,
-                                mediaSourceID: String,
-                                playSessionID: String,
+                                playback: JellyfinPlaybackOpenResult,
                                 cfg: Config,
                                 label: String = "timeline") async throws {
         let requests = try [
             ("playing", JellyfinPlayback.playingRequest(
                 server: cfg.server, token: cfg.token, identity: cfg.identity,
-                userId: cfg.userID, itemId: cfg.itemID, mediaSourceId: mediaSourceID,
-                playSessionId: playSessionID, playMethod: .directPlay, positionTicks: positionTicks)),
+                userId: cfg.userID, itemId: cfg.itemID, mediaSourceId: playback.mediaSourceId,
+                playSessionId: playback.playSessionId, playMethod: playback.playMethod,
+                positionTicks: positionTicks)),
             ("progress", JellyfinPlayback.progressRequest(
                 server: cfg.server, token: cfg.token, identity: cfg.identity,
-                userId: cfg.userID, itemId: cfg.itemID, mediaSourceId: mediaSourceID,
-                playSessionId: playSessionID, playMethod: .directPlay,
+                userId: cfg.userID, itemId: cfg.itemID, mediaSourceId: playback.mediaSourceId,
+                playSessionId: playback.playSessionId, playMethod: playback.playMethod,
                 positionTicks: positionTicks, isPaused: false)),
             ("paused", JellyfinPlayback.progressRequest(
                 server: cfg.server, token: cfg.token, identity: cfg.identity,
-                userId: cfg.userID, itemId: cfg.itemID, mediaSourceId: mediaSourceID,
-                playSessionId: playSessionID, playMethod: .directPlay,
+                userId: cfg.userID, itemId: cfg.itemID, mediaSourceId: playback.mediaSourceId,
+                playSessionId: playback.playSessionId, playMethod: playback.playMethod,
                 positionTicks: positionTicks, isPaused: true)),
             ("stopped", JellyfinPlayback.stoppedRequest(
                 server: cfg.server, token: cfg.token, identity: cfg.identity,
-                userId: cfg.userID, itemId: cfg.itemID, mediaSourceId: mediaSourceID,
-                playSessionId: playSessionID, playMethod: .directPlay, positionTicks: positionTicks)),
+                userId: cfg.userID, itemId: cfg.itemID, mediaSourceId: playback.mediaSourceId,
+                playSessionId: playback.playSessionId, playMethod: playback.playMethod,
+                positionTicks: positionTicks)),
         ]
 
         for (event, request) in requests {
             let (_, status) = try await transport.send(request)
             print(">>> JELLYFIN [\(label).\(event)] HTTP \(status)")
-            #expect((200..<300).contains(status),
-                    "Jellyfin \(event) expected 2xx, got \(status)")
-            guard (200..<300).contains(status) else { throw URLError(.badServerResponse) }
+            let succeeded = (200..<300).contains(status)
+            #expect(succeeded, "Jellyfin timeline event expected 2xx")
+            guard succeeded else { throw ProbeFailure.badHTTP }
         }
     }
 
