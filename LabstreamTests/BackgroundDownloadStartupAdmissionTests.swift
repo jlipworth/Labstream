@@ -8,6 +8,7 @@ struct BackgroundDownloadStartupAdmissionTests {
         try withTemporaryDirectory { directory in
             let store = DownloadStore(baseDirectory: directory)
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+            defer { session.invalidateInjectedSessionForTesting() }
             let ratingKey = "plex:dormant"
 
             do {
@@ -34,6 +35,7 @@ struct BackgroundDownloadStartupAdmissionTests {
         try await withTemporaryDirectory { directory in
             let store = DownloadStore(baseDirectory: directory)
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+            defer { session.invalidateInjectedSessionForTesting() }
 
             let first = await activate(session, resetKeys: [])
             #expect(first == .activated(cancelledTaskCount: 0, resetKeyCount: 0))
@@ -47,11 +49,12 @@ struct BackgroundDownloadStartupAdmissionTests {
         try await withTemporaryDirectory { directory in
             let store = DownloadStore(baseDirectory: directory)
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+            defer { session.invalidateInjectedSessionForTesting() }
             #expect(await activate(session, resetKeys: []) == .activated(
                 cancelledTaskCount: 0, resetKeyCount: 0))
 
             let ratingKey = "plex:attempt-working-session"
-            let attemptID = DownloadAttemptID(rawValue: "attempt-session-a")
+            let attemptID = try #require(DownloadAttemptID(rawValue: "attempt-session-a"))
             let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
             let stable = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
             try Data("previous-published-body".utf8).write(to: stable)
@@ -83,10 +86,10 @@ struct BackgroundDownloadStartupAdmissionTests {
             let store = DownloadStore(baseDirectory: directory)
             let owner = DownloadAttemptKey(
                 ratingKey: "plex:owned-stage",
-                attemptID: DownloadAttemptID(rawValue: "owner-a"))
+                attemptID: try #require(DownloadAttemptID(rawValue: "owner-a")))
             let orphan = DownloadAttemptKey(
                 ratingKey: "plex:orphan-stage",
-                attemptID: DownloadAttemptID(rawValue: "orphan-a"))
+                attemptID: try #require(DownloadAttemptID(rawValue: "orphan-a")))
             let ownedStable = store.destinationURL(ratingKey: owner.ratingKey, ext: "mp4")
             let orphanStable = store.destinationURL(ratingKey: orphan.ratingKey, ext: "mp4")
             let record = DownloadRecord(
@@ -101,6 +104,7 @@ struct BackgroundDownloadStartupAdmissionTests {
             try Data("orphan".utf8).write(to: orphanStage)
 
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+            defer { session.invalidateInjectedSessionForTesting() }
             #expect(await activate(session, resetKeys: []) == .activated(
                 cancelledTaskCount: 0, resetKeyCount: 0))
             await withCheckedContinuation { continuation in
@@ -144,6 +148,7 @@ struct BackgroundDownloadStartupAdmissionTests {
             #expect(FileManager.default.fileExists(atPath: partialURL.path))
 
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+            defer { session.invalidateInjectedSessionForTesting() }
             let activation = await activate(session, resetKeys: [key])
             #expect(activation == .activated(cancelledTaskCount: 0, resetKeyCount: 1))
 
