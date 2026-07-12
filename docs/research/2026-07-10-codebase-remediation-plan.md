@@ -3,7 +3,7 @@
 Status: **active implementation plan**
 
 Audit baseline: original app/PMSKit review through `edf2d27`; latest reconciled `main`
-baseline `5d369c2`; Phase 1 implementation journal reconciled through `f05944c`
+baseline `5d369c2`; Phase 1 implementation journal reconciled through `fab440c`
 
 Scope: correctness, concurrency, reliability, performance, Swift idioms, testability,
 backend sharing, platform sharing, conditional compilation, and build cost.
@@ -61,8 +61,8 @@ Current status at this checkpoint:
 | --- | --- | --- |
 | 0A–0B | Complete | Repeatable compile audit plus nonzero macOS/iOS app test plans are on the rebased branch. |
 | 1A | Partial / consultation boundary | The index has a serial revisioned writer, dirty retry, observable failures, bounded background-completion flush, commit-aware held replacement/removal outcomes, fail-closed tombstone persistence, and broad fault/stress coverage (`0bbcb5d` through `24e179c`). Existing mutations preserve synchronous durability. True transactional held-body deletion, cross-domain tombstone/row ordering, a literal bounded hung-write path, and a live explicit temp/rename committer require the larger reviewed design described below. |
-| 1B | Substantially implemented / verification pending | Typed top-level schema-v3 ownership, durable legacy assignment/reset, current task markers, dormant callback admission, fail-closed attempt seeding, attempt-bearing session entries, and exact-owner callback/finalizer mutations have landed. `COR-01` remains open at the media working-file/checkpoint migration and required device/redelivery gates. |
-| 1C | Partial / explicit media-staging consultation boundary | The registry/side-cache/cleanup train is implemented through `a7f6fee`; Store checkpoint APIs and Manager, Session, backend, transfer-start, and offline-playback consumers are exact-attempt through `a8fa19c`. Opaque/static media still use stable row paths; schema-v4-or-equivalent working-layout migration, remaining rating-key retry/halt state, Session-finalizer registry integration, and device gates remain unresolved. |
+| 1B | Substantially implemented / verification pending | Typed top-level ownership, durable legacy assignment/reset, current task markers, dormant callback admission, fail-closed attempt seeding, attempt-bearing session entries, and exact-owner callback/finalizer mutations have landed. Schema v4 now resets pre-v4 nonterminal partials behind the admission barrier and gives new attempts private media working paths. `COR-01` remains open at finalizer integration and required redelivery/device gates. |
+| 1C | Substantially implemented / verification pending | The registry/side-cache/cleanup train is implemented through `a7f6fee`; exact Store/Manager/Session consumers, attempt-private media and held bodies, validated-intent publication, exact in-flight release, and startup staging ownership are implemented through `fab440c`. Session finalizers are not yet registered in the work registry; startup sweep wiring and device gates remain unresolved. |
 | 1D–1F | Complete | Auth/secure-storage, system-media ownership, and player lifecycle generations survived the rebase unchanged. iPad/Mac physical ownership and lifecycle checks passed; iOS TSAN tests remain green. |
 | 2A | Complete | Plex photo coverage, modern Mac decoding, the effective MediaSession clock, and `PERF-01` are complete. The regenerated inventory found and mechanically removed exactly the four original definition-only helpers (`2fb3d00`, `5a5f050`, `cf1f919`, `6bff1c8`); no production deprecation remains. |
 | 2B | Complete | Locked record/metadata/duration/presence accessors and the existing ownership accessor now serve every single-key store read (`3a86b15`, `22fcf81`, `ff046e9`, `be507d6`). Exactly 12 intentional batch/UI snapshots remain. |
@@ -622,6 +622,38 @@ their relationship during the schema-v3 migration.
   and presentation state. Safe work requires splitting exact-attempt teardown from conditionally
   admitted current-slot cleanup, threading captured keys through every backend release call, and
   adding A/B release-isolation tests. No asymmetric partial was made.
+
+#### 2026-07-12 — Phase 1 schema-v4 media publication and exact release
+
+- **Status:** the two approved consultation boundaries are implemented; finalizer-registry wiring,
+  startup sweep invocation, full stress/redelivery evidence, and physical gates remain.
+- **Commits:** `364fea3` (`Define exact download release ownership`), `3a4cb65` (`Stage download
+  media by attempt`), `01f47e6` (`Release download resources by attempt`), `72c4b83` (`Fix exact
+  release call sites`), and `fab440c` (`Publish validated downloads by attempt`).
+- **Migration policy:** schema v4 deliberately discards every pre-v4 nonterminal partial after its
+  exact legacy task is cancelled. Stable media, resume blobs, held bodies, and derived attempt
+  staging are removed behind the durable reset/admission barrier; completed and unverified stable
+  media survive. This is the user-approved compatibility policy: partial-download survival is no
+  longer a Phase 1 acceptance requirement for pre-v4 rows.
+- **Private working layout:** new rows persist an exact-attempt media working path while continuing
+  to publish only the stable `DownloadRecord.localURL`. Opaque resume, static range checkpoints,
+  reattach/adoption, held-body assembly, progress evidence, retries, and validation use the private
+  path. Held bodies are themselves exact-attempt staging and remain referenced by their manifests.
+- **Publication protocol:** validation first commits an exact-attempt validated-promotion intent,
+  atomically renames the working body over the stable path, then commits the terminal row and drops
+  the working reference. Relaunch completes only an intent-proven promotion; it never infers file
+  ownership from a shared stable filename, byte count, or playability. This covers both static and
+  forward-only lanes and closes the rename-to-terminal-snapshot hard-kill window.
+- **Release split:** the 55-call teardown funnel now requires `DownloadAttemptKey`. Encoder
+  sessions, keepalives, transcode markers, server-prep pollers, queue-title protection, and work
+  cancellation release A exactly; active-slot/presentation state clears only when A is still the
+  tracked current owner. Two explicit ownerless repair paths remain for diagnosed corruption and
+  legacy state. Credential-generation auth quarantine intentionally remains rating-keyed.
+- **Evidence at commit:** exact release/server-prep policy suites passed 11/11; the Mac app build
+  and visionOS build-for-testing passed; the new Store/Session tests compile in the app test target.
+  The shared app schemes currently expose the test target to build-for-testing but not to the test
+  action, so executable focused Store tests remain part of the Phase 1 gate rather than being
+  misreported as run. No simulator was left booted.
 
 #### 2026-07-11 — Phase 2D compiler-cliff removal
 
