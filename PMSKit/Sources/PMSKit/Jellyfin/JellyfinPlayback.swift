@@ -3,12 +3,13 @@ import Foundation
 import FoundationNetworking
 #endif
 
-public enum JellyfinPlayMethod: String, Sendable, Equatable {
-    case directPlay
-    case directStream
-    case transcode
-}
+// Source-compatible backend spellings. Playback resolution now produces the neutral carriers
+// directly so app callers cannot lose fields at a conversion boundary.
+public typealias JellyfinPlayMethod = MediaBrowserPlayMethod
+public typealias JellyfinPlaybackSourceMetadata = MediaBrowserPlaybackSourceMetadata
 
+/// Source-compatible Jellyfin spelling retained while app callers migrate to
+/// `resolveMediaBrowserStream`. The neutral result is the authoritative resolver output.
 public struct JellyfinPlaybackOpenResult: Sendable, Equatable {
     public let url: URL
     public let playSessionId: String
@@ -30,39 +31,14 @@ public struct JellyfinPlaybackOpenResult: Sendable, Equatable {
         self.requiredHTTPHeaders = requiredHTTPHeaders
         self.sourceMetadata = sourceMetadata
     }
-}
 
-public struct JellyfinPlaybackSourceMetadata: Sendable, Equatable {
-    public static let empty = JellyfinPlaybackSourceMetadata()
-
-    public let container: String?
-    public let width: Int?
-    public let height: Int?
-    /// Kbps, matching Plex `Media.bitrate` units used by the diagnostics UI.
-    public let bitrate: Int?
-    public let videoCodec: String?
-    public let audioCodec: String?
-    /// Source HDR facts from the selected video stream, when the server exposed any. (#195)
-    public let hdr: VideoHDRMetadata?
-    /// Audio codec profile of the selected audio stream, e.g. "Dolby TrueHD + Dolby Atmos". (#195)
-    public let audioProfile: String?
-
-    public init(container: String? = nil,
-                width: Int? = nil,
-                height: Int? = nil,
-                bitrate: Int? = nil,
-                videoCodec: String? = nil,
-                audioCodec: String? = nil,
-                hdr: VideoHDRMetadata? = nil,
-                audioProfile: String? = nil) {
-        self.container = container
-        self.width = width
-        self.height = height
-        self.bitrate = bitrate
-        self.videoCodec = videoCodec
-        self.audioCodec = audioCodec
-        self.hdr = hdr
-        self.audioProfile = audioProfile
+    init(_ result: MediaBrowserPlaybackOpenResult) {
+        self.init(url: result.url,
+                  playSessionId: result.playSessionId,
+                  mediaSourceId: result.mediaSourceId,
+                  playMethod: result.playMethod,
+                  requiredHTTPHeaders: result.requiredHTTPHeaders,
+                  sourceMetadata: result.sourceMetadata)
     }
 }
 
@@ -313,7 +289,7 @@ public enum JellyfinPlayback {
             transcodeReasons: source.transcodeReasons)
     }
 
-    public static func resolveStream(response: JellyfinPlaybackInfoResponse,
+    public static func resolveMediaBrowserStream(response: JellyfinPlaybackInfoResponse,
                                      server: URL,
                                      identity: JellyfinClientIdentity,
                                      token: String,
@@ -325,7 +301,7 @@ public enum JellyfinPlayback {
                                      maxHeight: Int? = nil,
                                      audioBitrate: Int? = nil,
                                      audioStreamIndex: Int? = nil,
-                                     subtitleStreamIndex: Int? = nil) throws -> JellyfinPlaybackOpenResult {
+                                     subtitleStreamIndex: Int? = nil) throws -> MediaBrowserPlaybackOpenResult {
         guard let playSessionId = response.playSessionId, !playSessionId.isEmpty else {
             throw JellyfinPlaybackError.missingPlaySessionId
         }
@@ -353,7 +329,7 @@ public enum JellyfinPlayback {
                                                    audioBitrate: audioBitrate,
                                                    audioStreamIndex: resolvedAudioStreamIndex,
                                                    subtitleStreamIndex: subtitleStreamIndex)
-            return JellyfinPlaybackOpenResult(
+            return MediaBrowserPlaybackOpenResult(
                 url: url,
                 playSessionId: playSessionId,
                 mediaSourceId: mediaSourceId,
@@ -363,7 +339,8 @@ public enum JellyfinPlayback {
                 // remote-transcode playback/buffering path.
                 playMethod: .transcode,
                 requiredHTTPHeaders: streamHeaders(for: source, token: token, identity: identity),
-                sourceMetadata: source.playbackSourceMetadata(audioStreamIndex: resolvedAudioStreamIndex))
+                sourceMetadata: source.playbackSourceMetadata(audioStreamIndex: resolvedAudioStreamIndex),
+                usesServerEncoding: true)
         }
 
         guard source.supportsDirectPlay || source.supportsDirectStream else {
@@ -383,13 +360,44 @@ public enum JellyfinPlayback {
             comps.queryItems?.append(URLQueryItem(name: "Tag", value: tag))
         }
         guard let built = comps.url else { throw JellyfinPlaybackError.invalidURL }
-        return JellyfinPlaybackOpenResult(
+        return MediaBrowserPlaybackOpenResult(
             url: built,
             playSessionId: playSessionId,
             mediaSourceId: mediaSourceId,
             playMethod: source.supportsDirectPlay ? .directPlay : .directStream,
             requiredHTTPHeaders: streamHeaders(for: source, token: token, identity: identity),
-            sourceMetadata: source.playbackSourceMetadata(audioStreamIndex: audioStreamIndex))
+            sourceMetadata: source.playbackSourceMetadata(audioStreamIndex: audioStreamIndex),
+            usesServerEncoding: false)
+    }
+
+    /// Source-compatible wrapper. New app-facing code should consume the neutral resolver above.
+    public static func resolveStream(response: JellyfinPlaybackInfoResponse,
+                                     server: URL,
+                                     identity: JellyfinClientIdentity,
+                                     token: String,
+                                     itemId: String,
+                                     preferredMediaSourceId: String? = nil,
+                                     startTimeTicks: Int? = nil,
+                                     maxVideoBitrate: Int? = nil,
+                                     maxWidth: Int? = nil,
+                                     maxHeight: Int? = nil,
+                                     audioBitrate: Int? = nil,
+                                     audioStreamIndex: Int? = nil,
+                                     subtitleStreamIndex: Int? = nil) throws -> JellyfinPlaybackOpenResult {
+        JellyfinPlaybackOpenResult(try resolveMediaBrowserStream(
+            response: response,
+            server: server,
+            identity: identity,
+            token: token,
+            itemId: itemId,
+            preferredMediaSourceId: preferredMediaSourceId,
+            startTimeTicks: startTimeTicks,
+            maxVideoBitrate: maxVideoBitrate,
+            maxWidth: maxWidth,
+            maxHeight: maxHeight,
+            audioBitrate: audioBitrate,
+            audioStreamIndex: audioStreamIndex,
+            subtitleStreamIndex: subtitleStreamIndex))
     }
 
 
