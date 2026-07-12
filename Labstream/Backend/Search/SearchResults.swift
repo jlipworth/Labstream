@@ -114,7 +114,7 @@ struct SearchResultGroup: Identifiable, Sendable {
         return SearchResultGroup(id: "\(backendID.rawValue)-library-\(libraryID)",
                                  title: title,
                                  hubs: hubs,
-                                 backendID: backendID,
+                                 backendID: backendID.rawValue,
                                  libraryID: libraryID)
     }
 }
