@@ -39,6 +39,8 @@ extension DownloadManager {
         guard let startAttempt = acquireStartAttempt(ratingKey: ratingKey,
                                                      backend: "Plex",
                                                      allowReplacingExistingActiveRow: allowReplacingExistingActiveRow) else { return }
+        let attemptKey = DownloadAttemptKey(ratingKey: ratingKey,
+                                            attemptID: startAttempt.attemptID)
         lastError[ratingKey] = nil
         // NOTE: no `defer { activeJobs.remove }` here — that fired when this function returned,
         // which (for both choices) is right after `session.start` merely KICKS OFF the transfer,
@@ -52,7 +54,7 @@ extension DownloadManager {
                                                                   mediaIndex: mediaIndex,
                                                                   partIndex: partIndex,
                                                                   backend: .plex)) {
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             return
         }
 
@@ -79,7 +81,7 @@ extension DownloadManager {
             for: startAttempt,
             backend: "Plex"
         ) else {
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             return
         }
         recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(
@@ -93,7 +95,6 @@ extension DownloadManager {
         // D5/#102: cache poster-shaped artwork locally so artwork shows offline. Episodes
         // often expose a landscape still as `thumb`, which looks wrong in the Offline tab's
         // small portrait tile; prefer the show/season poster when TV hierarchy provides it.
-        let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: startAttempt.attemptID)
         cachePoster(for: attemptKey, thumb: DownloadSideAssetPolicy.offlinePosterRef(for: item),
                     server: server, token: token)
         cachePlexBIF(for: attemptKey, item: item, mediaIndex: mediaIndex,
@@ -119,13 +120,13 @@ extension DownloadManager {
                 lastError[ratingKey] = .transferFailed("No server version part to download.")
             }
             markStartAbortedBeforeTransfer(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             return
 
         case .preflightOriginal:
             guard let part = staticPart else {
                 markStartAbortedBeforeTransfer(ratingKey: ratingKey)
-                releaseInFlight(ratingKey: ratingKey)
+                releaseInFlight(for: attemptKey)
                 return
             }
             // The original file is a STATIC GET with a real Content-Length + valid moov atom.
@@ -167,7 +168,7 @@ extension DownloadManager {
             // version is already a server-prepared file) and NEVER touch the optimize queue.
             guard let part = staticPart else {
                 markStartAbortedBeforeTransfer(ratingKey: ratingKey)
-                releaseInFlight(ratingKey: ratingKey)
+                releaseInFlight(for: attemptKey)
                 return
             }
             let url = OptimizeRequest.downloadURL(server: server, token: token, partKey: part.key)
@@ -198,7 +199,7 @@ extension DownloadManager {
                                            partIndex: partIndex,
                                            backend: .plex) ?? part.size
         if rejectIfOverStorageLimit(ratingKey: ratingKey, backend: "Plex", expectedBytes: expectedBytes) {
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             return
         }
         let ext = part.container ?? (part.file as NSString?)?.pathExtension ?? "mp4"
@@ -226,7 +227,7 @@ extension DownloadManager {
             lastError[ratingKey] = .transferFailed(
                 "The download could not be saved safely. Check storage and try again.")
             _ = setAttemptStatus(.failed, for: attemptKey, context: "plex_static_publish")
-            if store.ownsAttempt(attemptKey) { releaseInFlight(ratingKey: ratingKey) }
+            if store.ownsAttempt(attemptKey) { releaseInFlight(for: attemptKey) }
             refreshRecords()
             return
         }
@@ -259,16 +260,16 @@ extension DownloadManager {
         // configured (lanes persist independently).
         let record = store.record(for: ratingKey)
         let backendSession = appModel.backendSession(for: .plex)
+        guard let attemptID = record?.attemptID else { return }
+        let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
         guard PlexOriginalFallbackPolicy.shouldFallback(
             record: record,
             ratingKey: ratingKey,
-            isTranscodeSourced: transcodeSourcedDownloads.contains(ratingKey),
-            hasServerPrepQueueTitle: serverPrepAttempts.queueTitle(forRecordKey: ratingKey) != nil,
+            isTranscodeSourced: transcodeSourcedDownloads.contains(attemptKey),
+            hasServerPrepQueueTitle: serverPrepAttempts.queueTitle(for: attemptKey) != nil,
             hasPlexSession: backendSession != nil),
             let metadata = record?.metadata,
-            let attemptID = record?.attemptID,
             let backendSession else { return }
-        let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
         let item = metadata.makeMediaItem()
         let target = Self.originalFallbackOptimizeTarget()
         recordDownloadDiagnostic("downloads.original_validation_fallback", fields: [
@@ -276,6 +277,7 @@ extension DownloadManager {
             "target": .label(target),
         ])
         activeJobs.insert(ratingKey)
+        inFlightAttempts.acquire(attemptKey)
         lastError[ratingKey] = nil
         await triggerOptimizeAndDownload(item: item, targetName: target,
                                          metadata: metadata, session: backendSession,
