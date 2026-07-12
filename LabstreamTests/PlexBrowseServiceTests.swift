@@ -157,6 +157,50 @@ struct PlexBrowseServiceTests {
                 == ["track-2", "track-1", "track-2"])
     }
 
+    @Test func delayedSearchPinsBothRequestsToAAndRejectsItAfterSessionBWins() async throws {
+        let model = AppModel(identity: Self.identity(), activeBackend: .plex)
+        model.serverBaseURL = URL(string: "https://plex.example.test/root")!
+        model.serverToken = "token-A"
+        let transport = DelayedPlexSearchTransport()
+        let display = PlexSearchDisplayProbe()
+
+        let sessionA = try #require(model.backendSession(for: .plex))
+        let serviceA = try PlexBrowseService(session: sessionA, identity: model.identity,
+                                             send: { try await transport.send($0) })
+        let keyA = "\(model.activeBrowseSessionKey):query"
+        let staleTask = Task { @MainActor in
+            let snapshot = try await serviceA.searchWithLibraries(query: "query")
+            if SearchRequestAuthority.accepts(
+                capturedKey: keyA,
+                currentKey: "\(model.activeBrowseSessionKey):query",
+                isCancelled: Task.isCancelled
+            ) {
+                await display.publish(snapshot.hubs.flatMap(\.metadata).map(\.ratingKey))
+            }
+        }
+
+        await transport.waitForARequestCount(2)
+        model.serverToken = "token-B"
+        let sessionB = try #require(model.backendSession(for: .plex))
+        let serviceB = try PlexBrowseService(session: sessionB, identity: model.identity,
+                                             send: { try await transport.send($0) })
+        let keyB = "\(model.activeBrowseSessionKey):query"
+        let current = try await serviceB.searchWithLibraries(query: "query")
+        #expect(SearchRequestAuthority.accepts(capturedKey: keyB,
+                                               currentKey: "\(model.activeBrowseSessionKey):query",
+                                               isCancelled: false))
+        await display.publish(current.hubs.flatMap(\.metadata).map(\.ratingKey))
+
+        await transport.releaseA()
+        try await staleTask.value
+
+        #expect(await transport.aRequestTokens == ["token-A", "token-A"])
+        #expect(!SearchRequestAuthority.accepts(capturedKey: keyA,
+                                                currentKey: "\(model.activeBrowseSessionKey):query",
+                                                isCancelled: false))
+        #expect(await display.items == ["result-B"])
+    }
+
     nonisolated private static func identity() -> ClientIdentity {
         ClientIdentity(clientIdentifier: "device", product: "Labstream", version: "1", deviceName: "Mac")
     }
@@ -191,4 +235,44 @@ private actor PlexBrowseTransport {
         requests.append(built)
         return try response(built)
     }
+}
+
+private actor DelayedPlexSearchTransport {
+    private(set) var aRequestTokens: [String] = []
+    private var heldAContinuation: CheckedContinuation<Data, Never>?
+
+    func send(_ request: PlexRequest) async throws -> Data {
+        let built = request.urlRequest()
+        let token = built.value(forHTTPHeaderField: "X-Plex-Token") ?? ""
+        if token == "token-A" { aRequestTokens.append(token) }
+
+        if token == "token-A", built.url?.path.hasSuffix("/hubs/search") == true {
+            return await withCheckedContinuation { heldAContinuation = $0 }
+        }
+        if built.url?.path.hasSuffix("/hubs/search") == true {
+            return Self.hubsJSON(id: "result-B")
+        }
+        if built.url?.path.hasSuffix("/library/sections") == true {
+            return Data(#"{"MediaContainer":{"Directory":[{"key":"1","title":"Movies","type":"movie"}]}}"#.utf8)
+        }
+        throw PlexBrowseTestFailure.unexpectedRequest
+    }
+
+    func waitForARequestCount(_ expected: Int) async {
+        while aRequestTokens.count < expected { await Task.yield() }
+    }
+
+    func releaseA() {
+        heldAContinuation?.resume(returning: Self.hubsJSON(id: "result-A"))
+        heldAContinuation = nil
+    }
+
+    nonisolated private static func hubsJSON(id: String) -> Data {
+        Data("{\"MediaContainer\":{\"Hub\":[{\"title\":\"Hub\",\"Metadata\":[{\"ratingKey\":\"\(id)\",\"title\":\"\(id)\",\"type\":\"movie\"}]}]}}".utf8)
+    }
+}
+
+private actor PlexSearchDisplayProbe {
+    private(set) var items: [String] = []
+    func publish(_ items: [String]) { self.items = items }
 }

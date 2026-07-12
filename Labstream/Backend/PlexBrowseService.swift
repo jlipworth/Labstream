@@ -6,6 +6,11 @@ struct PlexBrowsePage: Sendable {
     let total: Int?
 }
 
+struct PlexSearchSnapshot: Sendable {
+    let hubs: [Hub]
+    let libraries: [PlexSection]
+}
+
 /// App execution boundary for native Plex browse capabilities.
 ///
 /// Pure request construction remains in PMSKit/`BrowseAPI`; this service owns one immutable Plex
@@ -135,6 +140,14 @@ struct PlexBrowseService {
                                        query: query)
         let response: HubsResponse = try await execute(request)
         return response.mediaContainer.hub
+    }
+
+    /// Search hits are primary while section titles are best-effort, matching the prior UI
+    /// behavior. Both requests are pinned to this service's immutable session and identity.
+    func searchWithLibraries(query: String) async throws -> PlexSearchSnapshot {
+        async let hubs = search(query: query)
+        async let libraries = try? libraries()
+        return try await PlexSearchSnapshot(hubs: hubs, libraries: libraries ?? [])
     }
 
     func onDeck() async throws -> [MediaItem] {
