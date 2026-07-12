@@ -212,9 +212,7 @@ final class DownloadStore: @unchecked Sendable {
         case .artifactWriteFailed(let errorType):
             return .artifactWriteFailed(errorType: errorType)
         case .accepted(let ticket):
-            switch artifactLifecycle.waitSynchronously(
-                through: .init(sequence: ticket.sequence)
-            ) {
+            switch artifactLifecycle.waitSynchronously(for: ticket) {
             case .completed:
                 return .applied
             case .failed(.persistence(let failure)):
@@ -230,7 +228,7 @@ final class DownloadStore: @unchecked Sendable {
     func resolveArtifactSynchronously(
         _ ticket: DownloadArtifactLifecycleCoordinator.Ticket
     ) -> DownloadArtifactLifecycleCoordinator.FlushResult {
-        artifactLifecycle.waitSynchronously(through: .init(sequence: ticket.sequence))
+        artifactLifecycle.waitSynchronously(for: ticket)
     }
 
     struct EmbyConvertCleanupTombstone: Codable, Sendable, Equatable, Identifiable {
@@ -2545,7 +2543,7 @@ final class DownloadStore: @unchecked Sendable {
         case .staleOrMissing:
             return .staleOrMissing
         case .accepted(let change, let ticket):
-            switch artifactLifecycle.waitSynchronously(through: .init(sequence: ticket.sequence)) {
+            switch artifactLifecycle.waitSynchronously(for: ticket) {
             case .completed:
                 return change == .applied ? .applied : .noChange
             case .failed(.persistence(let failure)):

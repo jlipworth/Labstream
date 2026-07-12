@@ -36,7 +36,11 @@ final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
 
     private let condition = NSCondition()
     private var nextSequence: UInt64 = 0
-    private var outcomes: [UInt64: Outcome] = [:]
+    private struct Entry {
+        let intentID: UUID
+        var outcome: Outcome
+    }
+    private var entries: [UInt64: Entry] = [:]
 
     func register(
         key: DownloadAttemptKey,
@@ -47,7 +51,7 @@ final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
         condition.lock()
         nextSequence += 1
         let sequence = nextSequence
-        outcomes[sequence] = .pending
+        entries[sequence] = Entry(intentID: intentID, outcome: .pending)
         condition.unlock()
         return Ticket(
             sequence: sequence,
@@ -77,23 +81,24 @@ final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
 
     private func finish(_ ticket: Ticket, outcome: Outcome) {
         condition.lock()
-        guard outcomes[ticket.sequence] != nil else {
+        guard var entry = entries[ticket.sequence], entry.intentID == ticket.intentID else {
             condition.unlock()
             return
         }
-        outcomes[ticket.sequence] = outcome
+        entry.outcome = outcome
+        entries[ticket.sequence] = entry
         condition.broadcast()
         condition.unlock()
     }
 
-    func waitSynchronously(through watermark: Watermark) -> FlushResult {
-        blockingWait(through: watermark, timeout: nil)
+    func waitSynchronously(for ticket: Ticket) -> FlushResult {
+        blockingWait(for: ticket, timeout: nil)
     }
 
     func flush(through watermark: Watermark, timeout: TimeInterval) async -> FlushResult {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async { [self] in
-                continuation.resume(returning: blockingWait(
+                continuation.resume(returning: blockingBoundaryWait(
                     through: watermark,
                     timeout: max(0, timeout)
                 ))
@@ -101,28 +106,68 @@ final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
         }
     }
 
-    private func blockingWait(through watermark: Watermark, timeout: TimeInterval?) -> FlushResult {
+    private func blockingWait(for ticket: Ticket, timeout: TimeInterval?) -> FlushResult {
         condition.lock()
         let deadline = timeout.map { Date().addingTimeInterval($0) }
         while true {
+            guard let entry = entries[ticket.sequence], entry.intentID == ticket.intentID else {
+                condition.unlock()
+                return .completed
+            }
+            switch entry.outcome {
+            case .completed:
+                condition.unlock()
+                return .completed
+            case .failed(let failure):
+                condition.unlock()
+                return .failed(failure)
+            case .pending:
+                break
+            }
+            if let deadline {
+                guard Date() < deadline else {
+                    condition.unlock()
+                    return .timedOut(sequence: ticket.sequence)
+                }
+                _ = condition.wait(until: min(deadline, Date().addingTimeInterval(0.05)))
+            } else {
+                condition.wait()
+            }
+        }
+    }
+
+    /// A boundary observes the newest process attempt for each durable intent at or below its
+    /// immutable watermark. Registering a retry supersedes only the older attempt for that same
+    /// intent; unrelated failures remain visible. Outcomes are never destructively consumed, so
+    /// concurrent waiters over one watermark receive the same result.
+    private func blockingBoundaryWait(
+        through watermark: Watermark,
+        timeout: TimeInterval?
+    ) -> FlushResult {
+        condition.lock()
+        let deadline = timeout.map { Date().addingTimeInterval($0) }
+        while true {
+            let candidates = entries
+                .filter { $0.key <= watermark.sequence }
+            var latestByIntent: [UUID: (sequence: UInt64, outcome: Outcome)] = [:]
+            for (sequence, entry) in candidates {
+                if sequence > (latestByIntent[entry.intentID]?.sequence ?? 0) {
+                    latestByIntent[entry.intentID] = (sequence, entry.outcome)
+                }
+            }
             var pending = false
-            let sequences = watermark.sequence == 0 ? [] : Array(1...watermark.sequence)
-            for sequence in sequences where outcomes[sequence] != nil {
-                switch outcomes[sequence]! {
+            for value in latestByIntent.values {
+                switch value.outcome {
                 case .pending:
                     pending = true
                 case .completed:
                     continue
                 case .failed(let failure):
-                    // The durable row intent remains retry authority. Retire this process attempt
-                    // after reporting it once so a newly registered retry is not poisoned forever.
-                    outcomes.removeValue(forKey: sequence)
                     condition.unlock()
                     return .failed(failure)
                 }
             }
             if !pending {
-                for sequence in sequences { outcomes.removeValue(forKey: sequence) }
                 condition.unlock()
                 return .completed
             }
