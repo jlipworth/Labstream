@@ -86,8 +86,12 @@ struct ResumeContinueWatchingIntent: AppIntent {
         let items: [MediaItem]
         switch ctx.backend {
         case .plex:
-            let req = BrowseAPI.onDeck(server: ctx.server, token: ctx.token, identity: ctx.identity)
-            items = (try? await ctx.client.send(req, as: MetadataResponse.self))?.mediaContainer.metadata ?? []
+            let service = try? PlexBrowseService(
+                session: BackendSession(kind: .plex, baseURL: ctx.server, token: ctx.token),
+                identity: ctx.identity,
+                client: ctx.client
+            )
+            items = (try? await service?.onDeck()) ?? []
         case .jellyfin:
             let service = JellyfinBrowseService(appModel: appModel)
             let resume = (try? await service.resumeItems(limit: 10)) ?? []
