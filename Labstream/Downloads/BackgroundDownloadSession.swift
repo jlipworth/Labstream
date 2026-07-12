@@ -73,6 +73,24 @@ struct BackgroundDownloadSessionDiagnosticSnapshot: Sendable {
 /// updates via `onChange`. The store itself is internally locked.
 final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
 
+    enum RevalidationAdmission: Sendable, Equatable {
+        case started
+        case deferredForBackgroundWake
+        case alreadyFinalizing
+        case unavailable
+    }
+
+    enum RevalidationRequestOutcome: Sendable, Equatable {
+        case finished
+        case cancelled
+    }
+
+    private enum FinalizationAdmission: Sendable, Equatable {
+        case started
+        case alreadyFinalizing
+        case unavailable
+    }
+
     struct FinalizerRequest: Sendable {
         fileprivate let id: UUID
         let attemptKey: DownloadAttemptKey
@@ -175,6 +193,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private var loggedExpectation: Set<Int> = []
     /// Retry count by exact attempt for transient URLSession drops that provide resume data.
     private var retryCounts: [DownloadAttemptKey: Int] = [:]
+    /// Exact `.unverified` rows whose local probe was withheld for an OS background wake. Guarded
+    /// by `lock` so registration and gate-drain extraction are one atomic transition.
+    private var backgroundDeferredRevalidationKeys: Set<DownloadAttemptKey> = []
     /// JF-F2 loop guard: consecutive `.truncated` finalize outcomes per attempt. Deliberately NOT
     /// reset by `start`/`clearRetryCount` (a retry that truncates again must keep counting toward
     /// the parking budget); reset only on a `.complete` finalize. Only touched inside
@@ -428,6 +449,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// brokers an already synchronously admitted request; it must either register the request or
     /// call `abandonFinalizerRequest` so the session's admission/background accounting balances.
     var onFinalizerRequest: ((_ request: FinalizerRequest) -> Void)?
+    /// Revalidation is intentionally forbidden while an OS background wake handler is stored.
+    /// These callbacks let the manager distinguish a real local probe from that deferral and
+    /// retry as soon as the global gate drains instead of suppressing the row for a blind timeout.
+    var onRevalidationProbeDeferred: ((_ attemptKey: DownloadAttemptKey) -> Void)?
+    var onRevalidationRequestFinished:
+        ((_ attemptKey: DownloadAttemptKey, _ outcome: RevalidationRequestOutcome) -> Void)?
+    var onBackgroundCompletionGateDrained: ((_ deferredKeys: Set<DownloadAttemptKey>) -> Void)?
 
     /// True when this process currently owns an opaque or Range URLSession task for the row.
     /// `DownloadManager.activeJobs` is intentionally broader app-level bookkeeping and can survive
@@ -595,6 +623,18 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         guard injectedProtocolClasses != nil else { return }
         urlSession.invalidateAndCancel()
     }
+
+    #if DEBUG
+    func finishBackgroundEventsForTesting(identifier: String) {
+        fireBackgroundCompletionWhenFinalizationIsSafe(identifier: identifier)
+    }
+
+    func backgroundDeferredRevalidationKeysForTesting() -> Set<DownloadAttemptKey> {
+        lock.lock()
+        defer { lock.unlock() }
+        return backgroundDeferredRevalidationKeys
+    }
+    #endif
 
     /// Explicit schema-v3 startup barrier. This is the ONLY API that may create the underlying
     /// background session while dormant. It cancels all pre-current markers plus every task mapped
@@ -959,6 +999,18 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         return backgroundCompletionGate.hasPendingHandler
     }
 
+    /// Atomically observes the global wake gate and, for a revalidation request, registers the
+    /// exact retry before that gate can drain. This closes the check-then-register lost-wakeup race.
+    private func deferPlaybackProbeIfBackgroundWakePending(
+        revalidationKey: DownloadAttemptKey?
+    ) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard backgroundCompletionGate.hasPendingHandler else { return false }
+        if let revalidationKey { backgroundDeferredRevalidationKeys.insert(revalidationKey) }
+        return true
+    }
+
     private func beginPendingBackgroundCompletionOperation() {
         lock.lock()
         backgroundCompletionGate.beginOperation()
@@ -967,8 +1019,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     private func endPendingBackgroundCompletionOperation() {
         lock.lock()
+        let wasPending = backgroundCompletionGate.hasPendingHandler
         let identifiers = backgroundCompletionGate.endOperation()
+        let didDrain = wasPending && !backgroundCompletionGate.hasPendingHandler
+        let deferredKeys = didDrain ? backgroundDeferredRevalidationKeys : []
+        if didDrain { backgroundDeferredRevalidationKeys.removeAll() }
         lock.unlock()
+        if !deferredKeys.isEmpty { onBackgroundCompletionGateDrained?(deferredKeys) }
         flushPersistenceThenFireBackgroundCompletions(identifiers)
     }
 
@@ -983,8 +1040,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// manager; release the OS wake explicitly and leave admission dormant.
     func releaseBackgroundCompletionAfterStartupFailure() {
         lock.lock()
+        let wasPending = backgroundCompletionGate.hasPendingHandler
         let identifiers = backgroundCompletionGate.abortAwaitingHandlers()
+        let didDrain = wasPending && !backgroundCompletionGate.hasPendingHandler
+        let deferredKeys = didDrain ? backgroundDeferredRevalidationKeys : []
+        if didDrain { backgroundDeferredRevalidationKeys.removeAll() }
         lock.unlock()
+        if !deferredKeys.isEmpty { onBackgroundCompletionGateDrained?(deferredKeys) }
         guard !identifiers.isEmpty else { return }
         Task { @MainActor in
             for identifier in identifiers {
@@ -995,8 +1057,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     private func fireBackgroundCompletionWhenFinalizationIsSafe(identifier: String) {
         lock.lock()
+        let wasPending = backgroundCompletionGate.hasPendingHandler
         let identifiers = backgroundCompletionGate.finishEvents(identifier: identifier)
+        let didDrain = wasPending && !backgroundCompletionGate.hasPendingHandler
+        let deferredKeys = didDrain ? backgroundDeferredRevalidationKeys : []
+        if didDrain { backgroundDeferredRevalidationKeys.removeAll() }
         lock.unlock()
+        if !deferredKeys.isEmpty { onBackgroundCompletionGateDrained?(deferredKeys) }
         flushPersistenceThenFireBackgroundCompletions(identifiers)
     }
 
@@ -4609,7 +4676,23 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         publishesWorkingFile: Bool = true,
         holdsBackgroundCompletion: Bool
     ) -> Bool {
-        guard stillOwnsAttempt(attemptKey, phase: "finalize_admission") else { return false }
+        requestFinalizationAdmission(
+            attemptKey: attemptKey, destination: destination, bytes: bytes,
+            validationLabel: validationLabel, expectedExactBytes: expectedExactBytes,
+            publishesWorkingFile: publishesWorkingFile,
+            holdsBackgroundCompletion: holdsBackgroundCompletion) == .started
+    }
+
+    private func requestFinalizationAdmission(
+        attemptKey: DownloadAttemptKey,
+        destination: URL,
+        bytes: Int,
+        validationLabel: String,
+        expectedExactBytes: Int? = nil,
+        publishesWorkingFile: Bool = true,
+        holdsBackgroundCompletion: Bool
+    ) -> FinalizationAdmission {
+        guard stillOwnsAttempt(attemptKey, phase: "finalize_admission") else { return .unavailable }
         let requestID = UUID()
         let admitted = finalizationStateQueue.sync { () -> Bool in
             guard finalizerRequestIDsByAttempt[attemptKey] == nil else { return false }
@@ -4622,7 +4705,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "bytes": .bytes(bytes),
                 "validation": .label(validationLabel),
             ])
-            return false
+            return .alreadyFinalizing
         }
         if holdsBackgroundCompletion { beginPendingBackgroundCompletionOperation() }
         let request = FinalizerRequest(
@@ -4636,15 +4719,18 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             holdsBackgroundCompletion: holdsBackgroundCompletion)
         guard let onFinalizerRequest else {
             abandonFinalizerRequest(request)
-            return false
+            return .unavailable
         }
         onFinalizerRequest(request)
-        return true
+        return .started
     }
 
     /// Called by DownloadManager when registry admission loses to an existing exact finalizer (or
     /// when a broker is being torn down). Safe and idempotent for a request no longer admitted.
-    func abandonFinalizerRequest(_ request: FinalizerRequest) {
+    func abandonFinalizerRequest(
+        _ request: FinalizerRequest,
+        revalidationOutcome: RevalidationRequestOutcome = .cancelled
+    ) {
         let removed = finalizationStateQueue.sync {
             guard finalizerRequestIDsByAttempt[request.attemptKey] == request.id else {
                 return false
@@ -4655,11 +4741,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         if removed && request.holdsBackgroundCompletion {
             endPendingBackgroundCompletionOperation()
         }
+        if removed && !request.publishesWorkingFile {
+            onRevalidationRequestFinished?(request.attemptKey, revalidationOutcome)
+        }
     }
 
     /// Execute only after DownloadManager has installed the exact `.finalizer` registry lease.
     func executeFinalizerRequest(_ request: FinalizerRequest) async {
-        defer { abandonFinalizerRequest(request) }
+        defer {
+            let outcome: RevalidationRequestOutcome = Task.isCancelled ? .cancelled : .finished
+            abandonFinalizerRequest(request, revalidationOutcome: outcome)
+        }
         guard finalizationStateQueue.sync(execute: {
             finalizerRequestIDsByAttempt[request.attemptKey] == request.id
         }), !Task.isCancelled else { return }
@@ -4701,12 +4793,20 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// preserved as `.unverified`. Safe to call on reconnect/scene-active; the finalization guard
     /// coalesces duplicates and another inconclusive probe leaves the file preserved.
     @discardableResult
-    func revalidateCompletedDownload(ratingKey: String, validationLabel: String) -> Bool {
+    func revalidateCompletedDownload(
+        ratingKey: String, validationLabel: String
+    ) -> RevalidationAdmission {
+        // Do not even claim a finalizer while a background wake is active. A claim used to look
+        // like a real probe to DownloadManager, but the finalizer later skipped AVFoundation and
+        // left the exact attempt suppressed for 90 seconds.
         guard let record = store.record(for: ratingKey),
-              let attemptID = record.attemptID else { return false }
+              let attemptID = record.attemptID else { return .unavailable }
         let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
         guard store.ownsAttempt(key),
-              fileManager.fileExists(atPath: record.localURL.path) else { return false }
+              fileManager.fileExists(atPath: record.localURL.path) else { return .unavailable }
+        if deferPlaybackProbeIfBackgroundWakePending(revalidationKey: key) {
+            return .deferredForBackgroundWake
+        }
         let destination = record.localURL
         let bytes = fileSize(at: destination) ?? 0
         guard bytes > 0 else {
@@ -4727,7 +4827,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                    bytes: bytes)
             onError?(ratingKey, .transferFailed("Downloaded file is empty."))
             onChange?()
-            return true
+            return .started
         }
         // Short-circuit BEFORE the probe when the durable bytes provably fall short of the
         // source's exact size: the probe can never rescue an incomplete static file (it either
@@ -4757,7 +4857,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             onError?(ratingKey, .transferFailed(
                 "Download is incomplete (\(bytes / 1_000_000) of \(expectedExactBytes / 1_000_000) MB). Retry to continue."))
             onChange?()
-            return true
+            return .started
         }
         AppDiagnostics.record(.downloads, "downloads.unverified_revalidate", fields: [
             "download_id": .identifier(ratingKey),
@@ -4769,13 +4869,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "download_id": .identifier(ratingKey),
                 "validation": .label(validationLabel),
             ])
-            return false
+            return .unavailable
         }
-        return requestFinalization(
+        switch requestFinalizationAdmission(
             attemptKey: key, destination: destination, bytes: bytes,
             validationLabel: validationLabel,
             expectedExactBytes: store.sourceExactBytes(for: key),
-            publishesWorkingFile: false, holdsBackgroundCompletion: false)
+            publishesWorkingFile: false, holdsBackgroundCompletion: false) {
+        case .started: return .started
+        case .alreadyFinalizing: return .alreadyFinalizing
+        case .unavailable: return .unavailable
+        }
     }
 
     /// The durable partial now holds the whole file: validate it through the SAME finalize pipeline as
@@ -5034,9 +5138,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // written, so finalize as `.unverified` and let `revalidateUnverifiedDownloads` run the
         // real probe on the next foreground pass. Foreground finalizes (no pending handler) are
         // unchanged.
-        let deferProbeForBackgroundWake = hasPendingBackgroundCompletionHandler()
+        let deferProbeForBackgroundWake = deferPlaybackProbeIfBackgroundWakePending(
+            revalidationKey: publishesWorkingFile ? nil : attemptKey)
         var validation: (played: Bool, reason: String, durationMs: Int?, detail: String?)
         if deferProbeForBackgroundWake {
+            if !publishesWorkingFile {
+                onRevalidationProbeDeferred?(attemptKey)
+            }
             AppDiagnostics.record(.downloads, "downloads.finalize_probe_deferred", fields: [
                 "download_id": .identifier(ratingKey),
                 "bytes": .bytes(bytes),

@@ -654,3 +654,102 @@ private final class StartupSelectiveRemovalFailureFileManager: FileManager, @unc
         try super.removeItem(at: URL)
     }
 }
+
+struct UnverifiedRevalidationLifecycleTests {
+    @Test func pendingBackgroundHandlerDefersWithoutClaimingProbeAndDrainPublishesExactKeysOnce() throws {
+        try withDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+            defer { session.invalidateInjectedSessionForTesting() }
+            let first = try seedUnverified("plex:first", in: store)
+            let second = try seedUnverified("plex:second", in: store)
+            let drained = LockedRevalidationDrainBox()
+            session.onBackgroundCompletionGateDrained = { drained.append($0) }
+            session.noteBackgroundCompletionHandlerStored(identifier: "wake")
+
+            #expect(session.revalidateCompletedDownload(
+                ratingKey: first.ratingKey, validationLabel: "test") == .deferredForBackgroundWake)
+            #expect(session.revalidateCompletedDownload(
+                ratingKey: second.ratingKey, validationLabel: "test") == .deferredForBackgroundWake)
+            #expect(session.backgroundDeferredRevalidationKeysForTesting() == [first, second])
+
+            // Models scene-active arriving during the same wake: it remains a cheap exact-key
+            // deferral, not an AVFoundation finalizer claim or a second drain notification.
+            #expect(session.revalidateCompletedDownload(
+                ratingKey: first.ratingKey, validationLabel: "scene") == .deferredForBackgroundWake)
+            session.finishBackgroundEventsForTesting(identifier: "wake")
+            #expect(drained.values == [[first, second]])
+            #expect(session.backgroundDeferredRevalidationKeysForTesting().isEmpty)
+
+            session.finishBackgroundEventsForTesting(identifier: "wake")
+            #expect(drained.values == [[first, second]])
+        }
+    }
+
+    @Test func realProbeAdmissionDeduplicatesUntilExactClaimReleases() throws {
+        try withDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+            defer { session.invalidateInjectedSessionForTesting() }
+            let key = try seedUnverified("plex:dedupe", in: store)
+            let request = LockedFinalizerRequestBox()
+            session.onFinalizerRequest = { request.store($0) }
+
+            #expect(session.revalidateCompletedDownload(
+                ratingKey: key.ratingKey, validationLabel: "first") == .started)
+            #expect(session.revalidateCompletedDownload(
+                ratingKey: key.ratingKey, validationLabel: "concurrent") == .alreadyFinalizing)
+
+            session.abandonFinalizerRequest(try #require(request.value))
+            #expect(session.revalidateCompletedDownload(
+                ratingKey: key.ratingKey, validationLabel: "retry") == .started)
+            session.abandonFinalizerRequest(try #require(request.value))
+        }
+    }
+
+    @Test func positivePlaybackStillPromotesExactUnverifiedAttempt() throws {
+        try withDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let key = try seedUnverified("plex:play", in: store)
+            #expect(store.markCompleteIfUnverified(for: key) == .promoted)
+            #expect(store.record(for: key)?.status == .complete)
+        }
+    }
+
+    private func seedUnverified(_ ratingKey: String, in store: DownloadStore) throws
+        -> DownloadAttemptKey {
+        let attemptID = try #require(DownloadAttemptID(rawValue: UUID().uuidString))
+        let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+        let localURL = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
+        try Data("local-media".utf8).write(to: localURL)
+        let record = DownloadRecord(
+            ratingKey: ratingKey, attemptID: attemptID, title: "Local",
+            localURL: localURL, bytes: 11, progress: 1, status: .unverified)
+        #expect(store.createAttemptOwnedRecord(record, attemptID: attemptID) == .committed(key))
+        return key
+    }
+
+    private func withDirectory(_ body: (URL) throws -> Void) throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("unverified-revalidation-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try body(directory)
+    }
+}
+
+private final class LockedRevalidationDrainBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [Set<DownloadAttemptKey>] = []
+    var values: [Set<DownloadAttemptKey>] { lock.withLock { storage } }
+    func append(_ value: Set<DownloadAttemptKey>) { lock.withLock { storage.append(value) } }
+}
+
+private final class LockedFinalizerRequestBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: BackgroundDownloadSession.FinalizerRequest?
+    var value: BackgroundDownloadSession.FinalizerRequest? { lock.withLock { storage } }
+    func store(_ value: BackgroundDownloadSession.FinalizerRequest) {
+        lock.withLock { storage = value }
+    }
+}
