@@ -239,7 +239,7 @@ struct JellyfinBrowseService {
                       maxVideoBitrateKbps: Int,
                       resumeOffsetMs: Int? = nil,
                       audioStreamIndex: Int? = nil,
-                      subtitleStreamIndex: Int? = nil) async throws -> JellyfinPlaybackOpenResult {
+                      subtitleStreamIndex: Int? = nil) async throws -> MediaBrowserPlaybackOpenResult {
         let context = try context()
         let qualityPolicy = MediaBrowserPlaybackQualityPolicy(maxVideoBitrateKbps: maxVideoBitrateKbps)
         let startTicks = MediaBrowserPlaybackQualityPolicy.startTicks(resumeOffsetMs: resumeOffsetMs ?? item.viewOffset)
@@ -266,18 +266,19 @@ struct JellyfinBrowseService {
                                                            forcePlaybackTranscode: forceTranscode,
                                                            advertiseDolbyVision: DolbyVisionGuard.shouldAdvertiseDolbyVision(for: item))
         let info = try await send(req, as: JellyfinPlaybackInfoResponse.self)
-        return try JellyfinPlayback.resolveStream(response: info,
-                                                  server: context.server,
-                                                  identity: jellyfinIdentity,
-                                                  token: context.token,
-                                                  itemId: item.ratingKey,
-                                                  startTimeTicks: startTicks,
-                                                  maxVideoBitrate: qualityPolicy.maxStreamingBitrateBps,
-                                                  maxWidth: qualityPolicy.maxWidth,
-                                                  maxHeight: qualityPolicy.maxHeight,
-                                                  audioBitrate: qualityPolicy.audioBitrateBps,
-                                                  audioStreamIndex: audioStreamIndex,
-                                                  subtitleStreamIndex: subtitleStreamIndex)
+        return try JellyfinPlayback.resolveMediaBrowserStream(
+            response: info,
+            server: context.server,
+            identity: jellyfinIdentity,
+            token: context.token,
+            itemId: item.ratingKey,
+            startTimeTicks: startTicks,
+            maxVideoBitrate: qualityPolicy.maxStreamingBitrateBps,
+            maxWidth: qualityPolicy.maxWidth,
+            maxHeight: qualityPolicy.maxHeight,
+            audioBitrate: qualityPolicy.audioBitrateBps,
+            audioStreamIndex: audioStreamIndex,
+            subtitleStreamIndex: subtitleStreamIndex)
     }
 
 
