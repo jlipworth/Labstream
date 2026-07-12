@@ -231,6 +231,12 @@ final class DownloadStore: @unchecked Sendable {
         artifactLifecycle.waitSynchronously(for: ticket)
     }
 
+    func resolveArtifactSynchronouslyForTests(
+        through watermark: DownloadArtifactLifecycleCoordinator.Watermark
+    ) -> DownloadArtifactLifecycleCoordinator.FlushResult {
+        artifactLifecycle.waitSynchronously(through: watermark)
+    }
+
     struct EmbyConvertCleanupTombstone: Codable, Sendable, Equatable, Identifiable {
         let id: UUID
         let ratingKey: String
@@ -391,6 +397,7 @@ final class DownloadStore: @unchecked Sendable {
         enum ArtifactIntentPhase: String, Codable, Sendable {
             case prepared
             case publishedAwaitingPriorDeletion
+            case clearTargetCaptured
         }
 
         enum ArtifactIntentOperation: Codable, Sendable, Equatable {
@@ -407,7 +414,7 @@ final class DownloadStore: @unchecked Sendable {
             let attemptID: DownloadAttemptID
             let generation: UInt64
             var phase: ArtifactIntentPhase
-            let operation: ArtifactIntentOperation
+            var operation: ArtifactIntentOperation
         }
 
         let ratingKey: String
@@ -607,6 +614,7 @@ final class DownloadStore: @unchecked Sendable {
     private var pendingLegacyResetArtifacts: [DownloadAttemptKey: Set<URL>] = [:] // guarded by `lock`
     private var activeArtifactIntentIDs: Set<UUID> = [] // guarded by `lock`
     private var pendingResumeArtifactData: [UUID: Data] = [:] // guarded by `lock`
+    private var artifactLifecycleTickets: [UUID: DownloadArtifactLifecycleCoordinator.Ticket] = [:]
 
     /// - Parameter baseDirectory: where media files + the index live. Defaults to
     ///   `Application Support/Labstream/Downloads`, created if missing.
@@ -2408,7 +2416,7 @@ final class DownloadStore: @unchecked Sendable {
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
               !row.legacyResetPending, !row.deletionPending,
               row.pendingValidatedPromotionStatus == nil,
-              let metadata = row.metadata else {
+              row.metadata != nil else {
             lock.unlock()
             return .staleOrMissing
         }
@@ -2425,7 +2433,9 @@ final class DownloadStore: @unchecked Sendable {
             phase: .prepared,
             operation: .replaceResumeBlob(
                 newRelativePath: relative,
-                previousRelativePath: metadata.resumeDataRelativePath,
+                // The correct predecessor is the value published when this queued intent reaches
+                // the head, not the possibly stale value visible at submission time.
+                previousRelativePath: nil,
                 displayBytes: displayBytes
             )
         )
@@ -2438,11 +2448,15 @@ final class DownloadStore: @unchecked Sendable {
             intentID: intentID,
             preparedRevision: prepared
         )
-        activeArtifactIntentIDs.insert(intentID)
         pendingResumeArtifactData[intentID] = data
+        artifactLifecycleTickets[intentID] = ticket
+        let shouldStart = row.pendingArtifactIntents.count == 1
+        if shouldStart { activeArtifactIntentIDs.insert(intentID) }
         lock.unlock()
-        artifactWorkerQueue.async { [weak self] in
-            self?.executeResumeReplacement(ticket: ticket, data: data)
+        if shouldStart {
+            artifactWorkerQueue.async { [weak self] in
+                self?.executeResumeReplacement(ticket: ticket, data: data)
+            }
         }
         return .accepted(ticket: ticket)
     }
@@ -2575,7 +2589,9 @@ final class DownloadStore: @unchecked Sendable {
         }
         let relative = metadata.resumeDataRelativePath
         let hadDisplayBytes = metadata.resumeDisplayBytes != nil
-        let changed = relative != nil || (clearDisplayBytes && hadDisplayBytes)
+        let changed = relative != nil
+            || (clearDisplayBytes && hadDisplayBytes)
+            || !row.pendingArtifactIntents.isEmpty
         guard changed else {
             let ticket = enqueueAttemptPersistenceLocked()
             lock.unlock()
@@ -2605,7 +2621,8 @@ final class DownloadStore: @unchecked Sendable {
             generation: generation,
             phase: .prepared,
             operation: .clearResumeBlob(
-                relativePath: relative,
+                // Captured durably only when this intent becomes the serialized head.
+                relativePath: nil,
                 clearDisplayBytes: clearDisplayBytes
             )
         ))
@@ -2617,9 +2634,13 @@ final class DownloadStore: @unchecked Sendable {
             intentID: intentID,
             preparedRevision: prepared
         )
-        activeArtifactIntentIDs.insert(intentID)
+        artifactLifecycleTickets[intentID] = ticket
+        let shouldStart = row.pendingArtifactIntents.count == 1
+        if shouldStart { activeArtifactIntentIDs.insert(intentID) }
         lock.unlock()
-        artifactWorkerQueue.async { [weak self] in self?.executeResumeClear(ticket: ticket) }
+        if shouldStart {
+            artifactWorkerQueue.async { [weak self] in self?.executeResumeClear(ticket: ticket) }
+        }
         // Resume clear has a filesystem lifecycle ticket, unlike ordinary row-only mutations.
         // Its source-compatible wrapper below waits for this ticket when required.
         return .accepted(change: .applied, ticket: ticket)
@@ -2654,6 +2675,13 @@ final class DownloadStore: @unchecked Sendable {
 
         let newURL = baseDirectory.appendingPathComponent(newRelative)
         if !artifactFilesystem.fileExists(newURL, fileManager) {
+            if intent.phase == .publishedAwaitingPriorDeletion {
+                rollbackMissingPublishedResume(
+                    ticket: ticket,
+                    newRelative: newRelative,
+                    previousRelative: previousRelative)
+                return
+            }
             guard let data else {
                 // A kill before the generation-private write leaves the previous published blob
                 // authoritative. Abandon only this prepared intent.
@@ -2669,36 +2697,46 @@ final class DownloadStore: @unchecked Sendable {
             }
         }
 
-        lock.lock()
-        guard var publishing = rows[ticket.key.ratingKey],
-              publishing.attemptID == ticket.key.attemptID,
-              !publishing.pendingArtifactIntents.isEmpty,
-              publishing.pendingArtifactIntents[0].id == ticket.intentID,
-              var metadata = publishing.metadata else {
+        var predecessor = previousRelative
+        if intent.phase == .prepared {
+            lock.lock()
+            guard var publishing = rows[ticket.key.ratingKey],
+                  publishing.attemptID == ticket.key.attemptID,
+                  !publishing.pendingArtifactIntents.isEmpty,
+                  publishing.pendingArtifactIntents[0].id == ticket.intentID,
+                  var metadata = publishing.metadata else {
+                lock.unlock()
+                completeArtifactLifecycle(ticket)
+                return
+            }
+            // Serialize composition at execution: this is the artifact actually published by the
+            // retired predecessor intent, not the stale path visible when this one was submitted.
+            predecessor = metadata.resumeDataRelativePath
+            metadata.resumeDataRelativePath = newRelative
+            if let displayBytes, displayBytes > 0 {
+                metadata.resumeDisplayBytes = max(displayBytes, metadata.resumeDisplayBytes ?? 0)
+            }
+            metadata.downloadAttemptID = ticket.key.attemptID.rawValue
+            publishing.metadata = metadata
+            publishing.pendingArtifactIntents[0].operation = .replaceResumeBlob(
+                newRelativePath: newRelative,
+                previousRelativePath: predecessor,
+                displayBytes: displayBytes)
+            publishing.pendingArtifactIntents[0].phase = .publishedAwaitingPriorDeletion
+            rows[ticket.key.ratingKey] = publishing
+            let publishTicket = enqueueAttemptPersistenceLocked()
             lock.unlock()
-            completeArtifactLifecycle(ticket)
-            return
-        }
-        metadata.resumeDataRelativePath = newRelative
-        if let displayBytes, displayBytes > 0 {
-            metadata.resumeDisplayBytes = max(displayBytes, metadata.resumeDisplayBytes ?? 0)
-        }
-        metadata.downloadAttemptID = ticket.key.attemptID.rawValue
-        publishing.metadata = metadata
-        publishing.pendingArtifactIntents[0].phase = .publishedAwaitingPriorDeletion
-        rows[ticket.key.ratingKey] = publishing
-        let publishTicket = enqueueAttemptPersistenceLocked()
-        lock.unlock()
-        let publication = waitForPersistence(through: publishTicket)
-        guard publication.result.committed(through: publishTicket) else {
-            failArtifactLifecycle(ticket, publication.result)
-            return
+            let publication = waitForPersistence(through: publishTicket)
+            guard publication.result.committed(through: publishTicket) else {
+                failArtifactLifecycle(ticket, publication.result)
+                return
+            }
         }
 
-        if let previousRelative,
-           previousRelative != newRelative,
-           Self.isSafeOneLevelRelativePath(previousRelative) {
-            let oldURL = baseDirectory.appendingPathComponent(previousRelative)
+        if let predecessor,
+           predecessor != newRelative,
+           Self.isSafeOneLevelRelativePath(predecessor) {
+            let oldURL = baseDirectory.appendingPathComponent(predecessor)
             do {
                 if artifactFilesystem.fileExists(oldURL, fileManager) {
                     try artifactFilesystem.removeItem(oldURL, fileManager)
@@ -2716,6 +2754,42 @@ final class DownloadStore: @unchecked Sendable {
         ticket: DownloadArtifactLifecycleCoordinator.Ticket
     ) {
         finishArtifactIntent(ticket)
+    }
+
+    private func rollbackMissingPublishedResume(
+        ticket: DownloadArtifactLifecycleCoordinator.Ticket,
+        newRelative: String,
+        previousRelative: String?
+    ) {
+        let restoredRelative: String? = previousRelative.flatMap { relative in
+            guard Self.isSafeOneLevelRelativePath(relative),
+                  artifactFilesystem.fileExists(
+                    baseDirectory.appendingPathComponent(relative), fileManager) else { return nil }
+            return relative
+        }
+        lock.lock()
+        guard var row = rows[ticket.key.ratingKey],
+              row.attemptID == ticket.key.attemptID,
+              !row.pendingArtifactIntents.isEmpty,
+              row.pendingArtifactIntents[0].id == ticket.intentID,
+              var metadata = row.metadata else {
+            lock.unlock()
+            completeArtifactLifecycle(ticket)
+            return
+        }
+        if metadata.resumeDataRelativePath == newRelative {
+            metadata.resumeDataRelativePath = restoredRelative
+            if restoredRelative == nil { metadata.resumeDisplayBytes = nil }
+            row.metadata = metadata
+        }
+        row.pendingArtifactIntents.removeFirst()
+        rows[ticket.key.ratingKey] = row
+        let rollbackTicket = enqueueAttemptPersistenceLocked()
+        lock.unlock()
+        let rollback = waitForPersistence(through: rollbackTicket)
+        rollback.result.committed(through: rollbackTicket)
+            ? completeArtifactLifecycle(ticket)
+            : failArtifactLifecycle(ticket, rollback.result)
     }
 
     private func executeResumeClear(ticket: DownloadArtifactLifecycleCoordinator.Ticket) {
@@ -2739,8 +2813,33 @@ final class DownloadStore: @unchecked Sendable {
             return
         }
         lock.unlock()
-        if let relative, Self.isSafeOneLevelRelativePath(relative) {
-            let url = baseDirectory.appendingPathComponent(relative)
+        var capturedRelative = relative
+        if intent.phase == .prepared {
+            lock.lock()
+            guard var capturing = rows[ticket.key.ratingKey],
+                  capturing.attemptID == ticket.key.attemptID,
+                  !capturing.pendingArtifactIntents.isEmpty,
+                  capturing.pendingArtifactIntents[0].id == ticket.intentID else {
+                lock.unlock()
+                completeArtifactLifecycle(ticket)
+                return
+            }
+            capturedRelative = capturing.metadata?.resumeDataRelativePath
+            capturing.pendingArtifactIntents[0].operation = .clearResumeBlob(
+                relativePath: capturedRelative,
+                clearDisplayBytes: clearDisplayBytes)
+            capturing.pendingArtifactIntents[0].phase = .clearTargetCaptured
+            rows[ticket.key.ratingKey] = capturing
+            let captureTicket = enqueueAttemptPersistenceLocked()
+            lock.unlock()
+            let capture = waitForPersistence(through: captureTicket)
+            guard capture.result.committed(through: captureTicket) else {
+                failArtifactLifecycle(ticket, capture.result)
+                return
+            }
+        }
+        if let capturedRelative, Self.isSafeOneLevelRelativePath(capturedRelative) {
+            let url = baseDirectory.appendingPathComponent(capturedRelative)
             do {
                 if artifactFilesystem.fileExists(url, fileManager) {
                     try artifactFilesystem.removeItem(url, fileManager)
@@ -2762,7 +2861,7 @@ final class DownloadStore: @unchecked Sendable {
             return
         }
         // Compare-clear: a queued/newer generation may already publish a different path.
-        if metadata.resumeDataRelativePath == relative {
+        if metadata.resumeDataRelativePath == capturedRelative {
             metadata.resumeDataRelativePath = nil
             if clearDisplayBytes { metadata.resumeDisplayBytes = nil }
             metadata.downloadAttemptID = ticket.key.attemptID.rawValue
@@ -2804,15 +2903,20 @@ final class DownloadStore: @unchecked Sendable {
         lock.withLock {
             activeArtifactIntentIDs.remove(ticket.intentID)
             pendingResumeArtifactData.removeValue(forKey: ticket.intentID)
+            artifactLifecycleTickets.removeValue(forKey: ticket.intentID)
         }
         artifactLifecycle.complete(ticket)
+        recoverPendingArtifactIntents()
     }
 
     private func failArtifactLifecycle(
         _ ticket: DownloadArtifactLifecycleCoordinator.Ticket,
         _ failure: PersistenceFlushResult
     ) {
-        _ = lock.withLock { activeArtifactIntentIDs.remove(ticket.intentID) }
+        lock.withLock {
+            activeArtifactIntentIDs.remove(ticket.intentID)
+            artifactLifecycleTickets.removeValue(forKey: ticket.intentID)
+        }
         artifactLifecycle.fail(ticket, failure)
     }
 
@@ -2820,28 +2924,32 @@ final class DownloadStore: @unchecked Sendable {
         _ ticket: DownloadArtifactLifecycleCoordinator.Ticket,
         errorType: String
     ) {
-        _ = lock.withLock { activeArtifactIntentIDs.remove(ticket.intentID) }
+        lock.withLock {
+            activeArtifactIntentIDs.remove(ticket.intentID)
+            artifactLifecycleTickets.removeValue(forKey: ticket.intentID)
+        }
         artifactLifecycle.failArtifact(ticket, errorType: errorType)
     }
 
     private func recoverPendingArtifactIntents() {
         lock.lock()
-        let pending: [(DownloadAttemptKey, Row.ArtifactIntent)] = rows.values.flatMap { row -> [(DownloadAttemptKey, Row.ArtifactIntent)] in
-            guard let attemptID = row.attemptID else { return [] }
+        let pending: [(DownloadAttemptKey, Row.ArtifactIntent)] = rows.values.compactMap { row -> (DownloadAttemptKey, Row.ArtifactIntent)? in
+            guard let attemptID = row.attemptID else { return nil }
             let key = DownloadAttemptKey(ratingKey: row.ratingKey, attemptID: attemptID)
-            return row.pendingArtifactIntents
-                .filter { !activeArtifactIntentIDs.contains($0.id) }
-                .map { (key, $0) }
+            guard let head = row.pendingArtifactIntents.first,
+                  !activeArtifactIntentIDs.contains(head.id) else { return nil }
+            return (key, head)
         }
         activeArtifactIntentIDs.formUnion(pending.map { $0.1.id })
+        let scheduled = pending.map { key, intent -> (DownloadAttemptKey, Row.ArtifactIntent, DownloadArtifactLifecycleCoordinator.Ticket) in
+            let ticket = artifactLifecycleTickets[intent.id] ?? artifactLifecycle.register(
+                key: key, generation: intent.generation, intentID: intent.id,
+                preparedRevision: .init(revision: 0))
+            artifactLifecycleTickets[intent.id] = ticket
+            return (key, intent, ticket)
+        }
         lock.unlock()
-        for (key, intent) in pending {
-            let ticket = artifactLifecycle.register(
-                key: key,
-                generation: intent.generation,
-                intentID: intent.id,
-                preparedRevision: .init(revision: 0)
-            )
+        for (_, intent, ticket) in scheduled {
             artifactWorkerQueue.async { [weak self] in
                 guard let self else { return }
                 switch intent.operation {

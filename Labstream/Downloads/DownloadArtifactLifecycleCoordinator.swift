@@ -95,6 +95,10 @@ final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
         blockingWait(for: ticket, timeout: nil)
     }
 
+    func waitSynchronously(through watermark: Watermark) -> FlushResult {
+        blockingBoundaryWait(through: watermark, timeout: nil)
+    }
+
     func flush(through watermark: Watermark, timeout: TimeInterval) async -> FlushResult {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async { [self] in
@@ -193,7 +197,7 @@ struct DownloadArtifactFilesystem: Sendable {
 
     static let live = Self(
         writeAuthArtifact: { data, url, fileManager in
-            try CredentialArtifactStorage.writeAuthArtifact(data, to: url, fileManager: fileManager)
+            try DownloadArtifactFileCommitter().commit(data, to: url)
         },
         removeItem: { url, fileManager in try fileManager.removeItem(at: url) },
         fileExists: { url, fileManager in fileManager.fileExists(atPath: url.path) }
