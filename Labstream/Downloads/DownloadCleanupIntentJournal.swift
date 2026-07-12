@@ -80,34 +80,42 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
     /// reuse the already-durable value rather than append a duplicate operation with a fresh UUID.
     @discardableResult
     func ensure(_ proposed: DurableDownloadCleanupIntent) -> AddResult {
-        switch load() {
-        case .failed(let failure):
-            return .failed(failure)
-        case .loaded(let values):
-            if let existing = values.first(where: {
-                $0.attemptKey == proposed.attemptKey
-                    && $0.backend == proposed.backend
-                    && $0.server == proposed.server
-                    && $0.operation == proposed.operation
-            }) {
-                return .committed(existing)
-            }
-            return add(proposed)
+        lock.lock(); defer { lock.unlock() }
+        var values: [DurableDownloadCleanupIntent]
+        switch readLocked() {
+        case .loaded(let loaded): values = loaded
+        case .failed(let failure): return .failed(failure)
         }
+        if let existing = values.first(where: {
+            $0.attemptKey == proposed.attemptKey
+                && $0.backend == proposed.backend
+                && $0.server == proposed.server
+                && $0.operation == proposed.operation
+        }) {
+            return .committed(existing)
+        }
+        return appendLocked(proposed, to: &values)
     }
 
     @discardableResult
     func add(_ intent: DurableDownloadCleanupIntent) -> AddResult {
-        lock.lock()
+        lock.lock(); defer { lock.unlock() }
         var values: [DurableDownloadCleanupIntent]
         switch readLocked() {
         case .loaded(let loaded): values = loaded
-        case .failed(let failure):
-            lock.unlock()
-            return .failed(failure)
+        case .failed(let failure): return .failed(failure)
         }
+        return appendLocked(intent, to: &values)
+    }
+
+    /// UUID conflict validation and the append/replace are part of the caller's single locked
+    /// transaction. In particular, `ensure` must not unlock between its semantic lookup and this
+    /// append or two concurrent retries can both observe absence and persist duplicate authority.
+    private func appendLocked(
+        _ intent: DurableDownloadCleanupIntent,
+        to values: inout [DurableDownloadCleanupIntent]
+    ) -> AddResult {
         if let existing = values.first(where: { $0.id == intent.id }) {
-            lock.unlock()
             return existing == intent ? .committed(intent) : .conflictingID(existing)
         }
         values.append(intent)
@@ -115,7 +123,6 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
         do {
             data = try persistence.encode(values)
         } catch {
-            lock.unlock()
             return .failed(Self.failure(.encode, error))
         }
         do {
@@ -125,20 +132,16 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
             // proof that this add committed; UUID presence alone could be a conflicting authority.
             switch readLocked() {
             case .loaded(let durable) where durable.contains(intent):
-                lock.unlock()
                 return .committed(intent)
             case .loaded(let durable):
                 if let conflict = durable.first(where: { $0.id == intent.id }) {
-                    lock.unlock()
                     return .conflictingID(conflict)
                 }
             case .failed:
                 break
             }
-            lock.unlock()
             return .failed(Self.failure(.commit, error))
         }
-        lock.unlock()
         return .committed(intent)
     }
 

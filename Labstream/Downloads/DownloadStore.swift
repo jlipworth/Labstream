@@ -3185,7 +3185,8 @@ final class DownloadStore: @unchecked Sendable {
     /// Remove a record and delete its backing file.
     func remove(ratingKey: String) {
         lock.lock()
-        guard rows[ratingKey]?.pendingValidatedPromotionStatus == nil else {
+        guard rows[ratingKey]?.pendingValidatedPromotionStatus == nil,
+              rows[ratingKey]?.deletionPending != true else {
             lock.unlock()
             return
         }

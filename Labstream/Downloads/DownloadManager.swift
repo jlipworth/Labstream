@@ -568,7 +568,7 @@ public final class DownloadManager {
 
         var finalizedPendingDeletion = false
         for record in records {
-            guard let attemptID = record.attemptID, let metadata = record.metadata else { continue }
+            guard let attemptID = record.attemptID else { continue }
             let key = DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
             if let pending = store.deletionPendingCleanupIntents(for: key) {
                 switch DownloadCleanupOrdering.prepareForDestructiveDeletion(
@@ -600,6 +600,8 @@ public final class DownloadManager {
                     lastError[key.ratingKey] = nil
                     finalizedPendingDeletion = true
                 case .deletionPending:
+                    session.haltForPendingDeletion(ratingKey: key.ratingKey)
+                    _ = downloadWorkRegistry.cancelCancellableWork(for: key)
                     lastError[key.ratingKey] = .transferFailed(
                         "Deletion is pending until server cleanup can be saved. Tap Delete to retry.")
                 case .indexPersistenceFailed:
@@ -610,6 +612,7 @@ public final class DownloadManager {
                 }
                 continue
             }
+            guard let metadata = record.metadata else { continue }
             let cleanupOnly = startupCleanupOnlyKeys.contains(key)
             let terminal = record.status == .failed || record.status == .complete
                 || record.status == .unverified
@@ -2989,7 +2992,7 @@ public final class DownloadManager {
             case .ready(let durable):
                 cleanupIntentsToExecute = durable
             case .deletionPending(_, let failure):
-                session.cancel(ratingKey: ratingKey)
+                session.haltForPendingDeletion(ratingKey: ratingKey)
                 _ = downloadWorkRegistry.cancelCancellableWork(for: rowAttemptKey)
                 lastError[ratingKey] = .transferFailed(
                     "Deletion is pending until server cleanup can be saved. Tap Delete to retry.")
