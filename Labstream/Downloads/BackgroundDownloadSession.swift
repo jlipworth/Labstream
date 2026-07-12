@@ -937,6 +937,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     ])
                 }
             }
+            let stagingSweep = self.store.sweepUnreferencedAttemptStaging()
+            if !stagingSweep.removedRelativePaths.isEmpty
+                || !stagingSweep.failedRelativePaths.isEmpty {
+                AppDiagnostics.record(.downloads, "downloads.attempt_staging_swept", fields: [
+                    "removed_count": .int(stagingSweep.removedRelativePaths.count),
+                    "failed_count": .int(stagingSweep.failedRelativePaths.count),
+                ])
+            }
             // Build the indexed-key set ONCE (FS-free) before the task loop, instead of
             // stat'ing every store row per task under the held lock (was O(tasks×rows)).
             let knownKeys = self.store.allRatingKeys
