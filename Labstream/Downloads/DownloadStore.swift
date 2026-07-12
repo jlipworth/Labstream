@@ -1087,6 +1087,18 @@ final class DownloadStore: @unchecked Sendable {
                 }
                 failArtifactLifecycle(ticket, errorType: String(reflecting: type(of: error))); return
             }
+        } else {
+            // Recovery may observe the post-rename/pre-directory-sync crash window. The prepared
+            // exact-attempt recipe proves why stable may be authoritative, but the directory entry
+            // still must be made durable before any terminal row can publish it.
+            do { try promotionFilesystem.syncParentDirectory(stableURL) }
+            catch {
+                lock.withLock {
+                    recordPromotionOutcomeLocked(.renameFailed(
+                        errorType: String(reflecting: type(of: error))), intentID: intent.id)
+                }
+                failArtifactLifecycle(ticket, errorType: String(reflecting: type(of: error))); return
+            }
         }
         guard let bytes = promotionFilesystem.size(stableURL), bytes == provenBytes else {
             lock.withLock { recordPromotionOutcomeLocked(.sourceMissing, intentID: intent.id) }
@@ -1161,6 +1173,9 @@ final class DownloadStore: @unchecked Sendable {
             } catch {
                 return .renameFailed(errorType: String(reflecting: type(of: error)))
             }
+        } else {
+            do { try promotionFilesystem.syncParentDirectory(stableURL) }
+            catch { return .renameFailed(errorType: String(reflecting: type(of: error))) }
         }
         guard let bytes = promotionFilesystem.size(stableURL), bytes > 0 else {
             return .sourceMissing

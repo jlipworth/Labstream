@@ -135,15 +135,12 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             let store = DownloadStore(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in try gate.write(data, to: url) })
-            let finished = DispatchSemaphore(value: 0)
-            DispatchQueue.global().async {
-                _ = store.promoteValidatedAttempt(for: owner, terminalStatus: .complete)
-                finished.signal()
-            }
-            #expect(await signal(gate.started, timeout: 1))
+            let promotion = store.submitValidatedPromotion(
+                for: owner, terminalStatus: .complete)
             #expect(store.submitStaticRangeCheckpointReset(for: owner) == .staleOrMissing)
             gate.release.signal()
-            #expect(await signal(finished, timeout: 1))
+            #expect(await store.resolveValidatedPromotion(promotion)
+                == .promoted(owner, bytes: 2, status: .complete))
         }
     }
 
