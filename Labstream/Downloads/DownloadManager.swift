@@ -63,6 +63,15 @@ struct UnverifiedRevalidationCoordinator: Sendable {
         for key in keys { timerTokens.removeValue(forKey: key) }
     }
 
+    /// Park every request generation that still owns a session finalizer claim. A watchdog may
+    /// have moved a long limiter wait from `inFlight` to `desired`, so `requestIDs`—not merely the
+    /// admission set—is the authority for foreground work that must be cancelled on deactivation.
+    mutating func parkRunningRequestsUntilActive() -> Set<DownloadAttemptKey> {
+        let keys = Set(requestIDs.keys)
+        parkUntilActive(keys)
+        return keys
+    }
+
     mutating func permitRetry(_ key: DownloadAttemptKey, sceneIsActive: Bool) -> Bool {
         guard sceneIsActive else {
             parkUntilActive([key])
@@ -436,12 +445,20 @@ public final class DownloadManager {
                     session?.abandonFinalizerRequest(request)
                     return
                 }
+                // The session claims synchronously, but its broker hop is queued on MainActor.
+                // Scene deactivation can overtake that hop; never install a foreground-only probe
+                // after the coordinator has parked it. Publishing finalizers remain admitted.
+                guard !request.isRevalidation || self.isAppSceneActive else {
+                    session.abandonFinalizerRequest(request)
+                    return
+                }
                 guard !self.store.isDeletionPending(for: request.attemptKey) else {
                     session.abandonFinalizerRequest(request)
                     return
                 }
                 guard self.downloadWorkRegistry.startIfAbsent(
-                    for: request.attemptKey, kind: .finalizer,
+                    for: request.attemptKey,
+                    kind: request.isRevalidation ? .revalidationFinalizer : .finalizer,
                     operation: { [weak session] in
                         guard let session else { return }
                         await session.executeFinalizerRequest(request)
@@ -1530,6 +1547,14 @@ public final class DownloadManager {
             resetUnverifiedAutomaticRetryBudget()
             revalidateUnverifiedDownloads(reason: "scene_active")
             recoverStaticRangeTransfersAfterForeground()
+        } else {
+            // A muted AVPlayer probe cannot make useful progress once visionOS suspends the scene.
+            // Park its exact request edge before cancellation so its completion cannot consume the
+            // retry. Publishing finalizers are a different registry kind and continue untouched.
+            let running = unverifiedRevalidation.parkRunningRequestsUntilActive()
+            for key in running {
+                _ = downloadWorkRegistry.cancelRevalidationFinalizer(for: key)
+            }
         }
     }
 

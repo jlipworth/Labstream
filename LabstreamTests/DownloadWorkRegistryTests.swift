@@ -135,6 +135,40 @@ struct DownloadWorkRegistryTests {
         #expect(registry.snapshot().attempts.first?.entries.map(\.token) == [finalizerToken])
     }
 
+    @Test func terminalRefreshPreservesBothPublishingAndRevalidationFinalizers() {
+        let registry = DownloadWorkRegistry()
+        let attempt = key("plex:terminal-revalidation", "attempt-A")
+        let publishing = pendingTask()
+        let revalidation = pendingTask()
+        let poster = pendingTask()
+        defer { publishing.cancel(); revalidation.cancel(); poster.cancel() }
+        _ = registry.register(publishing, for: attempt, kind: .finalizer)
+        _ = registry.register(revalidation, for: attempt, kind: .revalidationFinalizer)
+        let posterToken = registry.register(poster, for: attempt, kind: .sideCache(.poster))
+
+        #expect(registry.cancelCancellableWork(
+            for: attempt, mode: .preservingFinalizer) == [posterToken])
+        #expect(!publishing.isCancelled)
+        #expect(!revalidation.isCancelled)
+        #expect(poster.isCancelled)
+    }
+
+    @Test func inactiveCancellationTargetsRevalidationButPreservesPublishingFinalizer() {
+        let registry = DownloadWorkRegistry()
+        let attempt = key("plex:inactive", "attempt-A")
+        let publishing = pendingTask()
+        let revalidation = pendingTask()
+        defer { publishing.cancel(); revalidation.cancel() }
+        let publishingToken = registry.register(publishing, for: attempt, kind: .finalizer)
+        let revalidationToken = registry.register(
+            revalidation, for: attempt, kind: .revalidationFinalizer)
+
+        #expect(registry.cancelRevalidationFinalizer(for: attempt) == [revalidationToken])
+        #expect(revalidation.isCancelled)
+        #expect(!publishing.isCancelled)
+        #expect(registry.snapshot().attempts.first?.entries.map(\.token) == [publishingToken])
+    }
+
     @Test func successfulReleasePreservesFinalizerAndSideCaches() {
         let registry = DownloadWorkRegistry()
         let attempt = key("plex:complete", "attempt-A")
