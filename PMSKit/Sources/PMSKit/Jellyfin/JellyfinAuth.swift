@@ -3,20 +3,6 @@ import Foundation
 import FoundationNetworking
 #endif
 
-public struct JellyfinClientIdentity: Sendable, Equatable {
-    public let client: String
-    public let device: String
-    public let deviceId: String
-    public let version: String
-
-    public init(client: String, device: String, deviceId: String, version: String) {
-        self.client = client
-        self.device = device
-        self.deviceId = deviceId
-        self.version = version
-    }
-}
-
 public struct JellyfinQuickConnectResult: Decodable, Sendable, Equatable {
     public let authenticated: Bool
     public let secret: String?
