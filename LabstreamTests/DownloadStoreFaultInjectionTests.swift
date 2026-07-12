@@ -4,6 +4,49 @@ import Testing
 @testable import Labstream
 
 struct DownloadStoreFaultInjectionTests {
+    @Test func lifecycleSubmissionReturnsWhileItsCommitIsBlockedAndCommitsLater() async throws {
+        try await withTemporaryDirectory { directory in
+            let blocked = DispatchSemaphore(value: 0)
+            let release = DispatchSemaphore(value: 0)
+            let writes = LockedFaultBox(0)
+            let store = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init { data, url in
+                    let count = writes.withValue { value in value += 1; return value }
+                    if count == 2 {
+                        blocked.signal()
+                        release.wait()
+                    }
+                    try data.write(to: url, options: .atomic)
+                }
+            )
+            let attemptID = DownloadAttemptID(rawValue: UUID().uuidString)!
+            guard case .committed(let key) = store.createAttemptOwnedRecord(
+                Self.record("plex:lifecycle-ticket", directory: directory, bytes: 1),
+                attemptID: attemptID
+            ) else {
+                Issue.record("Seed must commit")
+                return
+            }
+
+            let submission = store.submitStatus(for: key, .paused)
+            guard case .accepted(change: .applied, ticket: let ticket?) = submission else {
+                Issue.record("Expected an exact accepted persistence ticket")
+                return
+            }
+            #expect(await waitForSignal(blocked))
+            #expect(store.status(for: key.ratingKey) == .paused)
+            #expect(await store.flushPersistence(through: ticket, timeout: 0.01)
+                == .timedOut(targetRevision: ticket.revision, committedRevision: 1))
+
+            release.signal()
+            #expect(await store.flushPersistence(through: ticket, timeout: 1)
+                == .committed(revision: ticket.revision))
+            let restored = DownloadStore(baseDirectory: directory)
+            #expect(restored.status(for: key.ratingKey) == .paused)
+        }
+    }
+
     @Test func blockedOlderCommitStillFinishesWithNewestFreshStoreSnapshot() async throws {
         try await withTemporaryDirectory { directory in
             let firstWriteStarted = DispatchSemaphore(value: 0)
