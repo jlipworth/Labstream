@@ -657,6 +657,102 @@ private final class StartupSelectiveRemovalFailureFileManager: FileManager, @unc
 
 struct UnverifiedRevalidationLifecycleTests {
     @MainActor
+    @Test func inactiveOvertakingBrokerRegistrationNeverStartsProbeAndActiveRetriesOnce() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("unverified-broker-overtake-\(UUID().uuidString)",
+                                  isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DownloadStore(baseDirectory: directory)
+        let key = try seedUnverified("plex:broker-overtake", in: store)
+        let validator = HeldRevalidationValidator()
+        await validator.allowSuccess()
+        let session = BackgroundDownloadSession(
+            store: store, protocolClasses: [],
+            playbackValidator: { _, _ in await validator.validate() })
+        defer { session.invalidateInjectedSessionForTesting() }
+        let manager = DownloadManager(
+            appModel: AppModel(identity: PlatformClientIdentity.make(
+                clientIdentifier: "broker-overtake-test")),
+            store: store, session: session, registerForBackgroundEvents: false)
+
+        // Both calls run in one MainActor turn. The session claim is synchronous, while its broker
+        // registration is queued; inactive must win without allowing the queued probe to start.
+        manager.noteAppScenePhase("active")
+        manager.noteAppScenePhase("inactive")
+        for _ in 0..<20 { await Task.yield() }
+        #expect(await validator.attemptCount == 0)
+        #expect(store.record(for: key)?.status == .unverified)
+        #expect(session.diagnosticSnapshot().finalizingRatingKeyCount == 0)
+        #expect(manager.unverifiedRevalidationSnapshotForTesting().desired.contains(key))
+
+        manager.noteAppScenePhase("active")
+        #expect(await validator.waitForAttempts(1))
+        for _ in 0..<200 where store.record(for: key)?.status != .complete {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(store.record(for: key)?.status == .complete)
+        #expect(await validator.attemptCount == 1)
+    }
+
+    @MainActor
+    @Test func activeToInactiveCancelsOnlyHeldRevalidationAndActiveRetriesExactlyOnce() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("unverified-inactive-cancel-\(UUID().uuidString)",
+                                  isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DownloadStore(baseDirectory: directory)
+        let key = try seedUnverified("plex:inactive-cancel", in: store)
+        let validator = HeldRevalidationValidator()
+        let session = BackgroundDownloadSession(
+            store: store, protocolClasses: [],
+            playbackValidator: { _, _ in await validator.validate() })
+        defer { session.invalidateInjectedSessionForTesting() }
+        let manager = DownloadManager(
+            appModel: AppModel(identity: PlatformClientIdentity.make(
+                clientIdentifier: "inactive-cancel-test")),
+            store: store, session: session, registerForBackgroundEvents: false)
+
+        // Keep a publishing finalizer beside the probe. The lifecycle transition must not cancel
+        // this work: completed background transfers still need to publish `.unverified` and drain.
+        let publishingTask = Task<Void, Never> {
+            do { try await Task.sleep(for: .seconds(30)) } catch { return }
+        }
+        defer { publishingTask.cancel() }
+        let publishingToken = manager.downloadWorkRegistry.register(
+            publishingTask, for: key, kind: .finalizer)
+
+        manager.noteAppScenePhase("active")
+        #expect(await validator.waitForAttempts(1))
+        #expect(store.record(for: key)?.status == .unverified)
+
+        manager.noteAppScenePhase("inactive")
+        #expect(await validator.waitForCancellations(1))
+        for _ in 0..<100 where session.diagnosticSnapshot().finalizingRatingKeyCount != 0 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(session.diagnosticSnapshot().finalizingRatingKeyCount == 0)
+        #expect(store.record(for: key)?.status == .unverified)
+        #expect(!publishingTask.isCancelled)
+        #expect(manager.downloadWorkRegistry.snapshot().attempts
+            .first(where: { $0.key == key })?.entries.map(\.kind) == [.finalizer])
+        let parked = manager.unverifiedRevalidationSnapshotForTesting()
+        #expect(parked.inFlight.isEmpty)
+        #expect(parked.desired.contains(key))
+
+        await validator.allowSuccess()
+        manager.noteAppScenePhase("active")
+        #expect(await validator.waitForAttempts(2))
+        for _ in 0..<200 where store.record(for: key)?.status != .complete {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(store.record(for: key)?.status == .complete)
+        #expect(await validator.attemptCount == 2)
+        #expect(manager.downloadWorkRegistry.complete(key: key, token: publishingToken))
+    }
+
+    @MainActor
     @Test func inactiveSessionChangeAfterGateDrainCreatesNoFinalizerRequest() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("unverified-inactive-manager-\(UUID().uuidString)",
@@ -767,6 +863,24 @@ struct UnverifiedRevalidationLifecycleTests {
         let cancelPermitted = state.permitRetry(cancelKey, sceneIsActive: false)
         #expect(!cancelPermitted)
         #expect(state.desired.contains(cancelKey))
+    }
+
+    @Test func inactiveParksRunningRequestEvenAfterWatchdogMovedItToDesired() throws {
+        let key = try coordinatorKey("watchdog-inactive")
+        var state = UnverifiedRevalidationCoordinator()
+        let requestID = UUID()
+        let began = state.begin(key, preservesOvertakenRequest: false)
+        #expect(began)
+        let token = state.started(key, requestID: requestID)
+        let fired = state.timerFired(for: key, token: token, remainsUnverified: true)
+        #expect(fired)
+        #expect(state.inFlight.isEmpty)
+        #expect(state.desired.contains(key))
+
+        let running = state.parkRunningRequestsUntilActive()
+        #expect(running == [key])
+        #expect(state.desired.contains(key))
+        #expect(state.requestIDs[key] == requestID)
     }
 
     @Test func staleOldFinishCannotClearNewSameKeyRequestGeneration() throws {
@@ -964,6 +1078,43 @@ struct UnverifiedRevalidationLifecycleTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         try body(directory)
+    }
+}
+
+private actor HeldRevalidationValidator {
+    private(set) var attemptCount = 0
+    private(set) var cancellationCount = 0
+    private var succeeds = false
+
+    func validate() async -> BackgroundDownloadSession.PlaybackValidation {
+        attemptCount += 1
+        while !succeeds {
+            do {
+                try await Task.sleep(for: .milliseconds(10))
+            } catch {
+                cancellationCount += 1
+                return .init(played: false, reason: "cancelled", durationMs: nil, detail: nil)
+            }
+        }
+        return .init(played: true, reason: "played", durationMs: 60_000, detail: nil)
+    }
+
+    func allowSuccess() { succeeds = true }
+
+    func waitForAttempts(_ expected: Int) async -> Bool {
+        for _ in 0..<200 {
+            if attemptCount >= expected { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return false
+    }
+
+    func waitForCancellations(_ expected: Int) async -> Bool {
+        for _ in 0..<200 {
+            if cancellationCount >= expected { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return false
     }
 }
 

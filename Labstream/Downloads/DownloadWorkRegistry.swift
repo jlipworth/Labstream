@@ -22,6 +22,10 @@ final class DownloadWorkRegistry {
 
     enum Kind: Hashable, Sendable {
         case finalizer
+        /// Foreground-only local AVFoundation verification for an already-published
+        /// `.unverified` row. Unlike a publishing finalizer, this work may be cancelled when the
+        /// scene resigns active without interrupting transfer publication.
+        case revalidationFinalizer
         case sideCache(SideCacheKind)
         /// Encoder DELETE and other tombstone/journal-backed cleanup must survive ordinary row
         /// cancellation. Only exact task completion removes this work from the registry.
@@ -34,10 +38,32 @@ final class DownloadWorkRegistry {
         fileprivate var sortKey: String {
             switch self {
             case .finalizer: return "0-finalizer"
-            case .sideCache(let kind): return "1-side-cache-\(kind.rawValue)"
-            case .requiredCleanup: return "2-required-cleanup"
+            case .revalidationFinalizer: return "1-revalidation-finalizer"
+            case .sideCache(let kind): return "2-side-cache-\(kind.rawValue)"
+            case .requiredCleanup: return "3-required-cleanup"
             }
         }
+    }
+
+    /// Cancel only foreground revalidation probes. Publishing finalizers use the distinct
+    /// `.finalizer` kind and must continue while the app is inactive so completed transfers can
+    /// reach their durable `.unverified` terminal state and release the OS wake handler.
+    @discardableResult
+    func cancelRevalidationFinalizer(for key: DownloadAttemptKey) -> [Token] {
+        guard var entries = entriesByAttempt[key] else { return [] }
+        let cancelled = entries.values
+            .filter { $0.kind == .revalidationFinalizer }
+            .sorted { $0.token.id.uuidString < $1.token.id.uuidString }
+        for entry in cancelled {
+            entries.removeValue(forKey: entry.token)
+            entry.task.cancel()
+        }
+        if entries.isEmpty {
+            entriesByAttempt.removeValue(forKey: key)
+        } else {
+            entriesByAttempt[key] = entries
+        }
+        return cancelled.map(\.token)
     }
 
     enum AttemptCancellationMode: Sendable, Equatable {
@@ -152,8 +178,10 @@ final class DownloadWorkRegistry {
                 guard $0.kind.isCancellableWithAttempt else { return false }
                 switch (mode, $0.kind) {
                 case (.preservingFinalizer, .finalizer),
+                     (.preservingFinalizer, .revalidationFinalizer),
                      (.preservingSideCache, .sideCache(_)),
                      (.preservingFinalizerAndSideCache, .finalizer),
+                     (.preservingFinalizerAndSideCache, .revalidationFinalizer),
                      (.preservingFinalizerAndSideCache, .sideCache(_)):
                     return false
                 default:

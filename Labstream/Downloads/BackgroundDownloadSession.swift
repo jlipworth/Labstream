@@ -100,6 +100,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         fileprivate let expectedExactBytes: Int?
         fileprivate let publishesWorkingFile: Bool
         fileprivate let holdsBackgroundCompletion: Bool
+        var isRevalidation: Bool { !publishesWorkingFile }
+    }
+
+    struct PlaybackValidation: Sendable {
+        let played: Bool
+        let reason: String
+        let durationMs: Int?
+        let detail: String?
     }
 
     enum StartupActivationResult: Sendable, Equatable {
@@ -248,6 +256,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// mechanism; if the blob is missing, stale, or loses its temp file, we fall back to the durable
     /// partial file size and create a fresh open-ended Range task from there.
     private static let playbackValidationLimiter = DownloadPlaybackValidationLimiter()
+    private let injectedPlaybackValidator:
+        (@Sendable (URL, Double?) async -> PlaybackValidation)?
     private static let rangeProgressDiagnosticByteInterval = 32 * 1_024 * 1_024
     private let rangeRemainderPolicy = StaticRangeRemainderRequestPolicy()
     /// #169: a finished Range response-body append must not run on the (serial) URLSession delegate
@@ -613,9 +623,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
     #endif
 
-    init(store: DownloadStore, protocolClasses: [AnyClass]? = nil) {
+    init(
+        store: DownloadStore,
+        protocolClasses: [AnyClass]? = nil,
+        playbackValidator: (@Sendable (URL, Double?) async -> PlaybackValidation)? = nil
+    ) {
         self.store = store
         self.injectedProtocolClasses = protocolClasses
+        self.injectedPlaybackValidator = playbackValidator
         super.init()
     }
 
@@ -5168,7 +5183,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 return
             }
             defer { Task { await Self.playbackValidationLimiter.signal() } }
-            validation = await Self.validateLocalPlayback(destination)
+            validation = await validateLocalPlayback(destination)
             guard !Task.isCancelled else { return }
             if !validation.played {
                 // #187: keep headset-idle finalization bounded. Multiple long AVPlayer probes in
@@ -5179,7 +5194,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 for extraTimeout in [15.0] {
                     downloadLog.notice("playback-probe retry ratingKey=\(ratingKey, privacy: .public) reason=\(validation.reason, privacy: .public) nextTimeout=\(extraTimeout, privacy: .public)")
                     do { try await Task.sleep(for: .seconds(2)) } catch { return }
-                    validation = await Self.validateLocalPlayback(destination, timeoutSecondsOverride: extraTimeout)
+                    validation = await validateLocalPlayback(
+                        destination, timeoutSecondsOverride: extraTimeout)
                     guard !Task.isCancelled else { return }
                     if validation.played { break }
                 }
@@ -5467,8 +5483,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// - Parameter timeoutSecondsOverride: when set, overrides the policy's ready/play deadline.
     ///   Used by the GH #98 retry to give a busy device more time before condemning a complete file.
     /// - Returns: `detail` carries `AVPlayerItem.error` on an `item_failed` result, for diagnosis.
-    private static func validateLocalPlayback(_ url: URL, timeoutSecondsOverride: Double? = nil)
+    private func validateLocalPlayback(_ url: URL, timeoutSecondsOverride: Double? = nil)
         async -> (played: Bool, reason: String, durationMs: Int?, detail: String?) {
+        if let injectedPlaybackValidator {
+            let result = await injectedPlaybackValidator(url, timeoutSecondsOverride)
+            return (result.played, result.reason, result.durationMs, result.detail)
+        }
+        return await Self.validateLocalPlaybackUsingAVFoundation(
+            url, timeoutSecondsOverride: timeoutSecondsOverride)
+    }
+
+    private static func validateLocalPlaybackUsingAVFoundation(
+        _ url: URL, timeoutSecondsOverride: Double? = nil
+    ) async -> (played: Bool, reason: String, durationMs: Int?, detail: String?) {
         let asset = AVURLAsset(url: url)
         let item = AVPlayerItem(asset: asset)
         let player = AVPlayer(playerItem: item)
