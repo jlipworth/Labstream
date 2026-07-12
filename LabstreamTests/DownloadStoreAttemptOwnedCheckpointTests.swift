@@ -27,15 +27,11 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
                 offset: 32, length: 3, relativePath: "mixed-artifact-held.body")
             try Data([7, 8, 9]).write(
                 to: directory.appendingPathComponent(segment.relativePath))
-            guard case .accepted = store.submitHeldRangeSegment(for: owner, segment: segment) else {
+            guard case .accepted(let successor) = store.submitHeldRangeSegment(
+                for: owner, segment: segment) else {
                 Issue.record("held successor rejected"); return
             }
-
-            let watermark = store.currentArtifactLifecycleWatermark()
-            guard case .committed = await store.flushLifecycleAndPersistence(
-                through: store.currentPersistenceTicket(),
-                artifactWatermark: watermark,
-                timeout: 1) else {
+            guard case .completed = store.resolveArtifactSynchronously(successor.ticket) else {
                 Issue.record("mixed queue did not drain after successor submission"); return
             }
             #expect(store.resumeData(for: owner) == Data("resume-after-retry".utf8))
@@ -77,15 +73,11 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
                 offset: 64, length: 2, relativePath: "held-terminal-replanned.body")
             try Data([5, 6]).write(
                 to: directory.appendingPathComponent(replanned.relativePath))
-            guard case .accepted = store.submitHeldRangeSegment(for: owner, segment: replanned) else {
+            guard case .accepted(let successor) = store.submitHeldRangeSegment(
+                for: owner, segment: replanned) else {
                 Issue.record("replanned replacement rejected"); return
             }
-
-            let watermark = store.currentArtifactLifecycleWatermark()
-            guard case .committed = await store.flushLifecycleAndPersistence(
-                through: store.currentPersistenceTicket(),
-                artifactWatermark: watermark,
-                timeout: 1) else {
+            guard case .completed = store.resolveArtifactSynchronously(successor.ticket) else {
                 Issue.record("terminal-failed held queue did not drain after replan"); return
             }
             #expect(store.record(for: owner)?.metadata?.heldRangeSegments == [replanned])
