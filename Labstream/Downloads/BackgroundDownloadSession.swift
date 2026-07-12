@@ -1428,7 +1428,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             }
             if !invalidManifests.isEmpty {
                 guard case .accepted(let removal) = store.removeHeldRangeSegments(
-                    for: attemptKey, offsets: invalidManifests.map(\.offset)) else { continue }
+                    for: attemptKey,
+                    offsets: invalidManifests.map(\.offset),
+                    deletingRelativePaths: invalidManifests.compactMap { $0.url?.lastPathComponent }
+                ) else { continue }
                 guard removal.committed else {
                     recordUncommittedHeldManifestRemoval(
                         ratingKey: ratingKey,
@@ -1437,13 +1440,18 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     )
                     continue
                 }
+                guard case .purged(let cleanup) = store.completeDeferredHeldRangeBodyDeletions(
+                    for: attemptKey, removal: removal) else { continue }
                 for invalid in invalidManifests {
-                    if let url = invalid.url { try? fileManager.removeItem(at: url) }
                     AppDiagnostics.record(.downloads, "downloads.range_held_manifest_discarded", fields: [
                         "download_id": .identifier(ratingKey),
                         "base_offset": .int(invalid.offset),
                         "manifest_length": .int(invalid.length),
                         "actual_length": .int(invalid.actualLength ?? -1),
+                        "body_delete_deferred": .bool(
+                            invalid.url.map {
+                                cleanup.failedRelativePaths.contains($0.lastPathComponent)
+                            } ?? false),
                     ])
                 }
             }

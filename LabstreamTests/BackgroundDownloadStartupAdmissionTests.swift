@@ -219,6 +219,94 @@ struct BackgroundDownloadStartupAdmissionTests {
         }
     }
 
+    @Test func invalidHeldManifestCommitFailurePreservesBodyAndManifestAcrossRelaunch() async throws {
+        try await withTemporaryDirectory { directory in
+            let initial = DownloadStore(baseDirectory: directory)
+            let key = DownloadAttemptKey(
+                ratingKey: "plex:invalid-held-commit",
+                attemptID: try #require(DownloadAttemptID(rawValue: "attempt-a")))
+            let stable = initial.destinationURL(ratingKey: key.ratingKey, ext: "mp4")
+            let record = DownloadRecord(
+                ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Invalid",
+                localURL: stable, status: .paused,
+                metadata: OfflineMetadata(
+                    ratingKey: key.ratingKey, title: "Invalid", type: "movie",
+                    resumeMode: .staticByteRange))
+            #expect(initial.createAttemptOwnedRecord(record, attemptID: key.attemptID)
+                == .committed(key))
+            let working = try #require(initial.attemptWorkingFileURL(for: key))
+            try Data().write(to: working)
+            let manifest = OfflineHeldRangeSegment(
+                offset: 64, length: 4, relativePath: "invalid-held-commit.body")
+            let body = directory.appendingPathComponent(manifest.relativePath)
+            try Data([1, 2, 3]).write(to: body) // length mismatch makes launch restoration discard
+            guard case .accepted = initial.persistHeldRangeSegment(for: key, segment: manifest) else {
+                Issue.record("Expected manifest"); return
+            }
+
+            let writes = StartupFailFirstIndexWrite()
+            let store = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init { data, url in try writes.write(data, to: url) })
+            let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+            defer { session.invalidateInjectedSessionForTesting() }
+            #expect(await activate(session, resetKeys: []) == .activated(
+                cancelledTaskCount: 0, resetKeyCount: 0))
+            await withCheckedContinuation { continuation in
+                session.reattach { _ in continuation.resume() }
+            }
+
+            #expect(FileManager.default.fileExists(atPath: body.path))
+            let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(relaunched.record(for: key)?.metadata?.heldRangeSegments == [manifest])
+            #expect(FileManager.default.fileExists(atPath: body.path))
+        }
+    }
+
+    @Test func invalidHeldManifestDeleteFaultRetainsIntentUntilHealthyRelaunch() async throws {
+        try await withTemporaryDirectory { directory in
+            let initial = DownloadStore(baseDirectory: directory)
+            let key = DownloadAttemptKey(
+                ratingKey: "jellyfin:invalid-held-delete",
+                attemptID: try #require(DownloadAttemptID(rawValue: "attempt-a")))
+            let stable = initial.destinationURL(ratingKey: key.ratingKey, ext: "mkv")
+            let record = DownloadRecord(
+                ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Invalid",
+                localURL: stable, status: .paused,
+                metadata: OfflineMetadata(
+                    ratingKey: key.ratingKey, title: "Invalid", type: "movie",
+                    resumeMode: .staticByteRange))
+            #expect(initial.createAttemptOwnedRecord(record, attemptID: key.attemptID)
+                == .committed(key))
+            try Data().write(to: try #require(initial.attemptWorkingFileURL(for: key)))
+            let manifest = OfflineHeldRangeSegment(
+                offset: 64, length: 4, relativePath: "invalid-held-delete.body")
+            let body = directory.appendingPathComponent(manifest.relativePath)
+            try Data([9, 8, 7]).write(to: body)
+            guard case .accepted = initial.persistHeldRangeSegment(for: key, segment: manifest) else {
+                Issue.record("Expected manifest"); return
+            }
+
+            let failingFiles = StartupSelectiveRemovalFailureFileManager(blockedPath: body.path)
+            let store = DownloadStore(baseDirectory: directory, fileManager: failingFiles)
+            let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+            defer { session.invalidateInjectedSessionForTesting() }
+            #expect(await activate(session, resetKeys: []) == .activated(
+                cancelledTaskCount: 0, resetKeyCount: 0))
+            await withCheckedContinuation { continuation in
+                session.reattach { _ in continuation.resume() }
+            }
+            #expect(store.record(for: key)?.metadata?.heldRangeSegments == nil)
+            #expect(store.deferredHeldRangeBodyDeletionRelativePaths(for: key)
+                == [manifest.relativePath])
+            #expect(FileManager.default.fileExists(atPath: body.path))
+
+            let healthyRelaunch = DownloadStore(baseDirectory: directory)
+            #expect(healthyRelaunch.deferredHeldRangeBodyDeletionRelativePaths(for: key) == [])
+            #expect(!FileManager.default.fileExists(atPath: body.path))
+        }
+    }
+
     @Test func finalizerAdmissionRejectsDuplicateAndAbandonBalancesGate() async throws {
         try await withTemporaryDirectory { directory in
             let store = DownloadStore(baseDirectory: directory)
@@ -474,4 +562,32 @@ private final class HeldRangeFailureURLProtocol: URLProtocol, @unchecked Sendabl
     }
 
     override func stopLoading() {}
+}
+
+private final class StartupFailFirstIndexWrite: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func write(_ data: Data, to url: URL) throws {
+        let shouldFail = lock.withLock {
+            count += 1
+            return count == 1
+        }
+        if shouldFail { throw CocoaError(.fileWriteOutOfSpace) }
+        try data.write(to: url, options: .atomic)
+    }
+}
+
+private final class StartupSelectiveRemovalFailureFileManager: FileManager, @unchecked Sendable {
+    private let blockedPath: String
+
+    init(blockedPath: String) {
+        self.blockedPath = blockedPath
+        super.init()
+    }
+
+    override func removeItem(at URL: URL) throws {
+        if URL.path == blockedPath { throw CocoaError(.fileWriteNoPermission) }
+        try super.removeItem(at: URL)
+    }
 }

@@ -1282,14 +1282,19 @@ final class DownloadStore: @unchecked Sendable {
         for key: DownloadAttemptKey,
         removal: HeldRangeSegmentsRemovalResult
     ) -> AttemptHeldRangeSegmentsPurgeResult {
+        guard removal.committed else {
+            return .purged(AttemptHeldRangePurgeResult(
+                removal: removal, removedRelativePaths: [], failedRelativePaths: []))
+        }
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
               !row.legacyResetPending else {
             lock.unlock()
             return .staleOrMissing
         }
-        let currentlyReferenced = Set(
-            row.metadata?.heldRangeSegments?.map(\.relativePath) ?? [])
+        let currentlyReferenced = heldRangeManifestRelativePathsLocked()
+        let protectedByManifest = Set(row.heldRangeBodyDeletionIntents)
+            .intersection(currentlyReferenced)
         let candidates = row.heldRangeBodyDeletionIntents
             .filter(Self.isSafeOneLevelRelativePath)
             .filter { !currentlyReferenced.contains($0) }
@@ -1306,8 +1311,8 @@ final class DownloadStore: @unchecked Sendable {
                 failed.append(relativePath)
             }
         }
-        let removedSet = Set(removed)
-        row.heldRangeBodyDeletionIntents.removeAll { removedSet.contains($0) }
+        let completed = Set(removed).union(protectedByManifest)
+        row.heldRangeBodyDeletionIntents.removeAll { completed.contains($0) }
         rows[key.ratingKey] = row
         let cleanupTicket = enqueueAttemptPersistenceLocked()
         lock.unlock()
@@ -3420,14 +3425,19 @@ final class DownloadStore: @unchecked Sendable {
     private func recoverDeferredHeldRangeBodyDeletions() {
         lock.lock()
         var changed = false
+        let globallyReferenced = heldRangeManifestRelativePathsLocked()
         for (ratingKey, original) in rows {
             guard !original.heldRangeBodyDeletionIntents.isEmpty else { continue }
             var row = original
-            let referenced = Set(row.metadata?.heldRangeSegments?.map(\.relativePath) ?? [])
             var completed = Set<String>()
-            for relativePath in row.heldRangeBodyDeletionIntents
-                where Self.isSafeOneLevelRelativePath(relativePath)
-                    && !referenced.contains(relativePath) {
+            for relativePath in row.heldRangeBodyDeletionIntents {
+                guard Self.isSafeOneLevelRelativePath(relativePath) else { continue }
+                if globallyReferenced.contains(relativePath) {
+                    // Another durable manifest owns this shared/pathological reference now. Clear
+                    // A's deletion claim without touching the body; the manifest remains authority.
+                    completed.insert(relativePath)
+                    continue
+                }
                 let url = baseDirectory.appendingPathComponent(relativePath)
                 do {
                     if fileManager.fileExists(atPath: url.path) {
@@ -3446,6 +3456,14 @@ final class DownloadStore: @unchecked Sendable {
         lock.unlock()
         // If clearing the already-executed intents fails, the next launch safely replays them.
         _ = waitForPersistence(through: ticket)
+    }
+
+    /// Must be called with `lock` held. Cross-row protection is deliberate: malformed/imported
+    /// indexes can share a relative path, and exact attempt A must never delete a body still named
+    /// by any current manifest (including a different rating key).
+    private func heldRangeManifestRelativePathsLocked() -> Set<String> {
+        Set(rows.values.flatMap { $0.metadata?.heldRangeSegments?.map(\.relativePath) ?? [] }
+            .filter(Self.isSafeOneLevelRelativePath))
     }
 
     private func cachedSubtitleTracksFromDisk(ratingKey: String) -> [OfflineTextSubtitleTrack]? {
