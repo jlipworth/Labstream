@@ -257,6 +257,12 @@ final class DownloadStore: @unchecked Sendable {
         case persistenceFailed(PersistenceFlushResult)
     }
 
+    enum AttemptResumeDataSubmission: Sendable, Equatable {
+        case accepted(ticket: PersistenceTicket)
+        case staleOrMissing
+        case artifactWriteFailed(errorType: String)
+    }
+
     enum AttemptHeldRangeSegmentPersistResult: Sendable, Equatable {
         case accepted(
             previous: OfflineHeldRangeSegment?,
@@ -2252,6 +2258,24 @@ final class DownloadStore: @unchecked Sendable {
         _ data: Data,
         displayBytes: Int? = nil
     ) -> AttemptResumeDataWriteResult {
+        switch submitResumeData(for: key, data, displayBytes: displayBytes) {
+        case .staleOrMissing:
+            return .staleOrMissing
+        case .artifactWriteFailed(let errorType):
+            return .artifactWriteFailed(errorType: errorType)
+        case .accepted(let ticket):
+            let persistence = waitForPersistence(through: ticket)
+            return persistence.result.committed(through: ticket)
+                ? .applied : .persistenceFailed(persistence.result)
+        }
+    }
+
+    @discardableResult
+    func submitResumeData(
+        for key: DownloadAttemptKey,
+        _ data: Data,
+        displayBytes: Int? = nil
+    ) -> AttemptResumeDataSubmission {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
               !row.legacyResetPending, var metadata = row.metadata else {
@@ -2274,9 +2298,7 @@ final class DownloadStore: @unchecked Sendable {
         rows[key.ratingKey] = row
         let ticket = enqueueAttemptPersistenceLocked()
         lock.unlock()
-        let persistence = waitForPersistence(through: ticket)
-        return persistence.result.committed(through: persistence.ticket)
-            ? .applied : .persistenceFailed(persistence.result)
+        return .accepted(ticket: ticket)
     }
 
     /// #95: the persisted resume blob for a row, if present on disk. `nil` when the row has no
@@ -2371,6 +2393,16 @@ final class DownloadStore: @unchecked Sendable {
         for key: DownloadAttemptKey,
         clearDisplayBytes: Bool = true
     ) -> AttemptMutationResult {
+        awaitAttemptMutationSubmission(
+            submitClearResumeData(for: key, clearDisplayBytes: clearDisplayBytes)
+        )
+    }
+
+    @discardableResult
+    func submitClearResumeData(
+        for key: DownloadAttemptKey,
+        clearDisplayBytes: Bool = true
+    ) -> AttemptMutationSubmission {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
               !row.legacyResetPending, var metadata = row.metadata else {
@@ -2386,9 +2418,7 @@ final class DownloadStore: @unchecked Sendable {
         guard changed else {
             let ticket = enqueueAttemptPersistenceLocked()
             lock.unlock()
-            let persistence = waitForPersistence(through: ticket)
-            return persistence.result.committed(through: persistence.ticket)
-                ? .noChange : .persistenceFailed(persistence.result)
+            return .accepted(change: .noChange, ticket: ticket)
         }
         metadata.resumeDataRelativePath = nil
         if clearDisplayBytes { metadata.resumeDisplayBytes = nil }
@@ -2397,9 +2427,7 @@ final class DownloadStore: @unchecked Sendable {
         rows[key.ratingKey] = row
         let ticket = enqueueAttemptPersistenceLocked()
         lock.unlock()
-        let persistence = waitForPersistence(through: ticket)
-        return persistence.result.committed(through: persistence.ticket)
-            ? .applied : .persistenceFailed(persistence.result)
+        return .accepted(change: .applied, ticket: ticket)
     }
 
     /// #169: the HTTP validator (`ETag`/`Last-Modified`) for a static byte-range download, captured

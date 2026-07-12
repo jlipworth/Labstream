@@ -2297,7 +2297,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                             ])
                             guard self.pauseStillApplies(for: attemptKey) else { return }
                             if let resumeData, !resumeData.isEmpty, supportsResume {
-                                self.store.setResumeData(for: attemptKey, resumeData, displayBytes: displayBytes)
+                                self.store.submitResumeData(for: attemptKey, resumeData, displayBytes: displayBytes)
                             }
                             self.markPausedAfterUserPause(for: attemptKey)
                         }
@@ -2407,7 +2407,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 let hasBlob = resumeData?.isEmpty == false
                 if StaticRangeResumeDataPolicy.shouldPersistBlobOnPark(hasResumeData: hasBlob),
                    let resumeData {
-                    self.store.setResumeData(for: key, resumeData, displayBytes: rangeResumeDisplayBytes)
+                    self.store.submitResumeData(for: key, resumeData, displayBytes: rangeResumeDisplayBytes)
                 }
                 AppDiagnostics.record(.downloads, "downloads.range_pause_resume_data", fields: [
                     "download_id": .identifier(ratingKey),
@@ -5583,7 +5583,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 } else {
                     displayBytes = rangeEntry.baseOffset + max(rangeEntry.bodyBytesWritten, Int(max(task.countOfBytesReceived, 0)))
                 }
-                store.setResumeData(for: rangeEntry.attemptKey, rangeResumeData, displayBytes: displayBytes)
+                store.submitResumeData(for: rangeEntry.attemptKey, rangeResumeData, displayBytes: displayBytes)
             }
             // A non-transient interruption (commonly a long headset-off that outlived the OS's own
             // retry, or connectivity loss) leaves the durable partial's completed bytes intact — the
@@ -5673,7 +5673,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     "error": .error(error),
                     "bytes_received": .bytes(Int(task.countOfBytesReceived)),
                 ])
-                store.setResumeData(for: entry.attemptKey, resumeData, displayBytes: displayBytes)
+                store.submitResumeData(for: entry.attemptKey, resumeData, displayBytes: displayBytes)
                 clearRetryCount(for: entry.attemptKey)
                 _ = store.submitStatus(for: entry.attemptKey, .paused)
                 onError?(entry.ratingKey, .interruptedResumable)
@@ -6042,7 +6042,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // (the transfer will fall back to a fresh Range from `durableBytes`). Drop the stale blob
             // AND its display watermark in the same breath, or the paused/queued row keeps claiming a
             // byte position the transfer no longer holds (the "resuming from another point" leak).
-            _ = store.clearResumeData(for: attemptKey)
+            _ = store.submitClearResumeData(for: attemptKey)
             AppDiagnostics.record(.downloads, "downloads.range_blob_resume_stale", fields: [
                 "download_id": .identifier(ratingKey),
                 "blob_offset": .int(blobOffset ?? -1),
