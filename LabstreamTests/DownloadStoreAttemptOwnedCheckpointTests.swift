@@ -5,6 +5,41 @@ import Testing
 
 @Suite("DownloadStore attempt-owned checkpoints")
 struct DownloadStoreAttemptOwnedCheckpointTests {
+    @Test func heldReplacementLifecycleReturnsBeforePreparedCommitAndCoversTerminalClear() async throws {
+        try await withStoreAsync { initial, directory in
+            let owner = key("plex:held-ticket", "attempt-a")
+            let media = directory.appendingPathComponent("held-ticket.mp4")
+            #expect(created(initial, key: owner, media: media))
+            let old = OfflineHeldRangeSegment(
+                offset: 64, length: 4, relativePath: "held-old.body")
+            try Data([1, 2, 3, 4]).write(
+                to: directory.appendingPathComponent(old.relativePath))
+            guard case .accepted = initial.persistHeldRangeSegment(for: owner, segment: old) else {
+                Issue.record("old seed failed"); return
+            }
+            let gate = BlockFirstHeldIndexWrite()
+            let store = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init { data, url in try gate.write(data, to: url) })
+            let next = OfflineHeldRangeSegment(
+                offset: 64, length: 4, relativePath: "held-next.body")
+            try Data([5, 6, 7, 8]).write(
+                to: directory.appendingPathComponent(next.relativePath))
+            guard case .accepted(let submission) = store.submitHeldRangeSegment(
+                for: owner, segment: next) else {
+                Issue.record("submission rejected"); return
+            }
+            #expect(await signal(gate.started, timeout: 1))
+            #expect(FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent(old.relativePath).path))
+            gate.release.signal()
+            #expect(store.resolveArtifactSynchronously(submission.ticket) == .completed)
+            #expect(!FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent(old.relativePath).path))
+            #expect(store.record(for: owner)?.metadata?.heldRangeSegments == [next])
+            #expect(store.deferredHeldRangeBodyDeletionRelativePaths(for: owner)?.isEmpty == true)
+        }
+    }
     @Test func staleAttemptCannotReadOrMutateReplacementCheckpointState() throws {
         try withStore { store, directory in
             let a = key("plex:checkpoint", "attempt-a")
@@ -317,6 +352,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
                 == [segment.relativePath])
 
             let relaunched = DownloadStore(baseDirectory: directory)
+            _ = relaunched.resolveArtifactSynchronouslyForTests(through: relaunched.currentArtifactLifecycleWatermark())
             #expect(!FileManager.default.fileExists(atPath: body.path))
             #expect(relaunched.record(for: owner)?.metadata?.heldRangeSegments == nil)
             #expect(relaunched.deferredHeldRangeBodyDeletionRelativePaths(for: owner) == [])
@@ -357,6 +393,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             // Disk still has the intent because clearing it faulted after body deletion. Relaunch
             // treats the absent file as idempotent success and durably clears only A's authority.
             let relaunched = DownloadStore(baseDirectory: directory)
+            _ = relaunched.resolveArtifactSynchronouslyForTests(through: relaunched.currentArtifactLifecycleWatermark())
             #expect(relaunched.ownsAttempt(owner))
             #expect(relaunched.deferredHeldRangeBodyDeletionRelativePaths(for: owner) == [])
             #expect(!FileManager.default.fileExists(atPath: body.path))
@@ -448,6 +485,7 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             #expect(FileManager.default.fileExists(atPath: bodyY.path))
 
             let relaunched = DownloadStore(baseDirectory: directory)
+            _ = relaunched.resolveArtifactSynchronouslyForTests(through: relaunched.currentArtifactLifecycleWatermark())
             #expect(relaunched.record(for: owner)?.metadata?.heldRangeSegments == [y])
             #expect(FileManager.default.fileExists(atPath: bodyY.path))
             // R1 itself was durable, so relaunch may idempotently finish X only.
@@ -580,6 +618,27 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         try await body(DownloadStore(baseDirectory: directory), directory)
+    }
+
+    private func signal(_ semaphore: DispatchSemaphore, timeout: TimeInterval) async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: semaphore.wait(
+                    timeout: .now() + timeout) == .success)
+            }
+        }
+    }
+}
+
+private final class BlockFirstHeldIndexWrite: @unchecked Sendable {
+    let started = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var count = 0
+    func write(_ data: Data, to url: URL) throws {
+        let first = lock.withLock { count += 1; return count == 1 }
+        if first { started.signal(); release.wait() }
+        try DownloadIndexFileCommitter().commit(data, to: url)
     }
 }
 
