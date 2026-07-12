@@ -930,10 +930,13 @@ final class PlaybackController {
         let needChapters = chapters.isEmpty
         let needStreams = streamingPart?.audioStreams.isEmpty ?? true
         guard isStreaming, needChapters || needStreams, let server, let token else { return false }
-        let req = BrowseAPI.metadata(server: server, token: token,
-                                     identity: identity, ratingKey: item.ratingKey)
-        guard let resp = try? await client.send(req, as: MetadataResponse.self),
-              let full = resp.mediaContainer.metadata.first else { return false }
+        let browseSession = BackendSession(kind: .plex, baseURL: server, token: token)
+        let browseClient = client
+        guard let service = try? PlexBrowseService(
+            session: browseSession,
+            identity: identity,
+            send: { request in try await browseClient.send(request) }
+        ), let full = try? await service.metadata(ratingKey: item.ratingKey) else { return false }
         refreshedItem = full
         if let markers = full.markers, !markers.isEmpty {
             skipRanges = Self.deriveSkipRanges(from: markers)

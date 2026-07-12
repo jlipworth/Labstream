@@ -139,16 +139,13 @@ struct ContainerBrowserView: View {
             return
         }
 
-        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
+        guard let service = try? PlexBrowseService(appModel: appModel) else {
             loadState = .failed("No server selected.")
             return
         }
         loadState = .loading
-        let req = BrowseAPI.children(server: server, token: token,
-                                     identity: appModel.identity, ratingKey: container.ratingKey)
         do {
-            let resp = try await appModel.client.send(req, as: MetadataResponse.self)
-            let loaded = resp.mediaContainer.metadata
+            let loaded = try await service.children(ratingKey: container.ratingKey)
             let normalized = loaded.normalizedForContainerBrowser(childrenAreEpisodes: childrenAreEpisodes)
             recordContainerChildrenDiagnostics(loaded, normalized: normalized, backend: "Plex")
             children = normalized

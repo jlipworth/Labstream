@@ -816,10 +816,8 @@ struct DetailView: View {
         case .emby:
             full = try? await EmbyBrowseService(appModel: appModel).metadata(itemId: ratingKey)
         case .plex:
-            guard let server = appModel.serverBaseURL, let token = appModel.serverToken else { return nil }
-            let req = BrowseAPI.metadata(server: server, token: token,
-                                         identity: appModel.identity, ratingKey: ratingKey)
-            full = (try? await appModel.client.send(req, as: MetadataResponse.self))?.mediaContainer.metadata.first
+            guard let service = try? PlexBrowseService(appModel: appModel) else { return nil }
+            full = try? await service.metadata(ratingKey: ratingKey)
         }
         guard let media = full?.media?.first else { return nil }
         let label = MediaVersionLabel.versionLabel(for: media)
