@@ -973,6 +973,92 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
         }
     }
 
+    @Test func reconcileDoesNotDestroyValidatedBodyBehindPendingPromotionIntent() async throws {
+        try await withStoreAsync { initial, directory in
+            let owner = key("jellyfin:promotion-reconcile-race", "attempt-a")
+            let stable = directory.appendingPathComponent("promotion-reconcile-race.mp4")
+            #expect(createdLiveForwardOnly(initial, key: owner, media: stable))
+            let working = try #require(initial.attemptWorkingFileURL(for: owner))
+            try Data("validated".utf8).write(to: working)
+
+            // Durable prepared `.validatedPromotion` head with the process "hard-killed" before
+            // source capture: park the original store's stat and abandon it mid-flight.
+            let originalGate = BlockFirstPromotionStat()
+            let live = DownloadPromotionFilesystem.live
+            let original = DownloadStore(
+                baseDirectory: directory,
+                promotionFilesystem: .init(
+                    exists: live.exists,
+                    size: { url in originalGate.size(url, using: live.size) },
+                    fullSyncSource: live.fullSyncSource,
+                    renameReplacing: live.renameReplacing,
+                    syncParentDirectory: live.syncParentDirectory))
+            let submission = original.submitValidatedPromotion(for: owner, terminalStatus: .complete)
+            #expect(await signal(originalGate.started, timeout: 1))
+
+            // Relaunch: intent replay is scheduled but parked at its own stat — the async
+            // replay-vs-reconcile window. Reconcile must not demote the liveForwardOnly row
+            // to `.failed` or delete the working file that IS the fully-validated body.
+            let replayGate = BlockFirstPromotionStat()
+            let relaunched = DownloadStore(
+                baseDirectory: directory,
+                promotionFilesystem: .init(
+                    exists: live.exists,
+                    size: { url in replayGate.size(url, using: live.size) },
+                    fullSyncSource: live.fullSyncSource,
+                    renameReplacing: live.renameReplacing,
+                    syncParentDirectory: live.syncParentDirectory))
+            #expect(await signal(replayGate.started, timeout: 1))
+            relaunched.reconcile(liveRatingKeys: [], snapshotRatingKeys: [owner.ratingKey])
+            #expect(relaunched.status(for: owner.ratingKey) == .downloading)
+            #expect(FileManager.default.fileExists(atPath: working.path))
+
+            replayGate.release.signal()
+            #expect(relaunched.resolveArtifactSynchronouslyForTests(
+                through: relaunched.currentArtifactLifecycleWatermark()) == .completed)
+            #expect(relaunched.record(for: owner)?.status == .complete)
+            #expect(relaunched.record(for: owner)?.bytes == 9)
+            originalGate.release.signal()
+            _ = await original.resolveValidatedPromotion(submission)
+        }
+    }
+
+    @Test func promotionIntentWithPermanentlyMissingSourceAbandonsAndAdmitsRetry() async throws {
+        try await withStoreAsync { initial, directory in
+            let owner = key("jellyfin:promotion-missing-source", "attempt-a")
+            let stable = directory.appendingPathComponent("promotion-missing-source.mp4")
+            #expect(createdLiveForwardOnly(initial, key: owner, media: stable))
+            let working = try #require(initial.attemptWorkingFileURL(for: owner))
+            try Data("validated".utf8).write(to: working)
+            let gate = BlockFirstPromotionStat()
+            let live = DownloadPromotionFilesystem.live
+            let original = DownloadStore(
+                baseDirectory: directory,
+                promotionFilesystem: .init(
+                    exists: live.exists,
+                    size: { url in gate.size(url, using: live.size) },
+                    fullSyncSource: live.fullSyncSource,
+                    renameReplacing: live.renameReplacing,
+                    syncParentDirectory: live.syncParentDirectory))
+            let submission = original.submitValidatedPromotion(for: owner, terminalStatus: .complete)
+            #expect(await signal(gate.started, timeout: 1))
+            // The validated body is destroyed while the durable prepared intent is at head.
+            // No replay can ever publish it: the head must abandon (row demoted to retryable
+            // `.failed`) instead of looping `.sourceMissing` and wedging every retry behind
+            // `.artifactLifecyclePending`.
+            try FileManager.default.removeItem(at: working)
+
+            let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(relaunched.resolveArtifactSynchronouslyForTests(
+                through: relaunched.currentArtifactLifecycleWatermark()) == .completed)
+            #expect(relaunched.record(for: owner)?.status == .failed)
+            let retry = key(owner.ratingKey, "attempt-b")
+            #expect(created(relaunched, key: retry, media: stable, replacing: owner.attemptID))
+            gate.release.signal()
+            _ = await original.resolveValidatedPromotion(submission)
+        }
+    }
+
     private func key(_ ratingKey: String, _ attempt: String) -> DownloadAttemptKey {
         DownloadAttemptKey(
             ratingKey: ratingKey,
@@ -1003,6 +1089,34 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             metadata: metadata)
         if case .committed(let actual) = store.createAttemptOwnedRecord(
             record, attemptID: key.attemptID, replacing: replacing) {
+            return actual == key
+        }
+        return false
+    }
+
+    /// Jellyfin/Emby transcode lanes: a live encoder stream whose reconcile path demotes
+    /// non-live rows to `.failed` and deletes the working file — the D2 destruction lane.
+    private func createdLiveForwardOnly(
+        _ store: DownloadStore,
+        key: DownloadAttemptKey,
+        media: URL
+    ) -> Bool {
+        let metadata = OfflineMetadata(
+            ratingKey: key.ratingKey,
+            title: "Item",
+            type: "movie",
+            resumeMode: .liveForwardOnly)
+        let record = DownloadRecord(
+            ratingKey: key.ratingKey,
+            attemptID: key.attemptID,
+            title: "Item",
+            localURL: media,
+            bytes: 0,
+            progress: 0,
+            status: .downloading,
+            metadata: metadata)
+        if case .committed(let actual) = store.createAttemptOwnedRecord(
+            record, attemptID: key.attemptID) {
             return actual == key
         }
         return false
@@ -1047,6 +1161,23 @@ private final class BlockFirstHeldIndexWrite: @unchecked Sendable {
         let first = lock.withLock { count += 1; return count == 1 }
         if first { started.signal(); release.wait() }
         try DownloadIndexFileCommitter().commit(data, to: url)
+    }
+}
+
+private final class BlockFirstPromotionStat: @unchecked Sendable {
+    let started = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var blocked = false
+
+    func size(_ url: URL, using body: @Sendable (URL) -> Int?) -> Int? {
+        let first = lock.withLock {
+            if blocked { return false }
+            blocked = true
+            return true
+        }
+        if first { started.signal(); release.wait() }
+        return body(url)
     }
 }
 

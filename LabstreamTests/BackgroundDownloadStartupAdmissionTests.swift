@@ -221,6 +221,94 @@ struct BackgroundDownloadStartupAdmissionTests {
         }
     }
 
+    // D5: `reattach` finalizes a validated promotion whose terminal snapshot committed before a
+    // hard kill. The recovery does an F_FULLFSYNC/rename/dir-sync/waitForPersistence, so it now runs
+    // off the URLSession delegate queue — but its ordering guarantee must survive the move: the row
+    // is terminal (`.complete`) by the time `reattach`'s completion (which drives reconcile) fires.
+    @Test func reattachFinalizesPendingValidatedPromotionBeforeReportingCompletion() async throws {
+        try await withTemporaryDirectory { directory in
+            let seed = DownloadStore(baseDirectory: directory)
+            let key = DownloadAttemptKey(
+                ratingKey: "plex:reattach-pending-promotion",
+                attemptID: try #require(DownloadAttemptID(rawValue: "attempt-a")))
+            let stable = seed.destinationURL(ratingKey: key.ratingKey, ext: "mp4")
+            try Data("stale-published".utf8).write(to: stable)
+            let record = DownloadRecord(
+                ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Promotion",
+                localURL: stable, status: .queued,
+                metadata: OfflineMetadata(
+                    ratingKey: key.ratingKey, title: "Promotion", type: "movie",
+                    resumeMode: .staticByteRange))
+            #expect(seed.createAttemptOwnedRecord(record, attemptID: key.attemptID)
+                    == .committed(key))
+            let working = try #require(seed.attemptWorkingFileURL(for: key))
+            try Data("validated".utf8).write(to: working)
+
+            // Durable prepared-but-not-terminal promotion: the intent's terminal status is recorded
+            // on the row, but the process "died" before the rename/terminal publication ran.
+            let indexURL = directory.appendingPathComponent("index.json")
+            var object = try #require(
+                JSONSerialization.jsonObject(with: Data(contentsOf: indexURL)) as? [String: Any])
+            var rows = try #require(object["rows"] as? [[String: Any]])
+            rows[0]["pendingValidatedPromotionStatus"] = "complete"
+            object["rows"] = rows
+            try JSONSerialization.data(withJSONObject: object).write(to: indexURL, options: .atomic)
+
+            let store = DownloadStore(baseDirectory: directory)
+            let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+            defer { session.invalidateInjectedSessionForTesting() }
+            #expect(await activate(session, resetKeys: []) == .activated(
+                cancelledTaskCount: 0, resetKeyCount: 0))
+            // Store construction alone must not have finalized it — reattach owns the recovery.
+            #expect(store.record(for: key)?.status == .queued)
+
+            await withCheckedContinuation { continuation in
+                session.reattach { _ in continuation.resume() }
+            }
+
+            // Recovery ran (off-queue) and completed before reattach reported: terminal row, the
+            // validated working body published over the stale stable file.
+            #expect(store.record(for: key)?.status == .complete)
+            #expect(store.record(for: key)?.bytes == 9)
+            #expect(String(decoding: try Data(contentsOf: stable), as: UTF8.self) == "validated")
+            #expect(!FileManager.default.fileExists(atPath: working.path))
+        }
+    }
+
+    // D6: `halt()` (Cancel/Delete) resets every sibling restart budget so a re-download of the same
+    // item starts clean. The consecutive-truncation budget is keyed by ratingKey and guarded by a
+    // separate queue, so it was omitted — a delete + re-download inherited the stale count and could
+    // park immediately. Cancel must now clear it too.
+    @Test func haltClearsConsecutiveTruncationBudgetForReDownload() async throws {
+        try await withTemporaryDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+            defer { session.invalidateInjectedSessionForTesting() }
+            #expect(await activate(session, resetKeys: []) == .activated(
+                cancelledTaskCount: 0, resetKeyCount: 0))
+
+            let key = DownloadAttemptKey(
+                ratingKey: "plex:truncation-budget",
+                attemptID: try #require(DownloadAttemptID(rawValue: "attempt-a")))
+            let stable = store.destinationURL(ratingKey: key.ratingKey, ext: "mp4")
+            let record = DownloadRecord(
+                ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Truncated",
+                localURL: stable, status: .queued,
+                metadata: OfflineMetadata(
+                    ratingKey: key.ratingKey, title: "Truncated", type: "movie",
+                    resumeMode: .staticByteRange))
+            #expect(store.createAttemptOwnedRecord(record, attemptID: key.attemptID)
+                    == .committed(key))
+
+            session.seedTruncationFailureCountForTesting(3, ratingKey: key.ratingKey)
+            #expect(session.truncationFailureCountForTesting(ratingKey: key.ratingKey) == 3)
+
+            session.cancel(ratingKey: key.ratingKey)
+
+            #expect(session.truncationFailureCountForTesting(ratingKey: key.ratingKey) == 0)
+        }
+    }
+
     @Test func invalidHeldManifestCommitFailurePreservesBodyAndManifestAcrossRelaunch() async throws {
         try await withTemporaryDirectory { directory in
             let initial = DownloadStore(baseDirectory: directory)
@@ -1143,5 +1231,122 @@ private final class LockedFinalizerRequestBox: @unchecked Sendable {
     var value: BackgroundDownloadSession.FinalizerRequest? { lock.withLock { storage } }
     func store(_ value: BackgroundDownloadSession.FinalizerRequest) {
         lock.withLock { storage = value }
+    }
+}
+
+/// D4 regression: the held-segment branch of `applyFinishedRangeBody` resolves its lifecycle
+/// asynchronously, but the caller's background-completion gate operation ends when the apply
+/// returns. Without a nested gate operation spanning that completion, the gate hits zero in the
+/// gap, the OS handler fires, and the app suspends before the train slot is refilled — the
+/// reopened #212 off-head stall.
+@Suite("Held-range body completion gate")
+struct HeldRangeBodyCompletionGateTests {
+    @Test @MainActor
+    func heldBodyLifecycleHoldsCompletionGateUntilTrainSlotIsReplanned() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("held-body-gate-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let writes = BlockingIndexWriteGate()
+        let store = DownloadStore(
+            baseDirectory: directory,
+            indexPersistence: .init { data, url in try writes.write(data, to: url) })
+        let attemptID = try #require(DownloadAttemptID(rawValue: "held-gate-a"))
+        let key = DownloadAttemptKey(ratingKey: "plex:held-gate", attemptID: attemptID)
+        let stable = store.destinationURL(ratingKey: key.ratingKey, ext: "mp4")
+        let record = DownloadRecord(
+            ratingKey: key.ratingKey, attemptID: attemptID, title: "Held Gate",
+            localURL: stable, bytes: 8, progress: 0.08, status: .downloading,
+            metadata: OfflineMetadata(
+                ratingKey: key.ratingKey, title: "Held Gate", type: "movie",
+                resumeMode: .staticByteRange))
+        #expect(store.createAttemptOwnedRecord(record, attemptID: attemptID) == .committed(key))
+        let working = try #require(store.attemptWorkingFileURL(for: key))
+        try Data(repeating: 0x5A, count: 8).write(to: working)
+
+        let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+        defer { session.invalidateInjectedSessionForTesting() }
+        let rebuildNeeded = DispatchSemaphore(value: 0)
+        session.onRangeRequestNeeded = { _, _ in rebuildNeeded.signal() }
+
+        // A stored (unfired) OS background-completion handler is the precondition: the gate is
+        // what keeps it — and the app — alive until the next task/hold exists.
+        let identifier = "held-gate-\(UUID().uuidString)"
+        let fired = DispatchSemaphore(value: 0)
+        BackgroundDownloadCompletionRegistry.shared.store(
+            identifier: identifier, completion: { fired.signal() })
+        defer { BackgroundDownloadCompletionRegistry.shared.fireCompletion(for: identifier) }
+        session.noteBackgroundCompletionHandlerStored(identifier: identifier)
+
+        // Off-head segment: durable working file (8 bytes) is behind this closed segment's
+        // baseOffset (30), so the body takes the durable-hold branch.
+        let stash = directory.appendingPathComponent("held-gate-stash.bin")
+        try Data([1, 2, 3, 4]).write(to: stash)
+        writes.arm()
+        let applied = DispatchSemaphore(value: 0)
+        session.applyFinishedHeldRangeBodyForTesting(
+            attemptKey: key, workingURL: working, expectedBytes: 100,
+            baseOffset: 30, segmentLength: 4, stash: stash, contentRangeStart: 30,
+            onApplied: { applied.signal() })
+
+        // The held-manifest persist is now blocked inside the index writer, and the apply — with
+        // it the caller's gate operation — has returned. The decisive #212 window: the nested
+        // operation begun before the apply returned must keep the gate open.
+        #expect(await waitForSignal(writes.entered, timeout: 5))
+        #expect(await waitForSignal(applied, timeout: 5))
+        #expect(session.diagnosticSnapshot().pendingBackgroundCompletionOperationCount == 1)
+        #expect(await waitForSignal(fired, timeout: 0) == false)
+
+        // Releasing the writer lets the lifecycle complete; its completion replans the train
+        // (request rebuild grace) BEFORE ending the nested operation, so the gate never drains.
+        writes.release.signal()
+        #expect(await waitForSignal(rebuildNeeded, timeout: 5))
+        var settled = false
+        for _ in 0..<200 {
+            if session.diagnosticSnapshot().pendingBackgroundCompletionOperationCount == 1 {
+                settled = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(settled, "rebuild-grace hold must overlap the held-lifecycle completion")
+        #expect(await waitForSignal(fired, timeout: 0) == false)
+        #expect(store.metadata(for: key.ratingKey)?.heldRangeSegments?.map(\.offset) == [30])
+    }
+
+    private func waitForSignal(
+        _ semaphore: DispatchSemaphore,
+        timeout: TimeInterval
+    ) async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: semaphore.wait(timeout: .now() + timeout) == .success)
+            }
+        }
+    }
+}
+
+/// Blocks exactly the first index write after `arm()` (signalling `entered`) until `release` is
+/// signalled; every other write commits through the live committer.
+private final class BlockingIndexWriteGate: @unchecked Sendable {
+    let entered = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var armed = false
+
+    func arm() { lock.withLock { armed = true } }
+
+    func write(_ data: Data, to url: URL) throws {
+        let shouldBlock = lock.withLock {
+            let wasArmed = armed
+            armed = false
+            return wasArmed
+        }
+        if shouldBlock {
+            entered.signal()
+            release.wait()
+        }
+        try DownloadIndexFileCommitter().commit(data, to: url)
     }
 }

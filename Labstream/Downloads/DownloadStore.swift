@@ -1098,8 +1098,12 @@ final class DownloadStore: @unchecked Sendable {
             provenBytes = capturedBytes
         } else {
             guard let bytes = promotionFilesystem.size(workingURL), bytes > 0 else {
-                lock.withLock { recordPromotionOutcomeLocked(.sourceMissing, intentID: intent.id) }
-                failArtifactLifecycle(ticket, errorType: "promotionSourceMissing"); return
+                // Pre-capture the rename cannot have run, so a missing working body is
+                // permanently unrecoverable: no replay can ever repair it. Abandon the intent
+                // (durably demoting the row to retryable `.failed`) instead of leaving a head
+                // that wedges every future retry behind `.artifactLifecyclePending`.
+                abandonUnrecoverablePromotion(ticket: ticket, intent: intent)
+                return
             }
             lock.lock()
             guard var capturing = rows[ticket.key.ratingKey],
@@ -1120,7 +1124,8 @@ final class DownloadStore: @unchecked Sendable {
             }
             provenBytes = bytes
         }
-        if promotionFilesystem.exists(workingURL) {
+        let workingExisted = promotionFilesystem.exists(workingURL)
+        if workingExisted {
             do {
                 try promotionFilesystem.fullSyncSource(workingURL)
                 try promotionFilesystem.renameReplacing(workingURL, stableURL)
@@ -1147,6 +1152,16 @@ final class DownloadStore: @unchecked Sendable {
             }
         }
         guard let bytes = promotionFilesystem.size(stableURL), bytes == provenBytes else {
+            if !workingExisted {
+                // Both bodies are gone (or stable no longer matches the captured proof) and no
+                // rename ran this pass, so no replay can ever publish this intent. Abandon it so
+                // the row fails retryably instead of wedging behind the queued head forever.
+                abandonUnrecoverablePromotion(ticket: ticket, intent: intent)
+                return
+            }
+            // The rename just succeeded, so stable SHOULD hold the proven body: treat the
+            // mismatch as transient/fail-closed and keep the durable intent — the next replay
+            // observes the renamed body and can still publish.
             lock.withLock { recordPromotionOutcomeLocked(.sourceMissing, intentID: intent.id) }
             failArtifactLifecycle(ticket, errorType: "promotionSourceMissing"); return
         }
@@ -1184,6 +1199,54 @@ final class DownloadStore: @unchecked Sendable {
             recordPromotionOutcomeLocked(.promoted(
                 ticket.key, bytes: bytes, status: terminalStatus), intentID: intent.id)
         }
+        completeArtifactLifecycle(ticket)
+    }
+
+    /// Abandon a validated promotion whose source body is permanently gone: neither the working
+    /// file nor a proven stable body exists, so replaying the durable intent can never succeed.
+    /// Without this path the intent stays queued at head forever — `createAttemptOwnedRecord`
+    /// rejects every retry with `.artifactLifecyclePending` and the row is wedged until a manual
+    /// delete. Retire the intent behind the same retirement barrier as a successful terminal
+    /// snapshot and demote the row to retryable `.failed` in the same durable transition.
+    private func abandonUnrecoverablePromotion(
+        ticket: DownloadArtifactLifecycleCoordinator.Ticket,
+        intent: Row.ArtifactIntent
+    ) {
+        lock.lock()
+        guard var row = rows[ticket.key.ratingKey], row.attemptID == ticket.key.attemptID,
+              row.pendingArtifactIntents.first?.id == intent.id else {
+            lock.unlock(); completeArtifactLifecycle(ticket); return
+        }
+        artifactRetirementKeys.insert(ticket.key)
+        let retiring = row.pendingArtifactIntents.removeFirst()
+        row.status = .failed
+        rows[ticket.key.ratingKey] = row
+        let terminal = enqueueAttemptPersistenceLocked()
+        lock.unlock()
+        let terminalOutcome = waitForPersistence(through: terminal)
+        guard terminalOutcome.result.committed(through: terminal) else {
+            lock.lock()
+            if var restored = rows[ticket.key.ratingKey],
+               restored.attemptID == ticket.key.attemptID,
+               !restored.pendingArtifactIntents.contains(where: { $0.id == retiring.id }) {
+                restored.pendingArtifactIntents.insert(retiring, at: 0)
+                rows[ticket.key.ratingKey] = restored
+                _ = enqueueAttemptPersistenceLocked()
+            }
+            artifactRetirementKeys.remove(ticket.key)
+            recordPromotionOutcomeLocked(
+                .persistenceFailed(ticket.key, terminalOutcome.result), intentID: intent.id)
+            lock.unlock()
+            failArtifactLifecycle(ticket, terminalOutcome.result); return
+        }
+        lock.withLock {
+            artifactRetirementKeys.remove(ticket.key)
+            startupArtifactCleanupIntentIDs.remove(retiring.id)
+            recordPromotionOutcomeLocked(.sourceMissing, intentID: intent.id)
+        }
+        AppDiagnostics.record(.downloads, "downloads.promotion_abandoned_source_missing", fields: [
+            "download_id": .identifier(ticket.key.ratingKey),
+        ])
         completeArtifactLifecycle(ticket)
     }
 
@@ -3047,14 +3110,10 @@ final class DownloadStore: @unchecked Sendable {
         )
         pendingResumeArtifactData[intentID] = data
         artifactLifecycleTickets[intentID] = ticket
-        let shouldStart = row.pendingArtifactIntents.count == 1
-        if shouldStart { activeArtifactIntentIDs.insert(intentID) }
+        let start = activateArtifactHeadLocked(
+            row: row, key: key, appendedIntent: intent, appendedTicket: ticket)
         lock.unlock()
-        if shouldStart {
-            artifactWorkerQueue.async { [weak self] in
-                self?.executeResumeReplacement(ticket: ticket, data: data)
-            }
-        }
+        if let start { scheduleArtifactLifecycle(ticket: start.1, intent: start.0) }
         return .accepted(ticket: ticket)
     }
 
@@ -3206,6 +3265,10 @@ final class DownloadStore: @unchecked Sendable {
                     self.artifactLifecycle.complete(lifecycle)
                 } else {
                     self.artifactLifecycle.fail(lifecycle, outcome.result)
+                    // One-shot persistence barrier with a random intentID: no retry ever
+                    // re-registers it, so exempt the recorded failure from later boundaries.
+                    // The ticket waiter above still observes the failure.
+                    self.artifactLifecycle.abandonIntent(lifecycle.intentID)
                 }
             }
             return .accepted(change: .noChange, ticket: lifecycle)
@@ -3213,7 +3276,7 @@ final class DownloadStore: @unchecked Sendable {
         row.artifactGeneration += 1
         let generation = row.artifactGeneration
         let intentID = UUID()
-        row.pendingArtifactIntents.append(.init(
+        let intent = Row.ArtifactIntent(
             id: intentID,
             attemptID: key.attemptID,
             generation: generation,
@@ -3223,7 +3286,8 @@ final class DownloadStore: @unchecked Sendable {
                 relativePath: nil,
                 clearDisplayBytes: clearDisplayBytes
             )
-        ))
+        )
+        row.pendingArtifactIntents.append(intent)
         rows[key.ratingKey] = row
         let prepared = enqueueAttemptPersistenceLocked()
         let ticket = artifactLifecycle.register(
@@ -3233,12 +3297,10 @@ final class DownloadStore: @unchecked Sendable {
             preparedRevision: prepared
         )
         artifactLifecycleTickets[intentID] = ticket
-        let shouldStart = row.pendingArtifactIntents.count == 1
-        if shouldStart { activeArtifactIntentIDs.insert(intentID) }
+        let start = activateArtifactHeadLocked(
+            row: row, key: key, appendedIntent: intent, appendedTicket: ticket)
         lock.unlock()
-        if shouldStart {
-            artifactWorkerQueue.async { [weak self] in self?.executeResumeClear(ticket: ticket) }
-        }
+        if let start { scheduleArtifactLifecycle(ticket: start.1, intent: start.0) }
         // Resume clear has a filesystem lifecycle ticket, unlike ordinary row-only mutations.
         // Its source-compatible wrapper below waits for this ticket when required.
         return .accepted(change: .applied, ticket: ticket)
@@ -3641,6 +3703,10 @@ final class DownloadStore: @unchecked Sendable {
             pendingResumeArtifactData.removeValue(forKey: failed.id)
             startupArtifactCleanupIntentIDs.remove(failed.id)
         }
+        // The retired head is permanently dead — nothing ever re-registers its intentID — so its
+        // failed coordinator entry must stop gating lifecycle boundaries. The caller still records
+        // the failure on the ticket for its own synchronous waiters.
+        artifactLifecycle.abandonIntent(failed.id)
         return true
     }
 
@@ -4909,6 +4975,13 @@ final class DownloadStore: @unchecked Sendable {
             // rewrite its checkpoint counters, or delete main/resume artifacts while the cleanup
             // journal is unavailable; cleanup migration is the only path allowed to unseal it.
             guard !row.deletionPending else { continue }
+            // A row with pending artifact intents is owned by the durable artifact queue: intent
+            // replay runs asynchronously on the artifact worker queue with no ordering barrier
+            // against this reconcile, and a staged `.validatedPromotion` head leaves the row
+            // `.downloading` while the working file IS the fully-validated body. Demoting the row
+            // or deleting its working/resume files here would destroy the intent's source, so
+            // replay/abandonment is the only authority allowed to resolve these rows.
+            guard row.pendingArtifactIntents.isEmpty else { continue }
             guard DownloadStatus.reconcileEligible(ratingKey: key,
                                                    snapshotRatingKeys: snapshotRatingKeys) else { continue }
             let hasLiveTask = liveRatingKeys.contains(key)
@@ -5295,12 +5368,24 @@ final class DownloadStore: @unchecked Sendable {
             lock.unlock(); release(); failArtifactLifecycle(ticket, outcome.result); return
         }
         let epoch = RowDeletionTicketEpoch(ticket)
+        // Any intent still queued on the removed row can never run again — its intentID is gone
+        // with the row — so abandon its coordinator entries (pending or failed) and drop the
+        // store-side bookkeeping, or one deleted row poisons/stalls every later boundary.
+        let orphanedIntentIDs = removed.pendingArtifactIntents.map(\.id)
+            .filter { $0 != ticket.intentID }
         lock.withLock {
             artifactRetirementKeys.remove(ticket.key)
+            for intentID in orphanedIntentIDs {
+                activeArtifactIntentIDs.remove(intentID)
+                pendingResumeArtifactData.removeValue(forKey: intentID)
+                artifactLifecycleTickets.removeValue(forKey: intentID)
+                startupArtifactCleanupIntentIDs.remove(intentID)
+            }
             if (rowDeletionWaiterCounts[epoch] ?? 0) > 0 {
                 rowDeletionOutcomes[epoch] = .removed(ticket.key)
             }
         }
+        for intentID in orphanedIntentIDs { artifactLifecycle.abandonIntent(intentID) }
         release(); completeArtifactLifecycle(ticket)
     }
 

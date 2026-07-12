@@ -786,8 +786,23 @@ public final class DownloadManager {
                         _ = downloadWorkRegistry.cancelCancellableWork(for: key)
                     }
                     Task { [weak self] in
-                        guard let self,
-                              case .removed = await store.resolveRowDeletion(submission) else { return }
+                        guard let self else { return }
+                        let outcome = await store.resolveRowDeletion(submission)
+                        guard case .removed = outcome else {
+                            // A non-`.removed` outcome means the accepted completion never proved
+                            // exact removal (terminal-barrier persistence/cleanup failed, or the
+                            // owner changed underneath us). Mirror the interactive delete() and
+                            // removeAttempt() paths: emit a diagnostic and surface a retry-able
+                            // lastError instead of guard-returning silently, which left the
+                            // deletion-pending row frozen until a manual Delete. The durable
+                            // reservation survives, so the next launch's migration re-drives it and
+                            // the surfaced "tap Delete to retry" gives the user an in-session action.
+                            recordStartupDeletionResolutionFailure(outcome, key: key)
+                            lastError[key.ratingKey] = .transferFailed(
+                                "Deletion could not finish safely. Free storage if needed, then tap Delete to retry.")
+                            refreshRecords()
+                            return
+                        }
                         for intent in durable {
                             deferredCleanupIntents[intent.id] = intent
                             switch intent.operation {
@@ -868,6 +883,32 @@ public final class DownloadManager {
             case .activeEncoding: executeActiveEncodingCleanupIntent(intent)
             case .embyConvert: executeEmbyConvertCleanupIntent(intent)
             }
+        }
+    }
+
+    /// Diagnostic for a launch-time pending-deletion completion that did not resolve to `.removed`.
+    /// Named/shaped to parallel `removeAttempt`'s remove_* diagnostics so the frozen-row case is
+    /// no longer silent.
+    private func recordStartupDeletionResolutionFailure(
+        _ outcome: DownloadStore.RowDeletionResult, key: DownloadAttemptKey
+    ) {
+        switch outcome {
+        case .removed:
+            break
+        case .staleOrMissing:
+            recordDownloadDiagnostic("downloads.migrate_deletion_owner_stale", fields: [
+                "download_id": .identifier(key.ratingKey),
+            ])
+        case .persistenceFailed(_, let failure):
+            recordDownloadDiagnostic("downloads.migrate_deletion_persist_failed", fields: [
+                "download_id": .identifier(key.ratingKey),
+                "failure": .label(Self.startupPersistenceFailureLabel(failure)),
+            ])
+        case .cleanupFailed(_, let count):
+            recordDownloadDiagnostic("downloads.migrate_deletion_artifact_failed", fields: [
+                "download_id": .identifier(key.ratingKey),
+                "failure_count": .int(count),
+            ])
         }
     }
 
@@ -3208,6 +3249,10 @@ public final class DownloadManager {
         var cleanupIntentsToExecute = rowAttemptKey.flatMap {
             store.deletionPendingCleanupIntents(for: $0)
         } ?? []
+        // A missing server-cleanup identity lets local deletion proceed but leaks the server
+        // encoder/conversion. That disclosure is ABOUT the deletion succeeding, so it must survive
+        // the success path's `lastError = nil` clear below — otherwise the leak goes silent.
+        var serverCleanupLeakDisclosure: DownloadError?
         if cleanupIntentsToExecute.isEmpty, let metadata = rowToDelete?.metadata {
             let backend = metadata.resolvedBackendKind(ratingKey: ratingKey)
             let transientPlaySessionID: String? = switch backend {
@@ -3227,8 +3272,9 @@ public final class DownloadManager {
                     } else {
                         // Missing legacy server identity cannot be repaired by retaining an
                         // undeletable row forever. Delete locally and surface the cleanup gap.
-                        lastError[ratingKey] = .transferFailed(
+                        serverCleanupLeakDisclosure = .transferFailed(
                             "Downloaded file deleted; server cleanup identity was unavailable.")
+                        lastError[ratingKey] = serverCleanupLeakDisclosure
                     }
                 } else {
                     recordDownloadDiagnostic("downloads.delete_deferred", fields: [
@@ -3244,8 +3290,9 @@ public final class DownloadManager {
                         attemptKey: key, metadata: metadata) {
                         cleanupIntentsToExecute.append(intent)
                     } else {
-                        lastError[ratingKey] = .transferFailed(
+                        serverCleanupLeakDisclosure = .transferFailed(
                             "Downloaded file deleted; server conversion cleanup identity was unavailable.")
+                        lastError[ratingKey] = serverCleanupLeakDisclosure
                     }
                 } else {
                     recordDownloadDiagnostic("downloads.delete_deferred", fields: [
@@ -3368,7 +3415,7 @@ public final class DownloadManager {
         // The prepared row-deletion recipe is submitted synchronously, but filesystem work and
         // terminal persistence run on the artifact worker. Keep the main actor responsive and do
         // not release attempt state until exact removal is proven complete.
-        Task { [weak self] in
+        Task { [weak self, serverCleanupLeakDisclosure] in
             guard let self else { return }
             let outcome = await store.resolveRowDeletion(deletionSubmission)
             guard case .removed = outcome else {
@@ -3384,7 +3431,10 @@ public final class DownloadManager {
                 case .embyConvert: executeEmbyConvertCleanupIntent(intent)
                 }
             }
-            lastError[ratingKey] = nil
+            // Preserve the server-cleanup-identity leak disclosure across a successful deletion —
+            // the row is gone but the server encoder/conversion was never torn down, and clearing
+            // to nil here would silence exactly the gap the disclosure was added to surface.
+            lastError[ratingKey] = serverCleanupLeakDisclosure
         // Drop server-prep progress state too, or re-downloading the same item resurfaces the
         // deleted row's stale "Preparing on server… N%" caption and seeds the ETA estimator with
         // dead samples. (`releaseInFlight` below also clears it — kept explicit here because the
