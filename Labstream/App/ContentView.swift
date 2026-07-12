@@ -80,6 +80,7 @@ struct ContentView: View {
             }
 
             await DebugRawURLPlaybackProbe.runIfRequested()
+            await DebugPlexBrowseProbe.runIfRequested(appModel: appModel)
             await DebugJellyfinPlaybackProbe.runIfRequested(appModel: appModel)
             await DebugEmbyPlaybackProbe.runIfRequested(appModel: appModel)
             await DebugPlexPlaybackProbe.runIfRequested(appModel: appModel)
