@@ -998,6 +998,7 @@ struct DetailView: View {
             span.end(fields: ["path_mode": "plex_stream"])
         case .jellyfin, .emby:
             remotePlayback = nil
+            var openContext: MediaBrowserPlaybackContext?
             do {
                 let playbackItem = await DetailPlaybackLauncher.metadataItem(
                     ratingKey: launchRatingKey,
@@ -1008,17 +1009,38 @@ struct DetailView: View {
                 guard playbackRequestID == requestID,
                       metadataReadyForActions,
                       actionBackend == launchBackend,
-                      detailed.ratingKey == launchRatingKey else { return }
+                      detailed.ratingKey == launchRatingKey else {
+                    span.end(result: "cancelled", fields: ["reason": "stale_metadata"])
+                    return
+                }
                 playingItem = playbackItem
+                let capturedContext = try DetailPlaybackLauncher.context(
+                    backend: launchBackend, appModel: appModel)
+                openContext = capturedContext
                 let opened = try await DetailPlaybackLauncher.open(
                     item: playbackItem,
-                    backend: launchBackend,
+                    context: capturedContext,
                     appModel: appModel,
                     maxVideoBitrateKbps: activeMaxVideoBitrateKbps)
-                guard playbackRequestID == requestID,
-                      metadataReadyForActions,
-                      actionBackend == launchBackend,
-                      detailed.ratingKey == launchRatingKey else { return }
+                let requestStillCurrent = playbackRequestID == requestID
+                    && metadataReadyForActions
+                    && actionBackend == launchBackend
+                    && detailed.ratingKey == launchRatingKey
+                let accepted = await DetailPlaybackLauncher.acceptInitialOpen(
+                    opened,
+                    requestStillCurrent: requestStillCurrent,
+                    appModel: appModel,
+                    cleanup: { remote in
+                        await DetailPlaybackLauncher.stopActiveEncodingNow(
+                            remote: remote, appModel: appModel)
+                    })
+                guard accepted else {
+                    // PlaybackInfo may have created a live encoder before the detail/auth context
+                    // changed. The stale result cannot be presented, but it still owns that exact
+                    // remote and must tear it down with the credentials that minted it.
+                    span.end(result: "cancelled", fields: ["reason": "stale_open_success"])
+                    return
+                }
                 remotePlayback = opened.playback
                 await presentResolvedPlayer()
                 span.end(fields: [
@@ -1026,7 +1048,22 @@ struct DetailView: View {
                     "play_method": opened.playMethod,
                 ])
             } catch {
-                span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
+                let requestStillCurrent = playbackRequestID == requestID
+                    && metadataReadyForActions
+                    && actionBackend == launchBackend
+                    && detailed.ratingKey == launchRatingKey
+                guard DetailPlaybackLauncher.shouldSurfaceOpenFailure(
+                    requestStillCurrent: requestStillCurrent,
+                    context: openContext,
+                    appModel: appModel) else {
+                    // A failure from an abandoned/auth-switched request is not the current
+                    // detail's failure. End its instrumentation without replacing current UI.
+                    span.end(result: "cancelled", fields: ["reason": "stale_open_failure"])
+                    return
+                }
+                span.end(result: "failure", fields: [
+                    "error": PerformanceInstrumentation.errorLabel(error)
+                ])
                 playbackErrorMessage = friendlyMessage(error)
             }
         }

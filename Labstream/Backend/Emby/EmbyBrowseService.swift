@@ -182,6 +182,27 @@ struct EmbyBrowseService {
                       audioStreamIndex: Int? = nil,
                       subtitleStreamIndex: Int? = nil) async throws -> MediaBrowserPlaybackOpenResult {
         let context = try context()
+        let session = BackendSession(kind: .emby, baseURL: context.server,
+                                     token: context.token, userID: context.userID,
+                                     serverID: appModel.embyServerID)
+        return try await playbackOpen(item: item, session: session, identity: appModel.identity,
+                                      maxVideoBitrateKbps: maxVideoBitrateKbps,
+                                      resumeOffsetMs: resumeOffsetMs,
+                                      audioStreamIndex: audioStreamIndex,
+                                      subtitleStreamIndex: subtitleStreamIndex)
+    }
+
+    func playbackOpen(item: MediaItem,
+                      session playbackSession: BackendSession,
+                      identity: ClientIdentity,
+                      maxVideoBitrateKbps: Int,
+                      resumeOffsetMs: Int? = nil,
+                      audioStreamIndex: Int? = nil,
+                      subtitleStreamIndex: Int? = nil) async throws -> MediaBrowserPlaybackOpenResult {
+        guard playbackSession.kind == .emby,
+              let userID = playbackSession.userID else { throw ServiceError.notAuthenticated }
+        let context = (server: playbackSession.baseURL, token: playbackSession.token, userID: userID)
+        let requestIdentity = identity.emby
         let qualityPolicy = MediaBrowserPlaybackQualityPolicy(maxVideoBitrateKbps: maxVideoBitrateKbps)
         let startTicks = MediaBrowserPlaybackQualityPolicy.startTicks(resumeOffsetMs: resumeOffsetMs ?? item.viewOffset)
         // GH #196 DV P5 guard: a fallback-less DV stream must not travel a video-copy lane.
@@ -206,7 +227,7 @@ struct EmbyBrowseService {
         // DIVERGENCE: Emby PlaybackInfo needs UserId in BOTH query and body.
         let req = try EmbyPlayback.playbackInfoRequest(server: context.server,
                                                        token: context.token,
-                                                       identity: embyIdentity,
+                                                       identity: requestIdentity,
                                                        userId: context.userID,
                                                        itemId: item.ratingKey,
                                                        startTimeTicks: startTicks,
@@ -219,7 +240,7 @@ struct EmbyBrowseService {
         return try EmbyPlayback.resolveMediaBrowserStream(
             response: info,
             server: context.server,
-            identity: embyIdentity,
+            identity: requestIdentity,
             token: context.token,
             userId: context.userID,
             itemId: item.ratingKey,
@@ -255,6 +276,15 @@ struct EmbyBrowseService {
 
     @discardableResult
     func stopActiveEncoding(playSessionId: String, session: BackendSession) async -> Bool {
+        await stopActiveEncoding(playSessionId: playSessionId,
+                                 session: session,
+                                 identity: appModel.identity)
+    }
+
+    @discardableResult
+    func stopActiveEncoding(playSessionId: String,
+                            session: BackendSession,
+                            identity: ClientIdentity) async -> Bool {
         guard let userID = session.userID else { return false }
         // Authenticate against the EXPLICIT session the caller resolved/validated for this job's
         // backend — never re-read the live `context()` lane, which may have been re-pointed at a
@@ -265,9 +295,9 @@ struct EmbyBrowseService {
             makeRequest: {
                 try EmbyLibrary.activeEncodingStopRequest(server: session.baseURL,
                                                           token: session.token,
-                                                          identity: embyIdentity,
+                                                          identity: identity.emby,
                                                           userId: userID,
-                                                          deviceId: appModel.identity.clientIdentifier,
+                                                          deviceId: identity.clientIdentifier,
                                                           playSessionId: playSessionId)
             },
             send: { req in _ = try await send(req) },

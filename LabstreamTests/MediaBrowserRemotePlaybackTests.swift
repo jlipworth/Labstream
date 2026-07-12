@@ -20,10 +20,11 @@ struct MediaBrowserRemotePlaybackTests {
                                                     requiredHTTPHeaders: ["X-Required": "yes"],
                                                     sourceMetadata: source,
                                                     usesServerEncoding: true)
-
-        let remote = MediaBrowserRemotePlayback(backend: .emby, result: result)
+        let context = try playbackContext(backend: .emby)
+        let remote = MediaBrowserRemotePlayback(context: context, result: result)
 
         #expect(remote.backend == .emby)
+        #expect(remote.context == context)
         #expect(remote.url == url)
         #expect(remote.headers == ["X-Required": "yes"])
         #expect(remote.playSessionId == "play-1")
@@ -41,7 +42,112 @@ struct MediaBrowserRemotePlaybackTests {
                                                     playMethod: .directPlay,
                                                     usesServerEncoding: false)
 
-        #expect(MediaBrowserRemotePlayback(backend: .jellyfin, result: direct).requiresActiveEncodingStop)
-        #expect(!MediaBrowserRemotePlayback(backend: .emby, result: direct).requiresActiveEncodingStop)
+        #expect(MediaBrowserRemotePlayback(
+            context: try playbackContext(backend: .jellyfin), result: direct
+        ).requiresActiveEncodingStop)
+        #expect(!MediaBrowserRemotePlayback(
+            context: try playbackContext(backend: .emby), result: direct
+        ).requiresActiveEncodingStop)
     }
+
+    @Test func heldOpenAuthSwitchRejectsStaleSuccessAndCleansExactRemote() async throws {
+        let appModel = configuredAppModel(token: "token-A")
+        let captured = try DetailPlaybackLauncher.context(backend: .jellyfin, appModel: appModel)
+        let held = HeldOpen()
+        let task = Task { try await held.value() }
+        await Task.yield()
+
+        appModel.jellyfinAccessToken = "token-B"
+        appModel.jellyfinAccessToken = "token-A"
+        let opened = DetailRemotePlaybackOpen(
+            playback: MediaBrowserRemotePlayback(
+                context: captured,
+                result: try openResult(playSessionID: "stale-session")),
+            playMethod: MediaBrowserPlayMethod.transcode.rawValue)
+        held.resume(.success(opened))
+
+        let completed = try await task.value
+        var cleaned: MediaBrowserRemotePlayback?
+        let accepted = await DetailPlaybackLauncher.acceptInitialOpen(
+            completed, requestStillCurrent: true, appModel: appModel,
+            cleanup: { cleaned = $0 })
+
+        #expect(!accepted)
+        #expect(cleaned == completed.playback)
+        #expect(cleaned?.context.session.token == "token-A")
+        #expect(!captured.isCurrent(in: appModel))
+    }
+
+    @Test func heldOpenStaleFailureDoesNotSurfaceOnCurrentDetail() async throws {
+        let appModel = configuredAppModel(token: "token-A")
+        let captured = try DetailPlaybackLauncher.context(backend: .jellyfin, appModel: appModel)
+        let held = HeldOpen()
+        let task = Task { try await held.value() }
+        await Task.yield()
+
+        appModel.jellyfinAccessToken = "token-B"
+        appModel.jellyfinAccessToken = "token-A"
+        held.resume(.failure(HeldFailure.expected))
+        do {
+            _ = try await task.value
+            Issue.record("Expected held open failure")
+        } catch {
+            #expect(!DetailPlaybackLauncher.shouldSurfaceOpenFailure(
+                requestStillCurrent: true, context: captured, appModel: appModel))
+        }
+    }
+
+    private func configuredAppModel(token: String) -> AppModel {
+        let model = AppModel(identity: identity(), activeBackend: .jellyfin)
+        model.jellyfinServerBaseURL = URL(string: "https://jellyfin.example.test")!
+        model.jellyfinAccessToken = token
+        model.jellyfinUserID = "user-1"
+        model.jellyfinServerID = "server-1"
+        return model
+    }
+
+    private func playbackContext(backend: MediaBackendKind) throws -> MediaBrowserPlaybackContext {
+        let baseURL = try #require(URL(string: "https://media.example.test"))
+        return MediaBrowserPlaybackContext(
+            backend: backend,
+            session: BackendSession(kind: backend.downloadBackendKind,
+                                    baseURL: baseURL,
+                                    token: "token-A",
+                                    userID: "user-1",
+                                    serverID: "server-1"),
+            authRevision: 7,
+            identity: identity())
+    }
+
+    private func identity() -> ClientIdentity {
+        ClientIdentity(clientIdentifier: "device-1", product: "Labstream", version: "1",
+                       deviceName: "Test Device")
+    }
+
+    private func openResult(playSessionID: String) throws -> MediaBrowserPlaybackOpenResult {
+        MediaBrowserPlaybackOpenResult(
+            url: try #require(URL(string: "https://media.example.test/master.m3u8")),
+            playSessionId: playSessionID,
+            mediaSourceId: "source-1",
+            playMethod: .transcode,
+            usesServerEncoding: true)
+    }
+}
+
+@MainActor
+private final class HeldOpen {
+    private var continuation: CheckedContinuation<DetailRemotePlaybackOpen, Error>?
+
+    func value() async throws -> DetailRemotePlaybackOpen {
+        try await withCheckedThrowingContinuation { continuation = $0 }
+    }
+
+    func resume(_ result: Result<DetailRemotePlaybackOpen, Error>) {
+        continuation?.resume(with: result)
+        continuation = nil
+    }
+}
+
+private enum HeldFailure: Error {
+    case expected
 }
