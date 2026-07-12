@@ -23,7 +23,7 @@ final class DownloadStore: @unchecked Sendable {
         let atomicWrite: @Sendable (Data, URL) throws -> Void
 
         static let live = IndexPersistence { data, url in
-            try data.write(to: url, options: .atomic)
+            try DownloadIndexFileCommitter().commit(data, to: url)
         }
     }
 
@@ -468,6 +468,9 @@ final class DownloadStore: @unchecked Sendable {
         try? CredentialArtifactStorage.applyProtectionAndBackupExclusion(
             to: self.baseDirectory,
             protection: CredentialArtifactStorage.authArtifactProtection,
+            fileManager: fileManager)
+        try? DownloadIndexFileCommitter.cleanupAbandonedTemps(
+            for: indexURL,
             fileManager: fileManager)
         load()
     }
