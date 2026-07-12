@@ -369,6 +369,12 @@ final class DownloadStore: @unchecked Sendable {
         case persistenceFailed(bytes: Int, PersistenceFlushResult)
     }
 
+    enum AttemptStaticCheckpointSubmission: Sendable, Equatable {
+        case accepted(ticket: DownloadArtifactLifecycleCoordinator.Ticket)
+        case notStatic(bytes: Int)
+        case staleOrMissing
+    }
+
     struct HeldRangeSegmentRemovalResult: Sendable, Equatable {
         let removed: OfflineHeldRangeSegment?
         let ticket: PersistenceTicket
@@ -414,6 +420,10 @@ final class DownloadStore: @unchecked Sendable {
         }
 
         enum ArtifactIntentOperation: Codable, Sendable, Equatable {
+            // Operational rollback boundary: an older binary whose exhaustive Codable enum lacks
+            // this case cannot read an index while a static checkpoint intent is pending. Release
+            // rollback must therefore drain artifact lifecycle tickets before installing that
+            // binary; the terminal snapshot removes the case from the persisted row.
             case replaceResumeBlob(
                 newRelativePath: String,
                 previousRelativePath: String?,
@@ -421,6 +431,13 @@ final class DownloadStore: @unchecked Sendable {
             )
             case clearResumeBlob(relativePath: String?, clearDisplayBytes: Bool)
             case heldBodyDeletion(relativePaths: [String])
+            case staticCheckpoint(
+                workingRelativePath: String,
+                stableSourceRelativePath: String?,
+                copyTempRelativePath: String?,
+                expectedBytes: Int?,
+                reconstructedTerminal: Bool
+            )
         }
 
         struct ArtifactIntent: Codable, Sendable, Equatable {
@@ -619,6 +636,7 @@ final class DownloadStore: @unchecked Sendable {
     private let embyCleanupPersistence: EmbyCleanupPersistence
     private let indexWriter: RevisionedPersistenceWriter<[Row]>
     private let artifactFilesystem: DownloadArtifactFilesystem
+    private let checkpointFilesystem: DownloadStaticCheckpointFilesystem
     private let artifactLifecycle = DownloadArtifactLifecycleCoordinator()
     private let artifactWorkerQueue = DispatchQueue(
         label: "com.visionplay.download-artifact-lifecycle", qos: .utility)
@@ -634,6 +652,9 @@ final class DownloadStore: @unchecked Sendable {
     /// must not schedule the successor until success, or until failure restores the retired head.
     private var artifactRetirementKeys: Set<DownloadAttemptKey> = [] // guarded by `lock`
     private var reservedHeldBodyDeletionPaths: [String: UUID] = [:] // guarded by `lock`
+    private var staticCheckpointOutcomes: [UUID: AttemptStaticRangeCheckpointResetResult] = [:]
+    private var staticCheckpointOutcomeOrder: [UUID] = [] // bounded live-resolver results
+    private var staticCheckpointAwaitingResultIDs: Set<UUID> = []
 
     /// - Parameter baseDirectory: where media files + the index live. Defaults to
     ///   `Application Support/Labstream/Downloads`, created if missing.
@@ -641,10 +662,12 @@ final class DownloadStore: @unchecked Sendable {
          fileManager: FileManager = .default,
          indexPersistence: IndexPersistence = .live,
          embyCleanupPersistence: EmbyCleanupPersistence? = nil,
-         artifactFilesystem: DownloadArtifactFilesystem = .live) {
+         artifactFilesystem: DownloadArtifactFilesystem = .live,
+         checkpointFilesystem: DownloadStaticCheckpointFilesystem = .live) {
         self.fileManager = fileManager
         self.embyCleanupPersistence = embyCleanupPersistence ?? .live
         self.artifactFilesystem = artifactFilesystem
+        self.checkpointFilesystem = checkpointFilesystem
         let appSupport = (try? fileManager.url(for: .applicationSupportDirectory,
                                                 in: .userDomainMask,
                                                 appropriateFor: nil,
@@ -1381,22 +1404,31 @@ final class DownloadStore: @unchecked Sendable {
             key: key, generation: intent.generation, intentID: intent.id,
             preparedRevision: prepared)
         artifactLifecycleTickets[intent.id] = ticket
-        var start: (Row.ArtifactIntent, DownloadArtifactLifecycleCoordinator.Ticket)?
-        if let head = row.pendingArtifactIntents.first,
-           !activeArtifactIntentIDs.contains(head.id) {
-            let headTicket: DownloadArtifactLifecycleCoordinator.Ticket
-            if head.id == intent.id {
-                headTicket = ticket
-            } else {
-                headTicket = artifactLifecycle.register(
-                    key: key, generation: head.generation, intentID: head.id,
-                    preparedRevision: .init(revision: 0))
-                artifactLifecycleTickets[head.id] = headTicket
-            }
-            activeArtifactIntentIDs.insert(head.id)
-            start = (head, headTicket)
-        }
+        let start = activateArtifactHeadLocked(
+            row: row, key: key, appendedIntent: intent, appendedTicket: ticket)
         return (intent, ticket, start)
+    }
+
+    private func activateArtifactHeadLocked(
+        row: Row,
+        key: DownloadAttemptKey,
+        appendedIntent: Row.ArtifactIntent,
+        appendedTicket: DownloadArtifactLifecycleCoordinator.Ticket
+    ) -> (Row.ArtifactIntent, DownloadArtifactLifecycleCoordinator.Ticket)? {
+        guard !artifactRetirementKeys.contains(key),
+              let head = row.pendingArtifactIntents.first,
+              !activeArtifactIntentIDs.contains(head.id) else { return nil }
+        let headTicket: DownloadArtifactLifecycleCoordinator.Ticket
+        if head.id == appendedIntent.id {
+            headTicket = appendedTicket
+        } else {
+            headTicket = artifactLifecycle.register(
+                key: key, generation: head.generation, intentID: head.id,
+                preparedRevision: .init(revision: 0))
+            artifactLifecycleTickets[head.id] = headTicket
+        }
+        activeArtifactIntentIDs.insert(head.id)
+        return (head, headTicket)
     }
 
     /// Schedule a durable queue head according to its operation. Successor submissions can be the
@@ -1416,6 +1448,8 @@ final class DownloadStore: @unchecked Sendable {
                 self.executeResumeClear(ticket: ticket)
             case .heldBodyDeletion:
                 self.executeHeldLifecycle(ticket: ticket, intent: intent)
+            case .staticCheckpoint:
+                self.executeStaticCheckpoint(ticket: ticket, intent: intent)
             }
         }
     }
@@ -3237,6 +3271,9 @@ final class DownloadStore: @unchecked Sendable {
             activeArtifactIntentIDs.remove(ticket.intentID)
             pendingResumeArtifactData.removeValue(forKey: ticket.intentID)
             artifactLifecycleTickets.removeValue(forKey: ticket.intentID)
+            if staticCheckpointOutcomes[ticket.intentID] == nil {
+                staticCheckpointAwaitingResultIDs.remove(ticket.intentID)
+            }
         }
         artifactLifecycle.complete(ticket)
         recoverPendingArtifactIntents()
@@ -3260,6 +3297,9 @@ final class DownloadStore: @unchecked Sendable {
         lock.withLock {
             activeArtifactIntentIDs.remove(ticket.intentID)
             artifactLifecycleTickets.removeValue(forKey: ticket.intentID)
+            staticCheckpointAwaitingResultIDs.remove(ticket.intentID)
+            staticCheckpointOutcomeOrder.removeAll { $0 == ticket.intentID }
+            staticCheckpointOutcomes.removeValue(forKey: ticket.intentID)
         }
         artifactLifecycle.failArtifact(ticket, errorType: errorType)
     }
@@ -3714,80 +3754,219 @@ final class DownloadStore: @unchecked Sendable {
         for key: DownloadAttemptKey,
         expectedBytes explicitExpectedBytes: Int? = nil
     ) -> AttemptStaticRangeCheckpointResetResult {
+        resolveStaticCheckpointSynchronously(submitStaticRangeCheckpointReset(
+            for: key, expectedBytes: explicitExpectedBytes))
+    }
+
+    func submitStaticRangeCheckpointReset(
+        for key: DownloadAttemptKey,
+        expectedBytes explicitExpectedBytes: Int? = nil
+    ) -> AttemptStaticCheckpointSubmission {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending else {
-            lock.unlock()
-            return .staleOrMissing
+              !row.legacyResetPending, !row.deletionPending,
+              row.pendingValidatedPromotionStatus == nil else {
+            lock.unlock(); return .staleOrMissing
         }
         let backend = row.metadata?.resolvedBackendKind(ratingKey: row.ratingKey)
             ?? DownloadBackendKind(ratingKeyPrefix: row.ratingKey)
         let mode = row.metadata?.resolvedResumeMode(ratingKey: row.ratingKey)
             ?? DownloadResumeMode.resolved(
-                backend: backend,
-                lane: row.metadata?.resolvedDownloadLane() ?? .original)
+                backend: backend, lane: row.metadata?.resolvedDownloadLane() ?? .original)
         guard mode == .staticByteRange else {
-            let bytes = row.bytes
-            lock.unlock()
-            return .notStatic(bytes: bytes)
+            let bytes = row.bytes; lock.unlock(); return .notStatic(bytes: bytes)
         }
-        let reconstructedTerminalCheckpoint = row.status == .complete || row.status == .unverified
-        let workingRelative: String
-        if reconstructedTerminalCheckpoint {
-            // The completed-size audit found a truncated published static body. Reconstitute an
-            // exact-attempt private checkpoint before the manager demotes the row, while retaining
-            // the stable copy until that demotion commits. A crash in between is therefore
-            // retryable and never destroys the only bytes.
-            workingRelative = Self.attemptStagingRelativePath(
+        let reconstructed = row.status == .complete || row.status == .unverified
+        let working: String
+        let stable: String?
+        let temporary: String?
+        if reconstructed {
+            working = Self.attemptStagingRelativePath(
                 for: key, stableRelativePath: row.relativePath)
-            let stableURL = baseDirectory.appendingPathComponent(row.relativePath)
-            let workingURL = baseDirectory.appendingPathComponent(workingRelative)
-            if !fileManager.fileExists(atPath: workingURL.path),
-               fileManager.fileExists(atPath: stableURL.path) {
-                do { try fileManager.copyItem(at: stableURL, to: workingURL) }
-                catch {
-                    lock.unlock()
-                    return .staleOrMissing
-                }
-            }
-            row.attemptWorkingRelativePath = workingRelative
+            stable = row.relativePath
+            temporary = ".\(working).checkpoint-\(UUID().uuidString)"
         } else {
-            guard let existingWorking = workingRelativePath(for: row, key: key) else {
-                lock.unlock()
-                return .staleOrMissing
+            guard let existing = workingRelativePath(for: row, key: key) else {
+                lock.unlock(); return .staleOrMissing
             }
-            workingRelative = existingWorking
+            working = existing; stable = nil; temporary = nil
         }
-        // Keep ownership stable through the stat of the exact attempt-private body.
-        let durableBytes = fileSize(relativePath: workingRelative) ?? 0
-        let expectedBytes = explicitExpectedBytes ?? Self.expectedBytesEstimate(row: row)
-        let progress = Self.progressForDurableBytes(durableBytes, expectedBytes: expectedBytes)
-        var changed = reconstructedTerminalCheckpoint
+        row.artifactGeneration += 1
+        let intent = Row.ArtifactIntent(
+            id: UUID(), attemptID: key.attemptID, generation: row.artifactGeneration,
+            phase: .prepared,
+            operation: .staticCheckpoint(
+                workingRelativePath: working,
+                stableSourceRelativePath: stable,
+                copyTempRelativePath: temporary,
+                expectedBytes: explicitExpectedBytes ?? Self.expectedBytesEstimate(row: row),
+                reconstructedTerminal: reconstructed))
+        row.pendingArtifactIntents.append(intent)
+        rows[key.ratingKey] = row
+        let prepared = enqueueAttemptPersistenceLocked()
+        let ticket = artifactLifecycle.register(
+            key: key, generation: intent.generation, intentID: intent.id,
+            preparedRevision: prepared)
+        artifactLifecycleTickets[intent.id] = ticket
+        staticCheckpointAwaitingResultIDs.insert(intent.id)
+        let start = activateArtifactHeadLocked(
+            row: row, key: key, appendedIntent: intent, appendedTicket: ticket)
+        lock.unlock()
+        if let start { scheduleArtifactLifecycle(ticket: start.1, intent: start.0) }
+        return .accepted(ticket: ticket)
+    }
+
+    func resolveStaticCheckpointSynchronously(
+        _ submission: AttemptStaticCheckpointSubmission
+    ) -> AttemptStaticRangeCheckpointResetResult {
+        switch submission {
+        case .staleOrMissing: return .staleOrMissing
+        case .notStatic(let bytes): return .notStatic(bytes: bytes)
+        case .accepted(let ticket):
+            let outcome = artifactLifecycle.waitSynchronously(for: ticket)
+            if let result = lock.withLock({ () -> AttemptStaticRangeCheckpointResetResult? in
+                staticCheckpointAwaitingResultIDs.remove(ticket.intentID)
+                staticCheckpointOutcomeOrder.removeAll { $0 == ticket.intentID }
+                return staticCheckpointOutcomes.removeValue(forKey: ticket.intentID)
+            }) {
+                return result
+            }
+            switch outcome {
+            case .completed: return .staleOrMissing
+            case .failed(.persistence(let failure)):
+                return .persistenceFailed(bytes: 0, failure)
+            case .failed(.artifact), .timedOut: return .staleOrMissing
+            }
+        }
+    }
+
+    func resolveStaticCheckpoint(
+        _ submission: AttemptStaticCheckpointSubmission
+    ) async -> AttemptStaticRangeCheckpointResetResult {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async { [self] in
+                continuation.resume(returning: resolveStaticCheckpointSynchronously(submission))
+            }
+        }
+    }
+
+    private func recordStaticCheckpointOutcomeLocked(
+        _ result: AttemptStaticRangeCheckpointResetResult,
+        intentID: UUID
+    ) {
+        guard staticCheckpointAwaitingResultIDs.contains(intentID) else { return }
+        staticCheckpointOutcomes[intentID] = result
+        staticCheckpointOutcomeOrder.removeAll { $0 == intentID }
+        staticCheckpointOutcomeOrder.append(intentID)
+        while staticCheckpointOutcomeOrder.count > 128 {
+            let evicted = staticCheckpointOutcomeOrder.removeFirst()
+            staticCheckpointOutcomes.removeValue(forKey: evicted)
+            staticCheckpointAwaitingResultIDs.remove(evicted)
+        }
+    }
+
+    func staticCheckpointOutcomeCountForTests() -> Int {
+        lock.withLock { staticCheckpointOutcomes.count }
+    }
+
+    private func executeStaticCheckpoint(
+        ticket: DownloadArtifactLifecycleCoordinator.Ticket,
+        intent: Row.ArtifactIntent
+    ) {
+        guard case .staticCheckpoint(
+            let working, let stable, let temporary, let expected, let reconstructed) = intent.operation
+        else { failArtifactLifecycle(ticket, errorType: "invalidStaticCheckpointIntent"); return }
+        guard Self.isSafeOneLevelRelativePath(working),
+              stable.map(Self.isSafeOneLevelRelativePath) ?? true,
+              temporary.map(Self.isSafeOneLevelRelativePath) ?? true else {
+            failArtifactLifecycle(ticket, errorType: "invalidStaticCheckpointLayout"); return
+        }
+        let prepared = waitForPersistence(through: ticket.preparedRevision)
+        guard prepared.result.committed(through: ticket.preparedRevision) else {
+            // A nonterminal stat is observational and preserves the legacy dirty-snapshot retry
+            // behavior even when intent preparation fails. Terminal reconstruction remains
+            // fail-closed: no copy occurs until the exact copy recipe is durable.
+            let durable = reconstructed ? 0 : checkpointFilesystem.size(
+                baseDirectory.appendingPathComponent(working)) ?? 0
+            lock.withLock {
+                if !reconstructed,
+                   var row = rows[ticket.key.ratingKey],
+                   row.attemptID == ticket.key.attemptID,
+                   row.pendingArtifactIntents.first?.id == intent.id {
+                    row.bytes = durable
+                    row.progress = Self.progressForDurableBytes(durable, expectedBytes: expected)
+                    if row.metadata?.resumeDisplayBytes != nil,
+                       (row.metadata?.resumeDataRelativePath ?? "").isEmpty {
+                        row.metadata?.resumeDisplayBytes = nil
+                    }
+                    rows[ticket.key.ratingKey] = row
+                }
+                recordStaticCheckpointOutcomeLocked(
+                    .persistenceFailed(bytes: durable, prepared.result), intentID: intent.id)
+            }
+            failArtifactLifecycle(ticket, prepared.result); return
+        }
+        lock.lock()
+        guard let current = rows[ticket.key.ratingKey],
+              current.attemptID == ticket.key.attemptID,
+              current.pendingArtifactIntents.first?.id == intent.id else {
+            lock.unlock(); completeArtifactLifecycle(ticket); return
+        }
+        lock.unlock()
+        let workingURL = baseDirectory.appendingPathComponent(working)
+        if reconstructed, !checkpointFilesystem.exists(workingURL) {
+            guard let stable, let temporary else {
+                failArtifactLifecycle(ticket, errorType: "invalidStaticCheckpointLayout"); return
+            }
+            do {
+                try checkpointFilesystem.durableCopy(
+                    baseDirectory.appendingPathComponent(stable), workingURL,
+                    baseDirectory.appendingPathComponent(temporary))
+            } catch {
+                failArtifactLifecycle(ticket, errorType: String(reflecting: type(of: error))); return
+            }
+        }
+        let durable = checkpointFilesystem.size(workingURL) ?? 0
+        lock.lock()
+        guard var row = rows[ticket.key.ratingKey], row.attemptID == ticket.key.attemptID,
+              row.pendingArtifactIntents.first?.id == intent.id else {
+            lock.unlock(); completeArtifactLifecycle(ticket); return
+        }
+        let oldBytes = row.bytes
+        let oldProgress = row.progress
+        let progress = Self.progressForDurableBytes(durable, expectedBytes: expected)
+        if reconstructed { row.attemptWorkingRelativePath = working }
         if row.metadata?.resumeDisplayBytes != nil,
            (row.metadata?.resumeDataRelativePath ?? "").isEmpty {
             row.metadata?.resumeDisplayBytes = nil
-            changed = true
         }
-        if row.bytes != durableBytes || abs(row.progress - progress) > 0.000_001 {
-            row.bytes = durableBytes
-            row.progress = progress
-            changed = true
-        }
-        guard changed else {
-            let ticket = enqueueAttemptPersistenceLocked()
-            lock.unlock()
-            let persistence = waitForPersistence(through: ticket)
-            return persistence.result.committed(through: persistence.ticket)
-                ? .unchanged(bytes: durableBytes)
-                : .persistenceFailed(bytes: durableBytes, persistence.result)
-        }
-        rows[key.ratingKey] = row
-        let ticket = enqueueAttemptPersistenceLocked()
+        row.bytes = durable; row.progress = progress
+        artifactRetirementKeys.insert(ticket.key)
+        let retiring = row.pendingArtifactIntents.removeFirst()
+        rows[ticket.key.ratingKey] = row
+        let terminal = enqueueAttemptPersistenceLocked()
         lock.unlock()
-        let persistence = waitForPersistence(through: ticket)
-        return persistence.result.committed(through: persistence.ticket)
-            ? .applied(bytes: durableBytes)
-            : .persistenceFailed(bytes: durableBytes, persistence.result)
+        let terminalOutcome = waitForPersistence(through: terminal)
+        guard terminalOutcome.result.committed(through: terminal) else {
+            lock.lock()
+            if var restored = rows[ticket.key.ratingKey], restored.attemptID == ticket.key.attemptID {
+                restored.pendingArtifactIntents.insert(retiring, at: 0)
+                rows[ticket.key.ratingKey] = restored
+                _ = enqueueAttemptPersistenceLocked()
+            }
+            artifactRetirementKeys.remove(ticket.key)
+            recordStaticCheckpointOutcomeLocked(
+                .persistenceFailed(bytes: durable, terminalOutcome.result), intentID: intent.id)
+            lock.unlock()
+            failArtifactLifecycle(ticket, terminalOutcome.result); return
+        }
+        lock.withLock {
+            artifactRetirementKeys.remove(ticket.key)
+            recordStaticCheckpointOutcomeLocked((reconstructed
+                || oldBytes != durable || abs(oldProgress - progress) > 0.000_001)
+                ? .applied(bytes: durable) : .unchanged(bytes: durable), intentID: intent.id)
+        }
+        completeArtifactLifecycle(ticket)
     }
 
     func durableStaticRangeCheckpointSize(ratingKey: String) -> Int {

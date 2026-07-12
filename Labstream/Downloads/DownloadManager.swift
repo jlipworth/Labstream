@@ -137,6 +137,9 @@ public final class DownloadManager {
     /// queue-paused manual resumes, and one-shot restart-counter
     /// preservation.
     private var staticRangeRecovery = StaticRangeRecoveryTracker()
+    @ObservationIgnored private let staticCheckpointResolutions =
+        OrderedAsyncWorkCoordinator<
+            DownloadAttemptKey, DownloadStore.AttemptStaticRangeCheckpointResetResult>()
     /// Reentrancy depth of `resumeStaticRangeWhenReady`, which deliberately dispatches
     /// synchronously with `refreshRecords`. Guards against the #210 recursion family.
     private var staticResumeReentryDepth = 0
@@ -1434,33 +1437,45 @@ public final class DownloadManager {
     /// Exact Store checkpoint mutations can fail because the row was replaced/reset or because
     /// the resulting full snapshot did not commit. Both outcomes halt the caller before it creates
     /// dependent transfer work; a later refresh/retry will acquire a fresh row owner.
-    private func resetStaticRangeCheckpoint(
+    private func resolveStaticRangeCheckpoint(
         for record: DownloadRecord,
         expectedBytes: Int? = nil,
-        context: String
-    ) -> Int? {
-        guard let key = attemptKey(for: record) else { return nil }
-        switch store.resetStaticRangeProgressToDurableCheckpoint(
-            for: key, expectedBytes: expectedBytes
-        ) {
-        case .applied(let bytes), .unchanged(let bytes):
-            return bytes
-        case .notStatic:
-            return nil
-        case .staleOrMissing:
-            recordDownloadDiagnostic("downloads.range_checkpoint_owner_stale", fields: [
-                "download_id": .identifier(record.ratingKey),
-                "context": .label(context),
-            ])
-            return nil
-        case .persistenceFailed(_, let failure):
-            recordDownloadDiagnostic("downloads.range_checkpoint_persist_failed", fields: [
-                "download_id": .identifier(record.ratingKey),
-                "context": .label(context),
-                "failure": .label(Self.startupPersistenceFailureLabel(failure)),
-            ])
-            return nil
-        }
+        context: String,
+        completion: @escaping (Int?) -> Void
+    ) {
+        guard let key = attemptKey(for: record) else { return }
+        staticCheckpointResolutions.enqueue(key: key, operation: { [store] in
+            let submission = store.submitStaticRangeCheckpointReset(
+                for: key, expectedBytes: expectedBytes)
+            return await store.resolveStaticCheckpoint(submission)
+        }, completion: { [weak self] result in
+            guard let self else { return }
+            // The result belongs only to the exact owner captured by the queued request. Avoid
+            // mutating manager trackers/errors when a replacement won while the worker was busy.
+            guard store.record(for: key) != nil else {
+                completion(nil)
+                return
+            }
+            switch result {
+            case .applied(let bytes), .unchanged(let bytes):
+                completion(bytes)
+            case .notStatic:
+                completion(nil)
+            case .staleOrMissing:
+                recordDownloadDiagnostic("downloads.range_checkpoint_owner_stale", fields: [
+                    "download_id": .identifier(record.ratingKey),
+                    "context": .label(context),
+                ])
+                completion(nil)
+            case .persistenceFailed(_, let failure):
+                recordDownloadDiagnostic("downloads.range_checkpoint_persist_failed", fields: [
+                    "download_id": .identifier(record.ratingKey),
+                    "context": .label(context),
+                    "failure": .label(Self.startupPersistenceFailureLabel(failure)),
+                ])
+                completion(nil)
+            }
+        })
     }
 
     func setAttemptStatus(
@@ -1531,42 +1546,41 @@ public final class DownloadManager {
                                         preserveActiveIntent: Bool = false) {
         let ratingKey = record.ratingKey
         let backend = DownloadJobSnapshot(record: record).backend
-        guard let key = attemptKey(for: record),
-              let checkpointBytes = resetStaticRangeCheckpoint(
-                for: record, context: "defer_resume") else { return }
-        staticRangeRecovery.addPendingResume(ratingKey)
-        clearRetryHandoff(ratingKey: ratingKey)
-        retryState.removeRetrying(ratingKey)
-        switch StaticRangeRecoveryPolicy.deferredResumeDisposition(
-            checkpointBytes: checkpointBytes,
-            preserveActiveIntent: preserveActiveIntent
-        ) {
-        case .queuedActiveIntent:
-            // This was not a user pause: a system/adopted Range continuation needs backend auth before
-            // it can rebuild the next request. Persist an active queued intent so a second app kill
-            // before backend restore is derived by launch auto-resume instead of turning into a manual
-            // `.paused` / `.failed` row with only in-memory pending state.
-            guard setAttemptStatus(.queued, for: key, context: "defer_resume") else { return }
-            lastError[ratingKey] = checkpointBytes > 0 ? .interruptedResumable : .transferFailed(
-                "Download will restart when the \(backend.displayName) session is ready.")
-        case .pausedAtCheckpoint:
-            guard setAttemptStatus(.paused, for: key, context: "defer_resume") else { return }
-            lastError[ratingKey] = .interruptedResumable
-        case .failedNoCheckpoint:
-            // No durable checkpoint remains (for example, an adopted range task discovered a validator
-            // mismatch and discarded the stale prefix). Keep this restartable as a failed row rather
-            // than a paused row with no partial and no retry path.
-            guard setAttemptStatus(.failed, for: key, context: "defer_resume") else { return }
-            lastError[ratingKey] = .transferFailed(
-                "No completed checkpoint was saved before the interruption; retry will restart this download from 0%.")
+        guard let key = attemptKey(for: record) else { return }
+        resolveStaticRangeCheckpoint(for: record, context: "defer_resume") {
+            [weak self] checkpointBytes in
+            guard let self, let checkpointBytes else { return }
+            switch StaticRangeRecoveryPolicy.deferredResumeDisposition(
+                checkpointBytes: checkpointBytes,
+                preserveActiveIntent: preserveActiveIntent
+            ) {
+            case .queuedActiveIntent:
+                guard setAttemptStatus(.queued, for: key, context: "defer_resume") else { return }
+                lastError[ratingKey] = checkpointBytes > 0
+                    ? .interruptedResumable
+                    : .transferFailed(
+                        "Download will restart when the \(backend.displayName) session is ready.")
+            case .pausedAtCheckpoint:
+                guard setAttemptStatus(.paused, for: key, context: "defer_resume") else { return }
+                lastError[ratingKey] = .interruptedResumable
+            case .failedNoCheckpoint:
+                guard setAttemptStatus(.failed, for: key, context: "defer_resume") else { return }
+                lastError[ratingKey] = .transferFailed(
+                    "No completed checkpoint was saved before the interruption; retry will restart this download from 0%.")
+            }
+            // Status compare-and-set is the final exact-owner fence before manager-only trackers
+            // are changed; no suspension occurs between this point and those mutations.
+            staticRangeRecovery.addPendingResume(ratingKey)
+            clearRetryHandoff(ratingKey: ratingKey)
+            retryState.removeRetrying(ratingKey)
+            recordDownloadDiagnostic("downloads.range_resume_deferred", fields: [
+                "download_id": .identifier(ratingKey),
+                "backend": .label(backend.rawValue),
+                "reason": .label(reason),
+                "checkpoint_bytes": .bytes(checkpointBytes),
+            ])
+            refreshRecords()
         }
-        recordDownloadDiagnostic("downloads.range_resume_deferred", fields: [
-            "download_id": .identifier(ratingKey),
-            "backend": .label(backend.rawValue),
-            "reason": .label(reason),
-            "checkpoint_bytes": .bytes(checkpointBytes),
-        ])
-        refreshRecords()
     }
 
 
@@ -1638,20 +1652,23 @@ public final class DownloadManager {
                 staticRangeRecovery.removePendingResume(ratingKey)
                 return
             }
-            guard let key = attemptKey(for: record),
-                  let checkpointBytes = resetStaticRangeCheckpoint(
-                    for: record, context: "queue_paused") else { return }
-            if checkpointBytes > 0 {
-                guard setAttemptStatus(.paused, for: key, context: "queue_paused") else { return }
-                lastError[ratingKey] = .interruptedResumable
+            guard let key = attemptKey(for: record) else { return }
+            resolveStaticRangeCheckpoint(for: record, context: "queue_paused") {
+                [weak self] checkpointBytes in
+                guard let self, let checkpointBytes else { return }
+                if checkpointBytes > 0 {
+                    guard setAttemptStatus(
+                        .paused, for: key, context: "queue_paused") else { return }
+                    lastError[ratingKey] = .interruptedResumable
+                }
+                staticRangeRecovery.removePendingResume(ratingKey)
+                recordDownloadDiagnostic("downloads.range_resume_queue_paused", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "reason": .label(reason),
+                    "checkpoint_bytes": .bytes(checkpointBytes),
+                ])
+                refreshRecords()
             }
-            staticRangeRecovery.removePendingResume(ratingKey)
-            recordDownloadDiagnostic("downloads.range_resume_queue_paused", fields: [
-                "download_id": .identifier(ratingKey),
-                "reason": .label(reason),
-                "checkpoint_bytes": .bytes(checkpointBytes),
-            ])
-            refreshRecords()
             return
         }
         guard let record = store.record(for: ratingKey) else {
@@ -3328,7 +3345,6 @@ public final class DownloadManager {
     /// continues from the durable offset. `sourceExactBytes` is nil for transcode lanes, whose
     /// outputs are legitimately smaller than their source, so they are never touched.
     private func demoteIncompleteCompletedStaticRows(reason: String) {
-        var demotedAny = false
         for record in store.records where record.status == .complete || record.status == .unverified {
             guard let key = attemptKey(for: record),
                   !store.isDeletionPending(for: key),
@@ -3343,14 +3359,16 @@ public final class DownloadManager {
                 "bytes": .bytes(durable),
                 "expected_bytes": .bytes(expected),
             ])
-            guard resetStaticRangeCheckpoint(
-                for: record, expectedBytes: expected, context: "size_audit") != nil,
-                  setAttemptStatus(.failed, for: key, context: "size_audit") else { continue }
-            lastError[record.ratingKey] = .transferFailed(
-                "Download is incomplete (\(durable / 1_000_000) of \(expected / 1_000_000) MB). Retry to continue.")
-            demotedAny = true
+            resolveStaticRangeCheckpoint(
+                for: record, expectedBytes: expected, context: "size_audit"
+            ) { [weak self] checkpointBytes in
+                guard let self, checkpointBytes != nil,
+                      setAttemptStatus(.failed, for: key, context: "size_audit") else { return }
+                lastError[record.ratingKey] = .transferFailed(
+                    "Download is incomplete (\(durable / 1_000_000) of \(expected / 1_000_000) MB). Retry to continue.")
+                refreshRecords()
+            }
         }
-        if demotedAny { refreshRecords() }
     }
 
     private func revalidateUnverifiedDownloads(reason: String) {
@@ -3430,20 +3448,26 @@ public final class DownloadManager {
                     !staticRangeRecovery.wasManuallyResumedWhileQueuePaused($0.ratingKey)
                 }
                 for record in queueParked {
-                    guard let key = attemptKey(for: record),
-                          let checkpointBytes = resetStaticRangeCheckpoint(
-                            for: record, context: "stale_queue_pause") else { continue }
-                    staticRangeRecovery.removePendingResume(record.ratingKey)
-                    if checkpointBytes > 0 {
-                        guard setAttemptStatus(
-                            .paused, for: key, context: "stale_queue_pause") else { continue }
-                        lastError[record.ratingKey] = .interruptedResumable
+                    guard let key = attemptKey(for: record) else { continue }
+                    resolveStaticRangeCheckpoint(for: record, context: "stale_queue_pause") {
+                        [weak self] checkpointBytes in
+                        guard let self, let checkpointBytes else { return }
+                        if checkpointBytes > 0 {
+                            guard setAttemptStatus(
+                                .paused, for: key, context: "stale_queue_pause") else { return }
+                            lastError[record.ratingKey] = .interruptedResumable
+                        } else if store.record(for: key) == nil {
+                            return
+                        }
+                        staticRangeRecovery.removePendingResume(record.ratingKey)
+                        recordDownloadDiagnostic("downloads.range_stale_queued_paused", fields: [
+                            "download_id": .identifier(record.ratingKey),
+                            "backend": .label(
+                                DownloadJobSnapshot(record: record).backend.rawValue),
+                            "checkpoint_bytes": .bytes(checkpointBytes),
+                        ])
+                        refreshRecords()
                     }
-                    recordDownloadDiagnostic("downloads.range_stale_queued_paused", fields: [
-                        "download_id": .identifier(record.ratingKey),
-                        "backend": .label(DownloadJobSnapshot(record: record).backend.rawValue),
-                        "checkpoint_bytes": .bytes(checkpointBytes),
-                    ])
                 }
                 for record in manuallyResumed where !staticRangeRecovery.hasPendingResume(record.ratingKey) {
                     guard let key = attemptKey(for: record),

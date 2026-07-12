@@ -5,6 +5,175 @@ import Testing
 
 @Suite("DownloadStore attempt-owned checkpoints")
 struct DownloadStoreAttemptOwnedCheckpointTests {
+    @Test @MainActor func orderedAsyncCoordinatorDeliversOverlappingSameKeyCompletions() async {
+        let coordinator = OrderedAsyncWorkCoordinator<String, Int>()
+        let (stream, continuation) = AsyncStream.makeStream(of: Int.self)
+        coordinator.enqueue(key: "same-owner", operation: { 1 }) {
+            continuation.yield($0)
+        }
+        coordinator.enqueue(key: "same-owner", operation: { 2 }) {
+            continuation.yield($0)
+            continuation.finish()
+        }
+        var received: [Int] = []
+        for await value in stream { received.append(value) }
+        #expect(received == [1, 2])
+    }
+
+    @Test func staticCheckpointStatRunsOffStoreLock() async throws {
+        try await withStoreAsync { initial, directory in
+            let owner = key("plex:checkpoint-off-lock", "attempt-a")
+            let media = directory.appendingPathComponent("checkpoint-off-lock.mp4")
+            #expect(created(initial, key: owner, media: media, bytes: 90, progress: 0.9))
+            let working = try #require(initial.attemptWorkingFileURL(for: owner))
+            try Data([1, 2, 3]).write(to: working)
+            let gate = BlockCheckpointStat()
+            let live = DownloadStaticCheckpointFilesystem.live
+            let store = DownloadStore(
+                baseDirectory: directory,
+                checkpointFilesystem: .init(
+                    exists: live.exists,
+                    size: { url in gate.size(url, using: live.size) },
+                    durableCopy: live.durableCopy))
+            guard case .accepted(let ticket) = store.submitStaticRangeCheckpointReset(
+                for: owner, expectedBytes: 100) else {
+                Issue.record("checkpoint submission rejected"); return
+            }
+            #expect(await signal(gate.started, timeout: 1))
+            let readerFinished = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async {
+                _ = store.record(for: owner)
+                readerFinished.signal()
+            }
+            #expect(await signal(readerFinished, timeout: 0.25))
+            gate.release.signal()
+            #expect(store.resolveArtifactSynchronously(ticket) == .completed)
+            #expect(store.record(for: owner)?.bytes == 3)
+        }
+    }
+
+    @Test func overlappingStaticCheckpointResolversCompleteInOrderForSameOwner() async throws {
+        try await withStoreAsync { initial, directory in
+            let owner = key("plex:checkpoint-overlap", "attempt-a")
+            let media = directory.appendingPathComponent("checkpoint-overlap.mp4")
+            #expect(created(initial, key: owner, media: media, bytes: 9, progress: 0.9))
+            let working = try #require(initial.attemptWorkingFileURL(for: owner))
+            try Data([1, 2, 3]).write(to: working)
+            let gate = BlockCheckpointStat()
+            let live = DownloadStaticCheckpointFilesystem.live
+            let store = DownloadStore(
+                baseDirectory: directory,
+                checkpointFilesystem: .init(
+                    exists: live.exists,
+                    size: { url in gate.size(url, using: live.size) },
+                    durableCopy: live.durableCopy))
+            let first = store.submitStaticRangeCheckpointReset(for: owner, expectedBytes: 10)
+            let second = store.submitStaticRangeCheckpointReset(for: owner, expectedBytes: 20)
+            #expect(await signal(gate.started, timeout: 1))
+            async let firstResult = store.resolveStaticCheckpoint(first)
+            async let secondResult = store.resolveStaticCheckpoint(second)
+            gate.release.signal()
+            gate.release.signal()
+            #expect(await firstResult == .applied(bytes: 3))
+            #expect(await secondResult == .applied(bytes: 3))
+            #expect(store.record(for: owner)?.progress == 0.15)
+            #expect(store.staticCheckpointOutcomeCountForTests() == 0)
+        }
+    }
+
+    @Test func staticCheckpointSubmissionRejectsDeletionReservation() throws {
+        try withStore { store, directory in
+            let owner = key("emby:checkpoint-delete-fence", "attempt-a")
+            let media = directory.appendingPathComponent("checkpoint-delete-fence.mp4")
+            #expect(created(store, key: owner, media: media))
+            let server = try #require(DurableDownloadCleanupIntent.ServerIdentity(
+                baseURL: URL(string: "https://emby.example")!,
+                serverID: "server-1", userID: "user-1"))
+            let cleanup = try #require(DurableDownloadCleanupIntent(
+                id: UUID(), attemptKey: owner, backend: .emby, server: server,
+                operation: .activeEncoding(playSessionID: "session-1")))
+            #expect(store.markDeletionPending(for: owner, cleanupIntents: [cleanup]) == .applied)
+            #expect(store.submitStaticRangeCheckpointReset(for: owner) == .staleOrMissing)
+        }
+    }
+
+    @Test func staticCheckpointSubmissionRejectsPromotionReservation() async throws {
+        try await withStoreAsync { initial, directory in
+            let owner = key("plex:checkpoint-promotion-fence", "attempt-a")
+            let media = directory.appendingPathComponent("checkpoint-promotion-fence.mp4")
+            #expect(created(initial, key: owner, media: media))
+            let working = try #require(initial.attemptWorkingFileURL(for: owner))
+            try Data([1, 2]).write(to: working)
+            let gate = BlockFirstHeldIndexWrite()
+            let store = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init { data, url in try gate.write(data, to: url) })
+            let finished = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async {
+                _ = store.promoteValidatedAttempt(for: owner, terminalStatus: .complete)
+                finished.signal()
+            }
+            #expect(await signal(gate.started, timeout: 1))
+            #expect(store.submitStaticRangeCheckpointReset(for: owner) == .staleOrMissing)
+            gate.release.signal()
+            #expect(await signal(finished, timeout: 1))
+        }
+    }
+
+    @Test func terminalCheckpointCopyRunsOffStoreLockAndRecoversAfterCopyFailure() async throws {
+        try await withStoreAsync { initial, directory in
+            let owner = key("plex:checkpoint-copy-recovery", "attempt-a")
+            let stable = directory.appendingPathComponent("checkpoint-copy-recovery.mp4")
+            #expect(created(initial, key: owner, media: stable))
+            let working = try #require(initial.attemptWorkingFileURL(for: owner))
+            try Data([4, 5, 6, 7]).write(to: working)
+            #expect(initial.promoteValidatedAttempt(for: owner, terminalStatus: .complete)
+                == .promoted(owner, bytes: 4, status: .complete))
+
+            let gate = BlockCheckpointCopy(failAfterRelease: true)
+            let live = DownloadStaticCheckpointFilesystem.live
+            let failing = DownloadStore(
+                baseDirectory: directory,
+                checkpointFilesystem: .init(
+                    exists: live.exists,
+                    size: live.size,
+                    durableCopy: { source, destination, temporary in
+                        try gate.copy(source, destination, temporary)
+                    }))
+            guard case .accepted(let ticket) = failing.submitStaticRangeCheckpointReset(
+                for: owner, expectedBytes: 10) else {
+                Issue.record("terminal checkpoint submission rejected"); return
+            }
+            #expect(await signal(gate.started, timeout: 1))
+            let readerFinished = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async {
+                _ = failing.record(for: owner)
+                readerFinished.signal()
+            }
+            #expect(await signal(readerFinished, timeout: 0.25))
+            gate.release.signal()
+            guard failing.resolveStaticCheckpointSynchronously(.accepted(ticket: ticket))
+                    == .staleOrMissing else {
+                Issue.record("expected injected copy failure"); return
+            }
+
+            // The prepared copy recipe survived the process boundary. Launch recovery retries the
+            // idempotent copy, publishes the exact-attempt working path, and retains stable bytes.
+            let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(relaunched.resolveArtifactSynchronouslyForTests(
+                through: relaunched.currentArtifactLifecycleWatermark()) == .completed)
+            #expect(relaunched.record(for: owner)?.bytes == 4)
+            #expect(relaunched.record(for: owner)?.progress == 0.4)
+            #expect(relaunched.staticCheckpointOutcomeCountForTests() == 0)
+            let reconstructed = try #require(
+                relaunched.attemptStagingURL(for: owner, stableURL: stable))
+            #expect(FileManager.default.fileExists(atPath: reconstructed.path))
+            #expect(FileManager.default.fileExists(atPath: stable.path))
+            #expect(relaunched.setStatus(for: owner, .failed) == .applied)
+            #expect(relaunched.attemptWorkingFileURL(for: owner) == reconstructed)
+        }
+    }
+
     @Test func heldSuccessorRestartsFailedResumeQueueHeadWithOperationDispatcher() async throws {
         try await withStoreAsync { initial, directory in
             let owner = key("plex:mixed-artifact-retry", "attempt-a")
@@ -761,6 +930,32 @@ private final class BlockFirstHeldIndexWrite: @unchecked Sendable {
         let first = lock.withLock { count += 1; return count == 1 }
         if first { started.signal(); release.wait() }
         try DownloadIndexFileCommitter().commit(data, to: url)
+    }
+}
+
+private final class BlockCheckpointStat: @unchecked Sendable {
+    let started = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+
+    func size(_ url: URL, using body: @Sendable (URL) -> Int?) -> Int? {
+        started.signal()
+        release.wait()
+        return body(url)
+    }
+}
+
+private final class BlockCheckpointCopy: @unchecked Sendable {
+    let started = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    private let failAfterRelease: Bool
+
+    init(failAfterRelease: Bool) { self.failAfterRelease = failAfterRelease }
+
+    func copy(_ source: URL, _ destination: URL, _ temporary: URL) throws {
+        started.signal()
+        release.wait()
+        if failAfterRelease { throw CocoaError(.fileWriteOutOfSpace) }
+        try DownloadStaticCheckpointFilesystem.live.durableCopy(source, destination, temporary)
     }
 }
 
