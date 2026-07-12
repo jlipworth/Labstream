@@ -446,6 +446,76 @@ struct DownloadStorePersistenceTests {
         }
     }
 
+    @Test func legacyResetPostCancellationSubmissionJoinsRecoveredActiveHead() async throws {
+        try await withTemporaryDirectory { directory in
+            let media = directory.appendingPathComponent("reset-active-join.mp4")
+            try Data([7]).write(to: media)
+            var row = legacyRow(ratingKey: "plex:reset-active-join", status: "paused", bytes: 1)
+            row["relativePath"] = media.lastPathComponent
+            try writeLegacyIndex(schemaVersion: 2, rows: [row], directory: directory)
+
+            let originalDelete = BlockingArtifactDelete(path: media.path)
+            let live = DownloadArtifactFilesystem.live
+            let original = DownloadStore(baseDirectory: directory, artifactFilesystem: .init(
+                writeAuthArtifact: live.writeAuthArtifact,
+                removeItem: { url, fm in try originalDelete.remove(url, fm: fm) },
+                fileExists: live.fileExists))
+            guard case .committed(let plan) = original.commitLegacyAttemptOwnershipMigration(),
+                  let key = plan.taskCancellationAndReset.first else { return }
+            let originalSubmission = original.submitLegacyResetAfterTaskCancellation(key)
+            #expect(await waitForSignal(originalDelete.started, timeout: 1))
+
+            let recoveredDelete = BlockingArtifactDelete(path: media.path)
+            let recovered = DownloadStore(baseDirectory: directory, artifactFilesystem: .init(
+                writeAuthArtifact: live.writeAuthArtifact,
+                removeItem: { url, fm in try recoveredDelete.remove(url, fm: fm) },
+                fileExists: live.fileExists))
+            #expect(await waitForSignal(recoveredDelete.started, timeout: 1))
+            guard case .accepted(let joined) = recovered.submitLegacyResetAfterTaskCancellation(key) else {
+                Issue.record("expected post-cancellation submission to join recovered active head")
+                recoveredDelete.release.signal(); originalDelete.release.signal(); return
+            }
+            recoveredDelete.release.signal()
+            #expect(await recovered.resolveLegacyReset(.accepted(ticket: joined))
+                == .committed(key, cleanupFailureCount: 0))
+            originalDelete.release.signal()
+            _ = await original.resolveLegacyReset(originalSubmission)
+        }
+    }
+
+    @Test func legacyResetReservationRejectsConcurrentHeldBodyAdoption() async throws {
+        try await withTemporaryDirectory { directory in
+            let media = directory.appendingPathComponent("reset-reserved-adoption.mp4")
+            try Data([8]).write(to: media)
+            var legacy = legacyRow(ratingKey: "plex:reset-reserved", status: "paused", bytes: 1)
+            legacy["relativePath"] = media.lastPathComponent
+            try writeLegacyIndex(schemaVersion: 2, rows: [legacy], directory: directory)
+            let blocker = BlockingArtifactDelete(path: media.path)
+            let live = DownloadArtifactFilesystem.live
+            let store = DownloadStore(baseDirectory: directory, artifactFilesystem: .init(
+                writeAuthArtifact: live.writeAuthArtifact,
+                removeItem: { url, fm in try blocker.remove(url, fm: fm) },
+                fileExists: live.fileExists))
+            let adopterID = DownloadAttemptID(uuid: UUID())
+            let adopterRecord = makeRecord(
+                ratingKey: "plex:adopter", title: "Adopter", directory: directory, bytes: 0,
+                metadata: OfflineMetadata(ratingKey: "plex:adopter", title: "Adopter", type: "movie"))
+            guard case .committed(let adopterKey) = store.createAttemptOwnedRecord(
+                adopterRecord, attemptID: adopterID) else { return }
+            guard case .committed(let plan) = store.commitLegacyAttemptOwnershipMigration(),
+                  let resetKey = plan.taskCancellationAndReset.first else { return }
+            let reset = store.submitLegacyResetAfterTaskCancellation(resetKey)
+            #expect(await waitForSignal(blocker.started, timeout: 1))
+            let segment = OfflineHeldRangeSegment(
+                offset: 0, length: 1, relativePath: media.lastPathComponent)
+            #expect(store.persistHeldRangeSegment(for: adopterKey, segment: segment)
+                == .staleOrMissing)
+            blocker.release.signal()
+            #expect(await store.resolveLegacyReset(reset)
+                == .committed(resetKey, cleanupFailureCount: 0))
+        }
+    }
+
     @Test func newAttemptRecordWritesMatchingTopLevelAndNestedShadow() throws {
         try withTemporaryDirectory { directory in
             let ratingKey = "plex:new-v3"
@@ -1277,6 +1347,17 @@ private final class FailOneLegacyResetDelete: @unchecked Sendable {
             failed = true; return true
         }
         if shouldFail { throw CocoaError(.fileWriteOutOfSpace) }
+        try fm.removeItem(at: url)
+    }
+}
+
+private final class BlockingArtifactDelete: @unchecked Sendable {
+    let started = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    private let path: String
+    init(path: String) { self.path = path }
+    func remove(_ url: URL, fm: FileManager) throws {
+        if url.path == path { started.signal(); release.wait() }
         try fm.removeItem(at: url)
     }
 }
