@@ -173,6 +173,25 @@ struct JellyfinBrowseService {
         return item
     }
 
+    func metadata(itemId: String,
+                  session: BackendSession,
+                  identity: ClientIdentity) async throws -> MediaItem {
+        guard session.kind == .jellyfin,
+              let userID = session.userID else { throw ServiceError.notAuthenticated }
+        let core = MediaBrowserBrowseCore(
+            context: MediaBrowserBrowseContext(server: session.baseURL,
+                                               token: session.token,
+                                               userID: userID,
+                                               identity: identity.jellyfin),
+            adapter: JellyfinBrowseCoreAdapter(),
+            send: { request in try await send(request) }
+        )
+        guard let item = try await core.metadata(itemID: itemId) else {
+            throw ServiceError.noPlayableItem
+        }
+        return item
+    }
+
     func playbackOpen(item: MediaItem,
                       maxVideoBitrateKbps: Int,
                       resumeOffsetMs: Int? = nil,

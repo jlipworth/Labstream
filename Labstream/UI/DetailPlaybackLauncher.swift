@@ -11,17 +11,19 @@ enum DetailPlaybackLauncher {
 
     static func metadataItem(ratingKey: String,
                              fallback: MediaItem,
-                             backend: MediaBackendKind,
+                             context: MediaBrowserPlaybackContext,
                              appModel: AppModel,
                              resumeRewindSeconds: Int) async -> MediaItem {
         let fetched: MediaItem?
-        switch backend {
+        switch context.backend {
         case .plex:
             fetched = nil
         case .jellyfin:
-            fetched = try? await JellyfinBrowseService(appModel: appModel).metadata(itemId: ratingKey)
+            fetched = try? await JellyfinBrowseService(appModel: appModel).metadata(
+                itemId: ratingKey, session: context.session, identity: context.identity)
         case .emby:
-            fetched = try? await EmbyBrowseService(appModel: appModel).metadata(itemId: ratingKey)
+            fetched = try? await EmbyBrowseService(appModel: appModel).metadata(
+                itemId: ratingKey, session: context.session, identity: context.identity)
         }
         return itemWithResumeRewind(fetched ?? fallback, resumeRewindSeconds: resumeRewindSeconds)
     }
@@ -154,6 +156,12 @@ enum DetailPlaybackLauncher {
                                          context: MediaBrowserPlaybackContext?,
                                          appModel: AppModel) -> Bool {
         requestStillCurrent && (context?.isCurrent(in: appModel) ?? true)
+    }
+
+    static func shouldContinueAfterMetadata(requestStillCurrent: Bool,
+                                            context: MediaBrowserPlaybackContext,
+                                            appModel: AppModel) -> Bool {
+        requestStillCurrent && context.isCurrent(in: appModel)
     }
 
     private static func reopenStream(context: MediaBrowserPlaybackContext,
