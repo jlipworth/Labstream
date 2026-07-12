@@ -40,13 +40,21 @@ final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
     private struct Entry {
         let intentID: UUID
         var outcome: Outcome
-        /// The intent is permanently dead (retired failed head, deleted row, resolved one-shot
-        /// barrier) and will never be re-registered. Ticket waits still observe the recorded
-        /// outcome; boundary waits must stop gating on it or one abandonment poisons every
-        /// subsequent boundary for the rest of the process.
-        var abandoned = false
     }
+    /// Live work only: pending attempts plus failures whose intent may still be retried. A
+    /// sequence leaves this table when its chain completes, or when its intent is permanently
+    /// abandoned (retired failed head, deleted row, resolved one-shot barrier) — abandonment and
+    /// supersession park exact failures in `retiredFailures` so the table cannot grow per dead
+    /// intent and boundary scans only ever walk live work.
     private var entries: [UInt64: Entry] = [:]
+    /// Exact outcomes for failed attempts whose entries were retired (superseded by a completed
+    /// retry, or permanently abandoned). Ticket-scoped waiters consult this when their sequence is
+    /// gone from `entries`, so a delayed waiter still observes its own attempt's failure instead
+    /// of inheriting a retry's success. Bounded FIFO; an evicted (ancient) ticket reads
+    /// `.completed`, the same as any pruned completed chain.
+    private var retiredFailures: [UInt64: Failure] = [:]
+    private var retiredFailureOrder: [UInt64] = []
+    private static let retiredFailureCap = 512
 
     func register(
         key: DownloadAttemptKey,
@@ -93,12 +101,16 @@ final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
         }
         if case .completed = outcome {
             // A completed newest attempt can never gate a boundary, and every older attempt for
-            // the same intent is superseded by it, so the whole chain is prunable. Ticket waits
-            // treat a pruned entry as completed. This keeps the entry table bounded by pending
-            // and unresolved-failed work instead of growing per registration forever.
+            // the same intent is superseded by it, so the whole chain leaves the live table.
+            // Superseded pending attempts read as completed (the intent is durably resolved);
+            // superseded FAILED attempts keep their exact outcome in `retiredFailures` so a
+            // delayed holder of the failed ticket is not misreported as successful.
             for (sequence, candidate) in entries
             where candidate.intentID == ticket.intentID && sequence <= ticket.sequence {
                 entries.removeValue(forKey: sequence)
+                if sequence != ticket.sequence, case .failed(let failure) = candidate.outcome {
+                    retireFailureLocked(sequence: sequence, failure: failure)
+                }
             }
         } else {
             entry.outcome = outcome
@@ -108,23 +120,81 @@ final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
         condition.unlock()
     }
 
-    /// Mark every attempt for a permanently abandoned intent as boundary-exempt. Abandonment is
-    /// the store's durable statement that no retry will ever re-register this intentID (its failed
-    /// head was retired ahead of a queued row deletion, its row was removed, or it was a resolved
-    /// one-shot persistence barrier), so boundaries must not report its stale outcome — and must
-    /// not wait on it — for the rest of the process. The entries stay so ticket-scoped waiters can
-    /// still observe the recorded failure.
+    /// Retire every attempt for a permanently abandoned intent. Abandonment is the store's durable
+    /// statement that no retry will ever re-register this intentID (its failed head was retired
+    /// ahead of a queued row deletion, its row was removed, or it was a resolved one-shot
+    /// persistence barrier), so boundaries must not report its stale outcome — and must not wait
+    /// on it — for the rest of the process. Attempts leave the live table entirely: failed ones
+    /// park their exact outcome in `retiredFailures`, and still-pending ones resolve to a terminal
+    /// abandonment failure so ticket-scoped waiters unblock instead of waiting forever on an
+    /// intent that can no longer finish.
     func abandonIntent(_ intentID: UUID) {
         condition.lock()
         var changed = false
-        for (sequence, entry) in entries where entry.intentID == intentID && !entry.abandoned {
-            var abandoned = entry
-            abandoned.abandoned = true
-            entries[sequence] = abandoned
+        for (sequence, entry) in entries where entry.intentID == intentID {
+            entries.removeValue(forKey: sequence)
+            switch entry.outcome {
+            case .failed(let failure):
+                retireFailureLocked(sequence: sequence, failure: failure)
+            case .pending:
+                retireFailureLocked(
+                    sequence: sequence, failure: .artifact(errorType: "intentAbandoned"))
+            case .completed:
+                break
+            }
             changed = true
         }
         if changed { condition.broadcast() }
         condition.unlock()
+    }
+
+    #if DEBUG
+    /// Test-only visibility into retirement: live table must hold only in-flight/retryable work.
+    var liveEntryCountForTesting: Int {
+        condition.lock(); defer { condition.unlock() }
+        return entries.count
+    }
+
+    /// Test-only visibility into the bounded retired-failure store.
+    var retiredFailureCountForTesting: Int {
+        condition.lock(); defer { condition.unlock() }
+        return retiredFailures.count
+    }
+    #endif
+
+    /// Fail and permanently abandon an attempt in a single transition, for intents that are dead
+    /// the moment they fail (one-shot persistence barriers under a never-re-registered intentID).
+    /// Fusing the two steps means no boundary waiter can wake between `fail` and `abandonIntent`
+    /// and observe the intermediate failed-but-live entry. Ticket-scoped waiters still read the
+    /// exact failure from `retiredFailures`.
+    func failAndAbandonIntent(_ ticket: Ticket, _ failure: DownloadStore.PersistenceFlushResult) {
+        condition.lock()
+        for (sequence, entry) in entries where entry.intentID == ticket.intentID {
+            entries.removeValue(forKey: sequence)
+            switch entry.outcome {
+            case .failed(let recorded):
+                retireFailureLocked(sequence: sequence, failure: recorded)
+            case .pending where sequence == ticket.sequence:
+                retireFailureLocked(sequence: sequence, failure: .persistence(failure))
+            case .pending:
+                retireFailureLocked(
+                    sequence: sequence, failure: .artifact(errorType: "intentAbandoned"))
+            case .completed:
+                break
+            }
+        }
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    /// Caller must hold `condition`.
+    private func retireFailureLocked(sequence: UInt64, failure: Failure) {
+        if retiredFailures.updateValue(failure, forKey: sequence) == nil {
+            retiredFailureOrder.append(sequence)
+        }
+        while retiredFailureOrder.count > Self.retiredFailureCap {
+            retiredFailures.removeValue(forKey: retiredFailureOrder.removeFirst())
+        }
     }
 
     func waitSynchronously(for ticket: Ticket) -> FlushResult {
@@ -151,7 +221,11 @@ final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
         let deadline = timeout.map { Date().addingTimeInterval($0) }
         while true {
             guard let entry = entries[ticket.sequence], entry.intentID == ticket.intentID else {
+                // Retired sequences resolve to their exact recorded failure; a pruned completed
+                // chain (or an evicted ancient failure) reads as completed.
+                let retired = retiredFailures[ticket.sequence]
                 condition.unlock()
+                if let retired { return .failed(retired) }
                 return .completed
             }
             switch entry.outcome {
@@ -189,8 +263,10 @@ final class DownloadArtifactLifecycleCoordinator: @unchecked Sendable {
         condition.lock()
         let deadline = timeout.map { Date().addingTimeInterval($0) }
         while true {
-            let candidates = entries
-                .filter { $0.key <= watermark.sequence && !$0.value.abandoned }
+            // `entries` holds live work only — abandoned/superseded attempts were retired — so
+            // one dead intent can no longer poison every later boundary, and the scan cost is
+            // bounded by in-flight and retryable-failed attempts.
+            let candidates = entries.filter { $0.key <= watermark.sequence }
             var latestByIntent: [UUID: (sequence: UInt64, outcome: Outcome)] = [:]
             for (sequence, entry) in candidates {
                 if sequence > (latestByIntent[entry.intentID]?.sequence ?? 0) {

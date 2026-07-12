@@ -3264,11 +3264,11 @@ final class DownloadStore: @unchecked Sendable {
                 if outcome.result.committed(through: ticket) {
                     self.artifactLifecycle.complete(lifecycle)
                 } else {
-                    self.artifactLifecycle.fail(lifecycle, outcome.result)
                     // One-shot persistence barrier with a random intentID: no retry ever
-                    // re-registers it, so exempt the recorded failure from later boundaries.
-                    // The ticket waiter above still observes the failure.
-                    self.artifactLifecycle.abandonIntent(lifecycle.intentID)
+                    // re-registers it, so the failure is recorded and abandoned in one atomic
+                    // transition — a boundary waiter must never observe the intermediate
+                    // failed-but-live entry. The ticket waiter above still reads the failure.
+                    self.artifactLifecycle.failAndAbandonIntent(lifecycle, outcome.result)
                 }
             }
             return .accepted(change: .noChange, ticket: lifecycle)
