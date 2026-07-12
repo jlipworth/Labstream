@@ -1723,11 +1723,7 @@ private enum EmbyAuthError: Error {
 
 private extension MediaBackendKind {
     var switchChoice: MediaBackendChoice {
-        switch self {
-        case .plex: return .plex
-        case .jellyfin: return .jellyfin
-        case .emby: return .emby
-        }
+        self
     }
 }
 
