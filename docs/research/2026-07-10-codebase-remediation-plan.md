@@ -820,6 +820,36 @@ their relationship during the schema-v3 migration.
 - **Remaining Phase 1A boundary:** this closes cleanup/index ordering only. Held-body deferred deletion
   and bounded lifecycle mutation tickets remain separate incomplete slices.
 
+#### 2026-07-12 — Phase 1 resume and held-body artifact lifecycle tickets
+
+- **Commits:** `3837be41`, `ae918098`, `0da4de1d`, `697f1876`, and `867242d3` add the
+  durable resume-artifact transaction and its deterministic lifecycle coordinator; `a4373941`,
+  `1ac9267a`, `2a18539c`, `1d90f1c7`, `14ae4d1f`, and `685509af` migrate held-manifest/body
+  cleanup and close its failure/restart races.
+- **Resume boundary:** schema-v4 rows carry optional ordered artifact intents and generations. Resume
+  blob replacement/clear is prepared durably, performed off the Store lock with full-file and
+  directory synchronization, and terminally retired only after the clearing index revision commits.
+  Relaunch recovers only the queue head; a failed retirement restores the exact intent before a
+  same-intent retry. Strict aged-temp cleanup ignores fresh, unrelated, and near-pattern files.
+- **Held boundary:** manifest replacement/removal and deferred body deletion are one queued lifecycle.
+  The prepared row revision owns every predecessor path before deletion; an in-memory reservation
+  prevents any manifest API from adopting a path until terminal retirement succeeds or failure
+  restoration completes. Filesystem deletion runs on the artifact worker through the injected seam,
+  never under the Store lock. Production session call sites return to their serialized queue before
+  waiting, then replan from the durable checkpoint on failure and re-enter held draining after
+  successful asynchronous removal. Ownerless legacy deletion authority is staged immediately after
+  durable attempt-ownership migration and before callback admission.
+- **Failure/liveness proof:** successor submission detects and restarts an inactive failed queue head
+  through an operation-aware dispatcher. Direct-ticket regressions cover a prepared resume failure
+  followed by a held successor and a held terminal-retirement failure followed by production-shaped
+  replan; neither test invokes the independent watermark recovery path. Adversarial review is clean.
+- **Evidence:** focused attempt-owned checkpoint tests passed 18/18, the full Mac plan passed 225/225,
+  and PMSKit passed 1,487 tests across 188 suites. The direct-ticket coverage amendment passed the
+  focused suite again.
+- **Remaining Phase 1A artifact boundary:** static checkpoint copy/stat/reset, validated promotion,
+  legacy-reset deletion, and whole-row/pending-deletion artifact removal are not migrated by this
+  slice. Physical background redelivery and device migration gates also remain open.
+
 #### 2026-07-11 — Phase 2D compiler-cliff removal
 
 - **Status:** complete.
