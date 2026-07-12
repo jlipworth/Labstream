@@ -1040,6 +1040,8 @@ struct CustomPlayerChrome: View {
 
             HStack(spacing: 8) {
                 phoneLandscapeSkipButton(seconds: -30)
+                phoneLandscapeSkipButton(seconds: -10)
+                phoneLandscapeSkipButton(seconds: 10)
                 phoneLandscapeSkipButton(seconds: 30)
 
                 Spacer(minLength: 12)

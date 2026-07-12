@@ -8,14 +8,29 @@ struct RailViewAllView: View {
     @State private var model = RailPagingModel()
 
     private var source: RailPagingSource { RailPagingSource(destination: destination, appModel: appModel) }
-    private var columns: [GridItem] {
+    private var regularColumns: [GridItem] {
         [GridItem(.adaptive(minimum: DS.Poster.gridMin(compact: compactWidth),
                             maximum: DS.Poster.gridMax(compact: compactWidth)),
                   spacing: DS.gridGutter(compact: compactWidth))]
     }
 
     var body: some View {
-        ScrollView {
+        GeometryReader { geometry in
+            ScrollView {
+                destinationContent(availableWidth: geometry.size.width)
+            }
+        }
+        .navigationTitle(destination.title)
+        .navigationDestination(for: MediaItem.self) { item in
+            if item.isMusicContainer { musicDestination(for: item, sectionKey: nil) }
+            else { DetailView(item: item, originBackend: destination.backend) }
+        }
+        .task(id: destination.id) { await model.loadInitial(source: source) }
+        .refreshable { await model.refresh(source: source) }
+    }
+
+    @ViewBuilder
+    private func destinationContent(availableWidth: CGFloat) -> some View {
             if model.isInitialLoading && model.items.isEmpty {
                 ProgressView("Loading…").frame(maxWidth: .infinity, minHeight: 320)
             } else if let error = model.initialError, model.items.isEmpty {
@@ -29,9 +44,15 @@ struct RailViewAllView: View {
                 ContentUnavailableView("Nothing here yet", systemImage: "rectangle.stack")
                     .frame(maxWidth: .infinity, minHeight: 320)
             } else {
-                LazyVGrid(columns: columns, spacing: compactWidth ? DS.Space.lg : DS.Space.xxl) {
+                let metrics = compactGridMetrics(availableWidth: availableWidth)
+                LazyVGrid(columns: gridColumns(metrics: metrics),
+                          spacing: metrics?.rowSpacing ?? DS.Space.xxl) {
                     ForEach(Array(model.items.enumerated()), id: \.element.ratingKey) { index, item in
-                        NavigationLink(value: item) { PosterCell(item: item) }
+                        NavigationLink(value: item) {
+                            PosterCell(item: item,
+                                       width: metrics.map { CGFloat($0.posterWidth) },
+                                       labelStyle: metrics == nil ? .standard : .denseLibrary)
+                        }
                             .cardLink()
                             .videoCardContextMenu(for: item)
                             .onAppear {
@@ -40,7 +61,10 @@ struct RailViewAllView: View {
                             }
                     }
                 }
-                .padding(DS.pagePadding(compact: compactWidth))
+                .padding(.horizontal, metrics.map { CGFloat($0.horizontalPadding) }
+                         ?? DS.pagePadding(compact: compactWidth))
+                .padding(.vertical, metrics.map { CGFloat($0.horizontalPadding) }
+                         ?? DS.pagePadding(compact: compactWidth))
 
                 if model.isLoadingNext { ProgressView().padding() }
                 if let error = model.nextError {
@@ -50,13 +74,17 @@ struct RailViewAllView: View {
                     }.padding()
                 }
             }
-        }
-        .navigationTitle(destination.title)
-        .navigationDestination(for: MediaItem.self) { item in
-            if item.isMusicContainer { musicDestination(for: item, sectionKey: nil) }
-            else { DetailView(item: item, originBackend: destination.backend) }
-        }
-        .task(id: destination.id) { await model.loadInitial(source: source) }
-        .refreshable { await model.refresh(source: source) }
+    }
+
+    private func compactGridMetrics(availableWidth: CGFloat) -> MobileLibraryGridLayout.Metrics? {
+        guard compactWidth else { return nil }
+        return MobileLibraryGridLayout.metrics(availableWidth: Double(availableWidth))
+    }
+
+    private func gridColumns(metrics: MobileLibraryGridLayout.Metrics?) -> [GridItem] {
+        guard let metrics else { return regularColumns }
+        return Array(repeating: GridItem(.fixed(CGFloat(metrics.posterWidth)),
+                                         spacing: CGFloat(metrics.gutter)),
+                     count: metrics.columnCount)
     }
 }
