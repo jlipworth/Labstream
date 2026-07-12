@@ -65,7 +65,7 @@ extension DownloadManager {
                                                                   mediaIndex: mediaIndex,
                                                                   partIndex: partIndex,
                                                                   backend: .emby)) {
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             return
         }
 
@@ -97,7 +97,7 @@ extension DownloadManager {
             for: startAttempt,
             backend: "Emby"
         ) else {
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             return
         }
         recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(
@@ -156,7 +156,7 @@ extension DownloadManager {
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
             _ = setEmbyAttemptStatus(.failed, for: attemptKey, context: "playback_info")
             clearStaticRangePendingResume(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             refreshRecords()
             return
         }
@@ -195,7 +195,7 @@ extension DownloadManager {
                 "The requested server version is no longer available. Choose another version and retry.")
             _ = setEmbyAttemptStatus(.failed, for: attemptKey, context: "source_mismatch")
             clearStaticRangePendingResume(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             refreshRecords()
             return
         }
@@ -271,7 +271,7 @@ extension DownloadManager {
             lastError[ratingKey] = .transferFailed(reason.userMessage)
             _ = setEmbyAttemptStatus(.failed, for: attemptKey, context: "route_rejected")
             clearStaticRangePendingResume(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             refreshRecords()
             return
         }
@@ -341,7 +341,7 @@ extension DownloadManager {
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
             _ = setEmbyAttemptStatus(.failed, for: attemptKey, context: "request_build")
             clearStaticRangePendingResume(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             refreshRecords()
             return
         }
@@ -352,7 +352,7 @@ extension DownloadManager {
                            localURL: destination, bytes: 0, progress: 0,
                            metadata: metadata),
             for: attemptKey, context: "resolved_destination") else {
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             return
         }
         // #84: the authoritative media-source id comes from the PlaybackInfo decision; persist it
@@ -362,7 +362,7 @@ extension DownloadManager {
                 for: attemptKey, context: "media_source", mutate: {
                     $0.mediaSourceID = decision.mediaSourceId
                 }) else {
-                releaseInFlight(ratingKey: ratingKey)
+                releaseInFlight(for: attemptKey)
                 return
             }
         }
@@ -391,7 +391,7 @@ extension DownloadManager {
             guard setEmbyAttemptStatus(
                 .paused, for: attemptKey, context: "queue_paused") else { return }
             lastError[ratingKey] = .interruptedResumable
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             recordDownloadDiagnostic("downloads.start_deferred_queue_paused", fields: [
                 "download_id": .identifier(ratingKey),
                 "backend": .label("Emby"),
@@ -419,8 +419,8 @@ extension DownloadManager {
                 // (not range-resumable), and the minted PlaySessionId MUST be torn down on terminal
                 // transition. #84: persist it onto the row so a hard app kill can still tear the
                 // encoder down on next launch.
-                transcodeSourcedDownloads.insert(ratingKey)
-                embyPlaySessionByRatingKey[ratingKey] = decision.playSessionId
+                transcodeSourcedDownloads.insert(attemptKey)
+                embyPlaySessionByAttempt[attemptKey] = decision.playSessionId
                 guard updateEmbyAttemptMetadata(
                     for: attemptKey, context: "play_session", mutate: {
                         $0.playSessionID = decision.playSessionId

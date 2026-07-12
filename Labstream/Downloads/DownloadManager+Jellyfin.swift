@@ -51,7 +51,7 @@ extension DownloadManager {
                                                                   mediaIndex: mediaIndex,
                                                                   partIndex: partIndex,
                                                                   backend: .jellyfin)) {
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             return
         }
 
@@ -81,7 +81,7 @@ extension DownloadManager {
             for: startAttempt,
             backend: "Jellyfin"
         ) else {
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             return
         }
         recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(
@@ -179,7 +179,7 @@ extension DownloadManager {
                     maxHeight: profile.maxHeight,
                     audioStreamIndex: audioStreamIndex)
                 request = transcodedRequest
-                jellyfinPlaySessionByRatingKey[ratingKey] = decision.playSessionId
+                jellyfinPlaySessionByAttempt[attemptKey] = decision.playSessionId
                 mintedPlaySessionId = sourcePlan.playSessionID
                 expectedBytes = sourcePlan.expectedBytes
                 transferRoute = sourcePlan.route
@@ -266,7 +266,7 @@ extension DownloadManager {
                         maxHeight: fallbackProfile.maxHeight,
                         audioStreamIndex: audioStreamIndex)
                 }
-                jellyfinPlaySessionByRatingKey[ratingKey] = decision.playSessionId
+                jellyfinPlaySessionByAttempt[attemptKey] = decision.playSessionId
                 mintedPlaySessionId = sourcePlan.playSessionID
             }
             // Lens 6 F1: both transcode lanes awaited PlaybackInfo above with NO currency check —
@@ -276,7 +276,7 @@ extension DownloadManager {
             // chain minted.
             guard startAttemptStillCurrent(startAttempt, backend: "Jellyfin",
                                            phase: "post_negotiation") else {
-                jellyfinPlaySessionByRatingKey.removeValue(forKey: ratingKey)
+                jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
                 stopSupersededMediaBrowserEncoder(ratingKey: ratingKey,
                                                   playSessionID: mintedPlaySessionId,
                                                   backendKind: .jellyfin,
@@ -285,7 +285,7 @@ extension DownloadManager {
             }
         } catch {
             guard store.ownsAttempt(attemptKey) else {
-                jellyfinPlaySessionByRatingKey.removeValue(forKey: ratingKey)
+                jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
                 stopSupersededMediaBrowserEncoder(ratingKey: ratingKey,
                                                   playSessionID: mintedPlaySessionId,
                                                   backendKind: .jellyfin,
@@ -301,7 +301,7 @@ extension DownloadManager {
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
             _ = store.setStatus(for: attemptKey, .failed)
             clearStaticRangePendingResume(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             refreshRecords()
             return
         }
@@ -313,14 +313,14 @@ extension DownloadManager {
             attemptID: startAttempt.attemptID)
         guard case .committed(let publishedKey) = publishResult,
               publishedKey == attemptKey else {
-            jellyfinPlaySessionByRatingKey.removeValue(forKey: ratingKey)
+            jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
             stopSupersededMediaBrowserEncoder(ratingKey: ratingKey,
                                               playSessionID: mintedPlaySessionId,
                                               backendKind: .jellyfin,
                                               backendSession: backendSession)
             if store.ownsAttempt(attemptKey) {
                 _ = store.setStatus(for: attemptKey, .failed)
-                releaseInFlight(ratingKey: ratingKey)
+                releaseInFlight(for: attemptKey)
             }
             return
         }
@@ -330,14 +330,14 @@ extension DownloadManager {
             guard jellyfinMutationAccepted(
                 store.setPlaySessionID(for: attemptKey, mintedPlaySessionId),
                 key: attemptKey, phase: "play_session") else {
-                jellyfinPlaySessionByRatingKey.removeValue(forKey: ratingKey)
+                jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
                 stopSupersededMediaBrowserEncoder(ratingKey: ratingKey,
                                                   playSessionID: mintedPlaySessionId,
                                                   backendKind: .jellyfin,
                                                   backendSession: backendSession)
                 if store.ownsAttempt(attemptKey) {
                     _ = store.setStatus(for: attemptKey, .failed)
-                    releaseInFlight(ratingKey: ratingKey)
+                    releaseInFlight(for: attemptKey)
                 }
                 return
             }
@@ -360,7 +360,7 @@ extension DownloadManager {
                 }, key: attemptKey, phase: "media_source") else {
                 if store.ownsAttempt(attemptKey) {
                     _ = store.setStatus(for: attemptKey, .failed)
-                    releaseInFlight(ratingKey: ratingKey)
+                    releaseInFlight(for: attemptKey)
                 }
                 return
             }
@@ -392,7 +392,7 @@ extension DownloadManager {
             // Mark it so the rate isn't misread as a network problem. `.original` is a static file
             // stream → network-bound, range-resumable, not marked.
             if transferRoute.isLiveForwardOnly {
-                transcodeSourcedDownloads.insert(ratingKey)
+                transcodeSourcedDownloads.insert(attemptKey)
             }
             try session.start(ratingKey: ratingKey,
                               with: request,

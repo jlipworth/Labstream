@@ -101,14 +101,15 @@ extension DownloadManager {
         }
     }
 
-    func beginEmbyConvertAttempt(ratingKey: String) -> UUID {
-        serverPrepAttempts.beginEmbyConvertAttempt(forRecordKey: ratingKey)
+    func beginEmbyConvertAttempt(for key: DownloadAttemptKey) -> UUID {
+        serverPrepAttempts.beginEmbyConvertAttempt(for: key)
     }
 
     func embyConvertAttemptIsCurrent(ratingKey: String, attemptID: UUID,
                                      targetName: String? = nil, jobId: Int? = nil) -> Bool {
-        guard activeJobs.contains(ratingKey),
-              serverPrepAttempts.isCurrentEmbyConvertAttempt(forRecordKey: ratingKey, id: attemptID),
+        guard let key = inFlightAttempts.owner(forRatingKey: ratingKey),
+              activeJobs.contains(ratingKey),
+              serverPrepAttempts.isCurrentEmbyConvertAttempt(for: key, id: attemptID),
               let row = store.record(for: ratingKey),
               row.status == .preparing else { return false }
         if let targetName, row.metadata?.optimizeTargetName != targetName { return false }
@@ -157,7 +158,7 @@ extension DownloadManager {
             failEmbyConvert(for: storeAttemptKey, .notAuthenticated)
             return
         }
-        let attemptID = beginEmbyConvertAttempt(ratingKey: ratingKey)
+        let attemptID = beginEmbyConvertAttempt(for: storeAttemptKey)
 
         // Carry the convert preset + a `.preparing`-grade metadata snapshot. `optimizeTargetName`
         // doubles as the server-prep marker the UI/resume paths key off (parity with Plex).
@@ -221,7 +222,7 @@ extension DownloadManager {
             // Keep the `.preparing` row until the static lane replaces it. Removing first left a
             // process-kill window with no durable row and no way to resume this accepted download.
             clearOptimizeProgress(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: storeAttemptKey)
             await downloadEmby(item, choice: .existingVersion, audioStreamIndex: audioStreamIndex,
                                mediaSourceIDOverride: reuseId,
                                deferStaticStartWhenQueuePaused: true,
@@ -254,7 +255,7 @@ extension DownloadManager {
                 return
             }
             clearOptimizeProgress(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: storeAttemptKey)
             await downloadEmby(item, choice: .existingVersion, audioStreamIndex: audioStreamIndex,
                                mediaSourceIDOverride: reuseId,
                                deferStaticStartWhenQueuePaused: true,
@@ -563,7 +564,7 @@ extension DownloadManager {
             cancelEmbyConvertJob(jobId: jobId, ratingKey: ratingKey,
                                  server: server, token: token, identity: identity)
             clearOptimizeProgress(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: storeAttemptKey)
             let requestedProfileLabel = records.first { $0.ratingKey == ratingKey }?
                 .metadata?.requestedProfileLabel ?? targetName
             await downloadEmby(item, choice: .existingVersion, audioStreamIndex: audioStreamIndex,
@@ -751,7 +752,7 @@ extension DownloadManager {
         // atomically with persisting the recovered job id.
         guard setEmbyAttemptStatus(.failed, for: key, context: "convert_failure") else { return }
         clearOptimizeProgress(ratingKey: key.ratingKey)
-        releaseInFlight(ratingKey: key.ratingKey)
+        releaseInFlight(for: key)
         refreshRecords()
     }
 
@@ -933,7 +934,7 @@ extension DownloadManager {
         // Clear the prep progress + release THIS lane's bookkeeping so the handoff `downloadEmby`
         // re-acquires the `activeJobs` slot cleanly and drives the row from 0% on the static lane.
         clearOptimizeProgress(ratingKey: ratingKey)
-        releaseInFlight(ratingKey: ratingKey)
+        releaseInFlight(for: storeAttemptKey)
         let requestedProfileLabel = records.first { $0.ratingKey == ratingKey }?
             .metadata?.requestedProfileLabel ?? targetName
         // Keep the seeded `.preparing` row until the static handoff atomically replaces it. A crash
@@ -1024,7 +1025,8 @@ extension DownloadManager {
         let maxAttempts = 6 // ~30 seconds at the shared 5s poll cadence; bounded before new convert.
         var lastSourceCount = 0
         for attempt in 0..<maxAttempts {
-            guard serverPrepAttempts.isCurrentEmbyConvertAttempt(forRecordKey: ratingKey, id: attemptID),
+            guard let key = inFlightAttempts.owner(forRatingKey: ratingKey),
+                  serverPrepAttempts.isCurrentEmbyConvertAttempt(for: key, id: attemptID),
                   activeJobs.contains(ratingKey) else { return nil }
             let sources = await embyFileSources(server: server, token: token, identity: identity,
                                                 userId: userId, itemId: itemId)

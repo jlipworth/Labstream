@@ -33,7 +33,7 @@ extension DownloadManager {
                                             session: BackendSession,
                                             attemptKey: DownloadAttemptKey) async {
         let ratingKey = item.ratingKey
-        guard let pollerID = beginServerPrepPoller(ratingKey: ratingKey, source: "start") else { return }
+        guard let pollerID = beginServerPrepPoller(for: attemptKey, source: "start") else { return }
         // Audit B.9: run the chain inside a Task registered in `serverPrepPollerTasks` (exactly
         // like the resume path) so a delete's `releaseInFlight` can CANCEL the fresh-start poll
         // loop too. Previously only the resume path stored a handle; a fresh start ran inline
@@ -45,9 +45,9 @@ extension DownloadManager {
                                               ratingKey: ratingKey, pollerID: pollerID,
                                               attemptKey: attemptKey)
         }
-        registerServerPrepPollerTask(task, ratingKey: ratingKey)
+        registerServerPrepPollerTask(task, for: attemptKey)
         await task.value
-        endServerPrepPoller(ratingKey: ratingKey, id: pollerID)
+        endServerPrepPoller(for: attemptKey, id: pollerID)
     }
 
     private func runOptimizeAndDownload(item: MediaItem, targetName: String,
@@ -109,7 +109,7 @@ extension DownloadManager {
                 "The download could not be saved safely. Check storage and try again.")
             _ = setAttemptStatus(.failed, for: attemptKey, context: "plex_optimize_seed")
             if store.ownsAttempt(attemptKey) {
-                releaseInFlight(ratingKey: ratingKey)
+                releaseInFlight(for: attemptKey)
             }
             refreshRecords()
             return
@@ -126,7 +126,7 @@ extension DownloadManager {
             // downloaded. Protection is instead released terminally (on `.complete`/`.failed`)
             // via `releaseInFlight`, driven from `refreshRecords`, plus the explicit
             // error-path release below.
-            serverPrepAttempts.protectQueueTitle(queueTitle, forRecordKey: ratingKey)
+            serverPrepAttempts.protectQueueTitle(queueTitle, for: attemptKey)
             let sourceItem = await fetchCurrentMediaItem(ratingKey: ratingKey, server: server,
                                                          token: token, identity: identity) ?? item
             try assertCurrentOptimizeAttempt(attemptKey: attemptKey,
@@ -250,11 +250,11 @@ extension DownloadManager {
             // A-1 (audit lens 8): park for deferred resume — keep the queued server-prep row, drop
             // the in-memory slot so the prep scanner reattaches once the matching lane returns.
             clearOptimizeProgress(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             refreshRecords()
             scheduleServerPrepResumeRetries()
         } catch let error as DownloadError {
-            guard resumeOptimizePollerIsCurrent(ratingKey: ratingKey, pollerID: pollerID,
+            guard resumeOptimizePollerIsCurrent(for: attemptKey, pollerID: pollerID,
                                                 phase: "start_error") else { return }
             recordDownloadDiagnostic("downloads.optimize_failed", fields: [
                 "download_id": .identifier(ratingKey),
@@ -269,13 +269,13 @@ extension DownloadManager {
             // Same stale-poller race as the resume chain: pause/delete already released this
             // attempt, and a quick re-download may own a NEW attempt on this key by now —
             // never strip the new attempt's slot from a superseded chain's handler.
-            guard resumeOptimizePollerIsCurrent(ratingKey: ratingKey, pollerID: pollerID,
+            guard resumeOptimizePollerIsCurrent(for: attemptKey, pollerID: pollerID,
                                                 phase: "start_cancelled") else { return }
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             clearOptimizeProgress(ratingKey: ratingKey)
             refreshRecords()
         } catch {
-            guard resumeOptimizePollerIsCurrent(ratingKey: ratingKey, pollerID: pollerID,
+            guard resumeOptimizePollerIsCurrent(for: attemptKey, pollerID: pollerID,
                                                 phase: "start_error") else { return }
             recordDownloadDiagnostic("downloads.optimize_failed", fields: [
                 "download_id": .identifier(ratingKey),
@@ -306,7 +306,7 @@ extension DownloadManager {
                                                ext: ext.isEmpty ? "mp4" : ext)
         if rejectIfOverStorageLimit(ratingKey: ratingKey, backend: "Plex", expectedBytes: part.size) {
             _ = setAttemptStatus(.failed, for: attemptKey, context: "plex_optimize_storage")
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             throw lastError[ratingKey] ?? DownloadError.storageLimitExceeded("Storage limit exceeded.")
         }
         try assertCurrentOptimizeAttempt(attemptKey: attemptKey,
@@ -363,7 +363,7 @@ extension DownloadManager {
             // appear), so a Plex optimize download is usually network-bound — but the server
             // can still be finalizing/serving it as it writes, so mark it transcode-sourced and
             // let `isDownloadTranscodeLimited` decide from the live rate.
-            transcodeSourcedDownloads.insert(ratingKey)
+            transcodeSourcedDownloads.insert(attemptKey)
             try session.start(ratingKey: ratingKey, from: url, to: destination,
                               expectedBytes: part.size,
                               byteRangeCheckpoint: true,
@@ -409,7 +409,7 @@ extension DownloadManager {
         guard store.ownsAttempt(attemptKey) else {
             throw DownloadLifecycleCancellation.staleOptimizeAttempt
         }
-        try assertCurrentOptimizeAttempt(ratingKey: attemptKey.ratingKey,
+        try assertCurrentOptimizeAttempt(attemptKey: attemptKey,
                                          metadata: metadata,
                                          targetName: targetName)
         guard store.ownsAttempt(attemptKey) else {
@@ -436,18 +436,19 @@ extension DownloadManager {
         }
     }
 
-    func assertCurrentOptimizeAttempt(ratingKey: String,
+    func assertCurrentOptimizeAttempt(attemptKey: DownloadAttemptKey,
                                               metadata: OfflineMetadata,
                                               targetName: String) throws {
-        guard activeJobs.contains(ratingKey) else {
+        let ratingKey = attemptKey.ratingKey
+        guard activeJobs.contains(ratingKey), inFlightAttempts.owns(attemptKey) else {
             throw DownloadLifecycleCancellation.staleOptimizeAttempt
         }
         if let queueTitle = metadata.optimizeQueueTitle {
-            guard serverPrepAttempts.queueTitle(forRecordKey: ratingKey) == queueTitle else {
+            guard serverPrepAttempts.queueTitle(for: attemptKey) == queueTitle else {
                 throw DownloadLifecycleCancellation.staleOptimizeAttempt
             }
         }
-        guard let current = store.record(for: ratingKey),
+        guard let current = store.record(for: attemptKey),
               current.status == .queued,
               current.bytes == 0,
               current.progress == 0 else {

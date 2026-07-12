@@ -18,39 +18,36 @@ public struct ServerPrepAttemptTracker: Sendable, Equatable {
         }
     }
 
-    private var protectedQueueTitles: Set<String> = []
-    private var queueTitleByRecordKey: [String: String] = [:]
-    private var embyConvertAttemptByRecordKey: [String: UUID] = [:]
-    private var plexPollerByRecordKey: [String: UUID] = [:]
+    private var queueTitleByAttempt: [DownloadAttemptKey: String] = [:]
+    private var embyConvertAttemptByAttempt: [DownloadAttemptKey: UUID] = [:]
+    private var plexPollerByAttempt: [DownloadAttemptKey: UUID] = [:]
 
     public init() {}
 
-    public var allProtectedQueueTitles: Set<String> { protectedQueueTitles }
+    public var allProtectedQueueTitles: Set<String> { Set(queueTitleByAttempt.values) }
 
-    public func queueTitle(forRecordKey recordKey: String) -> String? {
-        queueTitleByRecordKey[recordKey]
+    public func queueTitle(for key: DownloadAttemptKey) -> String? {
+        queueTitleByAttempt[key]
     }
 
-    public mutating func protectQueueTitle(_ title: String, forRecordKey recordKey: String) {
-        protectedQueueTitles.insert(title)
-        queueTitleByRecordKey[recordKey] = title
+    public mutating func protectQueueTitle(_ title: String, for key: DownloadAttemptKey) {
+        queueTitleByAttempt[key] = title
     }
 
     @discardableResult
-    public mutating func releaseQueueTitle(forRecordKey recordKey: String) -> String? {
-        guard let title = queueTitleByRecordKey.removeValue(forKey: recordKey) else { return nil }
-        protectedQueueTitles.remove(title)
+    public mutating func releaseQueueTitle(for key: DownloadAttemptKey) -> String? {
+        guard let title = queueTitleByAttempt.removeValue(forKey: key) else { return nil }
         return title
     }
 
-    public func hasPlexPoller(forRecordKey recordKey: String) -> Bool {
-        plexPollerByRecordKey[recordKey] != nil
+    public func hasPlexPoller(for key: DownloadAttemptKey) -> Bool {
+        plexPollerByAttempt[key] != nil
     }
 
     @discardableResult
-    public mutating func beginPlexPoller(forRecordKey recordKey: String, id: UUID = UUID()) -> UUID? {
-        guard plexPollerByRecordKey[recordKey] == nil else { return nil }
-        plexPollerByRecordKey[recordKey] = id
+    public mutating func beginPlexPoller(for key: DownloadAttemptKey, id: UUID = UUID()) -> UUID? {
+        guard plexPollerByAttempt[key] == nil else { return nil }
+        plexPollerByAttempt[key] = id
         return id
     }
 
@@ -58,42 +55,42 @@ public struct ServerPrepAttemptTracker: Sendable, Equatable {
     /// (pause/delete run `releaseAll`, a quick resume then begins a NEW poller id) must check
     /// this before running terminal cleanup: an unconditional release from a superseded poller's
     /// catch handler would strip the new attempt's slot/queue-title and cancel its poller.
-    public func isCurrentPlexPoller(forRecordKey recordKey: String, id: UUID) -> Bool {
-        plexPollerByRecordKey[recordKey] == id
+    public func isCurrentPlexPoller(for key: DownloadAttemptKey, id: UUID) -> Bool {
+        plexPollerByAttempt[key] == id
     }
 
     @discardableResult
-    public mutating func endPlexPoller(forRecordKey recordKey: String, id: UUID) -> Bool {
-        guard plexPollerByRecordKey[recordKey] == id else { return false }
-        plexPollerByRecordKey.removeValue(forKey: recordKey)
+    public mutating func endPlexPoller(for key: DownloadAttemptKey, id: UUID) -> Bool {
+        guard plexPollerByAttempt[key] == id else { return false }
+        plexPollerByAttempt.removeValue(forKey: key)
         return true
     }
 
     @discardableResult
-    public mutating func clearPlexPoller(forRecordKey recordKey: String) -> Bool {
-        plexPollerByRecordKey.removeValue(forKey: recordKey) != nil
+    public mutating func clearPlexPoller(for key: DownloadAttemptKey) -> Bool {
+        plexPollerByAttempt.removeValue(forKey: key) != nil
     }
 
     @discardableResult
-    public mutating func beginEmbyConvertAttempt(forRecordKey recordKey: String, id: UUID = UUID()) -> UUID {
-        embyConvertAttemptByRecordKey[recordKey] = id
+    public mutating func beginEmbyConvertAttempt(for key: DownloadAttemptKey, id: UUID = UUID()) -> UUID {
+        embyConvertAttemptByAttempt[key] = id
         return id
     }
 
-    public func isCurrentEmbyConvertAttempt(forRecordKey recordKey: String, id: UUID) -> Bool {
-        embyConvertAttemptByRecordKey[recordKey] == id
+    public func isCurrentEmbyConvertAttempt(for key: DownloadAttemptKey, id: UUID) -> Bool {
+        embyConvertAttemptByAttempt[key] == id
     }
 
     @discardableResult
-    public mutating func clearEmbyConvertAttempt(forRecordKey recordKey: String) -> Bool {
-        embyConvertAttemptByRecordKey.removeValue(forKey: recordKey) != nil
+    public mutating func clearEmbyConvertAttempt(for key: DownloadAttemptKey) -> Bool {
+        embyConvertAttemptByAttempt.removeValue(forKey: key) != nil
     }
 
     @discardableResult
-    public mutating func releaseAll(forRecordKey recordKey: String) -> ReleaseSummary {
-        let title = releaseQueueTitle(forRecordKey: recordKey)
-        let clearedEmby = clearEmbyConvertAttempt(forRecordKey: recordKey)
-        let clearedPoller = clearPlexPoller(forRecordKey: recordKey)
+    public mutating func releaseAll(for key: DownloadAttemptKey) -> ReleaseSummary {
+        let title = releaseQueueTitle(for: key)
+        let clearedEmby = clearEmbyConvertAttempt(for: key)
+        let clearedPoller = clearPlexPoller(for: key)
         return ReleaseSummary(releasedQueueTitle: title,
                               clearedEmbyConvertAttempt: clearedEmby,
                               clearedPlexPoller: clearedPoller)

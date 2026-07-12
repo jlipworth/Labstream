@@ -103,13 +103,16 @@ public final class DownloadManager {
 
     /// ratingKeys with an active (optimize or transfer) job in flight.
     public internal(set) var activeJobs: Set<String> = []
+    /// Exact owner of each compatibility `activeJobs` slot. The Set remains the UI-facing shape;
+    /// this tracker is the authority used by compare-release.
+    @ObservationIgnored var inFlightAttempts = DownloadInFlightAttemptTracker()
     /// App-level retry guard/presentation/handoff markers. The handoff sentinel prevents refresh
     /// cleanup from treating a transient `.failed` retry row as terminal before replacement work is
     /// seeded, while `retrying` still guards async retry continuations.
     private var retryState = DownloadRetryStateTracker()
     @ObservationIgnored private var refreshRecordsTask: Task<Void, Never>?
     private var serverPrepResumeRetryTask: Task<Void, Never>?
-    @ObservationIgnored private var serverPrepPollerTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored private var serverPrepPollerTasks: [DownloadAttemptKey: Task<Void, Never>] = [:]
     /// Server-prep attempt identities for Plex optimize and Emby convert. Keeps protected Plex
     /// queue titles, Plex poller ownership, and Emby convert attempt UUIDs in one IO-free model.
     /// The queue title must stay protected for the REAL download lifetime (until the file
@@ -221,7 +224,7 @@ public final class DownloadManager {
     /// network problem. Ephemeral; never persisted. Membership alone marks a download as
     /// transcode-sourced; `isDownloadTranscodeLimited` adds the "running well below realtime"
     /// test so a fast-rendering job isn't mislabelled.
-    var transcodeSourcedDownloads: Set<String> = []
+    var transcodeSourcedDownloads: Set<DownloadAttemptKey> = []
 
     /// ratingKey -> the server `PlaySessionId` minted/assigned for a TRANSCODED download.
     /// Required for encoder teardown: active server encoders must be killed with
@@ -233,8 +236,8 @@ public final class DownloadManager {
     /// row is seeded. Normal terminal transitions tear down from this in-memory map and clear the
     /// persisted copy on success; hard-kill/relaunch cleanup uses the persisted copy in
     /// `teardownOrphanedEncodersOnLaunch()`.
-    var embyPlaySessionByRatingKey: [String: String] = [:]
-    var jellyfinPlaySessionByRatingKey: [String: String] = [:]
+    var embyPlaySessionByAttempt: [DownloadAttemptKey: String] = [:]
+    var jellyfinPlaySessionByAttempt: [DownloadAttemptKey: String] = [:]
     /// Generation-guarded keepalive task handle shared by both backend loops. A task that RETURNS
     /// (auth-dead, session mismatch, natural exit) must remove itself from its map, or the
     /// `ensure*Keepalives` gate sees a live entry forever and never restarts the keepalive after
@@ -247,11 +250,11 @@ public final class DownloadManager {
     /// Jellyfin kills idle transcodes when no session progress/ping arrives. Offline downloads
     /// consume `/Videos/{id}/stream.mp4` as a file transfer, not through the playback controller, so
     /// keep the server-minted PlaySessionId alive until the transfer reaches a terminal row state.
-    @ObservationIgnored private var jellyfinDownloadKeepaliveTasks: [String: KeepaliveTaskHandle] = [:]
+    @ObservationIgnored private var jellyfinDownloadKeepaliveTasks: [DownloadAttemptKey: KeepaliveTaskHandle] = [:]
     /// Emby applies the same ~60-second idle expiry to compatible-remux encoders. This is separate
     /// bookkeeping because only Emby's `.compatibleRemux` lane is live; its optimize lane is a
     /// persistent Convert job and must never emit playback keepalives.
-    @ObservationIgnored private var embyDownloadKeepaliveTasks: [String: KeepaliveTaskHandle] = [:]
+    @ObservationIgnored private var embyDownloadKeepaliveTasks: [DownloadAttemptKey: KeepaliveTaskHandle] = [:]
     /// Auth-dead tasks exit permanently for the credential generation that received 401/403.
     /// Without this sentinel every `refreshRecords()` would immediately recreate the task and
     /// hammer the server. Values are non-secret stable digests of server+user+token identity.
@@ -950,7 +953,7 @@ public final class DownloadManager {
                 "backend": .label(backend),
                 "reason": .label("replace_active_without_task"),
             ])
-            releaseInFlight(ratingKey: ratingKey)
+            repairUnownedInFlightState(ratingKey: ratingKey, reason: "replace_active_without_task")
         }
         switch DownloadStartSlotPolicy.decision(existingRecordStatus: existingStatus,
                                                 hasActiveSlot: activeJobs.contains(ratingKey),
@@ -988,7 +991,7 @@ public final class DownloadManager {
                 "backend": .label(backend),
                 "reason": .label("active_without_row"),
             ])
-            releaseInFlight(ratingKey: ratingKey)
+            repairUnownedInFlightState(ratingKey: ratingKey, reason: "active_without_row")
         }
         activeJobs.insert(ratingKey)
         return true
@@ -1029,6 +1032,7 @@ public final class DownloadManager {
             return nil
         }
         let attemptID = startAttempts.begin(ratingKey)
+        inFlightAttempts.acquire(DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID))
         return DownloadStartAttemptHandle(
             ratingKey: ratingKey,
             attemptID: attemptID,
@@ -1149,7 +1153,8 @@ public final class DownloadManager {
     /// when the backend lane supports it; server-prep rows are marked paused so relaunch/refresh
     /// does not auto-poll/retry until the user resumes.
     public func pause(ratingKey: String) {
-        guard let record = records.first(where: { $0.ratingKey == ratingKey }) else { return }
+        guard let record = records.first(where: { $0.ratingKey == ratingKey }),
+              let releaseKey = attemptKey(for: record) else { return }
         let pauseAction = DownloadPausePolicy.rowAction(
             status: record.status,
             isStaticRangeRecord: StaticRangeRecoveryPolicy.isStaticRangeRecord(record),
@@ -1184,7 +1189,7 @@ public final class DownloadManager {
                   setAttemptStatus(.paused, for: key, context: "user_pause") else { return }
         }
         clearOptimizeProgress(ratingKey: ratingKey)
-        releaseInFlight(ratingKey: ratingKey)
+        releaseInFlight(for: releaseKey)
         refreshRecords()
     }
 
@@ -1721,6 +1726,7 @@ public final class DownloadManager {
             }
             if resumed {
                 activeJobs.insert(ratingKey)
+                inFlightAttempts.acquire(retryAttemptKey)
                 refreshRecords()
                 return
             }
@@ -1803,7 +1809,7 @@ public final class DownloadManager {
                     "backend": .label("Plex"),
                     "reason": .label("retry_failed_row"),
                 ])
-                self.releaseInFlight(ratingKey: ratingKey)
+                self.releaseInFlight(for: retryAttemptKey)
             }
             let currentItem = await self.fetchCurrentMediaItem(ratingKey: ratingKey,
                                                                server: server,
@@ -1832,13 +1838,13 @@ public final class DownloadManager {
                     self.lastError[ratingKey] = .transferFailed(
                         "The saved server version is no longer available. Choose another version and retry.")
                     self.clearStaticRangePendingResume(ratingKey: ratingKey)
-                    self.releaseInFlight(ratingKey: ratingKey)
+                    self.releaseInFlight(for: retryAttemptKey)
                     guard self.setAttemptStatus(
                         .failed, for: retryAttemptKey, context: "retry_part_missing") else { return }
                     self.refreshRecords()
                     return
                 }
-                self.releaseInFlight(ratingKey: ratingKey)
+                self.releaseInFlight(for: retryAttemptKey)
                 // Keep the row in place even when there is no durable media partial yet. `upsert`
                 // preserves cached poster/chapter/trickplay paths, while the static Range lane resumes
                 // from the durable file size (0 when no checkpoint exists). Removing here made Plex
@@ -1855,7 +1861,7 @@ public final class DownloadManager {
             if mediaIndex > 0,
                metadata?.resolvedDownloadLane() == .original,
                currentItem.media?.indices.contains(mediaIndex) == true {
-                self.releaseInFlight(ratingKey: ratingKey)
+                self.releaseInFlight(for: retryAttemptKey)
                 // Preserve side materials for the same static existing-version row; the replacement
                 // upsert updates transfer fields without deleting cached assets.
                 await self.download(currentItem, choice: .existingVersion,
@@ -1874,7 +1880,7 @@ public final class DownloadManager {
             // Drop the stale `.failed` row only once we know the replacement can be seeded.
             // This also removes any leftover invalid/partial file from the failed attempt.
             guard self.retryAttemptCanContinue(for: retryAttemptKey, token: retryToken) else { return }
-            self.releaseInFlight(ratingKey: ratingKey)
+            self.releaseInFlight(for: retryAttemptKey)
             if !DownloadRetryPolicy.shouldPromotePausedStaticPartial(record) {
                 guard self.removeAttempt(retryAttemptKey, context: "retry_replace") else { return }
             }
@@ -2000,7 +2006,7 @@ public final class DownloadManager {
                 "download_id": .identifier(record.ratingKey),
                 "target": .label(targetName),
             ])
-            self.releaseInFlight(ratingKey: record.ratingKey)
+            self.releaseInFlight(for: key)
             if !DownloadRetryPolicy.shouldPromotePausedStaticPartial(record) {
                 guard self.removeAttempt(key, context: "plex_optimize_replace") else { return }
             }
@@ -2062,7 +2068,7 @@ public final class DownloadManager {
                     "backend": .label("Jellyfin"),
                     "reason": .label("retry_failed_row"),
                 ])
-                self.releaseInFlight(ratingKey: record.ratingKey)
+                self.releaseInFlight(for: key)
             }
             guard self.retryAttemptCanContinue(for: key, token: attemptToken) else { return }
             // Keep the failed row visible until `downloadJellyfin` successfully seeds the
@@ -2128,7 +2134,7 @@ public final class DownloadManager {
                     "backend": .label("Emby"),
                     "reason": .label("retry_failed_row"),
                 ])
-                self.releaseInFlight(ratingKey: record.ratingKey)
+                self.releaseInFlight(for: key)
             }
             guard self.retryAttemptCanContinue(for: key, token: attemptToken) else { return }
             // Keep the failed row visible until `downloadEmby` successfully seeds the replacement.
@@ -2269,7 +2275,8 @@ public final class DownloadManager {
                 phase: metadata.embyConvertRecoveryPhase) {
             case .poll(let jobId):
                 activeJobs.insert(ratingKey)
-                let attemptID = beginEmbyConvertAttempt(ratingKey: ratingKey)
+                inFlightAttempts.acquire(key)
+                let attemptID = beginEmbyConvertAttempt(for: key)
                 recordDownloadDiagnostic("downloads.convert_resume", fields: [
                     "download_id": .identifier(ratingKey),
                     "job_id": .int(jobId),
@@ -2298,7 +2305,8 @@ public final class DownloadManager {
                 guard setAttemptStatus(
                     .preparing, for: key, context: "emby_convert_recover") else { continue }
                 activeJobs.insert(ratingKey)
-                let attemptID = beginEmbyConvertAttempt(ratingKey: ratingKey)
+                inFlightAttempts.acquire(key)
+                let attemptID = beginEmbyConvertAttempt(for: key)
                 recordDownloadDiagnostic("downloads.convert_recovery", fields: [
                     "download_id": .identifier(ratingKey),
                     "baseline_count": .int(baseline.count),
@@ -2327,7 +2335,7 @@ public final class DownloadManager {
                 }
                 _ = setAttemptStatus(.failed, for: key, context: "emby_convert_identity")
                 clearOptimizeProgress(ratingKey: record.ratingKey)
-                releaseInFlight(ratingKey: record.ratingKey)
+                releaseInFlight(for: key)
             case .expireRecovery:
                 // The identity is past the 24h adoption deadline: recovery could only ever fail
                 // again (matchingNewJobIDs hard-returns [] after expiry), which looped
@@ -2363,7 +2371,7 @@ public final class DownloadManager {
                     "Server conversion could not be recovered; retry to create a new conversion.")
                 _ = setAttemptStatus(.failed, for: key, context: "emby_convert_expired")
                 clearOptimizeProgress(ratingKey: record.ratingKey)
-                releaseInFlight(ratingKey: record.ratingKey)
+                releaseInFlight(for: key)
             }
         }
         refreshRecords()
@@ -2412,7 +2420,10 @@ public final class DownloadManager {
         // Same current-store rule as Emby: callers often set the row queued/preparing immediately
         // before asking the prep scanner to attach a poller.
         let serverPrepRows = store.records.filter(DownloadRetryPolicy.isPlexServerPrepResumeCandidate)
-        let candidates = serverPrepRows.filter { !serverPrepAttempts.hasPlexPoller(forRecordKey: $0.ratingKey) }
+        let candidates = serverPrepRows.filter {
+            guard let key = attemptKey(for: $0) else { return false }
+            return !serverPrepAttempts.hasPlexPoller(for: key)
+        }
         let skippedActivePollers = serverPrepRows.count - candidates.count
         if skippedActivePollers > 0 {
             recordDownloadDiagnostic("downloads.optimize_resume_scan", fields: [
@@ -2424,7 +2435,8 @@ public final class DownloadManager {
 
         for record in candidates {
             guard let metadata = record.metadata,
-                  let targetName = metadata.optimizeTargetName else { continue }
+                  let targetName = metadata.optimizeTargetName,
+                  let key = attemptKey(for: record) else { continue }
             // Only Plex has a server-side render/poll PREP phase. Jellyfin/Emby optimize is a live
             // transcode stream with no separate queued-prep row, so a JF/Emby row in this state was
             // interrupted mid-transfer and is handled by reconcile (-> .failed -> retryable).
@@ -2460,8 +2472,9 @@ public final class DownloadManager {
                 ])
             }
             activeJobs.insert(ratingKey)
+            inFlightAttempts.acquire(key)
             if let queueTitle = metadata.optimizeQueueTitle {
-                serverPrepAttempts.protectQueueTitle(queueTitle, forRecordKey: ratingKey)
+                serverPrepAttempts.protectQueueTitle(queueTitle, for: key)
             }
             recordDownloadDiagnostic("downloads.optimize_resume", fields: [
                 "download_id": .identifier(ratingKey),
@@ -2469,14 +2482,14 @@ public final class DownloadManager {
                 "has_queue_title": .bool(metadata.optimizeQueueTitle != nil),
             ])
 
-            guard let pollerID = beginServerPrepPoller(ratingKey: ratingKey, source: "resume") else {
+            guard let pollerID = beginServerPrepPoller(for: key, source: "resume") else {
                 continue
             }
             let task = Task { [weak self] in
                 defer {
                     Task { [weak self] in
                         await MainActor.run {
-                            self?.endServerPrepPoller(ratingKey: ratingKey, id: pollerID)
+                            self?.endServerPrepPoller(for: key, id: pollerID)
                         }
                     }
                 }
@@ -2487,7 +2500,7 @@ public final class DownloadManager {
                                                           token: token,
                                                           pollerID: pollerID)
             }
-            serverPrepPollerTasks[ratingKey] = task
+            serverPrepPollerTasks[key] = task
         }
     }
 
@@ -2495,12 +2508,13 @@ public final class DownloadManager {
     /// delete/terminal transitions. The resume path registers its detached Task directly; the
     /// FRESH-start optimize chain (audit B.9) wraps its body in a Task and registers it here —
     /// without a stored handle, delete had no way to cancel a fresh start's poll loop.
-    func registerServerPrepPollerTask(_ task: Task<Void, Never>, ratingKey: String) {
-        serverPrepPollerTasks[ratingKey] = task
+    func registerServerPrepPollerTask(_ task: Task<Void, Never>, for key: DownloadAttemptKey) {
+        serverPrepPollerTasks[key] = task
     }
 
-    func beginServerPrepPoller(ratingKey: String, source: String) -> UUID? {
-        guard let id = serverPrepAttempts.beginPlexPoller(forRecordKey: ratingKey) else {
+    func beginServerPrepPoller(for key: DownloadAttemptKey, source: String) -> UUID? {
+        let ratingKey = key.ratingKey
+        guard let id = serverPrepAttempts.beginPlexPoller(for: key) else {
             recordDownloadDiagnostic("downloads.optimize_poller_skip", fields: [
                 "download_id": .identifier(ratingKey),
                 "source": .label(source),
@@ -2515,17 +2529,19 @@ public final class DownloadManager {
         return id
     }
 
-    func endServerPrepPoller(ratingKey: String, id: UUID) {
-        guard serverPrepAttempts.endPlexPoller(forRecordKey: ratingKey, id: id) else { return }
-        serverPrepPollerTasks.removeValue(forKey: ratingKey)
+    func endServerPrepPoller(for key: DownloadAttemptKey, id: UUID) {
+        guard serverPrepAttempts.endPlexPoller(for: key, id: id) else { return }
+        serverPrepPollerTasks.removeValue(forKey: key)
         recordDownloadDiagnostic("downloads.optimize_poller_detached", fields: [
-            "download_id": .identifier(ratingKey),
+            "download_id": .identifier(key.ratingKey),
         ])
     }
 
     private func clearServerPrepPoller(ratingKey: String, reason: String) {
-        let hadPoller = serverPrepAttempts.clearPlexPoller(forRecordKey: ratingKey)
-        let task = serverPrepPollerTasks.removeValue(forKey: ratingKey)
+        guard let key = inFlightAttempts.owner(forRatingKey: ratingKey)
+                ?? store.record(for: ratingKey).flatMap(attemptKey(for:)) else { return }
+        let hadPoller = serverPrepAttempts.clearPlexPoller(for: key)
+        let task = serverPrepPollerTasks.removeValue(forKey: key)
         task?.cancel()
         if hadPoller || task != nil {
             recordDownloadDiagnostic("downloads.optimize_poller_reset", fields: [
@@ -2567,7 +2583,7 @@ public final class DownloadManager {
                 lastError[ratingKey] = .transferFailed(
                     "The download could not be saved safely. Check storage and try again.")
                 _ = setAttemptStatus(.failed, for: key, context: "plex_deadline_publish")
-                if store.ownsAttempt(key) { releaseInFlight(ratingKey: ratingKey) }
+                if store.ownsAttempt(key) { releaseInFlight(for: key) }
                 refreshRecords()
                 return
             }
@@ -2576,7 +2592,7 @@ public final class DownloadManager {
             guard store.ownsAttempt(key) else {
                 throw DownloadLifecycleCancellation.staleOptimizeAttempt
             }
-            try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
+            try assertCurrentOptimizeAttempt(attemptKey: key,
                                              metadata: metadata,
                                              targetName: targetName)
             let currentItem = await fetchCurrentMediaItem(ratingKey: ratingKey, server: server,
@@ -2585,7 +2601,7 @@ public final class DownloadManager {
             guard store.ownsAttempt(key) else {
                 throw DownloadLifecycleCancellation.staleOptimizeAttempt
             }
-            try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
+            try assertCurrentOptimizeAttempt(attemptKey: key,
                                              metadata: metadata,
                                              targetName: targetName)
             let originalPartIDs = DownloadOptimizeSourcePolicy.resumeBaselinePartIDs(metadata: metadata, item: currentItem)
@@ -2630,7 +2646,7 @@ public final class DownloadManager {
                 guard store.ownsAttempt(key) else {
                     throw DownloadLifecycleCancellation.staleOptimizeAttempt
                 }
-                try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
+                try assertCurrentOptimizeAttempt(attemptKey: key,
                                                  metadata: metadata,
                                                  targetName: targetName)
             }
@@ -2653,7 +2669,7 @@ public final class DownloadManager {
             guard store.ownsAttempt(key) else {
                 throw DownloadLifecycleCancellation.staleOptimizeAttempt
             }
-            try assertCurrentOptimizeAttempt(ratingKey: ratingKey,
+            try assertCurrentOptimizeAttempt(attemptKey: key,
                                              metadata: metadata,
                                              targetName: targetName)
             try startOptimizedPartDownload(attemptKey: key,
@@ -2677,7 +2693,7 @@ public final class DownloadManager {
                current.metadata?.optimizeTargetName == targetName,
                current.metadata?.optimizeQueueTitle == metadata.optimizeQueueTitle {
                 clearOptimizeProgress(ratingKey: ratingKey)
-                releaseInFlight(ratingKey: ratingKey)
+                releaseInFlight(for: key)
                 refreshRecords()
                 scheduleServerPrepResumeRetries()
             }
@@ -2686,12 +2702,12 @@ public final class DownloadManager {
             // slot/poller, and let the prep scanner reattach once the matching Plex lane returns.
             guard store.ownsAttempt(key) else { return }
             clearOptimizeProgress(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: key)
             refreshRecords()
             scheduleServerPrepResumeRetries()
         } catch let error as DownloadError {
             guard store.ownsAttempt(key),
-                  resumeOptimizePollerIsCurrent(ratingKey: ratingKey, pollerID: pollerID,
+                  resumeOptimizePollerIsCurrent(for: key, pollerID: pollerID,
                                                 phase: "resume_error") else { return }
             recordDownloadDiagnostic("downloads.optimize_resume_failed", fields: [
                 "download_id": .identifier(ratingKey),
@@ -2701,7 +2717,7 @@ public final class DownloadManager {
             lastError[ratingKey] = error
             _ = setAttemptStatus(.failed, for: key, context: "plex_poller_error")
             clearOptimizeProgress(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: key)
             refreshRecords()
         } catch is CancellationError {
             // A poller cancelled by pause/delete can reach here AFTER a quick resume already
@@ -2709,14 +2725,14 @@ public final class DownloadManager {
             // unconditionally would strip the new attempt's slot/queue-title and cancel its
             // poller — only the still-current poller may tear down.
             guard store.ownsAttempt(key),
-                  resumeOptimizePollerIsCurrent(ratingKey: ratingKey, pollerID: pollerID,
+                  resumeOptimizePollerIsCurrent(for: key, pollerID: pollerID,
                                                 phase: "resume_cancelled") else { return }
             clearOptimizeProgress(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: key)
             refreshRecords()
         } catch {
             guard store.ownsAttempt(key),
-                  resumeOptimizePollerIsCurrent(ratingKey: ratingKey, pollerID: pollerID,
+                  resumeOptimizePollerIsCurrent(for: key, pollerID: pollerID,
                                                 phase: "resume_error") else { return }
             recordDownloadDiagnostic("downloads.optimize_resume_failed", fields: [
                 "download_id": .identifier(ratingKey),
@@ -2727,7 +2743,7 @@ public final class DownloadManager {
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
             _ = setAttemptStatus(.failed, for: key, context: "plex_poller_error")
             clearOptimizeProgress(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: key)
             refreshRecords()
         }
     }
@@ -2736,8 +2752,9 @@ public final class DownloadManager {
     /// `pollerID` was minted by `beginPlexPoller` when this chain attached; once pause/delete
     /// ran `releaseAll` (or a newer attempt attached its own poller), this returns false and the
     /// superseded chain must not run terminal cleanup against the newer attempt's state.
-    func resumeOptimizePollerIsCurrent(ratingKey: String, pollerID: UUID, phase: String) -> Bool {
-        guard serverPrepAttempts.isCurrentPlexPoller(forRecordKey: ratingKey, id: pollerID) else {
+    func resumeOptimizePollerIsCurrent(for key: DownloadAttemptKey, pollerID: UUID, phase: String) -> Bool {
+        let ratingKey = key.ratingKey
+        guard serverPrepAttempts.isCurrentPlexPoller(for: key, id: pollerID) else {
             recordDownloadDiagnostic("downloads.optimize_release_skipped_stale_poller", fields: [
                 "download_id": .identifier(ratingKey),
                 "phase": .label(phase),
@@ -2817,12 +2834,15 @@ public final class DownloadManager {
     /// Delete a download and its backing file.
     public func delete(ratingKey: String) {
         let rowToDelete = store.record(for: ratingKey)
+        let rowAttemptKey = rowToDelete?.attemptID.map {
+            DownloadAttemptKey(ratingKey: ratingKey, attemptID: $0)
+        }
         var convertCleanupIntent: DurableDownloadCleanupIntent?
         if let metadata = rowToDelete?.metadata {
             let backend = metadata.resolvedBackendKind(ratingKey: ratingKey)
             let transientPlaySessionID: String? = switch backend {
-            case .emby: embyPlaySessionByRatingKey[ratingKey]
-            case .jellyfin: jellyfinPlaySessionByRatingKey[ratingKey]
+            case .emby: rowAttemptKey.flatMap { embyPlaySessionByAttempt[$0] }
+            case .jellyfin: rowAttemptKey.flatMap { jellyfinPlaySessionByAttempt[$0] }
             case .plex: nil
             }
             if backend != .plex,
@@ -2902,8 +2922,8 @@ public final class DownloadManager {
                 "reason": .label(reason),
             ])
         }
-        if let attemptID = rowToDelete?.attemptID {
-            let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+        let deletedAttemptKey = rowAttemptKey
+        if let key = deletedAttemptKey {
             _ = downloadWorkRegistry.cancelCancellableWork(for: key)
             session.cancel(ratingKey: ratingKey)
             _ = store.remove(for: key)
@@ -2931,7 +2951,11 @@ public final class DownloadManager {
         // Pass the pre-removal snapshot: the store row no longer exists, so without it the
         // Jellyfin/Emby encoder-teardown server-match guard would see nil metadata and silently
         // dead-end the persisted-psid branch during this teardown.
-        releaseInFlight(ratingKey: ratingKey, rowSnapshot: rowToDelete)
+        if let deletedAttemptKey {
+            releaseInFlight(for: deletedAttemptKey, rowSnapshot: rowToDelete)
+        } else {
+            repairUnownedInFlightState(ratingKey: ratingKey, reason: "legacy_delete")
+        }
         refreshRecords()
     }
 
@@ -2983,13 +3007,13 @@ public final class DownloadManager {
         } catch let error as DownloadError {
             lastError[plan.ratingKey] = error
             _ = setAttemptStatus(.failed, for: plan.attemptKey, context: "transfer_start")
-            if plan.releaseInFlightOnFailure { releaseInFlight(ratingKey: plan.ratingKey) }
+            if plan.releaseInFlightOnFailure { releaseInFlight(for: plan.attemptKey) }
             refreshRecords()
         } catch {
             lastError[plan.ratingKey] = .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
             _ = setAttemptStatus(.failed, for: plan.attemptKey, context: "transfer_start")
-            if plan.releaseInFlightOnFailure { releaseInFlight(ratingKey: plan.ratingKey) }
+            if plan.releaseInFlightOnFailure { releaseInFlight(for: plan.attemptKey) }
             refreshRecords()
         }
     }
@@ -3220,13 +3244,16 @@ public final class DownloadManager {
             fresh = store.records
         }
         let serverPrepKickIsRecent = lastServerPrepRefreshKickAt.map { now.timeIntervalSince($0) < 5 } ?? false
+        let serverPrepKeysByRatingKey = Dictionary(uniqueKeysWithValues: fresh.compactMap { record in
+            attemptKey(for: record).map { (record.ratingKey, $0) }
+        })
         let serverPrepRefreshPlan = ServerPrepRefreshPolicy.refreshPlan(
             records: fresh,
             isQueuePaused: isQueuePaused,
             refreshKickScheduled: serverPrepRefreshKickScheduled,
             refreshKickRecent: serverPrepKickIsRecent,
-            hasPlexPoller: { [serverPrepAttempts] ratingKey in
-                serverPrepAttempts.hasPlexPoller(forRecordKey: ratingKey)
+            hasPlexPoller: { [serverPrepAttempts, serverPrepKeysByRatingKey] ratingKey in
+                serverPrepKeysByRatingKey[ratingKey].map(serverPrepAttempts.hasPlexPoller(for:)) ?? false
             },
             isActiveJob: { [activeJobs] ratingKey in
                 activeJobs.contains(ratingKey)
@@ -3376,7 +3403,14 @@ public final class DownloadManager {
             records: fresh,
             retryHandoffKeys: retryState.handoffKeys,
             retryingKeys: retryState.retryingKeys)
-        for key in terminalKeys { releaseInFlight(ratingKey: key) }
+        let terminalRecordsByKey = Dictionary(uniqueKeysWithValues: fresh.map { ($0.ratingKey, $0) })
+        for ratingKey in terminalKeys {
+            if let record = terminalRecordsByKey[ratingKey], let key = attemptKey(for: record) {
+                releaseInFlight(for: key)
+            } else {
+                repairUnownedInFlightState(ratingKey: ratingKey, reason: "legacy_terminal")
+            }
+        }
 
         records = fresh
         offlineLibrarySnapshot = makeOfflineLibrarySnapshot(from: fresh)
@@ -3417,7 +3451,7 @@ public final class DownloadManager {
             "Network stalled; restarting this forward-only stream from the beginning.")
         guard let key = attemptKey(for: current),
               setAttemptStatus(.failed, for: key, context: "stream_stall") else { return }
-        releaseInFlight(ratingKey: ratingKey)
+        releaseInFlight(for: key)
         // `releaseInFlight` wipes the stall tracker entry, including the attempt count
         // `detectRestarts` just incremented — without re-seeding it the 2-restart cap never binds
         // and a persistent wedge restarts the encoder from byte 0 every stall timeout forever.
@@ -3488,6 +3522,7 @@ public final class DownloadManager {
         let authGeneration = Self.keepaliveAuthGeneration(session)
         for record in records {
             guard let metadata = record.metadata,
+                  let key = attemptKey(for: record),
                   session.matchesPersistedServer(metadata)
             else { continue }
             switch DownloadKeepaliveLifecyclePolicy.authQuarantineAction(
@@ -3502,11 +3537,11 @@ public final class DownloadManager {
             }
             guard let candidate = JellyfinDownloadKeepalivePolicy.candidate(
                 for: record,
-                hasExistingTask: jellyfinDownloadKeepaliveTasks[record.ratingKey] != nil)
+                hasExistingTask: jellyfinDownloadKeepaliveTasks[key] != nil)
             else { continue }
 
             startJellyfinDownloadKeepalive(
-                ratingKey: candidate.ratingKey,
+                attemptKey: key,
                 itemId: candidate.itemID,
                 mediaSourceId: candidate.mediaSourceID,
                 playSessionId: candidate.playSessionID,
@@ -3523,6 +3558,7 @@ public final class DownloadManager {
         let authGeneration = Self.keepaliveAuthGeneration(session)
         for record in records {
             guard let metadata = record.metadata,
+                  let key = attemptKey(for: record),
                   session.matchesPersistedServer(metadata),
                   EmbyDownloadKeepalivePolicy.matchesPersistedUser(
                     metadata.backendUserID, currentUserID: userId)
@@ -3539,11 +3575,11 @@ public final class DownloadManager {
             }
             guard let candidate = EmbyDownloadKeepalivePolicy.candidate(
                 for: record,
-                hasExistingTask: embyDownloadKeepaliveTasks[record.ratingKey] != nil)
+                hasExistingTask: embyDownloadKeepaliveTasks[key] != nil)
             else { continue }
 
             startEmbyDownloadKeepalive(
-                ratingKey: candidate.ratingKey,
+                attemptKey: key,
                 playSessionId: candidate.playSessionID,
                 userId: userId)
         }
@@ -3554,10 +3590,11 @@ public final class DownloadManager {
             for: "\(session.serverID ?? "")|\(session.baseURL.absoluteString)|\(session.userID ?? "")|\(session.token)")
     }
 
-    func startEmbyDownloadKeepalive(ratingKey: String,
+    func startEmbyDownloadKeepalive(attemptKey: DownloadAttemptKey,
                                     playSessionId: String,
                                     userId: String) {
-        embyDownloadKeepaliveTasks.removeValue(forKey: ratingKey)?.task.cancel()
+        let ratingKey = attemptKey.ratingKey
+        embyDownloadKeepaliveTasks.removeValue(forKey: attemptKey)?.task.cancel()
         let identity = appModel.identity.emby
         let enqueueUserId = userId
         let generation = UUID()
@@ -3568,14 +3605,14 @@ public final class DownloadManager {
                     guard let self,
                           EmbyDownloadKeepalivePolicy.shouldRemoveTask(
                             completingGeneration: generation,
-                            currentGeneration: self.embyDownloadKeepaliveTasks[ratingKey]?.generation)
+                            currentGeneration: self.embyDownloadKeepaliveTasks[attemptKey]?.generation)
                     else { return }
-                    self.embyDownloadKeepaliveTasks.removeValue(forKey: ratingKey)
+                    self.embyDownloadKeepaliveTasks.removeValue(forKey: attemptKey)
                 }
             }
             var lastTickOutcome: JellyfinKeepaliveTickOutcome?
             while !Task.isCancelled {
-                guard let record = self.records.first(where: { $0.ratingKey == ratingKey }),
+                guard let record = self.store.record(for: attemptKey),
                       EmbyDownloadKeepalivePolicy.candidate(for: record, hasExistingTask: false) != nil
                 else { return }
                 // Re-resolve every tick so token rotation, sign-out, or server replacement stops
@@ -3640,21 +3677,22 @@ public final class DownloadManager {
                 } catch { return }
             }
         }
-        embyDownloadKeepaliveTasks[ratingKey] = KeepaliveTaskHandle(generation: generation,
+        embyDownloadKeepaliveTasks[attemptKey] = KeepaliveTaskHandle(generation: generation,
                                                                     task: task)
         recordDownloadDiagnostic("downloads.emby_keepalive_start", fields: [
             "download_id": .identifier(ratingKey),
         ])
     }
 
-    func startJellyfinDownloadKeepalive(ratingKey: String,
+    func startJellyfinDownloadKeepalive(attemptKey: DownloadAttemptKey,
                                                  itemId: String,
                                                  mediaSourceId: String,
                                                  playSessionId: String,
                                                  session: BackendSession,
                                                  userId: String,
                                                  durationMs: Int?) {
-        jellyfinDownloadKeepaliveTasks.removeValue(forKey: ratingKey)?.task.cancel()
+        let ratingKey = attemptKey.ratingKey
+        jellyfinDownloadKeepaliveTasks.removeValue(forKey: attemptKey)?.task.cancel()
         let identity = appModel.identity.jellyfin
         let enqueueUserId = userId
         let generation = UUID()
@@ -3669,9 +3707,9 @@ public final class DownloadManager {
                     guard let self,
                           DownloadKeepaliveLifecyclePolicy.shouldRemoveTask(
                             completingGeneration: generation,
-                            currentGeneration: self.jellyfinDownloadKeepaliveTasks[ratingKey]?.generation)
+                            currentGeneration: self.jellyfinDownloadKeepaliveTasks[attemptKey]?.generation)
                     else { return }
-                    self.jellyfinDownloadKeepaliveTasks.removeValue(forKey: ratingKey)
+                    self.jellyfinDownloadKeepaliveTasks.removeValue(forKey: attemptKey)
                 }
             }
             var sentPlaying = false
@@ -3685,7 +3723,7 @@ public final class DownloadManager {
             var lastReportedTicks = 0
             var lastTickOutcome: JellyfinKeepaliveTickOutcome?
             while !Task.isCancelled {
-                guard let record = self.records.first(where: { $0.ratingKey == ratingKey }),
+                guard let record = self.store.record(for: attemptKey),
                       record.status == .queued || record.status == .downloading else { return }
                 // A-2 (audit lens 8): re-resolve the Jellyfin lane per tick — token rotation or a
                 // re-login mid-download must not keep pinging with the enqueue-time snapshot (the
@@ -3789,7 +3827,7 @@ public final class DownloadManager {
                 }
             }
         }
-        jellyfinDownloadKeepaliveTasks[ratingKey] = KeepaliveTaskHandle(generation: generation,
+        jellyfinDownloadKeepaliveTasks[attemptKey] = KeepaliveTaskHandle(generation: generation,
                                                                         task: task)
         recordDownloadDiagnostic("downloads.jellyfin_keepalive_start", fields: [
             "download_id": .identifier(ratingKey),
@@ -3812,25 +3850,61 @@ public final class DownloadManager {
     /// `rowSnapshot` is the caller's pre-removal copy of the row for the delete path, where the
     /// store row is already gone by the time this runs: without it the encoder-teardown
     /// server-match guards below would read nil metadata and skip the persisted-psid branch.
-    func releaseInFlight(ratingKey: String, rowSnapshot: DownloadRecord? = nil) {
+    func releaseInFlight(for attemptKey: DownloadAttemptKey, rowSnapshot: DownloadRecord? = nil) {
+        let ratingKey = attemptKey.ratingKey
+        let releasePlan = DownloadAttemptReleasePolicy.plan(
+            releasing: attemptKey,
+            currentOwner: inFlightAttempts.owner(forRatingKey: ratingKey))
+        transcodeSourcedDownloads.remove(attemptKey)
+        _ = downloadWorkRegistry.cancelCancellableWork(for: attemptKey)
+        _ = serverPrepAttempts.releaseAll(for: attemptKey)
+        serverPrepPollerTasks.removeValue(forKey: attemptKey)?.cancel()
+        jellyfinDownloadKeepaliveTasks.removeValue(forKey: attemptKey)?.task.cancel()
+        embyDownloadKeepaliveTasks.removeValue(forKey: attemptKey)?.task.cancel()
+
+        if releasePlan.releaseCurrentState, inFlightAttempts.release(ifOwnedBy: attemptKey) {
+            clearCurrentInFlightState(ratingKey: ratingKey)
+        }
+
+        // Exact resource teardown continues even when A is stale and B owns the current slot.
+        releaseExactEncoderResources(for: attemptKey, rowSnapshot: rowSnapshot)
+    }
+
+    private func clearCurrentInFlightState(ratingKey: String) {
         retryState.removeRetrying(ratingKey)
         clearRetryHandoff(ratingKey: ratingKey)
         activeJobs.remove(ratingKey)
         // Lens 6 F1–F3: invalidate the entry-point start-attempt token with the slot, so a chain
         // still parked on a negotiation await wakes up stale and exits without re-seeding the row.
         startAttempts.clear(ratingKey)
-        transcodeSourcedDownloads.remove(ratingKey)
         // Defense-in-depth: no terminal transition should leave optimize progress/ETA samples
         // behind for a key that is no longer in flight — a later re-download of the same item
         // would display and extrapolate from them.
         clearOptimizeProgress(ratingKey: ratingKey)
-        _ = serverPrepAttempts.releaseAll(forRecordKey: ratingKey)
-        serverPrepPollerTasks.removeValue(forKey: ratingKey)?.cancel()
-        jellyfinDownloadKeepaliveTasks.removeValue(forKey: ratingKey)?.task.cancel()
-        embyDownloadKeepaliveTasks.removeValue(forKey: ratingKey)?.task.cancel()
+        forwardOnlyStallTracker.remove(ratingKey)
         jellyfinKeepaliveAuthQuarantine.removeValue(forKey: ratingKey)
         embyKeepaliveAuthQuarantine.removeValue(forKey: ratingKey)
-        forwardOnlyStallTracker.remove(ratingKey)
+    }
+
+    /// Explicit compatibility/corruption repair. Normal asynchronous teardown must always provide
+    /// an exact attempt key and never enter this path.
+    private func repairUnownedInFlightState(ratingKey: String, reason: String) {
+        if let owner = inFlightAttempts.owner(forRatingKey: ratingKey) {
+            releaseInFlight(for: owner)
+            return
+        }
+        clearCurrentInFlightState(ratingKey: ratingKey)
+        recordDownloadDiagnostic("downloads.inflight_ownerless_repaired", fields: [
+            "download_id": .identifier(ratingKey),
+            "reason": .label(reason),
+        ])
+    }
+
+    private func releaseExactEncoderResources(
+        for attemptKey: DownloadAttemptKey,
+        rowSnapshot: DownloadRecord?
+    ) {
+        let ratingKey = attemptKey.ratingKey
         // CLEANUP INVARIANT: a transcoded Emby download leaves a live FFmpeg encoder running on
         // the server until ActiveEncodings is deleted. Fire teardown for the minted PlaySessionId
         // on EVERY terminal transition (complete / failed / cancelled / deleted). Best-effort and
@@ -3840,17 +3914,20 @@ public final class DownloadManager {
         // the DELETE must hit the server the encoder actually runs on. If that lane is no longer
         // configured (signed out), skip now — the persisted `playSessionID` stays put and the launch
         // sweep retries once the lane returns.
-        let storeRow = store.record(for: ratingKey)
-        let releaseMetadata = storeRow?.metadata ?? rowSnapshot?.metadata
+        let storeRow = store.record(for: attemptKey)
+        let matchingSnapshot = rowSnapshot.flatMap { row in
+            row.attemptID == attemptKey.attemptID ? row : nil
+        }
+        let releaseMetadata = storeRow?.metadata ?? matchingSnapshot?.metadata
         // JF-F5: the delete path (row already removed, snapshot in hand) is the last chance to
         // tear down a persisted-psid encoder — after this the handle is gone and no launch sweep
         // can retry. The policy fires the persisted-psid `.stop` only in this context.
-        let rowRemoved = storeRow == nil && rowSnapshot != nil
+        let rowRemoved = storeRow == nil && matchingSnapshot != nil
         let embySession = appModel.backendSession(for: .emby)
         let embySessionMatchesMetadata = releaseMetadata.map { metadata in
             embySession?.matchesPersistedServer(metadata) == true
         }
-        let embyPlaySessionId = embyPlaySessionByRatingKey[ratingKey]
+        let embyPlaySessionId = embyPlaySessionByAttempt[attemptKey]
         switch DownloadEncoderTeardownPolicy.decision(
             backend: .emby,
             transientPlaySessionID: embyPlaySessionId,
@@ -3860,13 +3937,12 @@ public final class DownloadManager {
             rowRemoved: rowRemoved
         ) {
         case .none:
-            embyPlaySessionByRatingKey.removeValue(forKey: ratingKey)
+            embyPlaySessionByAttempt.removeValue(forKey: attemptKey)
             break
         case .stop(let playSessionId):
             guard let metadata = releaseMetadata,
-                  let attemptID = storeRow?.attemptID ?? rowSnapshot?.attemptID,
                   let intent = persistActiveEncodingCleanupIntent(
-                    attemptKey: DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID),
+                    attemptKey: attemptKey,
                     metadata: metadata,
                     playSessionID: playSessionId
                   ) else {
@@ -3876,7 +3952,7 @@ public final class DownloadManager {
                 ])
                 break
             }
-            embyPlaySessionByRatingKey.removeValue(forKey: ratingKey)
+            embyPlaySessionByAttempt.removeValue(forKey: attemptKey)
             executeActiveEncodingCleanupIntent(intent)
         case .skip(let reason):
             recordDownloadDiagnostic("downloads.emby_encoder_teardown_skip", fields: [
@@ -3889,7 +3965,7 @@ public final class DownloadManager {
         let jellyfinSessionMatchesMetadata = releaseMetadata.map { metadata in
             jellyfinSession?.matchesPersistedServer(metadata) == true
         }
-        let jellyfinPlaySessionId = jellyfinPlaySessionByRatingKey[ratingKey]
+        let jellyfinPlaySessionId = jellyfinPlaySessionByAttempt[attemptKey]
         switch DownloadEncoderTeardownPolicy.decision(
             backend: .jellyfin,
             transientPlaySessionID: jellyfinPlaySessionId,
@@ -3899,13 +3975,12 @@ public final class DownloadManager {
             rowRemoved: rowRemoved
         ) {
         case .none:
-            jellyfinPlaySessionByRatingKey.removeValue(forKey: ratingKey)
+            jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
             break
         case .stop(let playSessionId):
             guard let metadata = releaseMetadata,
-                  let attemptID = storeRow?.attemptID ?? rowSnapshot?.attemptID,
                   let intent = persistActiveEncodingCleanupIntent(
-                    attemptKey: DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID),
+                    attemptKey: attemptKey,
                     metadata: metadata,
                     playSessionID: playSessionId
                   ) else {
@@ -3915,7 +3990,7 @@ public final class DownloadManager {
                 ])
                 break
             }
-            jellyfinPlaySessionByRatingKey.removeValue(forKey: ratingKey)
+            jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
             executeActiveEncodingCleanupIntent(intent)
         case .skip(let reason):
             recordDownloadDiagnostic("downloads.jellyfin_encoder_teardown_skip", fields: [
