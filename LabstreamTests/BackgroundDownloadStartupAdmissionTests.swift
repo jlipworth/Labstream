@@ -656,51 +656,182 @@ private final class StartupSelectiveRemovalFailureFileManager: FileManager, @unc
 }
 
 struct UnverifiedRevalidationLifecycleTests {
+    @MainActor
+    @Test func inactiveSessionChangeAfterGateDrainCreatesNoFinalizerRequest() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("unverified-inactive-manager-\(UUID().uuidString)",
+                                  isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = DownloadStore(baseDirectory: directory)
+        let key = try seedUnverified("plex:inactive-manager", in: store)
+        let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+        defer { session.invalidateInjectedSessionForTesting() }
+        let manager = DownloadManager(
+            appModel: AppModel(identity: PlatformClientIdentity.make(
+                clientIdentifier: "inactive-revalidation-test")),
+            store: store, session: session, registerForBackgroundEvents: false)
+        manager.noteAppScenePhase("inactive")
+
+        // This is the same callback that used to start a real AVFoundation finalizer after the
+        // background gate had drained, even though the headset scene remained inactive.
+        session.onChange?()
+        for _ in 0..<10 { await Task.yield() }
+
+        let snapshot = manager.unverifiedRevalidationSnapshotForTesting()
+        #expect(snapshot.inFlight.isEmpty)
+        #expect(snapshot.desired.contains(key))
+        #expect(session.diagnosticSnapshot().finalizingRatingKeyCount == 0)
+        // Let the manager's initial injected-session reattach callback finish before deleting its
+        // temporary index directory.
+        try await Task.sleep(for: .milliseconds(100))
+    }
+
     @Test func coordinatorGateDrainOvertakeReDrivesAfterClaimReleaseExactlyOnce() throws {
         let key = try coordinatorKey("gate")
         var state = UnverifiedRevalidationCoordinator()
+        let requestID = UUID()
         let began = state.begin(key, preservesOvertakenRequest: false)
         #expect(began)
-        _ = state.started(key)
-        state.gateDrained([key])
+        _ = state.started(key, requestID: requestID)
+        state.gateDrained([key], sceneIsActive: true)
         // Drain can overtake finalizer release. The release consumes the desired edge once.
-        let firstFinish = state.finished(key, cancelled: false, remainsUnverified: true)
-        let duplicateFinish = state.finished(key, cancelled: false, remainsUnverified: true)
+        let firstFinish = state.finished(
+            key, requestID: requestID, cancelled: false, remainsUnverified: true)
+        let duplicateFinish = state.finished(
+            key, requestID: requestID, cancelled: false, remainsUnverified: true)
         #expect(firstFinish == .soon)
         #expect(duplicateFinish == nil)
+    }
+
+    @Test func coordinatorInactiveGateDrainParksUntilActiveTransition() throws {
+        let key = try coordinatorKey("inactive-drain")
+        var state = UnverifiedRevalidationCoordinator()
+        let shouldStartInactive = state.gateDrained([key], sceneIsActive: false)
+        #expect(!shouldStartInactive)
+        #expect(state.desired == [key])
+
+        // The active transition performs the ordinary scan; the parked desired edge does not
+        // suppress its exact admission.
+        let beganOnActive = state.begin(key, preservesOvertakenRequest: true)
+        #expect(beganOnActive)
+    }
+
+    @Test func coordinatorActiveGateDrainRequestsImmediateForegroundScan() throws {
+        let key = try coordinatorKey("active-drain")
+        var state = UnverifiedRevalidationCoordinator()
+        let shouldStart = state.gateDrained([key], sceneIsActive: true)
+        #expect(shouldStart)
+    }
+
+    @Test func inactiveDrainThenOldFinishRemainsParkedUntilActive() throws {
+        let key = try coordinatorKey("inactive-finish")
+        var state = UnverifiedRevalidationCoordinator()
+        let requestID = UUID()
+        let began = state.begin(key, preservesOvertakenRequest: false)
+        #expect(began)
+        _ = state.started(key, requestID: requestID)
+        _ = state.gateDrained([key], sceneIsActive: false)
+        let retry = state.finished(
+            key, requestID: requestID, cancelled: false, remainsUnverified: true)
+        #expect(retry == .soon)
+        let permitted = state.permitRetry(key, sceneIsActive: false)
+        #expect(!permitted)
+        #expect(state.desired == [key])
+        let activeBegin = state.begin(key, preservesOvertakenRequest: true)
+        #expect(activeBegin)
+    }
+
+    @Test func watchdogAndCancelCannotRestartWhileInactive() throws {
+        let timerKey = try coordinatorKey("inactive-timer")
+        var state = UnverifiedRevalidationCoordinator()
+        let timerID = UUID()
+        let timerBegan = state.begin(timerKey, preservesOvertakenRequest: false)
+        #expect(timerBegan)
+        let token = state.started(timerKey, requestID: timerID)
+        let timerFired = state.timerFired(
+            for: timerKey, token: token, remainsUnverified: true)
+        #expect(timerFired)
+        let timerPermitted = state.permitRetry(timerKey, sceneIsActive: false)
+        #expect(!timerPermitted)
+        #expect(state.desired.contains(timerKey))
+
+        let cancelKey = try coordinatorKey("inactive-cancel")
+        let cancelID = UUID()
+        let cancelBegan = state.begin(cancelKey, preservesOvertakenRequest: false)
+        #expect(cancelBegan)
+        _ = state.started(cancelKey, requestID: cancelID)
+        let retry = state.finished(
+            cancelKey, requestID: cancelID, cancelled: true, remainsUnverified: true)
+        #expect(retry == .soon)
+        let cancelPermitted = state.permitRetry(cancelKey, sceneIsActive: false)
+        #expect(!cancelPermitted)
+        #expect(state.desired.contains(cancelKey))
+    }
+
+    @Test func staleOldFinishCannotClearNewSameKeyRequestGeneration() throws {
+        let key = try coordinatorKey("generation")
+        var state = UnverifiedRevalidationCoordinator()
+        let oldID = UUID()
+        let oldBegan = state.begin(key, preservesOvertakenRequest: false)
+        #expect(oldBegan)
+        _ = state.started(key, requestID: oldID)
+        _ = state.gateDrained([key], sceneIsActive: true)
+
+        let replacementBegan = state.begin(key, preservesOvertakenRequest: true)
+        #expect(replacementBegan)
+        let replacementID = UUID()
+        _ = state.started(key, requestID: replacementID)
+        let stale = state.finished(
+            key, requestID: oldID, cancelled: false, remainsUnverified: true)
+        #expect(stale == nil)
+        #expect(state.inFlight.contains(key))
+        #expect(state.requestIDs[key] == replacementID)
+
+        let replacement = state.finished(
+            key, requestID: replacementID, cancelled: false, remainsUnverified: false)
+        #expect(replacement == nil)
+        #expect(!state.inFlight.contains(key))
     }
 
     @Test func coordinatorBrokerRejectionRetriesPromptly() throws {
         let key = try coordinatorKey("broker")
         var state = UnverifiedRevalidationCoordinator()
+        let requestID = UUID()
         let began = state.begin(key, preservesOvertakenRequest: true)
         #expect(began)
-        _ = state.started(key)
-        let retry = state.finished(key, cancelled: true, remainsUnverified: true)
+        _ = state.started(key, requestID: requestID)
+        let retry = state.finished(
+            key, requestID: requestID, cancelled: true, remainsUnverified: true)
         #expect(retry == .soon)
     }
 
     @Test func coordinatorInconclusiveProbeGetsOnlyOneDelayedAutomaticRetry() throws {
         let key = try coordinatorKey("inconclusive")
         var state = UnverifiedRevalidationCoordinator()
+        let firstID = UUID()
         let firstBegin = state.begin(key, preservesOvertakenRequest: false)
         #expect(firstBegin)
-        _ = state.started(key)
-        let firstFinish = state.finished(key, cancelled: false, remainsUnverified: true)
+        _ = state.started(key, requestID: firstID)
+        let firstFinish = state.finished(
+            key, requestID: firstID, cancelled: false, remainsUnverified: true)
         #expect(firstFinish == .delayed)
         let secondBegin = state.begin(key, preservesOvertakenRequest: false)
         #expect(secondBegin)
-        _ = state.started(key)
-        let secondFinish = state.finished(key, cancelled: false, remainsUnverified: true)
+        let secondID = UUID()
+        _ = state.started(key, requestID: secondID)
+        let secondFinish = state.finished(
+            key, requestID: secondID, cancelled: false, remainsUnverified: true)
         #expect(secondFinish == nil)
     }
 
     @Test func coordinatorWatchdogRequeuesRatherThanOnlyClearing() throws {
         let key = try coordinatorKey("watchdog")
         var state = UnverifiedRevalidationCoordinator()
+        let requestID = UUID()
         let began = state.begin(key, preservesOvertakenRequest: false)
         #expect(began)
-        let token = state.started(key)
+        let token = state.started(key, requestID: requestID)
         let fired = state.timerFired(for: key, token: token, remainsUnverified: true)
         #expect(fired)
         #expect(state.desired.contains(key))
@@ -711,16 +842,20 @@ struct UnverifiedRevalidationLifecycleTests {
     @Test func coordinatorCancelRetriesButReplacementRejectsStaleCompletion() throws {
         let key = try coordinatorKey("cancel")
         var state = UnverifiedRevalidationCoordinator()
+        let firstID = UUID()
         let firstBegin = state.begin(key, preservesOvertakenRequest: false)
         #expect(firstBegin)
-        _ = state.started(key)
-        let cancelled = state.finished(key, cancelled: true, remainsUnverified: true)
+        _ = state.started(key, requestID: firstID)
+        let cancelled = state.finished(
+            key, requestID: firstID, cancelled: true, remainsUnverified: true)
         #expect(cancelled == .soon)
 
         let replacementBegin = state.begin(key, preservesOvertakenRequest: false)
         #expect(replacementBegin)
-        _ = state.started(key)
-        let staleFinish = state.finished(key, cancelled: true, remainsUnverified: false)
+        let replacementID = UUID()
+        _ = state.started(key, requestID: replacementID)
+        let staleFinish = state.finished(
+            key, requestID: replacementID, cancelled: true, remainsUnverified: false)
         #expect(staleFinish == nil)
         #expect(!state.inFlight.contains(key))
         #expect(!state.desired.contains(key))
@@ -729,9 +864,10 @@ struct UnverifiedRevalidationLifecycleTests {
     @Test func coordinatorStaleTimerCannotTouchReplacementAttempt() throws {
         let old = try coordinatorKey("old")
         var state = UnverifiedRevalidationCoordinator()
+        let requestID = UUID()
         let began = state.begin(old, preservesOvertakenRequest: false)
         #expect(began)
-        let token = state.started(old)
+        let token = state.started(old, requestID: requestID)
         let staleFire = state.timerFired(for: old, token: token, remainsUnverified: false)
         #expect(!staleFire)
         #expect(!state.inFlight.contains(old))
@@ -778,14 +914,18 @@ struct UnverifiedRevalidationLifecycleTests {
             let request = LockedFinalizerRequestBox()
             session.onFinalizerRequest = { request.store($0) }
 
-            #expect(session.revalidateCompletedDownload(
-                ratingKey: key.ratingKey, validationLabel: "first") == .started)
+            guard case .started = session.revalidateCompletedDownload(
+                ratingKey: key.ratingKey, validationLabel: "first") else {
+                Issue.record("Expected first real probe admission"); return
+            }
             #expect(session.revalidateCompletedDownload(
                 ratingKey: key.ratingKey, validationLabel: "concurrent") == .alreadyFinalizing)
 
             session.abandonFinalizerRequest(try #require(request.value))
-            #expect(session.revalidateCompletedDownload(
-                ratingKey: key.ratingKey, validationLabel: "retry") == .started)
+            guard case .started = session.revalidateCompletedDownload(
+                ratingKey: key.ratingKey, validationLabel: "retry") else {
+                Issue.record("Expected retry probe admission"); return
+            }
             session.abandonFinalizerRequest(try #require(request.value))
         }
     }

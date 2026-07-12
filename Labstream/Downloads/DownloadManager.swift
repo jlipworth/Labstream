@@ -11,6 +11,7 @@ struct UnverifiedRevalidationCoordinator: Sendable {
     private(set) var inFlight: Set<DownloadAttemptKey> = []
     private(set) var desired: Set<DownloadAttemptKey> = []
     private(set) var timerTokens: [DownloadAttemptKey: UUID] = [:]
+    private(set) var requestIDs: [DownloadAttemptKey: UUID] = [:]
     private var automaticRetryCounts: [DownloadAttemptKey: Int] = [:]
 
     mutating func begin(_ key: DownloadAttemptKey, preservesOvertakenRequest: Bool) -> Bool {
@@ -22,12 +23,14 @@ struct UnverifiedRevalidationCoordinator: Sendable {
         return true
     }
 
-    mutating func started(_ key: DownloadAttemptKey) -> UUID {
+    mutating func started(_ key: DownloadAttemptKey, requestID: UUID) -> UUID {
         desired.remove(key)
+        requestIDs[key] = requestID
         return armTimer(for: key)
     }
 
-    mutating func deferred(_ key: DownloadAttemptKey) {
+    mutating func deferred(_ key: DownloadAttemptKey, requestID: UUID? = nil) {
+        if let requestID, requestIDs[key] != requestID { return }
         inFlight.remove(key)
         desired.insert(key)
         timerTokens.removeValue(forKey: key)
@@ -41,18 +44,39 @@ struct UnverifiedRevalidationCoordinator: Sendable {
         return desired.contains(key) ? .soon : nil
     }
 
-    mutating func gateDrained(_ keys: Set<DownloadAttemptKey>) {
+    @discardableResult
+    mutating func gateDrained(
+        _ keys: Set<DownloadAttemptKey>, sceneIsActive: Bool
+    ) -> Bool {
         inFlight.subtract(keys)
         desired.formUnion(keys)
         for key in keys {
             timerTokens.removeValue(forKey: key)
             automaticRetryCounts[key] = 0
         }
+        return sceneIsActive && !keys.isEmpty
+    }
+
+    mutating func parkUntilActive(_ keys: Set<DownloadAttemptKey>) {
+        inFlight.subtract(keys)
+        desired.formUnion(keys)
+        for key in keys { timerTokens.removeValue(forKey: key) }
+    }
+
+    mutating func permitRetry(_ key: DownloadAttemptKey, sceneIsActive: Bool) -> Bool {
+        guard sceneIsActive else {
+            parkUntilActive([key])
+            return false
+        }
+        return true
     }
 
     mutating func finished(
-        _ key: DownloadAttemptKey, cancelled: Bool, remainsUnverified: Bool
+        _ key: DownloadAttemptKey, requestID: UUID, cancelled: Bool,
+        remainsUnverified: Bool
     ) -> Retry? {
+        guard requestIDs[key] == requestID else { return nil }
+        requestIDs.removeValue(forKey: key)
         let ownedClaim = inFlight.remove(key) != nil
         let hadDesiredEdge = desired.contains(key)
         timerTokens.removeValue(forKey: key)
@@ -83,6 +107,7 @@ struct UnverifiedRevalidationCoordinator: Sendable {
             inFlight.remove(key)
             desired.remove(key)
             automaticRetryCounts.removeValue(forKey: key)
+            requestIDs.removeValue(forKey: key)
             return false
         }
         if inFlight.remove(key) != nil { desired.insert(key) }
@@ -236,6 +261,7 @@ public final class DownloadManager {
     /// synchronously with `refreshRecords`. Guards against the #210 recursion family.
     private var staticResumeReentryDepth = 0
     @ObservationIgnored private var unverifiedRevalidation = UnverifiedRevalidationCoordinator()
+    @ObservationIgnored private var isAppSceneActive = false
     @ObservationIgnored private var downloadWatchdogTask: Task<Void, Never>?
     @ObservationIgnored private var forwardOnlyStallTracker = DownloadForwardOnlyStallTracker()
     @ObservationIgnored private var lastDownloadHealthDiagnosticAt: Date?
@@ -425,18 +451,18 @@ public final class DownloadManager {
                 }
             }
         }
-        self.session.onRevalidationProbeDeferred = { [weak self] key in
+        self.session.onRevalidationProbeDeferred = { [weak self] key, requestID in
             Task { @MainActor in
                 // `started` meant only that a finalizer was claimed; the session discovered the
                 // global wake gate before touching AVFoundation. This is not an in-flight probe.
-                self?.unverifiedRevalidation.deferred(key)
+                self?.unverifiedRevalidation.deferred(key, requestID: requestID)
             }
         }
-        self.session.onRevalidationRequestFinished = { [weak self] key, outcome in
+        self.session.onRevalidationRequestFinished = { [weak self] key, requestID, outcome in
             Task { @MainActor in
                 guard let self else { return }
                 let retry = self.unverifiedRevalidation.finished(
-                    key, cancelled: outcome == .cancelled,
+                    key, requestID: requestID, cancelled: outcome == .cancelled,
                     remainsUnverified: self.store.record(for: key)?.status == .unverified)
                 if let retry {
                     self.scheduleUnverifiedRevalidationRetry(
@@ -449,8 +475,11 @@ public final class DownloadManager {
                 guard let self else { return }
                 // Force-clear the exact keys delivered by the session. This also makes ordering
                 // safe if the gate-drain callback overtakes the per-request deferred callback.
-                self.unverifiedRevalidation.gateDrained(deferredKeys)
-                self.revalidateUnverifiedDownloads(reason: "background_gate_drained")
+                let shouldStart = self.unverifiedRevalidation.gateDrained(
+                    deferredKeys, sceneIsActive: self.isAppSceneActive)
+                if shouldStart {
+                    self.revalidateUnverifiedDownloads(reason: "background_gate_drained")
+                }
             }
         }
         // D3: surface background-delegate failures instead of silently dropping the
@@ -1493,6 +1522,7 @@ public final class DownloadManager {
     /// App lifecycle hint for UI refresh/finalization work. Static range transfer shape is no
     /// longer scene-dependent.
     func noteAppScenePhase(_ phase: String) {
+        isAppSceneActive = phase == "active"
         if phase == "active" {
             // #187: headset reattach can deliver a burst of background-session progress and scene
             // activation events while the Offline window is being reconstructed. Coalesce the first
@@ -3496,6 +3526,10 @@ public final class DownloadManager {
         demoteIncompleteCompletedStaticRows(reason: reason)
         let candidates = store.records.filter { $0.status == .unverified }
         guard !candidates.isEmpty else { return }
+        guard isAppSceneActive else {
+            unverifiedRevalidation.parkUntilActive(Set(candidates.compactMap { attemptKey(for: $0) }))
+            return
+        }
         for record in candidates {
             guard let key = attemptKey(for: record),
                   !store.isDeletionPending(for: key) else { continue }
@@ -3521,10 +3555,10 @@ public final class DownloadManager {
                 if unverifiedRevalidation.unavailable(key) != nil {
                     scheduleUnverifiedRevalidationRetry(for: key, delay: .seconds(1))
                 }
-            case .started:
+            case .started(let requestID):
                 scheduleUnverifiedRevalidationRetry(
                     for: key, delay: .seconds(90),
-                    token: unverifiedRevalidation.started(key))
+                    token: unverifiedRevalidation.started(key, requestID: requestID))
             }
         }
     }
@@ -3534,6 +3568,8 @@ public final class DownloadManager {
     private func scheduleUnverifiedRevalidationRetry(
         for key: DownloadAttemptKey, delay: Duration, token suppliedToken: UUID? = nil
     ) {
+        guard unverifiedRevalidation.permitRetry(
+            key, sceneIsActive: isAppSceneActive) else { return }
         let token = suppliedToken ?? unverifiedRevalidation.armTimer(for: key)
         Task { [weak self] in
             do { try await Task.sleep(for: delay) } catch { return }
@@ -3542,6 +3578,8 @@ public final class DownloadManager {
                     for: key, token: token,
                     remainsUnverified: self.store.record(for: key)?.status == .unverified
                 ) else { return }
+                guard self.unverifiedRevalidation.permitRetry(
+                    key, sceneIsActive: self.isAppSceneActive) else { return }
                 self.revalidateUnverifiedDownloads(reason: "timeout_retry")
             }
         }
@@ -3551,6 +3589,12 @@ public final class DownloadManager {
         unverifiedRevalidation.resetAutomaticRetryBudget(Set(
             store.records.filter { $0.status == .unverified }.compactMap { attemptKey(for: $0) }))
     }
+
+    #if DEBUG
+    func unverifiedRevalidationSnapshotForTesting() -> UnverifiedRevalidationCoordinator {
+        unverifiedRevalidation
+    }
+    #endif
 
     private func clearRetryHandoff(ratingKey: String) {
         retryState.clearHandoff(ratingKey)

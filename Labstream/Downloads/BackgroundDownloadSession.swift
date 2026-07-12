@@ -74,7 +74,7 @@ struct BackgroundDownloadSessionDiagnosticSnapshot: Sendable {
 final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
 
     enum RevalidationAdmission: Sendable, Equatable {
-        case started
+        case started(requestID: UUID)
         case deferredForBackgroundWake
         case alreadyFinalizing
         case unavailable
@@ -86,7 +86,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
 
     private enum FinalizationAdmission: Sendable, Equatable {
-        case started
+        case started(requestID: UUID)
         case alreadyFinalizing
         case unavailable
     }
@@ -452,9 +452,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// Revalidation is intentionally forbidden while an OS background wake handler is stored.
     /// These callbacks let the manager distinguish a real local probe from that deferral and
     /// retry as soon as the global gate drains instead of suppressing the row for a blind timeout.
-    var onRevalidationProbeDeferred: ((_ attemptKey: DownloadAttemptKey) -> Void)?
+    var onRevalidationProbeDeferred:
+        ((_ attemptKey: DownloadAttemptKey, _ requestID: UUID) -> Void)?
     var onRevalidationRequestFinished:
-        ((_ attemptKey: DownloadAttemptKey, _ outcome: RevalidationRequestOutcome) -> Void)?
+        ((_ attemptKey: DownloadAttemptKey, _ requestID: UUID,
+          _ outcome: RevalidationRequestOutcome) -> Void)?
     var onBackgroundCompletionGateDrained: ((_ deferredKeys: Set<DownloadAttemptKey>) -> Void)?
 
     /// True when this process currently owns an opaque or Range URLSession task for the row.
@@ -4676,11 +4678,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         publishesWorkingFile: Bool = true,
         holdsBackgroundCompletion: Bool
     ) -> Bool {
-        requestFinalizationAdmission(
+        if case .started = requestFinalizationAdmission(
             attemptKey: attemptKey, destination: destination, bytes: bytes,
             validationLabel: validationLabel, expectedExactBytes: expectedExactBytes,
             publishesWorkingFile: publishesWorkingFile,
-            holdsBackgroundCompletion: holdsBackgroundCompletion) == .started
+            holdsBackgroundCompletion: holdsBackgroundCompletion) { return true }
+        return false
     }
 
     private func requestFinalizationAdmission(
@@ -4722,7 +4725,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             return .unavailable
         }
         onFinalizerRequest(request)
-        return .started
+        return .started(requestID: requestID)
     }
 
     /// Called by DownloadManager when registry admission loses to an existing exact finalizer (or
@@ -4742,7 +4745,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             endPendingBackgroundCompletionOperation()
         }
         if removed && !request.publishesWorkingFile {
-            onRevalidationRequestFinished?(request.attemptKey, revalidationOutcome)
+            onRevalidationRequestFinished?(request.attemptKey, request.id, revalidationOutcome)
         }
     }
 
@@ -4827,7 +4830,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                                    bytes: bytes)
             onError?(ratingKey, .transferFailed("Downloaded file is empty."))
             onChange?()
-            return .started
+            return .unavailable
         }
         // Short-circuit BEFORE the probe when the durable bytes provably fall short of the
         // source's exact size: the probe can never rescue an incomplete static file (it either
@@ -4857,7 +4860,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             onError?(ratingKey, .transferFailed(
                 "Download is incomplete (\(bytes / 1_000_000) of \(expectedExactBytes / 1_000_000) MB). Retry to continue."))
             onChange?()
-            return .started
+            return .unavailable
         }
         AppDiagnostics.record(.downloads, "downloads.unverified_revalidate", fields: [
             "download_id": .identifier(ratingKey),
@@ -4876,7 +4879,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             validationLabel: validationLabel,
             expectedExactBytes: store.sourceExactBytes(for: key),
             publishesWorkingFile: false, holdsBackgroundCompletion: false) {
-        case .started: return .started
+        case .started(let requestID): return .started(requestID: requestID)
         case .alreadyFinalizing: return .alreadyFinalizing
         case .unavailable: return .unavailable
         }
@@ -5143,7 +5146,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         var validation: (played: Bool, reason: String, durationMs: Int?, detail: String?)
         if deferProbeForBackgroundWake {
             if !publishesWorkingFile {
-                onRevalidationProbeDeferred?(attemptKey)
+                let requestID = finalizationStateQueue.sync {
+                    finalizerRequestIDsByAttempt[attemptKey]
+                }
+                if let requestID { onRevalidationProbeDeferred?(attemptKey, requestID) }
             }
             AppDiagnostics.record(.downloads, "downloads.finalize_probe_deferred", fields: [
                 "download_id": .identifier(ratingKey),
