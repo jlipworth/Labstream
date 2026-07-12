@@ -242,7 +242,7 @@ struct EmbyBrowseService {
                       maxVideoBitrateKbps: Int,
                       resumeOffsetMs: Int? = nil,
                       audioStreamIndex: Int? = nil,
-                      subtitleStreamIndex: Int? = nil) async throws -> EmbyPlaybackOpenResult {
+                      subtitleStreamIndex: Int? = nil) async throws -> MediaBrowserPlaybackOpenResult {
         let context = try context()
         let qualityPolicy = MediaBrowserPlaybackQualityPolicy(maxVideoBitrateKbps: maxVideoBitrateKbps)
         let startTicks = MediaBrowserPlaybackQualityPolicy.startTicks(resumeOffsetMs: resumeOffsetMs ?? item.viewOffset)
@@ -278,19 +278,20 @@ struct EmbyBrowseService {
                                                        forcePlaybackTranscode: forceTranscode,
                                                        advertiseDolbyVision: DolbyVisionGuard.shouldAdvertiseDolbyVision(for: item))
         let info = try await send(req, as: EmbyPlaybackInfoResponse.self)
-        return try EmbyPlayback.resolveStream(response: info,
-                                              server: context.server,
-                                              identity: embyIdentity,
-                                              token: context.token,
-                                              userId: context.userID,
-                                              itemId: item.ratingKey,
-                                              startTimeTicks: startTicks,
-                                              maxVideoBitrate: qualityPolicy.maxStreamingBitrateBps,
-                                              maxWidth: qualityPolicy.maxWidth,
-                                              maxHeight: qualityPolicy.maxHeight,
-                                              audioBitrate: qualityPolicy.audioBitrateBps,
-                                              audioStreamIndex: audioStreamIndex,
-                                              subtitleStreamIndex: subtitleStreamIndex)
+        return try EmbyPlayback.resolveMediaBrowserStream(
+            response: info,
+            server: context.server,
+            identity: embyIdentity,
+            token: context.token,
+            userId: context.userID,
+            itemId: item.ratingKey,
+            startTimeTicks: startTicks,
+            maxVideoBitrate: qualityPolicy.maxStreamingBitrateBps,
+            maxWidth: qualityPolicy.maxWidth,
+            maxHeight: qualityPolicy.maxHeight,
+            audioBitrate: qualityPolicy.audioBitrateBps,
+            audioStreamIndex: audioStreamIndex,
+            subtitleStreamIndex: subtitleStreamIndex)
     }
 
 

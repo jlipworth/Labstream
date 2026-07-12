@@ -55,8 +55,7 @@ struct DetailView: View {
     @State private var detailed: MediaItem
     @State private var presentingPlayer = false
     @State private var localPlaybackRequest: LocalPlaybackRequest?
-    @State private var remotePlayback: JellyfinRemotePlayback?
-    @State private var embyRemotePlayback: EmbyRemotePlayback?
+    @State private var remotePlayback: MediaBrowserRemotePlayback?
     @State private var showDownloadOptions = false
     @State private var playbackErrorMessage: String?
     @State private var isResolvingPlayback = false
@@ -476,9 +475,6 @@ struct DetailView: View {
         .onChange(of: remotePlayback?.id) { _, _ in
             syncMacPlayerPresentation()
         }
-        .onChange(of: embyRemotePlayback?.id) { _, _ in
-            syncMacPlayerPresentation()
-        }
         .onDisappear {
             dismissMacPlayerPresentation()
         }
@@ -530,10 +526,7 @@ struct DetailView: View {
         }
         let playingRatingKey = playingItem?.ratingKey ?? detailed.ratingKey
         if let remotePlayback {
-            return AnyHashable("jellyfin-\(remotePlayback.id.uuidString)-\(playingRatingKey)")
-        }
-        if let embyRemotePlayback {
-            return AnyHashable("emby-\(embyRemotePlayback.id.uuidString)-\(playingRatingKey)")
+            return AnyHashable("\(remotePlayback.backend.rawValue)-\(remotePlayback.id.uuidString)-\(playingRatingKey)")
         }
         return AnyHashable("plex-\(playingRatingKey)")
     }
@@ -731,7 +724,6 @@ struct DetailView: View {
                     trickPlayKind = .plexBIF
                 }
                 remotePlayback = nil
-                embyRemotePlayback = nil
                 playingItem = nil
                 presentingPlayer = false
                 let request = LocalPlaybackRequest(url: local,
@@ -846,51 +838,55 @@ struct DetailView: View {
         // episode on Up Next autoplay (#15). Fall back to `detailed` defensively.
         let playing = playingItem ?? detailed
         if let remote = remotePlayback {
-            CustomPlayerView(item: playing,
-                             controllerFactory: {
-                                 DetailPlaybackLauncher.jellyfinPlaybackController(
-                                    remote: remote,
+            switch remote.backend {
+            case .jellyfin:
+                CustomPlayerView(item: playing,
+                                 controllerFactory: {
+                                     DetailPlaybackLauncher.playbackController(
+                                        remote: remote,
+                                        item: playing,
+                                        appModel: appModel,
+                                        maxVideoBitrateKbps: activeMaxVideoBitrateKbps,
+                                        qualityDefaultsKey: appModel.activeStreamingQualityDefaultsKey)
+                                 },
+                                 trickPlayProvider: JellyfinTrickPlayThumbnailProvider(
                                     item: playing,
-                                    appModel: appModel,
-                                    maxVideoBitrateKbps: activeMaxVideoBitrateKbps,
-                                    qualityDefaultsKey: appModel.activeStreamingQualityDefaultsKey)
-                             },
-                             trickPlayProvider: JellyfinTrickPlayThumbnailProvider(
-                                item: playing,
-                                server: appModel.jellyfinServerBaseURL,
-                                token: appModel.jellyfinAccessToken,
-                                identity: appModel.identity.jellyfin),
-                             cinemaOrigin: onlineCinemaOrigin,
-                             onClose: { presentingPlayer = false },
-                             mobileOrientationCoordinator: mobilePlayerOrientationCoordinator,
-                             allowsRealityTheater: false)
-                .id(remote.id)
-                .ignoresSafeArea()
-        } else if let remote = embyRemotePlayback {
-            CustomPlayerView(item: playing,
-                             controllerFactory: {
-                                 DetailPlaybackLauncher.embyPlaybackController(
-                                    remote: remote,
+                                    server: appModel.jellyfinServerBaseURL,
+                                    token: appModel.jellyfinAccessToken,
+                                    identity: appModel.identity.jellyfin),
+                                 cinemaOrigin: onlineCinemaOrigin,
+                                 onClose: { presentingPlayer = false },
+                                 mobileOrientationCoordinator: mobilePlayerOrientationCoordinator,
+                                 allowsRealityTheater: false)
+                    .id(remote.id)
+                    .ignoresSafeArea()
+            case .emby:
+                CustomPlayerView(item: playing,
+                                 controllerFactory: {
+                                     DetailPlaybackLauncher.playbackController(
+                                        remote: remote,
+                                        item: playing,
+                                        appModel: appModel,
+                                        maxVideoBitrateKbps: activeMaxVideoBitrateKbps,
+                                        qualityDefaultsKey: appModel.activeStreamingQualityDefaultsKey)
+                                 },
+                                 // Emby has no Jellyfin-style trickplay tiles; serve coarse,
+                                 // chapter-granularity scrub previews instead.
+                                 trickPlayProvider: EmbyChapterTrickPlayThumbnailProvider(
                                     item: playing,
-                                    appModel: appModel,
-                                    maxVideoBitrateKbps: activeMaxVideoBitrateKbps,
-                                    qualityDefaultsKey: appModel.activeStreamingQualityDefaultsKey)
-                             },
-                             // Emby has no Jellyfin-style trickplay tiles; serve coarse,
-                             // chapter-granularity scrub previews from the per-chapter image
-                             // endpoint instead (nil when the item has no chapter images).
-                             trickPlayProvider: EmbyChapterTrickPlayThumbnailProvider(
-                                item: playing,
-                                server: appModel.embyServerBaseURL,
-                                token: appModel.embyAccessToken,
-                                identity: appModel.identity.emby,
-                                userId: appModel.embyUserID),
-                             cinemaOrigin: onlineCinemaOrigin,
-                             onClose: { presentingPlayer = false },
-                             mobileOrientationCoordinator: mobilePlayerOrientationCoordinator,
-                             allowsRealityTheater: false)
-                .id(remote.id)
-                .ignoresSafeArea()
+                                    server: appModel.embyServerBaseURL,
+                                    token: appModel.embyAccessToken,
+                                    identity: appModel.identity.emby,
+                                    userId: appModel.embyUserID),
+                                 cinemaOrigin: onlineCinemaOrigin,
+                                 onClose: { presentingPlayer = false },
+                                 mobileOrientationCoordinator: mobilePlayerOrientationCoordinator,
+                                 allowsRealityTheater: false)
+                    .id(remote.id)
+                    .ignoresSafeArea()
+            case .plex:
+                EmptyView()
+            }
         } else if let token = appModel.serverToken, let server = appModel.serverBaseURL {
             // The custom player owns its own chrome, including a top-leading Close affordance,
             // so a `.fullScreenCover` is always escapable (the old AVKit path had no system
@@ -998,60 +994,32 @@ struct DetailView: View {
         switch launchBackend {
         case .plex:
             remotePlayback = nil
-            embyRemotePlayback = nil
             await presentResolvedPlayer()
             span.end(fields: ["path_mode": "plex_stream"])
-        case .jellyfin:
-            embyRemotePlayback = nil
+        case .jellyfin, .emby:
+            remotePlayback = nil
             do {
-                let playbackItem = await DetailPlaybackLauncher.metadataItem(ratingKey: launchRatingKey,
-                                                                             fallback: detailed,
-                                                                             backend: launchBackend,
-                                                                             appModel: appModel,
-                                                                             resumeRewindSeconds: resumeRewindSeconds)
+                let playbackItem = await DetailPlaybackLauncher.metadataItem(
+                    ratingKey: launchRatingKey,
+                    fallback: detailed,
+                    backend: launchBackend,
+                    appModel: appModel,
+                    resumeRewindSeconds: resumeRewindSeconds)
                 guard playbackRequestID == requestID,
                       metadataReadyForActions,
                       actionBackend == launchBackend,
                       detailed.ratingKey == launchRatingKey else { return }
                 playingItem = playbackItem
-                let opened = try await DetailPlaybackLauncher.openJellyfin(item: playbackItem,
-                                                                          appModel: appModel,
-                                                                          maxVideoBitrateKbps: activeMaxVideoBitrateKbps)
+                let opened = try await DetailPlaybackLauncher.open(
+                    item: playbackItem,
+                    backend: launchBackend,
+                    appModel: appModel,
+                    maxVideoBitrateKbps: activeMaxVideoBitrateKbps)
                 guard playbackRequestID == requestID,
                       metadataReadyForActions,
                       actionBackend == launchBackend,
                       detailed.ratingKey == launchRatingKey else { return }
                 remotePlayback = opened.playback
-                await presentResolvedPlayer()
-                span.end(fields: [
-                    "path_mode": "remote_stream",
-                    "play_method": opened.playMethod,
-                ])
-            } catch {
-                span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
-                playbackErrorMessage = friendlyMessage(error)
-            }
-        case .emby:
-            remotePlayback = nil
-            do {
-                let playbackItem = await DetailPlaybackLauncher.metadataItem(ratingKey: launchRatingKey,
-                                                                             fallback: detailed,
-                                                                             backend: launchBackend,
-                                                                             appModel: appModel,
-                                                                             resumeRewindSeconds: resumeRewindSeconds)
-                guard playbackRequestID == requestID,
-                      metadataReadyForActions,
-                      actionBackend == launchBackend,
-                      detailed.ratingKey == launchRatingKey else { return }
-                playingItem = playbackItem
-                let opened = try await DetailPlaybackLauncher.openEmby(item: playbackItem,
-                                                                      appModel: appModel,
-                                                                      maxVideoBitrateKbps: activeMaxVideoBitrateKbps)
-                guard playbackRequestID == requestID,
-                      metadataReadyForActions,
-                      actionBackend == launchBackend,
-                      detailed.ratingKey == launchRatingKey else { return }
-                embyRemotePlayback = opened.playback
                 await presentResolvedPlayer()
                 span.end(fields: [
                     "path_mode": "remote_stream",

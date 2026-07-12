@@ -59,10 +59,11 @@ enum DebugEmbyPlaybackProbe {
             let detailed = (try? await service.metadata(itemId: item.ratingKey)) ?? item
             log.notice("probe.item_resolved type=\(detailed.type, privacy: .public) duration_ms=\(detailed.duration ?? 0, privacy: .public) chapters=\((detailed.chapters?.count ?? 0), privacy: .public)")
 
-            let opened = try await DetailPlaybackLauncher.openEmby(item: detailed,
-                                                                  appModel: appModel,
-                                                                  maxVideoBitrateKbps: bitrateKbps)
-            let playback = DetailPlaybackLauncher.embyPlaybackController(
+            let opened = try await DetailPlaybackLauncher.open(item: detailed,
+                                                               backend: .emby,
+                                                               appModel: appModel,
+                                                               maxVideoBitrateKbps: bitrateKbps)
+            let playback = DetailPlaybackLauncher.playbackController(
                 remote: opened.playback,
                 item: detailed,
                 appModel: appModel,
