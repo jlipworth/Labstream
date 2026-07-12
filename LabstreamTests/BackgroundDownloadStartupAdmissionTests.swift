@@ -78,6 +78,40 @@ struct BackgroundDownloadStartupAdmissionTests {
         }
     }
 
+    @Test func reattachSweepsOnlyUnreferencedAttemptStaging() async throws {
+        try await withTemporaryDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let owner = DownloadAttemptKey(
+                ratingKey: "plex:owned-stage",
+                attemptID: DownloadAttemptID(rawValue: "owner-a"))
+            let orphan = DownloadAttemptKey(
+                ratingKey: "plex:orphan-stage",
+                attemptID: DownloadAttemptID(rawValue: "orphan-a"))
+            let ownedStable = store.destinationURL(ratingKey: owner.ratingKey, ext: "mp4")
+            let orphanStable = store.destinationURL(ratingKey: orphan.ratingKey, ext: "mp4")
+            let record = DownloadRecord(
+                ratingKey: owner.ratingKey, attemptID: owner.attemptID, title: "Owned",
+                localURL: ownedStable, status: .queued)
+            #expect(store.createAttemptOwnedRecord(record, attemptID: owner.attemptID)
+                    == .committed(owner))
+            let ownedStage = try #require(store.attemptWorkingFileURL(for: owner))
+            let orphanStage = try #require(store.attemptStagingURL(
+                for: orphan, stableURL: orphanStable))
+            try Data("owned".utf8).write(to: ownedStage)
+            try Data("orphan".utf8).write(to: orphanStage)
+
+            let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+            #expect(await activate(session, resetKeys: []) == .activated(
+                cancelledTaskCount: 0, resetKeyCount: 0))
+            await withCheckedContinuation { continuation in
+                session.reattach { _ in continuation.resume() }
+            }
+
+            #expect(FileManager.default.fileExists(atPath: ownedStage.path))
+            #expect(!FileManager.default.fileExists(atPath: orphanStage.path))
+        }
+    }
+
     @Test func migratedPausedRowIsDurablyResetBeforeAdmission() async throws {
         try await withTemporaryDirectory { directory in
             let ratingKey = "plex:legacy-paused"
