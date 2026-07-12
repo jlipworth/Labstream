@@ -1000,23 +1000,30 @@ struct DetailView: View {
             remotePlayback = nil
             var openContext: MediaBrowserPlaybackContext?
             do {
+                // Capture credentials before the metadata await so both requests belong to one
+                // immutable auth generation. An auth/detail switch while metadata is held rejects
+                // the request before PlaybackInfo can create a stale encoder.
+                let capturedContext = try DetailPlaybackLauncher.context(
+                    backend: launchBackend, appModel: appModel)
+                openContext = capturedContext
                 let playbackItem = await DetailPlaybackLauncher.metadataItem(
                     ratingKey: launchRatingKey,
                     fallback: detailed,
-                    backend: launchBackend,
+                    context: capturedContext,
                     appModel: appModel,
                     resumeRewindSeconds: resumeRewindSeconds)
-                guard playbackRequestID == requestID,
-                      metadataReadyForActions,
-                      actionBackend == launchBackend,
-                      detailed.ratingKey == launchRatingKey else {
+                let metadataRequestStillCurrent = playbackRequestID == requestID
+                    && metadataReadyForActions
+                    && actionBackend == launchBackend
+                    && detailed.ratingKey == launchRatingKey
+                guard DetailPlaybackLauncher.shouldContinueAfterMetadata(
+                    requestStillCurrent: metadataRequestStillCurrent,
+                    context: capturedContext,
+                    appModel: appModel) else {
                     span.end(result: "cancelled", fields: ["reason": "stale_metadata"])
                     return
                 }
                 playingItem = playbackItem
-                let capturedContext = try DetailPlaybackLauncher.context(
-                    backend: launchBackend, appModel: appModel)
-                openContext = capturedContext
                 let opened = try await DetailPlaybackLauncher.open(
                     item: playbackItem,
                     context: capturedContext,

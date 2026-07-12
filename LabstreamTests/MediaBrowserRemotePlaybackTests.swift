@@ -97,6 +97,27 @@ struct MediaBrowserRemotePlaybackTests {
         }
     }
 
+    @Test func heldMetadataAuthSwitchAndViewInvalidationRejectBeforeOpen() async throws {
+        let appModel = configuredAppModel(token: "token-A")
+        let captured = try DetailPlaybackLauncher.context(backend: .jellyfin, appModel: appModel)
+        let held = HeldMetadata()
+        let task = Task { await held.value() }
+        await Task.yield()
+
+        // Return to byte-for-byte equal credentials to prove the auth revision, not merely token
+        // comparison, invalidates metadata minted by the abandoned generation.
+        appModel.jellyfinAccessToken = "token-B"
+        appModel.jellyfinAccessToken = "token-A"
+        held.resume(MediaItem(ratingKey: "item-1", title: "Held metadata", type: "movie"))
+        _ = await task.value
+
+        #expect(!DetailPlaybackLauncher.shouldContinueAfterMetadata(
+            requestStillCurrent: true, context: captured, appModel: appModel))
+        let current = try DetailPlaybackLauncher.context(backend: .jellyfin, appModel: appModel)
+        #expect(!DetailPlaybackLauncher.shouldContinueAfterMetadata(
+            requestStillCurrent: false, context: current, appModel: appModel))
+    }
+
     private func configuredAppModel(token: String) -> AppModel {
         let model = AppModel(identity: identity(), activeBackend: .jellyfin)
         model.jellyfinServerBaseURL = URL(string: "https://jellyfin.example.test")!
@@ -144,6 +165,20 @@ private final class HeldOpen {
 
     func resume(_ result: Result<DetailRemotePlaybackOpen, Error>) {
         continuation?.resume(with: result)
+        continuation = nil
+    }
+}
+
+@MainActor
+private final class HeldMetadata {
+    private var continuation: CheckedContinuation<MediaItem, Never>?
+
+    func value() async -> MediaItem {
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func resume(_ value: MediaItem) {
+        continuation?.resume(returning: value)
         continuation = nil
     }
 }
