@@ -337,9 +337,112 @@ struct DownloadStorePersistenceTests {
                 Issue.record("Expected durable reset barrier after phase-three crash")
                 return
             }
+            #expect(relaunched.resolveArtifactSynchronouslyForTests(
+                through: relaunched.currentArtifactLifecycleWatermark()) == .completed)
             #expect(relaunched.resetLegacyAttemptAfterTaskCancellation(key)
-                == .committed(key, cleanupFailureCount: 0))
+                == .notPending)
             #expect(relaunched.commitLegacyAttemptOwnershipMigration() == .notRequired)
+        }
+    }
+
+    @Test func legacyResetDoesNotDeletePathReferencedByAnotherCurrentRow() throws {
+        try withTemporaryDirectory { directory in
+            let shared = directory.appendingPathComponent("shared.resume")
+            try Data([1, 2, 3]).write(to: shared)
+            var a = legacyRow(ratingKey: "plex:shared-a", status: "paused", bytes: 3)
+            var b = legacyRow(ratingKey: "plex:shared-b", status: "paused", bytes: 3)
+            var metadataA = try #require(a["metadata"] as? [String: Any])
+            var metadataB = try #require(b["metadata"] as? [String: Any])
+            metadataA["resumeDataRelativePath"] = shared.lastPathComponent
+            metadataB["resumeDataRelativePath"] = shared.lastPathComponent
+            a["metadata"] = metadataA; b["metadata"] = metadataB
+            try writeLegacyIndex(schemaVersion: 2, rows: [a, b], directory: directory)
+            let store = DownloadStore(baseDirectory: directory)
+            guard case .committed(let plan) = store.commitLegacyAttemptOwnershipMigration(),
+                  plan.taskCancellationAndReset.count == 2 else {
+                Issue.record("expected two reset owners"); return
+            }
+            let first = plan.taskCancellationAndReset.sorted { $0.ratingKey < $1.ratingKey }[0]
+            #expect(store.resetLegacyAttemptAfterTaskCancellation(first)
+                == .committed(first, cleanupFailureCount: 0))
+            #expect(FileManager.default.fileExists(atPath: shared.path))
+        }
+    }
+
+    @Test func legacyResetPreparedFailureDeletesNothingAndSameProcessRetryCompletes() throws {
+        try withTemporaryDirectory { directory in
+            let media = directory.appendingPathComponent("reset-prepared.mp4")
+            try Data([1, 2]).write(to: media)
+            var row = legacyRow(ratingKey: "plex:reset-prepared", status: "paused", bytes: 2)
+            row["relativePath"] = media.lastPathComponent
+            try writeLegacyIndex(schemaVersion: 2, rows: [row], directory: directory)
+            let writes = SelectedAtomicWriteFailureHarness(failingAttempts: [2])
+            let store = DownloadStore(baseDirectory: directory,
+                indexPersistence: .init { data, url in try writes.write(data, to: url) })
+            guard case .committed(let plan) = store.commitLegacyAttemptOwnershipMigration(),
+                  let key = plan.taskCancellationAndReset.first else { return }
+            guard case .failed = store.resetLegacyAttemptAfterTaskCancellation(key) else {
+                Issue.record("expected prepared failure"); return
+            }
+            #expect(FileManager.default.fileExists(atPath: media.path))
+            #expect(store.resetLegacyAttemptAfterTaskCancellation(key)
+                == .committed(key, cleanupFailureCount: 0))
+        }
+    }
+
+    @Test func legacyResetPartialDeletionFailureRetriesExactRemainingRecipe() throws {
+        try withTemporaryDirectory { directory in
+            let media = directory.appendingPathComponent("reset-partial.mp4")
+            let resume = directory.appendingPathComponent("reset-partial.resume")
+            try Data([1]).write(to: media); try Data([2]).write(to: resume)
+            var row = legacyRow(ratingKey: "plex:reset-partial", status: "paused", bytes: 1)
+            row["relativePath"] = media.lastPathComponent
+            var metadata = try #require(row["metadata"] as? [String: Any])
+            metadata["resumeDataRelativePath"] = resume.lastPathComponent
+            row["metadata"] = metadata
+            try writeLegacyIndex(schemaVersion: 2, rows: [row], directory: directory)
+            let deletes = FailOneLegacyResetDelete(name: resume.lastPathComponent)
+            let live = DownloadArtifactFilesystem.live
+            let store = DownloadStore(baseDirectory: directory, artifactFilesystem: .init(
+                writeAuthArtifact: live.writeAuthArtifact,
+                removeItem: { url, fm in try deletes.remove(url, fm: fm) },
+                fileExists: live.fileExists))
+            guard case .committed(let plan) = store.commitLegacyAttemptOwnershipMigration(),
+                  let key = plan.taskCancellationAndReset.first else { return }
+            guard case .cleanupFailed(_, cleanupFailureCount: 1) =
+                    store.resetLegacyAttemptAfterTaskCancellation(key) else {
+                Issue.record("expected partial delete failure"); return
+            }
+            #expect(store.resetLegacyAttemptAfterTaskCancellation(key)
+                == .committed(key, cleanupFailureCount: 0))
+            #expect(!FileManager.default.fileExists(atPath: resume.path))
+        }
+    }
+
+    @Test func legacyResetRelaunchesAfterDeletionBeforeTerminalWithoutHoldingStoreLock() async throws {
+        try await withTemporaryDirectory { directory in
+            let media = directory.appendingPathComponent("reset-hard-kill.mp4")
+            try Data([9]).write(to: media)
+            var row = legacyRow(ratingKey: "plex:reset-hard-kill", status: "paused", bytes: 1)
+            row["relativePath"] = media.lastPathComponent
+            try writeLegacyIndex(schemaVersion: 2, rows: [row], directory: directory)
+            let writes = BlockingNthAtomicWriteHarness(3)
+            let store = DownloadStore(baseDirectory: directory,
+                indexPersistence: .init { data, url in try writes.write(data, to: url) })
+            guard case .committed(let plan) = store.commitLegacyAttemptOwnershipMigration(),
+                  let key = plan.taskCancellationAndReset.first else { return }
+            let submission = store.submitLegacyResetAfterTaskCancellation(key)
+            #expect(await waitForSignal(writes.started, timeout: 1))
+            #expect(!FileManager.default.fileExists(atPath: media.path))
+            let read = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async { _ = store.records; read.signal() }
+            #expect(await waitForSignal(read, timeout: 0.25))
+            let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(relaunched.resolveArtifactSynchronouslyForTests(
+                through: relaunched.currentArtifactLifecycleWatermark()) == .completed)
+            writes.release.signal()
+            #expect(await store.resolveLegacyReset(submission)
+                == .committed(key, cleanupFailureCount: 0))
         }
     }
 
@@ -1146,5 +1249,34 @@ private final class SelectedAtomicWriteFailureHarness: @unchecked Sendable {
         let attempt = lock.withLock { attempts += 1; return attempts }
         if failingAttempts.contains(attempt) { throw InjectedAtomicWriteFailure() }
         try data.write(to: url, options: .atomic)
+    }
+}
+
+private final class BlockingNthAtomicWriteHarness: @unchecked Sendable {
+    let started = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private let blockedAttempt: Int
+    private var attempts = 0
+    init(_ blockedAttempt: Int) { self.blockedAttempt = blockedAttempt }
+    func write(_ data: Data, to url: URL) throws {
+        let attempt = lock.withLock { attempts += 1; return attempts }
+        if attempt == blockedAttempt { started.signal(); release.wait() }
+        try data.write(to: url, options: .atomic)
+    }
+}
+
+private final class FailOneLegacyResetDelete: @unchecked Sendable {
+    private let lock = NSLock()
+    private let name: String
+    private var failed = false
+    init(name: String) { self.name = name }
+    func remove(_ url: URL, fm: FileManager) throws {
+        let shouldFail = lock.withLock {
+            guard url.lastPathComponent == name, !failed else { return false }
+            failed = true; return true
+        }
+        if shouldFail { throw CocoaError(.fileWriteOutOfSpace) }
+        try fm.removeItem(at: url)
     }
 }
