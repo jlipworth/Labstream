@@ -134,6 +134,49 @@ struct PlexBrowseServiceTests {
         #expect(requests[1].url?.query?.contains("query=A%20%26%20B") == true)
     }
 
+    @Test func homeRailPagingPreservesServerPathPagingTypeAndReportedTotal() async throws {
+        let transport = PlexBrowseTransport { request in
+            guard request.url?.path == "/root/hubs/home/recentlyAdded" else {
+                throw PlexBrowseTestFailure.unexpectedRequest
+            }
+            return Data(#"{"MediaContainer":{"totalSize":73,"Metadata":[{"ratingKey":"m21","title":"Twenty One","type":"movie"}]}}"#.utf8)
+        }
+        let service = try PlexBrowseService(
+            session: BackendSession(kind: .plex,
+                                    baseURL: try #require(URL(string: "https://plex.example.test/root")),
+                                    token: "rail-token"),
+            identity: Self.identity(),
+            send: { try await transport.send($0) })
+
+        let page = try await service.homeRailPage(path: "/hubs/home/recentlyAdded", type: 1,
+                                                  start: 20, limit: 10)
+        #expect(page.items.map(\.ratingKey) == ["m21"])
+        #expect(page.total == 73)
+
+        let request = try #require(await transport.requests.first)
+        #expect(request.httpMethod == "GET")
+        #expect(request.value(forHTTPHeaderField: "X-Plex-Token") == "rail-token")
+        let requestURL = try #require(request.url)
+        let components = try #require(URLComponents(url: requestURL,
+                                                    resolvingAgainstBaseURL: false))
+        #expect(components.queryItems == [
+            URLQueryItem(name: "X-Plex-Container-Start", value: "20"),
+            URLQueryItem(name: "X-Plex-Container-Size", value: "10"),
+            URLQueryItem(name: "type", value: "1"),
+        ])
+    }
+
+    @Test func railPagingSourceHasNoDirectPlexExecutionRegression() throws {
+        let testsURL = URL(fileURLWithPath: #filePath)
+        let sourceURL = testsURL.deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("Labstream/Backend/Paging/RailPagingSource.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        #expect(!source.contains("appModel.client.send"))
+        #expect(!source.contains("PlexRequest("))
+        #expect(source.contains("PlexBrowseService(appModel: appModel)"))
+        #expect(source.contains("service.homeRailPage"))
+    }
+
     @Test func musicPlaylistCapabilitiesPreserveOrderAndDuplicateEntries() async throws {
         let transport = PlexBrowseTransport { request in
             switch request.url?.path {

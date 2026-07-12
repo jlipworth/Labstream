@@ -158,6 +158,23 @@ struct PlexBrowseService {
         return response.mediaContainer.metadata
     }
 
+    /// Pages a server-provided native Home rail path without moving execution back into UI/paging.
+    /// The path and query shape intentionally match the former `RailPagingSource` request exactly.
+    func homeRailPage(path: String, type: Int?, start: Int, limit: Int) async throws -> PlexBrowsePage {
+        let request = PlexRequest(
+            url: session.baseURL.appendingPathComponent(path),
+            method: "GET",
+            queryItems: [
+                .init(name: "X-Plex-Container-Start", value: String(start)),
+                .init(name: "X-Plex-Container-Size", value: String(limit)),
+            ] + (type.map { [.init(name: "type", value: String($0))] } ?? []),
+            headers: PlexHeaders.standard(identity: identity, token: session.token)
+        )
+        let response: MetadataResponse = try await execute(request)
+        return PlexBrowsePage(items: response.mediaContainer.metadata,
+                              total: response.mediaContainer.totalSize)
+    }
+
     func musicArtists(libraryID: String, sort: String, start: Int, size: Int) async throws -> MusicPage {
         let request = MusicRequest.artists(server: session.baseURL, token: session.token,
                                            identity: identity, sectionKey: libraryID, sort: sort,
