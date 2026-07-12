@@ -3975,8 +3975,25 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         fallbackURLsByOffset: [Int: Set<URL>] = [:]
     ) -> Bool {
         guard !segments.isEmpty else { return true }
+        // Snapshot every same-attempt generation before staging the manifest removal. The Store
+        // commits these paths as deferred deletion authority in the SAME row revision, so an index
+        // failure retains both manifest/body and a later commit/relaunch can finish idempotently.
+        lock.lock()
+        var candidateURLs = Set<URL>()
+        for segment in segments {
+            if let current = heldRangeSegments[key]?[segment.offset]?.url {
+                candidateURLs.insert(current)
+            }
+            candidateURLs.formUnion(
+                heldRangeRetainedPredecessorURLs[key]?[segment.offset] ?? [])
+            if let fallbackURL = segment.fallbackURL { candidateURLs.insert(fallbackURL) }
+            candidateURLs.formUnion(fallbackURLsByOffset[segment.offset] ?? [])
+        }
+        lock.unlock()
         guard case .accepted(let removal) = store.removeHeldRangeSegments(
-            for: key, offsets: segments.map(\.offset)) else { return false }
+            for: key,
+            offsets: segments.map(\.offset),
+            deletingRelativePaths: candidateURLs.map(\.lastPathComponent)) else { return false }
         guard removal.committed else {
             recordUncommittedHeldManifestRemoval(
                 ratingKey: key.ratingKey,
@@ -3985,42 +4002,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             )
             return false
         }
-        let persistedByOffset = Dictionary(
-            removal.removed.map { ($0.offset, $0) },
-            uniquingKeysWith: { first, _ in first }
-        )
+        guard case .purged(let cleanup) = store.completeDeferredHeldRangeBodyDeletions(
+            for: key, removal: removal), cleanup.failedRelativePaths.isEmpty else { return false }
         lock.lock()
-        var mappedByOffset: [Int: URL] = [:]
-        var retainedByOffset: [Int: Set<URL>] = [:]
         for segment in segments {
-            if let mapped = heldRangeSegments[key]?.removeValue(forKey: segment.offset) {
-                mappedByOffset[segment.offset] = mapped.url
-            }
-            if let retained = heldRangeRetainedPredecessorURLs[key]?.removeValue(
-                forKey: segment.offset
-            ) {
-                retainedByOffset[segment.offset] = retained
-            }
+            heldRangeSegments[key]?.removeValue(forKey: segment.offset)
+            heldRangeRetainedPredecessorURLs[key]?.removeValue(forKey: segment.offset)
         }
         if heldRangeRetainedPredecessorURLs[key]?.isEmpty == true {
             heldRangeRetainedPredecessorURLs.removeValue(forKey: key)
         }
         lock.unlock()
-        var urls = Set<URL>()
-        for segment in segments {
-            var fallbacks = fallbackURLsByOffset[segment.offset] ?? []
-            if let fallbackURL = segment.fallbackURL { fallbacks.insert(fallbackURL) }
-            let persistedURL = persistedByOffset[segment.offset].flatMap {
-                store.heldRangeSegmentURL(relativePath: $0.relativePath)
-            }
-            urls.formUnion(HeldRangeBodyOwnershipPolicy.removalBodies(
-                current: mappedByOffset[segment.offset],
-                persisted: persistedURL,
-                fallback: fallbacks,
-                retainedPredecessors: retainedByOffset[segment.offset] ?? []
-            ))
-        }
-        for url in urls { try? fileManager.removeItem(at: url) }
         return true
     }
 
@@ -4042,7 +4034,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "download_id": .identifier(ratingKey),
             "operation": .label(operation),
             "outcome": .label(outcome),
-            "body_disposition": .label("delete_to_fail_closed"),
+            "body_disposition": .label("retained_for_durable_retry"),
         ])
     }
 
@@ -4248,31 +4240,28 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// resurrected against a partial it no longer matches.
     private func purgeHeldRangeSegments(for key: DownloadAttemptKey) {
         let ratingKey = key.ratingKey
-        guard case .accepted(let take) = store.takeHeldRangeSegments(for: key) else { return }
+        lock.lock()
+        let currentURLs = heldRangeSegments[key]?.values.map(\.url) ?? []
+        let retainedURLs = heldRangeRetainedPredecessorURLs[key]?.values.flatMap { $0 } ?? []
+        lock.unlock()
+        guard case .accepted(let take) = store.takeHeldRangeSegments(
+            for: key,
+            deletingRelativePaths: (currentURLs + retainedURLs).map(\.lastPathComponent)) else { return }
         guard take.committed else {
             recordUncommittedHeldManifestRemoval(
                 ratingKey: ratingKey, operation: "purge", persistence: take.persistence)
             return
         }
+        guard case .purged(let cleanup) = store.completeDeferredHeldRangeBodyDeletions(
+            for: key, removal: take), cleanup.failedRelativePaths.isEmpty else { return }
         lock.lock()
-        let held = heldRangeSegments.removeValue(forKey: key)
-        let retained = heldRangeRetainedPredecessorURLs.removeValue(forKey: key)
+        heldRangeSegments.removeValue(forKey: key)
+        heldRangeRetainedPredecessorURLs.removeValue(forKey: key)
         lock.unlock()
-        let currentURLs = held?.values.map(\.url) ?? []
-        let retainedURLs = retained?.values.map { $0 } ?? []
-        let persistedURLs = take.removed.compactMap {
-            store.heldRangeSegmentURL(relativePath: $0.relativePath)
-        }
-        let urls = HeldRangeBodyOwnershipPolicy.purgeBodies(
-            current: currentURLs,
-            persisted: persistedURLs,
-            retainedPredecessors: retainedURLs
-        )
-        guard !urls.isEmpty || !take.removed.isEmpty else { return }
-        for url in urls { try? fileManager.removeItem(at: url) }
+        guard !cleanup.removedRelativePaths.isEmpty || !take.removed.isEmpty else { return }
         AppDiagnostics.record(.downloads, "downloads.range_held_segments_purged", fields: [
             "download_id": .identifier(ratingKey),
-            "purged_count": .int(urls.count),
+            "purged_count": .int(cleanup.removedRelativePaths.count),
         ])
     }
 

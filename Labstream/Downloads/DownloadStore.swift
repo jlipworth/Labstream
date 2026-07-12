@@ -85,6 +85,7 @@ final class DownloadStore: @unchecked Sendable {
         case legacyResetPending
         case validatedPromotionPending
         case deletionPending
+        case heldBodyDeletionPending
         case checkpointHandoffFailed
     }
 
@@ -271,6 +272,9 @@ final class DownloadStore: @unchecked Sendable {
 
     struct HeldRangeSegmentsRemovalResult: Sendable, Equatable {
         let removed: [OfflineHeldRangeSegment]
+        /// Every exact-attempt held body whose deletion is part of the same durable snapshot as
+        /// the manifest removal. These paths remain in the row until filesystem deletion succeeds.
+        let deferredRelativePaths: [String]
         let ticket: PersistenceTicket
         let persistence: PersistenceFlushResult
 
@@ -321,6 +325,10 @@ final class DownloadStore: @unchecked Sendable {
         /// Exact, credential-free cleanup operations captured at delete time. This includes a
         /// transient in-memory PlaySessionId that may not yet have reached ordinary row metadata.
         var deletionPendingCleanupIntents: [DurableDownloadCleanupIntent]
+        /// Exact-attempt held bodies whose manifests have been removed in the same index
+        /// transaction, but whose filesystem deletion has not yet been completed. Keeping this
+        /// authority in schema-v4's row makes a failed/ambiguous commit and relaunch recoverable.
+        var heldRangeBodyDeletionIntents: [String]
         /// Decode-only evidence used to distinguish a valid v3 owner from the nested v2 fallback.
         /// This field is deliberately absent from CodingKeys.
         var decodedTopLevelAttemptIDPresent: Bool
@@ -334,6 +342,7 @@ final class DownloadStore: @unchecked Sendable {
             case legacyResetArtifactRelativePaths
             case deletionPending
             case deletionPendingCleanupIntents
+            case heldRangeBodyDeletionIntents
         }
 
         // Backward-compatible decoding: rows written before D2 lack `status`.
@@ -364,6 +373,8 @@ final class DownloadStore: @unchecked Sendable {
             deletionPendingCleanupIntents = try c.decodeIfPresent(
                 [DurableDownloadCleanupIntent].self,
                 forKey: .deletionPendingCleanupIntents) ?? []
+            heldRangeBodyDeletionIntents = try c.decodeIfPresent(
+                [String].self, forKey: .heldRangeBodyDeletionIntents) ?? []
             decodedTopLevelAttemptIDPresent = topLevelAttemptID != nil
             decodedAttemptIdentityDisagrees = topLevelAttemptID != nil
                 && nestedAttemptID != nil
@@ -379,7 +390,8 @@ final class DownloadStore: @unchecked Sendable {
              legacyResetPending: Bool = false,
              legacyResetArtifactRelativePaths: [String]? = nil,
              deletionPending: Bool = false,
-             deletionPendingCleanupIntents: [DurableDownloadCleanupIntent] = []) {
+             deletionPendingCleanupIntents: [DurableDownloadCleanupIntent] = [],
+             heldRangeBodyDeletionIntents: [String] = []) {
             self.ratingKey = ratingKey
             self.attemptID = attemptID
             self.title = title
@@ -394,6 +406,7 @@ final class DownloadStore: @unchecked Sendable {
             self.legacyResetArtifactRelativePaths = legacyResetArtifactRelativePaths
             self.deletionPending = deletionPending
             self.deletionPendingCleanupIntents = deletionPendingCleanupIntents
+            self.heldRangeBodyDeletionIntents = heldRangeBodyDeletionIntents
             self.decodedTopLevelAttemptIDPresent = attemptID != nil
             self.decodedAttemptIdentityDisagrees = false
         }
@@ -419,6 +432,9 @@ final class DownloadStore: @unchecked Sendable {
                 try c.encode(
                     deletionPendingCleanupIntents,
                     forKey: .deletionPendingCleanupIntents)
+            }
+            if !heldRangeBodyDeletionIntents.isEmpty {
+                try c.encode(heldRangeBodyDeletionIntents, forKey: .heldRangeBodyDeletionIntents)
             }
         }
     }
@@ -497,6 +513,7 @@ final class DownloadStore: @unchecked Sendable {
             for: indexURL,
             fileManager: fileManager)
         load()
+        recoverDeferredHeldRangeBodyDeletions()
     }
 
     /// Missing means an empty queue. Read/decode failures remain distinct so no later mutation can
@@ -1119,6 +1136,7 @@ final class DownloadStore: @unchecked Sendable {
         let attempt = removed.isEmpty ? proveCleanupNoOpDurable() : persist()
         return HeldRangeSegmentsRemovalResult(
             removed: removed,
+            deferredRelativePaths: [],
             ticket: attempt.ticket,
             persistence: attempt.result
         )
@@ -1137,7 +1155,8 @@ final class DownloadStore: @unchecked Sendable {
     @discardableResult
     func removeHeldRangeSegments(
         for key: DownloadAttemptKey,
-        offsets: [Int]
+        offsets: [Int],
+        deletingRelativePaths candidates: [String] = []
     ) -> AttemptHeldRangeSegmentsRemovalResult {
         let offsetSet = Set(offsets)
         lock.lock()
@@ -1157,11 +1176,19 @@ final class DownloadStore: @unchecked Sendable {
                 rows[key.ratingKey] = row
             }
         }
+        let safeCandidates = Set(candidates.filter(Self.isSafeOneLevelRelativePath))
+        let manifestPaths = Set(removed.map(\.relativePath).filter(Self.isSafeOneLevelRelativePath))
+        let deferred = Set(row.heldRangeBodyDeletionIntents)
+            .union(safeCandidates)
+            .union(manifestPaths)
+        row.heldRangeBodyDeletionIntents = deferred.sorted()
+        rows[key.ratingKey] = row
         let ticket = enqueueAttemptPersistenceLocked()
         lock.unlock()
         let persistence = waitForPersistence(through: ticket)
         return .accepted(HeldRangeSegmentsRemovalResult(
             removed: removed,
+            deferredRelativePaths: deferred.sorted(),
             ticket: persistence.ticket,
             persistence: persistence.result
         ))
@@ -1191,7 +1218,8 @@ final class DownloadStore: @unchecked Sendable {
 
     @discardableResult
     func takeHeldRangeSegments(
-        for key: DownloadAttemptKey
+        for key: DownloadAttemptKey,
+        deletingRelativePaths candidates: [String] = []
     ) -> AttemptHeldRangeSegmentsRemovalResult {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
@@ -1204,16 +1232,91 @@ final class DownloadStore: @unchecked Sendable {
             metadata.heldRangeSegments = nil
             metadata.downloadAttemptID = key.attemptID.rawValue
             row.metadata = metadata
-            rows[key.ratingKey] = row
         }
+        let deferred = Set(row.heldRangeBodyDeletionIntents)
+            .union(candidates.filter(Self.isSafeOneLevelRelativePath))
+            .union(removed.map(\.relativePath).filter(Self.isSafeOneLevelRelativePath))
+        row.heldRangeBodyDeletionIntents = deferred.sorted()
+        rows[key.ratingKey] = row
         let ticket = enqueueAttemptPersistenceLocked()
         lock.unlock()
         let persistence = waitForPersistence(through: ticket)
         return .accepted(HeldRangeSegmentsRemovalResult(
             removed: removed,
+            deferredRelativePaths: deferred.sorted(),
             ticket: persistence.ticket,
             persistence: persistence.result
         ))
+    }
+
+    /// Complete a previously staged held-body deletion. The owner check and filesystem mutations
+    /// share the Store lock, so a stale attempt A can never race a replacement B into reusing a
+    /// path. Missing files count as idempotent success. Failed deletes retain their durable intent.
+    @discardableResult
+    func retryDeferredHeldRangeBodyDeletions(
+        for key: DownloadAttemptKey
+    ) -> AttemptHeldRangeSegmentsPurgeResult {
+        // First prove the current full snapshot. A prior failed manifest-removal write may have
+        // staged intents only in memory; no body may be touched until that snapshot is durable.
+        lock.lock()
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
+              !row.legacyResetPending else {
+            lock.unlock()
+            return .staleOrMissing
+        }
+        let ticket = enqueueAttemptPersistenceLocked()
+        lock.unlock()
+        let persistence = waitForPersistence(through: ticket)
+        let removal = HeldRangeSegmentsRemovalResult(
+            removed: [], deferredRelativePaths: row.heldRangeBodyDeletionIntents,
+            ticket: persistence.ticket, persistence: persistence.result)
+        guard removal.committed else {
+            return .purged(AttemptHeldRangePurgeResult(
+                removal: removal, removedRelativePaths: [], failedRelativePaths: []))
+        }
+        return completeDeferredHeldRangeBodyDeletions(for: key, removal: removal)
+    }
+
+    @discardableResult
+    func completeDeferredHeldRangeBodyDeletions(
+        for key: DownloadAttemptKey,
+        removal: HeldRangeSegmentsRemovalResult
+    ) -> AttemptHeldRangeSegmentsPurgeResult {
+        lock.lock()
+        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
+              !row.legacyResetPending else {
+            lock.unlock()
+            return .staleOrMissing
+        }
+        let currentlyReferenced = Set(
+            row.metadata?.heldRangeSegments?.map(\.relativePath) ?? [])
+        let candidates = row.heldRangeBodyDeletionIntents
+            .filter(Self.isSafeOneLevelRelativePath)
+            .filter { !currentlyReferenced.contains($0) }
+        var removed: [String] = []
+        var failed: [String] = []
+        for relativePath in candidates {
+            let url = baseDirectory.appendingPathComponent(relativePath)
+            do {
+                if fileManager.fileExists(atPath: url.path) {
+                    try fileManager.removeItem(at: url)
+                }
+                removed.append(relativePath)
+            } catch {
+                failed.append(relativePath)
+            }
+        }
+        let removedSet = Set(removed)
+        row.heldRangeBodyDeletionIntents.removeAll { removedSet.contains($0) }
+        rows[key.ratingKey] = row
+        let cleanupTicket = enqueueAttemptPersistenceLocked()
+        lock.unlock()
+        // A failed clear is harmless: the durable intent replays idempotently on relaunch.
+        _ = waitForPersistence(through: cleanupTicket)
+        return .purged(AttemptHeldRangePurgeResult(
+            removal: removal,
+            removedRelativePaths: removed.sorted(),
+            failedRelativePaths: failed.sorted()))
     }
 
     /// Remove the exact owner's manifest first and delete bodies only after that absence is proven
@@ -1232,47 +1335,23 @@ final class DownloadStore: @unchecked Sendable {
                 failedRelativePaths: []
             ))
         }
-        let relativePaths = removal.removed.map(\.relativePath)
-            .filter(Self.isSafeOneLevelRelativePath)
-            .sorted()
-        // The index commit wait releases the store lock. Re-check before touching shared files,
-        // then keep ownership stable through deletion so B cannot adopt a path between check/use.
-        lock.lock()
-        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending else {
-            lock.unlock()
-            return .purged(AttemptHeldRangePurgeResult(
-                removal: removal,
-                removedRelativePaths: [],
-                failedRelativePaths: relativePaths
-            ))
-        }
-        var removed: [String] = []
-        var failed: [String] = []
-        for relativePath in relativePaths {
-            let url = baseDirectory.appendingPathComponent(relativePath)
-            do {
-                if fileManager.fileExists(atPath: url.path) {
-                    try fileManager.removeItem(at: url)
-                }
-                removed.append(relativePath)
-            } catch {
-                failed.append(relativePath)
-            }
-        }
-        lock.unlock()
-        return .purged(AttemptHeldRangePurgeResult(
-            removal: removal,
-            removedRelativePaths: removed.sorted(),
-            failedRelativePaths: failed.sorted()
-        ))
+        return completeDeferredHeldRangeBodyDeletions(for: key, removal: removal)
     }
 
     var referencedHeldRangeSegmentRelativePaths: Set<String> {
         lock.lock(); defer { lock.unlock() }
         return Set(rows.values.flatMap { row in
-            row.metadata?.heldRangeSegments?.map(\.relativePath) ?? []
+            (row.metadata?.heldRangeSegments?.map(\.relativePath) ?? [])
+                + row.heldRangeBodyDeletionIntents
         }.filter(Self.isSafeOneLevelRelativePath))
+    }
+
+    func deferredHeldRangeBodyDeletionRelativePaths(
+        for key: DownloadAttemptKey
+    ) -> [String]? {
+        lock.lock(); defer { lock.unlock() }
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else { return nil }
+        return row.heldRangeBodyDeletionIntents
     }
 
     /// Re-resolve a stored relative cache path to an absolute URL that exists on disk.
@@ -1663,7 +1742,8 @@ final class DownloadStore: @unchecked Sendable {
         // reservation. A deletion-pending row is the only durable cleanup authority when the
         // standalone journal is unavailable.
         guard existing?.pendingValidatedPromotionStatus == nil,
-              existing?.deletionPending != true else {
+              existing?.deletionPending != true,
+              existing?.heldRangeBodyDeletionIntents.isEmpty != false else {
             lock.unlock()
             return
         }
@@ -1689,7 +1769,8 @@ final class DownloadStore: @unchecked Sendable {
                                      status: record.status,
                                      metadata: metadata,
                                      legacyResetPending: existing?.legacyResetPending ?? false,
-                                     legacyResetArtifactRelativePaths: existing?.legacyResetArtifactRelativePaths)
+                                     legacyResetArtifactRelativePaths: existing?.legacyResetArtifactRelativePaths,
+                                     heldRangeBodyDeletionIntents: existing?.heldRangeBodyDeletionIntents ?? [])
         sideAssetHydrationCache.removeValue(forKey: record.ratingKey)
         lock.unlock()
         persist()
@@ -1735,6 +1816,14 @@ final class DownloadStore: @unchecked Sendable {
                 expectedPreviousOwner: expectedKey,
                 actualOwner: existingKey,
                 reason: .deletionPending
+            )
+        }
+        if existing?.heldRangeBodyDeletionIntents.isEmpty == false {
+            lock.unlock()
+            return .rejectedOwnership(
+                expectedPreviousOwner: expectedKey,
+                actualOwner: existingKey,
+                reason: .heldBodyDeletionPending
             )
         }
         // Same-ID replay is the only retry allowed after an ambiguous/failed commit. Otherwise a
@@ -3190,7 +3279,8 @@ final class DownloadStore: @unchecked Sendable {
     func remove(ratingKey: String) {
         lock.lock()
         guard rows[ratingKey]?.pendingValidatedPromotionStatus == nil,
-              rows[ratingKey]?.deletionPending != true else {
+              rows[ratingKey]?.deletionPending != true,
+              rows[ratingKey]?.heldRangeBodyDeletionIntents.isEmpty != false else {
             lock.unlock()
             return
         }
@@ -3245,7 +3335,8 @@ final class DownloadStore: @unchecked Sendable {
         guard let existing = rows[key.ratingKey], existing.attemptID == key.attemptID,
               !existing.legacyResetPending,
               existing.pendingValidatedPromotionStatus == nil,
-              existing.deletionPending == requiresDeletionPending else {
+              existing.deletionPending == requiresDeletionPending,
+              (requiresDeletionPending || existing.heldRangeBodyDeletionIntents.isEmpty) else {
             lock.unlock()
             return .staleOrMissing
         }
@@ -3278,6 +3369,7 @@ final class DownloadStore: @unchecked Sendable {
             row.metadata?.chapterImageRelativePaths?.values ?? Dictionary<Int, String>().values))
         assets.append(contentsOf: row.metadata?.offlineTextSubtitles?.map(\.relativePath) ?? [])
         assets.append(contentsOf: row.metadata?.heldRangeSegments?.map(\.relativePath) ?? [])
+        assets.append(contentsOf: row.heldRangeBodyDeletionIntents)
         for asset in assets where Self.isSafeOneLevelRelativePath(asset) {
             try? fileManager.removeItem(at: baseDirectory.appendingPathComponent(asset))
         }
@@ -3320,6 +3412,40 @@ final class DownloadStore: @unchecked Sendable {
             persist()
             lock.lock()
         }
+    }
+
+    /// Relaunch recovery for the second half of the held-manifest/body transaction. A persisted
+    /// intent proves the corresponding manifest-removal snapshot committed before the prior
+    /// process died. Deletion is idempotent; failures keep the path in the row for the next launch.
+    private func recoverDeferredHeldRangeBodyDeletions() {
+        lock.lock()
+        var changed = false
+        for (ratingKey, original) in rows {
+            guard !original.heldRangeBodyDeletionIntents.isEmpty else { continue }
+            var row = original
+            let referenced = Set(row.metadata?.heldRangeSegments?.map(\.relativePath) ?? [])
+            var completed = Set<String>()
+            for relativePath in row.heldRangeBodyDeletionIntents
+                where Self.isSafeOneLevelRelativePath(relativePath)
+                    && !referenced.contains(relativePath) {
+                let url = baseDirectory.appendingPathComponent(relativePath)
+                do {
+                    if fileManager.fileExists(atPath: url.path) {
+                        try fileManager.removeItem(at: url)
+                    }
+                    completed.insert(relativePath)
+                } catch {}
+            }
+            guard !completed.isEmpty else { continue }
+            row.heldRangeBodyDeletionIntents.removeAll { completed.contains($0) }
+            rows[ratingKey] = row
+            changed = true
+        }
+        guard changed else { lock.unlock(); return }
+        let ticket = enqueuePersistenceLocked()
+        lock.unlock()
+        // If clearing the already-executed intents fails, the next launch safely replays them.
+        _ = waitForPersistence(through: ticket)
     }
 
     private func cachedSubtitleTracksFromDisk(ratingKey: String) -> [OfflineTextSubtitleTrack]? {
