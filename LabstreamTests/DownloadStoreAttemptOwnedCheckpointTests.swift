@@ -256,6 +256,44 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
         }
     }
 
+    @Test func relaunchReplaysPreparedCheckpointWhileOriginalWorkerIsBlockedPostCopy() async throws {
+        try await withStoreAsync { initial, directory in
+            let owner = key("plex:checkpoint-hard-kill-window", "attempt-a")
+            let stable = directory.appendingPathComponent("checkpoint-hard-kill-window.mp4")
+            #expect(created(initial, key: owner, media: stable))
+            let working = try #require(initial.attemptWorkingFileURL(for: owner))
+            try Data([6, 7, 8, 9]).write(to: working)
+            #expect(initial.promoteValidatedAttempt(for: owner, terminalStatus: .complete)
+                == .promoted(owner, bytes: 4, status: .complete))
+            let gate = BlockAfterCheckpointCopy()
+            let live = DownloadStaticCheckpointFilesystem.live
+            let original = DownloadStore(
+                baseDirectory: directory,
+                checkpointFilesystem: .init(
+                    exists: live.exists, size: live.size,
+                    durableCopy: { source, destination, temporary in
+                        try gate.copy(source, destination, temporary, using: live.durableCopy)
+                    }))
+            let submission = original.submitStaticRangeCheckpointReset(
+                for: owner, expectedBytes: 10)
+            #expect(await signal(gate.copied, timeout: 1))
+
+            // Disk still contains only the prepared recipe: the original worker has copied the
+            // body but cannot enqueue its terminal row. A fresh process must replay that recipe.
+            let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(relaunched.resolveArtifactSynchronouslyForTests(
+                through: relaunched.currentArtifactLifecycleWatermark()) == .completed)
+            #expect(relaunched.record(for: owner)?.bytes == 4)
+            #expect(relaunched.record(for: owner)?.progress == 0.4)
+            gate.release.signal()
+            switch await original.resolveStaticCheckpoint(submission) {
+            case .applied(bytes: 4), .unchanged(bytes: 4): break
+            default: Issue.record("original worker did not retire idempotently")
+            }
+            #expect(DownloadStore(baseDirectory: directory).record(for: owner)?.bytes == 4)
+        }
+    }
+
     @Test func heldSuccessorRestartsFailedResumeQueueHeadWithOperationDispatcher() async throws {
         try await withStoreAsync { initial, directory in
             let owner = key("plex:mixed-artifact-retry", "attempt-a")
@@ -1038,6 +1076,22 @@ private final class BlockCheckpointCopy: @unchecked Sendable {
         release.wait()
         if failAfterRelease { throw CocoaError(.fileWriteOutOfSpace) }
         try DownloadStaticCheckpointFilesystem.live.durableCopy(source, destination, temporary)
+    }
+}
+
+private final class BlockAfterCheckpointCopy: @unchecked Sendable {
+    let copied = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+
+    func copy(
+        _ source: URL,
+        _ destination: URL,
+        _ temporary: URL,
+        using body: @Sendable (URL, URL, URL) throws -> Void
+    ) throws {
+        try body(source, destination, temporary)
+        copied.signal()
+        release.wait()
     }
 }
 
