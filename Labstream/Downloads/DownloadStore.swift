@@ -192,6 +192,21 @@ final class DownloadStore: @unchecked Sendable {
         awaitAttemptMutationSubmission(submission)
     }
 
+    func resolveSynchronously(
+        _ submission: AttemptResumeDataSubmission
+    ) -> AttemptResumeDataWriteResult {
+        switch submission {
+        case .staleOrMissing:
+            return .staleOrMissing
+        case .artifactWriteFailed(let errorType):
+            return .artifactWriteFailed(errorType: errorType)
+        case .accepted(let ticket):
+            let persistence = waitForPersistence(through: ticket)
+            return persistence.result.committed(through: ticket)
+                ? .applied : .persistenceFailed(persistence.result)
+        }
+    }
+
     struct EmbyConvertCleanupTombstone: Codable, Sendable, Equatable, Identifiable {
         let id: UUID
         let ratingKey: String
