@@ -540,6 +540,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         super.init()
     }
 
+    /// Break the foreground URLSession/delegate retain cycle used by deterministic transport
+    /// tests. Production background-session lifetime remains OS-owned and is never invalidated.
+    func invalidateInjectedSessionForTesting() {
+        guard injectedProtocolClasses != nil else { return }
+        urlSession.invalidateAndCancel()
+    }
+
     /// Explicit schema-v3 startup barrier. This is the ONLY API that may create the underlying
     /// background session while dormant. It cancels all pre-current markers plus every task mapped
     /// to an approved reset key, waits until cancellation has drained from the daemon's task list,

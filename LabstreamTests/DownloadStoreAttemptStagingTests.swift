@@ -97,12 +97,12 @@ struct DownloadStoreAttemptStagingTests {
                                     isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let writes = LockedFaultBox(0)
+        let writes = PromotionWriteCounter()
         let owner = key("plex:promotion-crash", "attempt-a")
         let store = DownloadStore(
             baseDirectory: directory,
             indexPersistence: .init { data, url in
-                let count = writes.withValue { value in value += 1; return value }
+                let count = writes.next()
                 if count == 3 { throw CocoaError(.fileWriteOutOfSpace) }
                 try data.write(to: url, options: .atomic)
             })
@@ -223,7 +223,9 @@ struct DownloadStoreAttemptStagingTests {
     private func created(_ store: DownloadStore, key: DownloadAttemptKey, stable: URL,
                          replacing: DownloadAttemptID? = nil) -> Bool {
         let record = DownloadRecord(ratingKey: key.ratingKey, attemptID: key.attemptID,
-                                    title: "Item", localURL: stable, status: .queued)
+                                    title: "Item", localURL: stable, status: .queued,
+                                    metadata: OfflineMetadata(
+                                        ratingKey: key.ratingKey, title: "Item", type: "movie"))
         if case .committed(let actual) = store.createAttemptOwnedRecord(
             record, attemptID: key.attemptID, replacing: replacing) {
             return actual == key
@@ -237,5 +239,17 @@ struct DownloadStoreAttemptStagingTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         try body(DownloadStore(baseDirectory: directory), directory)
+    }
+}
+
+private final class PromotionWriteCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func next() -> Int {
+        lock.withLock {
+            value += 1
+            return value
+        }
     }
 }
