@@ -919,6 +919,29 @@ their relationship during the schema-v3 migration.
 - **Remaining Phase 1A artifact boundary:** legacy-reset deletion and whole-row/pending-deletion
   artifact removal remain incomplete.
 
+#### 2026-07-12 — open Phase 1 foreground revalidation liveness defect
+
+- **Observed symptom:** a download completed while the headset is off can remain
+  `.unverified`/“Playback not verified” after wear/foreground and become `.complete` only after the
+  user presses Play. Playback-position advancement explicitly promotes the row, so that UI symptom
+  is consistent with the state machine rather than evidence that server verification completed.
+- **Current-head finding:** revalidation is local and server-independent, but it enters the same
+  finalizer pipeline as initial validation. Any globally pending background URLSession completion
+  handler makes that pipeline defer the AVFoundation probe and preserve `.unverified`. The Manager
+  nevertheless treats every admitted request as a real in-flight probe for 90 seconds. During that
+  interval both `session_change` and `scene_active` triggers are suppressed; expiry merely removes
+  the key and schedules no retry. A single finalizer often releases its own hold before the queued
+  Manager callback runs, so the race is timing-dependent, but another held/stored global handler or
+  a scene-active event during the suppression window reproduces the indefinite state.
+- **Expected local timing:** one item uses an 8-second local probe, a 2-second delay and 15-second
+  retry, plus an optional 4-second local asset/frame fallback. Probes are serialized, so several
+  items may queue, but no media-server round trip is required.
+- **Required correction (now queued):** distinguish “probe actually admitted/ran” from “background
+  gate deferred”; never retain a deferred attempt in the in-flight suppression set; trigger an exact-
+  attempt retry when the background completion gate drains; preserve scene-active retries and true
+  concurrent-probe dedupe; make timeout/cancel/failure requeue rather than silently erase. Add
+  deterministic global-handler, gate-drain, multi-download, concurrency, and Play-promotion tests.
+
 #### 2026-07-11 — Phase 2D compiler-cliff removal
 
 - **Status:** complete.
