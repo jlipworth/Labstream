@@ -616,6 +616,9 @@ final class DownloadStore: @unchecked Sendable {
     private var pendingResumeArtifactData: [UUID: Data] = [:] // guarded by `lock`
     private var artifactLifecycleTickets: [UUID: DownloadArtifactLifecycleCoordinator.Ticket] = [:]
     private var startupArtifactCleanupIntentIDs: Set<UUID> = [] // guarded by `lock`
+    /// Exact rows between in-memory intent retirement and its terminal index outcome. Recovery
+    /// must not schedule the successor until success, or until failure restores the retired head.
+    private var artifactRetirementKeys: Set<DownloadAttemptKey> = [] // guarded by `lock`
 
     /// - Parameter baseDirectory: where media files + the index live. Defaults to
     ///   `Application Support/Labstream/Downloads`, created if missing.
@@ -2795,6 +2798,7 @@ final class DownloadStore: @unchecked Sendable {
             if restoredRelative == nil { metadata.resumeDisplayBytes = nil }
             row.metadata = metadata
         }
+        artifactRetirementKeys.insert(ticket.key)
         let retiringIntent = row.pendingArtifactIntents.removeFirst()
         rows[ticket.key.ratingKey] = row
         let rollbackTicket = enqueueAttemptPersistenceLocked()
@@ -2882,6 +2886,7 @@ final class DownloadStore: @unchecked Sendable {
             metadata.downloadAttemptID = ticket.key.attemptID.rawValue
             clearing.metadata = metadata
         }
+        artifactRetirementKeys.insert(ticket.key)
         let retiringIntent = clearing.pendingArtifactIntents.removeFirst()
         rows[ticket.key.ratingKey] = clearing
         let terminal = enqueueAttemptPersistenceLocked()
@@ -2904,6 +2909,7 @@ final class DownloadStore: @unchecked Sendable {
             completeArtifactLifecycle(ticket)
             return
         }
+        artifactRetirementKeys.insert(ticket.key)
         let retiringIntent = row.pendingArtifactIntents.removeFirst()
         rows[ticket.key.ratingKey] = row
         let terminal = enqueueAttemptPersistenceLocked()
@@ -2934,10 +2940,12 @@ final class DownloadStore: @unchecked Sendable {
                 rows[ticket.key.ratingKey] = row
                 _ = enqueueAttemptPersistenceLocked()
             }
+            artifactRetirementKeys.remove(ticket.key)
             lock.unlock()
             failArtifactLifecycle(ticket, outcome)
             return
         }
+        _ = lock.withLock { artifactRetirementKeys.remove(ticket.key) }
         completeArtifactLifecycle(ticket)
     }
 
@@ -2980,6 +2988,7 @@ final class DownloadStore: @unchecked Sendable {
         let pending: [(DownloadAttemptKey, Row.ArtifactIntent)] = rows.values.compactMap { row -> (DownloadAttemptKey, Row.ArtifactIntent)? in
             guard let attemptID = row.attemptID else { return nil }
             let key = DownloadAttemptKey(ratingKey: row.ratingKey, attemptID: attemptID)
+            guard !artifactRetirementKeys.contains(key) else { return nil }
             guard let head = row.pendingArtifactIntents.first,
                   !activeArtifactIntentIDs.contains(head.id) else { return nil }
             return (key, head)
