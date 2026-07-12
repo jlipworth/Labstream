@@ -34,6 +34,16 @@ import FoundationNetworking
 /// header set is redacted before logging.
 @Suite(.serialized)
 struct LiveEmbyProbeTests {
+    private enum SharedProbeFailure: Error {
+        case targetSessionCleanup
+    }
+
+    private struct TimelineSequenceFailure: Error {
+        let playingAccepted: Bool
+        let stoppedAccepted: Bool
+        let errorType: String
+    }
+
 
     /// Required env inputs. Returns nil (→ test is a no-op) when any are absent.
     private struct LiveConfig {
@@ -278,6 +288,18 @@ struct LiveEmbyProbeTests {
             let readbackMatched = observed == targetTicks
             #expect(readbackMatched, "Emby resume readback did not observe the requested test offset")
             if !readbackMatched { throw URLError(.cannotParseResponse) }
+        } catch let sequenceFailure as TimelineSequenceFailure {
+            if sequenceFailure.playingAccepted && !sequenceFailure.stoppedAccepted {
+                do {
+                    try await stopFailedTargetSession(positionTicks: targetTicks,
+                                                      playback: targetPlayback,
+                                                      cfg: cfg)
+                } catch {
+                    Issue.record("Emby failed-target session cleanup was not accepted; server session cleanup requires manual verification")
+                    primaryError = SharedProbeFailure.targetSessionCleanup
+                }
+            }
+            if primaryError == nil { primaryError = sequenceFailure }
         } catch {
             primaryError = error
         }
@@ -404,13 +426,52 @@ struct LiveEmbyProbeTests {
                 positionTicks: positionTicks)),
         ]
 
+        var playingAccepted = false
+        var stoppedAccepted = false
         for (event, request) in requests {
-            let (_, status) = try await transport.send(request)
-            print(">>> EMBY-SHARED [\(label).\(event)] HTTP \(status)")
-            let succeeded = (200..<300).contains(status)
-            #expect(succeeded, "Emby timeline event expected 2xx")
-            guard succeeded else { throw URLError(.badServerResponse) }
+            do {
+                let (_, status) = try await transport.send(request)
+                print(">>> EMBY-SHARED [\(label).\(event)] HTTP \(status)")
+                let succeeded = (200..<300).contains(status)
+                #expect(succeeded, "Emby timeline event expected 2xx")
+                guard succeeded else {
+                    throw TimelineSequenceFailure(playingAccepted: playingAccepted,
+                                                  stoppedAccepted: stoppedAccepted,
+                                                  errorType: "http")
+                }
+                if event == "playing" { playingAccepted = true }
+                if event == "stopped" { stoppedAccepted = true }
+            } catch let failure as TimelineSequenceFailure {
+                throw failure
+            } catch {
+                throw TimelineSequenceFailure(playingAccepted: playingAccepted,
+                                              stoppedAccepted: stoppedAccepted,
+                                              errorType: String(reflecting: type(of: error)))
+            }
         }
+    }
+
+    /// Close the exact target PlaybackInfo session when Playing succeeded but the sequence could
+    /// not confirm Stopped. Failure remains observable and prevents an acceptance PASS.
+    private func stopFailedTargetSession(positionTicks: Int,
+                                         playback: EmbyPlaybackOpenResult,
+                                         cfg: LiveConfig) async throws {
+        let request = try EmbyPlayback.stoppedRequest(
+            server: cfg.server,
+            token: cfg.token,
+            identity: cfg.identity,
+            userId: cfg.userId,
+            itemId: cfg.itemId,
+            mediaSourceId: playback.mediaSourceId,
+            playSessionId: playback.playSessionId,
+            playMethod: playback.playMethod,
+            positionTicks: positionTicks
+        )
+        let (_, status) = try await transport.send(request)
+        print(">>> EMBY-SHARED [target-cleanup.stopped] HTTP \(status)")
+        let succeeded = (200..<300).contains(status)
+        #expect(succeeded, "Emby failed-target Stopped cleanup expected 2xx")
+        guard succeeded else { throw SharedProbeFailure.targetSessionCleanup }
     }
 
     private func waitForTimelinePosition(_ expected: Int, cfg: LiveConfig) async throws -> Int {
