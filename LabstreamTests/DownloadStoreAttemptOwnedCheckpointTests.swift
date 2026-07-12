@@ -13,6 +13,8 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             try Data(repeating: 7, count: 7).write(to: media)
             #expect(created(store, key: a, media: media))
             #expect(created(store, key: b, media: media, replacing: a.attemptID))
+            let workingB = try #require(store.attemptWorkingFileURL(for: b))
+            try Data(repeating: 8, count: 4).write(to: workingB)
 
             #expect(store.setResumeData(for: b, Data("owner-b".utf8), displayBytes: 12)
                     == .applied)
@@ -40,8 +42,8 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             #expect(store.rangeValidator(for: b) == "etag-b")
             #expect(store.sourcePartSize(for: b) == 70)
             #expect(store.sourceExactBytes(for: b) == 70)
-            #expect(store.durableStaticRangeCheckpointSize(for: b) == 7)
-            #expect(store.staticRangeRecoveryEvidence(for: b)?.durableBytes == 7)
+            #expect(store.durableStaticRangeCheckpointSize(for: b) == 4)
+            #expect(store.staticRangeRecoveryEvidence(for: b)?.durableBytes == 4)
         }
     }
 
@@ -77,6 +79,24 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             #expect(purge.removedRelativePaths == [segment.relativePath])
             #expect(purge.failedRelativePaths.isEmpty)
             #expect(!FileManager.default.fileExists(atPath: body.path))
+        }
+    }
+
+    @Test func reconciliationIgnoresStableJunkForNonterminalAttemptEvidence() throws {
+        try withStore { store, directory in
+            let owner = key("plex:reconcile-working", "attempt-a")
+            let stable = directory.appendingPathComponent("reconcile-working.mp4")
+            try Data(repeating: 9, count: 17).write(to: stable)
+            #expect(created(store, key: owner, media: stable, bytes: 99, progress: 0.9))
+
+            store.reconcile(liveRatingKeys: [], snapshotRatingKeys: [owner.ratingKey])
+
+            let row = try #require(store.record(for: owner))
+            #expect(row.status == .failed)
+            #expect(row.bytes == 0)
+            #expect(row.progress == 0)
+            #expect(FileManager.default.fileExists(atPath: stable.path))
+            #expect(store.staticRangeRecoveryEvidence(for: owner)?.durableBytes == 0)
         }
     }
 
@@ -152,6 +172,8 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             let media = directory.appendingPathComponent("reset-fault.mp4")
             try Data([1, 2, 3]).write(to: media)
             #expect(created(initial, key: owner, media: media, bytes: 99, progress: 0.99))
+            let working = try #require(initial.attemptWorkingFileURL(for: owner))
+            try Data([4, 5]).write(to: working)
             let writes = FailFirstIndexWrite()
             let store = DownloadStore(
                 baseDirectory: directory,
@@ -163,10 +185,10 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
                 Issue.record("Expected observable checkpoint reset failure")
                 return
             }
-            #expect(bytes == 3)
+            #expect(bytes == 2)
             #expect(DownloadStore(baseDirectory: directory).record(for: owner)?.bytes == 99)
             #expect(store.setRangeValidator(for: owner, "retry") == .applied)
-            #expect(DownloadStore(baseDirectory: directory).record(for: owner)?.bytes == 3)
+            #expect(DownloadStore(baseDirectory: directory).record(for: owner)?.bytes == 2)
         }
     }
 

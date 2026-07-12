@@ -52,6 +52,62 @@ struct DownloadStoreAttemptStagingTests {
         }
     }
 
+    @Test func workingLayoutIsDurableExactOwnerMetadataWhileRecordPublishesStableURL() throws {
+        try withStore { store, directory in
+            let owner = key("plex:durable-working", "attempt-a")
+            let stable = store.destinationURL(ratingKey: owner.ratingKey, ext: "mp4")
+            #expect(created(store, key: owner, stable: stable))
+            let initial = try #require(store.attemptWorkingFileLayout(for: owner))
+            #expect(initial.stableURL == stable)
+            #expect(initial.workingURL != stable)
+            #expect(store.record(for: owner)?.localURL == stable)
+
+            let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(relaunched.attemptWorkingFileLayout(for: owner) == initial)
+            #expect(relaunched.record(for: owner)?.localURL == stable)
+            #expect(relaunched.attemptWorkingFileURL(
+                for: key(owner.ratingKey, "attempt-b")) == nil)
+        }
+    }
+
+    @Test func validatedPromotionPublishesAndTerminalsOneExactOwnerAtomically() throws {
+        try withStore { store, directory in
+            let owner = key("emby:promote", "attempt-a")
+            let stable = store.destinationURL(ratingKey: owner.ratingKey, ext: "mp4")
+            try Data("old-stable-junk".utf8).write(to: stable)
+            #expect(created(store, key: owner, stable: stable))
+            let working = try #require(store.attemptWorkingFileURL(for: owner))
+            try Data("validated".utf8).write(to: working)
+
+            #expect(store.promoteValidatedAttempt(for: owner, terminalStatus: .complete)
+                    == .promoted(owner, bytes: 9, status: .complete))
+            #expect(String(decoding: try Data(contentsOf: stable), as: UTF8.self) == "validated")
+            #expect(!FileManager.default.fileExists(atPath: working.path))
+            #expect(store.attemptWorkingFileLayout(for: owner) == nil)
+            let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(relaunched.record(for: owner)?.status == .complete)
+            #expect(relaunched.record(for: owner)?.bytes == 9)
+            #expect(relaunched.record(for: owner)?.localURL == stable)
+        }
+    }
+
+    @Test func genericUpsertDerivesNewOwnersWorkingPathInsteadOfInheritingOldOwner() throws {
+        try withStore { store, _ in
+            let a = key("plex:upsert-owner", "attempt-a")
+            let b = key("plex:upsert-owner", "attempt-b")
+            let stable = store.destinationURL(ratingKey: a.ratingKey, ext: "mp4")
+            #expect(created(store, key: a, stable: stable))
+            let workingA = try #require(store.attemptWorkingFileURL(for: a))
+            store.upsert(DownloadRecord(
+                ratingKey: b.ratingKey, attemptID: b.attemptID, title: "B",
+                localURL: stable, status: .queued,
+                metadata: OfflineMetadata(ratingKey: b.ratingKey, title: "B", type: "movie")))
+            let workingB = try #require(store.attemptWorkingFileURL(for: b))
+            #expect(workingB != workingA)
+            #expect(store.attemptWorkingFileURL(for: a) == nil)
+        }
+    }
+
     @Test func relaunchInventoryAndSweepSelectOnlyUnreferencedAttemptStaging() throws {
         try withStore { store, directory in
             let owned = key("jellyfin:owned", "owned-attempt")

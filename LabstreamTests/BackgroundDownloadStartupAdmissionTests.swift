@@ -89,7 +89,7 @@ struct BackgroundDownloadStartupAdmissionTests {
             let index = try #require(
                 JSONSerialization.jsonObject(with: indexData) as? [String: Any]
             )
-            #expect(index["schemaVersion"] as? Int == 3)
+            #expect(index["schemaVersion"] as? Int == 4)
 
             let relaunched = DownloadStore(baseDirectory: directory)
             #expect(relaunched.commitLegacyAttemptOwnershipMigration() == .notRequired)
