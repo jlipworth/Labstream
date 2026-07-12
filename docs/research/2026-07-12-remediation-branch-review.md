@@ -8,6 +8,49 @@
 > exact-attempt finalizer registry integration landed in `813254f`. Physical-device force-quit /
 > background-redelivery gates remain open and are not claimed complete by this update.
 
+## Resume checkpoint after remediation
+
+**Review-remediation code checkpoint:** `f165daf` (`Resolve remediation branch review findings`).
+The worktree was clean after that commit and all worktree simulators were shut down.
+
+### Phase 1
+
+- **State:** headless-complete; physical verification pending.
+- The two critical findings, all M1–M12 findings, and the listed minor findings below were fixed.
+  The corrected design preserves current exact-attempt background work across startup admission,
+  carries durable static checkpoints into retry attempts, prevents persistence-failure wedges and
+  held-drain livelock, preserves successful/pause side-cache work, and gives startup recovery both
+  bounded automatic retry and a visible manual action.
+- Full Mac and iPad simulator plans passed, with Thread Sanitizer on iPad; PMSKit passed 1,450 tests
+  in 178 suites; clean iPad/visionOS install-and-launch smokes passed. These do **not** replace the
+  remaining physical iPad/Vision Pro force-quit redelivery and cancel/delete/re-add matrix.
+- The approved migration contract is now explicit: completed downloads survive; pre-v4
+  nonterminal partials are deliberately reset only behind exact legacy-task cancellation; current
+  exact-attempt partials survive relaunch.
+
+### Phase 3
+
+| Slice | Resume state |
+| --- | --- |
+| 3A canonical backend identity | Complete (`25b7548`). |
+| 3B shared identity/auth/server URL values | Complete (`1779a5f`). Backend wire dialects remain separate. |
+| 3C neutral playback boundary | Open; consult before the broad app-state migration. |
+| 3D shared progress request plan | Headless-complete (`2aa19e9`); live Jellyfin/Emby progress probes pending. |
+| 3E shared device-profile facts | Open; download-adjacent consultation boundary. |
+
+### Phase 4
+
+| Slice | Resume state |
+| --- | --- |
+| 4A MediaBrowser library request factory | Headless-complete (`7ebbe77`, `1779a5f`); live browse probes pending. |
+| 4B shared browse core | Open. |
+| 4C Plex request builders in PMSKit | Headless-complete (`1d577b7`); live Plex browse probe pending. |
+| 4D Plex browse service/capabilities | Open; consult before direct-send and UI execution migration. |
+
+**Safe next work:** finish the pending live evidence for 3D/4A/4C, then scope 3C, 3E, 4B, and
+4D with the user before implementation. Do not reopen already-landed request/identity slices or
+declare Phase 1 complete until the physical background-session gates pass.
+
 **Scope:** committed diff `main...HEAD` (40 commits, 104 files, +14,330/−2,172) in
 `/Users/jlipworth/labstream-worktrees/remediation-nondownloads`. Uncommitted working-tree
 edits excluded per instruction.
