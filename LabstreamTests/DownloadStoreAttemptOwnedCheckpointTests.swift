@@ -47,8 +47,35 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             }
             #expect(await signal(readerFinished, timeout: 0.25))
             gate.release.signal()
-            #expect(store.resolveArtifactSynchronously(ticket) == .completed)
+            #expect(store.resolveStaticCheckpointSynchronously(.accepted(ticket: ticket))
+                == .applied(bytes: 3))
             #expect(store.record(for: owner)?.bytes == 3)
+        }
+    }
+
+    @Test func delayedStaticCheckpointResolversRetainAllTypedOutcomesPast128() async throws {
+        try await withStoreAsync { store, directory in
+            let owner = key("plex:checkpoint-many-results", "attempt-a")
+            let media = directory.appendingPathComponent("checkpoint-many-results.mp4")
+            #expect(created(store, key: owner, media: media))
+            let working = try #require(store.attemptWorkingFileURL(for: owner))
+            try Data([1]).write(to: working)
+            let submissions = (1...140).map {
+                store.submitStaticRangeCheckpointReset(for: owner, expectedBytes: $0 + 1)
+            }
+            guard case .committed = await store.flushLifecycleAndPersistence(
+                through: store.currentPersistenceTicket(),
+                artifactWatermark: store.currentArtifactLifecycleWatermark(), timeout: 5) else {
+                Issue.record("checkpoint queue did not drain"); return
+            }
+            #expect(store.staticCheckpointOutcomeCountForTests() == 140)
+            for submission in submissions {
+                switch store.resolveStaticCheckpointSynchronously(submission) {
+                case .applied(bytes: 1), .unchanged(bytes: 1): break
+                default: Issue.record("typed checkpoint outcome was lost")
+                }
+            }
+            #expect(store.staticCheckpointOutcomeCountForTests() == 0)
         }
     }
 
@@ -171,6 +198,61 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             #expect(FileManager.default.fileExists(atPath: stable.path))
             #expect(relaunched.setStatus(for: owner, .failed) == .applied)
             #expect(relaunched.attemptWorkingFileURL(for: owner) == reconstructed)
+        }
+    }
+
+    @Test func staticCheckpointTerminalFailureRestartsThroughSameProcessSuccessor() async throws {
+        try await withStoreAsync { initial, directory in
+            let owner = key("plex:checkpoint-terminal-retry", "attempt-a")
+            let media = directory.appendingPathComponent("checkpoint-terminal-retry.mp4")
+            #expect(created(initial, key: owner, media: media, bytes: 9, progress: 0.9))
+            let working = try #require(initial.attemptWorkingFileURL(for: owner))
+            try Data([1, 2]).write(to: working)
+            let writes = FailNthIndexWrite(2)
+            let store = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init { data, url in try writes.write(data, to: url) })
+            let first = store.submitStaticRangeCheckpointReset(for: owner, expectedBytes: 10)
+            guard case .persistenceFailed(bytes: 2, _) =
+                    store.resolveStaticCheckpointSynchronously(first) else {
+                Issue.record("expected terminal snapshot failure"); return
+            }
+            let successor = store.submitStaticRangeCheckpointReset(for: owner, expectedBytes: 20)
+            #expect(await store.resolveStaticCheckpoint(successor) == .applied(bytes: 2))
+            #expect(store.record(for: owner)?.bytes == 2)
+            #expect(store.record(for: owner)?.progress == 0.1)
+        }
+    }
+
+    @Test func copiedTerminalCheckpointReplaysAfterPreTerminalCommitCrash() throws {
+        try withStore { initial, directory in
+            let owner = key("plex:checkpoint-post-copy-crash", "attempt-a")
+            let stable = directory.appendingPathComponent("checkpoint-post-copy-crash.mp4")
+            #expect(created(initial, key: owner, media: stable))
+            let working = try #require(initial.attemptWorkingFileURL(for: owner))
+            try Data([3, 4, 5]).write(to: working)
+            #expect(initial.promoteValidatedAttempt(for: owner, terminalStatus: .complete)
+                == .promoted(owner, bytes: 3, status: .complete))
+            let writes = FailNthIndexWrite(2)
+            let failing = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init { data, url in try writes.write(data, to: url) })
+            guard case .persistenceFailed(bytes: 3, _) =
+                    failing.resetStaticRangeProgressToDurableCheckpoint(
+                        for: owner, expectedBytes: 10) else {
+                Issue.record("expected post-copy terminal failure"); return
+            }
+            let reconstructed = try #require(
+                failing.attemptStagingURL(for: owner, stableURL: stable))
+            #expect(FileManager.default.fileExists(atPath: reconstructed.path))
+            #expect(FileManager.default.fileExists(atPath: stable.path))
+
+            let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(relaunched.resolveArtifactSynchronouslyForTests(
+                through: relaunched.currentArtifactLifecycleWatermark()) == .completed)
+            #expect(relaunched.record(for: owner)?.bytes == 3)
+            #expect(relaunched.record(for: owner)?.progress == 0.3)
+            #expect(relaunched.staticCheckpointOutcomeCountForTests() == 0)
         }
     }
 
