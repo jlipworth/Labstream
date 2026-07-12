@@ -204,14 +204,146 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             #expect(DownloadStore(baseDirectory: directory)
                 .record(for: owner)?.metadata?.heldRangeSegments == [segment])
 
-            guard case .accepted(let retry) = store.takeHeldRangeSegments(for: owner) else {
-                Issue.record("Expected no-op durability retry")
+            guard case .purged(let retry) =
+                    store.retryDeferredHeldRangeBodyDeletions(for: owner) else {
+                Issue.record("Expected deferred deletion retry")
                 return
             }
-            #expect(retry.committed)
+            #expect(retry.removal.committed)
+            #expect(retry.removedRelativePaths == [segment.relativePath])
             #expect(DownloadStore(baseDirectory: directory)
                 .record(for: owner)?.metadata?.heldRangeSegments == nil)
+            #expect(!FileManager.default.fileExists(atPath: body.path))
+            #expect(DownloadStore(baseDirectory: directory)
+                .deferredHeldRangeBodyDeletionRelativePaths(for: owner) == [])
+        }
+    }
+
+    @Test func failedHeldPurgeBlocksReplacementUntilExactOwnerCleanupCompletes() throws {
+        try withStore { initial, directory in
+            let a = key("plex:held-replacement-race", "attempt-a")
+            let b = key("plex:held-replacement-race", "attempt-b")
+            let media = directory.appendingPathComponent("held-replacement-race.mp4")
+            let segment = OfflineHeldRangeSegment(
+                offset: 64, length: 4, relativePath: "held-replacement-a.body")
+            let bodyA = directory.appendingPathComponent(segment.relativePath)
+            #expect(created(initial, key: a, media: media))
+            try Data([1, 2, 3, 4]).write(to: bodyA)
+            guard case .accepted = initial.persistHeldRangeSegment(for: a, segment: segment) else {
+                Issue.record("Expected A manifest"); return
+            }
+
+            let writes = FailFirstIndexWrite()
+            let store = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init { data, url in try writes.write(data, to: url) })
+            guard case .purged(let failed) = store.purgeHeldRangeSegments(for: a) else {
+                Issue.record("Expected staged A purge"); return
+            }
+            #expect(!failed.removal.committed)
+            #expect(FileManager.default.fileExists(atPath: bodyA.path))
+
+            let metadataB = OfflineMetadata(
+                ratingKey: b.ratingKey, title: "B", type: "movie", resumeMode: .staticByteRange)
+            let recordB = DownloadRecord(
+                ratingKey: b.ratingKey, attemptID: b.attemptID, title: "B", localURL: media,
+                status: .queued, metadata: metadataB)
+            guard case .rejectedOwnership(_, _, let reason) = store.createAttemptOwnedRecord(
+                recordB, attemptID: b.attemptID, replacing: a.attemptID) else {
+                Issue.record("Expected pending deletion to block B"); return
+            }
+            #expect(reason == .heldBodyDeletionPending)
+
+            guard case .purged(let completed) =
+                    store.retryDeferredHeldRangeBodyDeletions(for: a) else {
+                Issue.record("Expected A cleanup retry"); return
+            }
+            #expect(completed.removal.committed)
+            #expect(!FileManager.default.fileExists(atPath: bodyA.path))
+            #expect(store.createAttemptOwnedRecord(
+                recordB, attemptID: b.attemptID, replacing: a.attemptID) == .committed(b))
+
+            let bodyB = directory.appendingPathComponent("held-replacement-b.body")
+            try Data([8, 8, 8, 8]).write(to: bodyB)
+            let segmentB = OfflineHeldRangeSegment(
+                offset: 64, length: 4, relativePath: bodyB.lastPathComponent)
+            guard case .accepted = store.persistHeldRangeSegment(for: b, segment: segmentB) else {
+                Issue.record("Expected B manifest"); return
+            }
+            #expect(store.retryDeferredHeldRangeBodyDeletions(for: a) == .staleOrMissing)
+            #expect(FileManager.default.fileExists(atPath: bodyB.path))
+            #expect(store.record(for: b)?.metadata?.heldRangeSegments == [segmentB])
+        }
+    }
+
+    @Test func relaunchCompletesDurableHeldBodyDeletionIntentIdempotently() throws {
+        try withStore { store, directory in
+            let owner = key("jellyfin:held-crash", "attempt-a")
+            let media = directory.appendingPathComponent("held-crash.mkv")
+            let segment = OfflineHeldRangeSegment(
+                offset: 96, length: 3, relativePath: "held-crash-a.body")
+            let body = directory.appendingPathComponent(segment.relativePath)
+            #expect(created(store, key: owner, media: media))
+            try Data([7, 8, 9]).write(to: body)
+            guard case .accepted = store.persistHeldRangeSegment(for: owner, segment: segment) else {
+                Issue.record("Expected manifest"); return
+            }
+
+            // Simulate death after the manifest-removal + deletion-intent snapshot commits but
+            // before the process executes the filesystem half of the transaction.
+            guard case .accepted(let staged) = store.takeHeldRangeSegments(
+                for: owner, deletingRelativePaths: [segment.relativePath]) else {
+                Issue.record("Expected staged deletion"); return
+            }
+            #expect(staged.committed)
             #expect(FileManager.default.fileExists(atPath: body.path))
+            #expect(store.deferredHeldRangeBodyDeletionRelativePaths(for: owner)
+                == [segment.relativePath])
+
+            let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(!FileManager.default.fileExists(atPath: body.path))
+            #expect(relaunched.record(for: owner)?.metadata?.heldRangeSegments == nil)
+            #expect(relaunched.deferredHeldRangeBodyDeletionRelativePaths(for: owner) == [])
+
+            // A second launch proves missing-body cleanup is idempotent and does not recreate
+            // authority or perturb the exact owner.
+            let second = DownloadStore(baseDirectory: directory)
+            #expect(second.ownsAttempt(owner))
+            #expect(second.deferredHeldRangeBodyDeletionRelativePaths(for: owner) == [])
+        }
+    }
+
+    @Test func failedIntentClearReplaysMissingBodyCleanupAfterRelaunch() throws {
+        try withStore { initial, directory in
+            let owner = key("emby:held-clear-crash", "attempt-a")
+            let media = directory.appendingPathComponent("held-clear-crash.mkv")
+            let segment = OfflineHeldRangeSegment(
+                offset: 128, length: 2, relativePath: "held-clear-crash-a.body")
+            let body = directory.appendingPathComponent(segment.relativePath)
+            #expect(created(initial, key: owner, media: media))
+            try Data([4, 2]).write(to: body)
+            guard case .accepted = initial.persistHeldRangeSegment(for: owner, segment: segment) else {
+                Issue.record("Expected manifest"); return
+            }
+
+            let writes = FailNthIndexWrite(2)
+            let store = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init { data, url in try writes.write(data, to: url) })
+            guard case .purged(let purge) = store.purgeHeldRangeSegments(for: owner) else {
+                Issue.record("Expected purge"); return
+            }
+            #expect(purge.removal.committed)
+            #expect(purge.removedRelativePaths == [segment.relativePath])
+            #expect(!FileManager.default.fileExists(atPath: body.path))
+            #expect(writes.count == 2)
+
+            // Disk still has the intent because clearing it faulted after body deletion. Relaunch
+            // treats the absent file as idempotent success and durably clears only A's authority.
+            let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(relaunched.ownsAttempt(owner))
+            #expect(relaunched.deferredHeldRangeBodyDeletionRelativePaths(for: owner) == [])
+            #expect(!FileManager.default.fileExists(atPath: body.path))
         }
     }
 
@@ -341,6 +473,23 @@ private final class FailFirstIndexWrite: @unchecked Sendable {
         let shouldFail = lock.withLock {
             count += 1
             return count == 1
+        }
+        if shouldFail { throw CocoaError(.fileWriteOutOfSpace) }
+        try data.write(to: url, options: .atomic)
+    }
+}
+
+private final class FailNthIndexWrite: @unchecked Sendable {
+    private let lock = NSLock()
+    private let failure: Int
+    private(set) var count = 0
+
+    init(_ failure: Int) { self.failure = failure }
+
+    func write(_ data: Data, to url: URL) throws {
+        let shouldFail = lock.withLock {
+            count += 1
+            return count == failure
         }
         if shouldFail { throw CocoaError(.fileWriteOutOfSpace) }
         try data.write(to: url, options: .atomic)
