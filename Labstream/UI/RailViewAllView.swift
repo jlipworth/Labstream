@@ -76,12 +76,12 @@ struct RailViewAllView: View {
             }
     }
 
-    private func compactGridMetrics(availableWidth: CGFloat) -> MobileLibraryGridLayout.Metrics? {
+    private func compactGridMetrics(availableWidth: CGFloat) -> MobileViewAllGridLayout.Metrics? {
         guard compactWidth else { return nil }
-        return MobileLibraryGridLayout.metrics(availableWidth: Double(availableWidth))
+        return MobileViewAllGridLayout.metrics(availableWidth: Double(availableWidth))
     }
 
-    private func gridColumns(metrics: MobileLibraryGridLayout.Metrics?) -> [GridItem] {
+    private func gridColumns(metrics: MobileViewAllGridLayout.Metrics?) -> [GridItem] {
         guard let metrics else { return regularColumns }
         return Array(repeating: GridItem(.fixed(CGFloat(metrics.posterWidth)),
                                          spacing: CGFloat(metrics.gutter)),
