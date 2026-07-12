@@ -885,6 +885,40 @@ their relationship during the schema-v3 migration.
 - **Remaining Phase 1A artifact boundary:** validated promotion, legacy-reset deletion, and whole-row/
   pending-deletion artifact removal remain outside this slice.
 
+#### 2026-07-12 — Phase 1 validated-promotion artifact lifecycle
+
+- **Commits:** `a4788111` stages validated publication through the artifact queue; `e8a01ddd`
+  closes the post-rename/pre-directory-sync recovery window and makes the promotion/checkpoint
+  reservation test deterministic.
+- **Transaction:** `.validatedPromotion` durably records the exact attempt's working/stable paths and
+  terminal status, then captures and commits the validated source size before publication. The worker
+  full-syncs the source, atomically renames over the stable path, syncs the parent directory, verifies
+  the stable size against captured authority, publishes bytes/progress/status, and retires the intent
+  only behind terminal index durability. All filesystem work and persistence waits stay off the Store
+  lock. Background finalization now submits and asynchronously resolves the ticket rather than
+  synchronously blocking its caller.
+- **Crash/replay:** working-present replay repeats full-sync → rename → directory-sync. Working-absent
+  replay accepts stable bytes only from the durable exact-attempt recipe and captured size, and still
+  re-syncs the parent directory before terminal publication. The latter is required when a crash or
+  error lands after rename but before the original directory sync. Legacy schema-v4
+  `pendingValidatedPromotionStatus` rows remain readable/drainable and use the identical filesystem
+  ordering; the compatibility field is not removed by this migration.
+- **Evidence:** tests cover prepared failure with working/stable authority preserved, terminal failure
+  with restored-head same-process retry, source full-sync failure preventing rename, ordered
+  full-sync/rename/directory-sync seams, filesystem work off the Store lock, legacy recovery, and a
+  real rename-before-terminal hard-kill boundary. A sole-survivor replay test additionally fails the
+  first recovery directory sync, proves the raw on-disk intent remains queued, then launches an
+  independent Store that syncs and terminally converges. Static checkpoint submission is proven to
+  reject the promotion reservation using the nonblocking submit API, eliminating the prior loaded-
+  suite global-scheduling timeout. Adversarial review is clean.
+- **Gates:** focused promotion staging passed 17/17, focused promotion plus checkpoint suites passed
+  46/46 after the replay fix, the full Mac plan passed 242/242, and PMSKit passed 1,487/1,487.
+- **Rollback:** the new exhaustive intent operation must be drained before installing a reader that
+  lacks it. Legacy pending-promotion decoding remains supported specifically to preserve forward
+  migration and operational recovery.
+- **Remaining Phase 1A artifact boundary:** legacy-reset deletion and whole-row/pending-deletion
+  artifact removal remain incomplete.
+
 #### 2026-07-11 — Phase 2D compiler-cliff removal
 
 - **Status:** complete.
