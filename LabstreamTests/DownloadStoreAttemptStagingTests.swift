@@ -5,6 +5,217 @@ import Testing
 
 @Suite("DownloadStore attempt staging")
 struct DownloadStoreAttemptStagingTests {
+    @Test func validatedPromotionPreparedFailureKeepsWorkingAuthorityAndRetries() throws {
+        try withStore { initial, directory in
+            let owner = key("plex:promotion-prepared-failure", "attempt-a")
+            let stable = directory.appendingPathComponent("promotion-prepared-failure.mp4")
+            try Data("old-stable".utf8).write(to: stable)
+            #expect(created(initial, key: owner, stable: stable))
+            let working = try #require(initial.attemptWorkingFileURL(for: owner))
+            try Data("validated".utf8).write(to: working)
+            let writes = FailPromotionWriteNth(1)
+            let store = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init { data, url in try writes.write(data, to: url) })
+            guard case .persistenceFailed = store.promoteValidatedAttempt(
+                for: owner, terminalStatus: .complete) else {
+                Issue.record("expected prepared failure"); return
+            }
+            #expect(String(decoding: try Data(contentsOf: stable), as: UTF8.self) == "old-stable")
+            #expect(String(decoding: try Data(contentsOf: working), as: UTF8.self) == "validated")
+            #expect(store.promoteValidatedAttempt(for: owner, terminalStatus: .complete)
+                == .promoted(owner, bytes: 9, status: .complete))
+        }
+    }
+
+    @Test func validatedPromotionTerminalFailureRestoresAndRetriesSameProcess() throws {
+        try withStore { initial, directory in
+            let owner = key("plex:promotion-terminal-failure", "attempt-a")
+            let stable = directory.appendingPathComponent("promotion-terminal-failure.mp4")
+            #expect(created(initial, key: owner, stable: stable))
+            let working = try #require(initial.attemptWorkingFileURL(for: owner))
+            try Data("validated".utf8).write(to: working)
+            let writes = FailPromotionWriteNth(3)
+            let store = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init { data, url in try writes.write(data, to: url) })
+            guard case .persistenceFailed = store.promoteValidatedAttempt(
+                for: owner, terminalStatus: .complete) else {
+                Issue.record("expected terminal failure"); return
+            }
+            #expect(!FileManager.default.fileExists(atPath: working.path))
+            #expect(store.promoteValidatedAttempt(for: owner, terminalStatus: .complete)
+                == .promoted(owner, bytes: 9, status: .complete))
+        }
+    }
+
+    @Test func validatedPromotionRenameRunsOffStoreLockBehindNonblockingTicket() async throws {
+        try await withStoreAsync { initial, directory in
+            let owner = key("plex:promotion-off-lock", "attempt-a")
+            let stable = directory.appendingPathComponent("promotion-off-lock.mp4")
+            #expect(created(initial, key: owner, stable: stable))
+            let working = try #require(initial.attemptWorkingFileURL(for: owner))
+            try Data("validated".utf8).write(to: working)
+            let gate = BlockingPromotionRename()
+            let live = DownloadPromotionFilesystem.live
+            let store = DownloadStore(
+                baseDirectory: directory,
+                promotionFilesystem: .init(
+                    exists: live.exists, size: live.size,
+                    fullSyncSource: live.fullSyncSource,
+                    renameReplacing: { source, destination in
+                        try gate.rename(source, destination, using: live.renameReplacing)
+                    },
+                    syncParentDirectory: live.syncParentDirectory))
+            let submission = store.submitValidatedPromotion(
+                for: owner, terminalStatus: .complete)
+            #expect(await wait(gate.blocked, timeout: 1))
+            let read = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async { _ = store.records; read.signal() }
+            #expect(await wait(read, timeout: 0.25))
+            gate.release.signal()
+            #expect(await store.resolveValidatedPromotion(submission)
+                == .promoted(owner, bytes: 9, status: .complete))
+        }
+    }
+
+    @Test func validatedPromotionReplaysHardKillWindowAfterRenameBeforeTerminal() async throws {
+        try await withStoreAsync { initial, directory in
+            let owner = key("plex:promotion-hard-kill", "attempt-a")
+            let stable = directory.appendingPathComponent("promotion-hard-kill.mp4")
+            try Data("old".utf8).write(to: stable)
+            #expect(created(initial, key: owner, stable: stable))
+            let working = try #require(initial.attemptWorkingFileURL(for: owner))
+            try Data("validated".utf8).write(to: working)
+            let gate = BlockAfterPromotionRename()
+            let live = DownloadPromotionFilesystem.live
+            let original = DownloadStore(
+                baseDirectory: directory,
+                promotionFilesystem: .init(
+                    exists: live.exists, size: live.size,
+                    fullSyncSource: live.fullSyncSource,
+                    renameReplacing: { source, destination in
+                        try gate.rename(source, destination, using: live.renameReplacing)
+                    },
+                    syncParentDirectory: live.syncParentDirectory))
+            let submission = original.submitValidatedPromotion(
+                for: owner, terminalStatus: .complete)
+            #expect(await wait(gate.renamed, timeout: 1))
+            #expect(!FileManager.default.fileExists(atPath: working.path))
+            #expect(String(decoding: try Data(contentsOf: stable), as: UTF8.self) == "validated")
+
+            let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(relaunched.resolveArtifactSynchronouslyForTests(
+                through: relaunched.currentArtifactLifecycleWatermark()) == .completed)
+            #expect(relaunched.record(for: owner)?.status == .complete)
+            #expect(relaunched.record(for: owner)?.bytes == 9)
+            gate.release.signal()
+            #expect(await original.resolveValidatedPromotion(submission)
+                == .promoted(owner, bytes: 9, status: .complete))
+        }
+    }
+
+    @Test func validatedPromotionDurabilityOrdersFileSyncRenameThenDirectorySync() throws {
+        try withStore { initial, directory in
+            let owner = key("plex:promotion-durability-order", "attempt-a")
+            let stable = directory.appendingPathComponent("promotion-durability-order.mp4")
+            #expect(created(initial, key: owner, stable: stable))
+            let working = try #require(initial.attemptWorkingFileURL(for: owner))
+            try Data("validated".utf8).write(to: working)
+            let recorder = PromotionDurabilityRecorder()
+            let live = DownloadPromotionFilesystem.live
+            let store = DownloadStore(
+                baseDirectory: directory,
+                promotionFilesystem: .init(
+                    exists: live.exists, size: live.size,
+                    fullSyncSource: { url in
+                        try recorder.run("file-sync") { try live.fullSyncSource(url) }
+                    },
+                    renameReplacing: { source, destination in
+                        try recorder.run("rename") {
+                            try live.renameReplacing(source, destination)
+                        }
+                    },
+                    syncParentDirectory: { url in
+                        try recorder.run("directory-sync") {
+                            try live.syncParentDirectory(url)
+                        }
+                    }))
+            #expect(store.promoteValidatedAttempt(for: owner, terminalStatus: .complete)
+                == .promoted(owner, bytes: 9, status: .complete))
+            #expect(recorder.events == ["file-sync", "rename", "directory-sync"])
+        }
+    }
+
+    @Test func validatedPromotionFullSyncFailureNeverRenames() throws {
+        try withStore { initial, directory in
+            let owner = key("plex:promotion-sync-failure", "attempt-a")
+            let stable = directory.appendingPathComponent("promotion-sync-failure.mp4")
+            try Data("old".utf8).write(to: stable)
+            #expect(created(initial, key: owner, stable: stable))
+            let working = try #require(initial.attemptWorkingFileURL(for: owner))
+            try Data("validated".utf8).write(to: working)
+            let live = DownloadPromotionFilesystem.live
+            let store = DownloadStore(
+                baseDirectory: directory,
+                promotionFilesystem: .init(
+                    exists: live.exists, size: live.size,
+                    fullSyncSource: { _ in throw CocoaError(.fileWriteOutOfSpace) },
+                    renameReplacing: { _, _ in
+                        Issue.record("rename must not run after sync failure")
+                    },
+                    syncParentDirectory: { _ in
+                        Issue.record("directory sync must not run after sync failure")
+                    }))
+            guard case .renameFailed = store.promoteValidatedAttempt(
+                for: owner, terminalStatus: .complete) else {
+                Issue.record("expected sync failure"); return
+            }
+            #expect(FileManager.default.fileExists(atPath: working.path))
+            #expect(String(decoding: try Data(contentsOf: stable), as: UTF8.self) == "old")
+        }
+    }
+
+    @Test func legacyPendingPromotionRecoveryUsesDurableFilesystemOrdering() throws {
+        try withStore { initial, directory in
+            let owner = key("plex:legacy-promotion-recovery", "attempt-a")
+            let stable = directory.appendingPathComponent("legacy-promotion-recovery.mp4")
+            #expect(created(initial, key: owner, stable: stable))
+            let working = try #require(initial.attemptWorkingFileURL(for: owner))
+            try Data("validated".utf8).write(to: working)
+            let indexURL = directory.appendingPathComponent("index.json")
+            var object = try #require(
+                JSONSerialization.jsonObject(with: Data(contentsOf: indexURL)) as? [String: Any])
+            var rows = try #require(object["rows"] as? [[String: Any]])
+            rows[0]["pendingValidatedPromotionStatus"] = "complete"
+            object["rows"] = rows
+            try JSONSerialization.data(withJSONObject: object).write(to: indexURL, options: .atomic)
+
+            let recorder = PromotionDurabilityRecorder()
+            let live = DownloadPromotionFilesystem.live
+            let store = DownloadStore(
+                baseDirectory: directory,
+                promotionFilesystem: .init(
+                    exists: live.exists, size: live.size,
+                    fullSyncSource: { url in
+                        try recorder.run("file-sync") { try live.fullSyncSource(url) }
+                    },
+                    renameReplacing: { source, destination in
+                        try recorder.run("rename") {
+                            try live.renameReplacing(source, destination)
+                        }
+                    },
+                    syncParentDirectory: { url in
+                        try recorder.run("directory-sync") {
+                            try live.syncParentDirectory(url)
+                        }
+                    }))
+            #expect(store.recoverPendingValidatedPromotion(for: owner)
+                == .promoted(owner, bytes: 9, status: .complete))
+            #expect(recorder.events == ["file-sync", "rename", "directory-sync"])
+        }
+    }
+
     @Test func stagingNamesAreDeterministicPathSafeAndAttemptScoped() throws {
         try withStore { store, directory in
             let a = key("plex:item/unsafe", "attempt/a")
@@ -104,7 +315,7 @@ struct DownloadStoreAttemptStagingTests {
             baseDirectory: directory,
             indexPersistence: .init { data, url in
                 let count = writes.next()
-                if count == 3 { throw CocoaError(.fileWriteOutOfSpace) }
+                if count == 4 { throw CocoaError(.fileWriteOutOfSpace) }
                 try data.write(to: url, options: .atomic)
             })
         let stable = store.destinationURL(ratingKey: owner.ratingKey, ext: "mp4")
@@ -113,7 +324,7 @@ struct DownloadStoreAttemptStagingTests {
         let working = try #require(store.attemptWorkingFileURL(for: owner))
         try Data("validated-owner-a".utf8).write(to: working)
 
-        // Write 2 durably records the validated intent; rename succeeds; write 3 fails before the
+        // Writes 2–3 durably record the intent and captured source size; rename succeeds; write 4 fails before the
         // terminal row can replace that intent on disk.
         guard case .persistenceFailed(let failedKey, _) = store.promoteValidatedAttempt(
             for: owner, terminalStatus: .complete) else {
@@ -126,9 +337,10 @@ struct DownloadStoreAttemptStagingTests {
                 == "validated-owner-a")
 
         let relaunched = DownloadStore(baseDirectory: directory)
-        #expect(relaunched.record(for: owner)?.status == .queued)
-        #expect(relaunched.recoverPendingValidatedPromotion(for: owner)
-                == .promoted(owner, bytes: 17, status: .complete))
+        #expect(relaunched.resolveArtifactSynchronouslyForTests(
+            through: relaunched.currentArtifactLifecycleWatermark()) == .completed)
+        #expect(relaunched.record(for: owner)?.status == .complete)
+        #expect(relaunched.record(for: owner)?.bytes == 17)
         let verified = DownloadStore(baseDirectory: directory)
         #expect(verified.record(for: owner)?.status == .complete)
         #expect(verified.record(for: owner)?.bytes == 17)
@@ -296,6 +508,16 @@ struct DownloadStoreAttemptStagingTests {
         try body(DownloadStore(baseDirectory: directory), directory)
     }
 
+    private func withStoreAsync(
+        _ body: (DownloadStore, URL) async throws -> Void
+    ) async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("download-stage-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try await body(DownloadStore(baseDirectory: directory), directory)
+    }
+
     private func wait(_ semaphore: DispatchSemaphore, timeout: TimeInterval) async -> Bool {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
@@ -334,5 +556,55 @@ private final class BlockingPromotionWriter: @unchecked Sendable {
             release.wait()
         }
         try data.write(to: url, options: .atomic)
+    }
+}
+
+private final class FailPromotionWriteNth: @unchecked Sendable {
+    private let lock = NSLock()
+    private let failure: Int
+    private var count = 0
+    init(_ failure: Int) { self.failure = failure }
+    func write(_ data: Data, to url: URL) throws {
+        let fail = lock.withLock { count += 1; return count == failure }
+        if fail { throw CocoaError(.fileWriteOutOfSpace) }
+        try data.write(to: url, options: .atomic)
+    }
+}
+
+private final class BlockingPromotionRename: @unchecked Sendable {
+    let blocked = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    func rename(
+        _ source: URL,
+        _ destination: URL,
+        using body: @Sendable (URL, URL) throws -> Void
+    ) throws {
+        blocked.signal()
+        release.wait()
+        try body(source, destination)
+    }
+}
+
+private final class BlockAfterPromotionRename: @unchecked Sendable {
+    let renamed = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    func rename(
+        _ source: URL,
+        _ destination: URL,
+        using body: @Sendable (URL, URL) throws -> Void
+    ) throws {
+        try body(source, destination)
+        renamed.signal()
+        release.wait()
+    }
+}
+
+private final class PromotionDurabilityRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String] = []
+    var events: [String] { lock.withLock { storage } }
+    func run(_ event: String, _ body: () throws -> Void) throws {
+        lock.withLock { storage.append(event) }
+        try body()
     }
 }
