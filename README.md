@@ -1,7 +1,10 @@
 # Labstream
 
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Platform: visionOS 26 + iOS/iPadOS 26.1+](https://img.shields.io/badge/Platform-visionOS%2026%20%2B%20iOS%2FiPadOS%2026.1%2B-black.svg)](https://developer.apple.com/)
+[![visionOS 26](https://img.shields.io/badge/visionOS-26-black.svg)](https://developer.apple.com/visionos/)
+[![iOS 26.1+](https://img.shields.io/badge/iOS-26.1%2B-black.svg)](https://developer.apple.com/ios/)
+[![iPadOS 26.1+](https://img.shields.io/badge/iPadOS-26.1%2B-black.svg)](https://developer.apple.com/ipados/)
+[![macOS 26 preview](https://img.shields.io/badge/macOS-26%20development%20preview-lightgrey.svg)](docs/MACOS.md)
 [![Swift 6](https://img.shields.io/badge/Swift-6-orange.svg)](https://www.swift.org/)
 [![Xcode 26](https://img.shields.io/badge/Xcode-26-blue.svg)](https://developer.apple.com/xcode/)
 
@@ -9,19 +12,26 @@
 
 Labstream does not provide, host, sell, or bundle movies, TV, music, or other media. It connects only to servers you choose, and offline downloads are for media you are authorized to access and download under the applicable server/service terms.
 
-It brings server-aware streaming, an Apple Vision Pro cinema playback surface, a native
-iPhone/iPad shell, music browsing, privacy-preserving diagnostics, and offline downloads to a
-source-first SwiftUI app. A native Mac target is also present on `main` as a local-build
-development preview; it is not yet a released or supported App Store product.
+The repository contains native targets for Apple Vision Pro, iPhone/iPad, and Mac. The
+visionOS target is the primary development path, `LabstreamMobile` is one universal iPhone/iPad
+target, and `LabstreamMac` is a local-build development preview. They share the SwiftUI app
+source, custom AVFoundation player, and `PMSKit` backend layer, with platform-specific shells and
+system integration.
 
 > **Distribution status:** Labstream is currently distributed as source for local builds. There
 > is no App Store or TestFlight build today. Mac distribution remains deferred pending licensing
 > and release review.
 
+> **Development status:** This is an active, pre-release project rather than a compatibility
+> promise. Plex, Jellyfin, and Emby paths are implemented, but backend, server-version, media,
+> and platform combinations do not all have equal live-device validation. Expect incomplete
+> behavior and regressions while the current architecture remediation and platform work continue.
+
 ## Contents
 
 - [Features](#features)
 - [Supported backends](#supported-backends)
+- [Platform status](#platform-status)
 - [Tech stack](#tech-stack)
 - [Quick start](#quick-start)
 - [Project structure](#project-structure)
@@ -31,6 +41,9 @@ development preview; it is not yet a released or supported App Store product.
 - [License](#license)
 
 ## Features
+
+These are implemented product areas, not a claim that every item is complete on every platform
+and backend. See the platform and backend status tables below for the current support boundaries.
 
 ### Playback
 
@@ -64,11 +77,20 @@ development preview; it is not yet a released or supported App Store product.
 
 | Backend | Sign-in | Core support |
 | --- | --- | --- |
-| Plex | Plex PIN/OAuth and server discovery | Browse, search, playback, progress, music, downloads/offline. |
-| Jellyfin | Server URL plus Jellyfin auth or Quick Connect | Browse, search, playback, progress, music, downloads/offline. |
-| Emby | Emby Connect PIN or manual server login | Browse, search, playback, progress, music, downloads/offline. |
+| Plex | Plex PIN/OAuth and server discovery | Implemented across browse, search, playback, progress, music, and downloads/offline; primary live-test backend. |
+| Jellyfin | Server URL plus Jellyfin auth or Quick Connect | Browse, search, playback, progress, music, and downloads/offline paths are implemented; live coverage varies by server and media. |
+| Emby | Emby Connect PIN or manual server login | Browse, search, playback, progress, music, and downloads/offline paths are implemented; live coverage varies by server and media. |
 
 Labstream is unofficial and independent. It is not affiliated with, endorsed by, sponsored by, or officially supported by Plex, the Jellyfin project, or Emby Media.
+
+## Platform status
+
+| Platform | Target / scheme | Current status |
+| --- | --- | --- |
+| Apple Vision Pro / visionOS 26 | `Labstream` | Primary development and validation path. Includes the app-owned immersive cinema surface. |
+| iPhone / iOS 26.1+ | `LabstreamMobile` | Native adaptive mobile shell in active development. Local simulator and signed-device builds are supported. |
+| iPad / iPadOS 26.1+ | `LabstreamMobile` | The same universal mobile target, using the regular-width sidebar layout. Local simulator and signed-device builds are supported. |
+| Apple-silicon Mac / macOS 26 | `LabstreamMac` | Local-build development preview only; not a supported distribution target or compatibility promise. Real sign-in, playback, media-key, and background-download coverage remains incomplete. |
 
 ## Tech stack
 
