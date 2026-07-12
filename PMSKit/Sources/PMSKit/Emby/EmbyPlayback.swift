@@ -648,10 +648,10 @@ public enum EmbyPlayback {
                                       playMethod: EmbyPlayMethod,
                                       positionTicks: Int = 0) throws -> URLRequest {
         try progressBody(server: server, token: token, identity: identity, userId: userId,
-                         path: "/Sessions/Playing",
+                         event: .playing,
                          itemId: itemId, mediaSourceId: mediaSourceId,
                          playSessionId: playSessionId, playMethod: playMethod,
-                         positionTicks: positionTicks, isPaused: false)
+                         positionTicks: positionTicks)
     }
 
     /// `POST /Sessions/Playing/Progress`
@@ -666,10 +666,10 @@ public enum EmbyPlayback {
                                        positionTicks: Int,
                                        isPaused: Bool) throws -> URLRequest {
         try progressBody(server: server, token: token, identity: identity, userId: userId,
-                         path: "/Sessions/Playing/Progress",
+                         event: isPaused ? .paused : .progress,
                          itemId: itemId, mediaSourceId: mediaSourceId,
                          playSessionId: playSessionId, playMethod: playMethod,
-                         positionTicks: positionTicks, isPaused: isPaused)
+                         positionTicks: positionTicks)
     }
 
     /// `POST /Sessions/Playing/Stopped`
@@ -683,10 +683,10 @@ public enum EmbyPlayback {
                                       playMethod: EmbyPlayMethod,
                                       positionTicks: Int) throws -> URLRequest {
         try progressBody(server: server, token: token, identity: identity, userId: userId,
-                         path: "/Sessions/Playing/Stopped",
+                         event: .stopped,
                          itemId: itemId, mediaSourceId: mediaSourceId,
                          playSessionId: playSessionId, playMethod: playMethod,
-                         positionTicks: positionTicks, isPaused: false)
+                         positionTicks: positionTicks)
     }
 
     /// `POST /Sessions/Playing/Ping?PlaySessionId=..`
@@ -709,37 +709,26 @@ public enum EmbyPlayback {
                                      token: String,
                                      identity: EmbyClientIdentity,
                                      userId: String,
-                                     path: String,
+                                     event: MediaBrowserPlaybackProgressRequestEvent,
                                      itemId: String,
                                      mediaSourceId: String,
                                      playSessionId: String,
                                      playMethod: EmbyPlayMethod,
-                                     positionTicks: Int,
-                                     isPaused: Bool) throws -> URLRequest {
-        let url = try embyURL(server: server, path: path)
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Accept")
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        EmbyAuth.applyAuth(to: &req, identity: identity, userId: userId, token: token)
-        let body: [String: Any] = [
-            "ItemId": itemId,
-            "MediaSourceId": mediaSourceId,
-            "PlaySessionId": playSessionId,
-            "PositionTicks": positionTicks,
-            "IsPaused": isPaused,
-            "PlayMethod": embyPlayMethodWireValue(playMethod),
-        ]
-        req.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
-        return req
-    }
-
-    private static func embyPlayMethodWireValue(_ method: EmbyPlayMethod) -> String {
-        switch method {
-        case .directPlay: return "DirectPlay"
-        case .directStream: return "DirectStream"
-        case .transcode: return "Transcode"
-        }
+                                     positionTicks: Int) throws -> URLRequest {
+        let url = try embyURL(server: server, path: event.endpoint.rawValue)
+        return try MediaBrowserPlaybackProgressRequestPlan(
+            url: url,
+            authDialect: .emby(identity),
+            event: event,
+            payload: MediaBrowserPlaybackProgressPayload(
+                userId: userId,
+                itemId: itemId,
+                mediaSourceId: mediaSourceId,
+                playSessionId: playSessionId,
+                playMethod: MediaBrowserPlayMethod(playMethod),
+                positionTicks: positionTicks
+            )
+        ).request(token: token)
     }
 
     static func streamingDeviceProfile(maxStreamingBitrate: Int,
