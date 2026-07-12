@@ -241,6 +241,13 @@ final class AppModel {
                                                 authRevision: input.authRevision)
     }
 
+    /// Process-local credential generation for async work that must reject a result minted before
+    /// a same-server sign-out/sign-in or token replacement. The credential itself stays in the
+    /// accompanying `BackendSession`; this counter is safe to compare and log.
+    func authSessionRevision(for kind: MediaBackendKind) -> Int {
+        sessionIdentityInput(for: kind).authRevision
+    }
+
     private func sessionIdentityInput(for kind: MediaBackendKind) -> (serverID: String?,
                                                                       baseURL: URL?,
                                                                       userID: String?,

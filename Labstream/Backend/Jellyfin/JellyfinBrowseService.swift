@@ -179,6 +179,27 @@ struct JellyfinBrowseService {
                       audioStreamIndex: Int? = nil,
                       subtitleStreamIndex: Int? = nil) async throws -> MediaBrowserPlaybackOpenResult {
         let context = try context()
+        let session = BackendSession(kind: .jellyfin, baseURL: context.server,
+                                     token: context.token, userID: context.userID,
+                                     serverID: appModel.jellyfinServerID)
+        return try await playbackOpen(item: item, session: session, identity: appModel.identity,
+                                      maxVideoBitrateKbps: maxVideoBitrateKbps,
+                                      resumeOffsetMs: resumeOffsetMs,
+                                      audioStreamIndex: audioStreamIndex,
+                                      subtitleStreamIndex: subtitleStreamIndex)
+    }
+
+    func playbackOpen(item: MediaItem,
+                      session playbackSession: BackendSession,
+                      identity: ClientIdentity,
+                      maxVideoBitrateKbps: Int,
+                      resumeOffsetMs: Int? = nil,
+                      audioStreamIndex: Int? = nil,
+                      subtitleStreamIndex: Int? = nil) async throws -> MediaBrowserPlaybackOpenResult {
+        guard playbackSession.kind == .jellyfin,
+              let userID = playbackSession.userID else { throw ServiceError.notAuthenticated }
+        let context = (server: playbackSession.baseURL, token: playbackSession.token, userID: userID)
+        let requestIdentity = identity.jellyfin
         let qualityPolicy = MediaBrowserPlaybackQualityPolicy(maxVideoBitrateKbps: maxVideoBitrateKbps)
         let startTicks = MediaBrowserPlaybackQualityPolicy.startTicks(resumeOffsetMs: resumeOffsetMs ?? item.viewOffset)
         // GH #196 DV P5 guard: a fallback-less DV stream must not travel a video-copy lane.
@@ -194,7 +215,7 @@ struct JellyfinBrowseService {
         }
         let req = try JellyfinPlayback.playbackInfoRequest(server: context.server,
                                                            token: context.token,
-                                                           identity: jellyfinIdentity,
+                                                           identity: requestIdentity,
                                                            itemId: item.ratingKey,
                                                            userId: context.userID,
                                                            startTimeTicks: startTicks,
@@ -207,7 +228,7 @@ struct JellyfinBrowseService {
         return try JellyfinPlayback.resolveMediaBrowserStream(
             response: info,
             server: context.server,
-            identity: jellyfinIdentity,
+            identity: requestIdentity,
             token: context.token,
             itemId: item.ratingKey,
             startTimeTicks: startTicks,
@@ -269,6 +290,15 @@ struct JellyfinBrowseService {
 
     @discardableResult
     func stopActiveEncoding(playSessionId: String, session: BackendSession) async -> Bool {
+        await stopActiveEncoding(playSessionId: playSessionId,
+                                 session: session,
+                                 identity: appModel.identity)
+    }
+
+    @discardableResult
+    func stopActiveEncoding(playSessionId: String,
+                            session: BackendSession,
+                            identity: ClientIdentity) async -> Bool {
         // Authenticate against the EXPLICIT session the caller resolved/validated for this job's
         // backend — never re-read the live `context()` lane, which may have been re-pointed at a
         // different server since (the #84 launch sweep validates the server match before calling;
@@ -278,8 +308,8 @@ struct JellyfinBrowseService {
             makeRequest: {
                 try JellyfinLibrary.activeEncodingStopRequest(server: session.baseURL,
                                                               token: session.token,
-                                                              identity: jellyfinIdentity,
-                                                              deviceId: appModel.identity.clientIdentifier,
+                                                              identity: identity.jellyfin,
+                                                              deviceId: identity.clientIdentifier,
                                                               playSessionId: playSessionId)
             },
             send: { req in _ = try await send(req) },
