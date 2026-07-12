@@ -183,6 +183,15 @@ final class DownloadStore: @unchecked Sendable {
         }
     }
 
+    /// Compatibility bridge for orchestration code that selects blocking versus bounded lifecycle
+    /// behavior from its execution context. Never call this from a pending background-session
+    /// delivery; that path must carry the ticket to `flushPersistence` instead.
+    func resolveSynchronously(
+        _ submission: AttemptMutationSubmission
+    ) -> AttemptMutationResult {
+        awaitAttemptMutationSubmission(submission)
+    }
+
     struct EmbyConvertCleanupTombstone: Codable, Sendable, Equatable, Identifiable {
         let id: UUID
         let ratingKey: String

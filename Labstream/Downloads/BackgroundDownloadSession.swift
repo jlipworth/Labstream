@@ -871,6 +871,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         key: DownloadAttemptKey,
         phase: String
     ) -> Bool {
+        // Preserve the existing foreground contract: dependent task/file work starts only after
+        // the submitted snapshot commits. A stored OS handler switches this exact call to
+        // admission-only; the completion gate then owns the bounded outcome.
+        if !hasPendingBackgroundCompletionHandler() {
+            return acceptedAttemptMutation(
+                store.resolveSynchronously(result), key: key, phase: phase)
+        }
         switch result {
         case .accepted:
             return true
