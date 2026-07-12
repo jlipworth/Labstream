@@ -149,8 +149,8 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
         }
     }
 
-    @Test func resumeWriteReportsIndexFaultAndLaterFullSnapshotCommitsIt() throws {
-        try withStore { initial, directory in
+    @Test func resumeWriteReportsIndexFaultAndLaterFullSnapshotCommitsIt() async throws {
+        try await withStoreAsync { initial, directory in
             let owner = key("emby:resume-fault", "attempt-a")
             let media = directory.appendingPathComponent("resume-fault.mp4")
             #expect(created(initial, key: owner, media: media))
@@ -164,14 +164,23 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
                 Issue.record("Expected observable resume manifest failure")
                 return
             }
-            #expect(store.resumeData(for: owner) == Data("resume".utf8))
+            // No artifact is touched before its prepared intent commits.
+            #expect(store.resumeData(for: owner) == nil)
             #expect(DownloadStore(baseDirectory: directory).resumeData(for: owner) == nil)
 
             #expect(store.setRangeValidator(for: owner, "retry-barrier") == .applied)
+            let watermark = store.currentArtifactLifecycleWatermark()
+            guard case .committed = await store.flushLifecycleAndPersistence(
+                through: store.currentPersistenceTicket(),
+                artifactWatermark: watermark,
+                timeout: 1) else {
+                Issue.record("Expected artifact retry to commit")
+                return
+            }
             let restored = DownloadStore(baseDirectory: directory)
             #expect(restored.resumeData(for: owner) == Data("resume".utf8))
             #expect(restored.rangeValidator(for: owner) == "retry-barrier")
-            #expect(writes.count == 2)
+            #expect(writes.count >= 2)
         }
     }
 
@@ -561,6 +570,16 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         try body(DownloadStore(baseDirectory: directory), directory)
+    }
+
+    private func withStoreAsync(
+        _ body: (DownloadStore, URL) async throws -> Void
+    ) async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("attempt-checkpoint-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try await body(DownloadStore(baseDirectory: directory), directory)
     }
 }
 

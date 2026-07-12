@@ -913,6 +913,21 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         return submission
     }
 
+    @discardableResult
+    private func resolveLifecycleSubmission(
+        _ submission: DownloadStore.AttemptArtifactMutationSubmission
+    ) -> DownloadStore.AttemptArtifactMutationSubmission {
+        if !hasPendingBackgroundCompletionHandler() {
+            switch submission {
+            case .staleOrMissing:
+                break
+            case .accepted(_, let ticket):
+                _ = store.resolveArtifactSynchronously(ticket)
+            }
+        }
+        return submission
+    }
+
     private func fileSize(at url: URL) -> Int? {
         DownloadFileStat.logicalSize(at: url, attributesOfItem: fileManager.attributesOfItem(atPath:))
     }
@@ -975,13 +990,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private func flushPersistenceThenFireBackgroundCompletions(_ identifiers: [String]) {
         guard !identifiers.isEmpty else { return }
         let ticket = store.currentPersistenceTicket()
+        let artifactWatermark = store.currentArtifactLifecycleWatermark()
         let store = self.store
         Task {
             await BackgroundCompletionPersistenceBarrier.flushThenRelease(
                 identifiers: identifiers,
                 flush: {
-                    await store.flushPersistence(
+                    await store.flushLifecycleAndPersistence(
                         through: ticket,
+                        artifactWatermark: artifactWatermark,
                         timeout: Self.backgroundCompletionPersistenceTimeout
                     )
                 },
