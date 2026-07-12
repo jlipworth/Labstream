@@ -303,6 +303,18 @@ struct BackgroundDownloadStartupAdmissionTests {
                 == [manifest.relativePath])
             #expect(FileManager.default.fileExists(atPath: body.path))
 
+            // `reattach` reports task enumeration, not completion of artifact lifecycle workers
+            // that invalid-manifest restoration submitted while enumerating the store.  Wait for
+            // that exact process boundary before simulating a hard relaunch; otherwise a slow
+            // sanitizer run can construct the second store before the deletion intent itself is
+            // durable and race two stores over the same index.
+            let failedBoundary = store.resolveArtifactSynchronouslyForTests(
+                through: store.currentArtifactLifecycleWatermark())
+            guard case .failed(.artifact) = failedBoundary else {
+                Issue.record("Expected the injected held-body deletion fault, got \(failedBoundary)")
+                return
+            }
+
             let healthyRelaunch = DownloadStore(baseDirectory: directory)
             _ = healthyRelaunch.resolveArtifactSynchronouslyForTests(
                 through: healthyRelaunch.currentArtifactLifecycleWatermark())
