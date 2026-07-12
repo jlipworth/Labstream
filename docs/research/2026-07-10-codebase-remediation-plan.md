@@ -992,6 +992,57 @@ their relationship during the schema-v3 migration.
 - **Remaining Phase 1A artifact boundary:** whole-row and post-journal pending-deletion artifact
   removal remain incomplete.
 
+#### 2026-07-12 — Phase 1 whole-row and pending-deletion artifact lifecycle
+
+- **Commits:** `7f998d38` stages whole-row removal; `074af07a` hardens legacy recovery tests;
+  `17098b9a` and `c0ed635a` broadcast joined outcomes per exact retry epoch; `bede7832` makes row
+  deletion a terminal artifact barrier; `d36dad49` closes remaining working/held authority;
+  `6266994c` queues the terminal operation behind predecessor work and adds destructive directory
+  durability. Intermediate review fixes are intentionally retained as separate audit boundaries.
+- **Cleanup ordering:** ordinary exact deletion and the post-journal `deletionPending` destructive
+  half both prepare a durable `.rowDeletion` recipe before local destruction. Required Jellyfin/Emby
+  cleanup still enters the independent journal first; only then may pending deletion submit the row
+  lifecycle. Manager launch, user-delete, retry, and Plex-Optimize paths submit nonblocking work,
+  cancel exact cancellable tails once the durable terminal barrier is accepted, and await exact
+  `.removed` before executing journal cleanup or releasing final in-flight bookkeeping.
+- **Terminal queue semantics:** deletion may append behind existing resume, held, static-checkpoint,
+  or promotion work, and repeated Delete joins the exact terminal ticket. No artifact/path successor
+  can append after it. Predecessor success advances normally; predecessor artifact/persistence failure
+  is durably superseded because the terminal recipe already captures all predecessor paths. If that
+  head transition itself cannot commit, the deletion ticket fails observably and a later exact retry
+  re-registers/restarts the same queue without duplicate intents or an unbounded waiter.
+- **Authority and concurrency:** pending row deletion immediately revokes `ownsAttempt` and persisted
+  working-layout/URL authority. Resume replace/clear, all held APIs (including compatibility takes),
+  static checkpoints, validated promotion, generic metadata/side assets, direct staging promotion,
+  legacy resume publication, and startup held-job staging reject the terminal barrier. Candidate
+  paths are filtered against every other row's published and pending-intent authority, reserved under
+  the Store lock across off-lock deletion and terminal persistence, and released on every exit.
+- **Durability:** row, held-body, legacy-reset, resume-clear, and resume-predecessor deletion now fsync
+  the parent directory before retiring index authority. Sync failure is a lifecycle failure: the
+  durable intent remains retryable even when the unlink already occurred. A hard kill before terminal
+  persistence reloads the prepared row/recipe; a hard kill after terminal commit finds the row absent.
+  Ownerless completed legacy rows receive a private exact owner only inside the prepared delete recipe,
+  with same-process failure/retry and relaunch recovery preserved.
+- **Outcome liveness:** live results and waiter counts are scoped by `(intentID, preparedRevision)`.
+  Same-ticket double taps and startup joins receive the identical broadcast result, while an unresolved
+  failed epoch cannot be overwritten by a later successful retry. Typed failures remain bounded and
+  privacy-safe.
+- **Evidence:** tests cover prepared/delete/directory-sync/terminal failures, hard-kill relaunch,
+  ownerless and deletion-pending migration, cross-row shared paths, blocked Store responsiveness,
+  same-ticket multiwaiters, reverse-order retry epochs, terminal successor/adoption rejection,
+  immediate authority revocation, resume/static/held predecessor success and failure, failed-head
+  transition persistence and exact retry, and held/row directory-sync replay. Focused Store passed
+  49 tests; full Mac passed 285 tests (297 parameterized executions) with parallel testing disabled;
+  PMSKit passed 1,487 tests. Default parallel execution continues to expose the separately tracked
+  timing-sensitive browse/retry tests, both green focused and in the serialized full run. Final
+  adversarial closeout review is clean.
+- **Rollback:** `.rowDeletion` is a new exhaustive schema-v4 artifact operation. Downgrade requires
+  draining every pending terminal intent or retaining its decoder and terminal guards. A blind older
+  binary can otherwise fail row decode or ignore deletion/path reservations and is unsafe.
+- **Phase 1A implementation status:** the planned resume, held, checkpoint, promotion, legacy-reset,
+  and whole-row destructive artifact lifecycles are implementation-complete. Combined concurrency,
+  simulator/device, background-redelivery, and migration acceptance gates remain below.
+
 #### 2026-07-11 — Phase 2D compiler-cliff removal
 
 - **Status:** complete.
