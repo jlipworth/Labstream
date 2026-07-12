@@ -156,6 +156,8 @@ public enum MediaBrowserLibraryQueryName: Sendable {
 public enum MediaBrowserLibraryPath: Sendable, Equatable {
     case userViews(userId: String)
     case items(userId: String)
+    case albumArtists
+    case playlistItems(playlistId: String)
 }
 
 public enum MediaBrowserLibraryQueryDialect: Sendable, Equatable {
@@ -172,7 +174,18 @@ public enum MediaBrowserLibraryQueryDialect: Sendable, Equatable {
             return "/Users/\(userId)/Views"
         case (.emby, .items(let userId)):
             return "/Users/\(userId)/Items"
+        case (_, .albumArtists):
+            return "/Artists/AlbumArtists"
+        case (_, .playlistItems(let playlistId)):
+            return "/Playlists/\(playlistId)/Items"
         }
+    }
+
+    /// Jellyfin's root-style view/items endpoints require the user id in the query. Emby's
+    /// user-scoped endpoint paths already carry it. Specialized endpoints use `UserId` in both
+    /// dialects and are expressed explicitly by their factory methods.
+    public var includesUserIDInRootQuery: Bool {
+        self == .jellyfin
     }
 
     public func queryName(_ name: MediaBrowserLibraryQueryName) -> String {
