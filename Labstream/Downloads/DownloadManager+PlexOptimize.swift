@@ -390,10 +390,14 @@ extension DownloadManager {
             "download_id": .identifier(ratingKey),
             "target": .label(targetName),
         ])
-        _ = store.remove(for: attemptKey)
-        lastError[ratingKey] = nil
-        clearOptimizeProgress(ratingKey: ratingKey)
-        refreshRecords()
+        let submission = store.submitRemove(for: attemptKey)
+        Task { [weak self] in
+            guard let self,
+                  case .removed = await store.resolveRowDeletion(submission) else { return }
+            lastError[ratingKey] = nil
+            clearOptimizeProgress(ratingKey: ratingKey)
+            refreshRecords()
+        }
     }
 
     /// Same-owner replacement for the successive Plex prep snapshots and rendered-Part handoff.
