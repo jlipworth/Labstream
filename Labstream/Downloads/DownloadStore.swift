@@ -297,6 +297,10 @@ final class DownloadStore: @unchecked Sendable {
         /// Exact attempt-owned media body. This is deliberately separate from `relativePath`:
         /// readers always see the stable publication URL while in-flight evidence stays private.
         var attemptWorkingRelativePath: String?
+        /// Durable proof that this exact attempt already passed validation and is allowed to
+        /// publish its working body. This closes the crash window between rename and terminal row
+        /// commit without guessing that arbitrary bytes at the stable path belong to this attempt.
+        var pendingValidatedPromotionStatus: DownloadStatus?
         var bytes: Int
         var progress: Double
         var status: DownloadStatus
@@ -314,6 +318,7 @@ final class DownloadStore: @unchecked Sendable {
 
         private enum CodingKeys: String, CodingKey {
             case ratingKey, attemptID, title, relativePath, attemptWorkingRelativePath
+            case pendingValidatedPromotionStatus
             case bytes, progress, status, metadata
             case legacyResetPending
             case legacyResetArtifactRelativePaths
@@ -331,6 +336,8 @@ final class DownloadStore: @unchecked Sendable {
             relativePath = try c.decode(String.self, forKey: .relativePath)
             attemptWorkingRelativePath = try c.decodeIfPresent(
                 String.self, forKey: .attemptWorkingRelativePath)
+            pendingValidatedPromotionStatus = try c.decodeIfPresent(
+                DownloadStatus.self, forKey: .pendingValidatedPromotionStatus)
             bytes = try c.decode(Int.self, forKey: .bytes)
             progress = try c.decode(Double.self, forKey: .progress)
             status = try c.decodeIfPresent(DownloadStatus.self, forKey: .status)
@@ -350,6 +357,7 @@ final class DownloadStore: @unchecked Sendable {
         init(ratingKey: String, attemptID: DownloadAttemptID? = nil,
              title: String, relativePath: String,
              attemptWorkingRelativePath: String? = nil,
+             pendingValidatedPromotionStatus: DownloadStatus? = nil,
              bytes: Int, progress: Double, status: DownloadStatus,
              metadata: OfflineMetadata? = nil,
              legacyResetPending: Bool = false,
@@ -359,6 +367,7 @@ final class DownloadStore: @unchecked Sendable {
             self.title = title
             self.relativePath = relativePath
             self.attemptWorkingRelativePath = attemptWorkingRelativePath
+            self.pendingValidatedPromotionStatus = pendingValidatedPromotionStatus
             self.bytes = bytes
             self.progress = progress
             self.status = status
@@ -376,6 +385,8 @@ final class DownloadStore: @unchecked Sendable {
             try c.encode(title, forKey: .title)
             try c.encode(relativePath, forKey: .relativePath)
             try c.encodeIfPresent(attemptWorkingRelativePath, forKey: .attemptWorkingRelativePath)
+            try c.encodeIfPresent(
+                pendingValidatedPromotionStatus, forKey: .pendingValidatedPromotionStatus)
             try c.encode(bytes, forKey: .bytes)
             try c.encode(progress, forKey: .progress)
             try c.encode(status, forKey: .status)
@@ -630,9 +641,10 @@ final class DownloadStore: @unchecked Sendable {
         attemptWorkingFileLayout(for: key)?.workingURL
     }
 
-    /// Publish a caller-validated media body as one linearized Store operation. Rename, terminal
-    /// row mutation, and snapshot submission all occur under the ownership lock; replacement B
-    /// cannot enter between A's filesystem publication and A's terminal snapshot.
+    /// Publish a caller-validated media body as one linearized Store operation. A validated intent
+    /// is committed before rename, then rename, terminal row mutation, and terminal snapshot
+    /// submission occur under the ownership lock. The intent is the durable proof used after a
+    /// hard kill; arbitrary pre-existing bytes at the stable path are never inferred to belong to A.
     @discardableResult
     func promoteValidatedAttempt(
         for key: DownloadAttemptKey,
@@ -660,16 +672,25 @@ final class DownloadStore: @unchecked Sendable {
             lock.unlock()
             return .sourceMissing
         }
-        let renameResult = workingURL.withUnsafeFileSystemRepresentation { source in
-            stableURL.withUnsafeFileSystemRepresentation { destination in
-                guard let source, let destination else { return -1 }
-                return Int(Darwin.rename(source, destination))
-            }
-        }
-        guard renameResult == 0 else {
-            let error = POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        guard row.pendingValidatedPromotionStatus == nil
+                || row.pendingValidatedPromotionStatus == terminalStatus else {
             lock.unlock()
-            return .renameFailed(errorType: String(reflecting: error))
+            return .invalidTerminalStatus
+        }
+        // Keep ownership locked through this synchronous durability proof. The revisioned writer
+        // operates on its captured value snapshot and never needs `lock`, so this cannot deadlock.
+        // It intentionally prevents replacement B from entering between intent commit and rename.
+        row.pendingValidatedPromotionStatus = terminalStatus
+        rows[key.ratingKey] = row
+        let intentTicket = enqueueAttemptPersistenceLocked()
+        let intentPersistence = waitForPersistence(through: intentTicket)
+        guard intentPersistence.result.committed(through: intentPersistence.ticket) else {
+            lock.unlock()
+            return .persistenceFailed(key, intentPersistence.result)
+        }
+        if let renameError = renameReplacing(source: workingURL, destination: stableURL) {
+            lock.unlock()
+            return .renameFailed(errorType: renameError)
         }
         row.bytes = bytes
         row.progress = 1
@@ -678,6 +699,7 @@ final class DownloadStore: @unchecked Sendable {
         // keeps staging inventory honest and prevents a later caller from treating a missing
         // working body as terminal evidence.
         row.attemptWorkingRelativePath = nil
+        row.pendingValidatedPromotionStatus = nil
         rows[key.ratingKey] = row
         let ticket = enqueueAttemptPersistenceLocked()
         lock.unlock()
@@ -686,6 +708,66 @@ final class DownloadStore: @unchecked Sendable {
             return .persistenceFailed(key, persistence.result)
         }
         return .promoted(key, bytes: bytes, status: terminalStatus)
+    }
+
+    /// Finish a promotion proven by a durable validated intent after a hard kill. If the working
+    /// body still exists the kill preceded rename; otherwise a stable body is accepted only because
+    /// the exact attempt's intent was committed first. No playback/size heuristic grants ownership.
+    @discardableResult
+    func recoverPendingValidatedPromotion(
+        for key: DownloadAttemptKey
+    ) -> AttemptValidatedPromotionResult {
+        lock.lock()
+        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID else {
+            lock.unlock()
+            return .staleOrMissingOwner
+        }
+        guard !row.legacyResetPending else {
+            lock.unlock()
+            return .resetPending
+        }
+        guard let terminalStatus = row.pendingValidatedPromotionStatus,
+              terminalStatus == .complete || terminalStatus == .unverified,
+              let workingRelative = workingRelativePath(for: row, key: key) else {
+            lock.unlock()
+            return .invalidWorkingLayout
+        }
+        let workingURL = baseDirectory.appendingPathComponent(workingRelative)
+        let stableURL = baseDirectory.appendingPathComponent(row.relativePath)
+        if fileManager.fileExists(atPath: workingURL.path),
+           let renameError = renameReplacing(source: workingURL, destination: stableURL) {
+            lock.unlock()
+            return .renameFailed(errorType: renameError)
+        }
+        guard let bytes = fileSize(at: stableURL), bytes > 0 else {
+            lock.unlock()
+            return .sourceMissing
+        }
+        row.bytes = bytes
+        row.progress = 1
+        row.status = terminalStatus
+        row.attemptWorkingRelativePath = nil
+        row.pendingValidatedPromotionStatus = nil
+        rows[key.ratingKey] = row
+        let ticket = enqueueAttemptPersistenceLocked()
+        lock.unlock()
+        let persistence = waitForPersistence(through: ticket)
+        guard persistence.result.committed(through: persistence.ticket) else {
+            return .persistenceFailed(key, persistence.result)
+        }
+        return .promoted(key, bytes: bytes, status: terminalStatus)
+    }
+
+    /// `nil` means success; otherwise the returned value is a privacy-safe error type.
+    private func renameReplacing(source: URL, destination: URL) -> String? {
+        let result = source.withUnsafeFileSystemRepresentation { sourcePath in
+            destination.withUnsafeFileSystemRepresentation { destinationPath in
+                guard let sourcePath, let destinationPath else { return -1 }
+                return Int(Darwin.rename(sourcePath, destinationPath))
+            }
+        }
+        guard result != 0 else { return nil }
+        return String(reflecting: POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO))
     }
 
     private func workingRelativePath(for row: Row, key: DownloadAttemptKey) -> String? {
@@ -790,6 +872,13 @@ final class DownloadStore: @unchecked Sendable {
         for row in rows.values {
             guard let attemptID = row.attemptID else { continue }
             let key = DownloadAttemptKey(ratingKey: row.ratingKey, attemptID: attemptID)
+            // Held range bodies are already persisted at exact-attempt staging paths (they are
+            // private checkpoints, not public side assets). Keep every manifest-owned body live
+            // during the generic startup staging sweep.
+            for held in row.metadata?.heldRangeSegments ?? []
+                where Self.isAttemptStagingRelativePath(held.relativePath) {
+                referenced.insert(held.relativePath)
+            }
             let stablePaths = [row.relativePath] + sideAssetRelativePaths(for: row.metadata)
             for stablePath in stablePaths where Self.isSafeOneLevelRelativePath(stablePath) {
                 referenced.insert(Self.attemptStagingRelativePath(

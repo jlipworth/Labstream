@@ -43,6 +43,41 @@ struct BackgroundDownloadStartupAdmissionTests {
         }
     }
 
+    @Test func activeStaticTransferCheckpointsOnlyInAttemptWorkingFile() async throws {
+        try await withTemporaryDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+            #expect(await activate(session, resetKeys: []) == .activated(
+                cancelledTaskCount: 0, resetKeyCount: 0))
+
+            let ratingKey = "plex:attempt-working-session"
+            let attemptID = DownloadAttemptID(rawValue: "attempt-session-a")
+            let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+            let stable = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
+            try Data("previous-published-body".utf8).write(to: stable)
+            let record = DownloadRecord(
+                ratingKey: ratingKey, attemptID: attemptID, title: "Working",
+                localURL: stable, status: .queued,
+                metadata: OfflineMetadata(
+                    ratingKey: ratingKey, title: "Working", type: "movie",
+                    resumeMode: .staticByteRange))
+            #expect(store.createAttemptOwnedRecord(record, attemptID: attemptID) == .committed(key))
+            let working = try #require(store.attemptWorkingFileURL(for: key))
+
+            try session.start(
+                ratingKey: ratingKey,
+                from: URL(string: "https://example.invalid/media.mp4")!,
+                to: stable,
+                expectedBytes: 1_024,
+                byteRangeCheckpoint: true)
+
+            #expect(FileManager.default.fileExists(atPath: working.path))
+            #expect((try Data(contentsOf: stable)) == Data("previous-published-body".utf8))
+            #expect(store.record(for: key)?.localURL == stable)
+            session.cancel(ratingKey: ratingKey)
+        }
+    }
+
     @Test func migratedPausedRowIsDurablyResetBeforeAdmission() async throws {
         try await withTemporaryDirectory { directory in
             let ratingKey = "plex:legacy-paused"
