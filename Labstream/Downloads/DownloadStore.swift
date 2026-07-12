@@ -1475,6 +1475,18 @@ final class DownloadStore: @unchecked Sendable {
         for key: DownloadAttemptKey,
         cleanupIntents: [DurableDownloadCleanupIntent]
     ) -> AttemptMutationResult {
+        awaitAttemptMutationSubmission(
+            submitDeletionPending(for: key, cleanupIntents: cleanupIntents)
+        )
+    }
+
+    /// Nonblocking reservation half of deletion ordering. Destructive work still must not start
+    /// until a bounded flush proves this exact ticket committed.
+    @discardableResult
+    func submitDeletionPending(
+        for key: DownloadAttemptKey,
+        cleanupIntents: [DurableDownloadCleanupIntent]
+    ) -> AttemptMutationSubmission {
         guard !cleanupIntents.isEmpty,
               cleanupIntents.allSatisfy({ $0.attemptKey == key }) else {
             return .staleOrMissing
@@ -1489,19 +1501,16 @@ final class DownloadStore: @unchecked Sendable {
         if row.deletionPending {
             // The first durable reservation is authoritative. A retry may rebuild candidates with
             // fresh UUIDs; never replace exact crash-recovery authority once captured.
+            let ticket = enqueueAttemptPersistenceLocked()
             lock.unlock()
-            let persistence = proveCleanupNoOpDurable()
-            return persistence.result.committed(through: persistence.ticket)
-                ? .noChange : .persistenceFailed(persistence.result)
+            return .accepted(change: .noChange, ticket: ticket)
         }
         row.deletionPending = true
         row.deletionPendingCleanupIntents = cleanupIntents
         rows[key.ratingKey] = row
         let ticket = enqueueAttemptPersistenceLocked()
         lock.unlock()
-        let persistence = waitForPersistence(through: ticket)
-        return persistence.result.committed(through: persistence.ticket)
-            ? .applied : .persistenceFailed(persistence.result)
+        return .accepted(change: .applied, ticket: ticket)
     }
 
     func record(for key: DownloadAttemptKey) -> DownloadRecord? {
@@ -3465,10 +3474,28 @@ final class DownloadStore: @unchecked Sendable {
         remove(for: key, requiresDeletionPending: true)
     }
 
+    /// Nonblocking destructive half. This is legal only after the independent cleanup journal is
+    /// durable; a failed index commit leaves the deletion-pending capsule dirty for launch retry.
+    @discardableResult
+    func submitCompletePendingDeletion(
+        for key: DownloadAttemptKey
+    ) -> AttemptMutationSubmission {
+        submitRemove(for: key, requiresDeletionPending: true)
+    }
+
     private func remove(
         for key: DownloadAttemptKey,
         requiresDeletionPending: Bool
     ) -> AttemptMutationResult {
+        awaitAttemptMutationSubmission(
+            submitRemove(for: key, requiresDeletionPending: requiresDeletionPending)
+        )
+    }
+
+    private func submitRemove(
+        for key: DownloadAttemptKey,
+        requiresDeletionPending: Bool
+    ) -> AttemptMutationSubmission {
         lock.lock()
         guard let existing = rows[key.ratingKey], existing.attemptID == key.attemptID,
               !existing.legacyResetPending,
@@ -3486,9 +3513,7 @@ final class DownloadStore: @unchecked Sendable {
         sideAssetHydrationCache.removeValue(forKey: key.ratingKey)
         let ticket = enqueueAttemptPersistenceLocked()
         lock.unlock()
-        let persistence = waitForPersistence(through: ticket)
-        return persistence.result.committed(through: persistence.ticket)
-            ? .applied : .persistenceFailed(persistence.result)
+        return .accepted(change: .applied, ticket: ticket)
     }
 
     private func deleteArtifacts(for row: Row) {
