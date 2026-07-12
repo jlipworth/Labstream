@@ -179,7 +179,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// reset by `start`/`clearRetryCount` (a retry that truncates again must keep counting toward
     /// the parking budget); reset only on a `.complete` finalize. Only touched inside
     /// `finalizeTransferredFile`, guarded by `finalizationStateQueue` (async context — no NSLock).
-    private var truncationFailureCounts: [DownloadAttemptKey: Int] = [:]
+    /// Consecutive truncation failures belong to the visible download, not a disposable attempt.
+    /// Retry intentionally mints a new attempt; keying this budget by attempt made parking
+    /// unreachable for a repeatedly truncated server response.
+    private var truncationFailureCounts: [String: Int] = [:]
     /// Bounded per-row backend/request rehydrations after auth/forbidden HTTP responses on static
     /// Range tasks. This is intentionally separate from transient retry counts: 403 should not blindly
     /// replay the same URL, but one fresh backend negotiation may mint a usable request.
@@ -209,6 +212,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// Background URLSession construction itself can trigger delegate delivery. Keep the session
     /// dormant until schema-v3 ownership has committed and every pre-current task has disappeared.
     private var startupAdmissionState: StartupAdmissionState = .dormant
+    /// Exact migrated owners whose daemon tasks must be purged before admission. Current-marker
+    /// callbacks for every other exact owner are safe to adopt while the background session is
+    /// reconnecting; rejecting them would destroy healthy force-quit survivors.
+    private var startupResetKeys: Set<DownloadAttemptKey> = []
     private let startupResetQueue = DispatchQueue(
         label: "com.labstream.downloads.startup-reset",
         qos: .utility
@@ -613,6 +620,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             return
         case .dormant:
             startupAdmissionState = .legacyPurge
+            startupResetKeys = resetKeys
             lock.unlock()
         }
 
@@ -721,6 +729,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     return
                 }
                 self.startupAdmissionState = .active
+                self.startupResetKeys.removeAll()
                 self.lock.unlock()
                 AppDiagnostics.record(.downloads, "downloads.startup_admission_opened", fields: [
                     "cancelled_task_count": .int(cancelledTaskIdentifiers.count),
@@ -740,6 +749,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     ) {
         lock.lock()
         startupAdmissionState = .dormant
+        startupResetKeys.removeAll()
         lock.unlock()
         AppDiagnostics.record(.downloads, "downloads.startup_admission_failed", fields: [
             "reason": .label(reason),
@@ -747,14 +757,47 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         completion(.failed(reason: reason))
     }
 
-    private func admitsTaskCallback(_ taskIdentifier: Int) -> Bool {
-        lock.lock(); defer { lock.unlock() }
-        return startupAdmissionState == .active
-            && !permanentlyRejectedTaskIdentifiers.contains(taskIdentifier)
+    private func admitsTaskCallback(_ task: URLSessionTask) -> Bool {
+        lock.lock()
+        let state = startupAdmissionState
+        let rejected = permanentlyRejectedTaskIdentifiers.contains(task.taskIdentifier)
+        let resetKeys = startupResetKeys
+        lock.unlock()
+        let key = BackgroundDownloadTaskIdentity.attemptIdentity(
+            taskDescription: task.taskDescription).flatMap { attemptID in
+                Self.ratingKey(for: task, knownKeys: store.allRatingKeys).map {
+                    DownloadAttemptKey(ratingKey: $0, attemptID: attemptID)
+                }
+            }
+        return Self.shouldAdmitStartupCallback(
+            isActive: state == .active,
+            isPurging: state == .legacyPurge,
+            isPermanentlyRejected: rejected,
+            hasCurrentMarker: BackgroundDownloadTaskIdentity.markerVersion(
+                taskDescription: task.taskDescription).isCurrent,
+            taskKey: key,
+            resetKeys: resetKeys,
+            ownsAttempt: key.map(store.ownsAttempt) ?? false
+        )
+    }
+
+    nonisolated static func shouldAdmitStartupCallback(
+        isActive: Bool,
+        isPurging: Bool,
+        isPermanentlyRejected: Bool,
+        hasCurrentMarker: Bool,
+        taskKey: DownloadAttemptKey?,
+        resetKeys: Set<DownloadAttemptKey>,
+        ownsAttempt: Bool
+    ) -> Bool {
+        guard !isPermanentlyRejected else { return false }
+        if isActive { return true }
+        guard isPurging, hasCurrentMarker, let taskKey, ownsAttempt else { return false }
+        return !resetKeys.contains(taskKey)
     }
 
     private func rejectTaskCallback(_ task: URLSessionTask, temporaryBody: URL? = nil) -> Bool {
-        guard !admitsTaskCallback(task.taskIdentifier) else { return false }
+        guard !admitsTaskCallback(task) else { return false }
         lock.lock()
         permanentlyRejectedTaskIdentifiers.insert(task.taskIdentifier)
         inflight.removeValue(forKey: task.taskIdentifier)
@@ -3901,21 +3944,22 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     /// Batch removal: one manifest persist for a whole discard set, instead of a full index
     /// rewrite per segment. Retained replacement generations remain owned per offset.
+    @discardableResult
     private func removeHeldRangeSegments(
         for key: DownloadAttemptKey,
         segments: [(offset: Int, fallbackURL: URL?)],
         fallbackURLsByOffset: [Int: Set<URL>] = [:]
-    ) {
-        guard !segments.isEmpty else { return }
+    ) -> Bool {
+        guard !segments.isEmpty else { return true }
         guard case .accepted(let removal) = store.removeHeldRangeSegments(
-            for: key, offsets: segments.map(\.offset)) else { return }
+            for: key, offsets: segments.map(\.offset)) else { return false }
         guard removal.committed else {
             recordUncommittedHeldManifestRemoval(
                 ratingKey: key.ratingKey,
                 operation: "remove",
                 persistence: removal.persistence
             )
-            return
+            return false
         }
         let persistedByOffset = Dictionary(
             removal.removed.map { ($0.offset, $0) },
@@ -3953,6 +3997,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             ))
         }
         for url in urls { try? fileManager.removeItem(at: url) }
+        return true
     }
 
     private func recordUncommittedHeldManifestRemoval(
@@ -4001,15 +4046,26 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             }
             let stashed = held.map { (offset: $0.key, length: $0.value.length) }
             let run = StaticRangeSegmentAssemblyPolicy.appendableRun(durableBytes: durable, stashedSegments: stashed)
-            removeHeldRangeSegments(for: key,
-                                    segments: run.discard.map { ($0.offset, held[$0.offset]?.url) })
+            guard removeHeldRangeSegments(
+                for: key,
+                segments: run.discard.map { ($0.offset, held[$0.offset]?.url) }
+            ) else { break }
             guard let next = run.append.first, let entry = held[next.offset] else { break }
             if StaticRangeTrainIntegrityPolicy.heldSpliceDecision(
                 storedValidator: storedValidator,
                 heldValidator: entry.validator
             ) == .discardChangedResource {
-                removeHeldRangeSegment(for: key, offset: next.offset,
-                                       fallbackURL: entry.url)
+                guard removeHeldRangeSegments(
+                    for: key,
+                    segments: [(offset: next.offset, fallbackURL: entry.url)]
+                ) else {
+                    AppDiagnostics.record(.downloads, "downloads.range_segment_discard_deferred", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "base_offset": .int(next.offset),
+                        "reason": .label("manifest_persistence_failed"),
+                    ])
+                    break
+                }
                 AppDiagnostics.record(.downloads, "downloads.range_segment_held_discarded", fields: [
                     "download_id": .identifier(ratingKey),
                     "base_offset": .int(next.offset),
@@ -4046,8 +4102,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             } catch {
                 // M1: an append failure for one held segment must not wedge the drain forever. Drop the
                 // failing entry (and its stash), record it, and keep draining the rest of the run.
-                removeHeldRangeSegment(for: key, offset: next.offset,
-                                       fallbackURL: entry.url)
+                guard removeHeldRangeSegments(
+                    for: key,
+                    segments: [(offset: next.offset, fallbackURL: entry.url)]
+                ) else {
+                    AppDiagnostics.record(.downloads, "downloads.range_segment_assemble_deferred", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "base_offset": .int(next.offset),
+                        "reason": .label("manifest_persistence_failed"),
+                    ])
+                    break
+                }
                 AppDiagnostics.record(.downloads, "downloads.range_segment_assemble_failed", fields: [
                     "download_id": .identifier(ratingKey),
                     "base_offset": .int(next.offset),
@@ -4966,14 +5031,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             guard !Task.isCancelled else { return nil }
             switch outcome {
             case .truncated:
-                let next = truncationFailureCounts[attemptKey, default: 0] + 1
-                truncationFailureCounts[attemptKey] = next
+                let next = truncationFailureCounts[attemptKey.ratingKey, default: 0] + 1
+                truncationFailureCounts[attemptKey.ratingKey] = next
                 return next
             case .complete:
-                truncationFailureCounts.removeValue(forKey: attemptKey)
+                truncationFailureCounts.removeValue(forKey: attemptKey.ratingKey)
                 return 0
             default:
-                return truncationFailureCounts[attemptKey] ?? 0
+                return truncationFailureCounts[attemptKey.ratingKey] ?? 0
             }
         }
         guard let truncationFailures else { return }
@@ -5139,10 +5204,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private func promoteValidatedWorkingFile(for key: DownloadAttemptKey,
                                                 status: DownloadStatus,
                                                 phase: String) -> Bool {
+        var shouldSurfaceFailure = true
+        var shouldMarkFailed = true
         switch store.promoteValidatedAttempt(for: key, terminalStatus: status) {
         case .promoted:
             return true
         case .staleOrMissingOwner:
+            shouldSurfaceFailure = false
             AppDiagnostics.record(.downloads, "downloads.stale_attempt_mutation_dropped", fields: [
                 "download_id": .identifier(key.ratingKey), "phase": .label(phase)])
         case .resetPending:
@@ -5158,16 +5226,27 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 "download_id": .identifier(key.ratingKey), "phase": .label(phase),
                 "reason": .label("source_missing")])
         case .invalidTerminalStatus:
+            shouldSurfaceFailure = false
             assertionFailure("Only complete/unverified may publish a validated attempt")
         case .renameFailed(let errorType):
             AppDiagnostics.record(.downloads, "downloads.finalize_promotion_failed", fields: [
                 "download_id": .identifier(key.ratingKey), "phase": .label(phase),
                 "reason": .label("rename_failed"), "error_type": .label(errorType)])
         case .persistenceFailed(_, let persistence):
+            // A committed pending-promotion intent may already own recovery after relaunch. Do not
+            // overwrite it with `.failed`; surface the problem now and let exact intent recovery
+            // finish the publication safely.
+            shouldMarkFailed = false
             AppDiagnostics.record(.downloads, "downloads.finalize_promotion_failed", fields: [
                 "download_id": .identifier(key.ratingKey), "phase": .label(phase),
                 "reason": .label("persistence_failed"),
                 "persistence": .label(String(describing: persistence))])
+        }
+        if shouldSurfaceFailure {
+            if shouldMarkFailed { _ = store.setStatus(for: key, .failed) }
+            onError?(key.ratingKey, .transferFailed(
+                "Downloaded file was verified but could not be published. Retry the download."))
+            onChange?()
         }
         return false
     }
@@ -5367,10 +5446,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // again on the next byte. Fail with the real reason and tear the train down; the
             // durable partial stays as the checkpoint for after the user frees space.
             if DownloadDiskSpacePolicy.isOutOfSpace(nsError) {
-                guard let durableBytes = resetStaticRangeProgressToDurableCheckpoint(
+                let durableBytes = resetStaticRangeProgressToDurableCheckpoint(
                 for: rangeEntry.attemptKey, expectedBytes: rangeEntry.expectedBytes,
                 context: "completion_storage_full"
-            ) else { return }
+            ) ?? rangeEntry.baseOffset
                 var fields: [String: DiagnosticFieldValue] = [
                     "download_id": .identifier(rangeEntry.ratingKey),
                     "context": .label("task_completion"),
@@ -6188,7 +6267,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// transaction used cellular/expensive/constrained networking without logging addresses/hosts.
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     didFinishCollecting metrics: URLSessionTaskMetrics) {
-        guard admitsTaskCallback(task.taskIdentifier) else { return }
+        guard admitsTaskCallback(task) else { return }
         lock.lock()
         let rangeEntry = rangeInflight[task.taskIdentifier]
         let opaqueEntry = rangeEntry == nil ? inflight[task.taskIdentifier] : nil

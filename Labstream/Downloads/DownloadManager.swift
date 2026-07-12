@@ -92,6 +92,8 @@ public final class DownloadManager {
     @ObservationIgnored private var didRunInitialStartupReattach = false
     @ObservationIgnored private var startupCleanupOnlyKeys: Set<DownloadAttemptKey> = []
     @ObservationIgnored private var startupRecoveryErrorKeys: Set<String> = []
+    @ObservationIgnored private var startupRecoveryRetryTask: Task<Void, Never>?
+    @ObservationIgnored private var startupRecoveryRetryCount = 0
 
     /// Coarse, pre-derived UI state for `OfflineLibraryView`.
     ///
@@ -153,6 +155,10 @@ public final class DownloadManager {
     /// cleanup intent alive for this process and each convert-resume sweep retries persisting
     /// them. Lost on app death — an accepted trade-off versus wedging delete() forever.
     @ObservationIgnored var deferredEmbyCleanupTombstones: [DownloadStore.EmbyConvertCleanupTombstone] = []
+    /// Process-lifetime fallback when the durable cleanup journal is temporarily unavailable.
+    /// User deletion must still remove the row/file; these exact intents retry opportunistically
+    /// and are removed only after the same confirmation paths as durable journal entries.
+    @ObservationIgnored private var deferredCleanupIntents: [UUID: DurableDownloadCleanupIntent] = [:]
     /// Tombstone ids whose recovery is currently running. Sweeps fire from many lifecycle edges
     /// (pause, retry ladder, backend-ready) and each spawned a fresh GET /Sync/Jobs (+ racing
     /// DELETE) per tombstone; this is the tombstone twin of the `activeJobs` row guard.
@@ -375,8 +381,25 @@ public final class DownloadManager {
     /// blocked rather than receiving a guessed owner.
     public func retryDownloadStartupRecovery() {
         guard startupRecoveryState != .ready, !startupRecoveryInFlight else { return }
+        startupRecoveryRetryTask?.cancel()
+        startupRecoveryRetryTask = nil
         startupRecoveryState = .preparing
         continueStartupRecovery(with: store.commitLegacyAttemptOwnershipMigration())
+    }
+
+    private func scheduleTransientStartupRecoveryRetry() {
+        guard startupRecoveryRetryTask == nil, startupRecoveryRetryCount < 3 else { return }
+        startupRecoveryRetryCount += 1
+        let attempt = startupRecoveryRetryCount
+        startupRecoveryRetryTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(Double(attempt) * 2)) }
+            catch { return }
+            guard let self else { return }
+            self.startupRecoveryRetryTask = nil
+            guard self.startupRecoveryState != .ready, !self.startupRecoveryInFlight else { return }
+            self.startupRecoveryState = .preparing
+            self.continueStartupRecovery(with: self.store.commitLegacyAttemptOwnershipMigration())
+        }
     }
 
     private func continueStartupRecovery(
@@ -397,6 +420,7 @@ public final class DownloadManager {
                 message: "Download recovery could not be saved. Free storage if needed, then retry.",
                 reason: Self.startupPersistenceFailureLabel(persistence)
             )
+            scheduleTransientStartupRecoveryRetry()
         case .malformedV3Rows(let ratingKeys):
             blockDownloadStartup(
                 affectedRatingKeys: Set(ratingKeys),
@@ -415,6 +439,9 @@ public final class DownloadManager {
                 case .activated, .alreadyActive:
                     self.startupRecoveryInFlight = false
                     self.startupRecoveryState = .ready
+                    self.startupRecoveryRetryTask?.cancel()
+                    self.startupRecoveryRetryTask = nil
+                    self.startupRecoveryRetryCount = 0
                     for key in self.startupRecoveryErrorKeys { self.lastError[key] = nil }
                     self.startupRecoveryErrorKeys.removeAll()
                     self.performInitialStartupReattachIfNeeded()
@@ -429,6 +456,7 @@ public final class DownloadManager {
                         message: "Download recovery did not finish. Retry when storage and the system download service are available.",
                         reason: "activation_failed"
                     )
+                    self.scheduleTransientStartupRecoveryRetry()
                 }
             }
         }
@@ -714,6 +742,7 @@ public final class DownloadManager {
             }
             self.cleanupIntentsInFlight.remove(intent.id)
             guard confirmedGone else { return }
+            self.deferredCleanupIntents.removeValue(forKey: intent.id)
             switch self.store.clearPlaySessionID(
                 for: intent.attemptKey, expectedPlaySessionID: playSessionID
             ) {
@@ -783,6 +812,7 @@ public final class DownloadManager {
                 }
 
                 guard self.clearEmbyConvertMetadataIfExact(intent) else { return }
+                self.deferredCleanupIntents.removeValue(forKey: intent.id)
                 _ = self.cleanupIntentJournal.remove(
                     id: intent.id, attemptKey: intent.attemptKey, operation: intent.operation)
             } catch {
@@ -1206,7 +1236,7 @@ public final class DownloadManager {
                   setAttemptStatus(.paused, for: key, context: "user_pause") else { return }
         }
         clearOptimizeProgress(ratingKey: ratingKey)
-        releaseInFlight(for: releaseKey)
+        releaseInFlight(for: releaseKey, cancellationMode: .preservingSideCache)
         refreshRecords()
     }
 
@@ -2854,7 +2884,7 @@ public final class DownloadManager {
         let rowAttemptKey = rowToDelete?.attemptID.map {
             DownloadAttemptKey(ratingKey: ratingKey, attemptID: $0)
         }
-        var convertCleanupIntent: DurableDownloadCleanupIntent?
+        var cleanupIntentsToExecute: [DurableDownloadCleanupIntent] = []
         if let metadata = rowToDelete?.metadata {
             let backend = metadata.resolvedBackendKind(ratingKey: ratingKey)
             let transientPlaySessionID: String? = switch backend {
@@ -2865,34 +2895,44 @@ public final class DownloadManager {
             if backend != .plex,
                let playSessionID = metadata.playSessionID ?? transientPlaySessionID,
                !playSessionID.isEmpty {
-                guard let attemptID = rowToDelete?.attemptID,
-                      persistActiveEncodingCleanupIntent(
-                        attemptKey: DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID),
-                        metadata: metadata,
-                        playSessionID: playSessionID
-                      ) != nil else {
-                    // The row/file is still the only durable cleanup authority. Deleting it after
-                    // a journal failure would permanently leak the server encoder.
+                if let attemptID = rowToDelete?.attemptID {
+                    let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+                    if let intent = persistActiveEncodingCleanupIntent(
+                        attemptKey: key, metadata: metadata, playSessionID: playSessionID
+                    ) ?? Self.makeActiveEncodingCleanupIntent(
+                        attemptKey: key, metadata: metadata, playSessionID: playSessionID
+                    ) {
+                        cleanupIntentsToExecute.append(intent)
+                    } else {
+                        // Missing legacy server identity cannot be repaired by retaining an
+                        // undeletable row forever. Delete locally and surface the cleanup gap.
+                        lastError[ratingKey] = .transferFailed(
+                            "Downloaded file deleted; server cleanup identity was unavailable.")
+                    }
+                } else {
                     recordDownloadDiagnostic("downloads.delete_deferred", fields: [
                         "download_id": .identifier(ratingKey),
-                        "reason": .label("cleanup_intent_not_durable"),
+                        "reason": .label("cleanup_attempt_owner_missing"),
                     ])
-                    return
                 }
             }
             if Self.hasEmbyConvertCleanupAuthority(metadata) {
-                guard let attemptID = rowToDelete?.attemptID,
-                      let intent = persistEmbyConvertCleanupIntent(
-                        attemptKey: DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID),
-                        metadata: metadata
-                      ) else {
+                if let attemptID = rowToDelete?.attemptID {
+                    let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+                    if let intent = persistEmbyConvertCleanupIntent(
+                        attemptKey: key, metadata: metadata
+                    ) ?? Self.makeEmbyConvertCleanupIntent(attemptKey: key, metadata: metadata) {
+                        cleanupIntentsToExecute.append(intent)
+                    } else {
+                        lastError[ratingKey] = .transferFailed(
+                            "Downloaded file deleted; server conversion cleanup identity was unavailable.")
+                    }
+                } else {
                     recordDownloadDiagnostic("downloads.delete_deferred", fields: [
                         "download_id": .identifier(ratingKey),
-                        "reason": .label("convert_cleanup_intent_not_durable"),
+                        "reason": .label("convert_cleanup_attempt_owner_missing"),
                     ])
-                    return
                 }
-                convertCleanupIntent = intent
             }
         }
         recordDownloadDiagnostic("downloads.cancel_or_delete", fields: [
@@ -2957,7 +2997,13 @@ public final class DownloadManager {
             session.cancel(ratingKey: ratingKey)
             store.remove(ratingKey: ratingKey)
         }
-        if let convertCleanupIntent { executeEmbyConvertCleanupIntent(convertCleanupIntent) }
+        for intent in cleanupIntentsToExecute {
+            deferredCleanupIntents[intent.id] = intent
+            switch intent.operation {
+            case .activeEncoding: executeActiveEncodingCleanupIntent(intent)
+            case .embyConvert: executeEmbyConvertCleanupIntent(intent)
+            }
+        }
         lastError[ratingKey] = nil
         // Drop server-prep progress state too, or re-downloading the same item resurfaces the
         // deleted row's stale "Preparing on server… N%" caption and seeds the ETA estimator with
@@ -3431,7 +3477,11 @@ public final class DownloadManager {
                 // A terminal status can be published by the finalizer immediately before its
                 // `onChange`. Release transfer/server ownership, but do not self-cancel the exact
                 // finalizer before its final callback/accounting defer runs.
-                releaseInFlight(for: key, cancellationMode: .preservingFinalizer)
+                let mode: DownloadWorkRegistry.AttemptCancellationMode =
+                    (record.status == .complete || record.status == .unverified)
+                    ? .preservingFinalizerAndSideCache
+                    : .preservingFinalizer
+                releaseInFlight(for: key, cancellationMode: mode)
             } else {
                 repairUnownedInFlightState(ratingKey: ratingKey, reason: "legacy_terminal")
             }
@@ -3439,6 +3489,12 @@ public final class DownloadManager {
 
         records = fresh
         offlineLibrarySnapshot = makeOfflineLibrarySnapshot(from: fresh)
+        for intent in deferredCleanupIntents.values where !cleanupIntentsInFlight.contains(intent.id) {
+            switch intent.operation {
+            case .activeEncoding: executeActiveEncodingCleanupIntent(intent)
+            case .embyConvert: executeEmbyConvertCleanupIntent(intent)
+            }
+        }
         ensureJellyfinDownloadKeepalives(for: fresh)
         ensureEmbyDownloadKeepalives(for: fresh)
         for restart in forwardOnlyRestarts {

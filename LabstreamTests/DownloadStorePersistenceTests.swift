@@ -119,6 +119,32 @@ struct DownloadStorePersistenceTests {
         }
     }
 
+    @Test func reconciledOwnerlessTerminalRowIsAdoptedInsteadOfGloballyBlockingV4() throws {
+        try withTemporaryDirectory { directory in
+            let ratingKey = "plex:ownerless-demoted"
+            try writeLegacyIndex(
+                schemaVersion: 4,
+                rows: [legacyRow(ratingKey: ratingKey, status: "complete", bytes: 99)],
+                directory: directory)
+            let store = DownloadStore(baseDirectory: directory)
+            store.reconcile(liveRatingKeys: [], snapshotRatingKeys: [ratingKey])
+            #expect(store.status(for: ratingKey) == .failed)
+
+            let fixedID = DownloadAttemptID(rawValue: "adopted-after-reconcile")!
+            let relaunched = DownloadStore(baseDirectory: directory)
+            guard case .committed(let plan) = relaunched.commitLegacyAttemptOwnershipMigration(
+                idFactory: { _ in fixedID }) else {
+                Issue.record("Expected ownerless reconciled row to enter safe reset")
+                return
+            }
+            let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: fixedID)
+            #expect(plan.taskCancellationAndReset == [key])
+            #expect(relaunched.resetLegacyAttemptAfterTaskCancellation(key)
+                == .committed(key, cleanupFailureCount: 0))
+            #expect(relaunched.commitLegacyAttemptOwnershipMigration() == .notRequired)
+        }
+    }
+
     @Test func completedCleanupOnlyOwnershipIsReconstructedAfterRelaunch() throws {
         try withTemporaryDirectory { directory in
             let ratingKey = "jellyfin:legacy-cleanup"

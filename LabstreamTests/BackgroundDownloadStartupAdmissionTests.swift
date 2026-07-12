@@ -4,6 +4,31 @@ import Testing
 @testable import Labstream
 
 struct BackgroundDownloadStartupAdmissionTests {
+    @Test func purgeWindowAdmitsOnlyHealthyCurrentExactOwnerCallbacks() throws {
+        let healthy = DownloadAttemptKey(
+            ratingKey: "plex:healthy",
+            attemptID: try #require(DownloadAttemptID(rawValue: "healthy-attempt")))
+        let reset = DownloadAttemptKey(
+            ratingKey: "plex:reset",
+            attemptID: try #require(DownloadAttemptID(rawValue: "reset-attempt")))
+
+        #expect(BackgroundDownloadSession.shouldAdmitStartupCallback(
+            isActive: false, isPurging: true, isPermanentlyRejected: false,
+            hasCurrentMarker: true, taskKey: healthy, resetKeys: [reset], ownsAttempt: true))
+        #expect(!BackgroundDownloadSession.shouldAdmitStartupCallback(
+            isActive: false, isPurging: true, isPermanentlyRejected: false,
+            hasCurrentMarker: true, taskKey: reset, resetKeys: [reset], ownsAttempt: true))
+        #expect(!BackgroundDownloadSession.shouldAdmitStartupCallback(
+            isActive: false, isPurging: true, isPermanentlyRejected: false,
+            hasCurrentMarker: false, taskKey: healthy, resetKeys: [], ownsAttempt: true))
+        #expect(!BackgroundDownloadSession.shouldAdmitStartupCallback(
+            isActive: false, isPurging: true, isPermanentlyRejected: false,
+            hasCurrentMarker: true, taskKey: healthy, resetKeys: [], ownsAttempt: false))
+        #expect(!BackgroundDownloadSession.shouldAdmitStartupCallback(
+            isActive: true, isPurging: false, isPermanentlyRejected: true,
+            hasCurrentMarker: true, taskKey: healthy, resetKeys: [], ownsAttempt: true))
+    }
+
     @Test func dormantSessionRejectsStartWithoutCreatingWork() throws {
         try withTemporaryDirectory { directory in
             let store = DownloadStore(baseDirectory: directory)
@@ -103,7 +128,10 @@ struct BackgroundDownloadStartupAdmissionTests {
             try Data("owned".utf8).write(to: ownedStage)
             try Data("orphan".utf8).write(to: orphanStage)
 
-            let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+            // The sweep is launch-scoped: only staging present in the Store's initial inventory is
+            // eligible, so work created after admission can never race deletion.
+            let relaunchedStore = DownloadStore(baseDirectory: directory)
+            let session = BackgroundDownloadSession(store: relaunchedStore, protocolClasses: [])
             defer { session.invalidateInjectedSessionForTesting() }
             #expect(await activate(session, resetKeys: []) == .activated(
                 cancelledTaskCount: 0, resetKeyCount: 0))

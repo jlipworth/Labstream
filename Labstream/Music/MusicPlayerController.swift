@@ -152,6 +152,7 @@ final class MusicPlayerController {
     /// don't drop the image while keeping the (async-fetched) artwork best-effort.
     @ObservationIgnored private var currentArtwork: MPMediaItemArtwork?
     @ObservationIgnored private var artworkTask: Task<Void, Never>?
+    @ObservationIgnored private let artworkRequestAuthority = PlaybackArtworkRequestAuthority()
 
     /// How often (seconds) the elapsed-time observer fires.
     @ObservationIgnored private let elapsedIntervalSeconds: Double = 0.5
@@ -471,6 +472,7 @@ final class MusicPlayerController {
         }
         artworkTask?.cancel()
         artworkTask = nil
+        artworkRequestAuthority.invalidate()
         mediaLease?.clearNowPlaying()
         mediaLease?.release()
         mediaLease = nil
@@ -575,7 +577,9 @@ final class MusicPlayerController {
         reporter?.report(state: .stopped, force: true)
         removeTrackObservers()
         removePlayerObservers()
-        audioSession.removeObservers()
+        audioSession.reinstallObservers(isCurrent: { [weak self] in
+            self?.lifecycleCallbacks.accepts(.musicAudioSession, generation: generation) == true
+        })
 
         atQueueEnd = false
         currentIndex = index
@@ -592,9 +596,6 @@ final class MusicPlayerController {
         reporter = makeReporter(for: track)
 
         prepareSessionIfNeeded()
-        audioSession.installObservers(isCurrent: { [weak self] in
-            self?.lifecycleCallbacks.accepts(.musicAudioSession, generation: generation) == true
-        })
         installTrackObservers(for: playerItem, generation: generation)
         player.replaceCurrentItem(with: playerItem)
         // Install player-level observation only after replacement; otherwise the outgoing
@@ -604,7 +605,7 @@ final class MusicPlayerController {
         isPlaying = true
 
         updateNowPlayingInfo(for: track)
-        fetchArtwork(for: track, generation: generation)
+        fetchArtwork(for: track)
     }
 
     /// Timeline/scrobble reporting uses the Plex PMS `/:/timeline` + scrobble endpoints,
@@ -799,25 +800,25 @@ final class MusicPlayerController {
     /// shared `MediaArtwork` helper (Plex `/photo` transcode, or the authenticated
     /// Jellyfin/Emby image endpoint). Guards that the track is still current before
     /// assigning, so a quick skip can't attach stale art.
-    private func fetchArtwork(for track: MediaItem,
-                              generation: MusicPlaybackLifecycle.Generation) {
+    private func fetchArtwork(for track: MediaItem) {
         artworkTask?.cancel()
+        let artworkToken = artworkRequestAuthority.begin()
         guard let request = MediaArtwork.imageRequest(path: track.musicArtPath,
                                                       appModel: appModel,
                                                       pixelWidth: 600,
                                                       pixelHeight: 600) else { return }
         let ratingKey = track.ratingKey
-        let lease = mediaLease
         artworkTask = Task { [weak self] in
             guard let data = await Self.fetchArtworkData(request: request),
                   let image = UIImage(data: data) else { return }
             let artwork = Self.makeArtwork(image)
             await MainActor.run {
                 guard let self, self.current?.ratingKey == ratingKey,
-                      self.lifecycleCallbacks.accepts(.musicArtwork, generation: generation),
-                      self.mediaLease === lease, lease?.isCurrent == true else { return }
+                      self.artworkRequestAuthority.accepts(artworkToken) else { return }
                 self.currentArtwork = artwork
-                if let track = self.current {
+                // Cache while video owns the shared media session. Reclaiming music
+                // republishes this image through the newly-acquired music lease.
+                if self.mediaLease?.isCurrent == true, let track = self.current {
                     self.updateNowPlayingInfo(for: track)
                 }
             }

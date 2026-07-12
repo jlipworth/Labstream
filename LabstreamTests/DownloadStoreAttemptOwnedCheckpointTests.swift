@@ -47,6 +47,55 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
         }
     }
 
+    @Test func terminalStaticAuditReadsPublishedStableBodyAfterWorkingPathIsConsumed() throws {
+        try withStore { store, directory in
+            let owner = key("plex:terminal-audit", "attempt-a")
+            let stable = directory.appendingPathComponent("terminal-audit.mp4")
+            #expect(created(store, key: owner, media: stable))
+            #expect(store.setSourcePartSize(for: owner, 10) == .applied)
+            let working = try #require(store.attemptWorkingFileURL(for: owner))
+            try Data(repeating: 4, count: 4).write(to: working)
+
+            #expect(store.promoteValidatedAttempt(for: owner, terminalStatus: .complete)
+                == .promoted(owner, bytes: 4, status: .complete))
+            #expect(store.attemptWorkingFileURL(for: owner) == nil)
+            #expect(store.durableStaticRangeCheckpointSize(for: owner) == 4)
+            #expect(store.sourceExactBytes(for: owner) == 10)
+            #expect(store.resetStaticRangeProgressToDurableCheckpoint(
+                for: owner, expectedBytes: 10) == .applied(bytes: 4))
+            #expect(store.setStatus(for: owner, .failed) == .applied)
+            #expect(store.durableStaticRangeCheckpointSize(for: owner) == 4)
+            #expect(FileManager.default.fileExists(atPath: stable.path))
+        }
+    }
+
+    @Test func staticRetryHandsDurableCheckpointToNewExactOwner() throws {
+        try withStore { store, directory in
+            let a = key("plex:handoff", "attempt-a")
+            let b = key("plex:handoff", "attempt-b")
+            let stable = directory.appendingPathComponent("handoff.mp4")
+            #expect(created(store, key: a, media: stable))
+            #expect(store.setSourcePartSize(for: a, 10) == .applied)
+            let workingA = try #require(store.attemptWorkingFileURL(for: a))
+            try Data([1, 2, 3, 4]).write(to: workingA)
+            let metadata = OfflineMetadata(
+                ratingKey: b.ratingKey, title: "Item", type: "movie",
+                sourcePartSize: 10, resumeMode: .staticByteRange)
+            let replacement = DownloadRecord(
+                ratingKey: b.ratingKey, attemptID: b.attemptID, title: "Item",
+                localURL: stable, status: .queued, metadata: metadata)
+
+            #expect(store.createAttemptOwnedRecord(
+                replacement, attemptID: b.attemptID, replacing: a.attemptID) == .committed(b))
+            let workingB = try #require(store.attemptWorkingFileURL(for: b))
+            #expect(try Data(contentsOf: workingB) == Data([1, 2, 3, 4]))
+            #expect(!FileManager.default.fileExists(atPath: workingA.path))
+            #expect(store.record(for: b)?.bytes == 4)
+            #expect(store.record(for: b)?.progress == 0.4)
+            #expect(store.durableStaticRangeCheckpointSize(for: b) == 4)
+        }
+    }
+
     @Test func heldManifestOperationsAreExactAttemptScoped() throws {
         try withStore { store, directory in
             let a = key("jellyfin:held", "attempt-a")

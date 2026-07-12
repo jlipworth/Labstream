@@ -5,7 +5,7 @@ import Testing
 
 @MainActor
 struct AuthSecureStorageTests {
-    @Test func clientIdentityGenerationFailsClosedWhenSecureWriteFails() {
+    @Test func clientIdentityWriteFailureStillBuildsServicesForBackgroundDrain() throws {
         let store = KeychainStore(
             service: "com.visionplay.tests.identity.\(UUID().uuidString)",
             synchronizesPlexToken: false,
@@ -14,7 +14,8 @@ struct AuthSecureStorageTests {
             })
 
         #expect(store.clientIdentifier() == nil)
-        #expect(AppServices.make(keychain: store) == nil)
+        let services = try #require(AppServices.make(keychain: store))
+        #expect(!services.appModel.identity.clientIdentifier.isEmpty)
     }
 
     @Test func backendSelectionDoesNotPublishWhenSecureWriteFails() {
@@ -143,11 +144,99 @@ struct AuthSecureStorageTests {
         #expect(await restore.value == false)
 
         #expect(model.activeBackend == .jellyfin)
-        #expect(model.token == nil)
+        // The already-durable account token is safe to hydrate before discovery; only the held
+        // server result is forbidden from publishing after the attempt is superseded.
+        #expect(model.token == "saved-token")
         #expect(model.selectedServer == nil)
         #expect(!writes.accounts.contains(KeychainStore.tokenKey))
         #expect(!writes.accounts.contains(KeychainStore.selectedPlexServerIDKey))
         cleanupBackendKeys(store)
+    }
+
+    @Test func plexRestoreDiscoveryFailureKeepsSavedAccountTokenForRetryUI() async {
+        let service = "com.visionplay.tests.plex-retry.\(UUID().uuidString)"
+        let store = KeychainStore(service: service, synchronizesPlexToken: false,
+                                  usesDevelopmentFileStorage: true)
+        #expect(store.saveToken("saved-token"))
+        #expect(store.saveSelectedBackend(.plex))
+        let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "plex-retry"))
+        let manager = AuthManager(appModel: model, keychain: store,
+                                  plexSessionDiscoverer: { _ in throw PlexError.serverUnreachable })
+
+        #expect(await manager.restoreSession())
+        #expect(model.token == "saved-token")
+        #expect(!model.isBrowseReady)
+        #expect(manager.state == .failed("Signed in, but server discovery failed."))
+        cleanupBackendKeys(store)
+    }
+
+    @Test func authorizedPlexPINSurvivesDiscoveryFailure() async throws {
+        let service = "com.visionplay.tests.plex-authorized.\(UUID().uuidString)"
+        let store = KeychainStore(service: service, synchronizesPlexToken: false,
+                                  usesDevelopmentFileStorage: true)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [AuthorizedPlexPINURLProtocol.self]
+        let identity = PlatformClientIdentity.make(clientIdentifier: "plex-authorized")
+        let client = PlexClient(session: URLSession(configuration: configuration), identity: identity)
+        let model = AppModel(identity: identity, client: client)
+        let manager = AuthManager(appModel: model, keychain: store,
+                                  plexSessionDiscoverer: { _ in throw PlexError.serverUnreachable },
+                                  authSleep: { _ in await Task.yield() })
+
+        _ = try await manager.createPin()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while ContinuousClock.now < deadline {
+            if case .failed = manager.state { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        #expect(store.token == "authorized-token")
+        #expect(model.token == "authorized-token")
+        #expect(!model.isBrowseReady)
+        #expect(manager.state == .failed("Signed in, but server discovery failed."))
+        cleanupBackendKeys(store)
+    }
+
+    @Test func plexRestoreDoesNotRequirePreferredServerWrite() async {
+        let service = "com.visionplay.tests.plex-restore-write.\(UUID().uuidString)"
+        let store = KeychainStore(service: service, synchronizesPlexToken: false,
+                                  usesDevelopmentFileStorage: true,
+                                  writeInterceptor: { account, _ in
+                                      account == KeychainStore.selectedPlexServerIDKey ? false : nil
+                                  })
+        #expect(store.saveToken("saved-token"))
+        #expect(store.saveSelectedBackend(.plex))
+        let server = PlexDevice(name: "Server", clientIdentifier: "server-id",
+                                provides: "server", connections: [])
+        let discovery = PlexSessionDiscovery(
+            servers: [server], selectedServer: server, serverToken: "server-token",
+            baseURL: URL(string: "https://server.invalid")!, isLocal: false,
+            accountProfile: nil)
+        let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "plex-write"))
+        let manager = AuthManager(appModel: model, keychain: store,
+                                  plexSessionDiscoverer: { _ in discovery })
+
+        #expect(await manager.restoreSession())
+        #expect(model.isBrowseReady)
+        #expect(manager.state == .authenticated)
+        cleanupBackendKeys(store)
+    }
+
+    @Test func backgroundRestoreDoesNotCancelInteractiveAuthorization() async {
+        let store = KeychainStore(service: "com.visionplay.tests.restore-admission.\(UUID().uuidString)",
+                                  synchronizesPlexToken: false,
+                                  writeInterceptor: { _, _ in true })
+        let loader = EmbyConnectLoaderGate()
+        let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "restore-admission"))
+        let manager = AuthManager(appModel: model, keychain: store,
+                                  authDataLoader: { request in try await loader.load(request) },
+                                  authSleep: { _ in await Task.yield() })
+
+        await manager.startEmbyConnect()
+        #expect(manager.state == .awaitingEmbyConnectPin(code: "ABCD"))
+        #expect(await manager.restoreSessionIfNoAuthorizationInProgress() == nil)
+        #expect(manager.state == .awaitingEmbyConnectPin(code: "ABCD"))
+        manager.cancelCurrentAuthorization()
     }
 
     @Test func multiKeyReplacementRestoresPreviousSessionAfterWriteFailure() {
@@ -300,6 +389,34 @@ struct AuthSecureStorageTests {
         #expect(model.serverBaseURL == nil)
         #expect(store.selectedPlexServerID == nil)
         cleanupBackendKeys(store)
+    }
+
+    @Test func failedRefreshClearsStaleResolvedPlexServerButKeepsAccountToken() async {
+        let store = KeychainStore(service: "com.visionplay.tests.refresh-clear.\(UUID().uuidString)",
+                                  synchronizesPlexToken: false,
+                                  writeInterceptor: { _, _ in true })
+        let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "refresh-clear"),
+                             token: "token")
+        let staleServer = PlexDevice(name: "Stale", clientIdentifier: "stale-id",
+                                     provides: "server", connections: [])
+        model.selectedServer = staleServer
+        model.plexServers = [staleServer]
+        model.serverToken = "stale-server-token"
+        model.serverBaseURL = URL(string: "https://stale.invalid")
+        let manager = AuthManager(appModel: model, keychain: store,
+                                  plexSessionDiscoverer: { _ in throw PlexError.serverUnreachable })
+
+        do {
+            try await manager.refreshServers()
+            Issue.record("Expected discovery failure")
+        } catch { }
+
+        #expect(model.token == "token")
+        #expect(model.selectedServer == nil)
+        #expect(model.plexServers.isEmpty)
+        #expect(model.serverToken == nil)
+        #expect(model.serverBaseURL == nil)
+        #expect(!model.isBrowseReady)
     }
 
     @Test func signOutDuringHeldServerSelectionCannotPublishOrPersist() async throws {
@@ -512,4 +629,36 @@ private actor PlexProfileGate {
         continuation?.resume(returning: PlexAccountProfile(username: "stale"))
         continuation = nil
     }
+}
+
+private final class AuthorizedPlexPINURLProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "plex.tv"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        guard let url = request.url else {
+            client?.urlProtocol(self, didFailWithError: URLError(.badURL))
+            return
+        }
+        let json: String
+        if request.httpMethod == "POST" {
+            let strong = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "strong" })?.value == "true"
+            json = strong
+                ? #"{"id":2,"code":"STRONG","authToken":null}"#
+                : #"{"id":1,"code":"LINK","authToken":null}"#
+        } else {
+            json = #"{"id":1,"code":"LINK","authToken":"authorized-token"}"#
+        }
+        let response = HTTPURLResponse(url: url, statusCode: 200,
+                                       httpVersion: nil, headerFields: nil)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(json.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() { }
 }

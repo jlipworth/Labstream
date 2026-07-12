@@ -1080,7 +1080,10 @@ mutate markers, report after final stopped, resume audio, or touch Now Playing.
 - Thread Sanitizer passes targeted download/auth/ownership stress suites.
 - No old attempt/generation can mutate a newer one.
 - Relaunch restores the newest durable download state.
-- Existing partial/completed downloads survive migration and background tasks reattach.
+- Existing completed downloads survive migration. Under the approved schema-v4 reset policy,
+  pre-v4 nonterminal partials are intentionally discarded only after their legacy tasks are
+  cancelled; current exact-attempt partials and healthy background tasks survive relaunch and
+  reattach.
 - Exactly one media owner controls Now Playing/remote commands.
 - A cancelled auth attempt can never later authenticate or persist credentials.
 

@@ -15,9 +15,11 @@ struct AppServices {
 
     static func make(keychain providedKeychain: KeychainStore? = nil) -> AppServices? {
         let keychain = providedKeychain ?? AppKeychainService.makeStore()
-        guard let clientIdentifier = keychain.clientIdentifier() else {
-            return nil
-        }
+        // The client identifier is routing metadata, not a credential. If secure storage is
+        // temporarily unavailable, use a process-local identity so the app can still finish
+        // launching (most importantly, so background URLSession events can be drained). A later
+        // launch retries the durable identifier; credentials themselves remain fail-closed.
+        let clientIdentifier = keychain.clientIdentifier() ?? UUID().uuidString
         let identity = PlatformClientIdentity.make(clientIdentifier: clientIdentifier)
         let model = AppModel(identity: identity, activeBackend: keychain.selectedBackend)
         return AppServices(

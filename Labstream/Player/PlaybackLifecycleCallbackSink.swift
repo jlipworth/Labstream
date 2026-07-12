@@ -35,3 +35,55 @@ final class PlaybackLifecycleCallbackSink<Generation> {
         return true
     }
 }
+
+/// Authority for the reconnect deadline. Unlike item callback authority, this token is
+/// deliberately independent of `PlaybackController.playbackGeneration`: one reconnect
+/// operation spans negotiation and one or more player-item replacements.
+@MainActor
+final class PlaybackReconnectWatchdogAuthority {
+    struct Token: Equatable, Sendable {
+        fileprivate let value: UInt
+    }
+
+    private var value: UInt = 0
+    private var armed = false
+
+    func arm() -> Token {
+        value &+= 1
+        armed = true
+        return Token(value: value)
+    }
+
+    func end() {
+        value &+= 1
+        armed = false
+    }
+
+    func accepts(_ token: Token) -> Bool {
+        armed && token.value == value
+    }
+}
+
+/// Per-request artwork authority, intentionally separate from player-item lifecycle.
+/// Suspending music for video replaces observer authority but does not change the track art.
+@MainActor
+final class PlaybackArtworkRequestAuthority {
+    struct Token: Equatable, Sendable {
+        fileprivate let value: UInt
+    }
+
+    private var value: UInt = 0
+
+    func begin() -> Token {
+        value &+= 1
+        return Token(value: value)
+    }
+
+    func invalidate() {
+        value &+= 1
+    }
+
+    func accepts(_ token: Token) -> Bool {
+        token.value == value
+    }
+}

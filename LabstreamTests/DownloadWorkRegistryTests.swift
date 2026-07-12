@@ -135,6 +135,25 @@ struct DownloadWorkRegistryTests {
         #expect(registry.snapshot().attempts.first?.entries.map(\.token) == [finalizerToken])
     }
 
+    @Test func successfulReleasePreservesFinalizerAndSideCaches() {
+        let registry = DownloadWorkRegistry()
+        let attempt = key("plex:complete", "attempt-A")
+        let finalizer = pendingTask()
+        let poster = pendingTask()
+        let cleanup = pendingTask()
+        defer { finalizer.cancel(); poster.cancel(); cleanup.cancel() }
+        _ = registry.register(finalizer, for: attempt, kind: .finalizer)
+        _ = registry.register(poster, for: attempt, kind: .sideCache(.poster))
+        _ = registry.register(cleanup, for: attempt, kind: .requiredCleanup)
+
+        #expect(registry.cancelCancellableWork(
+            for: attempt, mode: .preservingFinalizerAndSideCache).isEmpty)
+        #expect(!finalizer.isCancelled)
+        #expect(!poster.isCancelled)
+        #expect(!cleanup.isCancelled)
+        #expect(registry.snapshot().totalCount == 3)
+    }
+
     @Test func cancelledOldSideCacheCompletionCannotRemoveReaddedAttemptsWork() async {
         let registry = DownloadWorkRegistry()
         let old = key("plex:readd", "attempt-A")

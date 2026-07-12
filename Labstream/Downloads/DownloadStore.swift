@@ -83,6 +83,8 @@ final class DownloadStore: @unchecked Sendable {
         case missingExpectedOwner
         case ownerMismatch
         case legacyResetPending
+        case validatedPromotionPending
+        case checkpointHandoffFailed
     }
 
     enum AttemptMutationResult: Sendable, Equatable {
@@ -413,6 +415,10 @@ final class DownloadStore: @unchecked Sendable {
     private var sideAssetHydrationCache: [String: HydratedSideAssets] = [:] // guarded by `lock`
     private var lastProgressPersist = Date.distantPast   // guarded by `lock`
     private let baseDirectory: URL                  // Application Support/Downloads
+    /// A sweep may race side-cache writers which create their attempt-private file before the
+    /// corresponding metadata mutation. Only files inventoried at Store initialization can be
+    /// startup orphans; a later launch can collect newly-born files if no row ever adopts them.
+    private let startupStagingInventory: Set<String>
     private let indexURL: URL                        // baseDirectory/index.json
     private let embyCleanupURL: URL                  // durable orphan-prevention queue
     private let fileManager: FileManager
@@ -440,6 +446,9 @@ final class DownloadStore: @unchecked Sendable {
             .appendingPathComponent("Labstream", isDirectory: true)
             .appendingPathComponent("Downloads", isDirectory: true)
         self.baseDirectory = dir
+        self.startupStagingInventory = Set(
+            ((try? fileManager.contentsOfDirectory(atPath: dir.path)) ?? [])
+                .filter(Self.isAttemptStagingRelativePath))
         let indexURL = dir.appendingPathComponent("index.json")
         self.indexURL = indexURL
         self.embyCleanupURL = dir.appendingPathComponent("emby-convert-cleanup.json")
@@ -662,6 +671,11 @@ final class DownloadStore: @unchecked Sendable {
             lock.unlock()
             return .resetPending
         }
+        guard row.pendingValidatedPromotionStatus == nil
+                || row.pendingValidatedPromotionStatus == terminalStatus else {
+            lock.unlock()
+            return .invalidTerminalStatus
+        }
         guard let workingRelative = workingRelativePath(for: row, key: key) else {
             lock.unlock()
             return .invalidWorkingLayout
@@ -672,35 +686,38 @@ final class DownloadStore: @unchecked Sendable {
             lock.unlock()
             return .sourceMissing
         }
-        guard row.pendingValidatedPromotionStatus == nil
-                || row.pendingValidatedPromotionStatus == terminalStatus else {
-            lock.unlock()
-            return .invalidTerminalStatus
-        }
-        // Keep ownership locked through this synchronous durability proof. The revisioned writer
-        // operates on its captured value snapshot and never needs `lock`, so this cannot deadlock.
-        // It intentionally prevents replacement B from entering between intent commit and rename.
+        // The pending intent is also an in-memory ownership reservation. Replacement/delete paths
+        // refuse it, allowing the slow durability wait and rename to happen without blocking every
+        // unrelated Store reader behind NSLock.
         row.pendingValidatedPromotionStatus = terminalStatus
         rows[key.ratingKey] = row
         let intentTicket = enqueueAttemptPersistenceLocked()
+        lock.unlock()
         let intentPersistence = waitForPersistence(through: intentTicket)
         guard intentPersistence.result.committed(through: intentPersistence.ticket) else {
-            lock.unlock()
             return .persistenceFailed(key, intentPersistence.result)
         }
         if let renameError = renameReplacing(source: workingURL, destination: stableURL) {
-            lock.unlock()
             return .renameFailed(errorType: renameError)
         }
-        row.bytes = bytes
-        row.progress = 1
-        row.status = terminalStatus
+        lock.lock()
+        guard var committedRow = rows[key.ratingKey],
+              committedRow.attemptID == key.attemptID,
+              committedRow.pendingValidatedPromotionStatus == terminalStatus else {
+            lock.unlock()
+            // The reservation should make this unreachable. Preserve the durable intent so launch
+            // recovery, rather than an ownership guess, decides what may publish.
+            return .staleOrMissingOwner
+        }
+        committedRow.bytes = bytes
+        committedRow.progress = 1
+        committedRow.status = terminalStatus
         // A terminal row publishes only the stable file. Dropping the now-consumed private path
         // keeps staging inventory honest and prevents a later caller from treating a missing
         // working body as terminal evidence.
-        row.attemptWorkingRelativePath = nil
-        row.pendingValidatedPromotionStatus = nil
-        rows[key.ratingKey] = row
+        committedRow.attemptWorkingRelativePath = nil
+        committedRow.pendingValidatedPromotionStatus = nil
+        rows[key.ratingKey] = committedRow
         let ticket = enqueueAttemptPersistenceLocked()
         lock.unlock()
         let persistence = waitForPersistence(through: ticket)
@@ -893,7 +910,10 @@ final class DownloadStore: @unchecked Sendable {
             guard Self.isAttemptStagingRelativePath(name), !referenced.contains(name) else {
                 return false
             }
-            return (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+            guard startupStagingInventory.contains(name),
+                  let values = try? url.resourceValues(forKeys: [.isRegularFileKey]),
+                  values.isRegularFile == true else { return false }
+            return true
         }.sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
@@ -1560,6 +1580,11 @@ final class DownloadStore: @unchecked Sendable {
         lock.lock()
         let rel = record.localURL.lastPathComponent
         let existing = rows[record.ratingKey]
+        // Legacy/unconditional writers may not erase a validated-publication reservation.
+        guard existing?.pendingValidatedPromotionStatus == nil else {
+            lock.unlock()
+            return
+        }
         let attemptID = record.attemptID ?? existing?.attemptID
         var metadata = record.metadata ?? existing?.metadata
         if var incoming = record.metadata, let previous = existing?.metadata {
@@ -1614,6 +1639,14 @@ final class DownloadStore: @unchecked Sendable {
                 reason: .legacyResetPending
             )
         }
+        if existing?.pendingValidatedPromotionStatus != nil {
+            lock.unlock()
+            return .rejectedOwnership(
+                expectedPreviousOwner: expectedKey,
+                actualOwner: existingKey,
+                reason: .validatedPromotionPending
+            )
+        }
         // Same-ID replay is the only retry allowed after an ambiguous/failed commit. Otherwise a
         // replacement must compare-and-swap the exact owner captured when the start was acquired.
         if existing?.attemptID != attemptID {
@@ -1645,15 +1678,58 @@ final class DownloadStore: @unchecked Sendable {
             metadata = incoming
         }
         metadata?.downloadAttemptID = attemptID.rawValue
+        let newWorkingRelative = Self.attemptStagingRelativePath(
+            for: key, stableRelativePath: rel)
+        var oldWorkingURLToRemove: URL?
+        var inheritedDurableBytes: Int?
+        // A manual Retry/launch resume intentionally changes attempt identity. For a static-range
+        // row, ownership can change without throwing away its multi-GB durable checkpoint: clone
+        // the old private body to the new private path before committing the new owner. The old
+        // body remains until the new index snapshot is durable, so a failed/ambiguous commit is
+        // safe for both the current process and relaunch.
+        if existing?.attemptID != attemptID,
+           let expectedPreviousOwner,
+           previous?.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .staticByteRange,
+           metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .staticByteRange,
+           let previous,
+           let oldWorkingRelative = workingRelativePath(
+                for: previous,
+                key: DownloadAttemptKey(
+                    ratingKey: record.ratingKey, attemptID: expectedPreviousOwner)) {
+            let oldWorkingURL = baseDirectory.appendingPathComponent(oldWorkingRelative)
+            let newWorkingURL = baseDirectory.appendingPathComponent(newWorkingRelative)
+            if let durableBytes = fileSize(at: oldWorkingURL), durableBytes > 0 {
+                do {
+                    if fileManager.fileExists(atPath: newWorkingURL.path) {
+                        try fileManager.removeItem(at: newWorkingURL)
+                    }
+                    try fileManager.copyItem(at: oldWorkingURL, to: newWorkingURL)
+                    oldWorkingURLToRemove = oldWorkingURL
+                    inheritedDurableBytes = durableBytes
+                } catch {
+                    lock.unlock()
+                    return .rejectedOwnership(
+                        expectedPreviousOwner: expectedKey,
+                        actualOwner: existingKey,
+                        reason: .checkpointHandoffFailed
+                    )
+                }
+            }
+        }
+        let effectiveBytes = inheritedDurableBytes ?? record.bytes
+        let effectiveProgress = inheritedDurableBytes.map {
+            Self.progressForDurableBytes(
+                $0,
+                expectedBytes: previous.flatMap { Self.expectedBytesEstimate(row: $0) })
+        } ?? record.progress
         rows[record.ratingKey] = Row(
             ratingKey: record.ratingKey,
             attemptID: attemptID,
             title: record.title,
             relativePath: rel,
-            attemptWorkingRelativePath: Self.attemptStagingRelativePath(
-                for: key, stableRelativePath: rel),
-            bytes: record.bytes,
-            progress: record.progress,
+            attemptWorkingRelativePath: newWorkingRelative,
+            bytes: effectiveBytes,
+            progress: effectiveProgress,
             status: record.status,
             metadata: metadata,
             legacyResetPending: previous?.legacyResetPending ?? false,
@@ -1665,6 +1741,9 @@ final class DownloadStore: @unchecked Sendable {
         let persistence = waitForPersistence(through: ticket)
         guard persistence.result.committed(through: persistence.ticket) else {
             return .failed(key, persistence.result)
+        }
+        if let oldWorkingURLToRemove {
+            try? fileManager.removeItem(at: oldWorkingURLToRemove)
         }
         return .committed(key)
     }
@@ -2147,6 +2226,48 @@ final class DownloadStore: @unchecked Sendable {
             return .malformedV3Rows(shadowDisagreements)
         }
         if loadedSchemaVersion >= DownloadIndexCoding.currentSchemaVersion {
+            // `reconcile` may legitimately demote a legacy ownerless terminal row after its stable
+            // file disappears. That produces an ownerless `.failed` v4 row; treating it as generic
+            // corruption globally wedges every download forever. Adopt only truly ownerless rows
+            // (no top-level or nested token), then run the same fail-safe artifact reset barrier as
+            // a pre-v4 partial. Rows carrying ambiguous/mismatched identity still fail closed below.
+            var adoptedReset: [DownloadAttemptKey] = []
+            var adoptedCleanupOnly: [DownloadAttemptKey] = []
+            for ratingKey in rows.keys.sorted() {
+                guard var row = rows[ratingKey],
+                      Self.requiresAttemptOwnership(row),
+                      row.attemptID == nil,
+                      !row.decodedTopLevelAttemptIDPresent else { continue }
+                let attemptID = idFactory(ratingKey)
+                row.attemptID = attemptID
+                row.decodedTopLevelAttemptIDPresent = true
+                row.metadata?.downloadAttemptID = attemptID.rawValue
+                let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+                if row.status == .complete || row.status == .unverified {
+                    adoptedCleanupOnly.append(key)
+                } else {
+                    row.attemptWorkingRelativePath = Self.attemptStagingRelativePath(
+                        for: key, stableRelativePath: row.relativePath)
+                    row.legacyResetPending = true
+                    adoptedReset.append(key)
+                }
+                rows[ratingKey] = row
+            }
+            if !adoptedReset.isEmpty || !adoptedCleanupOnly.isEmpty {
+                let plan = LegacyAttemptMigrationPlan(
+                    taskCancellationAndReset: adoptedReset,
+                    cleanupOnly: adoptedCleanupOnly)
+                let ticket = enqueueAttemptPersistenceLocked()
+                lock.unlock()
+                let persistence = waitForPersistence(through: ticket)
+                guard persistence.result.committed(through: persistence.ticket) else {
+                    return .failed(plan, persistence.result)
+                }
+                lock.lock()
+                pendingLegacyAttemptResetKeys.formUnion(adoptedReset)
+                lock.unlock()
+                return .committed(plan)
+            }
             let malformed = rows.values
                 .filter {
                     guard Self.requiresAttemptOwnership($0) else { return false }
@@ -2406,15 +2527,38 @@ final class DownloadStore: @unchecked Sendable {
             lock.unlock()
             return .notStatic(bytes: bytes)
         }
-        guard let workingRelative = workingRelativePath(for: row, key: key) else {
-            lock.unlock()
-            return .staleOrMissing
+        let reconstructedTerminalCheckpoint = row.status == .complete || row.status == .unverified
+        let workingRelative: String
+        if reconstructedTerminalCheckpoint {
+            // The completed-size audit found a truncated published static body. Reconstitute an
+            // exact-attempt private checkpoint before the manager demotes the row, while retaining
+            // the stable copy until that demotion commits. A crash in between is therefore
+            // retryable and never destroys the only bytes.
+            workingRelative = Self.attemptStagingRelativePath(
+                for: key, stableRelativePath: row.relativePath)
+            let stableURL = baseDirectory.appendingPathComponent(row.relativePath)
+            let workingURL = baseDirectory.appendingPathComponent(workingRelative)
+            if !fileManager.fileExists(atPath: workingURL.path),
+               fileManager.fileExists(atPath: stableURL.path) {
+                do { try fileManager.copyItem(at: stableURL, to: workingURL) }
+                catch {
+                    lock.unlock()
+                    return .staleOrMissing
+                }
+            }
+            row.attemptWorkingRelativePath = workingRelative
+        } else {
+            guard let existingWorking = workingRelativePath(for: row, key: key) else {
+                lock.unlock()
+                return .staleOrMissing
+            }
+            workingRelative = existingWorking
         }
         // Keep ownership stable through the stat of the exact attempt-private body.
         let durableBytes = fileSize(relativePath: workingRelative) ?? 0
         let expectedBytes = explicitExpectedBytes ?? Self.expectedBytesEstimate(row: row)
         let progress = Self.progressForDurableBytes(durableBytes, expectedBytes: expectedBytes)
-        var changed = false
+        var changed = reconstructedTerminalCheckpoint
         if row.metadata?.resumeDisplayBytes != nil,
            (row.metadata?.resumeDataRelativePath ?? "").isEmpty {
             row.metadata?.resumeDisplayBytes = nil
@@ -2459,6 +2603,12 @@ final class DownloadStore: @unchecked Sendable {
               !row.legacyResetPending,
               row.metadata?.resolvedResumeMode(ratingKey: row.ratingKey) == .staticByteRange else {
             return nil
+        }
+        // Terminal promotion consumes and nils the attempt-private working path. Integrity audits
+        // must stat the published stable body for completed/unverified rows; nonterminal resume
+        // paths continue to trust only the private exact-attempt checkpoint.
+        if row.status == .complete || row.status == .unverified {
+            return fileSize(relativePath: row.relativePath) ?? 0
         }
         guard let workingRelative = workingRelativePath(for: row, key: key) else { return nil }
         return fileSize(relativePath: workingRelative) ?? 0
@@ -2945,6 +3095,10 @@ final class DownloadStore: @unchecked Sendable {
     /// Remove a record and delete its backing file.
     func remove(ratingKey: String) {
         lock.lock()
+        guard rows[ratingKey]?.pendingValidatedPromotionStatus == nil else {
+            lock.unlock()
+            return
+        }
         let row = rows.removeValue(forKey: ratingKey)
         sideAssetHydrationCache.removeValue(forKey: ratingKey)
         lock.unlock()
@@ -2979,7 +3133,8 @@ final class DownloadStore: @unchecked Sendable {
     func remove(for key: DownloadAttemptKey) -> AttemptMutationResult {
         lock.lock()
         guard let existing = rows[key.ratingKey], existing.attemptID == key.attemptID,
-              !existing.legacyResetPending else {
+              !existing.legacyResetPending,
+              existing.pendingValidatedPromotionStatus == nil else {
             lock.unlock()
             return .staleOrMissing
         }

@@ -60,7 +60,21 @@ public struct OfflineLibraryView: View {
         snapshot: OfflineLibrarySnapshot,
         scrollProxy: ScrollViewProxy
     ) -> some View {
-        offlineRowsOrEmpty(snapshot: snapshot)
+        VStack(spacing: 0) {
+            if case .blocked(let message) = manager.startupRecoveryState {
+                HStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90")
+                    Text(message)
+                        .font(.callout)
+                    Spacer()
+                    Button("Retry Recovery") { manager.retryDownloadStartupRecovery() }
+                        .buttonStyle(.borderedProminent)
+                }
+                .padding()
+                .accessibilityElement(children: .combine)
+            }
+            offlineRowsOrEmpty(snapshot: snapshot)
+        }
             .navigationTitle("Offline")
             .toolbar { offlineToolbar(snapshot: snapshot) }
             .task(id: focusedRatingKey) { await focusRequestedDownload(using: scrollProxy) }

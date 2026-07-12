@@ -60,10 +60,12 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
 
     private let lock = NSLock()
     private let fileURL: URL
+    private let quarantineDirectory: URL
     private let persistence: Persistence
 
     init(directory: URL, persistence: Persistence = .live) {
         self.fileURL = directory.appendingPathComponent("download-cleanup-intents.json")
+        self.quarantineDirectory = directory
         self.persistence = persistence
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
@@ -185,8 +187,72 @@ final class DownloadCleanupIntentJournal: @unchecked Sendable {
             }
             return .loaded(values)
         } catch {
-            return .failed(Self.failure(.decode, error))
+            return repairElementDecodeFailureLocked(data: data, originalError: error)
         }
+    }
+
+    /// A forward-incompatible or corrupt element must not permanently block unrelated cleanup
+    /// authority. Preserve the exact original bytes in a quarantine file, then rewrite only the
+    /// independently decodable, UUID-unambiguous values. Top-level JSON corruption and duplicate
+    /// UUIDs remain fail-closed because their boundaries/authority cannot be established safely.
+    private func repairElementDecodeFailureLocked(
+        data: Data,
+        originalError: any Error
+    ) -> LoadResult {
+        guard let rawValues = try? JSONSerialization.jsonObject(with: data) as? [Any] else {
+            return .failed(Self.failure(.decode, originalError))
+        }
+        var recovered: [DurableDownloadCleanupIntent] = []
+        var rejectedCount = 0
+        for rawValue in rawValues {
+            guard JSONSerialization.isValidJSONObject(rawValue),
+                  let elementData = try? JSONSerialization.data(withJSONObject: rawValue),
+                  let value = try? JSONDecoder().decode(
+                    DurableDownloadCleanupIntent.self, from: elementData) else {
+                rejectedCount += 1
+                continue
+            }
+            recovered.append(value)
+        }
+        guard rejectedCount > 0 else {
+            // The array decoded element-by-element, so the aggregate failure is a duplicate-ID
+            // ambiguity (or an invariant introduced by a future decoder). Never guess.
+            return .failed(Self.failure(.decode, originalError))
+        }
+        guard Set(recovered.map(\.id)).count == recovered.count else {
+            return .failed(Failure(
+                stage: .decode,
+                errorType: String(reflecting: DuplicateIntentID.self)
+            ))
+        }
+
+        let quarantineURL = quarantineDirectory.appendingPathComponent(
+            "download-cleanup-intents-quarantine-\(UUID().uuidString).json")
+        do {
+            try persistence.atomicWrite(data, quarantineURL)
+        } catch {
+            return .failed(Self.failure(.commit, error))
+        }
+        let repairedData: Data
+        do {
+            repairedData = try persistence.encode(recovered)
+        } catch {
+            return .failed(Self.failure(.encode, error))
+        }
+        do {
+            try persistence.atomicWrite(repairedData, fileURL)
+        } catch {
+            // The canonical replace may have won before throwing. Exact recovered equality proves
+            // repair committed, just as add/remove prove their postconditions after ambiguity.
+            if let durableData = try? persistence.read(fileURL),
+               let durable = try? JSONDecoder().decode(
+                    [DurableDownloadCleanupIntent].self, from: durableData),
+               durable == recovered {
+                return .loaded(recovered)
+            }
+            return .failed(Self.failure(.commit, error))
+        }
+        return .loaded(recovered)
     }
 
     private static func failure(_ stage: Failure.Stage, _ error: any Error) -> Failure {
