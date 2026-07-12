@@ -178,10 +178,9 @@ struct SearchView: View {
         }
     }
 
-    private func plexSearchSections(server: URL, token: String) async -> [PlexSection] {
-        let req = BrowseAPI.sections(server: server, token: token, identity: appModel.identity)
-        let response = try? await appModel.client.send(req, as: SectionsResponse.self)
-        return response?.mediaContainer.directory ?? []
+    private func plexSearchSections() async -> [PlexSection] {
+        guard let service = try? PlexBrowseService(appModel: appModel) else { return [] }
+        return (try? await service.libraries()) ?? []
     }
 
     private func runSearch() async {
@@ -240,7 +239,7 @@ struct SearchView: View {
                                    identity: appModel.identity, query: trimmed)
         do {
             async let searchResponse = appModel.client.send(req, as: HubsResponse.self)
-            async let sections = plexSearchSections(server: server, token: token)
+            async let sections = plexSearchSections()
             let resp = try await searchResponse
             let plexSections = await sections
             if Task.isCancelled { return }

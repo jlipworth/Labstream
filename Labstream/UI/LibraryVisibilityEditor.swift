@@ -259,12 +259,10 @@ struct LibraryVisibilityEditor: View {
     private func fetchCandidates() async throws -> [LibraryVisibility.Candidate] {
         switch appModel.activeBackend {
         case .plex:
-            guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
+            guard let service = try? PlexBrowseService(appModel: appModel) else {
                 throw LibraryVisibilityEditorError.noServer
             }
-            let req = BrowseAPI.sections(server: server, token: token, identity: appModel.identity)
-            let resp = try await appModel.client.send(req, as: SectionsResponse.self)
-            return resp.mediaContainer.directory
+            return try await service.libraries()
                 .filter { !$0.isMusic }
                 .map { LibraryVisibility.Candidate(id: $0.key, title: $0.title,
                                                    kind: LibrarySectionKind(plexType: $0.type).visibilityKindToken) }

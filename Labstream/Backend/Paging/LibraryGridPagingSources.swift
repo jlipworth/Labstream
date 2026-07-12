@@ -23,32 +23,19 @@ extension LibraryPagingSource {
             cacheEmptyFirstPage: true,
             awaitAlphabetBeforeInitialLoad: true,
             fetchPage: { start, limit in
-                guard let server = appModel.serverBaseURL,
-                      let token = appModel.serverToken else {
+                guard let service = try? PlexBrowseService(appModel: appModel) else {
                     throw LibraryPagingError.missingPlexServer
                 }
-                let req = BrowseAPI.sectionItems(server: server,
-                                                 token: token,
-                                                 identity: appModel.identity,
-                                                 sectionKey: section.key,
-                                                 containerStart: start,
-                                                 containerSize: limit,
-                                                 sort: "titleSort")
-                let resp = try await appModel.client.send(req, as: MetadataResponse.self)
-                let items = resp.mediaContainer.metadata
-                SpotlightIndexer.index(items, server: server)
-                return LibraryPagingPage(items: items,
-                                         reportedTotal: resp.mediaContainer.totalSize)
+                let page = try await service.sectionPage(sectionKey: section.key,
+                                                         startIndex: start,
+                                                         limit: limit,
+                                                         sort: "titleSort")
+                SpotlightIndexer.index(page.items, server: service.session.baseURL)
+                return LibraryPagingPage(items: page.items, reportedTotal: page.total)
             },
             fetchAlphabetCounts: {
-                guard let server = appModel.serverBaseURL,
-                      let token = appModel.serverToken else { return [] }
-                let req = BrowseAPI.firstCharacters(server: server,
-                                                    token: token,
-                                                    identity: appModel.identity,
-                                                    sectionKey: section.key)
-                let response = try? await appModel.client.send(req, as: FirstCharacterResponse.self)
-                return response?.libraryCounts() ?? []
+                guard let service = try? PlexBrowseService(appModel: appModel) else { return [] }
+                return (try? await service.alphabetCounts(sectionKey: section.key)) ?? []
             }
         )
     }
@@ -191,57 +178,4 @@ private func mediaBrowserAlphabetCounts(backend: MediaBackendID,
         return byIndex
     }
     return counts.keys.sorted().map { (display: counts[$0]!.0, count: counts[$0]!.1) }
-}
-
-struct FirstCharacterResponse: Decodable {
-    let mediaContainer: Container
-    enum CodingKeys: String, CodingKey { case mediaContainer = "MediaContainer" }
-
-    struct Container: Decodable {
-        let directory: [Entry]
-        enum CodingKeys: String, CodingKey {
-            case directory = "Directory"
-        }
-
-        init(from decoder: Decoder) throws {
-            let c = try decoder.container(keyedBy: CodingKeys.self)
-            directory = try c.decodeIfPresent([Entry].self, forKey: .directory) ?? []
-        }
-    }
-
-    struct Entry: Decodable {
-        let key: String?
-        let title: String?
-        let count: Int
-
-        enum CodingKeys: String, CodingKey {
-            case key
-            case title
-            case size
-            case count
-        }
-
-        init(from decoder: Decoder) throws {
-            let c = try decoder.container(keyedBy: CodingKeys.self)
-            key = try c.decodeIfPresent(String.self, forKey: .key)
-            title = try c.decodeIfPresent(String.self, forKey: .title)
-            count = (try? c.decodeLossyIntIfPresent(forKey: .size))
-                ?? (try? c.decodeLossyIntIfPresent(forKey: .count))
-                ?? 0
-        }
-    }
-
-    /// Maps the Plex first-character response onto the shared alphabet-count shape;
-    /// `LibraryPagingModel` turns it into `AlphabetBucket`s once the first page total is known.
-    func libraryCounts() -> [(display: String, count: Int)] {
-        mediaContainer.directory.map { (display: ($0.title ?? $0.key ?? ""), count: $0.count) }
-    }
-}
-
-private extension KeyedDecodingContainer {
-    func decodeLossyIntIfPresent(forKey key: Key) throws -> Int? {
-        if let int = try decodeIfPresent(Int.self, forKey: key) { return int }
-        if let string = try decodeIfPresent(String.self, forKey: key) { return Int(string) }
-        return nil
-    }
 }

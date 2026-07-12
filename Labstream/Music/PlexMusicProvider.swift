@@ -24,10 +24,10 @@ struct PlexMusicProvider: MusicProvider {
     }
 
     func musicLibraries() async throws -> [MusicLibrary] {
-        let s = try session()
-        let req = BrowseAPI.sections(server: s.server, token: s.token, identity: s.identity)
-        let resp = try await appModel.client.send(req, as: SectionsResponse.self)
-        return resp.mediaContainer.directory.filter(\.isMusic)
+        guard let service = try? PlexBrowseService(appModel: appModel) else {
+            throw NotConnected()
+        }
+        return try await service.libraries().filter(\.isMusic)
             .map { MusicLibrary(id: $0.key, title: $0.title) }
     }
 
