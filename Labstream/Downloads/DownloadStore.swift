@@ -932,6 +932,7 @@ final class DownloadStore: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
               !row.legacyResetPending,
+              !Self.hasPendingRowDeletion(row),
               row.status != .complete, row.status != .unverified,
               let working = row.attemptWorkingRelativePath,
               Self.isSafeOneLevelRelativePath(row.relativePath),
@@ -1832,6 +1833,7 @@ final class DownloadStore: @unchecked Sendable {
         var removed: [OfflineHeldRangeSegment] = []
         if !offsetSet.isEmpty,
            var row = rows[ratingKey],
+           !Self.hasPendingRowDeletion(row),
            var metadata = row.metadata,
            let segments = metadata.heldRangeSegments {
             removed = segments.filter { offsetSet.contains($0.offset) }
@@ -1913,7 +1915,8 @@ final class DownloadStore: @unchecked Sendable {
     func takeHeldRangeSegments(ratingKey: String) -> HeldRangeSegmentsTakeResult {
         lock.lock()
         var removed: [OfflineHeldRangeSegment] = []
-        if var row = rows[ratingKey], var metadata = row.metadata {
+        if var row = rows[ratingKey], !Self.hasPendingRowDeletion(row),
+           var metadata = row.metadata {
             removed = metadata.heldRangeSegments ?? []
             if !removed.isEmpty {
                 metadata.heldRangeSegments = nil
@@ -1938,7 +1941,8 @@ final class DownloadStore: @unchecked Sendable {
     ) -> AttemptHeldRangeSegmentsRemovalResult {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending, var metadata = row.metadata else {
+              !row.legacyResetPending, !Self.hasPendingRowDeletion(row),
+              var metadata = row.metadata else {
             lock.unlock()
             return .staleOrMissing
         }
