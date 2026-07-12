@@ -850,6 +850,41 @@ their relationship during the schema-v3 migration.
   legacy-reset deletion, and whole-row/pending-deletion artifact removal are not migrated by this
   slice. Physical background redelivery and device migration gates also remain open.
 
+#### 2026-07-12 — Phase 1 static checkpoint artifact lifecycle
+
+- **Commits:** `6c3b73f0` stages static checkpoint reset/copy/stat through the artifact lifecycle;
+  `cc093fd7` retains one typed outcome for every accepted live ticket until its required resolver
+  consumes it; `482675ba` adds a deterministic post-copy/pre-terminal hard-kill proof.
+- **Transaction:** an exact-attempt `.staticCheckpoint` intent durably records the private working
+  path, optional stable source and copy temp, expected bytes, and terminal-reconstruction flag. The
+  worker waits for prepared durability, performs the terminal stable-to-working durable copy and
+  file stat off the Store lock, then publishes the working path/bytes/progress and retires the intent
+  only behind the terminal index revision. Copy uses a same-directory temp, protection/backup
+  attributes, full file sync, atomic rename, and directory sync. Relaunch replays the queue head
+  idempotently whether the crash lands before copy, after rename, or before terminal publication.
+- **Production liveness:** all four MainActor Manager reset paths submit nonblocking work and receive
+  results through a per-attempt ordered async coordinator. Same-owner requests retain distinct
+  continuations; unrelated attempts proceed independently; exact ownership is rechecked before
+  manager trackers, diagnostics, or status are mutated. Static submissions reject legacy reset,
+  deletion-pending, and validated-promotion reservations.
+- **Failure/evidence:** tests block copy and stat while proving Store reads remain responsive; cover
+  prepared persistence failure, terminal failure with restored-head/same-process successor retry,
+  deletion/promotion fences, ordered overlapping continuations, and 140 delayed accepted outcomes
+  without eviction. The hard-kill test blocks the original worker immediately after the real durable
+  copy and before stat/terminal enqueue, launches an independent Store from only the prepared disk
+  snapshot, and proves replay plus idempotent convergence after the original worker is released.
+  Adversarial review is clean.
+- **Gates:** the focused attempt-owned suite passed 27/27 before the hard-kill amendment; PMSKit
+  passed 1,487/1,487 and the full Mac plan passed 234/234. The deterministic hard-kill amendment was
+  separately reviewed against its exact boundary. Two high-load full-plan attempts exposed the known
+  MediaBrowser browse-order timing flake; an immediate complete rerun passed, so this is recorded as
+  test-infrastructure evidence rather than hidden.
+- **Rollback:** `.staticCheckpoint` is a new exhaustive artifact-intent operation. Downgrade to a
+  reader that lacks that enum case requires draining every pending static lifecycle intent first (or
+  retaining the new decoder); a blind rollback while an intent is pending cannot decode the row.
+- **Remaining Phase 1A artifact boundary:** validated promotion, legacy-reset deletion, and whole-row/
+  pending-deletion artifact removal remain outside this slice.
+
 #### 2026-07-11 — Phase 2D compiler-cliff removal
 
 - **Status:** complete.
