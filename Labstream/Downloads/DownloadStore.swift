@@ -84,6 +84,7 @@ final class DownloadStore: @unchecked Sendable {
         case ownerMismatch
         case legacyResetPending
         case validatedPromotionPending
+        case deletionPending
         case checkpointHandoffFailed
     }
 
@@ -313,6 +314,13 @@ final class DownloadStore: @unchecked Sendable {
         /// partial artifacts reset before background callback admission may open.
         var legacyResetPending: Bool
         var legacyResetArtifactRelativePaths: [String]?
+        /// A user requested deletion while required server-cleanup authority could not move into
+        /// the independent journal. The row and its exact metadata remain the durable fallback
+        /// until a later retry journals every operation and completes destructive deletion.
+        var deletionPending: Bool
+        /// Exact, credential-free cleanup operations captured at delete time. This includes a
+        /// transient in-memory PlaySessionId that may not yet have reached ordinary row metadata.
+        var deletionPendingCleanupIntents: [DurableDownloadCleanupIntent]
         /// Decode-only evidence used to distinguish a valid v3 owner from the nested v2 fallback.
         /// This field is deliberately absent from CodingKeys.
         var decodedTopLevelAttemptIDPresent: Bool
@@ -324,6 +332,8 @@ final class DownloadStore: @unchecked Sendable {
             case bytes, progress, status, metadata
             case legacyResetPending
             case legacyResetArtifactRelativePaths
+            case deletionPending
+            case deletionPendingCleanupIntents
         }
 
         // Backward-compatible decoding: rows written before D2 lack `status`.
@@ -350,6 +360,10 @@ final class DownloadStore: @unchecked Sendable {
             legacyResetPending = try c.decodeIfPresent(Bool.self, forKey: .legacyResetPending) ?? false
             legacyResetArtifactRelativePaths = try c.decodeIfPresent(
                 [String].self, forKey: .legacyResetArtifactRelativePaths)
+            deletionPending = try c.decodeIfPresent(Bool.self, forKey: .deletionPending) ?? false
+            deletionPendingCleanupIntents = try c.decodeIfPresent(
+                [DurableDownloadCleanupIntent].self,
+                forKey: .deletionPendingCleanupIntents) ?? []
             decodedTopLevelAttemptIDPresent = topLevelAttemptID != nil
             decodedAttemptIdentityDisagrees = topLevelAttemptID != nil
                 && nestedAttemptID != nil
@@ -363,7 +377,9 @@ final class DownloadStore: @unchecked Sendable {
              bytes: Int, progress: Double, status: DownloadStatus,
              metadata: OfflineMetadata? = nil,
              legacyResetPending: Bool = false,
-             legacyResetArtifactRelativePaths: [String]? = nil) {
+             legacyResetArtifactRelativePaths: [String]? = nil,
+             deletionPending: Bool = false,
+             deletionPendingCleanupIntents: [DurableDownloadCleanupIntent] = []) {
             self.ratingKey = ratingKey
             self.attemptID = attemptID
             self.title = title
@@ -376,6 +392,8 @@ final class DownloadStore: @unchecked Sendable {
             self.metadata = metadata
             self.legacyResetPending = legacyResetPending
             self.legacyResetArtifactRelativePaths = legacyResetArtifactRelativePaths
+            self.deletionPending = deletionPending
+            self.deletionPendingCleanupIntents = deletionPendingCleanupIntents
             self.decodedTopLevelAttemptIDPresent = attemptID != nil
             self.decodedAttemptIdentityDisagrees = false
         }
@@ -396,6 +414,12 @@ final class DownloadStore: @unchecked Sendable {
             if legacyResetPending { try c.encode(true, forKey: .legacyResetPending) }
             try c.encodeIfPresent(legacyResetArtifactRelativePaths,
                                   forKey: .legacyResetArtifactRelativePaths)
+            if deletionPending { try c.encode(true, forKey: .deletionPending) }
+            if !deletionPendingCleanupIntents.isEmpty {
+                try c.encode(
+                    deletionPendingCleanupIntents,
+                    forKey: .deletionPendingCleanupIntents)
+            }
         }
     }
 
@@ -1294,6 +1318,58 @@ final class DownloadStore: @unchecked Sendable {
         return rows[key.ratingKey]?.attemptID == key.attemptID
     }
 
+    func isDeletionPending(for key: DownloadAttemptKey) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else { return false }
+        return row.deletionPending
+    }
+
+    func deletionPendingCleanupIntents(
+        for key: DownloadAttemptKey
+    ) -> [DurableDownloadCleanupIntent]? {
+        lock.lock(); defer { lock.unlock() }
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
+              row.deletionPending else { return nil }
+        return row.deletionPendingCleanupIntents
+    }
+
+    /// Reserve exact row metadata as the durable cleanup authority before a failed journal write
+    /// can lead to destructive local deletion. Repeating after an ambiguous index failure retries
+    /// the dirty full snapshot and returns success only once the pending bit is proven durable.
+    @discardableResult
+    func markDeletionPending(
+        for key: DownloadAttemptKey,
+        cleanupIntents: [DurableDownloadCleanupIntent]
+    ) -> AttemptMutationResult {
+        guard !cleanupIntents.isEmpty,
+              cleanupIntents.allSatisfy({ $0.attemptKey == key }) else {
+            return .staleOrMissing
+        }
+        lock.lock()
+        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
+              !row.legacyResetPending,
+              row.pendingValidatedPromotionStatus == nil else {
+            lock.unlock()
+            return .staleOrMissing
+        }
+        if row.deletionPending {
+            // The first durable reservation is authoritative. A retry may rebuild candidates with
+            // fresh UUIDs; never replace exact crash-recovery authority once captured.
+            lock.unlock()
+            let persistence = proveCleanupNoOpDurable()
+            return persistence.result.committed(through: persistence.ticket)
+                ? .noChange : .persistenceFailed(persistence.result)
+        }
+        row.deletionPending = true
+        row.deletionPendingCleanupIntents = cleanupIntents
+        rows[key.ratingKey] = row
+        let ticket = enqueueAttemptPersistenceLocked()
+        lock.unlock()
+        let persistence = waitForPersistence(through: ticket)
+        return persistence.result.committed(through: persistence.ticket)
+            ? .applied : .persistenceFailed(persistence.result)
+    }
+
     func record(for key: DownloadAttemptKey) -> DownloadRecord? {
         lock.lock()
         let row = rows[key.ratingKey]?.attemptID == key.attemptID ? rows[key.ratingKey] : nil
@@ -1583,8 +1659,11 @@ final class DownloadStore: @unchecked Sendable {
         lock.lock()
         let rel = record.localURL.lastPathComponent
         let existing = rows[record.ratingKey]
-        // Legacy/unconditional writers may not erase a validated-publication reservation.
-        guard existing?.pendingValidatedPromotionStatus == nil else {
+        // Legacy/unconditional writers may not erase a validated-publication or deletion
+        // reservation. A deletion-pending row is the only durable cleanup authority when the
+        // standalone journal is unavailable.
+        guard existing?.pendingValidatedPromotionStatus == nil,
+              existing?.deletionPending != true else {
             lock.unlock()
             return
         }
@@ -1648,6 +1727,14 @@ final class DownloadStore: @unchecked Sendable {
                 expectedPreviousOwner: expectedKey,
                 actualOwner: existingKey,
                 reason: .validatedPromotionPending
+            )
+        }
+        if existing?.deletionPending == true {
+            lock.unlock()
+            return .rejectedOwnership(
+                expectedPreviousOwner: expectedKey,
+                actualOwner: existingKey,
+                reason: .deletionPending
             )
         }
         // Same-ID replay is the only retry allowed after an ambiguous/failed commit. Otherwise a
@@ -3134,10 +3221,26 @@ final class DownloadStore: @unchecked Sendable {
     /// or any of B's files, even when both attempts reuse the same rating key and stable paths.
     @discardableResult
     func remove(for key: DownloadAttemptKey) -> AttemptMutationResult {
+        remove(for: key, requiresDeletionPending: false)
+    }
+
+    /// Destructive half of the cleanup-ordering protocol. Only the Manager calls this after every
+    /// exact pending operation is independently durable in the cleanup journal. Ordinary retry,
+    /// finalizer, and abandoned-seed removal APIs cannot bypass a deletion reservation.
+    @discardableResult
+    func completePendingDeletion(for key: DownloadAttemptKey) -> AttemptMutationResult {
+        remove(for: key, requiresDeletionPending: true)
+    }
+
+    private func remove(
+        for key: DownloadAttemptKey,
+        requiresDeletionPending: Bool
+    ) -> AttemptMutationResult {
         lock.lock()
         guard let existing = rows[key.ratingKey], existing.attemptID == key.attemptID,
               !existing.legacyResetPending,
-              existing.pendingValidatedPromotionStatus == nil else {
+              existing.pendingValidatedPromotionStatus == nil,
+              existing.deletionPending == requiresDeletionPending else {
             lock.unlock()
             return .staleOrMissing
         }
