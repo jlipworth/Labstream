@@ -25,19 +25,11 @@ struct JellyfinBrowseService {
     }
 
     func userViews() async throws -> [JellyfinBaseItemDto] {
-        let context = try context()
-        let req = try JellyfinLibrary.userViewsRequest(server: context.server,
-                                                       token: context.token,
-                                                       identity: jellyfinIdentity,
-                                                       userId: context.userID)
-        let response = try await send(req, as: JellyfinUserViewsResponse.self)
-        return response.items
+        try await browseCore().userViews()
     }
 
     func userViewLinks() async throws -> [JellyfinLibraryLink] {
-        try await userViews().map {
-            JellyfinLibraryLink(id: $0.id, title: $0.name, collectionType: $0.collectionType)
-        }
+        try await browseCore().userViewLinks()
     }
 
     func items(parentId: String?,
@@ -78,26 +70,13 @@ struct JellyfinBrowseService {
                    albumArtistIds: String? = nil,
                    artistIds: String? = nil,
                    filters: [String] = []) async throws -> (items: [MediaItem], total: Int?) {
-        let context = try context()
-        let req = try JellyfinLibrary.itemsRequest(server: context.server,
-                                                   token: context.token,
-                                                   identity: jellyfinIdentity,
-                                                   userId: context.userID,
-                                                   parentId: parentId,
-                                                   recursive: recursive,
-                                                   startIndex: startIndex,
-                                                   limit: limit,
-                                                   searchTerm: searchTerm,
-                                                   nameStartsWith: nameStartsWith,
-                                                   sortBy: sortBy,
-                                                   sortOrder: sortOrder,
-                                                   includeItemTypes: includeItemTypes,
-                                                   fields: fields,
-                                                   albumArtistIds: albumArtistIds,
-                                                   artistIds: artistIds,
-                                                   filters: filters)
-        let response = try await send(req, as: JellyfinItemsResponse.self)
-        return (response.items.compactMap { $0.toMediaItem() }, response.totalRecordCount)
+        let page = try await browseCore().itemsPage(MediaBrowserItemsQuery(
+            parentID: parentId, recursive: recursive, startIndex: startIndex, limit: limit,
+            searchTerm: searchTerm, nameStartsWith: nameStartsWith, sortBy: sortBy,
+            sortOrder: sortOrder, includeItemTypes: includeItemTypes, fields: fields,
+            albumArtistIDs: albumArtistIds, artistIDs: artistIds, filters: filters
+        ))
+        return (page.items, page.total)
     }
 
     /// Tag-aggregated album artists for a music library (#111), via `/Artists/AlbumArtists`.
@@ -107,32 +86,17 @@ struct JellyfinBrowseService {
                           nameStartsWith: String? = nil,
                           sortBy: String = "SortName",
                           sortOrder: String = "Ascending") async throws -> (items: [MediaItem], total: Int?) {
-        let context = try context()
-        let req = try JellyfinLibrary.albumArtistsRequest(server: context.server,
-                                                          token: context.token,
-                                                          identity: jellyfinIdentity,
-                                                          userId: context.userID,
-                                                          parentId: parentId,
-                                                          startIndex: startIndex,
-                                                          limit: limit,
-                                                          nameStartsWith: nameStartsWith,
-                                                          sortBy: sortBy,
-                                                          sortOrder: sortOrder)
-        let response = try await send(req, as: JellyfinItemsResponse.self)
-        return (response.items.compactMap { $0.toMediaItem() }, response.totalRecordCount)
+        let page = try await browseCore().albumArtistsPage(
+            parentID: parentId, startIndex: startIndex, limit: limit,
+            nameStartsWith: nameStartsWith, sortBy: sortBy, sortOrder: sortOrder
+        )
+        return (page.items, page.total)
     }
 
     /// Ordered tracks of an audio playlist (#111), via `/Playlists/{id}/Items` — playlist
     /// order is preserved by the endpoint, so the caller must not re-sort.
     func playlistItems(playlistId: String) async throws -> [MediaItem] {
-        let context = try context()
-        let req = try JellyfinLibrary.playlistItemsRequest(server: context.server,
-                                                           token: context.token,
-                                                           identity: jellyfinIdentity,
-                                                           userId: context.userID,
-                                                           playlistId: playlistId)
-        let response = try await send(req, as: JellyfinItemsResponse.self)
-        return response.items.compactMap { $0.toMediaItem() }
+        try await browseCore().playlistItems(playlistID: playlistId)
     }
 
     func searchResults(query: String, limitPerLibrary: Int = 50) async throws -> SearchResults {
@@ -177,16 +141,9 @@ struct JellyfinBrowseService {
     func resumeItemsPage(parentId: String? = nil,
                          startIndex: Int,
                          limit: Int) async throws -> (items: [MediaItem], total: Int?) {
-        let context = try context()
-        let req = try JellyfinLibrary.resumeItemsRequest(server: context.server,
-                                                         token: context.token,
-                                                         identity: jellyfinIdentity,
-                                                         userId: context.userID,
-                                                         parentId: parentId,
-                                                         startIndex: startIndex,
-                                                         limit: limit)
-        let response = try await send(req, as: JellyfinItemsResponse.self)
-        return (response.items.compactMap { $0.toMediaItem() }, response.totalRecordCount)
+        let page = try await browseCore().resumeItemsPage(
+            parentID: parentId, startIndex: startIndex, limit: limit)
+        return (page.items, page.total)
     }
 
     func nextUp(parentId: String? = nil, limit: Int = 20) async throws -> [MediaItem] {
@@ -196,42 +153,23 @@ struct JellyfinBrowseService {
     func nextUpPage(parentId: String? = nil,
                     startIndex: Int,
                     limit: Int) async throws -> (items: [MediaItem], total: Int?) {
-        let context = try context()
-        let req = try JellyfinLibrary.nextUpRequest(server: context.server,
-                                                    token: context.token,
-                                                    identity: jellyfinIdentity,
-                                                    userId: context.userID,
-                                                    parentId: parentId,
-                                                    startIndex: startIndex,
-                                                    limit: limit)
-        let response = try await send(req, as: JellyfinItemsResponse.self)
-        return (response.items.compactMap { $0.toMediaItem() }, response.totalRecordCount)
+        let page = try await browseCore().nextUpPage(
+            parentID: parentId, startIndex: startIndex, limit: limit)
+        return (page.items, page.total)
     }
 
     func latestItems(parentId: String?,
                      includeItemTypes: String = "Movie,Episode,Video",
                      limit: Int = 20) async throws -> [MediaItem] {
-        let context = try context()
-        let req = try JellyfinLibrary.latestItemsRequest(server: context.server,
-                                                         token: context.token,
-                                                         identity: jellyfinIdentity,
-                                                         userId: context.userID,
-                                                         parentId: parentId,
-                                                         includeItemTypes: includeItemTypes,
-                                                         limit: limit)
-        let response = try await send(req, as: [JellyfinBaseItemDto].self)
-        return response.compactMap { $0.toMediaItem() }
+        try await browseCore().latestItems(parentID: parentId,
+                                           includeItemTypes: includeItemTypes,
+                                           limit: limit)
     }
 
     func metadata(itemId: String) async throws -> MediaItem {
-        let context = try context()
-        let req = try JellyfinLibrary.itemRequest(server: context.server,
-                                                  token: context.token,
-                                                  identity: jellyfinIdentity,
-                                                  userId: context.userID,
-                                                  itemId: itemId)
-        let dto = try await send(req, as: JellyfinBaseItemDto.self)
-        guard let item = dto.toMediaItem() else { throw ServiceError.noPlayableItem }
+        guard let item = try await browseCore().metadata(itemID: itemId) else {
+            throw ServiceError.noPlayableItem
+        }
         return item
     }
 
@@ -284,14 +222,7 @@ struct JellyfinBrowseService {
 
 
     func setPlayed(itemId: String, played: Bool) async throws {
-        let context = try context()
-        let req = try JellyfinLibrary.markPlayedRequest(server: context.server,
-                                                        token: context.token,
-                                                        identity: jellyfinIdentity,
-                                                        userId: context.userID,
-                                                        itemId: itemId,
-                                                        played: played)
-        _ = try await send(req)
+        try await browseCore().setPlayed(itemID: itemId, played: played)
     }
 
     func downloadRequest(itemId: String,
@@ -360,6 +291,18 @@ struct JellyfinBrowseService {
         return status
     }
 
+    private func browseCore() throws -> MediaBrowserBrowseCore<JellyfinBrowseCoreAdapter> {
+        let values = try context()
+        return MediaBrowserBrowseCore(
+            context: MediaBrowserBrowseContext(server: values.server,
+                                               token: values.token,
+                                               userID: values.userID,
+                                               identity: jellyfinIdentity),
+            adapter: JellyfinBrowseCoreAdapter(),
+            send: { request in try await send(request) }
+        )
+    }
+
     private func context() throws -> (server: URL, token: String, userID: String) {
         guard let server = appModel.jellyfinServerBaseURL,
               let token = appModel.jellyfinAccessToken,
@@ -382,10 +325,4 @@ struct JellyfinBrowseService {
             throw ServiceError.http(status)
         }
     }
-}
-
-struct JellyfinLibraryLink: Identifiable, Hashable {
-    let id: String
-    let title: String
-    let collectionType: String?
 }
