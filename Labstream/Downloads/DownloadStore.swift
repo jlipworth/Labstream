@@ -3065,6 +3065,10 @@ final class DownloadStore: @unchecked Sendable {
         lock.lock()
         var changed = false
         for (key, var row) in rows {
+            // A deletion-pending row is a sealed recovery capsule. Reconcile must not demote it,
+            // rewrite its checkpoint counters, or delete main/resume artifacts while the cleanup
+            // journal is unavailable; cleanup migration is the only path allowed to unseal it.
+            guard !row.deletionPending else { continue }
             guard DownloadStatus.reconcileEligible(ratingKey: key,
                                                    snapshotRatingKeys: snapshotRatingKeys) else { continue }
             let hasLiveTask = liveRatingKeys.contains(key)
