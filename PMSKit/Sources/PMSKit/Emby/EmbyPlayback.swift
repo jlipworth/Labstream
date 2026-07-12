@@ -740,53 +740,29 @@ public enum EmbyPlayback {
 
     static func streamingDeviceProfile(maxStreamingBitrate: Int,
                                        advertiseDolbyVision: Bool = false) -> [String: Any] {
+        let subtitlePolicy: MediaBrowserStreamingSubtitlePolicy = .embyEncodeSelected
         var profile: [String: Any] = [
             "Name": "Labstream",
             "MaxStreamingBitrate": maxStreamingBitrate,
-            "DirectPlayProfiles": [
-                ["Type": "Video", "Container": "mp4,m4v,mov", "VideoCodec": "h264,hevc", "AudioCodec": "aac,ac3,eac3"],
-                ["Type": "Video", "Container": "mpegts", "VideoCodec": "h264", "AudioCodec": "aac,ac3,eac3"],
-            ],
-            "TranscodingProfiles": [
-                [
-                    "Type": "Video",
-                    "Container": "ts",
-                    "Protocol": "hls",
-                    // h264 first (encode target); hevc enables VIDEO COPY of HEVC MKV
-                    // remuxes instead of a source-bitrate h264 re-encode. See the matching
-                    // comment in JellyfinPlayback.streamingDeviceProfile (GH #196 retest).
-                    "VideoCodec": "h264,hevc",
-                    "AudioCodec": "aac,ac3",
-                    "Context": "Streaming",
-                    "MinSegments": 2,
-                    "BreakOnNonKeyFrames": false,
-                ],
-            ],
+            "DirectPlayProfiles": MediaBrowserDeviceProfileFacts.directPlayProfiles,
+            "TranscodingProfiles": MediaBrowserDeviceProfileFacts.streamingHLSTranscodingProfiles(
+                subtitlePolicy: subtitlePolicy),
             // We do not render external sidecars or in-manifest WebVTT (Emby 4.9.3 does not embed
             // subtitle renditions in its HLS manifest), so every subtitle we ask for must be
             // burned into the video by the server. Declaring all common text and image subtitle
             // formats with Method "Encode" makes Emby resolve a selected `SubtitleStreamIndex` to
             // a burn-in transcode deterministically, for both text (SRT/ASS) and image (PGS/VOBSUB)
             // subtitles. Only consulted when a subtitle is actually selected.
-            "SubtitleProfiles": [
-                ["Format": "srt", "Method": "Encode"],
-                ["Format": "subrip", "Method": "Encode"],
-                ["Format": "ass", "Method": "Encode"],
-                ["Format": "ssa", "Method": "Encode"],
-                ["Format": "vtt", "Method": "Encode"],
-                ["Format": "webvtt", "Method": "Encode"],
-                ["Format": "sub", "Method": "Encode"],
-                ["Format": "idx", "Method": "Encode"],
-                ["Format": "pgssub", "Method": "Encode"],
-                ["Format": "dvdsub", "Method": "Encode"],
-                ["Format": "dvbsub", "Method": "Encode"],
-            ],
         ]
+        if let subtitleProfiles = MediaBrowserDeviceProfileFacts.subtitleProfiles(
+            policy: subtitlePolicy) {
+            profile["SubtitleProfiles"] = subtitleProfiles
+        }
         if advertiseDolbyVision {
             // GH #196 spike (a): mirror Jellyfin's DOVI-range advertising. Emby's DeviceProfile
             // schema tolerates the same CodecProfiles shape (unknown conditions are ignored).
             // Experimental, default-off, device-unverified.
-            profile["CodecProfiles"] = JellyfinPlayback.dolbyVisionCodecProfiles
+            profile["CodecProfiles"] = MediaBrowserDeviceProfileFacts.dolbyVisionCodecProfiles
         }
         return profile
     }
@@ -836,25 +812,8 @@ public enum EmbyPlayback {
     }
 
     static func compatibleRemuxDownloadDeviceProfile(maxStaticBitrate: Int) -> [String: Any] {
-        [
-            "Name": "Labstream-Compatible-Download",
-            "MaxStaticBitrate": maxStaticBitrate,
-            "MaxStreamingBitrate": maxStaticBitrate,
-            "DirectPlayProfiles": [
-                ["Type": "Video", "Container": "mp4,m4v,mov", "VideoCodec": "h264,hevc", "AudioCodec": "aac,ac3,eac3"],
-            ],
-            "TranscodingProfiles": [
-                [
-                    "Type": "Video",
-                    "Container": "mp4",
-                    "Protocol": "http",
-                    "VideoCodec": "h264,hevc",
-                    "AudioCodec": "aac",
-                    "Context": "Static",
-                    "BreakOnNonKeyFrames": false,
-                ],
-            ],
-        ]
+        MediaBrowserDeviceProfileFacts.compatibleRemuxDownloadProfile(
+            maxStaticBitrate: maxStaticBitrate)
     }
 
     // MARK: - URL joining (base-path preserving)
