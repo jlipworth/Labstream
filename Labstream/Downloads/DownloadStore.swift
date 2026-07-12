@@ -2628,15 +2628,33 @@ final class DownloadStore: @unchecked Sendable {
                       let attemptID = row.attemptID else { return nil }
                 return DownloadAttemptKey(ratingKey: row.ratingKey, attemptID: attemptID)
             }.sorted { $0.ratingKey < $1.ratingKey }
-            pendingLegacyAttemptResetKeys.formUnion(pending)
-            lock.unlock()
-            if !malformed.isEmpty { return .immediate(.malformedV3Rows(malformed)) }
+            if !malformed.isEmpty {
+                lock.unlock()
+                return .immediate(.malformedV3Rows(malformed))
+            }
             if !pending.isEmpty || !cleanupOnly.isEmpty {
-                return .immediate(.committed(LegacyAttemptMigrationPlan(
+                let plan = LegacyAttemptMigrationPlan(
                     taskCancellationAndReset: pending,
                     cleanupOnly: cleanupOnly
-                )))
+                )
+                // A prior v4 ownerless-adoption attempt may have timed out after mutating memory.
+                // Those rows now look fully adopted, but cancellation/reset admission must still
+                // prove the dirty snapshot. Resubmit the current full state and carry a new exact
+                // ticket rather than blessing in-memory identity as durable.
+                let writerState = indexWriter.state
+                if writerState.dirtyRevision != nil
+                    || writerState.committedRevision < nextPersistenceRevision {
+                    let ticket = enqueueAttemptPersistenceLocked()
+                    lock.unlock()
+                    return .accepted(
+                        plan: plan, ticket: ticket,
+                        pendingResetKeys: pending, advancesSchema: false)
+                }
+                pendingLegacyAttemptResetKeys.formUnion(pending)
+                lock.unlock()
+                return .immediate(.committed(plan))
             }
+            lock.unlock()
             return .immediate(.notRequired)
         }
 

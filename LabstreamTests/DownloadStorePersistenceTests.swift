@@ -145,6 +145,43 @@ struct DownloadStorePersistenceTests {
         }
     }
 
+    @Test func timedOutV4OwnerlessAdoptionRetryStillWaitsForDirtyCommit() async throws {
+        try await withTemporaryDirectory { directory in
+            let ratingKey = "plex:ownerless-timeout"
+            try writeLegacyIndex(
+                schemaVersion: 4,
+                rows: [legacyRow(ratingKey: ratingKey, status: "failed", bytes: 12)],
+                directory: directory)
+            let writes = FirstBlockingAtomicWriteHarness()
+            let retryFinished = DispatchSemaphore(value: 0)
+            let store = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init { data, url in try writes.write(data, to: url) })
+            let fixedID = DownloadAttemptID(rawValue: "ownerless-timeout-id")!
+            let first = store.submitLegacyAttemptOwnershipMigration(idFactory: { _ in fixedID })
+            #expect(await waitForSignal(writes.started, timeout: 1))
+            guard case .failed(let timedOutPlan, .timedOut) = await store.resolve(first, timeout: 0.01)
+            else {
+                Issue.record("Expected bounded first adoption timeout")
+                writes.release.signal()
+                return
+            }
+            let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: fixedID)
+            #expect(timedOutPlan.taskCancellationAndReset == [key])
+
+            let retry = store.submitLegacyAttemptOwnershipMigration(idFactory: { _ in .generated() })
+            Task.detached {
+                _ = await store.resolve(retry, timeout: 1)
+                retryFinished.signal()
+            }
+            #expect(!(await waitForSignal(retryFinished, timeout: 0.03)))
+            writes.release.signal()
+            #expect(await waitForSignal(retryFinished, timeout: 1))
+            #expect(store.commitLegacyAttemptOwnershipMigration()
+                == .committed(.init(taskCancellationAndReset: [key], cleanupOnly: [])))
+        }
+    }
+
     @Test func completedCleanupOnlyOwnershipIsReconstructedAfterRelaunch() throws {
         try withTemporaryDirectory { directory in
             let ratingKey = "jellyfin:legacy-cleanup"
@@ -992,6 +1029,16 @@ struct DownloadStorePersistenceTests {
         try body(directory)
     }
 
+    private func withTemporaryDirectory(
+        _ body: (URL) async throws -> Void
+    ) async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("download-store-persistence-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try await body(directory)
+    }
+
     private func legacyRow(ratingKey: String, status: String, bytes: Int,
                            nestedAttemptID: String? = nil) -> [String: Any] {
         var metadata: [String: Any] = [
@@ -1068,6 +1115,22 @@ private final class AtomicWriteHarness: @unchecked Sendable {
             return shouldFailNextWrite
         }
         if shouldFail { throw InjectedAtomicWriteFailure() }
+        try data.write(to: url, options: .atomic)
+    }
+}
+
+private final class FirstBlockingAtomicWriteHarness: @unchecked Sendable {
+    let started = DispatchSemaphore(value: 0)
+    let release = DispatchSemaphore(value: 0)
+    private let lock = NSLock()
+    private var attempts = 0
+
+    func write(_ data: Data, to url: URL) throws {
+        let attempt = lock.withLock { attempts += 1; return attempts }
+        if attempt == 1 {
+            started.signal()
+            release.wait()
+        }
         try data.write(to: url, options: .atomic)
     }
 }
