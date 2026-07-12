@@ -99,6 +99,21 @@ final class DownloadStore: @unchecked Sendable {
         case persistenceFailed(PersistenceFlushResult)
     }
 
+    /// Result of a lock-linearized exact-attempt mutation whose full snapshot has been accepted
+    /// by the revisioned writer but whose I/O has deliberately not been awaited. Lifecycle code
+    /// uses this form so a wedged filesystem cannot wedge URLSession's delegate queue before the
+    /// bounded background-completion flush. Existing synchronous APIs remain compatibility
+    /// wrappers over the same submission.
+    enum AttemptMutationSubmission: Sendable, Equatable {
+        case accepted(change: AttemptMutationChange, ticket: PersistenceTicket?)
+        case staleOrMissing
+    }
+
+    enum AttemptMutationChange: Sendable, Equatable {
+        case applied
+        case noChange
+    }
+
     enum AttemptUnverifiedPromotionResult: Sendable, Equatable {
         case promoted
         case notUnverified
@@ -149,6 +164,23 @@ final class DownloadStore: @unchecked Sendable {
     private struct PersistenceAttempt {
         let ticket: PersistenceTicket
         let result: PersistenceFlushResult
+    }
+
+    private func awaitAttemptMutationSubmission(
+        _ submission: AttemptMutationSubmission
+    ) -> AttemptMutationResult {
+        switch submission {
+        case .staleOrMissing:
+            return .staleOrMissing
+        case .accepted(let change, nil):
+            return change == .applied ? .applied : .noChange
+        case .accepted(let change, let ticket?):
+            let persistence = waitForPersistence(through: ticket)
+            guard persistence.result.committed(through: ticket) else {
+                return .persistenceFailed(persistence.result)
+            }
+            return change == .applied ? .applied : .noChange
+        }
     }
 
     struct EmbyConvertCleanupTombstone: Codable, Sendable, Equatable, Identifiable {
@@ -2117,12 +2149,41 @@ final class DownloadStore: @unchecked Sendable {
         setSourcePartSize(for: key, size, onlyIfMissing: false)
     }
 
+    @discardableResult
+    func submitSourcePartSizeIfMissing(
+        for key: DownloadAttemptKey,
+        _ size: Int?
+    ) -> AttemptMutationSubmission {
+        submitSourcePartSize(for: key, size, onlyIfMissing: true)
+    }
+
+    @discardableResult
+    func submitSourcePartSize(
+        for key: DownloadAttemptKey,
+        _ size: Int?
+    ) -> AttemptMutationSubmission {
+        submitSourcePartSize(for: key, size, onlyIfMissing: false)
+    }
+
     private func setSourcePartSize(
         for key: DownloadAttemptKey,
         _ size: Int?,
         onlyIfMissing: Bool
     ) -> AttemptMutationResult {
         updateMetadata(for: key) { metadata in
+            guard let size, size > 0 else { return }
+            let existing = metadata.sourcePartSize ?? 0
+            guard existing != size, !onlyIfMissing || existing <= 0 else { return }
+            metadata.sourcePartSize = size
+        }
+    }
+
+    private func submitSourcePartSize(
+        for key: DownloadAttemptKey,
+        _ size: Int?,
+        onlyIfMissing: Bool
+    ) -> AttemptMutationSubmission {
+        submitMetadata(for: key) { metadata in
             guard let size, size > 0 else { return }
             let existing = metadata.sourcePartSize ?? 0
             guard existing != size, !onlyIfMissing || existing <= 0 else { return }
@@ -2366,6 +2427,14 @@ final class DownloadStore: @unchecked Sendable {
         _ validator: String
     ) -> AttemptMutationResult {
         updateMetadata(for: key) { $0.rangeValidator = validator }
+    }
+
+    @discardableResult
+    func submitRangeValidator(
+        for key: DownloadAttemptKey,
+        _ validator: String?
+    ) -> AttemptMutationSubmission {
+        submitMetadata(for: key) { $0.rangeValidator = validator }
     }
 
     func clearRangeValidator(ratingKey: String) {
@@ -2906,6 +2975,16 @@ final class DownloadStore: @unchecked Sendable {
         for key: DownloadAttemptKey,
         mutate: (inout OfflineMetadata) -> Void
     ) -> AttemptMutationResult {
+        awaitAttemptMutationSubmission(submitMetadata(for: key, mutate: mutate))
+    }
+
+    /// Nonblocking exact-attempt metadata admission used by background delegate and teardown
+    /// lifecycle paths. The synchronous compatibility API above awaits this same ticket.
+    @discardableResult
+    func submitMetadata(
+        for key: DownloadAttemptKey,
+        mutate: (inout OfflineMetadata) -> Void
+    ) -> AttemptMutationSubmission {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
               !row.legacyResetPending, var metadata = row.metadata else {
@@ -2918,18 +2997,14 @@ final class DownloadStore: @unchecked Sendable {
         guard metadata != previous else {
             let ticket = enqueueAttemptPersistenceLocked()
             lock.unlock()
-            let persistence = waitForPersistence(through: ticket)
-            return persistence.result.committed(through: persistence.ticket)
-                ? .noChange : .persistenceFailed(persistence.result)
+            return .accepted(change: .noChange, ticket: ticket)
         }
         row.metadata = metadata
         rows[key.ratingKey] = row
         sideAssetHydrationCache.removeValue(forKey: key.ratingKey)
         let ticket = enqueueAttemptPersistenceLocked()
         lock.unlock()
-        let persistence = waitForPersistence(through: ticket)
-        return persistence.result.committed(through: persistence.ticket)
-            ? .applied : .persistenceFailed(persistence.result)
+        return .accepted(change: .applied, ticket: ticket)
     }
 
     /// Remove only the short-lived Sync-list crash-window markers. The server job id and File
@@ -2995,6 +3070,20 @@ final class DownloadStore: @unchecked Sendable {
         bytes: Int,
         progress: Double
     ) -> AttemptMutationResult {
+        awaitAttemptMutationSubmission(
+            submitProgress(for: key, bytes: bytes, progress: progress)
+        )
+    }
+
+    /// Nonblocking exact-attempt progress admission for URLSession/lifecycle paths. The live row
+    /// always changes immediately. Throttled samples intentionally carry no persistence ticket;
+    /// status-changing or cadence-selected samples carry the exact accepted revision.
+    @discardableResult
+    func submitProgress(
+        for key: DownloadAttemptKey,
+        bytes: Int,
+        progress: Double
+    ) -> AttemptMutationSubmission {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
               !row.legacyResetPending else {
@@ -3007,7 +3096,7 @@ final class DownloadStore: @unchecked Sendable {
         let changed = row.bytes != bytes || row.progress != progress || statusChanged
         guard changed else {
             lock.unlock()
-            return .noChange
+            return .accepted(change: .noChange, ticket: nil)
         }
         row.bytes = bytes
         row.progress = progress
@@ -3028,10 +3117,7 @@ final class DownloadStore: @unchecked Sendable {
                 "source": .label("progress_attempt"),
             ])
         }
-        guard let ticket else { return .applied }
-        let persistence = waitForPersistence(through: ticket)
-        return persistence.result.committed(through: persistence.ticket)
-            ? .applied : .persistenceFailed(persistence.result)
+        return .accepted(change: .applied, ticket: ticket)
     }
 
     /// Set the explicit lifecycle status for a row (D2). No-op if the row is gone.
@@ -3062,6 +3148,17 @@ final class DownloadStore: @unchecked Sendable {
         for key: DownloadAttemptKey,
         _ status: DownloadStatus
     ) -> AttemptMutationResult {
+        awaitAttemptMutationSubmission(submitStatus(for: key, status))
+    }
+
+    /// Nonblocking exact-attempt lifecycle transition. Even an unchanged status submits a full
+    /// snapshot so a prior dirty transition is retried and the returned ticket is real proof for
+    /// the enclosing bounded completion barrier.
+    @discardableResult
+    func submitStatus(
+        for key: DownloadAttemptKey,
+        _ status: DownloadStatus
+    ) -> AttemptMutationSubmission {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
               !row.legacyResetPending else {
@@ -3072,9 +3169,7 @@ final class DownloadStore: @unchecked Sendable {
         guard previousStatus != status else {
             let ticket = enqueueAttemptPersistenceLocked()
             lock.unlock()
-            let persistence = waitForPersistence(through: ticket)
-            return persistence.result.committed(through: persistence.ticket)
-                ? .noChange : .persistenceFailed(persistence.result)
+            return .accepted(change: .noChange, ticket: ticket)
         }
         let bytes = row.bytes
         let progress = row.progress
@@ -3090,9 +3185,7 @@ final class DownloadStore: @unchecked Sendable {
             "progress_percent": .int(Int((progress * 100).rounded(.down))),
             "source": .label("setStatus_attempt"),
         ])
-        let persistence = waitForPersistence(through: ticket)
-        return persistence.result.committed(through: persistence.ticket)
-            ? .applied : .persistenceFailed(persistence.result)
+        return .accepted(change: .applied, ticket: ticket)
     }
 
     /// Promote a previously byte-complete but probe-inconclusive row once a later validation or
