@@ -104,14 +104,72 @@ struct DownloadStoreAttemptStagingTests {
             #expect(!FileManager.default.fileExists(atPath: working.path))
             #expect(String(decoding: try Data(contentsOf: stable), as: UTF8.self) == "validated")
 
-            let relaunched = DownloadStore(baseDirectory: directory)
+            let replayDurability = PromotionDurabilityRecorder()
+            let relaunched = DownloadStore(
+                baseDirectory: directory,
+                promotionFilesystem: .init(
+                    exists: live.exists, size: live.size,
+                    fullSyncSource: live.fullSyncSource,
+                    renameReplacing: live.renameReplacing,
+                    syncParentDirectory: { url in
+                        try replayDurability.run("directory-sync") {
+                            try live.syncParentDirectory(url)
+                        }
+                    }))
             #expect(relaunched.resolveArtifactSynchronouslyForTests(
                 through: relaunched.currentArtifactLifecycleWatermark()) == .completed)
             #expect(relaunched.record(for: owner)?.status == .complete)
             #expect(relaunched.record(for: owner)?.bytes == 9)
+            #expect(replayDurability.events == ["directory-sync"])
             gate.release.signal()
             #expect(await original.resolveValidatedPromotion(submission)
                 == .promoted(owner, bytes: 9, status: .complete))
+        }
+    }
+
+    @Test func sourceAbsentReplayRequiresDirectorySyncBeforeTerminalPublication() async throws {
+        try await withStoreAsync { initial, directory in
+            let owner = key("plex:promotion-replay-dir-sync", "attempt-a")
+            let stable = directory.appendingPathComponent("promotion-replay-dir-sync.mp4")
+            #expect(created(initial, key: owner, stable: stable))
+            let working = try #require(initial.attemptWorkingFileURL(for: owner))
+            try Data("validated".utf8).write(to: working)
+            let gate = BlockAfterPromotionRename()
+            let live = DownloadPromotionFilesystem.live
+            let original = DownloadStore(
+                baseDirectory: directory,
+                promotionFilesystem: .init(
+                    exists: live.exists, size: live.size,
+                    fullSyncSource: live.fullSyncSource,
+                    renameReplacing: { source, destination in
+                        try gate.rename(source, destination, using: live.renameReplacing)
+                    },
+                    syncParentDirectory: live.syncParentDirectory))
+            let submission = original.submitValidatedPromotion(
+                for: owner, terminalStatus: .complete)
+            #expect(await wait(gate.renamed, timeout: 1))
+
+            let failingReplay = DownloadStore(
+                baseDirectory: directory,
+                promotionFilesystem: .init(
+                    exists: live.exists, size: live.size,
+                    fullSyncSource: live.fullSyncSource,
+                    renameReplacing: live.renameReplacing,
+                    syncParentDirectory: { _ in throw CocoaError(.fileWriteOutOfSpace) }))
+            guard case .failed(.artifact) = failingReplay.resolveArtifactSynchronouslyForTests(
+                through: failingReplay.currentArtifactLifecycleWatermark()) else {
+                Issue.record("replay must fail closed when directory sync fails"); return
+            }
+            let index = try #require(JSONSerialization.jsonObject(with: Data(
+                contentsOf: directory.appendingPathComponent("index.json"))) as? [String: Any])
+            let rows = try #require(index["rows"] as? [[String: Any]])
+            #expect(rows.first?["status"] as? String == "queued")
+            let survivor = DownloadStore(baseDirectory: directory)
+            #expect(survivor.resolveArtifactSynchronouslyForTests(
+                through: survivor.currentArtifactLifecycleWatermark()) == .completed)
+            #expect(survivor.record(for: owner)?.status == .complete)
+            gate.release.signal()
+            _ = await original.resolveValidatedPromotion(submission)
         }
     }
 
