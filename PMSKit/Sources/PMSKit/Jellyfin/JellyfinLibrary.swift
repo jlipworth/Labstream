@@ -3,28 +3,6 @@ import Foundation
 import FoundationNetworking
 #endif
 
-public struct JellyfinAuthenticationResult: Decodable, Sendable, Equatable {
-    public let user: JellyfinAuthenticatedUser?
-    public let accessToken: String?
-    public let serverId: String?
-
-    enum CodingKeys: String, CodingKey {
-        case user = "User"
-        case accessToken = "AccessToken"
-        case serverId = "ServerId"
-    }
-}
-
-public struct JellyfinAuthenticatedUser: Decodable, Sendable, Equatable {
-    public let id: String
-    public let name: String?
-
-    enum CodingKeys: String, CodingKey {
-        case id = "Id"
-        case name = "Name"
-    }
-}
-
 public enum JellyfinLibrary {
     private static let requestFactory = MediaBrowserLibraryRequestFactory(dialect: .jellyfin)
 
@@ -136,18 +114,14 @@ public enum JellyfinLibrary {
                                           parentId: String? = nil,
                                           startIndex: Int? = nil,
                                           limit: Int = 20) throws -> URLRequest {
-        var query = [
-            URLQueryItem(name: "userId", value: userId),
-            URLQueryItem(name: "limit", value: String(limit)),
-            URLQueryItem(name: "includeItemTypes", value: "Movie,Episode,Video"),
-            URLQueryItem(name: "fields", value: itemFields),
-            URLQueryItem(name: "enableUserData", value: "true"),
-            URLQueryItem(name: "enableImages", value: "true"),
-            URLQueryItem(name: "excludeActiveSessions", value: "false"),
-        ]
-        if let parentId { query.append(URLQueryItem(name: "parentId", value: parentId)) }
-        if let startIndex { query.append(URLQueryItem(name: "startIndex", value: String(startIndex))) }
-        let url = try url(server: server, path: "/UserItems/Resume", queryItems: query)
+        let shape = requestFactory.resumeItems(
+            userId: userId,
+            parentId: parentId,
+            startIndex: startIndex,
+            limit: limit,
+            fields: itemFields
+        )
+        let url = try url(server: server, shape: shape)
         return get(url: url, token: token, identity: identity)
     }
 
@@ -158,17 +132,14 @@ public enum JellyfinLibrary {
                                      parentId: String? = nil,
                                      startIndex: Int? = nil,
                                      limit: Int = 20) throws -> URLRequest {
-        var query = [
-            URLQueryItem(name: "userId", value: userId),
-            URLQueryItem(name: "limit", value: String(limit)),
-            URLQueryItem(name: "fields", value: itemFields),
-            URLQueryItem(name: "enableUserData", value: "true"),
-            URLQueryItem(name: "enableImages", value: "true"),
-            URLQueryItem(name: "enableResumable", value: "true"),
-        ]
-        if let parentId { query.append(URLQueryItem(name: "parentId", value: parentId)) }
-        if let startIndex { query.append(URLQueryItem(name: "startIndex", value: String(startIndex))) }
-        let url = try url(server: server, path: "/Shows/NextUp", queryItems: query)
+        let shape = requestFactory.nextUp(
+            userId: userId,
+            parentId: parentId,
+            startIndex: startIndex,
+            limit: limit,
+            fields: itemFields
+        )
+        let url = try url(server: server, shape: shape)
         return get(url: url, token: token, identity: identity)
     }
 
@@ -179,17 +150,14 @@ public enum JellyfinLibrary {
                                           parentId: String? = nil,
                                           includeItemTypes: String = "Movie,Episode,Video",
                                           limit: Int = 20) throws -> URLRequest {
-        var query = [
-            URLQueryItem(name: "userId", value: userId),
-            URLQueryItem(name: "limit", value: String(limit)),
-            URLQueryItem(name: "includeItemTypes", value: includeItemTypes),
-            URLQueryItem(name: "fields", value: itemFields),
-            URLQueryItem(name: "enableUserData", value: "true"),
-            URLQueryItem(name: "enableImages", value: "true"),
-            URLQueryItem(name: "groupItems", value: "false"),
-        ]
-        if let parentId { query.append(URLQueryItem(name: "parentId", value: parentId)) }
-        let url = try url(server: server, path: "/Items/Latest", queryItems: query)
+        let shape = requestFactory.latestItems(
+            userId: userId,
+            parentId: parentId,
+            includeItemTypes: includeItemTypes,
+            limit: limit,
+            fields: itemFields
+        )
+        let url = try url(server: server, shape: shape)
         return get(url: url, token: token, identity: identity)
     }
 
@@ -198,9 +166,8 @@ public enum JellyfinLibrary {
                                    identity: JellyfinClientIdentity,
                                    userId: String,
                                    itemId: String) throws -> URLRequest {
-        let url = try url(server: server, path: "/Users/\(userId)/Items/\(itemId)", queryItems: [
-            URLQueryItem(name: "fields", value: fullItemFields),
-        ])
+        let shape = requestFactory.item(userId: userId, itemId: itemId, fields: fullItemFields)
+        let url = try url(server: server, shape: shape)
         return get(url: url, token: token, identity: identity)
     }
 
@@ -210,11 +177,10 @@ public enum JellyfinLibrary {
                                          userId: String,
                                          itemId: String,
                                          played: Bool) throws -> URLRequest {
-        let url = try url(server: server,
-                          path: "/Users/\(userId)/PlayedItems/\(itemId)",
-                          queryItems: [])
+        let shape = requestFactory.markPlayed(userId: userId, itemId: itemId, played: played)
+        let url = try url(server: server, shape: shape)
         var req = authenticatedRequest(url: url, token: token, identity: identity)
-        req.httpMethod = played ? "POST" : "DELETE"
+        req.httpMethod = shape.httpMethod
         return req
     }
 
@@ -255,15 +221,15 @@ public enum JellyfinLibrary {
                                            mediaSourceId: String,
                                            streamIndex: Int,
                                            format: String) throws -> URLRequest {
-        let cleanFormat = format.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
-        let ext = ["srt", "vtt"].contains(cleanFormat) ? cleanFormat : "vtt"
-        let url = try JellyfinPlayback.jellyfinURL(
-            server: server,
-            path: "/Videos/\(itemId)/\(mediaSourceId)/Subtitles/\(streamIndex)/Stream.\(ext)"
+        let shape = requestFactory.textSubtitle(
+            itemId: itemId,
+            mediaSourceId: mediaSourceId,
+            streamIndex: streamIndex,
+            format: format
         )
+        let url = try url(server: server, shape: shape)
         var req = authenticatedRequest(url: url, token: token, identity: identity)
-        req.setValue(ext == "srt" ? "application/x-subrip,text/plain,*/*" : "text/vtt,text/plain,*/*",
-                     forHTTPHeaderField: "Accept")
+        req.setValue(shape.accept, forHTTPHeaderField: "Accept")
         return req
     }
 
@@ -398,15 +364,14 @@ public enum JellyfinLibrary {
                                       userId: String,
                                       itemId: String,
                                       maxStreamingBitrate: Int = 140_000_000) throws -> URL {
-        try url(server: server, path: "/Audio/\(itemId)/universal", queryItems: [
-            URLQueryItem(name: "UserId", value: userId),
-            URLQueryItem(name: "DeviceId", value: identity.deviceId),
-            URLQueryItem(name: "MaxStreamingBitrate", value: String(maxStreamingBitrate)),
-            URLQueryItem(name: "Container", value: musicDirectPlayContainers),
-            URLQueryItem(name: "TranscodingContainer", value: "ts"),
-            URLQueryItem(name: "TranscodingProtocol", value: "hls"),
-            URLQueryItem(name: "AudioCodec", value: "aac"),
-        ])
+        let shape = requestFactory.audioStream(
+            userId: userId,
+            deviceId: identity.deviceId,
+            itemId: itemId,
+            maxStreamingBitrate: maxStreamingBitrate,
+            containers: musicDirectPlayContainers
+        )
+        return try url(server: server, shape: shape)
     }
 
     /// Containers AVPlayer decodes natively — passed to the `universal` endpoint so a
@@ -419,11 +384,14 @@ public enum JellyfinLibrary {
                                 tag: String?,
                                 width: Int? = nil,
                                 height: Int? = nil) throws -> URL {
-        var query: [URLQueryItem] = []
-        if let tag, !tag.isEmpty { query.append(URLQueryItem(name: "tag", value: tag)) }
-        if let width { query.append(URLQueryItem(name: "width", value: String(width))) }
-        if let height { query.append(URLQueryItem(name: "height", value: String(height))) }
-        return try url(server: server, path: "/Items/\(itemId)/Images/\(imageType.rawValue)", queryItems: query)
+        let shape = requestFactory.image(
+            itemId: itemId,
+            imageType: imageType.rawValue,
+            tag: tag,
+            width: width,
+            height: height
+        )
+        return try url(server: server, shape: shape)
     }
 
     public static func chapterImageURL(server: URL,
@@ -432,11 +400,14 @@ public enum JellyfinLibrary {
                                        tag: String?,
                                        width: Int? = nil,
                                        height: Int? = nil) throws -> URL {
-        var query: [URLQueryItem] = []
-        if let tag, !tag.isEmpty { query.append(URLQueryItem(name: "tag", value: tag)) }
-        if let width { query.append(URLQueryItem(name: "fillWidth", value: String(width))) }
-        if let height { query.append(URLQueryItem(name: "fillHeight", value: String(height))) }
-        return try url(server: server, path: "/Items/\(itemId)/Images/Chapter/\(chapterIndex)", queryItems: query)
+        let shape = requestFactory.chapterImage(
+            itemId: itemId,
+            chapterIndex: chapterIndex,
+            tag: tag,
+            width: width,
+            height: height
+        )
+        return try url(server: server, shape: shape)
     }
 
 
@@ -493,12 +464,13 @@ public enum JellyfinLibrary {
                                                  identity: JellyfinClientIdentity,
                                                  deviceId: String,
                                                  playSessionId: String) throws -> URLRequest {
-        let url = try url(server: server, path: "/Videos/ActiveEncodings", queryItems: [
-            URLQueryItem(name: "deviceId", value: deviceId),
-            URLQueryItem(name: "playSessionId", value: playSessionId),
-        ])
+        let shape = requestFactory.activeEncodingStop(
+            deviceId: deviceId,
+            playSessionId: playSessionId
+        )
+        let url = try url(server: server, shape: shape)
         var req = authenticatedRequest(url: url, token: token, identity: identity)
-        req.httpMethod = "DELETE"
+        req.httpMethod = shape.httpMethod
         return req
     }
 

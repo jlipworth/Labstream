@@ -198,6 +198,123 @@ struct MediaBrowserLibraryRequestFactoryTests {
         #expect(shape.queryItems.map(\.value) == ["first", "second"])
     }
 
+    @Test func remainingConceptsPreserveOrderedDialectGoldens() {
+        struct ShapeGolden {
+            let name: String
+            let shape: MediaBrowserLibraryRequestShape
+            let expected: String
+        }
+
+        let jf = MediaBrowserLibraryRequestFactory(dialect: .jellyfin)
+        let emby = MediaBrowserLibraryRequestFactory(dialect: .emby)
+        let cases = [
+            ShapeGolden(
+                name: "Jellyfin resume reserved values",
+                shape: jf.resumeItems(userId: "u &/1", parentId: "p +&/x", limit: -2, fields: "F"),
+                expected: "GET /UserItems/Resume?userId=u &/1&limit=-2&includeItemTypes=Movie,Episode,Video&fields=F&enableUserData=true&enableImages=true&excludeActiveSessions=false&parentId=p +&/x accept=nil"
+            ),
+            ShapeGolden(
+                name: "Emby resume nil parent",
+                shape: emby.resumeItems(userId: "u &/1", parentId: nil, limit: 0, fields: "F"),
+                expected: "GET /path/to/user &/1/Items/Resume?Limit=0&IncludeItemTypes=Movie,Episode,Video&Fields=F&EnableUserData=true&EnableImages=true accept=nil"
+            ),
+            ShapeGolden(
+                name: "Jellyfin next up nil parent",
+                shape: jf.nextUp(userId: "u", parentId: nil, limit: 1, fields: "F"),
+                expected: "GET /Shows/NextUp?userId=u&limit=1&fields=F&enableUserData=true&enableImages=true&enableResumable=true accept=nil"
+            ),
+            ShapeGolden(
+                name: "Emby next up reserved parent",
+                shape: emby.nextUp(userId: "u", parentId: "p &+", limit: 1, fields: "F"),
+                expected: "GET /Shows/NextUp?UserId=u&Limit=1&Fields=F&EnableUserData=true&EnableImages=true&ParentId=p &+ accept=nil"
+            ),
+            ShapeGolden(
+                name: "Jellyfin latest empty item types",
+                shape: jf.latestItems(userId: "u", parentId: nil, includeItemTypes: "", limit: 0, fields: "F"),
+                expected: "GET /Items/Latest?userId=u&limit=0&includeItemTypes=&fields=F&enableUserData=true&enableImages=true&groupItems=false accept=nil"
+            ),
+            ShapeGolden(
+                name: "Emby latest reserved item types",
+                shape: emby.latestItems(userId: "u", parentId: "p/1", includeItemTypes: "Movie,Video & X", limit: 2, fields: "F"),
+                expected: "GET /path/to/user/Items/Latest?Limit=2&IncludeItemTypes=Movie,Video & X&Fields=F&EnableUserData=true&EnableImages=true&GroupItems=false&ParentId=p/1 accept=nil"
+            ),
+            ShapeGolden(
+                name: "Jellyfin metadata",
+                shape: jf.item(userId: "u/1", itemId: "i &+", fields: "F"),
+                expected: "GET /path/to/user/1/Items/i &+?fields=F accept=nil"
+            ),
+            ShapeGolden(
+                name: "Emby metadata",
+                shape: emby.item(userId: "u/1", itemId: "i &+", fields: "F"),
+                expected: "GET /path/to/user/1/Items/i &+?Fields=F accept=nil"
+            ),
+            ShapeGolden(
+                name: "Jellyfin mark played",
+                shape: jf.markPlayed(userId: "u", itemId: "i", played: true),
+                expected: "POST /path/to/user/PlayedItems/i accept=nil"
+            ),
+            ShapeGolden(
+                name: "Emby mark unplayed",
+                shape: emby.markPlayed(userId: "u", itemId: "i", played: false),
+                expected: "DELETE /path/to/user/PlayedItems/i accept=nil"
+            ),
+            ShapeGolden(
+                name: "Jellyfin subtitle normalizes reserved format",
+                shape: jf.textSubtitle(itemId: "i/1", mediaSourceId: "s &+", streamIndex: -1, format: "..SRT.."),
+                expected: "GET /Videos/i/1/s &+/Subtitles/-1/Stream.srt accept=application/x-subrip,text/plain,*/*"
+            ),
+            ShapeGolden(
+                name: "Emby subtitle empty format falls back",
+                shape: emby.textSubtitle(itemId: "i", mediaSourceId: "s", streamIndex: 0, format: ""),
+                expected: "GET /Videos/i/s/Subtitles/0/Stream.vtt accept=text/vtt,text/plain,*/*"
+            ),
+            ShapeGolden(
+                name: "Jellyfin audio ordered title-case query",
+                shape: jf.audioStream(userId: "u &+", deviceId: "d/1", itemId: "i", maxStreamingBitrate: -1, containers: ""),
+                expected: "GET /Audio/i/universal?UserId=u &+&DeviceId=d/1&MaxStreamingBitrate=-1&Container=&TranscodingContainer=ts&TranscodingProtocol=hls&AudioCodec=aac accept=nil"
+            ),
+            ShapeGolden(
+                name: "Emby audio ordered title-case query",
+                shape: emby.audioStream(userId: "u", deviceId: "d", itemId: "i", maxStreamingBitrate: 1, containers: "mp3,aac"),
+                expected: "GET /Audio/i/universal?UserId=u&DeviceId=d&MaxStreamingBitrate=1&Container=mp3,aac&TranscodingContainer=ts&TranscodingProtocol=hls&AudioCodec=aac accept=nil"
+            ),
+            ShapeGolden(
+                name: "Jellyfin image omits empty and nil options",
+                shape: jf.image(itemId: "i", imageType: "Primary", tag: "", width: nil, height: nil),
+                expected: "GET /Items/i/Images/Primary accept=nil"
+            ),
+            ShapeGolden(
+                name: "Emby image preserves reserved tag order",
+                shape: emby.image(itemId: "i", imageType: "Backdrop", tag: "t &+", width: 0, height: -1),
+                expected: "GET /Items/i/Images/Backdrop?tag=t &+&width=0&height=-1 accept=nil"
+            ),
+            ShapeGolden(
+                name: "Jellyfin chapter image",
+                shape: jf.chapterImage(itemId: "i", chapterIndex: -2, tag: nil, width: 0, height: nil),
+                expected: "GET /Items/i/Images/Chapter/-2?fillWidth=0 accept=nil"
+            ),
+            ShapeGolden(
+                name: "Emby chapter image",
+                shape: emby.chapterImage(itemId: "i", chapterIndex: 2, tag: "", width: nil, height: 0),
+                expected: "GET /Items/i/Images/Chapter/2?fillHeight=0 accept=nil"
+            ),
+            ShapeGolden(
+                name: "Jellyfin active encoding stop casing",
+                shape: jf.activeEncodingStop(deviceId: "d &+", playSessionId: "p/1"),
+                expected: "DELETE /Videos/ActiveEncodings?deviceId=d &+&playSessionId=p/1 accept=nil"
+            ),
+            ShapeGolden(
+                name: "Emby active encoding stop casing",
+                shape: emby.activeEncodingStop(deviceId: "d &+", playSessionId: "p/1"),
+                expected: "DELETE /Videos/ActiveEncodings?DeviceId=d &+&PlaySessionId=p/1 accept=nil"
+            ),
+        ]
+
+        for golden in cases {
+            #expect(shapeSnapshot(golden.shape) == golden.expected, Comment(rawValue: golden.name))
+        }
+    }
+
     private func wireSnapshot(_ request: URLRequest) throws -> String {
         let url = try #require(request.url)
         let headers = (request.allHTTPHeaderFields ?? [:])
@@ -206,5 +323,13 @@ struct MediaBrowserLibraryRequestFactoryTests {
             .joined(separator: "|")
         let body = request.httpBody?.base64EncodedString() ?? "nil"
         return "\(request.httpMethod ?? "nil") \(url.absoluteString) [\(headers)] body=\(body)"
+    }
+
+    private func shapeSnapshot(_ shape: MediaBrowserLibraryRequestShape) -> String {
+        let query = shape.queryItems
+            .map { "\($0.name)=\($0.value ?? "nil")" }
+            .joined(separator: "&")
+        let suffix = query.isEmpty ? "" : "?\(query)"
+        return "\(shape.httpMethod) \(shape.path)\(suffix) accept=\(shape.accept ?? "nil")"
     }
 }
