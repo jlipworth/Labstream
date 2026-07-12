@@ -1292,10 +1292,22 @@ final class DownloadStore: @unchecked Sendable {
             lock.unlock()
             return .staleOrMissing
         }
+        // A committed result proves only the snapshot captured by its exact ticket. If a later
+        // mutation is already staged (especially a failed R2), clearing R1 would submit the
+        // CURRENT full row and accidentally commit R2 before its bodies are eligible for deletion.
+        // Defer instead; retryDeferredHeldRangeBodyDeletions will prove the latest snapshot first.
+        guard nextPersistenceRevision == removal.ticket.revision else {
+            lock.unlock()
+            return .purged(AttemptHeldRangePurgeResult(
+                removal: removal, removedRelativePaths: [], failedRelativePaths: []))
+        }
+        let provenPaths = Set(removal.deferredRelativePaths)
         let currentlyReferenced = heldRangeManifestRelativePathsLocked()
         let protectedByManifest = Set(row.heldRangeBodyDeletionIntents)
+            .intersection(provenPaths)
             .intersection(currentlyReferenced)
         let candidates = row.heldRangeBodyDeletionIntents
+            .filter { provenPaths.contains($0) }
             .filter(Self.isSafeOneLevelRelativePath)
             .filter { !currentlyReferenced.contains($0) }
         var removed: [String] = []
