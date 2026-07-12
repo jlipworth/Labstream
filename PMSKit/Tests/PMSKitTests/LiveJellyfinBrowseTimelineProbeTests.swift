@@ -51,6 +51,13 @@ struct LiveJellyfinBrowseTimelineProbeTests {
         case invalidFixture
         case resumeReadback
         case restoration
+        case targetSessionCleanup
+    }
+
+    private struct TimelineSequenceFailure: Error {
+        let playingAccepted: Bool
+        let stoppedAccepted: Bool
+        let errorType: String
     }
 
     private let transport = LiveProbeTransport()
@@ -86,6 +93,18 @@ struct LiveJellyfinBrowseTimelineProbeTests {
             let readbackMatched = observed == targetTicks
             #expect(readbackMatched, "Jellyfin resume readback did not observe the requested test offset")
             if !readbackMatched { throw ProbeFailure.resumeReadback }
+        } catch let sequenceFailure as TimelineSequenceFailure {
+            if sequenceFailure.playingAccepted && !sequenceFailure.stoppedAccepted {
+                do {
+                    try await stopFailedTargetSession(positionTicks: targetTicks,
+                                                      playback: targetPlayback,
+                                                      cfg: cfg)
+                } catch {
+                    Issue.record("Jellyfin failed-target session cleanup was not accepted; server session cleanup requires manual verification")
+                    primaryError = ProbeFailure.targetSessionCleanup
+                }
+            }
+            if primaryError == nil { primaryError = sequenceFailure }
         } catch {
             primaryError = error
         }
@@ -213,13 +232,52 @@ struct LiveJellyfinBrowseTimelineProbeTests {
                 positionTicks: positionTicks)),
         ]
 
+        var playingAccepted = false
+        var stoppedAccepted = false
         for (event, request) in requests {
-            let (_, status) = try await transport.send(request)
-            print(">>> JELLYFIN [\(label).\(event)] HTTP \(status)")
-            let succeeded = (200..<300).contains(status)
-            #expect(succeeded, "Jellyfin timeline event expected 2xx")
-            guard succeeded else { throw ProbeFailure.badHTTP }
+            do {
+                let (_, status) = try await transport.send(request)
+                print(">>> JELLYFIN [\(label).\(event)] HTTP \(status)")
+                let succeeded = (200..<300).contains(status)
+                #expect(succeeded, "Jellyfin timeline event expected 2xx")
+                guard succeeded else {
+                    throw TimelineSequenceFailure(playingAccepted: playingAccepted,
+                                                  stoppedAccepted: stoppedAccepted,
+                                                  errorType: "http")
+                }
+                if event == "playing" { playingAccepted = true }
+                if event == "stopped" { stoppedAccepted = true }
+            } catch let failure as TimelineSequenceFailure {
+                throw failure
+            } catch {
+                throw TimelineSequenceFailure(playingAccepted: playingAccepted,
+                                              stoppedAccepted: stoppedAccepted,
+                                              errorType: String(reflecting: type(of: error)))
+            }
         }
+    }
+
+    /// If a target sequence got far enough to establish Playing but did not confirm Stopped,
+    /// close that exact real PlaybackInfo session before attempting resume restoration.
+    private func stopFailedTargetSession(positionTicks: Int,
+                                         playback: JellyfinPlaybackOpenResult,
+                                         cfg: Config) async throws {
+        let request = try JellyfinPlayback.stoppedRequest(
+            server: cfg.server,
+            token: cfg.token,
+            identity: cfg.identity,
+            userId: cfg.userID,
+            itemId: cfg.itemID,
+            mediaSourceId: playback.mediaSourceId,
+            playSessionId: playback.playSessionId,
+            playMethod: playback.playMethod,
+            positionTicks: positionTicks
+        )
+        let (_, status) = try await transport.send(request)
+        print(">>> JELLYFIN [target-cleanup.stopped] HTTP \(status)")
+        let succeeded = (200..<300).contains(status)
+        #expect(succeeded, "Jellyfin failed-target Stopped cleanup expected 2xx")
+        guard succeeded else { throw ProbeFailure.targetSessionCleanup }
     }
 
     private func waitForPosition(_ expected: Int, cfg: Config) async throws -> Int {
