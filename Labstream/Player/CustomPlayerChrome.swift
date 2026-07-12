@@ -171,7 +171,13 @@ struct CustomPlayerChrome: View {
             }
 
             #if os(iOS)
-            if shouldShowChrome, selectedMenu == nil {
+            // The buffering/reconnect/failure platter owns the center of the iOS player.
+            // Leaving the ordinary transport here puts its glass pause/play button visibly
+            // behind the platter (macOS does not have this centered transport, which is why
+            // the overlap only reproduced on iPhone).
+            if shouldShowChrome,
+               selectedMenu == nil,
+               controller.transportStatus.activeStatus == nil {
                 iosCenterPlayPauseButton
                     .transition(.scale(scale: 0.92).combined(with: .opacity))
             }
