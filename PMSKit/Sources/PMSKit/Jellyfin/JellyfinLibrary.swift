@@ -26,16 +26,14 @@ public struct JellyfinAuthenticatedUser: Decodable, Sendable, Equatable {
 }
 
 public enum JellyfinLibrary {
-    private static let dialect = MediaBrowserLibraryQueryDialect.jellyfin
+    private static let requestFactory = MediaBrowserLibraryRequestFactory(dialect: .jellyfin)
 
     public static func userViewsRequest(server: URL,
                                         token: String,
                                         identity: JellyfinClientIdentity,
                                         userId: String) throws -> URLRequest {
-        let url = try url(server: server, path: dialect.path(.userViews(userId: userId)), queryItems: [
-            dialect.queryItem(.userId, value: userId),
-            dialect.queryItem(.includeExternalContent, value: "false"),
-        ])
+        let shape = requestFactory.userViews(userId: userId)
+        let url = try url(server: server, shape: shape)
         return get(url: url, token: token, identity: identity)
     }
 
@@ -56,30 +54,23 @@ public enum JellyfinLibrary {
                                     albumArtistIds: String? = nil,
                                     artistIds: String? = nil,
                                     filters: [String] = []) throws -> URLRequest {
-        var query = baseItemsQuery(userId: userId, fields: fields)
-        if let parentId { query.append(dialect.queryItem(.parentId, value: parentId)) }
-        query.append(dialect.queryItem(.recursive, value: recursive ? "true" : "false"))
-        if let startIndex { query.append(dialect.queryItem(.startIndex, value: String(startIndex))) }
-        if let limit { query.append(dialect.queryItem(.limit, value: String(limit))) }
-        if let searchTerm, !searchTerm.isEmpty {
-            query.append(dialect.queryItem(.searchTerm, value: searchTerm))
-        }
-        if let nameStartsWith, !nameStartsWith.isEmpty {
-            query.append(dialect.queryItem(.nameStartsWith, value: nameStartsWith))
-        }
-        // An album-artist entity is a tag aggregate, not a folder, so its albums/tracks are
-        // reached by these filters rather than `parentId` (#111).
-        if let albumArtistIds, !albumArtistIds.isEmpty {
-            query.append(dialect.queryItem(.albumArtistIds, value: albumArtistIds))
-        }
-        if let artistIds, !artistIds.isEmpty {
-            query.append(dialect.queryItem(.artistIds, value: artistIds))
-        }
-        replaceQueryItem(named: dialect.queryName(.includeItemTypes), with: includeItemTypes, in: &query)
-        if !filters.isEmpty { query.append(dialect.queryItem(.filters, value: filters.joined(separator: ","))) }
-        replaceQueryItem(named: dialect.queryName(.sortBy), with: sortBy, in: &query)
-        replaceQueryItem(named: dialect.queryName(.sortOrder), with: sortOrder, in: &query)
-        let url = try url(server: server, path: dialect.path(.items(userId: userId)), queryItems: query)
+        let shape = requestFactory.items(
+            userId: userId,
+            parentId: parentId,
+            recursive: recursive,
+            startIndex: startIndex,
+            limit: limit,
+            searchTerm: searchTerm,
+            nameStartsWith: nameStartsWith,
+            sortBy: sortBy,
+            sortOrder: sortOrder,
+            includeItemTypes: includeItemTypes,
+            fields: fields,
+            albumArtistIds: albumArtistIds,
+            artistIds: artistIds,
+            filters: filters
+        )
+        let url = try url(server: server, shape: shape)
         return get(url: url, token: token, identity: identity)
     }
 
@@ -100,24 +91,17 @@ public enum JellyfinLibrary {
                                            sortBy: String = "SortName",
                                            sortOrder: String = "Ascending",
                                            fields: String = gridItemFields) throws -> URLRequest {
-        var query = [
-            URLQueryItem(name: "userId", value: userId),
-            URLQueryItem(name: "fields", value: fields),
-            URLQueryItem(name: "enableUserData", value: "true"),
-            URLQueryItem(name: "enableImages", value: "true"),
-            URLQueryItem(name: "recursive", value: "true"),
-            URLQueryItem(name: "sortBy", value: sortBy),
-            URLQueryItem(name: "sortOrder", value: sortOrder),
-        ]
-        if let parentId { query.append(URLQueryItem(name: "parentId", value: parentId)) }
-        if let startIndex { query.append(URLQueryItem(name: "startIndex", value: String(startIndex))) }
-        if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
-        // The A–Z rail probes each letter's album-artist count with a `NameStartsWith=X`,
-        // `Limit=1` request and reads the envelope's `TotalRecordCount` (#111).
-        if let nameStartsWith, !nameStartsWith.isEmpty {
-            query.append(URLQueryItem(name: "nameStartsWith", value: nameStartsWith))
-        }
-        let url = try url(server: server, path: "/Artists/AlbumArtists", queryItems: query)
+        let shape = requestFactory.albumArtists(
+            userId: userId,
+            parentId: parentId,
+            startIndex: startIndex,
+            limit: limit,
+            nameStartsWith: nameStartsWith,
+            sortBy: sortBy,
+            sortOrder: sortOrder,
+            fields: fields
+        )
+        let url = try url(server: server, shape: shape)
         return get(url: url, token: token, identity: identity)
     }
 
@@ -134,15 +118,14 @@ public enum JellyfinLibrary {
                                             startIndex: Int? = nil,
                                             limit: Int? = nil,
                                             fields: String = fullItemFields) throws -> URLRequest {
-        var query = [
-            URLQueryItem(name: "userId", value: userId),
-            URLQueryItem(name: "fields", value: fields),
-            URLQueryItem(name: "enableUserData", value: "true"),
-            URLQueryItem(name: "enableImages", value: "true"),
-        ]
-        if let startIndex { query.append(URLQueryItem(name: "startIndex", value: String(startIndex))) }
-        if let limit { query.append(URLQueryItem(name: "limit", value: String(limit))) }
-        let url = try url(server: server, path: "/Playlists/\(playlistId)/Items", queryItems: query)
+        let shape = requestFactory.playlistItems(
+            userId: userId,
+            playlistId: playlistId,
+            startIndex: startIndex,
+            limit: limit,
+            fields: fields
+        )
+        let url = try url(server: server, shape: shape)
         return get(url: url, token: token, identity: identity)
     }
 
@@ -532,24 +515,12 @@ public enum JellyfinLibrary {
         return req
     }
 
-    private static func baseItemsQuery(userId: String, fields: String = fullItemFields) -> [URLQueryItem] {
-        [
-            dialect.queryItem(.userId, value: userId),
-            dialect.queryItem(.includeItemTypes, value: "Movie,Series,Season,Episode,Video"),
-            dialect.queryItem(.fields, value: fields),
-            dialect.queryItem(.enableUserData, value: "true"),
-            dialect.queryItem(.sortBy, value: "SortName"),
-            dialect.queryItem(.sortOrder, value: "Ascending"),
-        ]
-    }
-
     public static let gridItemFields = MediaBrowserLibraryFields.gridItem
     public static let fullItemFields = MediaBrowserLibraryFields.fullItem
     private static let itemFields = fullItemFields
 
-    private static func replaceQueryItem(named name: String, with value: String, in query: inout [URLQueryItem]) {
-        query.removeAll { $0.name == name }
-        query.append(URLQueryItem(name: name, value: value))
+    private static func url(server: URL, shape: MediaBrowserLibraryRequestShape) throws -> URL {
+        try url(server: server, path: shape.path, queryItems: shape.queryItems)
     }
 
     private static func url(server: URL, path: String, queryItems: [URLQueryItem]) throws -> URL {
