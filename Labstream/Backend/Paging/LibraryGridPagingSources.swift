@@ -54,71 +54,39 @@ extension LibraryPagingSource {
     }
 
     static func jellyfin(view: JellyfinLibraryLink, appModel: AppModel) -> LibraryPagingSource {
-        LibraryPagingSource(
-            title: view.title,
-            identity: libraryPagingIdentity(libraryID: view.id,
-                                            sessionKey: appModel.browseSessionKey(for: .jellyfin)),
-            backendLabel: "Jellyfin",
-            cacheEmptyFirstPage: false,
-            awaitAlphabetBeforeInitialLoad: false,
-            collapsesMovieVersions: MediaBrowserLibraryGridPolicy.collapsesMovieVersions(collectionType: view.collectionType),
-            fetchPage: { start, limit in
-                let service = JellyfinBrowseService(appModel: appModel)
-                let recursive = jellyfinLibraryRecursive(for: view)
-                let itemTypes = jellyfinLibraryItemTypes(for: view)
-                let page = try await service.itemsPage(parentId: view.id,
-                                                       recursive: recursive,
-                                                       startIndex: start,
-                                                       limit: limit,
-                                                       includeItemTypes: itemTypes,
-                                                       fields: JellyfinLibrary.gridItemFields)
-                if let session = appModel.backendSession(for: .jellyfin) {
-                    SpotlightIndexer.index(page.items, backend: .jellyfin, server: session.baseURL)
-                }
-                let gridPage = LibraryPagingPage(items: page.items, reportedTotal: page.total)
-                recordGridPageDiagnostics(page.items,
-                                          backend: "Jellyfin",
-                                          sourceID: view.id,
-                                          sourceName: view.title,
-                                          sourceKind: view.collectionType,
-                                          recursive: recursive,
-                                          includeItemTypes: itemTypes,
-                                          startIndex: start,
-                                          limit: limit,
-                                          total: start == 0 ? gridPage.total : page.total)
-                return gridPage
-            },
-            fetchAlphabetCounts: {
-                await jellyfinAlphabetCounts(service: JellyfinBrowseService(appModel: appModel), view: view)
-            }
-        )
+        mediaBrowser(view: view, backend: .jellyfin, appModel: appModel)
     }
 
     static func emby(view: EmbyLibraryLink, appModel: AppModel) -> LibraryPagingSource {
-        LibraryPagingSource(
+        mediaBrowser(view: view, backend: .emby, appModel: appModel)
+    }
+
+    private static func mediaBrowser(view: MediaBrowserLibraryLink,
+                                     backend: MediaBackendID,
+                                     appModel: AppModel) -> LibraryPagingSource {
+        precondition(backend == .jellyfin || backend == .emby)
+        return LibraryPagingSource(
             title: view.title,
             identity: libraryPagingIdentity(libraryID: view.id,
-                                            sessionKey: appModel.browseSessionKey(for: .emby)),
-            backendLabel: "Emby",
+                                            sessionKey: appModel.browseSessionKey(for: backend)),
+            backendLabel: backend.displayName,
             cacheEmptyFirstPage: false,
             awaitAlphabetBeforeInitialLoad: false,
             collapsesMovieVersions: MediaBrowserLibraryGridPolicy.collapsesMovieVersions(collectionType: view.collectionType),
             fetchPage: { start, limit in
-                let service = EmbyBrowseService(appModel: appModel)
-                let recursive = embyLibraryRecursive(for: view)
-                let itemTypes = embyLibraryItemTypes(for: view)
-                let page = try await service.itemsPage(parentId: view.id,
-                                                       recursive: recursive,
-                                                       startIndex: start,
-                                                       limit: limit,
-                                                       includeItemTypes: itemTypes,
-                                                       fields: EmbyLibrary.gridItemFields)
-                if let session = appModel.backendSession(for: .emby) {
-                    SpotlightIndexer.index(page.items, backend: .emby, server: session.baseURL)
+                let recursive = MediaBrowserLibraryGridPolicy.recursive(collectionType: view.collectionType)
+                let itemTypes = MediaBrowserLibraryGridPolicy.itemTypes(collectionType: view.collectionType)
+                let page = try await mediaBrowserItemsPage(
+                    backend: backend, view: view, appModel: appModel,
+                    recursive: recursive, startIndex: start, limit: limit,
+                    includeItemTypes: itemTypes
+                )
+                if let session = appModel.backendSession(for: backend) {
+                    SpotlightIndexer.index(page.items, backend: backend, server: session.baseURL)
                 }
                 let gridPage = LibraryPagingPage(items: page.items, reportedTotal: page.total)
                 recordGridPageDiagnostics(page.items,
-                                          backend: "Emby",
+                                          backend: backend.displayName,
                                           sourceID: view.id,
                                           sourceName: view.title,
                                           sourceKind: view.collectionType,
@@ -130,7 +98,7 @@ extension LibraryPagingSource {
                 return gridPage
             },
             fetchAlphabetCounts: {
-                await embyAlphabetCounts(service: EmbyBrowseService(appModel: appModel), view: view)
+                await mediaBrowserAlphabetCounts(backend: backend, appModel: appModel, view: view)
             }
         )
     }
@@ -169,23 +137,50 @@ private func recordGridPageDiagnostics(_ items: [MediaItem],
     #endif
 }
 
-/// Probe each A-Z letter's item count for the Jellyfin alphabet rail, in parallel
-/// (GH #96). Returns raw `(display, count)` pairs; `LibraryPagingModel` applies the
-/// shared `AlphabetBucket` offset math after the first page reports the library total.
-private func jellyfinAlphabetCounts(service: JellyfinBrowseService,
-                                    view: JellyfinLibraryLink) async -> [(display: String, count: Int)] {
+@MainActor
+private func mediaBrowserItemsPage(backend: MediaBackendID,
+                                   view: MediaBrowserLibraryLink,
+                                   appModel: AppModel,
+                                   recursive: Bool,
+                                   startIndex: Int?,
+                                   limit: Int?,
+                                   nameStartsWith: String? = nil,
+                                   includeItemTypes: String) async throws -> (items: [MediaItem], total: Int?) {
+    switch backend {
+    case .jellyfin:
+        return try await JellyfinBrowseService(appModel: appModel).itemsPage(
+            parentId: view.id, recursive: recursive, startIndex: startIndex, limit: limit,
+            nameStartsWith: nameStartsWith, includeItemTypes: includeItemTypes,
+            fields: JellyfinLibrary.gridItemFields
+        )
+    case .emby:
+        return try await EmbyBrowseService(appModel: appModel).itemsPage(
+            parentId: view.id, recursive: recursive, startIndex: startIndex, limit: limit,
+            nameStartsWith: nameStartsWith, includeItemTypes: includeItemTypes,
+            fields: EmbyLibrary.gridItemFields
+        )
+    case .plex:
+        preconditionFailure("Plex does not use MediaBrowser paging")
+    }
+}
+
+/// Probe each A-Z letter's MediaBrowser item count in parallel (GH #96). Individual probe
+/// failures remain degraded to zero while stable letter order is reconstructed after completion.
+@MainActor
+private func mediaBrowserAlphabetCounts(backend: MediaBackendID,
+                                        appModel: AppModel,
+                                        view: MediaBrowserLibraryLink) async -> [(display: String, count: Int)] {
     let letters = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ").map(String.init)
-    let itemTypes = jellyfinLibraryItemTypes(for: view)
-    let recursive = jellyfinLibraryRecursive(for: view)
+    let itemTypes = MediaBrowserLibraryGridPolicy.itemTypes(collectionType: view.collectionType)
+    let recursive = MediaBrowserLibraryGridPolicy.recursive(collectionType: view.collectionType)
     let counts = await withTaskGroup(of: (Int, String, Int).self) { group -> [Int: (String, Int)] in
         for (index, letter) in letters.enumerated() {
             group.addTask {
-                let page = try? await service.itemsPage(parentId: view.id,
-                                                        recursive: recursive,
-                                                        limit: 1,
-                                                        nameStartsWith: letter,
-                                                        includeItemTypes: itemTypes,
-                                                        fields: JellyfinLibrary.gridItemFields)
+                let page = try? await mediaBrowserItemsPage(
+                    backend: backend, view: view, appModel: appModel,
+                    recursive: recursive, startIndex: nil, limit: 1,
+                    nameStartsWith: letter, includeItemTypes: itemTypes
+                )
                 return (index, letter, page?.total ?? 0)
             }
         }
@@ -196,49 +191,6 @@ private func jellyfinAlphabetCounts(service: JellyfinBrowseService,
         return byIndex
     }
     return counts.keys.sorted().map { (display: counts[$0]!.0, count: counts[$0]!.1) }
-}
-
-/// Emby twin of `jellyfinAlphabetCounts` (GH #96) — identical parallelized probe.
-private func embyAlphabetCounts(service: EmbyBrowseService,
-                                view: EmbyLibraryLink) async -> [(display: String, count: Int)] {
-    let letters = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ").map(String.init)
-    let itemTypes = embyLibraryItemTypes(for: view)
-    let recursive = embyLibraryRecursive(for: view)
-    let counts = await withTaskGroup(of: (Int, String, Int).self) { group -> [Int: (String, Int)] in
-        for (index, letter) in letters.enumerated() {
-            group.addTask {
-                let page = try? await service.itemsPage(parentId: view.id,
-                                                        recursive: recursive,
-                                                        limit: 1,
-                                                        nameStartsWith: letter,
-                                                        includeItemTypes: itemTypes,
-                                                        fields: EmbyLibrary.gridItemFields)
-                return (index, letter, page?.total ?? 0)
-            }
-        }
-        var byIndex: [Int: (String, Int)] = [:]
-        for await (index, letter, count) in group where count > 0 {
-            byIndex[index] = (letter, count)
-        }
-        return byIndex
-    }
-    return counts.keys.sorted().map { (display: counts[$0]!.0, count: counts[$0]!.1) }
-}
-
-private func embyLibraryItemTypes(for view: EmbyLibraryLink) -> String {
-    MediaBrowserLibraryGridPolicy.itemTypes(collectionType: view.collectionType)
-}
-
-private func embyLibraryRecursive(for view: EmbyLibraryLink) -> Bool {
-    MediaBrowserLibraryGridPolicy.recursive(collectionType: view.collectionType)
-}
-
-private func jellyfinLibraryItemTypes(for view: JellyfinLibraryLink) -> String {
-    MediaBrowserLibraryGridPolicy.itemTypes(collectionType: view.collectionType)
-}
-
-private func jellyfinLibraryRecursive(for view: JellyfinLibraryLink) -> Bool {
-    MediaBrowserLibraryGridPolicy.recursive(collectionType: view.collectionType)
 }
 
 struct FirstCharacterResponse: Decodable {

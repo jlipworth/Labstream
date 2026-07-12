@@ -115,6 +115,86 @@ struct MediaBrowserBrowseCoreTests {
         }
     }
 
+    @Test func searchFanoutPreservesLibraryOrderDespiteReverseCompletionAndOmitsEmptyLibraries() async throws {
+        let completion = SearchFanoutProbe()
+        let views = [
+            MediaBrowserLibraryLink(id: "first", title: "First", collectionType: "movies"),
+            MediaBrowserLibraryLink(id: "empty", title: "Empty", collectionType: "tvshows"),
+            MediaBrowserLibraryLink(id: "last", title: "Last", collectionType: "homevideos"),
+        ]
+
+        let results = try await MediaBrowserSearchFanout.search(
+            views: views, query: "needle", limitPerLibrary: 9, backendID: .emby
+        ) { view, query, limit, itemTypes in
+            #expect(query == "needle")
+            #expect(limit == 9)
+            await completion.recordStarted(view.id)
+            switch view.id {
+            case "first":
+                try await Task.sleep(for: .milliseconds(300))
+                await completion.recordCompleted(view.id)
+                return [Self.mediaItem(id: "one", type: "movie")]
+            case "empty":
+                try await Task.sleep(for: .milliseconds(100))
+                #expect(itemTypes == "Series,Season,Episode")
+                await completion.recordCompleted(view.id)
+                return []
+            default:
+                #expect(itemTypes == "Video")
+                await completion.recordCompleted(view.id)
+                return [Self.mediaItem(id: "three", type: "video")]
+            }
+        }
+
+        #expect(await completion.completed == ["last", "empty", "first"])
+        #expect(results.groups.map(\.title) == ["First", "Last"])
+        #expect(results.groups.map(\.id) == ["emby-library-first", "emby-library-last"])
+    }
+
+    @Test func searchFanoutRemainsAllOrErrorOnPartialFailure() async throws {
+        let views = [
+            MediaBrowserLibraryLink(id: "success", title: "Success", collectionType: "movies"),
+            MediaBrowserLibraryLink(id: "failure", title: "Failure", collectionType: "movies"),
+        ]
+
+        await #expect(throws: BrowseCoreTestFailure.transport) {
+            _ = try await MediaBrowserSearchFanout.search(
+                views: views, query: "q", limitPerLibrary: 2, backendID: .jellyfin
+            ) { view, _, _, _ in
+                if view.id == "failure" { throw BrowseCoreTestFailure.transport }
+                return [Self.mediaItem(id: "partial", type: "movie")]
+            }
+        }
+    }
+
+    @Test func cancellingSearchFanoutCancelsInFlightLibraryWork() async throws {
+        let probe = SearchFanoutProbe()
+        let views = (0..<3).map {
+            MediaBrowserLibraryLink(id: "library-\($0)", title: "Library \($0)", collectionType: "movies")
+        }
+        let task = Task {
+            try await MediaBrowserSearchFanout.search(
+                views: views, query: "q", limitPerLibrary: 2, backendID: .jellyfin
+            ) { view, _, _, _ in
+                await probe.recordStarted(view.id)
+                do {
+                    try await Task.sleep(for: .seconds(30))
+                    return []
+                } catch {
+                    await probe.recordCancelled(view.id)
+                    throw error
+                }
+            }
+        }
+
+        while await probe.started.count < views.count {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        task.cancel()
+        await #expect(throws: CancellationError.self) { _ = try await task.value }
+        #expect(await probe.cancelled.count == views.count)
+    }
+
     nonisolated private static func itemJSON(id: String) -> Data {
         Data(#"{"Id":"\#(id)","Name":"\#(id)","Type":"Movie","ImageTags":{"Primary":"tag"}}"#.utf8)
     }
@@ -127,6 +207,10 @@ struct MediaBrowserBrowseCoreTests {
     nonisolated private static func arrayJSON(ids: [String]) -> Data {
         let rows = ids.map { String(data: itemJSON(id: $0), encoding: .utf8)! }.joined(separator: ",")
         return Data("[\(rows)]".utf8)
+    }
+
+    nonisolated private static func mediaItem(id: String, type: String) -> MediaItem {
+        MediaItem(ratingKey: id, key: "/items/\(id)", title: id, type: type)
     }
 }
 
@@ -147,4 +231,14 @@ private actor BrowseCoreScriptedTransport {
         requests.append(request)
         return try response(request)
     }
+}
+
+private actor SearchFanoutProbe {
+    private(set) var started: [String] = []
+    private(set) var completed: [String] = []
+    private(set) var cancelled: [String] = []
+
+    func recordStarted(_ id: String) { started.append(id) }
+    func recordCompleted(_ id: String) { completed.append(id) }
+    func recordCancelled(_ id: String) { cancelled.append(id) }
 }

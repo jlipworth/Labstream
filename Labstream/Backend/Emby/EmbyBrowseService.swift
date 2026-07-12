@@ -103,38 +103,7 @@ struct EmbyBrowseService {
     }
 
     func searchResults(query: String, limitPerLibrary: Int = 50) async throws -> SearchResults {
-        _ = try context()
-        let views = try await userViewLinks()
-        let groupsByIndex = try await withThrowingTaskGroup(
-            of: (Int, SearchResultGroup?).self,
-            returning: [Int: SearchResultGroup].self
-        ) { taskGroup in
-            for (index, view) in views.enumerated() {
-                taskGroup.addTask {
-                    let items = try await self.items(parentId: view.id,
-                                                     recursive: true,
-                                                     limit: limitPerLibrary,
-                                                     searchTerm: query,
-                                                     sortBy: "SortName",
-                                                     sortOrder: "Ascending",
-                                                     includeItemTypes: mediaBrowserSearchItemTypes(forCollectionType: view.collectionType))
-                    let group = SearchResultGroup.mediaBrowserLibrary(backendID: "emby",
-                                                                      libraryID: view.id,
-                                                                      title: view.title,
-                                                                      items: items)
-                    return (index, group)
-                }
-            }
-
-            var groupsByIndex: [Int: SearchResultGroup] = [:]
-            for try await (index, group) in taskGroup {
-                if let group { groupsByIndex[index] = group }
-            }
-            return groupsByIndex
-        }
-
-        let groups = views.indices.compactMap { groupsByIndex[$0] }
-        return SearchResults(groups: groups)
+        try await browseCore().searchResults(query: query, limitPerLibrary: limitPerLibrary)
     }
 
     func resumeItems(parentId: String? = nil, limit: Int = 20) async throws -> [MediaItem] {
