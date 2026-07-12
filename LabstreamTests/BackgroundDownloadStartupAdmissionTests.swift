@@ -436,6 +436,54 @@ struct BackgroundDownloadStartupAdmissionTests {
             .write(to: directory.appendingPathComponent("index.json"), options: .atomic)
     }
 
+    @Test @MainActor
+    func malformedStartupReleasesStoredBackgroundHandler() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("background-startup-malformed-\(UUID().uuidString)",
+                                  isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+            let seed = DownloadStore(baseDirectory: directory)
+            let attemptID = DownloadAttemptID(rawValue: "top-level-owner")!
+            let key = DownloadAttemptKey(ratingKey: "plex:malformed-startup", attemptID: attemptID)
+            let record = DownloadRecord(
+                ratingKey: key.ratingKey, title: "Malformed",
+                localURL: directory.appendingPathComponent("malformed.mp4"),
+                status: .queued,
+                metadata: OfflineMetadata(ratingKey: key.ratingKey, title: "Malformed", type: "movie"))
+            #expect(seed.createAttemptOwnedRecord(record, attemptID: attemptID) == .committed(key))
+
+            let indexURL = directory.appendingPathComponent("index.json")
+            var envelope = try #require(
+                JSONSerialization.jsonObject(with: Data(contentsOf: indexURL)) as? [String: Any])
+            var rows = try #require(envelope["rows"] as? [[String: Any]])
+            var metadata = try #require(rows[0]["metadata"] as? [String: Any])
+            metadata["downloadAttemptID"] = "different-shadow-owner"
+            rows[0]["metadata"] = metadata
+            envelope["rows"] = rows
+            try JSONSerialization.data(withJSONObject: envelope).write(to: indexURL, options: .atomic)
+
+            let store = DownloadStore(baseDirectory: directory)
+            let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+            defer { session.invalidateInjectedSessionForTesting() }
+            let released = DispatchSemaphore(value: 0)
+            BackgroundDownloadCompletionRegistry.shared.store(
+                identifier: BackgroundDownloadSession.identifier,
+                completion: { released.signal() })
+            let manager = DownloadManager(
+                appModel: AppModel(identity: PlatformClientIdentity.make(
+                    clientIdentifier: "malformed-startup")),
+                store: store, session: session, registerForBackgroundEvents: true)
+
+            #expect(await waitForSignal(released, timeout: 1))
+            guard case .blocked = manager.startupRecoveryState else {
+                Issue.record("Malformed ownership must block startup")
+                return
+            }
+            #expect(!BackgroundDownloadCompletionRegistry.shared.hasPendingHandler(
+                identifier: BackgroundDownloadSession.identifier))
+    }
+
     private func withTemporaryDirectory(
         _ body: (URL) throws -> Void
     ) throws {
@@ -456,6 +504,17 @@ struct BackgroundDownloadStartupAdmissionTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
         try await body(directory)
+    }
+
+    private func waitForSignal(
+        _ semaphore: DispatchSemaphore,
+        timeout: TimeInterval
+    ) async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: semaphore.wait(timeout: .now() + timeout) == .success)
+            }
+        }
     }
 }
 
