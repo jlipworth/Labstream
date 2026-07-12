@@ -1,5 +1,6 @@
 import Foundation
 import PMSKit
+import Synchronization
 import Testing
 @testable import Labstream
 
@@ -503,7 +504,9 @@ struct DownloadStorePersistenceTests {
             guard case .committed(let adopterKey) = store.createAttemptOwnedRecord(
                 adopterRecord, attemptID: adopterID) else { return }
             guard case .committed(let plan) = store.commitLegacyAttemptOwnershipMigration(),
-                  let resetKey = plan.taskCancellationAndReset.first else { return }
+                  let resetKey = plan.taskCancellationAndReset.first(where: {
+                      $0.ratingKey == "plex:reset-reserved"
+                  }) else { return }
             let reset = store.submitLegacyResetAfterTaskCancellation(resetKey)
             #expect(await waitForSignal(blocker.started, timeout: 1))
             let segment = OfflineHeldRangeSegment(
@@ -862,16 +865,22 @@ struct DownloadStorePersistenceTests {
         #expect(await waitForSignal(fileManager.removalStarted, timeout: 1))
 
         let replacementReturned = DispatchSemaphore(value: 0)
+        let replacementResult = Mutex<DownloadStore.AttemptRecordCreateResult?>(nil)
         DispatchQueue.global(qos: .utility).async {
-            _ = store.createAttemptOwnedRecord(
+            let result = store.createAttemptOwnedRecord(
                 record, attemptID: attemptB, replacing: attemptA)
+            replacementResult.withLock { $0 = result }
             replacementReturned.signal()
         }
-        // B cannot publish its row while A still owns the lock and is deleting A's stable path.
-        #expect(!(await waitForSignal(replacementReturned, timeout: 0.02)))
+        // Off-lock deletion keeps the Store responsive, but its reservation must reject B rather
+        // than allowing B to publish the same stable path under A's cleanup tail.
+        #expect(await waitForSignal(replacementReturned, timeout: 1))
+        #expect(replacementResult.withLock { $0 } == .rejectedOwnership(
+            expectedPreviousOwner: keyA,
+            actualOwner: keyA,
+            reason: .artifactLifecyclePending))
         fileManager.allowRemoval.signal()
         #expect(await waitForSignal(removeReturned, timeout: 1))
-        #expect(await waitForSignal(replacementReturned, timeout: 1))
         #expect(store.record(for: ratingKey) == nil)
 
         // After A is fully removed, a fresh B seed/write is safe from A's cleanup tail.

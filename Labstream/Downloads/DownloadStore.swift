@@ -3849,9 +3849,6 @@ final class DownloadStore: @unchecked Sendable {
         _ key: DownloadAttemptKey
     ) -> LegacyAttemptResetSubmission {
         lock.lock()
-        guard pendingLegacyAttemptResetKeys.contains(key) else {
-            lock.unlock(); return .immediate(.notPending)
-        }
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID else {
             lock.unlock(); return .immediate(.staleOrMissing)
         }
@@ -3880,6 +3877,9 @@ final class DownloadStore: @unchecked Sendable {
             activeArtifactIntentIDs.insert(head.id)
             lock.unlock(); scheduleArtifactLifecycle(ticket: ticket, intent: head)
             return .accepted(ticket: ticket)
+        }
+        guard pendingLegacyAttemptResetKeys.contains(key) else {
+            lock.unlock(); return .immediate(.notPending)
         }
         guard row.pendingArtifactIntents.isEmpty else {
             lock.unlock(); return .immediate(.notPending)
