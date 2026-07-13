@@ -53,8 +53,13 @@ Clean up host preview state after a one-off test or before removing its worktree
 
 ```sh
 scripts/deploy-macos-to-host.sh --delete
+scripts/deploy-macos-to-host.sh --delete-all-staged
 scripts/deploy-macos-to-host.sh --reset-container
 ```
+
+Development identities use the visible display name `Labstream Dev — <identity>`, while an
+intentional production-identity build remains `Labstream`. `--delete-all-staged` terminates and
+removes every Mac app staged by the current worktree but preserves containers and Keychain data.
 
 `--delete` removes only the staged app for the effective identity. `--reset-container` removes
 only that identity's sandbox container. The helper never deletes `/Applications/Labstream.app`,

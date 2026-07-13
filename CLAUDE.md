@@ -292,8 +292,13 @@ a one-off UI/smoke identity:
 
 ```sh
 scripts/deploy-macos-to-host.sh --delete           # remove this identity's staged app only
+scripts/deploy-macos-to-host.sh --delete-all-staged # remove all apps staged by this worktree
 scripts/deploy-macos-to-host.sh --reset-container  # remove this identity's sandbox container only
 ```
+
+Per-worktree builds are visibly labeled `Labstream Dev — <identity>` in macOS; an intentional
+production-identity build remains `Labstream`. Cleanup commands preserve sandbox containers and
+Keychain credentials unless `--reset-container` is explicitly requested.
 
 Production container reset is intentionally guarded and requires both
 `--use-production-bundle-id` and `--allow-production-container-reset`; do not touch the
