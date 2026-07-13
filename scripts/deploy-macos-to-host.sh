@@ -18,6 +18,7 @@
 #   --bundle-id-suffix SUFFIX            use com.jlipworth.Labstream.dev.SUFFIX
 #   LABSTREAM_MAC_BUNDLE_ID_SUFFIX=...   env equivalent
 #   --use-production-bundle-id           use com.jlipworth.Labstream intentionally
+#                                        (Apple Development signed for canonical Keychain access)
 #
 # Safety:
 #   - The staged app lives under this worktree's build/macos-host/<identity>/.
@@ -154,6 +155,27 @@ if [ "$BUILD" -eq 1 ]; then
   mkdir -p "$DERIVED_DATA" "$STAGE_DIR"
   echo "building (Debug, macOS host arm64)…"
   BUILD_LOG="$STAGE_DIR/build.log"
+  SIGNING_ARGS=()
+  if [ "$USE_PRODUCTION" -eq 1 ]; then
+    # A canonical-service build uses a synchronizable Plex token. An ad-hoc signature has no
+    # application identifier/keychain group and Security rejects it with errSecMissingEntitlement
+    # (-34018), presenting a misleading Plex-token/session failure. Sign intentional production-
+    # identity host builds with the development team and a Mac provisioning profile instead.
+    TEAM="${LABSTREAM_MAC_DEVELOPMENT_TEAM:-}"
+    if [ -z "$TEAM" ]; then
+      TEAM=$(security find-certificate -a -c "Apple Development" -p 2>/dev/null \
+        | openssl x509 -noout -subject 2>/dev/null \
+        | grep -oE 'OU=[^,/]+' | head -1 | cut -d= -f2 || true)
+    fi
+    [ -n "$TEAM" ] || die "production-identity host build requires an Apple Development certificate/team"
+    SIGNING_ARGS=(
+      -allowProvisioningUpdates
+      -allowProvisioningDeviceRegistration
+      "DEVELOPMENT_TEAM=$TEAM"
+      CODE_SIGN_STYLE=Automatic
+      "CODE_SIGN_IDENTITY=Apple Development"
+    )
+  fi
   if ! scripts/xcodebuild-versioned.sh \
     -project Labstream.xcodeproj \
     -scheme "$SCHEME" \
@@ -163,12 +185,22 @@ if [ "$BUILD" -eq 1 ]; then
     PRODUCT_BUNDLE_IDENTIFIER="$EFFECTIVE_BUNDLE_ID" \
     INFOPLIST_KEY_CFBundleDisplayName="$DISPLAY_NAME" \
     LABSTREAM_KEYCHAIN_SERVICE="$KEYCHAIN_SERVICE" \
+    "${SIGNING_ARGS[@]}" \
     build >"$BUILD_LOG" 2>&1; then
     tail -60 "$BUILD_LOG" >&2 || true
     die "build failed (full log: $BUILD_LOG)"
   fi
   echo "build log: $BUILD_LOG"
   [ -d "$PRODUCT_APP" ] || die "build succeeded but product was not found: $PRODUCT_APP"
+  if [ "$USE_PRODUCTION" -eq 1 ]; then
+    SIGNED_TEAM=$(codesign -dvvv "$PRODUCT_APP" 2>&1 \
+      | sed -nE 's/^TeamIdentifier=(.+)$/\1/p' | head -1)
+    [ -n "$SIGNED_TEAM" ] && [ "$SIGNED_TEAM" != "not set" ] \
+      || die "production-identity app was not development-signed; refusing Keychain-broken build"
+    codesign -d --entitlements :- "$PRODUCT_APP" 2>/dev/null \
+      | plutil -extract keychain-access-groups xml1 -o - - >/dev/null 2>&1 \
+      || die "production-identity app lacks keychain-access-groups entitlement"
+  fi
   ditto "$PRODUCT_APP" "$STAGED_APP"
 fi
 
