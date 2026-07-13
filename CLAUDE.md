@@ -300,6 +300,11 @@ Per-worktree builds are visibly labeled `Labstream Dev — <identity>` in macOS;
 production-identity build remains `Labstream`. Cleanup commands preserve sandbox containers and
 Keychain credentials unless `--reset-container` is explicitly requested.
 
+`--use-production-bundle-id` is automatically Apple-Development-signed and provisions the Mac so
+the canonical synchronized Plex-token Keychain item is accessible. Do not replace it with an ad-hoc
+build: Security rejects synchronizable token access with OSStatus `-34018`, which surfaces as a
+misleading token/session error.
+
 Production container reset is intentionally guarded and requires both
 `--use-production-bundle-id` and `--allow-production-container-reset`; do not touch the
 production container unless explicitly testing/resetting the App Store identity. For old

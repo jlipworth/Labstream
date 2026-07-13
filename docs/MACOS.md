@@ -61,6 +61,11 @@ Development identities use the visible display name `Labstream Dev — <identity
 intentional production-identity build remains `Labstream`. `--delete-all-staged` terminates and
 removes every Mac app staged by the current worktree but preserves containers and Keychain data.
 
+The production-identity host path is Apple-Development-signed and provisions the Mac because its
+canonical service reads the synchronized Plex-token Keychain item. An ad-hoc canonical build lacks
+an application identifier/keychain group and fails that access with OSStatus `-34018`; use the
+helper rather than launching a generic ad-hoc product for signed-in testing.
+
 `--delete` removes only the staged app for the effective identity. `--reset-container` removes
 only that identity's sandbox container. The helper never deletes `/Applications/Labstream.app`,
 and resetting the canonical container requires both `--use-production-bundle-id` and

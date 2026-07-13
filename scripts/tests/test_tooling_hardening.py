@@ -103,6 +103,32 @@ class ToolingHardeningTests(unittest.TestCase):
             self.assertFalse(staged.exists())
             self.assertFalse(extra.exists())
 
+            fakebin = root / "fakebin"
+            fakebin.mkdir()
+            (fakebin / "codesign").write_text(textwrap.dedent("""\
+                #!/usr/bin/env bash
+                if [[ "$*" == *'-dvvv'* ]]; then
+                  echo 'TeamIdentifier=TESTTEAM' >&2
+                else
+                  echo '<plist version="1.0"><dict><key>keychain-access-groups</key><array><string>TESTTEAM.com.jlipworth.Labstream</string></array></dict></plist>'
+                fi
+                """))
+            (fakebin / "codesign").chmod(0o755)
+            (fakebin / "plutil").write_text("#!/usr/bin/env bash\ncat >/dev/null\n")
+            (fakebin / "plutil").chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{fakebin}:{env['PATH']}"
+            env["LABSTREAM_MAC_DEVELOPMENT_TEAM"] = "TESTTEAM"
+            subprocess.run([
+                "scripts/deploy-macos-to-host.sh", "--use-production-bundle-id"
+            ], cwd=root, env=env, check=True, stdout=subprocess.PIPE,
+               stderr=subprocess.PIPE, text=True)
+            production_args = args_file.read_text()
+            self.assertIn("-allowProvisioningUpdates", production_args)
+            self.assertIn("-allowProvisioningDeviceRegistration", production_args)
+            self.assertIn("DEVELOPMENT_TEAM=TESTTEAM", production_args)
+            self.assertIn("CODE_SIGN_IDENTITY=Apple Development", production_args)
+
     def test_ci_hygiene_rejects_pbx_file_reference_churn(self):
         with self.make_repo() as root:
             self.copy_script(root, "ci-hygiene.sh")
