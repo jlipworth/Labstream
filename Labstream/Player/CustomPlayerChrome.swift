@@ -602,7 +602,8 @@ struct CustomPlayerChrome: View {
 
     private var macFullscreenButton: some View {
         macTopChromeButton("Toggle Full Screen",
-                           systemImage: "arrow.up.left.and.arrow.down.right") {
+                           systemImage: "arrow.up.left.and.arrow.down.right",
+                           autoHidesChrome: true) {
             macWindowBridge.toggleFullScreen()
         }
         .keyboardShortcut("f", modifiers: [.command, .control])
@@ -610,9 +611,14 @@ struct CustomPlayerChrome: View {
 
     private func macTopChromeButton(_ help: String,
                                     systemImage: String,
+                                    autoHidesChrome: Bool = false,
                                     action: @escaping () -> Void) -> some View {
         Button {
-            revealChrome(keepVisible: true)
+            // A destructive/dismissal action keeps the controls pinned while it completes,
+            // but entering native fullscreen is not a modal interaction. Restart the ordinary
+            // five-second hide timer so the expanded movie does not retain its chrome until the
+            // viewer clicks the playback surface for the first time.
+            revealChrome(keepVisible: !autoHidesChrome)
             action()
         } label: {
             ZStack {
