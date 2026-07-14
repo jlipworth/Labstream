@@ -129,7 +129,7 @@ enum DetailPlaybackLauncher {
                                        request: request)
             },
             initialAudioStreamIndex: MediaBrowserPlaybackPreferencePolicy
-                .preferredAudioStreamIndex(for: item),
+                .initialAudioStreamIndex(for: item),
             initialSubtitleStreamIndex: MediaBrowserPlaybackPreferencePolicy
                 .preferredSubtitleStreamIndex(for: item),
             maxVideoBitrateKbps: maxVideoBitrateKbps,

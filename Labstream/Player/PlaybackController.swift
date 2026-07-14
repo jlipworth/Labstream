@@ -1963,8 +1963,8 @@ final class PlaybackController {
 
     private func effectiveRemoteAudioStreamIndex() -> Int? {
         audioStreamIDOverride
-            ?? MediaBrowserPlaybackPreferencePolicy.preferredAudioStreamIndex(for: item,
-                                                                             mediaIndex: mediaIndex)
+            ?? MediaBrowserPlaybackPreferencePolicy.initialAudioStreamIndex(for: item,
+                                                                           mediaIndex: mediaIndex)
     }
 
     private func effectiveRemoteSubtitleStreamIndex() -> Int? {
@@ -2060,11 +2060,12 @@ final class PlaybackController {
         let streams = part.audioStreams
         guard !streams.isEmpty else { return [] }
 
-        // Active track: a live override from a switch this session, else the PMS `selected`
-        // flag (sent only on the active track), else the container default, else the first.
+        // Active track: a live override from a switch this session, else the exact policy used
+        // for the initial remote open (preferred language, selected, default, then first). Keeping
+        // this shared prevents the checkmark from describing a different stream than PlaybackInfo.
         let selectedID = audioStreamIDOverride
-            ?? streams.first { $0.selected == true }?.id
-            ?? streams.first { $0.isDefault == true }?.id
+            ?? MediaBrowserPlaybackPreferencePolicy.initialAudioStreamIndex(for: item,
+                                                                            mediaIndex: mediaIndex)
             ?? streams[0].id
 
         // Label preference: displayTitle ("English (AAC Stereo)") is PMS's purpose-built
