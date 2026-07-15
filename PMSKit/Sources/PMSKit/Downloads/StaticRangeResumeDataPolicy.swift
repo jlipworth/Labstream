@@ -129,7 +129,7 @@ public enum StaticRangeResumeDataPolicy {
         hasResumeData && !resumeDataWasRejected
     }
 
-    /// When pausing a pre-queued SEGMENT TRAIN, only ONE of the (up to 8) live segments can ever be
+    /// When pausing a pre-queued SEGMENT TRAIN, only ONE of the currently two live segments can ever be
     /// resumed from its URLSession blob: the segment whose byte offset equals the durable partial
     /// size. `adoptionDecision` rejects every other offset as stale on Resume, so producing/persisting
     /// blobs for the off-head segments just thrashes the single per-key blob slot (last writer wins)

@@ -39,6 +39,12 @@ scripts/ci-hygiene.sh
 uv run --with-requirements requirements.txt mkdocs build --strict
 ```
 
+For app-owned changes, also run the affected host-app unit suite: `LabstreamTests` through the
+`LabstreamMobile` scheme on an iOS simulator and/or `LabstreamMacTests` through the
+`LabstreamMac` scheme on the host. Exact commands and test-plan names are in
+[Development setup](DEVELOPMENT.md). Shared app infrastructure should exercise both hosts; these
+tests supplement rather than replace the affected app build/smoke.
+
 ## Privacy and secrets
 
 Never commit or paste:

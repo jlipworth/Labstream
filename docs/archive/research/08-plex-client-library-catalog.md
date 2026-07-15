@@ -1,5 +1,9 @@
 # Plex Client Library / SDK Catalog — Transcode/Streaming Reference Survey
 
+> **Archived research snapshot:** retained as dated evidence, not current architecture, feature
+> status, or implementation guidance. Verify any reusable detail against the active docs and
+> current source; old product assumptions, API versions, issue links, and paths may have drifted.
+
 **Date:** June 2026
 **Purpose:** Catalog every notable Plex client library/SDK across languages to identify the best reference implementation(s) for porting **transcode-decision + streaming URL building** logic into a hand-rolled Swift visionOS client. The Swift generated SDK (`plexswift`) is archived and insufficient for transcoding, so we need a behavioral reference for the universal transcoder request flow.
 

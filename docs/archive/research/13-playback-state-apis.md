@@ -1,5 +1,9 @@
 # 13 — Playback-State & Navigation APIs (timeline, scrobble, playQueues, hubs, resume)
 
+> **Archived research snapshot:** retained as dated evidence, not current architecture, feature
+> status, or implementation guidance. Verify any reusable detail against the active docs and
+> current source; old product assumptions, API versions, issue links, and paths may have drifted.
+
 **Research date:** 2026-06-08
 **Scope:** The "plumbing" a real Plex client needs beyond decode/render: reporting playback state so the server updates resume/On Deck, marking watched/unwatched, building play queues for episode progression, fetching the Home hubs, and reading/writing resume offsets. Targeted at a personal-use visionOS client.
 

@@ -1,5 +1,9 @@
 # Development notes
 
+> **Archived first-public-cleanup snapshot:** do not use the commands or constraints below as
+> current development guidance. Use [`docs/DEVELOPMENT.md`](../../DEVELOPMENT.md) and
+> repository-root [`CLAUDE.md`](../../../CLAUDE.md).
+
 Durable, easy-to-forget facts about building and working on this app. Task/bug tracking lives in
 [GitHub Issues](https://github.com/jlipworth/Labstream/issues); see the [README](https://github.com/jlipworth/Labstream/blob/main/README.md)
 for the basic build/run.

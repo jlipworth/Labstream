@@ -12,13 +12,14 @@ timeline, optimize. It does **NOT** cover AVPlayer/AVKit playback (see *Hard lim
 
 ## Why it faithfully reproduces the app
 
-The app's only HTTP executor is `PlexClient.send`, which is a bare
-`URLSession.shared.data(for: request.urlRequest())` — no custom session, no retries, no
-header injection. So building a PMSKit request (e.g. `TranscodeRequest.decisionRequest()`)
-and sending it through `URLSession.shared` on macOS produces a **byte-identical** wire
-request to what the visionOS app sends — token in both the query string and the
-`X-Plex-Token` header, plus the full `X-Plex-*` identity set. (Hand-written `curl` 401s here
-because it omits that header set; PMSKit builds it for you. Don't go down the curl path.)
+For the Plex `PlexRequest` lane, the app's executor is `PlexClient.send`, which turns the
+request into a `URLRequest` and sends it through its injected `URLSession` (normally
+`.shared`) without rewriting the request. Other app lanes have their own executors, so this
+claim is intentionally limited to requests built through `PlexRequest`. Building the same
+PMSKit request (for example `TranscodeRequest.decisionRequest()`) and sending its
+`urlRequest()` through `URLSession.shared` on macOS therefore exercises the same request
+shape: token placement and the full `X-Plex-*` identity set come from PMSKit. Hand-written
+`curl` is not an equivalent probe unless every header and query item is reproduced.
 
 ## Run it
 
@@ -89,7 +90,9 @@ playhead advance, seek-restart, stall) without UI tapping, use the launch-arg-dr
 
 - `Labstream/DebugJellyfinPlaybackProbe.swift` → `--vp-probe-jellyfin-playback`
 - `Labstream/DebugEmbyPlaybackProbe.swift` → `--vp-probe-emby-playback`
+- `Labstream/DebugPlexPlaybackProbe.swift` → `--vp-probe-plex-playback`
 - `Labstream/DebugPlexDownloadProbe.swift` → `--vp-probe-plex-download` (downloads, not playback)
+- `Labstream/DebugJellyfinDownloadProbe.swift` → `--vp-probe-jellyfin-download`
 - `Labstream/DebugEmbyDownloadProbe.swift` → `--vp-probe-emby-download` (add `--vp-probe-start-download` to actually transfer + observe + delete)
 
 ⚠️ **The simulator download probe catches what the headless probe cannot.** The headless

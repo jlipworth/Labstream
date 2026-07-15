@@ -1,5 +1,9 @@
 # Competitive Teardown: Plex Clients for Apple Vision Pro (visionOS)
 
+> **Archived research snapshot:** retained as dated evidence, not current architecture, feature
+> status, or implementation guidance. Verify any reusable detail against the active docs and
+> current source; old product assumptions, API versions, issue links, and paths may have drifted.
+
 _Date: June 2026. Sources cited inline. Where a fact could not be confirmed from
 developer statements, App Store listings, changelogs, or press/forum chatter, it is
 marked **unconfirmed** rather than guessed._

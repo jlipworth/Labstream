@@ -22,8 +22,8 @@ flowchart TD
 - A completed download must have a local playable file and a durable offline record.
 - Direct original downloads are offered only when Labstream expects the file to play locally.
 - Server-rendered or server-prepared routes are used when the original is not a safe local target.
-- Transfers must reconcile cleanly on relaunch. Static/original and server-prepared
-  static routes should resume from durable checkpoints when possible; live-forward
+- Transfers reconcile on relaunch. Static/original and server-prepared static routes
+  resume from durable checkpoints when their persisted authority remains valid; live-forward
   remux/transcode streams may become retryable and restart from the beginning
   rather than claiming unsafe byte-offset resume.
 - Offline records must never contain access tokens. They do persist the minimum backend
@@ -79,10 +79,12 @@ Apple-standard architecture we can make stable:
 
 - **A pre-queued train of closed-range segment tasks for known-size static files.** The
   current compile-time regime is `.segmentTrain` on visionOS, iOS/iPadOS, and macOS.
-  Static Plex/Jellyfin/Emby file routes enqueue up to `maxQueuedSegments` (8) background
+  Static Plex/Jellyfin/Emby file routes enqueue up to `maxQueuedSegments` (currently 2) background
   `URLSessionDownloadTask`s ahead of the durable checkpoint, each a closed
   `Range: bytes=<offset>-<offset+segmentBytes-1>` request of `segmentBytes` (512 MiB) —
-  roughly 4 GiB of unattended runway per file. `StaticRangeSegmentQueuePolicy` is the pure
+  roughly 1 GiB of queued runway per file. The two-task cap is intentional: one head plus
+  one look-ahead preserves overlap without multiplying several visible downloads into
+  dozens of concurrent transfers. `StaticRangeSegmentQueuePolicy` is the pure
   planner: given the durable offset, the expected total size, and the segment offsets
   already live in the session, it emits the closed ranges still needed, up to the queue
   depth. When the expected total size is unknown, the planner falls back to a single
@@ -93,13 +95,15 @@ Apple-standard architecture we can make stable:
   `.openEndedRemainder` (the prior single-task shipping behavior); flipping a platform back
   is a one-line change, and both regimes recover from the same durable-partial checkpoint,
   so switching regimes across launches is safe.
-- **Segments are marked and stashed, then assembled in order.** Each segment task's
-  `taskDescription` carries `lbs-segment:v1:<offset>` combined with the download's
-  ratingKey via a U+001F separator, so a relaunch or reattach can identify which live
-  tasks belong to which download and at what offset without any other bookkeeping.
-  `StaticRangeReattachPolicy` adopts closed-range tasks bearing a valid, offset-matching
-  marker; a closed-range task with no marker (or a stale/mismatched one) is still dropped
-  as legacy, the same #231 safety behavior as before segmentation. When a segment task
+- **Segments are attempt-marked and stashed, then assembled in order.** Each new segment
+  task's `taskDescription` combines the rating key and current
+  `lbs-segment:v3:<offset>:<attemptID>` marker with a U+001F separator. Relaunch/reattach
+  therefore requires both the row and exact attempt, not merely a reused rating key.
+  V1 markers have no attempt identity and V2 markers use the older string marker version;
+  both are parseable for migration/diagnostics but are not current adoptable authority.
+  `StaticRangeReattachPolicy` adopts only a current, offset-matching task for the row's
+  exact attempt; unmarked, legacy, stale-attempt, or mismatched tasks are purged/rebuilt.
+  When a segment task
   finishes, its body is stashed by offset; `StaticRangeSegmentAssemblyPolicy` — a pure
   assembler — decides, given the durable offset and the set of stashed finished bodies,
   which stashes form the maximal contiguous run starting exactly at the durable offset
@@ -130,8 +134,8 @@ Apple-standard architecture we can make stable:
 - **HTTP safety checks still guard the append.** Completed bodies are validated for
   `Content-Range` start alignment, pinned validator mismatches, HTTP `200` full-body
   replacement/restart behavior, `416` total validation, temp disappearance fallback, and safe
-  resume-blob adoption/clearing. A strangely-resumed transfer should waste bandwidth or fall back
-  to the durable partial, never corrupt the file.
+  resume-blob adoption/clearing. A strangely resumed transfer is rejected, restarted, or
+  falls back to the durable partial rather than appending unvalidated bytes.
 - **Why segments, not one task:** a visionOS wake bounce can silently restart the body of an
   in-flight custom-`Range` request with no error and no resume-data callback (see the verified
   platform finding in `docs/DEVELOPMENT.md`). With one open-ended task, that restart forfeits
@@ -173,7 +177,10 @@ User-facing expectations worth setting (the "downloads disclaimer"):
 | `DownloadManager` | Main-actor queue coordination and user-visible state. |
 | Backend-specific manager extensions | Plex/Jellyfin/Emby route setup and server-prep polling. |
 | `BackgroundDownloadSession` | URLSession tasks, segment-train enqueue/refill, transfer callbacks, finalization. |
-| `DownloadStore` | Offline index persistence and file-side effects. |
+| `DownloadStore` | Schema-v4 index state, exact-attempt mutation admission, and transactional artifact state. |
+| `DownloadArtifactLifecycleCoordinator` and file-effect seams | Order attempt-scoped resume/checkpoint/promotion/deletion work with its terminal persistence outcome. |
+| `DownloadWorkRegistry` | Attempt-scoped side-cache and encoder-task ownership. |
+| `DownloadCleanupIntentJournal` | Independent durable, credential-free Jellyfin/Emby server-cleanup authority. |
 | PMSKit download policies | Pure route, retry, row-display, and recovery decisions, including the segment-train planner and assembler. |
 
 ## Offline metadata
@@ -197,10 +204,12 @@ Side assets such as posters, chapters, and compatible external text subtitles ar
 
 ## Reconcile and resume
 
-On launch, Labstream compares the offline index, files on disk, and any active transfers. It should:
+On launch, Labstream compares the offline index, files on disk, active transfers, persisted
+artifact reservations, and durable cleanup intents. Current reconciliation:
 
-- resume or retry recoverable transfers;
-- surface failed items clearly;
-- avoid deleting user data unless the user asked for cleanup;
-- keep orphan detection conservative;
-- preserve completed downloads even when the source server is temporarily unavailable.
+- adopts only current task markers whose exact attempt matches the durable row;
+- rebuilds legacy or ownerless active rows under a newly persisted attempt before work starts;
+- resumes/retries recoverable transfers and surfaces terminal failures in the row;
+- replays required server cleanup from the independent journal when the matching backend
+  session is available;
+- keeps completed media available without requiring the source server to be reachable.

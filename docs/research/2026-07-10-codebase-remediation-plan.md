@@ -1,6 +1,8 @@
 # Codebase remediation plan
 
-Status: **active implementation plan**
+Status: **active implementation and acceptance journal**. The summary table near the top is
+the current status source within this file; dated journal entries preserve earlier states and
+must not be read as current instructions when they conflict with that summary.
 
 Audit baseline: original app/PMSKit review through `edf2d27`; latest reconciled `main`
 baseline `5d369c2`; implementation journal reconciled through review-remediation checkpoint

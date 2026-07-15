@@ -1,5 +1,9 @@
 # 15 — Apple Vision Pro DeviceProfile: Direct Play for in-cap content (RESEARCH / PROPOSAL ONLY)
 
+> **Archived research snapshot:** retained as dated evidence, not current architecture, feature
+> status, or implementation guidance. Verify any reusable detail against the active docs and
+> current source; old `VisionPlay` names, issue links, branches, and paths below are historical.
+
 > **Update (2026-06): partially shipped.** The decision-only probe slice
 > (`directPlayProbeDecisionURL()` + `visionOSDirectPlayProbe`) landed in PMSKit with
 > unit coverage; the app-side half (loading direct-play instead of `start.m3u8`) is

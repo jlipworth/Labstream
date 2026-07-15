@@ -534,7 +534,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // always have the daemon, so they keep the background session below (which
         // survives app suspension/relaunch — the resume-after-kill path from D5/D8).
             config = URLSessionConfiguration.default
-            // The segment train enqueues more tasks (8) than the per-host connection limit, so the
+            // The segment train can enqueue multiple tasks (currently 2) per row, so the
             // starved tail tasks receive no data while queued. The foreground default config's 60s
             // request timeout then kills them with -1001 every minute (observed live: retry churn
             // resetting in-flight bodies). The device background session has no such idle timeout

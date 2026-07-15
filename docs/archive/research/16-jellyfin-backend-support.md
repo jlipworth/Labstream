@@ -1,5 +1,9 @@
 # 16 — Jellyfin Backend Support Research
 
+> **Archived research snapshot:** retained as dated evidence, not current architecture, feature
+> status, or implementation guidance. Verify any reusable detail against the active docs and
+> current source; old `VisionPlay` names, issue links, branches, and paths below are historical.
+
 **Research date:** 2026-06-14
 **Issue:** #35 — Support Jellyfin as an alternate media server backend.
 **Status:** Research + architecture recommendation. Implementation should stay on a separate branch/worktree until the Plex media-session-proxy refactor stabilizes.

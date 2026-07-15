@@ -18,7 +18,7 @@ flowchart TD
 
 ## Single-window routing
 
-`SystemEntryRouter` is the app's central handoff point. It waits for restore/sign-in readiness when needed, then routes into the main browse window rather than opening separate navigation stacks. External media identifiers are resolved against the active backend/session only, so Plex, Jellyfin, and Emby entries never imply a cross-device or offline catalog.
+`SystemEntryRouter` is the app's central handoff point. It waits for restore/sign-in readiness when needed, then routes into the main browse window rather than opening separate navigation stacks. Its fallback restore calls `restoreSessionIfNoAuthorizationInProgress()` and keeps waiting if a user-facing login owns authorization, so a system entry cannot cancel or supersede that login. External media identifiers are resolved against the active backend/session only, so Plex, Jellyfin, and Emby entries never imply a cross-device or offline catalog.
 
 ## App Intents
 
@@ -31,7 +31,7 @@ App Intents expose selected Labstream actions and media entities to system surfa
 
 ## Spotlight
 
-Spotlight indexing is user-controllable from Settings. Indexed content should use non-token identifiers, include backend/server scope where needed, and be cleared when the user disables media suggestions or signs out. Treat searchable identifiers as private because they may include a server namespace and media item id.
+Spotlight indexing is user-controllable from Settings. Indexed content uses non-token, backend/server-scoped identifiers and is cleared when the user disables media suggestions, signs out, or switches backend. Treat searchable identifiers as private because they may include a server namespace and media item id.
 
 New backend-scoped identifiers use the neutral `ls1|backend|server|item` shape. The
 router also accepts the legacy `vp1` prefix from early mobile-preview builds so saved

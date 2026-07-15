@@ -1,5 +1,9 @@
 # Live-server test requirements & CI enablement (issue #75)
 
+> **Archived first-public-cleanup snapshot:** this is not current CI or live-probe setup
+> guidance. Use [`docs/TESTING-STRATEGY.md`](../../TESTING-STRATEGY.md) and current script
+> `--help` output. The secret names and proposed CI wiring below are retained as history.
+
 What a live CI media server (and its test account) must provide for the opt-in `Live*Probe` tests,
 which env vars / secrets gate them, and how to wire them into CI without breaking the hermetic
 default. This is the companion to the coverage map in

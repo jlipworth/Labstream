@@ -1,5 +1,11 @@
 # Full Downloads-Engine Audit Plan (2026-07-10)
 
+> **Status:** dated audit and execution record. The automatable audit scope is closed as
+> described in section J and the downstream remediation checkpoint in section K; earlier
+> handoff/open-work sections are superseded by those later updates. Current subsystem
+> behavior belongs in [`docs/DOWNLOADS-OFFLINE.md`](../DOWNLOADS-OFFLINE.md). Remaining
+> physical-device evidence is an acceptance gate, not unfinished audit implementation.
+
 Systematic audit plan for the entire downloads subsystem, produced after a full read of
 `Labstream/Downloads/BackgroundDownloadSession.swift` (4409 lines), `DownloadManager.swift`
 (3027) + its 5 backend extensions, `DownloadStore.swift` (1067), the ~80 PMSKit download

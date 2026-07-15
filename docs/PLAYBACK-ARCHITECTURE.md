@@ -5,6 +5,12 @@ It owns `AVPlayer`, the `AVPlayerLayer` surface, progress reporting, diagnostics
 recovery, and teardown. The retired `AVPlayerViewController` path is not part of the current
 architecture.
 
+Each item replacement advances a playback generation. Observer callbacks, notifications,
+timers, artwork/metadata loads, reconnect watchdogs, and other queued work capture that
+generation and re-check it on the main actor through `PlaybackLifecycleCallbackSink` and
+`VideoPlaybackLifecyclePolicy`. Removing an observer is cleanup, not proof that a callback
+already queued for the old item was cancelled.
+
 ```mermaid
 sequenceDiagram
   participant UI
@@ -161,3 +167,7 @@ restore a hidden second player or reintroduce an AVKit-only control surface.
   cleanup as distinct operations.
 - Treat cleanup failures as non-fatal where the user-visible playback path can continue.
 - Keep diagnostic fields shape-level and redacted: no full URLs, tokens, hosts, titles, or filenames.
+- iOS/iPadOS and macOS video system integration acquires an identity-guarded
+  `SystemMediaSessionCoordinator` lease. Video temporarily supersedes music's Now Playing
+  and remote-command lease; releasing video restores the most recent surviving music owner
+  without stale teardown clearing the new owner.

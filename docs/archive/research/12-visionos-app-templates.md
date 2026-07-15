@@ -1,5 +1,9 @@
 # 12 — visionOS App Templates & Reference Projects
 
+> **Archived research snapshot:** retained as dated evidence, not current architecture, feature
+> status, or implementation guidance. Verify any reusable detail against the active docs and
+> current source; old `VisionPlay` names, issue links, branches, and paths below are historical.
+
 **Purpose:** Find the best *real, runnable* reference projects to use as a structural template for our personal-use visionOS Plex client (SwiftUI + AVKit playback, a cinema/big-screen environment, a floating browse window).
 
 **Date:** June 2026

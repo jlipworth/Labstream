@@ -1,5 +1,9 @@
 # Plex visionOS Client — App Architecture & Sideload Realities
 
+> **Archived research snapshot:** retained as dated evidence, not current architecture, feature
+> status, or implementation guidance. Verify any reusable detail against the active docs and
+> current source; old `VisionPlay` names, issue links, branches, and paths below are historical.
+
 **Date:** June 2026
 **Scope:** Personal-use native Apple Vision Pro (visionOS) Plex client. **Free/personal Apple ID, no paid Apple Developer account, sideload-only via Xcode.**
 

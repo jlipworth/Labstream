@@ -73,6 +73,16 @@ and resetting the canonical container requires both `--use-production-bundle-id`
 
 ## Validation
 
+The Mac scheme owns the `LabstreamMacTests` target and `LabstreamMacTests.xctestplan`. The plan
+hosts the shared `LabstreamTests/` sources in `LabstreamMac`; run it directly when changing
+app-owned persistence, lifecycle, auth-storage, or playback/system-media seams:
+
+```sh
+scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
+  -scheme LabstreamMac -testPlan LabstreamMacTests \
+  -destination 'platform=macOS,arch=arm64' test CODE_SIGNING_ALLOWED=NO
+```
+
 The current repeatable Mac sweep is:
 
 ```sh
@@ -80,9 +90,10 @@ scripts/validate-macos-228.sh
 ```
 
 The script retains its issue-era filename for now. It covers static identity checks, the Mac
-build, shared-platform builds, focused diagnostics tests, and a bounded host launch smoke through
-`scripts/smoke-macos-host.sh`. It does not prove real sign-in, subjective UI quality, live media
-playback, system media keys, or background-download durability.
+build, visionOS and iPhone-simulator builds, focused PMSKit diagnostics tests, and a bounded host
+launch smoke through `scripts/smoke-macos-host.sh`. It does not prove real sign-in, subjective UI
+quality, live media playback, system media keys, background-download durability, or the full
+app-hosted test plan.
 
 See [Testing strategy](TESTING-STRATEGY.md) for the repository-wide validation layers.
 
