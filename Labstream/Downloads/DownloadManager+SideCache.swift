@@ -44,12 +44,14 @@ extension DownloadManager {
     private func cachePoster(for attemptKey: DownloadAttemptKey, request: URLRequest?) {
         guard let request else { return }
         let posterURL = store.posterDestinationURL(ratingKey: attemptKey.ratingKey)
+        if store.reusableSideAssetRelativePath(for: attemptKey, destination: posterURL) != nil { return }
         guard let stagingURL = store.attemptStagingURL(for: attemptKey, stableURL: posterURL) else { return }
         let store = self.store
-        downloadWorkRegistry.start(for: attemptKey, kind: .sideCache(.poster)) { [weak self] in
-            guard !Task.isCancelled else { return }
+        downloadWorkRegistry.startIfAbsent(for: attemptKey, kind: .sideCache(.poster)) { [weak self] in
+            guard let self, !Task.isCancelled else { return }
             defer { try? FileManager.default.removeItem(at: stagingURL) }
-            guard await Self.fetchAndWritePoster(request: request, to: stagingURL),
+            guard let data = try? await self.fetchOptionalSideAsset(request, for: attemptKey),
+                  (try? data.write(to: stagingURL, options: .atomic)) != nil,
                   !Task.isCancelled,
                   Self.promoteSideAsset(store: store, key: attemptKey,
                                         stagingURL: stagingURL, stableURL: posterURL) else { return }
@@ -57,28 +59,8 @@ extension DownloadManager {
                 let result = store.updateMetadata(for: attemptKey) {
                     $0.posterRelativePath = posterURL.lastPathComponent
                 }
-                if result == .applied || result == .noChange { self?.refreshRecords() }
+                if result == .applied || result == .noChange { self.refreshRecords() }
             }
-        }
-    }
-
-    /// Best-effort poster fetch + atomic write, fully off the main actor, driven by a pre-resolved
-    /// `URLRequest`. Returns `true` only when a non-empty poster landed on disk at `destination`; any
-    /// failure (HTTP error, empty body, write failure) returns `false` and is never surfaced — a
-    /// missing poster is never a download error. Plex authenticates via token-in-query (a bare
-    /// `URLRequest(url:)`); the MediaBrowser (Jellyfin/Emby) image endpoints instead need the
-    /// `Authorization` header (Emby also `userId`) that `*.authenticatedRequest(...)` attaches.
-    private nonisolated static func fetchAndWritePoster(request: URLRequest, to destination: URL) async -> Bool {
-        do {
-            let (data, response) = try await URLSession.shared.data(
-                for: sideAssetRequest(applyingCellularPolicy: request))
-            if let http = response as? HTTPURLResponse,
-               !(200...299).contains(http.statusCode) { return false }
-            guard !data.isEmpty, !Task.isCancelled else { return false }
-            try data.write(to: destination, options: .atomic)
-            return true
-        } catch {
-            return false
         }
     }
 
@@ -219,22 +201,45 @@ extension DownloadManager {
     private func cacheTextSubtitles(for attemptKey: DownloadAttemptKey, pending: [PendingSubtitle]) {
         guard !pending.isEmpty else { return }
         let store = self.store
-        downloadWorkRegistry.start(for: attemptKey, kind: .sideCache(.textSubtitles)) { [weak self] in
+        downloadWorkRegistry.startIfAbsent(for: attemptKey, kind: .sideCache(.textSubtitles)) { [weak self] in
+            guard let self else { return }
             var tracks: [OfflineTextSubtitleTrack] = []
             for item in pending {
                 guard !Task.isCancelled else { return }
+                if store.reusableSideAssetRelativePath(for: attemptKey,
+                                                       destination: item.destination) != nil {
+                    if let track = item.track { tracks.append(track) }
+                    continue
+                }
                 defer { try? FileManager.default.removeItem(at: item.staging) }
-                guard await Self.fetchAndWriteTextSubtitle(request: item.request, to: item.staging),
+                guard let data = try? await self.fetchOptionalSideAsset(item.request, for: attemptKey),
+                      Self.validTextSubtitleData(data),
+                      (try? data.write(to: item.staging, options: .atomic)) != nil,
                       !Task.isCancelled,
                       Self.promoteSideAsset(store: store, key: attemptKey,
                                             stagingURL: item.staging, stableURL: item.destination)
                 else { continue }
-                if let track = item.track { tracks.append(track) }
+                if let track = item.track {
+                    tracks.append(track)
+                    _ = store.updateMetadata(for: attemptKey) {
+                        var merged = $0.offlineTextSubtitles ?? []
+                        if !merged.contains(where: { $0.relativePath == track.relativePath }) {
+                            merged.append(track)
+                        }
+                        $0.offlineTextSubtitles = merged
+                    }
+                }
             }
             guard !tracks.isEmpty else { return }
             await MainActor.run {
-                let result = store.updateMetadata(for: attemptKey) { $0.offlineTextSubtitles = tracks }
-                if result == .applied || result == .noChange { self?.refreshRecords() }
+                let result = store.updateMetadata(for: attemptKey) {
+                    var merged = $0.offlineTextSubtitles ?? []
+                    for track in tracks where !merged.contains(where: { $0.relativePath == track.relativePath }) {
+                        merged.append(track)
+                    }
+                    $0.offlineTextSubtitles = merged
+                }
+                if result == .applied || result == .noChange { self.refreshRecords() }
             }
         }
     }
@@ -252,19 +257,9 @@ extension DownloadManager {
         return comps.url
     }
 
-    private nonisolated static func fetchAndWriteTextSubtitle(request: URLRequest, to destination: URL) async -> Bool {
-        do {
-            let (data, response) = try await URLSession.shared.data(
-                for: sideAssetRequest(applyingCellularPolicy: request))
-            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { return false }
-            guard let text = String(data: data, encoding: .utf8),
-                  !OfflineTextSubtitleParser.parse(text).isEmpty,
-                  !Task.isCancelled else { return false }
-            try data.write(to: destination, options: .atomic)
-            return true
-        } catch {
-            return false
-        }
+    private nonisolated static func validTextSubtitleData(_ data: Data) -> Bool {
+        guard let text = String(data: data, encoding: .utf8) else { return false }
+        return !OfflineTextSubtitleParser.parse(text).isEmpty
     }
 
     /// Download + cache Plex's BIF trick-play index for the selected source Part so the
@@ -275,6 +270,7 @@ extension DownloadManager {
                               server: URL, token: String) {
         guard let part = DownloadSideAssetPolicy.selectedPlexBIFPart(from: item, mediaIndex: mediaIndex) else { return }
         let destination = store.plexBIFDestinationURL(ratingKey: attemptKey.ratingKey)
+        if store.reusableSideAssetRelativePath(for: attemptKey, destination: destination) != nil { return }
         guard let staging = store.attemptStagingURL(for: attemptKey, stableURL: destination) else { return }
         let request = TrickPlayRequest.plexBIFIndex(server: server,
                                                     token: token,
@@ -285,13 +281,11 @@ extension DownloadManager {
         // Wi-Fi-only download policy can be stamped, instead of the shared PlexClient.
         let bifRequest = Self.sideAssetRequest(applyingCellularPolicy: request.urlRequest())
         let store = self.store
-        downloadWorkRegistry.start(for: attemptKey, kind: .sideCache(.plexBIF)) { [weak self] in
-            guard !Task.isCancelled else { return }
+        downloadWorkRegistry.startIfAbsent(for: attemptKey, kind: .sideCache(.plexBIF)) { [weak self] in
+            guard let self, !Task.isCancelled else { return }
             defer { try? FileManager.default.removeItem(at: staging) }
             do {
-                let (data, response) = try await URLSession.shared.data(for: bifRequest)
-                if let http = response as? HTTPURLResponse,
-                   !(200..<300).contains(http.statusCode) { return }
+                let data = try await self.fetchOptionalSideAsset(bifRequest, for: attemptKey)
                 guard !data.isEmpty, (try? BIFParser.parse(data)) != nil else { return }
                 try data.write(to: staging, options: .atomic)
                 guard !Task.isCancelled,
@@ -301,7 +295,7 @@ extension DownloadManager {
                     let result = store.updateMetadata(for: attemptKey) {
                         $0.plexBIFRelativePath = destination.lastPathComponent
                     }
-                    if result == .applied || result == .noChange { self?.refreshRecords() }
+                    if result == .applied || result == .noChange { self.refreshRecords() }
                 }
             } catch {
                 // Expected for items/servers without BIFs, auth churn, or cache races.
@@ -327,14 +321,16 @@ extension DownloadManager {
         // the chapter's position in `chapters` — the same enumeration the Chapters rail and the
         // offline scrub provider use, so it is the stable join key offline.
         let identity = appModel.identity
-        var requests: [(index: Int, request: URLRequest)] = []
+        var requests: [(index: Int, request: URLRequest, destination: URL)] = []
         for (index, chapter) in chapters.enumerated() {
             guard let thumb = chapter.thumb, !thumb.isEmpty else { continue }
             switch backend {
             case .plex:
                 guard let url = PlexPhotoTranscode.url(server: server, token: token, imagePath: thumb,
                                                        width: 480, height: 270) else { continue }
-                requests.append((index, URLRequest(url: url)))
+                requests.append((index, URLRequest(url: url),
+                                 store.chapterImageDestinationURL(ratingKey: attemptKey.ratingKey,
+                                                                  index: index)))
             case .jellyfin:
                 guard let parsed = DownloadSideAssetPolicy.parsedSyntheticChapterImageKey(thumb, scheme: "jellyfin"),
                       let url = try? JellyfinLibrary.chapterImageURL(server: server, itemId: parsed.itemID,
@@ -342,7 +338,9 @@ extension DownloadManager {
                                                                     width: 480, height: 270) else { continue }
                 var req = JellyfinLibrary.authenticatedRequest(url: url, token: token, identity: identity.jellyfin)
                 req.setValue("*/*", forHTTPHeaderField: "Accept")
-                requests.append((index, req))
+                requests.append((index, req,
+                                 store.chapterImageDestinationURL(ratingKey: attemptKey.ratingKey,
+                                                                  index: index)))
             case .emby:
                 guard let parsed = DownloadSideAssetPolicy.parsedSyntheticChapterImageKey(thumb, scheme: "emby"),
                       let url = try? EmbyLibrary.chapterImageURL(server: server, itemId: parsed.itemID,
@@ -351,67 +349,74 @@ extension DownloadManager {
                 var req = EmbyLibrary.authenticatedRequest(url: url, token: token,
                                                             identity: identity.emby, userId: userID)
                 req.setValue("*/*", forHTTPHeaderField: "Accept")
-                requests.append((index, req))
+                requests.append((index, req,
+                                 store.chapterImageDestinationURL(ratingKey: attemptKey.ratingKey,
+                                                                  index: index)))
             }
         }
         guard !requests.isEmpty else { return }
-        let pendingRequests = requests
+        var reusableRelatives: [Int: String] = [:]
+        let pendingRequests = requests.filter { entry in
+            if let relative = store.reusableSideAssetRelativePath(
+                for: attemptKey, destination: entry.destination) {
+                reusableRelatives[entry.index] = relative
+                return false
+            }
+            return true
+        }
+        guard !pendingRequests.isEmpty || !reusableRelatives.isEmpty else { return }
         let store = self.store
-        downloadWorkRegistry.start(for: attemptKey, kind: .sideCache(.chapterImages)) { [weak self] in
-            guard !Task.isCancelled else { return }
-            // Bound side-asset fanout (#187). The old task group launched every chapter thumbnail at
-            // once and accumulated all image Data before writing. A long movie times several overnight
-            // downloads could amplify memory/network pressure independent of the media transfer. Fetch
-            // in small batches and write each batch before requesting the next one.
-            let batchSize = DownloadSideAssetPolicy.chapterImageBatchSize
-            if DownloadSideAssetPolicy.shouldLogChapterImageThrottling(requestCount: pendingRequests.count) {
+        downloadWorkRegistry.startIfAbsent(for: attemptKey, kind: .sideCache(.chapterImages)) { [weak self] in
+            guard let self else { return }
+            let policy = SideAssetRequestPolicy.conservativeDefault
+            if pendingRequests.count > policy.maximumConcurrentRequests {
                 await MainActor.run {
-                    self?.recordDownloadDiagnostic("downloads.side_cache_throttled", fields: [
+                    self.recordDownloadDiagnostic("downloads.side_cache_throttled", fields: [
                         "download_id": .identifier(attemptKey.ratingKey),
                         "asset": .label("chapter_images"),
                         "request_count": .int(pendingRequests.count),
-                        "batch_size": .int(batchSize),
+                        "maximum_concurrency": .int(policy.maximumConcurrentRequests),
+                        "maximum_starts_per_second": .double(policy.maximumRequestStartsPerSecond),
                     ])
                 }
             }
-            var relativesByIndex: [Int: String] = [:]
-            var start = 0
-            while start < pendingRequests.count {
-                guard !Task.isCancelled else { return }
-                let end = min(start + batchSize, pendingRequests.count)
-                let batch = Array(pendingRequests[start..<end])
-                let fetched: [(index: Int, data: Data)] = await withTaskGroup(of: (Int, Data)?.self) { group in
-                    for entry in batch {
-                        group.addTask {
-                            guard let (data, response) = try? await URLSession.shared.data(
-                                    for: Self.sideAssetRequest(applyingCellularPolicy: entry.request)),
-                                  let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-                                  !data.isEmpty else { return nil }
-                            return (entry.index, data)
-                        }
+            var relativesByIndex = reusableRelatives
+            await withTaskGroup(
+                of: (Int, URL, Data)?.self
+            ) { group in
+                for entry in pendingRequests {
+                    group.addTask {
+                        guard let data = try? await self.fetchOptionalSideAsset(
+                            entry.request, for: attemptKey) else { return nil }
+                        return (entry.index, entry.destination, data)
                     }
-                    var out: [(index: Int, data: Data)] = []
-                    for await result in group { if let result { out.append(result) } }
-                    return out
                 }
-                for entry in fetched {
-                    guard !Task.isCancelled else { return }
-                    let destination = store.chapterImageDestinationURL(ratingKey: attemptKey.ratingKey, index: entry.index)
-                    guard let staging = store.attemptStagingURL(for: attemptKey, stableURL: destination) else { continue }
+                for await result in group {
+                    guard let (index, destination, data) = result,
+                          !Task.isCancelled,
+                          let staging = store.attemptStagingURL(
+                            for: attemptKey, stableURL: destination) else { continue }
                     defer { try? FileManager.default.removeItem(at: staging) }
-                    guard (try? entry.data.write(to: staging, options: .atomic)) != nil,
+                    guard (try? data.write(to: staging, options: .atomic)) != nil,
                           Self.promoteSideAsset(store: store, key: attemptKey,
                                                 stagingURL: staging, stableURL: destination) else { continue }
-                    relativesByIndex[entry.index] = destination.lastPathComponent
+                    let relative = destination.lastPathComponent
+                    relativesByIndex[index] = relative
+                    _ = store.updateMetadata(for: attemptKey) {
+                        var merged = $0.chapterImageRelativePaths ?? [:]
+                        merged[index] = relative
+                        $0.chapterImageRelativePaths = merged
+                    }
                 }
-                start = end
             }
             guard !relativesByIndex.isEmpty else { return }
             await MainActor.run {
                 let result = store.updateMetadata(for: attemptKey) {
-                    $0.chapterImageRelativePaths = relativesByIndex
+                    var merged = $0.chapterImageRelativePaths ?? [:]
+                    merged.merge(relativesByIndex) { _, current in current }
+                    $0.chapterImageRelativePaths = merged
                 }
-                if result == .applied || result == .noChange { self?.refreshRecords() }
+                if result == .applied || result == .noChange { self.refreshRecords() }
             }
         }
     }

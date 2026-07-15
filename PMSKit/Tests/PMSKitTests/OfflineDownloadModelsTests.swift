@@ -276,6 +276,27 @@ struct OfflineDownloadModelsTests {
         #expect(incoming.heldRangeSegments == previous.heldRangeSegments)
     }
 
+    @Test("preserveCachedSideAssets unions partial chapter and trick-play successes")
+    func preserveCachedSideAssetsMergesPartialCollections() {
+        let previous = OfflineMetadata(
+            ratingKey: "jellyfin:item", title: "Title", type: "movie",
+            jellyfinTrickPlayTileRelativePaths: ["tile-0.jpg", "tile-1.jpg"],
+            chapterImageRelativePaths: [0: "chapter-0.jpg", 1: "chapter-old-1.jpg"])
+        var incoming = OfflineMetadata(
+            ratingKey: "jellyfin:item", title: "Title", type: "movie",
+            jellyfinTrickPlayTileRelativePaths: ["tile-1.jpg", "tile-2.jpg"],
+            chapterImageRelativePaths: [1: "chapter-new-1.jpg", 2: "chapter-2.jpg"])
+
+        incoming.preserveCachedSideAssets(from: previous)
+
+        #expect(incoming.jellyfinTrickPlayTileRelativePaths == [
+            "tile-0.jpg", "tile-1.jpg", "tile-2.jpg",
+        ])
+        #expect(incoming.chapterImageRelativePaths == [
+            0: "chapter-0.jpg", 1: "chapter-new-1.jpg", 2: "chapter-2.jpg",
+        ])
+    }
+
     @Test("chapterImageRelativePaths (index-keyed dict) round-trips through encode/decode")
     func chapterImagePathsRoundTrip() throws {
         // [Int: String] is the only non-String-keyed field on the model; pin its JSON round-trip

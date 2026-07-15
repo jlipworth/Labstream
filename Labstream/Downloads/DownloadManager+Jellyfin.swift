@@ -440,7 +440,7 @@ extension DownloadManager {
                                         width: Int = 320) {
         guard let mediaSourceId, !mediaSourceId.isEmpty else { return }
         let store = self.store
-        downloadWorkRegistry.start(for: attemptKey, kind: .sideCache(.jellyfinTrickPlay)) { [weak self] in
+        downloadWorkRegistry.startIfAbsent(for: attemptKey, kind: .sideCache(.jellyfinTrickPlay)) { [weak self] in
             guard !Task.isCancelled else { return }
             do {
                 let playlistReq = try JellyfinLibrary.trickPlayPlaylistRequest(server: server,
@@ -449,80 +449,58 @@ extension DownloadManager {
                                                                                itemId: itemId,
                                                                                mediaSourceId: mediaSourceId,
                                                                                width: width)
-                // Lens 4 F2: trickplay playlist + tiles are data-plane side assets — honor Wi-Fi-only.
-                let (playlistData, playlistResponse) = try await URLSession.shared.data(
-                    for: Self.sideAssetRequest(applyingCellularPolicy: playlistReq))
-                guard let playlistHTTP = playlistResponse as? HTTPURLResponse,
-                      (200..<300).contains(playlistHTTP.statusCode),
+                let playlistData = try await self?.fetchOptionalSideAsset(playlistReq, for: attemptKey)
+                guard let playlistData,
                       let playlistText = String(data: playlistData, encoding: .utf8),
                       !Task.isCancelled else { return }
                 let playlist = try JellyfinTrickPlayPlaylistParser.parse(playlistText)
-                var tileRelatives: [String] = []
+                var tileRelativeByIndex: [Int: String] = [:]
                 var tileFilenamesByURI: [String: String] = [:]
-                // Bound side-asset fanout (#187). A long movie can have many tile sheets; fetching all
-                // at once and then retaining every Data blob until after the group completes can amplify
-                // overnight memory pressure. Fetch in small concurrent batches and write each batch
-                // before moving on.
-                let batchSize = 4
-                if playlist.tiles.count > batchSize {
-                    await MainActor.run {
-                        self?.recordDownloadDiagnostic("downloads.side_cache_throttled", fields: [
-                            "download_id": .identifier(attemptKey.ratingKey),
-                            "asset": .label("jellyfin_trickplay_tiles"),
-                            "request_count": .int(playlist.tiles.count),
-                            "batch_size": .int(batchSize),
-                        ])
+                var missing: [(index: Int, uri: String, request: URLRequest, destination: URL)] = []
+                for (index, tile) in playlist.tiles.enumerated() {
+                    let destination = store.jellyfinTrickPlayTileDestinationURL(
+                        ratingKey: attemptKey.ratingKey, index: index)
+                    if let relative = store.reusableSideAssetRelativePath(
+                        for: attemptKey, destination: destination) {
+                        tileRelativeByIndex[index] = relative
+                        tileFilenamesByURI[tile.uri] = relative
+                        continue
                     }
+                    guard let request = try? JellyfinLibrary.trickPlayTileRequest(
+                        server: server, token: token, identity: identity, itemId: itemId,
+                        mediaSourceId: mediaSourceId, width: width, tileURI: tile.uri) else { continue }
+                    missing.append((index, tile.uri, request, destination))
                 }
-                var start = 0
-                while start < playlist.tiles.count {
-                    guard !Task.isCancelled else { return }
-                    let end = min(start + batchSize, playlist.tiles.count)
-                    let batch = Array(playlist.tiles[start..<end].enumerated()).map { (offset, tile) in
-                        (index: start + offset, tile: tile)
-                    }
-                    let fetched: [(index: Int, uri: String, data: Data)] = await withTaskGroup(of: (Int, String, Data)?.self) { group in
-                        for entry in batch {
-                            guard let tileReq = try? JellyfinLibrary.trickPlayTileRequest(server: server,
-                                                                                          token: token,
-                                                                                          identity: identity,
-                                                                                          itemId: itemId,
-                                                                                          mediaSourceId: mediaSourceId,
-                                                                                          width: width,
-                                                                                          tileURI: entry.tile.uri) else { continue }
-                            let uri = entry.tile.uri
-                            let index = entry.index
-                            group.addTask {
-                                guard let (tileData, tileResponse) = try? await URLSession.shared.data(
-                                        for: Self.sideAssetRequest(applyingCellularPolicy: tileReq)),
-                                      let tileHTTP = tileResponse as? HTTPURLResponse,
-                                      (200..<300).contains(tileHTTP.statusCode),
-                                      !tileData.isEmpty else { return nil }
-                                return (index, uri, tileData)
-                            }
+
+                await withTaskGroup(of: (Int, String, URL, Data)?.self) { group in
+                    for entry in missing {
+                        group.addTask { [weak self] in
+                            guard let self,
+                                  let data = try? await self.fetchOptionalSideAsset(
+                                    entry.request, for: attemptKey) else { return nil }
+                            return (entry.index, entry.uri, entry.destination, data)
                         }
-                        var out: [(index: Int, uri: String, data: Data)] = []
-                        for await result in group { if let result { out.append(result) } }
-                        return out.sorted { $0.index < $1.index }
                     }
-                    for entry in fetched {
-                        guard !Task.isCancelled else { return }
-                        let destination = store.jellyfinTrickPlayTileDestinationURL(
-                            ratingKey: attemptKey.ratingKey, index: entry.index)
-                        guard let staging = store.attemptStagingURL(for: attemptKey, stableURL: destination) else {
-                            continue
-                        }
+                    for await result in group {
+                        guard let (index, uri, destination, data) = result,
+                              !Task.isCancelled,
+                              let staging = store.attemptStagingURL(
+                                for: attemptKey, stableURL: destination) else { continue }
                         defer { try? FileManager.default.removeItem(at: staging) }
-                        try entry.data.write(to: staging, options: .atomic)
-                        guard Self.promoteSideAsset(store: store, key: attemptKey,
-                                                    stagingURL: staging, stableURL: destination) else {
-                            continue
+                        guard (try? data.write(to: staging, options: .atomic)) != nil,
+                              Self.promoteSideAsset(store: store, key: attemptKey,
+                                                    stagingURL: staging, stableURL: destination) else { continue }
+                        let relative = destination.lastPathComponent
+                        tileRelativeByIndex[index] = relative
+                        tileFilenamesByURI[uri] = relative
+                        _ = store.updateMetadata(for: attemptKey) {
+                            var merged = $0.jellyfinTrickPlayTileRelativePaths ?? []
+                            if !merged.contains(relative) { merged.append(relative) }
+                            $0.jellyfinTrickPlayTileRelativePaths = merged
                         }
-                        tileFilenamesByURI[entry.uri] = destination.lastPathComponent
-                        tileRelatives.append(destination.lastPathComponent)
                     }
-                    start = end
                 }
+                let tileRelatives = tileRelativeByIndex.sorted { $0.key < $1.key }.map(\.value)
                 guard !tileRelatives.isEmpty else { return }
                 let sanitized = JellyfinTrickPlayOfflineCachePlanner.sanitizedPlaylist(playlistText, tileFilenamesByURI: tileFilenamesByURI)
                 guard !sanitized.localizedCaseInsensitiveContains("apikey=") else { return }
@@ -538,7 +516,11 @@ extension DownloadManager {
                 await MainActor.run {
                     let result = store.updateMetadata(for: attemptKey) {
                         $0.jellyfinTrickPlayPlaylistRelativePath = playlistURL.lastPathComponent
-                        $0.jellyfinTrickPlayTileRelativePaths = tileRelatives
+                        var merged = $0.jellyfinTrickPlayTileRelativePaths ?? []
+                        for relative in tileRelatives where !merged.contains(relative) {
+                            merged.append(relative)
+                        }
+                        $0.jellyfinTrickPlayTileRelativePaths = merged
                     }
                     if result == .applied || result == .noChange { self?.refreshRecords() }
                 }
