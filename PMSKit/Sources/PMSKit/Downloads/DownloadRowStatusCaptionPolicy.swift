@@ -146,6 +146,11 @@ public enum DownloadRowStatusCaptionPolicy {
             if context.isActive, context.resumeMode == .staticByteRange {
                 return .activeStaticZeroByteTransfer
             }
+            // A persisted prep row is not proof that server work is currently observable. After a
+            // sign-out, server switch, or relaunch without the matching backend, no task/poller can
+            // truthfully claim "Preparing on server". Real active pollers still surface their live
+            // progress/finalizing state below, even if configuration changes while they unwind.
+            if !context.isActive, !context.isBackendConfigured { return .waitingForBackend }
             if DownloadProgressDisplay.isServerPrepFinalizing(state: context.serverPrepState,
                                                               progress: context.serverPrepProgress) {
                 return .serverPrepFinalizing
@@ -153,7 +158,6 @@ public enum DownloadRowStatusCaptionPolicy {
             if context.serverPrepProgress != nil { return .serverPrepProgressing }
             if context.serverPrepState == serverPrepQueuedState { return .serverPrepQueued }
             if isServerPrep { return .serverPrepQueued }
-            if !context.isActive, !context.isBackendConfigured { return .waitingForBackend }
             if context.isActive { return .activeServerPrep }
             if context.hasServerPrepQueueTitle { return .serverPrepQueued }
             return .queued

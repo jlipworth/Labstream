@@ -5425,8 +5425,15 @@ final class DownloadStore: @unchecked Sendable {
                   result.skippedRowCount, result.schemaVersion, result.rows.count)
         }
         var repairedSubtitleRows = 0
+        var normalizedPreparedStaticRows = 0
         rows = Dictionary(uniqueKeysWithValues: result.rows.map { row in
             var repaired = row
+            if PreparedStaticLaneNormalizationPolicy.normalize(
+                metadata: &repaired.metadata, ratingKey: repaired.ratingKey) {
+                normalizedPreparedStaticRows += 1
+                NSLog("DownloadStore: normalized legacy Plex prepared-static lane for %@",
+                      row.ratingKey)
+            }
             if repaired.metadata?.offlineTextSubtitles?.isEmpty ?? true,
                let tracks = cachedSubtitleTracksFromDisk(ratingKey: row.ratingKey),
                !tracks.isEmpty {
@@ -5440,7 +5447,7 @@ final class DownloadStore: @unchecked Sendable {
         // Never let a best-effort cache repair stamp a pre-v4 snapshot as v4 before the startup
         // migration has durably closed admission and marked every nonterminal partial for reset.
         // The repaired values are already in memory and ride along with the migration snapshot.
-        if repairedSubtitleRows > 0,
+        if repairedSubtitleRows > 0 || normalizedPreparedStaticRows > 0,
            loadedSchemaVersion >= DownloadIndexCoding.currentSchemaVersion {
             lock.unlock()
             persist()

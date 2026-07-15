@@ -59,7 +59,6 @@ struct DownloadRowStatusCaptionPolicyTests {
         #expect(paused.hasPrefix("Paused — tap to resume • 50% • "))
     }
 
-
     @Test("Phase classification makes row state machine explicit")
     func phases() {
         #expect(DownloadRowStatusCaptionPolicy.phase(context(
@@ -78,6 +77,29 @@ struct DownloadRowStatusCaptionPolicyTests {
             bytes: 1_000_000,
             isActive: true)) == .activeTransfer)
     }
+
+    @Test("Inactive server prep waits for its unavailable backend while active prep stays visible")
+    func unavailableBackendPrepCaption() {
+        let inactive = context(status: .preparing,
+                               backend: .emby,
+                               resumeMode: .serverPrepThenStatic,
+                               isActive: false,
+                               isBackendConfigured: false,
+                               serverPrepState: "finalizing",
+                               serverPrepProgress: 1.0)
+        #expect(DownloadRowStatusCaptionPolicy.phase(inactive) == .waitingForBackend)
+        #expect(DownloadRowStatusCaptionPolicy.caption(inactive) == "Waiting for Emby…")
+
+        let active = context(status: .preparing,
+                             backend: .plex,
+                             resumeMode: .serverPrepThenStatic,
+                             isActive: true,
+                             isBackendConfigured: false,
+                             serverPrepProgress: 0.42)
+        #expect(DownloadRowStatusCaptionPolicy.phase(active) == .serverPrepProgressing)
+        #expect(DownloadRowStatusCaptionPolicy.caption(active) == "Preparing on server… 42%")
+    }
+
 
     @Test("Compact sheet captions preserve modal phase wording")
     func compactActiveCaptions() {

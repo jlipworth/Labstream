@@ -631,28 +631,25 @@ public struct OfflineLibraryView: View {
     /// context for resumability and "why is this slower?" without making normal downloads look
     /// like failures.
     private func downloadLaneBadge(for record: DownloadRecord) -> some View {
-        let label: String
+        let badge = DownloadRowDisplayPolicy.routeBadge(for: record)
+        let label = badge.rawValue
         let systemImage: String
         let tint: Color
-        switch record.metadata?.resolvedDownloadLane() ?? .original {
-        case .original where record.metadata?.isServerPreparedVersion == true:
+        switch badge {
+        case .optimized:
             // B4: a server-prepared version rides the `.original` STATIC byte-range lane — it is a
             // finished file transferred/resumed byte-for-byte, NOT a live server transcode. Badge it
             // "Optimized" (distinct from a true source "Original", but never the alarming orange
             // "Transcode", which is reserved for the encoder-gated `.optimize`/remux lanes below).
-            label = "Optimized"
             systemImage = "checkmark.seal"
             tint = .secondary
         case .original:
-            label = "Original"
             systemImage = "checkmark.seal"
             tint = .secondary
-        case .compatibleRemux:
-            label = "Remux"
+        case .remux:
             systemImage = "arrow.triangle.2.circlepath"
             tint = .orange
-        case .optimize:
-            label = "Transcode"
+        case .transcode:
             systemImage = "gauge.with.dots.needle.bottom.50percent"
             tint = .orange
         }
