@@ -71,6 +71,37 @@ struct DownloadStorePersistenceTests {
         }
     }
 
+    @Test func relaunchNormalizesAndPersistsLegacyPlexPreparedStaticLane() throws {
+        try withTemporaryDirectory { directory in
+            let ratingKey = "12345"
+            let legacyHandoff = makeRecord(
+                ratingKey: ratingKey,
+                title: "Rendered Movie",
+                directory: directory,
+                bytes: 512,
+                metadata: OfflineMetadata(
+                    ratingKey: ratingKey,
+                    title: "Rendered Movie",
+                    type: "movie",
+                    optimizeTargetName: "8 Mbps 1080p",
+                    backendKind: .plex,
+                    downloadLane: .optimize,
+                    resumeMode: .staticByteRange,
+                    serverPreparedVersion: true
+                )
+            )
+            DownloadStore(baseDirectory: directory).upsert(legacyHandoff)
+
+            let repaired = DownloadStore(baseDirectory: directory)
+            #expect(repaired.record(for: ratingKey)?.metadata?.downloadLane == .original)
+            #expect(repaired.record(for: ratingKey)?.metadata?.isServerPreparedVersion == true)
+
+            // The repair is durable, not merely a presentation-time interpretation.
+            let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(relaunched.record(for: ratingKey)?.metadata?.downloadLane == .original)
+        }
+    }
+
     @Test func v2NestedAttemptMigratesToDurableTopLevelV3AndSurvivesRelaunchBarrier() throws {
         try withTemporaryDirectory { directory in
             let key = "plex:legacy-active"

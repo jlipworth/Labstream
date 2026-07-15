@@ -4,6 +4,30 @@ import Testing
 
 @Suite("Download row display policy")
 struct DownloadRowDisplayPolicyTests {
+    @Test("Route badge follows artifact provenance across server-prep handoff and terminal states")
+    func routeBadgeTransition() {
+        #expect(DownloadRowDisplayPolicy.routeBadge(
+            lane: .optimize, isServerPreparedVersion: false) == .transcode)
+        #expect(DownloadRowDisplayPolicy.routeBadge(
+            lane: .original, isServerPreparedVersion: true) == .optimized)
+        #expect(DownloadRowDisplayPolicy.routeBadge(
+            lane: .original, isServerPreparedVersion: false) == .original)
+        #expect(DownloadRowDisplayPolicy.routeBadge(
+            lane: .compatibleRemux, isServerPreparedVersion: false) == .remux)
+
+        // Jellyfin's optimized download remains a live-forward encoder stream; completion changes
+        // durable status, not the route that produced the artifact.
+        for status in [DownloadStatus.queued, .downloading, .paused, .complete, .unverified, .failed] {
+            #expect(DownloadRowDisplayPolicy.routeBadge(for: routeRecord(
+                status: status, lane: .optimize, serverPrepared: false)) == .transcode)
+        }
+        // A handed-off Plex/Emby static artifact remains Optimized across the same lifecycle.
+        for status in [DownloadStatus.queued, .downloading, .paused, .complete, .unverified, .failed] {
+            #expect(DownloadRowDisplayPolicy.routeBadge(for: routeRecord(
+                status: status, lane: .original, serverPrepared: true)) == .optimized)
+        }
+    }
+
     @Test("Active heads preserve backend and lane nuance")
     func activeHeads() {
         #expect(DownloadRowDisplayPolicy.activeHead(lane: .original,
@@ -195,5 +219,19 @@ struct DownloadRowDisplayPolicyTests {
                         title: "Title",
                         type: "movie",
                         resumeMode: resumeMode)
+    }
+
+    private func routeRecord(status: DownloadStatus,
+                             lane: DownloadLane,
+                             serverPrepared: Bool) -> DownloadRecord {
+        DownloadRecord(ratingKey: "route",
+                       title: "Route",
+                       localURL: URL(fileURLWithPath: "/tmp/route.mp4"),
+                       status: status,
+                       metadata: OfflineMetadata(ratingKey: "route",
+                                                 title: "Route",
+                                                 type: "movie",
+                                                 downloadLane: lane,
+                                                 serverPreparedVersion: serverPrepared ? true : nil))
     }
 }

@@ -318,6 +318,10 @@ extension DownloadManager {
         // final Part id as the static retry target.
         downloadMetadata.sourcePartID = part.id
         downloadMetadata.resumeMode = .staticByteRange
+        // The encoder phase is over: this is now a concrete, byte-range-resumable server artifact.
+        // Stamp all three provenance facts in the same store replacement so the title badge/caption
+        // atomically transitions from Transcode to Optimized before the static transfer starts.
+        downloadMetadata.downloadLane = .original
         // From here on the transfer is the RENDERED part, so byte-completeness must be judged
         // against ITS size — the enqueue metadata still carries the SOURCE part size, and a
         // transfer that completes via an adopted whole-file 200 never gets a Content-Range total

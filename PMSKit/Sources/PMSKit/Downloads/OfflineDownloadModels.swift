@@ -540,8 +540,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// the Emby #126 reuse of an existing converted version, and the Plex #112 existing-version
     /// download. All of those ride the `.original` static lane for byte-for-byte resumable transfer,
     /// so the lane alone can't distinguish them from a real original; this flag lets the UI badge
-    /// them "Transcode" (consistent with on-demand optimize) instead of mislabelling them "Original".
-    /// Purely cosmetic — it never affects the download/resume/rate mechanics, which stay lane-driven.
+    /// them "Optimized" instead of mislabelling them "Original". It also preserves exact prepared-
+    /// artifact retry intent; transfer/resume/rate mechanics remain lane- and resume-mode-driven.
     /// `nil`/false for a genuine original (and every pre-existing row).
     public var serverPreparedVersion: Bool?
     /// #169: HTTP validator (`ETag`, else `Last-Modified`) captured from the first static byte-range
@@ -826,9 +826,9 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         }
     }
 
-    /// Display helper: true when this row downloads a server-prepared (transcoded) version rather
-    /// than the genuine source — see `serverPreparedVersion`. Used by the offline UI to badge it
-    /// "Transcode" even though it rides the `.original` static lane.
+    /// True when this row downloads a server-prepared version rather than the genuine source — see
+    /// `serverPreparedVersion`. The offline UI badges this `.original` static artifact "Optimized",
+    /// and retries use the marker to preserve the exact prepared source.
     public var isServerPreparedVersion: Bool { serverPreparedVersion == true }
 
     /// #83: resolve this row's lane. New rows persist `downloadLane`; pre-#83 rows fall back to the

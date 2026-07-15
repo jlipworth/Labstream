@@ -5,9 +5,37 @@ import Foundation
 /// `DownloadManager` still supplies live facts (active slot, ETA dictionaries, backend auth), but
 /// this type owns the backend/lane wording that used to be duplicated inline in the SwiftUI-facing
 /// snapshot builder. Keeping it in PMSKit pins the user-visible nuance: server-prepared static files
-/// are labelled as transcodes, MediaBrowser compatible lanes say remuxing, and Plex optimize's
-/// phase-2 download is a static transcode file while Jellyfin/Emby optimize stays live encoder text.
+/// are labelled as optimized artifacts, MediaBrowser compatible lanes say remuxing, and Plex
+/// optimize's phase-2 download is a static file while Jellyfin optimize stays live encoder text.
 public enum DownloadRowDisplayPolicy {
+    /// Semantic route shown by the title badge. Keeping the classification outside SwiftUI makes
+    /// the actual badge state share the same persisted lane/provenance rule as captions and tests.
+    public enum RouteBadge: String, Sendable, Equatable {
+        case original = "Original"
+        case optimized = "Optimized"
+        case remux = "Remux"
+        case transcode = "Transcode"
+    }
+
+    public static func routeBadge(lane: DownloadLane,
+                                  isServerPreparedVersion: Bool) -> RouteBadge {
+        switch lane {
+        case .original where isServerPreparedVersion:
+            return .optimized
+        case .original:
+            return .original
+        case .compatibleRemux:
+            return .remux
+        case .optimize:
+            return .transcode
+        }
+    }
+
+    public static func routeBadge(for record: DownloadRecord) -> RouteBadge {
+        routeBadge(lane: record.metadata?.resolvedDownloadLane() ?? .original,
+                   isServerPreparedVersion: record.metadata?.isServerPreparedVersion == true)
+    }
+
     public static func byteString(_ bytes: Int) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
     }
