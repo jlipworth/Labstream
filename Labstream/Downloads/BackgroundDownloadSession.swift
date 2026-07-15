@@ -234,6 +234,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// the off-head headset probe needs durable breadcrumbs showing whether delegate progress kept
     /// arriving, without logging every `didWriteData` callback.
     private var lastRangeProgressDiagnostic: [Int: BackgroundRangeProgressDiagnosticSnapshot] = [:]
+    /// Stale delegates can replay thousands of buffered progress callbacks after an attempt is
+    /// replaced. Preserve the first diagnostic for each exact attempt/phase without flooding the
+    /// rotating evidence log with identical events.
+    private var loggedStaleAttemptCallbackPhases: Set<String> = []
     /// Cap UI progress publication to roughly 4 Hz total while preserving terminal updates.
     private let progressNotifyInterval: TimeInterval = 0.5
     private static let appBundleIdentifier = "com.jlipworth.Labstream"
@@ -921,10 +925,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     private func stillOwnsAttempt(_ key: DownloadAttemptKey, phase: String) -> Bool {
         guard store.ownsAttempt(key), !store.isDeletionPending(for: key) else {
-            AppDiagnostics.record(.downloads, "downloads.stale_attempt_callback_dropped", fields: [
-                "download_id": .identifier(key.ratingKey),
-                "phase": .label(phase),
-            ])
+            let diagnosticKey = "\(key.attemptID.rawValue)|\(phase)"
+            lock.lock()
+            let shouldLog = loggedStaleAttemptCallbackPhases.insert(diagnosticKey).inserted
+            lock.unlock()
+            if shouldLog {
+                AppDiagnostics.record(.downloads, "downloads.stale_attempt_callback_dropped", fields: [
+                    "download_id": .identifier(key.ratingKey),
+                    "phase": .label(phase),
+                ])
+            }
             return false
         }
         return true
@@ -1216,6 +1226,31 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "reason": .label(reason),
         ])
         endPendingBackgroundCompletionOperation()
+        if reason == "timeout",
+           !isTrackingTransfer(ratingKey: ratingKey),
+           let record = store.record(for: key),
+           record.status == .queued {
+            // A queued static row without a URLSession owner is not active work. Park it at the
+            // durable checkpoint instead of leaving a spinner that only Pause -> Resume can kick.
+            let reset = store.resetStaticRangeProgressToDurableCheckpoint(
+                for: key,
+                expectedBytes: record.metadata?.sourcePartSize)
+            let checkpointBytes: Int
+            switch reset {
+            case .applied(let bytes), .unchanged(let bytes), .notStatic(let bytes):
+                checkpointBytes = bytes
+            case .staleOrMissing, .persistenceFailed:
+                return
+            }
+            _ = resolveLifecycleSubmission(store.submitStatus(for: key, .paused))
+            AppDiagnostics.record(.downloads, "downloads.range_request_rebuild_parked", fields: [
+                "download_id": .identifier(ratingKey),
+                "checkpoint_bytes": .int(checkpointBytes),
+                "reason": .label("no_replacement_task"),
+            ])
+            onError?(ratingKey, .interruptedResumable)
+            onChange?()
+        }
     }
 
     /// Rebind delegate to any tasks the background session resumed after relaunch.
@@ -2443,7 +2478,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lock.lock()
         let hasReplacement = inflight.values.contains { $0.ratingKey == ratingKey }
             || rangeInflight.values.contains { $0.ratingKey == ratingKey }
+        let rangePauseIsActive = rangeHaltKinds[key] == .pause
         lock.unlock()
+        // Static Range pause is persisted before asynchronous task cancellation. Its callbacks may
+        // still save open-ended resume data, but only while the same pause halt remains installed;
+        // Resume clears the halt, so a late callback cannot pause the replacement generation.
+        if status == .paused, rangePauseIsActive {
+            return !hasReplacement
+        }
         // If the user already resumed/retried and a replacement task is tracked, a delayed cancel
         // callback from the old task must not flip the new active row back to Paused.
         return BackgroundDownloadPauseCancellationPolicy.pauseStillApplies(
@@ -2482,6 +2524,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // watermark instead of each racing the single per-key blob slot with its own file position.
         let pauseContext = makeRangePauseContext(for: attemptKey,
                                                  entries: Array(rangeEntriesForKey))
+        if !rangeIds.isEmpty {
+            // User intent wins synchronously over task-completion/refill races. Bounded train
+            // resume blobs and their optimistic watermark are unsafe and no longer authoritative.
+            if pauseContext.isTrain {
+                _ = resolveLifecycleSubmission(store.submitClearResumeData(for: attemptKey))
+            }
+            _ = resolveLifecycleSubmission(store.submitStatus(for: attemptKey, .paused))
+            onError?(ratingKey, .interruptedResumable)
+            onChange?()
+        }
         endRangeRequestRebuildGrace(for: attemptKey, reason: "paused")
         // M-6: held ahead-of-checkpoint stashes are deliberately KEPT across a user pause. The
         // resume planner counts held offsets as covered (no re-fetch) and the post-append drain
@@ -2816,6 +2868,38 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 ])
                 return
             }
+            if let segmentLength = rangeEntry.segmentLength,
+               bodyBytesWritten > segmentLength {
+                // A closed Range owns exactly `segmentLength` response bytes. URLSession resume
+                // data has been observed replaying a closed request as an effectively open-ended
+                // HTTP/3 transfer; do not merely cap its UI contribution while it downloads the
+                // rest of the file. Cancel at the first invariant breach and rebuild from the
+                // app-owned durable checkpoint.
+                lock.lock()
+                rangeInflight.removeValue(forKey: downloadTask.taskIdentifier)
+                supersededRangeTaskIdentifiers.insert(downloadTask.taskIdentifier)
+                loggedProgressMilestones.removeValue(forKey: downloadTask.taskIdentifier)
+                lastRangeProgressDiagnostic.removeValue(forKey: downloadTask.taskIdentifier)
+                lock.unlock()
+                downloadTask.cancel()
+                _ = resolveLifecycleSubmission(store.submitClearResumeData(for: rangeEntry.attemptKey))
+                guard resetStaticRangeProgressToDurableCheckpoint(
+                    for: rangeEntry.attemptKey,
+                    expectedBytes: rangeEntry.expectedBytes,
+                    context: "closed_range_oversized"
+                ) != nil else { return }
+                beginRangeRequestRebuildGrace(for: rangeEntry.attemptKey)
+                _ = resolveLifecycleSubmission(store.submitStatus(for: rangeEntry.attemptKey, .queued))
+                AppDiagnostics.record(.downloads, "downloads.range_closed_body_oversized", fields: [
+                    "download_id": .identifier(rangeEntry.ratingKey),
+                    "task_id": .int(downloadTask.taskIdentifier),
+                    "base_offset": .int(rangeEntry.baseOffset),
+                    "segment_length": .int(segmentLength),
+                    "reported_body_bytes": .int(bodyBytesWritten),
+                ])
+                onRangeRequestNeeded?(rangeEntry.ratingKey, .requestRebuildNeeded)
+                return
+            }
             let durableBytes = fileSize(at: rangeEntry.workingURL) ?? 0
             if durableBytes > rangeEntry.baseOffset + (rangeEntry.segmentLength ?? 0) {
                 lock.lock()
@@ -2959,9 +3043,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             }
             // Never publish a live sample past the known total — a transient overlap between a
             // just-superseded segment and its replacement must not flash the row past 100%.
-            if let effectiveExpectedBytes, effectiveExpectedBytes > 0 {
-                displayTotal = min(displayTotal, effectiveExpectedBytes)
-            }
+            displayTotal = DownloadLiveRangeProgressPolicy.activeDisplayBytes(
+                optimisticBytes: displayTotal,
+                expectedBytes: effectiveExpectedBytes,
+                durableBytes: durableBytes)
             // A Range task's in-flight bytes live in an OS temp file until
             // `didFinishDownloadingTo` lets us append them to the durable partial. Keep the visible
             // row/aggregate "downloaded" total pinned to the last real checkpoint; detailed
@@ -5819,7 +5904,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             }
             // Parking (paused/queued): keep the blob so a manual Resume — even after a relaunch —
             // continues the remainder's temp progress instead of re-fetching it.
-            if StaticRangeResumeDataPolicy.shouldPersistBlobOnPark(
+            if rangeEntry.segmentLength == nil,
+               StaticRangeResumeDataPolicy.shouldPersistBlobOnPark(
                 hasResumeData: rangeResumeData?.isEmpty == false,
                 resumeDataWasRejected: blobResumeAttempt == .rejectedResumeData
             ), let rangeResumeData {
@@ -6164,7 +6250,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let decision = StaticRangeResumeDataPolicy.failureResumeDecision(
             errorCode: error.code,
             hasResumeData: resumeData?.isEmpty == false,
-            currentBlobResumeCount: rangeBlobResumeCounts[entry.attemptKey] ?? 0
+            currentBlobResumeCount: rangeBlobResumeCounts[entry.attemptKey] ?? 0,
+            isClosedRange: entry.segmentLength != nil
         )
         guard case .resume(let nextAttempt) = decision, let resumeData else {
             lock.unlock()
@@ -6299,6 +6386,24 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let blobOffset = RangeTransferHTTPPolicy.rangeRequestStart(from: task.originalRequest)
             ?? RangeTransferHTTPPolicy.rangeRequestStart(from: task.currentRequest)
         let durableBytes = fileSize(at: destination) ?? 0
+        let blobRangeHeader = (task.originalRequest ?? task.currentRequest)?
+            .value(forHTTPHeaderField: "Range")
+        // Migration/backstop for blobs persisted by earlier builds. Even when the original
+        // request still says `bytes=start-end`, CFNetwork may replay the blob beyond `end`; reject
+        // every closed-range blob before it becomes an authoritative live task.
+        if !StaticRangeResumeDataPolicy.shouldAdoptBlob(
+            hasClosedRangeEnd: RangeTransferHTTPPolicy.rangeRequestEnd(blobRangeHeader) != nil
+        ) {
+            task.cancel()
+            _ = resolveLifecycleSubmission(store.submitClearResumeData(for: attemptKey))
+            AppDiagnostics.record(.downloads, "downloads.range_closed_blob_refused", fields: [
+                "download_id": .identifier(ratingKey),
+                "blob_offset": .int(blobOffset ?? -1),
+                "durable_bytes": .int(durableBytes),
+                "reason": .label(remainderReason),
+            ])
+            return false
+        }
         switch StaticRangeResumeDataPolicy.adoptionDecision(blobRangeOffset: blobOffset,
                                                             durableBytes: durableBytes,
                                                             segmentBaseOffset: failedSegment?.baseOffset) {
@@ -6328,8 +6433,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // remainder — and a resumed task's Content-Range starts at the blob's byte position, so
             // the completed segment would trip the offset-mismatch path and be discarded. A legacy
             // open-ended blob (`bytes=N-`) has no end bound and stays nil (unchanged semantics).
-            let blobRangeHeader = (task.originalRequest ?? task.currentRequest)?
-                .value(forHTTPHeaderField: "Range")
             let blobSegmentLength: Int? = {
                 let start = RangeTransferHTTPPolicy.rangeRequestStart(blobRangeHeader) ?? baseOffset
                 guard let end = RangeTransferHTTPPolicy.rangeRequestEnd(blobRangeHeader),

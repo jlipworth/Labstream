@@ -93,6 +93,21 @@ public enum DownloadLiveRangeProgressPolicy {
         return base + liveSum
     }
 
+    /// Clamp optimistic transfer coverage without claiming terminal completion before the
+    /// app-owned contiguous file reaches the server-declared size. Live segment bodies still sit
+    /// in URLSession temporary files and can fail validation; displaying 100% before they become
+    /// durable caused a later, apparently impossible rollback from 100% to 35%.
+    public static func activeDisplayBytes(optimisticBytes: Int,
+                                          expectedBytes: Int?,
+                                          durableBytes: Int) -> Int {
+        let optimistic = max(optimisticBytes, 0)
+        guard let expectedBytes, expectedBytes > 0 else { return optimistic }
+        if durableBytes < expectedBytes {
+            return min(optimistic, expectedBytes - 1)
+        }
+        return min(optimistic, expectedBytes)
+    }
+
     public static func liveDisplayBytes(for record: DownloadRecord,
                                         sample: DownloadLiveRangeProgressSample?) -> Int? {
         guard record.status == .downloading,
