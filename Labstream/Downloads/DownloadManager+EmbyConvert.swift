@@ -230,7 +230,7 @@ extension DownloadManager {
             await downloadEmby(item, choice: .existingVersion, audioStreamIndex: audioStreamIndex,
                                mediaSourceIDOverride: reuseId,
                                deferStaticStartWhenQueuePaused: true,
-                               requestedProfileLabelOverride: metadata.requestedProfileLabel ?? targetName,
+                               requestedProfileLabelOverride: targetName,
                                allowReplacingExistingActiveRow: true)
             return
         }
@@ -263,7 +263,7 @@ extension DownloadManager {
             await downloadEmby(item, choice: .existingVersion, audioStreamIndex: audioStreamIndex,
                                mediaSourceIDOverride: reuseId,
                                deferStaticStartWhenQueuePaused: true,
-                               requestedProfileLabelOverride: metadata.requestedProfileLabel ?? targetName,
+                               requestedProfileLabelOverride: targetName,
                                allowReplacingExistingActiveRow: true)
             return
         }
@@ -581,12 +581,10 @@ extension DownloadManager {
                                  server: server, token: token, identity: identity)
             clearOptimizeProgress(ratingKey: ratingKey)
             releaseInFlight(for: storeAttemptKey)
-            let requestedProfileLabel = records.first { $0.ratingKey == ratingKey }?
-                .metadata?.requestedProfileLabel ?? targetName
             await downloadEmby(item, choice: .existingVersion, audioStreamIndex: audioStreamIndex,
                                mediaSourceIDOverride: reuseId,
                                deferStaticStartWhenQueuePaused: true,
-                               requestedProfileLabelOverride: requestedProfileLabel,
+                               requestedProfileLabelOverride: targetName,
                                allowReplacingExistingActiveRow: true)
             return
         }
@@ -972,8 +970,6 @@ extension DownloadManager {
         // re-acquires the `activeJobs` slot cleanly and drives the row from 0% on the static lane.
         clearOptimizeProgress(ratingKey: ratingKey)
         releaseInFlight(for: storeAttemptKey)
-        let requestedProfileLabel = records.first { $0.ratingKey == ratingKey }?
-            .metadata?.requestedProfileLabel ?? targetName
         // Keep the seeded `.preparing` row until the static handoff atomically replaces it. A crash
         // here can then resume the completed job/source lookup instead of losing the download.
         // Hand off to the existing resumable `.original` static lane. `.existingVersion` addresses a
@@ -983,7 +979,7 @@ extension DownloadManager {
         await downloadEmby(item, choice: .existingVersion, audioStreamIndex: audioStreamIndex,
                            mediaSourceIDOverride: newSourceId,
                            deferStaticStartWhenQueuePaused: true,
-                           requestedProfileLabelOverride: requestedProfileLabel,
+                           requestedProfileLabelOverride: targetName,
                            allowReplacingExistingActiveRow: true)
     }
 

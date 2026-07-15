@@ -12,6 +12,7 @@ public enum DownloadRowStatusCaptionPolicy {
         public let progress: Double
         public let bytes: Int
         public let captionBytes: Int
+        public let sideAssetBytes: Int
         public let lane: DownloadLane
         public let backend: DownloadBackendKind
         public let resumeMode: DownloadResumeMode?
@@ -34,6 +35,7 @@ public enum DownloadRowStatusCaptionPolicy {
                     progress: Double,
                     bytes: Int,
                     captionBytes: Int? = nil,
+                    sideAssetBytes: Int = 0,
                     lane: DownloadLane,
                     backend: DownloadBackendKind,
                     resumeMode: DownloadResumeMode?,
@@ -55,6 +57,7 @@ public enum DownloadRowStatusCaptionPolicy {
             self.progress = progress
             self.bytes = bytes
             self.captionBytes = captionBytes ?? bytes
+            self.sideAssetBytes = max(0, sideAssetBytes)
             self.lane = lane
             self.backend = backend
             self.resumeMode = resumeMode
@@ -93,7 +96,8 @@ public enum DownloadRowStatusCaptionPolicy {
             self.init(status: snapshot.status,
                       progress: snapshot.progress,
                       bytes: mediaBytes,
-                      captionBytes: mediaBytes + max(0, record.sideAssetBytes),
+                      captionBytes: mediaBytes,
+                      sideAssetBytes: record.sideAssetBytes,
                       lane: snapshot.lane,
                       backend: backend ?? snapshot.backend,
                       resumeMode: snapshot.resumeMode,
@@ -184,10 +188,12 @@ public enum DownloadRowStatusCaptionPolicy {
             return context.failureCaption ?? "Download failed. Tap to retry."
         case .paused:
             return DownloadRowDisplayPolicy.pausedCaption(fraction: context.displayFraction,
-                                                          bytes: context.captionBytes)
+                                                          bytes: context.captionBytes,
+                                                          sideAssetBytes: context.sideAssetBytes)
         case .complete(let isUnverified):
             return DownloadRowDisplayPolicy.completeCaption(isUnverified: isUnverified,
                                                             bytes: context.captionBytes,
+                                                            sideAssetBytes: context.sideAssetBytes,
                                                             resolutionLabel: context.resolutionLabel)
         case .transferFinalizing:
             return transferFinalizingCaption(context)
@@ -218,14 +224,10 @@ public enum DownloadRowStatusCaptionPolicy {
         } else {
             head += " • 0%"
         }
-        if let eta = context.downloadETA, eta > 0,
-           let left = DownloadRowDisplayPolicy.timeLeftString(eta) {
-            head += " • ~\(left) left"
-        }
+        if let eta = downloadETAText(context) { head += " • \(eta)" }
         pieces.append(head)
-        if context.captionBytes > 0 {
-            pieces.append(DownloadRowDisplayPolicy.byteString(context.captionBytes))
-        }
+        pieces.append(contentsOf: DownloadRowDisplayPolicy.byteBreakdown(
+            mediaBytes: context.captionBytes, sideAssetBytes: context.sideAssetBytes))
         if let speed = context.downloadSpeedBytesPerSecond, speed > 0 {
             pieces.append("\(DownloadRowDisplayPolicy.byteString(Int(speed)))/s")
         }
@@ -253,16 +255,14 @@ public enum DownloadRowStatusCaptionPolicy {
                                                            backend: context.backend,
                                                            isServerPreparedVersion: context.isServerPreparedVersion)
             if let percentPiece { head += " • \(percentPiece)" }
-            if let eta = context.downloadETA, eta > 0,
-               let left = DownloadRowDisplayPolicy.timeLeftString(eta) {
-                head += " • ~\(left) left"
-            }
+            if let eta = downloadETAText(context) { head += " • \(eta)" }
             pieces.append(head)
         } else if let percentPiece {
             pieces.append(percentPiece)
         }
 
-        pieces.append(DownloadRowDisplayPolicy.byteString(context.captionBytes))
+        pieces.append(contentsOf: DownloadRowDisplayPolicy.byteBreakdown(
+            mediaBytes: context.captionBytes, sideAssetBytes: context.sideAssetBytes))
         if context.isActive, let speed = context.downloadSpeedBytesPerSecond, speed > 0 {
             let rate = "\(DownloadRowDisplayPolicy.byteString(Int(speed)))/s"
             pieces.append(context.isTranscodeLimited ? "\(rate) server-paced" : rate)
@@ -273,9 +273,20 @@ public enum DownloadRowStatusCaptionPolicy {
 
     private static func transferFinalizingCaption(_ context: Context) -> String {
         var pieces = ["Verifying download…"]
-        if context.captionBytes > 0 { pieces.append(DownloadRowDisplayPolicy.byteString(context.captionBytes)) }
+        pieces.append(contentsOf: DownloadRowDisplayPolicy.byteBreakdown(
+            mediaBytes: context.captionBytes, sideAssetBytes: context.sideAssetBytes))
         if let resolutionLabel = context.resolutionLabel { pieces.append(resolutionLabel) }
         return pieces.joined(separator: " • ")
+    }
+
+    private static func downloadETAText(_ context: Context) -> String? {
+        guard let eta = context.downloadETA, eta > 0,
+              let left = DownloadRowDisplayPolicy.timeLeftString(eta) else { return nil }
+        // Rate-based ETAs are always approximate. When the expected total is itself estimated
+        // from duration × selected bitrate, say so more plainly than the compact static-file `~`.
+        return context.displayFraction?.isEstimated == true
+            ? "roughly \(left) left"
+            : "~\(left) left"
     }
 
     private static func serverPrepFinalizingCaption(_ context: Context) -> String {
