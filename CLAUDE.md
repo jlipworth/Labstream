@@ -320,6 +320,12 @@ Claude self-serves screenshots and logs and may use only the bounded scenarios d
 disallowed; hand off authentication, gaze/hover, drag gestures, and flows whose UI change the
 harness cannot prove. Don't ask the user for screenshots or log dumps:
 
+For post-reproduction logs or evidence bundles, use the **`diagnostic-triage` skill**. Do not
+open or paste complete diagnostic JSONL directories or broad unified logs into conversation
+context by default. Run deterministic summarization/deduplication first, read its bounded brief,
+and escalate only to a named source window with a stated reason. Every subsequent evidence pull
+must be diffed against the prior bundle before its raw contents are read.
+
 ```sh
 # SIMID is this worktree's visionOS sim (see Build block / "Worktree simulators"); always target it
 # explicitly even though simulator turns are serialized; never target `booted`.
