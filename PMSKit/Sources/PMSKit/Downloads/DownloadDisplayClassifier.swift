@@ -26,7 +26,18 @@ public enum DownloadDisplayClassifier {
             return false
         case .optimize:
             let resumeMode = record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey)
-            return resumeMode == .liveForwardOnly ? true : record.progress <= 0
+            switch resumeMode {
+            case .liveForwardOnly:
+                return true
+            case .staticByteRange:
+                // The server has already rendered a concrete file and the row has handed off to
+                // ordinary Range transfer. Persisted progress can legitimately remain zero until
+                // the first large segment is committed, but that does not make the transfer
+                // encoder-paced.
+                return false
+            case .serverPrepThenStatic, nil:
+                return record.progress <= 0
+            }
         case .compatibleRemux:
             return record.progress <= 0
         }
