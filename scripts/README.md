@@ -51,6 +51,9 @@ There is no macOS simulator lane. See [`docs/MACOS.md`](../docs/MACOS.md).
 - `provisioning-profile-info.py` — provisioning-profile parsing/filtering shared by deploy scripts.
 - `headset-evidence.sh` — read-only `devicectl` evidence bundle after a headset repro. Output under
   `build/headset-evidence/` can contain private artifacts and must be reviewed before sharing.
+- `diagnostics-summarize.py` — deterministic, privacy-conscious first pass over an evidence bundle.
+  It writes bounded triage/delta artifacts under the bundle's `analysis/` directory so agents do
+  not repeatedly ingest raw rotated JSONL logs. Raw evidence is retained unchanged.
 
 Device deploy scripts mutate the installed app and may replace another build with the same bundle
 identifier. Read their `--help` output and the platform documentation before use.
