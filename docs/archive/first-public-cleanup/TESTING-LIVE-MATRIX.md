@@ -1,5 +1,9 @@
 # Live-server test matrix
 
+> **Archived first-public-cleanup snapshot:** this is not the current coverage matrix. Use
+> [`docs/TESTING-STRATEGY.md`](../../TESTING-STRATEGY.md) and the root
+> [`TESTING-CHECKLIST.md`](../../../TESTING-CHECKLIST.md); probe inventories below are dated.
+
 This is the **design + coverage map** for live-server integration testing of Labstream against a
 real media server (Plex first; Jellyfin/Emby as the parallel lanes mature). It answers three
 questions:

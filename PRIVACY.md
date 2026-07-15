@@ -1,6 +1,6 @@
 # Labstream — Privacy Policy
 
-_Last updated: 2026-07-10_
+_Last updated: 2026-07-15_
 
 Labstream is a personal media client for Apple Vision Pro, iPhone, and iPad that connects to a Plex Media Server, Jellyfin server, or Emby server **that you choose and control**. The source repository also contains a native Mac local-build development preview. Labstream is designed to collect as little as possible.
 
@@ -18,7 +18,10 @@ Labstream is a personal media client for Apple Vision Pro, iPhone, and iPad that
 ## What stays on your device
 
 - **Your media-server credentials/tokens** are stored in the Apple **Keychain** on visionOS and
-  mobile builds, as well as canonical production-style Mac builds. Plex tokens are sent only to Plex and the selected
+  mobile builds, as well as canonical production-style Mac builds. The Plex account token is the
+  only synchronizable Keychain item, so it may sync through your iCloud Keychain to your other
+  Labstream devices. The per-device client identifier, Jellyfin and Emby tokens, and selected
+  backend/server do not sync. Plex tokens are sent only to Plex and the selected
   Plex server; Jellyfin access tokens are sent only to your Jellyfin server;
   Emby access tokens are sent only to Emby Connect during sign-in and to your
   selected Emby server. They are never transmitted to the developer.
@@ -43,8 +46,12 @@ Labstream is a personal media client for Apple Vision Pro, iPhone, and iPad that
   new Spotlight indexing, clears Labstream's Spotlight index, and removes media
   title entity results from Labstream's Shortcuts/App Intents queries.
 - **Opt-in diagnostic logs** are off by default. If you enable diagnostic logging
-  in Settings, Labstream keeps recent app events in bounded local storage so you
-  can copy, export, or share a bug-report summary after reproducing a problem.
+  in Settings, Labstream keeps recent already-redacted app events in a 300-event
+  in-memory ring and in small rotating local diagnostic files (one active file plus
+  up to three archives, approximately 1 MB each). The rotating files exist so a
+  user-initiated headset evidence collection can survive a suspension or termination;
+  the in-app report uses the current process's ring buffer. You can copy, export, or
+  share a bug-report summary after reproducing a problem.
   This diagnostic report is user-initiated only and is not uploaded automatically.
 - **Passive MetricKit diagnostic summaries** — crash, hang, CPU exception, or disk-write exception — may be delivered by an Apple operating system after a problematic run and stored locally in a small bounded list. Labstream keeps only redacted summary fields for inclusion in a report you explicitly preview/copy/export; these summaries are not uploaded automatically and are separate from opt-in event logging.
 
@@ -52,10 +59,11 @@ Labstream is a personal media client for Apple Vision Pro, iPhone, and iPad that
 
 When you tap **Send feedback to developer**, **Copy diagnostic report**, or
 **Export diagnostic report file**, Labstream includes safe app/server
-product/version information, backend name, connection scheme, selected quality
-settings, Adaptive Bitrate state when available, a recent playback snapshot when
-available, passive redacted MetricKit summaries when present, and recent redacted
-events when diagnostic logging was enabled. The diagnostics API and report
+product/version/build information, platform and safely redacted app identity,
+backend and server product/version, connection scheme, selected quality settings,
+Adaptive Bitrate state, bucketed download/storage state, a recent playback snapshot
+when available, passive redacted MetricKit summaries when present, and up to 80 recent
+redacted events from the current process when diagnostic logging was enabled. The diagnostics API and report
 renderer are designed to omit sensitive values such as Plex/Jellyfin/Emby tokens,
 client identifiers, hostnames/IP addresses, full URLs, usernames, library paths,
 filenames, and media titles.

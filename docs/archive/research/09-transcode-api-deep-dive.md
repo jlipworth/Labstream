@@ -1,5 +1,9 @@
 # Plex Universal Transcode / Streaming API — Deep Dive
 
+> **Archived research snapshot:** retained as dated evidence, not current architecture, feature
+> status, or implementation guidance. Verify any reusable detail against the active docs and
+> current source; old `VisionPlay` names, issue links, branches, and paths below are historical.
+
 > **Status:** Officially documented in part, client-derived in detail. Plex's PMS API portal now documents the Transcoder family, including decision/start and profile augmentations, but many practical parameters, codes, and compatibility recipes below still come from open-source clients (`plex-for-kodi`, `python-plexapi`), Tautulli's schema, the canonical kmark gist, and Plex forum threads.
 > **It is version-dependent** — param names and decision codes have shifted across PMS releases. Treat every parameter as "send it, but tolerate the server ignoring it."
 > Confidence is tagged per row: **[code]** = seen in OSS client source, **[gist]** =

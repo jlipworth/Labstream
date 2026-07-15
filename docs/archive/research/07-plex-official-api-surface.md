@@ -1,5 +1,9 @@
 # 07 — Plex Official API Surface & Long-Term Stability
 
+> **Archived research snapshot:** retained as dated evidence, not current architecture, feature
+> status, or implementation guidance. Verify any reusable detail against the active docs and
+> current source; old product assumptions, API versions, issue links, and paths may have drifted.
+
 **Research date:** 2026-06-08
 **Scope:** Official vs reverse-engineered Plex API surface for a personal-use visionOS Plex client. Goes beyond prior research (PIN-OAuth → `X-Plex-Token`, archived `plexswift`, rumored JWT migration) to characterize the *official* spec, the documented-vs-undocumented boundary, the cloud v2 API, and the auth-migration risk.
 

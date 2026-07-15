@@ -16,7 +16,9 @@ media details out of commits and public issues.
 - `perf-log-summary.py` — converts privacy-safe performance signposts into summaries/Markdown.
 - `compile-audit.py` — opt-in, isolated arm64 compile-cost baseline for PMSKit and all app schemes;
   see [`docs/BUILD-PERFORMANCE-AUDIT.md`](../docs/BUILD-PERFORMANCE-AUDIT.md).
-- `tests/test_perf_log_summary.py` and `tests/test_tooling_hardening.py` — script/tooling tests.
+- `tests/test_compile_audit.py`, `tests/test_perf_log_summary.py`, and
+  `tests/test_tooling_hardening.py` — script/tooling tests. They run as part of
+  `scripts/ci-hygiene.sh` when `pyproject.toml` is present.
 
 ## Simulator and worktree helpers
 
@@ -79,6 +81,8 @@ gitignored. `live-test-filter.sh` is the shared output/exit-status filter used b
 - `live-playqueue-mutation-probe.sh` — ephemeral queue creation, play-next, and shuffle mutations.
 - `live-download-probe.sh` — direct-original versus optimizer route decision.
 - `live-download-status-probe.sh` — read-only optimizer queue/progress status.
+- `live-phase6-download-candidate-probe.sh` — finds a large original/static Plex item suitable for
+  the static-range transport-fault harness.
 - `live-optimize-probe.sh` — optimizer discovery, creation grammar, and rendered static part.
 - `live-offline-playback-decision-probe.sh` — local completed-row playback routing fixture.
 

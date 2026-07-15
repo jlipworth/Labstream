@@ -107,6 +107,36 @@ scripts/ci-hygiene.sh
 uv run --with-requirements requirements.txt mkdocs build --strict
 ```
 
+`PMSKit/Tests/PMSKitTests` is the portable package suite. App-owned deterministic tests live in
+`LabstreamTests/` and are hosted by two Xcode test targets over the same test sources:
+
+- `LabstreamTests`, selected by the `LabstreamMobile` scheme and `LabstreamTests.xctestplan`, runs
+  on an iPhone/iPad simulator;
+- `LabstreamMacTests`, selected by the `LabstreamMac` scheme and
+  `LabstreamMacTests.xctestplan`, runs on the macOS host.
+
+Run the app suite for the platform affected by a change (both for shared app infrastructure):
+
+```sh
+# Mobile-hosted app tests.
+scripts/worktree-sim.sh --platform iphone setup
+SIMID=$(scripts/worktree-sim.sh --platform iphone id)
+xcrun simctl boot "$SIMID" 2>/dev/null || true
+scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
+  -scheme LabstreamMobile -testPlan LabstreamTests \
+  -destination "platform=iOS Simulator,id=$SIMID" test CODE_SIGNING_ALLOWED=NO
+
+# Mac-hosted app tests.
+scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
+  -scheme LabstreamMac -testPlan LabstreamMacTests \
+  -destination 'platform=macOS,arch=arm64' test CODE_SIGNING_ALLOWED=NO
+```
+
+These are host-app unit tests, not UI automation or live-server acceptance tests. Keep policy and
+wire-format logic in PMSKit tests; use the app suites for app-owned persistence/filesystem,
+credential adapters, lifecycle coordination, playback ownership, and other platform integration
+seams.
+
 ## Physical Apple Vision Pro install
 
 Use the wrapper script rather than re-deriving signing details:
@@ -173,10 +203,8 @@ it and this section in agreement.
 ```sh
 SIMID=$(scripts/worktree-sim.sh --platform visionos id)
 xcrun simctl spawn "$SIMID" log show --last 10m --info --debug \
-  --predicate 'subsystem == "com.jlipworth.Labstream" OR subsystem == "com.jlipworth.VisionPlay"'
+  --predicate 'subsystem == "com.jlipworth.Labstream"'
 ```
-
-Some compatibility subsystems still log under `com.jlipworth.VisionPlay`; new diagnostics use `com.jlipworth.Labstream`.
 
 ## Verified platform findings
 

@@ -1,5 +1,9 @@
 # Profiling Labstream
 
+> **Archived first-public-cleanup snapshot:** retained for historical context. Tool names and
+> commands below may reflect the earlier workflow; verify any procedure against the current
+> instrumentation and scripts before running it.
+
 This is the baseline profiling workflow for Labstream on visionOS. Keep traces, screenshots, and
 exported logs out of git unless they have been scrubbed: Instruments captures can include app state,
 URLs, media titles, account identifiers, and local machine details.

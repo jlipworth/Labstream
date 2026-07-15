@@ -1,5 +1,9 @@
 # 10 — Apple Media API Inventory (visionOS 26)
 
+> **Archived research snapshot:** retained as dated evidence, not current architecture, feature
+> status, or implementation guidance. Verify any reusable detail against the active docs and
+> current source; old `VisionPlay` names, issue links, branches, and paths below are historical.
+
 Scope: the exact Apple frameworks/classes to implement each feature of a personal-use
 visionOS Plex client, with the bulk of the analysis on **offline download of a
 bitrate-capped transcode**. Assumes **visionOS 26 SDK (June 2026)**. Playback/theater

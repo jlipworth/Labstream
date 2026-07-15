@@ -88,13 +88,17 @@ not necessarily the backend currently visible in the UI.
 
 ## Browse, paging, search, and artwork
 
-- `Labstream/Backend/PlexBrowseAPI.swift` contains the app-facing Plex browse request
-  constructors. Plex does not have a separate concrete-service directory in the app.
+- `PMSKit/Sources/PMSKit/Models/PlexBrowseRequest.swift` contains pure Plex browse request
+  builders; `Labstream/Backend/PlexBrowseAPI.swift` is their source-compatible app facade.
+  `Labstream/Backend/PlexBrowseService.swift` pins one immutable Plex session and owns
+  execution, decoding, and normalized browse results.
 - `Labstream/Backend/Jellyfin/JellyfinBrowseService.swift` and
   `Labstream/Backend/Emby/EmbyBrowseService.swift` are the live MediaBrowser browse
-  executors and mapping seams.
+  facades. Their shared browse-only execution/decode/map core is
+  `Labstream/Backend/MediaBrowserBrowseCore.swift`; playback and downloads stay outside it.
 - `Labstream/Backend/Paging/` owns backend-neutral paging sources/models and the
-  Plex/Jellyfin/Emby grid adapters.
+  Plex/Jellyfin/Emby grid and rail adapters. `RailPagingModel`, `RailPagingSource`, and
+  `RailViewAllDestination` power paged Home “View All” destinations.
 - `Labstream/Backend/Search/SearchResults.swift` owns the grouped, deduplicated search
   presentation model.
 - `Labstream/UI/HomeView.swift` uses Plex native hubs or
@@ -158,6 +162,11 @@ are backend-scoped and cross-backend.
   `MacPlayerPresentation.swift` add native Mac system-media and presentation behavior.
 - `Labstream/Player/VideoNowPlayingCore.swift` is shared by iOS/iPadOS and macOS;
   visionOS owns player chrome directly.
+- `Labstream/Player/PlaybackLifecycleCallbackSink.swift` and
+  `VideoPlaybackLifecyclePolicy.swift` reject queued observer/task callbacks from a
+  superseded item generation; removing an observer alone is not treated as cancellation.
+- `Labstream/Player/SystemMediaSessionCoordinator.swift` serializes process-wide Now
+  Playing and remote-command ownership between music and video with identity-guarded leases.
 
 Pure playback policies and request builders live primarily in
 `PMSKit/Sources/PMSKit/Playback/`, `PMSKit/Sources/PMSKit/Transcode/`,
@@ -197,6 +206,16 @@ upstream connection rotation used by `PlaybackController`.
   callbacks to the live/recreated background session.
 - `Labstream/Downloads/DownloadStore.swift` owns the locked relative-path index and files
   under Application Support.
+- `DownloadArtifactLifecycleCoordinator.swift` registers attempt-scoped filesystem work
+  before execution and releases it only after the matching persistence outcome;
+  `DownloadArtifactFileCommitter.swift`, `DownloadPromotionFilesystem.swift`, and
+  `DownloadStaticCheckpointFilesystem.swift` are the narrow file-effect seams.
+- `RevisionedPersistenceWriter.swift` and `DownloadIndexFileCommitter.swift` serialize
+  revisioned index writes. `BackgroundCompletionPersistenceBarrier.swift` flushes the
+  exact boundary before releasing background-session completion handlers.
+- `DownloadWorkRegistry.swift` tracks attempt-scoped side-cache and encoder work.
+  `DownloadCleanupIntentJournal.swift` persists credential-free Jellyfin/Emby cleanup
+  independently so deleting a row cannot discard required server cleanup.
 - `Labstream/Downloads/OfflineLibraryView.swift` owns the cross-backend offline UI and
   local playback launch.
 - `PMSKit/Sources/PMSKit/Downloads/` contains pure route, status, retry, display, storage,
@@ -214,6 +233,9 @@ the documented foreground substitute.
 - `MusicStreamResolver.swift` is the single backend-aware stream resolver.
 - `MusicPlayerController.swift` owns the app-lifetime AVPlayer queue, shuffle/repeat,
   audio-session behavior, remote commands, and Now Playing metadata.
+- `MusicPlaybackLifecycle.swift` generation-guards per-track observers and queued work;
+  music acquires the shared `SystemMediaSessionCoordinator` lease rather than mutating
+  global MediaPlayer state independently of video.
 - `MusicLibraryView.swift`, `MediaBrowserMusicView.swift`, `MusicPagedGrid.swift`, and
   the album/artist/playlist detail views own presentation.
 - `MiniPlayerBar.swift` and `NowPlayingView.swift` are the compact/full playback surfaces.
@@ -227,7 +249,8 @@ but MediaBrowser music progress reporting is not yet implemented.
 
 - `Labstream/SystemIntegration/SystemEntryRouter.swift` is the process-lifetime bridge
   from non-view entry points into RootView navigation. It weakly references the app-owned
-  state and can wait for or initiate session restoration.
+  state and can wait for or initiate session restoration without preempting an in-progress
+  user authorization attempt.
 - `Labstream/SystemIntegration/LabstreamIntents.swift` defines Play, Open, and Continue
   Watching App Intents for all three backends.
 - `Labstream/SystemIntegration/MediaItemEntity.swift` defines backend/server-scoped

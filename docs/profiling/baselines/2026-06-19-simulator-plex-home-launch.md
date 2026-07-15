@@ -1,5 +1,8 @@
 # Profiling baseline: Plex Home launch load
 
+> **Historical baseline:** measurements from the dated branch/runtime below. Compare trends
+> only; this is not a current performance claim or current profiling procedure.
+
 - Branch: `issue/42-performance-profiling`
 - Commit: containing #42 profiling commit on `issue/42-performance-profiling` (read with `git log -- docs/profiling/baselines/2026-06-19-simulator-plex-home-launch.md`)
 - Date/time: 2026-06-19 11:19-11:26

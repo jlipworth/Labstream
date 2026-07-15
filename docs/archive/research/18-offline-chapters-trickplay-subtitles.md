@@ -1,5 +1,9 @@
 # 18 — Offline chapters, trickplay, and subtitles
 
+> **Archived research snapshot:** retained as dated evidence, not current architecture, feature
+> status, or implementation guidance. Verify any reusable detail against the active docs and
+> current source; old `VisionPlay` names, issue links, branches, and paths below are historical.
+
 Status: investigation for issue #74. This is not yet implemented behavior.
 
 ## Current online behavior

@@ -310,14 +310,15 @@ Production container reset is intentionally guarded and requires both
 production container unless explicitly testing/resetting the App Store identity. For old
 manual identities, inspect `~/Library/Containers/com.jlipworth.Labstream.dev.*` and remove
 only stale dev containers after confirming they do not correspond to an active worktree.
-Details: `docs/MACOS-HOST-DEPLOYMENT.md`.
+Current contributor guidance: `docs/MACOS.md`. The original host-helper rollout note is retained
+as historical context at `docs/archive/macos/MACOS-HOST-DEPLOYMENT.md`.
 
-## Live-testing workflow (semi-automated)
+## Live-testing workflow
 
-The USER performs all simulator interaction (synthetic clicking was tried and shelved —
-see the status note in the **`sim-driving` skill** before considering it). Claude
-self-serves the passive half — screenshots and logs. Don't ask the user for screenshots
-or log dumps:
+Claude self-serves screenshots and logs and may use only the bounded scenarios documented in the
+**`sim-driving` skill** for deterministic synthetic interaction. Free-form clicking remains
+disallowed; hand off authentication, gaze/hover, drag gestures, and flows whose UI change the
+harness cannot prove. Don't ask the user for screenshots or log dumps:
 
 ```sh
 # SIMID is this worktree's visionOS sim (see Build block / "Worktree simulators"); always target it

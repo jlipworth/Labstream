@@ -1,5 +1,9 @@
 # Prerequisites + Licensing Checklist — Native visionOS Plex Client (personal use)
 
+> **Archived research snapshot:** retained as dated evidence, not current architecture, feature
+> status, or implementation guidance. Verify any reusable detail against the active docs and
+> current source; old product assumptions, API versions, issue links, and paths may have drifted.
+
 _Compiled June 2026. Facts confirmed via web search against Apple Developer docs, Plex Support, and GitHub. Items flagged **[UNCERTAIN]** could not be fully verified and should be re-checked at build time._
 
 Target machine: Apple Silicon **MacBook Pro (M5)**, **macOS 26.x ("Tahoe")**, an Apple Vision Pro, and a **free personal Apple ID**.

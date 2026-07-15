@@ -1,5 +1,9 @@
 # 17 — Emby backend support research
 
+> **Archived research snapshot:** retained as dated evidence, not current architecture, feature
+> status, or implementation guidance. Verify any reusable detail against the active docs and
+> current source; old `VisionPlay` names, issue links, branches, and paths below are historical.
+
 Status: IMPLEMENTED (first slice) on `feature/emby-backend` and live-validated against a real Emby server. Sign-in (password), browse/DTO mapping, PlaybackInfo stream resolution, progress, and active-encoding cleanup are built as a parallel Emby lane (`PMSKit/Sources/PMSKit/Emby/*`, `VisionPlay/Backend/Emby/EmbyBrowseService.swift`) and verified by the opt-in `LiveEmbyProbe` test. Proven behavior has been promoted into [`docs/BACKENDS.md`](../../BACKENDS.md), [`docs/PERSISTENCE.md`](../../PERSISTENCE.md), [`docs/PLAYBACK-ARCHITECTURE.md`](../../PLAYBACK-ARCHITECTURE.md), [`docs/TESTING-STRATEGY.md`](../../TESTING-STRATEGY.md), and [`docs/DEVELOPMENT.md`](../../DEVELOPMENT.md). Still unbuilt: Emby downloads/offline, Emby Connect, and LAN discovery — this doc remains the planning map for those. The open documentation ambiguities below were resolved by the live probe and are annotated inline as RESOLVED.
 
 Issue: https://github.com/jlipworth/VisionPlay/issues/68
