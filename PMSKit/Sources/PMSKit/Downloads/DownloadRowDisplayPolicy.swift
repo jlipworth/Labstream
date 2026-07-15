@@ -61,19 +61,38 @@ public enum DownloadRowDisplayPolicy {
         }
     }
 
-    public static func pausedCaption(fraction: DownloadProgressDisplay.Fraction?, bytes: Int) -> String {
+    public static func pausedCaption(fraction: DownloadProgressDisplay.Fraction?,
+                                     bytes: Int,
+                                     sideAssetBytes: Int = 0) -> String {
         var pieces = ["Paused — tap to resume"]
         if let fraction { pieces.append(percentText(fraction)) }
-        if bytes > 0 { pieces.append(byteString(bytes)) }
+        pieces.append(contentsOf: byteBreakdown(mediaBytes: bytes, sideAssetBytes: sideAssetBytes))
         return pieces.joined(separator: " • ")
     }
 
-    public static func completeCaption(isUnverified: Bool, bytes: Int, resolutionLabel: String?) -> String {
-        var parts = isUnverified
-            ? ["Downloaded — playback not verified", byteString(bytes)]
-            : [byteString(bytes)]
+    public static func completeCaption(isUnverified: Bool,
+                                       bytes: Int,
+                                       sideAssetBytes: Int = 0,
+                                       resolutionLabel: String?) -> String {
+        var parts = isUnverified ? ["Downloaded — playback not verified"] : []
+        parts.append(contentsOf: byteBreakdown(mediaBytes: bytes, sideAssetBytes: sideAssetBytes))
         if let resolutionLabel { parts.append(resolutionLabel) }
         return parts.joined(separator: " • ")
+    }
+
+    /// Keep media bytes (the progress denominator) distinct from posters/subtitles/chapter art.
+    /// When extras exist, label both values so a caption cannot imply that percentage and the sum
+    /// use the same denominator.
+    public static func byteBreakdown(mediaBytes: Int, sideAssetBytes: Int) -> [String] {
+        let mediaBytes = max(0, mediaBytes)
+        let sideAssetBytes = max(0, sideAssetBytes)
+        if sideAssetBytes > 0 {
+            var pieces: [String] = []
+            if mediaBytes > 0 { pieces.append("\(byteString(mediaBytes)) media") }
+            pieces.append("\(byteString(sideAssetBytes)) extras")
+            return pieces
+        }
+        return mediaBytes > 0 ? [byteString(mediaBytes)] : []
     }
 
     public static func bitrateText(kbps: Int?) -> String? {
@@ -82,15 +101,34 @@ public enum DownloadRowDisplayPolicy {
         return String(format: "%.1f Mbps", Double(kbps) / 1_000)
     }
 
-    public static func downloadBitrateText(kbps: Int?, requestedProfileLabel: String? = nil) -> String? {
-        if let bitrate = bitrateText(kbps: kbps) {
-            return "Bitrate: \(bitrate)"
+    /// User-facing quality/bitrate text for an offline row.
+    ///
+    /// A selected bitrate preset is a video-encoder ceiling, while a backend `Media.bitrate`
+    /// value may describe the source (and Emby can retain that source value on a converted
+    /// MediaSource). Do not mix either value with the finished artifact's bitrate under one
+    /// ambiguous `Bitrate:` label. Active rows show the persisted user intent; successful rows
+    /// derive an average whole-file bitrate from the actual local media bytes and runtime.
+    public static func downloadQualityText(for record: DownloadRecord) -> String? {
+        switch record.status {
+        case .complete, .unverified:
+            guard let kbps = averageDownloadedBitrateKbps(bytes: record.bytes,
+                                                          durationMs: record.metadata?.duration),
+                  let bitrate = bitrateText(kbps: kbps) else {
+                return nil
+            }
+            return "Downloaded: \(bitrate) avg"
+        case .queued, .preparing, .downloading, .failed, .paused:
+            return requestedProfileText(record.metadata?.requestedProfileLabel)
         }
-        if let inferred = inferredBitrateKbps(from: requestedProfileLabel),
-           let bitrate = bitrateText(kbps: inferred) {
-            return "Bitrate: \(bitrate)"
-        }
-        return nil
+    }
+
+    /// Average whole-file/container bitrate in kbps. `Double` conversion happens before
+    /// multiplication so multi-gigabyte files cannot overflow `Int` on 32-bit intermediates.
+    public static func averageDownloadedBitrateKbps(bytes: Int, durationMs: Int?) -> Int? {
+        guard bytes > 0, let durationMs, durationMs > 0 else { return nil }
+        let kbps = Double(bytes) * 8.0 / Double(durationMs)
+        guard kbps.isFinite, kbps > 0, kbps <= Double(Int.max) else { return nil }
+        return Int(kbps.rounded())
     }
 
     public static func requestedProfileText(_ label: String?) -> String? {
@@ -110,15 +148,4 @@ public enum DownloadRowDisplayPolicy {
         }
     }
 
-    private static func inferredBitrateKbps(from label: String?) -> Int? {
-        guard let label else { return nil }
-        let pattern = #"(?i)(\d+(?:\.\d+)?)\s*mbps"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
-        let range = NSRange(label.startIndex..<label.endIndex, in: label)
-        guard let match = regex.firstMatch(in: label, range: range),
-              match.numberOfRanges >= 2,
-              let valueRange = Range(match.range(at: 1), in: label),
-              let mbps = Double(label[valueRange]) else { return nil }
-        return Int((mbps * 1_000).rounded())
-    }
 }

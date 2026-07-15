@@ -259,7 +259,7 @@ public struct OfflineLibraryView: View {
         if snapshot.aggregateStats.downloadedBytes > 0 {
             aggregateToolbarMetric(value: Self.aggregateByteString(snapshot.aggregateStats.downloadedBytes),
                                    systemImage: "externaldrive.fill",
-                                   accessibilityLabel: "Downloaded data")
+                                   accessibilityLabel: "Local download data")
         }
         if let queueToolbarAction = snapshot.queueToolbarAction {
             queueToolbarButton(queueToolbarAction)
@@ -277,7 +277,7 @@ public struct OfflineLibraryView: View {
             if snapshot.aggregateStats.downloadedBytes > 0 {
                 aggregateToolbarMetric(value: Self.aggregateByteString(snapshot.aggregateStats.downloadedBytes),
                                        systemImage: "externaldrive.fill",
-                                       accessibilityLabel: "Downloaded data")
+                                       accessibilityLabel: "Local download data")
             }
             if snapshot.aggregateStats.hasVisibleMetrics, snapshot.queueToolbarAction != nil {
                 Divider()
@@ -690,8 +690,7 @@ public struct OfflineLibraryView: View {
     }
 
     private func downloadBitrateText(for record: DownloadRecord) -> String? {
-        DownloadRowDisplayPolicy.downloadBitrateText(kbps: record.metadata?.downloadBitrateKbps,
-                                                     requestedProfileLabel: record.metadata?.requestedProfileLabel)
+        DownloadRowDisplayPolicy.downloadQualityText(for: record)
     }
 
     /// Reconstruct a faithful `MediaItem` from the persisted snapshot (D5) so the
