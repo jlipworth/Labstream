@@ -2270,6 +2270,26 @@ final class DownloadStore: @unchecked Sendable {
         return row.map(hydratedRecord)
     }
 
+    /// Reuse only a non-empty regular side-asset file that the exact live attempt already owns in
+    /// metadata. A deterministic destination on disk is not sufficient by itself: an orphan or a
+    /// previous attempt may have left the same filename behind. Keeping this check attempt-scoped
+    /// lets retry/handoff hydration skip durable successes without adopting stale files.
+    func reusableSideAssetRelativePath(for key: DownloadAttemptKey,
+                                       destination: URL) -> String? {
+        lock.lock(); defer { lock.unlock() }
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
+              !row.legacyResetPending, !row.deletionPending else { return nil }
+        let relative = destination.lastPathComponent
+        guard Self.isSafeOneLevelRelativePath(relative),
+              destination.deletingLastPathComponent().standardizedFileURL
+                == baseDirectory.standardizedFileURL,
+              sideAssetRelativePaths(for: row.metadata).contains(relative),
+              let attributes = try? fileManager.attributesOfItem(atPath: destination.path),
+              attributes[.type] as? FileAttributeType == .typeRegular,
+              ((attributes[.size] as? NSNumber)?.uint64Value ?? 0) > 0 else { return nil }
+        return relative
+    }
+
     /// Raw persisted metadata for callers that do not need a hydrated `DownloadRecord`.
     func metadata(for ratingKey: String) -> OfflineMetadata? {
         lock.lock(); defer { lock.unlock() }

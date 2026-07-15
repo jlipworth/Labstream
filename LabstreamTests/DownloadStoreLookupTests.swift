@@ -4,6 +4,35 @@ import Testing
 @testable import Labstream
 
 struct DownloadStoreLookupTests {
+    @Test func sideAssetReuseRequiresExactAttemptMetadataAndNonemptyRegularFile() throws {
+        try withTemporaryDirectory { directory in
+            let relative = "chapter-0.jpg"
+            let metadata = OfflineMetadata(
+                ratingKey: "emby:item", title: "Title", type: "movie",
+                chapterImageRelativePaths: [0: relative], downloadAttemptID: "attempt-a")
+            try DownloadIndexCoding.encode([
+                SeedRow(ratingKey: "emby:item", title: "Title", relativePath: "media.mp4",
+                        bytes: 0, progress: 0, status: .queued, metadata: metadata),
+            ]).write(to: directory.appendingPathComponent("index.json"), options: .atomic)
+            let store = DownloadStore(baseDirectory: directory)
+            let destination = directory.appendingPathComponent(relative)
+            let owner = DownloadAttemptKey(
+                ratingKey: "emby:item", attemptID: try #require(DownloadAttemptID(rawValue: "attempt-a")))
+            let replacement = DownloadAttemptKey(
+                ratingKey: "emby:item", attemptID: try #require(DownloadAttemptID(rawValue: "attempt-b")))
+
+            try Data().write(to: destination)
+            #expect(store.reusableSideAssetRelativePath(for: owner, destination: destination) == nil)
+            try Data([1]).write(to: destination)
+            #expect(store.reusableSideAssetRelativePath(for: owner, destination: destination) == relative)
+            #expect(store.reusableSideAssetRelativePath(for: replacement, destination: destination) == nil)
+
+            let orphan = directory.appendingPathComponent("orphan.jpg")
+            try Data([1]).write(to: orphan)
+            #expect(store.reusableSideAssetRelativePath(for: owner, destination: orphan) == nil)
+        }
+    }
+
     @Test func oneRecordLookupMatchesFullSnapshotAndTouchesOnlyItsSideAssets() throws {
         try withSeededStore(rowCount: 1_000) { store, fileManager, directory in
             let targetKey = ratingKey(777)

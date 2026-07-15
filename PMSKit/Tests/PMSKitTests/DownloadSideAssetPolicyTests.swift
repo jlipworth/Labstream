@@ -52,10 +52,4 @@ struct DownloadSideAssetPolicyTests {
         #expect(DownloadSideAssetPolicy.parsedSyntheticChapterImageKey("emby://item/abc/Chapter/nope", scheme: "emby") == nil)
         #expect(DownloadSideAssetPolicy.parsedSyntheticChapterImageKey("jellyfin://item/abc/Chapter/1", scheme: "emby") == nil)
     }
-
-    @Test("Chapter image throttling starts above batch size")
-    func throttlingPredicate() {
-        #expect(!DownloadSideAssetPolicy.shouldLogChapterImageThrottling(requestCount: DownloadSideAssetPolicy.chapterImageBatchSize))
-        #expect(DownloadSideAssetPolicy.shouldLogChapterImageThrottling(requestCount: DownloadSideAssetPolicy.chapterImageBatchSize + 1))
-    }
 }

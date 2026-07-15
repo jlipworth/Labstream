@@ -71,8 +71,8 @@ final class DownloadWorkRegistry {
         /// Terminal refresh releases network/server ownership while allowing the finalizer that
         /// published that terminal row to finish its callback and accounting defers.
         case preservingFinalizer
-        /// User pause releases the transfer slot but does not invalidate independent artwork,
-        /// subtitle, chapter, BIF, or trick-play hydration already in flight.
+        /// Retains optional hydration ownership while Pause/Pause All park its coordinator owner.
+        /// Resume can then continue the same exact-attempt work without duplicating requests.
         case preservingSideCache
         /// Successful publication releases transfer/server ownership while both the publishing
         /// finalizer and independent side assets finish their exact-attempt work.

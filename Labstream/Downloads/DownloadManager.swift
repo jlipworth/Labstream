@@ -255,6 +255,10 @@ public final class DownloadManager {
     /// Attempt-scoped ownership for async finalizers and side-cache tails. A replacement seed
     /// cancels only the previous owner's cancellable work; durable cleanup remains registered.
     @ObservationIgnored let downloadWorkRegistry = DownloadWorkRegistry()
+    /// Process-wide pacing/coalescing for optional download hydration. DownloadManager remains the
+    /// lifecycle owner, while the shared default prevents multiple app scenes/managers from creating
+    /// independent request budgets for the same server origin.
+    @ObservationIgnored let sideAssetFetchCoordinator: SideAssetFetchCoordinator
     private var serverPrepRefreshKickScheduled = false
     private var lastServerPrepRefreshKickAt: Date?
     private var lastServerPrepQueuePausedLogAt: Date?
@@ -420,6 +424,7 @@ public final class DownloadManager {
          store injectedStore: DownloadStore? = nil,
          session injectedSession: BackgroundDownloadSession? = nil,
          cleanupIntentJournal injectedCleanupIntentJournal: DownloadCleanupIntentJournal? = nil,
+         sideAssetFetchCoordinator injectedSideAssetFetchCoordinator: SideAssetFetchCoordinator? = nil,
          registerForBackgroundEvents: Bool = true) {
         self.appModel = appModel
         let store = injectedStore ?? DownloadStore()
@@ -428,6 +433,7 @@ public final class DownloadManager {
         let migrationSubmission = store.submitLegacyAttemptOwnershipMigration()
         self.store = store
         self.session = injectedSession ?? BackgroundDownloadSession(store: store)
+        self.sideAssetFetchCoordinator = injectedSideAssetFetchCoordinator ?? .shared
         self.cleanupIntentJournal = injectedCleanupIntentJournal
             ?? DownloadCleanupIntentJournal(directory: store.directory)
         self.records = store.records
@@ -1416,8 +1422,10 @@ public final class DownloadManager {
         case .committed(let key) where key.attemptID == handle.attemptID:
             if let previousOwner = handle.expectedPreviousOwner,
                previousOwner != key.attemptID {
-                _ = downloadWorkRegistry.cancelCancellableWork(for: DownloadAttemptKey(
-                    ratingKey: handle.ratingKey, attemptID: previousOwner))
+                let previousKey = DownloadAttemptKey(
+                    ratingKey: handle.ratingKey, attemptID: previousOwner)
+                _ = downloadWorkRegistry.cancelCancellableWork(for: previousKey)
+                cancelOptionalSideAssetHydration(for: previousKey)
             }
             return true
         case .committed:
@@ -1517,6 +1525,7 @@ public final class DownloadManager {
                   setAttemptStatus(.paused, for: key, context: "user_pause") else { return }
         }
         clearOptimizeProgress(ratingKey: ratingKey)
+        setOptionalSideAssetHydrationParked(true, for: releaseKey)
         releaseInFlight(for: releaseKey, cancellationMode: .preservingSideCache)
         refreshRecords()
     }
@@ -1984,6 +1993,7 @@ public final class DownloadManager {
               let record = records.first(where: { $0.ratingKey == ratingKey }) else { return }
         guard let currentKey = attemptKey(for: record),
               !store.isDeletionPending(for: currentKey) else { return }
+        setOptionalSideAssetHydrationParked(false, for: currentKey)
         guard record.status != .complete, record.status != .unverified else { return }
         let shouldPromotePausedStatic = StaticRangeRecoveryPolicy.shouldMarkPausedRowInactiveBeforeBackendRetry(record)
         let shouldReplacePersistedActiveStatic = allowReplacingExistingActiveRow
@@ -4436,6 +4446,9 @@ public final class DownloadManager {
         transcodeSourcedDownloads.remove(attemptKey)
         _ = downloadWorkRegistry.cancelCancellableWork(
             for: attemptKey, mode: cancellationMode)
+        if cancellationMode == .allCancellable {
+            cancelOptionalSideAssetHydration(for: attemptKey)
+        }
         _ = serverPrepAttempts.releaseAll(for: attemptKey)
         serverPrepPollerTasks.removeValue(forKey: attemptKey)?.cancel()
         jellyfinDownloadKeepaliveTasks.removeValue(forKey: attemptKey)?.task.cancel()

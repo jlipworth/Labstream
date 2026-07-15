@@ -781,11 +781,17 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         if jellyfinTrickPlayPlaylistRelativePath == nil {
             jellyfinTrickPlayPlaylistRelativePath = previous.jellyfinTrickPlayPlaylistRelativePath
         }
-        if (jellyfinTrickPlayTileRelativePaths?.isEmpty ?? true) {
-            jellyfinTrickPlayTileRelativePaths = previous.jellyfinTrickPlayTileRelativePaths
+        if let previousTiles = previous.jellyfinTrickPlayTileRelativePaths, !previousTiles.isEmpty {
+            var merged = previousTiles
+            for relative in jellyfinTrickPlayTileRelativePaths ?? [] where !merged.contains(relative) {
+                merged.append(relative)
+            }
+            jellyfinTrickPlayTileRelativePaths = merged
         }
-        if (chapterImageRelativePaths?.isEmpty ?? true) {
-            chapterImageRelativePaths = previous.chapterImageRelativePaths
+        if let previousChapters = previous.chapterImageRelativePaths, !previousChapters.isEmpty {
+            var merged = previousChapters
+            merged.merge(chapterImageRelativePaths ?? [:]) { _, current in current }
+            chapterImageRelativePaths = merged
         }
         if (offlineTextSubtitles?.isEmpty ?? true) {
             offlineTextSubtitles = previous.offlineTextSubtitles
