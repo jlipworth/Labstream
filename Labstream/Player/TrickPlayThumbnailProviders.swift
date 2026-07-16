@@ -395,9 +395,11 @@ actor EmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     /// The chapter the scrub target falls within: the last chapter whose start is at or before the
     /// target, falling back to the first chapter for targets before the first marker.
     private func nearestFrame(to targetMs: Int) -> Frame? {
-        guard !frames.isEmpty else { return nil }
-        let clamped = max(0, targetMs)
-        return frames.last { $0.timeMs <= clamped } ?? frames.first
+        guard let index = SparseTrickPlayFrameSelectionPolicy.frameIndex(
+            nearMs: targetMs,
+            sortedFrameTimesMs: frames.map(\.timeMs)
+        ) else { return nil }
+        return frames[index]
     }
 
     private func insert(_ data: Data, for index: Int) {
@@ -461,9 +463,11 @@ actor LocalEmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     /// The chapter the scrub target falls within: the last chapter whose start is at or before the
     /// target, falling back to the first for targets before the first marker. Matches the online provider.
     private func nearestFrame(to targetMs: Int) -> Frame? {
-        guard !frames.isEmpty else { return nil }
-        let clamped = max(0, targetMs)
-        return frames.last { $0.timeMs <= clamped } ?? frames.first
+        guard let index = SparseTrickPlayFrameSelectionPolicy.frameIndex(
+            nearMs: targetMs,
+            sortedFrameTimesMs: frames.map(\.timeMs)
+        ) else { return nil }
+        return frames[index]
     }
 
     private func insert(_ data: Data, for index: Int) {
