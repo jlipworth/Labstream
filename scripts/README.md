@@ -10,6 +10,9 @@ media details out of commits and public issues.
 - `xcodebuild-versioned.sh` — wraps `xcodebuild` and stamps a source-derived internal Build ID.
 - `build-version-args.sh` — prints the version/build arguments used by the wrapper and deploy scripts.
 - `ci-hygiene.sh` — repository privacy, signing, placeholder, and tooling guardrails.
+- `ci-macos-apple-platforms.sh` — native-runner preflight, isolated unsigned
+  visionOS/iOS/iPadOS builds, PMSKit tests, evidence, and cleanup. See
+  [`docs/MACOS-CI.md`](../docs/MACOS-CI.md).
 - `publication-audit.py` — audits tracked text, Git history, and optionally GitHub issue text for
   sensitive publication regressions without echoing matched secrets.
 - `loc.sh` — informational per-module source line counts.
