@@ -28,6 +28,20 @@ public struct UnavailableTrickPlayThumbnailProvider: TrickPlayThumbnailProviding
     public func thumbnail(nearMs targetMs: Int) async -> TrickPlayThumbnail? { nil }
 }
 
+/// Chooses the sparse preview frame whose capture begins at or before the scrub target.
+/// `sortedFrameTimesMs` must be ascending. Targets before the first frame use the first available
+/// image, matching the graceful fallback used by chapter-image preview providers.
+public enum SparseTrickPlayFrameSelectionPolicy {
+    public static func frameIndex(nearMs targetMs: Int,
+                                  sortedFrameTimesMs: [Int]) -> Int? {
+        guard !sortedFrameTimesMs.isEmpty else { return nil }
+        let clamped = max(0, targetMs)
+        return sortedFrameTimesMs.indices.last {
+            sortedFrameTimesMs[$0] <= clamped
+        } ?? sortedFrameTimesMs.startIndex
+    }
+}
+
 public struct JellyfinTrickPlayTile: Equatable, Sendable {
     public let uri: String
     public let startMs: Int

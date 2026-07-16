@@ -81,6 +81,7 @@ struct CustomPlayerChrome: View {
     @State private var trickPlayPreviewTask: Task<Void, Never>?
     @State private var trickPlayPreviewImage: UIImage?
     @State private var trickPlayPreviewTimeMs: Int?
+    @State private var trickPlayPreviewCaptureTimeMs: Int?
     @State private var trickPlayPreviewLoading = false
     @State private var trickPlayImageCache = TrickPlayPreviewImageCache(limit: 32)
     @State private var trickPlayRequestGeneration = 0
@@ -1256,7 +1257,11 @@ struct CustomPlayerChrome: View {
                 }
             }
 
-            Text(format(ms: trickPlayPreviewTimeMs ?? scrubState.displayedPositionMs))
+            Text(format(ms: TrickPlayPreviewResolutionPolicy.displayedTimeMs(
+                targetMs: trickPlayPreviewTimeMs,
+                thumbnailCaptureTimeMs: trickPlayPreviewCaptureTimeMs,
+                fallbackMs: scrubState.displayedPositionMs
+            )))
                 .font(.caption.monospacedDigit().weight(.semibold))
                 .foregroundStyle(.primary)
                 .padding(.horizontal, 10)
@@ -1731,7 +1736,7 @@ struct CustomPlayerChrome: View {
         if let cached = trickPlayImageCache.nearestImage(to: targetMs, toleranceMs: 15_000) {
             trickPlayPreviewTask?.cancel()
             trickPlayPreviewImage = cached.image
-            trickPlayPreviewTimeMs = cached.timeMs
+            trickPlayPreviewCaptureTimeMs = cached.timeMs
             trickPlayPreviewLoading = false
             return
         }
@@ -1747,13 +1752,27 @@ struct CustomPlayerChrome: View {
             guard !Task.isCancelled else { return }
             let decoded = thumbnail.flatMap { UIImage(data: $0.imageData) }
             await MainActor.run {
-                guard generation == trickPlayRequestGeneration,
-                      activeTrickPlayTargetMs == targetMs else { return }
-                trickPlayPreviewLoading = false
-                guard let thumbnail, let decoded else { return }
-                trickPlayImageCache.insert(decoded, for: thumbnail.timeMs)
-                trickPlayPreviewImage = decoded
-                trickPlayPreviewTimeMs = thumbnail.timeMs
+                let completion = TrickPlayPreviewResolutionPolicy.completion(
+                    requestGeneration: generation,
+                    currentGeneration: trickPlayRequestGeneration,
+                    requestTargetMs: targetMs,
+                    activeTargetMs: activeTrickPlayTargetMs,
+                    decodedThumbnailTimeMs: decoded == nil ? nil : thumbnail?.timeMs
+                )
+                switch completion {
+                case .ignoredStale:
+                    return
+                case .clearImage:
+                    trickPlayPreviewLoading = false
+                    trickPlayPreviewImage = nil
+                    trickPlayPreviewCaptureTimeMs = nil
+                case .showImage(let captureTimeMs):
+                    guard let decoded else { return }
+                    trickPlayPreviewLoading = false
+                    trickPlayImageCache.insert(decoded, for: captureTimeMs)
+                    trickPlayPreviewImage = decoded
+                    trickPlayPreviewCaptureTimeMs = captureTimeMs
+                }
             }
         }
     }
@@ -1775,6 +1794,7 @@ struct CustomPlayerChrome: View {
         trickPlayPreviewLoading = false
         trickPlayPreviewImage = nil
         trickPlayPreviewTimeMs = nil
+        trickPlayPreviewCaptureTimeMs = nil
     }
 
     private func performRelativeSkip(seconds: Int) {
