@@ -1,0 +1,20 @@
+# Native Apple-platform validation on the physical macOS local backend.
+#
+# Keep this manual-only and main-only until the labelled runner has been
+# enrolled and its local-backend trust boundary has been validated. In
+# particular, never add PR events here: local-backend steps execute repo
+# code directly on the host and must not run code from forks.
+when:
+  event: [manual]
+  branch: main
+
+labels:
+  platform: darwin/arm64
+  backend: local
+  purpose: mac-ci
+
+steps:
+  - name: unsigned-apple-builds-and-tests
+    image: bash
+    commands:
+      - ./scripts/ci-macos-apple-platforms.sh

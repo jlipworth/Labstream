@@ -27,11 +27,16 @@ uv run --with-requirements requirements.txt mkdocs build --strict
 
 ## CI checks
 
-The public CI surface is intentionally portable:
+The default public CI surface is intentionally portable:
 
 - MkDocs builds with `mkdocs build --strict` and deploys the static site.
 - Repo hygiene scans for common secret, signing, and placeholder regressions.
 - PMSKit's hermetic tests run without media-server credentials.
+
+A separate [native macOS CI lane](MACOS-CI.md) is prepared for unsigned
+visionOS and iOS/iPadOS builds. It remains manual/main-only and cannot execute
+until the explicitly labelled physical runner is enrolled; fork pull requests
+are permanently outside that local-backend trust boundary.
 
 ## Simulator checks
 
