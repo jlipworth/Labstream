@@ -1,7 +1,7 @@
 import Foundation
 import PMSKit
 
-/// The only tuning surface for optional download-side network traffic.
+/// The only tuning surface for burst-prone optional side-asset network traffic.
 ///
 /// The default is intentionally conservative relative to the two-events-per-second
 /// CrowdSec leak rate observed during the July 2026 incident. It is an application
@@ -47,9 +47,9 @@ struct SideAssetCoordinatorClock: Sendable {
     )
 }
 
-/// Coordinates burst-prone, optional side assets across every download in the process.
-/// Pacing and concurrency are isolated per server origin, while owners at an origin are
-/// selected round-robin so one chapter-heavy download cannot monopolize the queue.
+/// Coordinates burst-prone optional side assets across downloads and online playback in the
+/// process. Pacing and concurrency are isolated per server origin, while owners at an origin are
+/// selected round-robin so one chapter-heavy operation cannot monopolize the queue.
 actor SideAssetFetchCoordinator {
     static let shared = SideAssetFetchCoordinator()
 
@@ -142,6 +142,46 @@ actor SideAssetFetchCoordinator {
         } onCancel: {
             Task { await self.cancelWaiter(waiterID) }
         }
+    }
+
+    /// Routes an authenticated optional HTTP asset through the same process-wide origin policy
+    /// used by download hydration. Player chapter rails can otherwise create one URLSession task
+    /// per chapter in a single render pass, which is indistinguishable from a crawler to common
+    /// ingress protection. Request identity remains process-local because it can contain tokens.
+    func fetch(request: URLRequest,
+               owner: SideAssetOwner,
+               existingFile: URL? = nil,
+               session: URLSession = .shared,
+               operation injectedOperation: FetchOperation? = nil) async throws -> Data {
+        guard let url = request.url,
+              let scheme = url.scheme?.lowercased(),
+              let host = url.host?.lowercased() else { throw SideAssetFetchError.invalidOrigin }
+        let effectivePort = url.port ?? (scheme == "https" ? 443 : 80)
+        let origin = SideAssetOrigin(rawValue: "\(scheme)://\(host):\(effectivePort)")
+
+        var requestIdentity = "\(request.httpMethod ?? "GET")\u{0}\(url.absoluteString)"
+        for (name, value) in request.allHTTPHeaderFields?.sorted(by: {
+            if $0.key != $1.key { return $0.key < $1.key }
+            return $0.value < $1.value
+        }) ?? [] {
+            requestIdentity += "\u{0}\(name):\(value)"
+        }
+        if let body = request.httpBody { requestIdentity += "\u{0}\(body.base64EncodedString())" }
+
+        let operation: FetchOperation = injectedOperation ?? {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else {
+                throw SideAssetFetchError.httpStatus((response as? HTTPURLResponse)?.statusCode ?? -1)
+            }
+            guard !data.isEmpty else { throw SideAssetFetchError.emptyResponse }
+            return data
+        }
+        return try await fetch(origin: origin,
+                               owner: owner,
+                               requestKey: SideAssetRequestKey(rawValue: requestIdentity),
+                               existingFile: existingFile,
+                               operation: operation)
     }
 
     /// Parked work retains its place. In-flight work is cooperatively cancelled and
@@ -424,37 +464,11 @@ extension DownloadManager {
     /// carry credentials.
     func fetchOptionalSideAsset(_ request: URLRequest,
                                 for key: DownloadAttemptKey) async throws -> Data {
-        guard let url = request.url,
-              let scheme = url.scheme?.lowercased(),
-              let host = url.host?.lowercased() else { throw SideAssetFetchError.invalidOrigin }
-        let effectivePort = url.port ?? (scheme == "https" ? 443 : 80)
-        let origin = SideAssetOrigin(rawValue: "\(scheme)://\(host):\(effectivePort)")
         let owner = Self.sideAssetOwner(for: key)
         if isQueuePaused { await sideAssetFetchCoordinator.setParked(true, for: owner) }
 
-        var requestIdentity = "\(request.httpMethod ?? "GET")\u{0}\(url.absoluteString)"
-        for (name, value) in request.allHTTPHeaderFields?.sorted(by: {
-            if $0.key != $1.key { return $0.key < $1.key }
-            return $0.value < $1.value
-        }) ?? [] {
-            requestIdentity += "\u{0}\(name):\(value)"
-        }
-        if let body = request.httpBody { requestIdentity += "\u{0}\(body.base64EncodedString())" }
-
         let policyRequest = Self.sideAssetRequest(applyingCellularPolicy: request)
-        return try await sideAssetFetchCoordinator.fetch(
-            origin: origin,
-            owner: owner,
-            requestKey: SideAssetRequestKey(rawValue: requestIdentity)
-        ) {
-            let (data, response) = try await URLSession.shared.data(for: policyRequest)
-            guard let http = response as? HTTPURLResponse,
-                  (200..<300).contains(http.statusCode) else {
-                throw SideAssetFetchError.httpStatus((response as? HTTPURLResponse)?.statusCode ?? -1)
-            }
-            guard !data.isEmpty else { throw SideAssetFetchError.emptyResponse }
-            return data
-        }
+        return try await sideAssetFetchCoordinator.fetch(request: policyRequest, owner: owner)
     }
 
     func setOptionalSideAssetHydrationParked(_ parked: Bool, for key: DownloadAttemptKey) {

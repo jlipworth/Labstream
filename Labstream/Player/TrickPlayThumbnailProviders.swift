@@ -212,9 +212,12 @@ actor JellyfinTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
                                                                            itemId: itemId,
                                                                            mediaSourceId: mediaSourceId,
                                                                            width: width)
-                    let (data, response) = try await session.data(for: req)
-                    guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-                          let text = String(data: data, encoding: .utf8) else { return nil }
+                    let data = try await SideAssetFetchCoordinator.shared.fetch(
+                        request: req,
+                        owner: SideAssetOwner(rawValue: "player-trickplay"),
+                        session: session
+                    )
+                    guard let text = String(data: data, encoding: .utf8) else { return nil }
                     return try JellyfinTrickPlayPlaylistParser.parse(text)
                 } catch {
                     return nil
@@ -236,9 +239,12 @@ actor JellyfinTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
                                                                mediaSourceId: mediaSourceId,
                                                                width: width,
                                                                tileURI: tile.uri)
-            let (data, response) = try await session.data(for: req)
-            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-                  let image = UIImage(data: data) else { return nil }
+            let data = try await SideAssetFetchCoordinator.shared.fetch(
+                request: req,
+                owner: SideAssetOwner(rawValue: "player-trickplay"),
+                session: session
+            )
+            guard let image = UIImage(data: data) else { return nil }
             tileCache.insert(image, for: tile.uri)
             return image
         } catch {
@@ -378,13 +384,13 @@ actor EmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
                                                                 userId: userId,
                                                                 width: 480,
                                                                 height: 270) else { return nil }
-            let (data, response) = try await session.data(for: req)
-            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), !data.isEmpty else {
-                return nil
-            }
+            let data = try await SideAssetFetchCoordinator.shared.fetch(
+                request: req,
+                owner: SideAssetOwner(rawValue: "player-trickplay"),
+                session: session
+            )
             insert(data, for: frame.index)
-            let contentType = http.value(forHTTPHeaderField: "Content-Type") ?? "image/jpeg"
-            return TrickPlayThumbnail(timeMs: frame.timeMs, imageData: data, contentType: contentType)
+            return TrickPlayThumbnail(timeMs: frame.timeMs, imageData: data, contentType: "image/jpeg")
         } catch {
             // Unavailable chapter images are expected; keep silent and graceful and never log the
             // URL (it carries the auth token on the live request).
