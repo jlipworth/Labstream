@@ -13,6 +13,9 @@ build directories. --preflight checks the host toolchain without building.
 
 Environment:
   MACOS_CI_OUTPUT_DIR       Evidence directory (default: build/ci-macos/<run>)
+  MACOS_CI_ARTIFACT_ROOT    Persistent runner evidence root (Woodpecker sets it)
+  MACOS_CI_RETENTION_DAYS   Delete completed runs older than this (default: 7)
+  MACOS_CI_MAX_RUNS         Keep at most this many evidence runs (default: 10)
   MACOS_CI_MIN_FREE_GB      Required free space before work (default: 100)
   MACOS_CI_MAX_LOG_MB       Maximum retained bytes per log (default: 10)
   MACOS_CI_MAX_RESULT_MB    Maximum retained bytes per xcresult (default: 250)
@@ -68,12 +71,45 @@ if [[ "$mode" == preflight ]]; then
   exit 0
 fi
 
-run_id="${WOODPECKER_BUILD_NUMBER:-local}-$(date -u +%Y%m%dT%H%M%SZ)-$$"
-output_dir="${MACOS_CI_OUTPUT_DIR:-$repo_root/build/ci-macos/$run_id}"
+run_id="${CI_PIPELINE_NUMBER:-${WOODPECKER_BUILD_NUMBER:-local}}-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+artifact_root="${MACOS_CI_ARTIFACT_ROOT:-}"
+if [[ -n "$artifact_root" && "$artifact_root" != /* ]]; then
+  fail "MACOS_CI_ARTIFACT_ROOT must be an absolute path"
+fi
+output_dir="${MACOS_CI_OUTPUT_DIR:-${artifact_root:-$repo_root/build/ci-macos}/$run_id}"
 derived_data="$output_dir/work/DerivedData"
 swift_scratch="$output_dir/work/SwiftPM"
 evidence_dir="$output_dir/evidence"
 mkdir -p "$derived_data" "$swift_scratch" "$evidence_dir"
+
+prune_artifacts() {
+  local root="$1"
+  local retention_days="${MACOS_CI_RETENTION_DAYS:-7}"
+  local max_runs="${MACOS_CI_MAX_RUNS:-10}"
+  local run_dir
+  local -a run_dirs=()
+
+  [[ "$retention_days" =~ ^[0-9]+$ ]] || fail "MACOS_CI_RETENTION_DAYS must be an integer"
+  [[ "$max_runs" =~ ^[1-9][0-9]*$ ]] || fail "MACOS_CI_MAX_RUNS must be a positive integer"
+
+  # Only direct child directories of the dedicated Labstream artifact root are
+  # eligible. Never follow symlinks or clean a caller-provided parent tree.
+  find -P "$root" -mindepth 1 -maxdepth 1 -type d -mtime "+$retention_days" \
+    -exec rm -rf -- {} +
+  while IFS= read -r run_dir; do
+    run_dirs+=("$run_dir")
+  done < <(
+    find -P "$root" -mindepth 1 -maxdepth 1 -type d -exec stat -f '%m %N' {} + \
+      | sort -rn | cut -d' ' -f2-
+  )
+  if ((${#run_dirs[@]} > max_runs)); then
+    rm -rf -- "${run_dirs[@]:max_runs}"
+  fi
+}
+
+if [[ -n "$artifact_root" ]]; then
+  prune_artifacts "$artifact_root"
+fi
 
 cleanup() {
   local status=$?

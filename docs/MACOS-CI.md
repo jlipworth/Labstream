@@ -35,8 +35,16 @@ Each Xcode action receives its own DerivedData directory and `.xcresult`
 bundle. Logs, toolchain facts, and result bundles are written beneath
 `build/ci-macos/<run>/evidence`. DerivedData and SwiftPM build state are removed
 through an exit/signal trap; the evidence remains for bounded collection by
-the CI system. Set `MACOS_CI_OUTPUT_DIR` when the runner's artifact collector
-requires a specific path.
+the CI system. The Woodpecker workflow sets `MACOS_CI_ARTIFACT_ROOT` to the
+runner-owned persistent artifact directory. Runs older than seven days are
+deleted and at most ten runs are retained. These defaults can be tightened with
+`MACOS_CI_RETENTION_DAYS` and `MACOS_CI_MAX_RUNS`.
+
+This is deliberately runner-local retention, not a claim that Woodpecker has a
+built-in artifact store. Off-host upload remains disabled until an existing
+S3-compatible destination and scoped credentials are selected. The local
+backend would also need a trusted uploader executable installed on the host;
+no storage secrets belong in this repository.
 
 The workflow never requests signing, provisioning, a developer identity,
 physical devices, TestFlight, or App Store access. It also does not boot a
@@ -83,3 +91,9 @@ Before changing the pipeline beyond manual/main-only:
 - confirm no personal home, Keychain, signing, or device credentials enter the
   job environment;
 - keep fork pull requests permanently excluded.
+
+The portable hygiene workflow runs `scripts/validate-macos-pipeline.py`. It
+requires all three exact labels, a manual-only event and the `main` branch. It
+is a review regression check, not an agent-side event filter. Woodpecker must
+continue to require approval for fork pipelines, and fork pipelines must never
+be approved for execution while the native agent is eligible.
