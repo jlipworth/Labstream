@@ -1,6 +1,6 @@
 import Foundation
 
-/// Pure request builders for Plex collection and item-extra reads. Kept in PMSKit so
+/// Pure request builders for Plex collection reads. Kept in PMSKit so
 /// backend URL semantics are covered by unit tests before UI wiring consumes them.
 public enum CollectionRequest {
     /// `GET /library/sections/{sectionKey}/collections` — list backend-defined Plex

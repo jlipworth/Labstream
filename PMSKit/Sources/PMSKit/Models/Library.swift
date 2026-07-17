@@ -111,7 +111,7 @@ public struct MediaRemoteTrailer: Decodable, Sendable, Equatable {
 /// Cheap related-media availability lifted from backend detail payloads. The actual
 /// playable rows should still be fetched through backend-specific helpers (`/extras`,
 /// `LocalTrailers`, `SpecialFeatures`, `Intros`) so item ids/types are preserved. The
-/// first VisionPlay UI surface is intentionally one combined "Trailers & Extras" shelf;
+/// first Labstream UI surface is intentionally one combined "Trailers & Extras" shelf;
 /// backend-specific subtype grouping can layer on later without changing this shape.
 public struct MediaRelatedAvailability: Sendable, Equatable {
     public let extraIds: [String]

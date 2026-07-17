@@ -197,6 +197,7 @@ struct ContainerBrowserView: View {
             backendLabel: backend.displayName,
             cacheEmptyFirstPage: true,
             awaitAlphabetBeforeInitialLoad: false,
+            supportsAlphabetRail: false,
             fetchPage: { start, limit in
                 switch backend {
                 case .plex:

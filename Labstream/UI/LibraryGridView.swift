@@ -463,9 +463,11 @@ struct LibraryGridView: View {
         GeometryReader { geometry in
             ScrollViewReader { proxy in
                 VStack(alignment: .leading, spacing: 0) {
-                    browseControls(proxy: proxy)
-                        .padding(.horizontal, DS.pagePadding(compact: compactWidth))
-                        .padding(.vertical, DS.Space.lg)
+                    if showsBrowseControls {
+                        browseControls(proxy: proxy)
+                            .padding(.horizontal, DS.pagePadding(compact: compactWidth))
+                            .padding(.vertical, DS.Space.lg)
+                    }
 
                     ScrollView {
                         VStack(alignment: .leading, spacing: DS.Space.lg) {
@@ -591,6 +593,15 @@ struct LibraryGridView: View {
             }
             Spacer(minLength: 0)
         }
+    }
+
+    /// Collection order is backend-curated and Plex does not expose the regular section
+    /// sort/filter/alphabet capabilities on the collections endpoint. Avoid reserving an
+    /// empty controls row above this specialized grid while preserving the full browse
+    /// architecture for normal libraries.
+    private var showsBrowseControls: Bool {
+        if case .plexCollections = source { return false }
+        return true
     }
 
     private var capabilityNotice: String? {
