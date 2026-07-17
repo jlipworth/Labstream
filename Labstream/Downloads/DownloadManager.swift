@@ -553,10 +553,25 @@ public final class DownloadManager {
                         "backend": .label(kind.rawValue),
                         "status_code": .int(httpStatus),
                     ])
+                    // Quiesce the live train BEFORE parking (preserving held segments): the parked
+                    // `.paused`/`.queued` row is otherwise auto-promoted back to `.downloading` by a
+                    // same-attempt sibling's progress callback, defeating the deferral.
+                    self.session.quiesceStaticRangeForDeferredResume(ratingKey: ratingKey)
                     self.deferStaticRangeResume(record: record, reason: "backend_signed_out")
                 case .fail:
-                    self.store.setStatus(ratingKey: ratingKey, .failed)
-                    self.lastError[ratingKey] = .transferFailed("Server returned HTTP \(httpStatus).")
+                    // Drive the full session-side terminal teardown (purge held segments, supersede live
+                    // siblings, advance the train epoch, attempt-fenced `.failed` write) that the range
+                    // engine's early handoff skipped — a bare store `.failed` write leaves the train live
+                    // and a sibling progress callback auto-promotes the row straight back to `.downloading`.
+                    self.session.failStaticRangeAuthTerminal(ratingKey: ratingKey)
+                    // Surface the terminal auth failure through the same notAuthenticated remap +
+                    // diagnostic as the pre-branch onError flow (A-3): the callback only ever fires for a
+                    // deferrable 401/403, so this is exactly the message the remap would have caught. Keep
+                    // the sign-in-again affordance instead of a generic "Server returned HTTP 401.".
+                    self.recordDownloadDiagnostic("downloads.transfer_auth_dead", fields: [
+                        "download_id": .identifier(ratingKey),
+                    ])
+                    self.lastError[ratingKey] = .notAuthenticated
                     self.refreshRecords()
                 }
             }
