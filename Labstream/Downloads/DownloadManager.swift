@@ -539,7 +539,7 @@ public final class DownloadManager {
         // Decide on the main actor: if the backend session is actually gone, park the row in the same
         // deferred "waiting for a valid session" state the resume path uses; otherwise (still signed
         // in) it is a real auth error and stays `.failed`.
-        self.session.onRangeAuthHTTPFailure = { [weak self] ratingKey, httpStatus in
+        self.session.onRangeAuthHTTPFailure = { [weak self] ratingKey, httpStatus, attemptKey in
             Task { @MainActor in
                 guard let self,
                       let record = self.store.records.first(where: { $0.ratingKey == ratingKey }) else { return }
@@ -556,14 +556,14 @@ public final class DownloadManager {
                     // Quiesce the live train BEFORE parking (preserving held segments): the parked
                     // `.paused`/`.queued` row is otherwise auto-promoted back to `.downloading` by a
                     // same-attempt sibling's progress callback, defeating the deferral.
-                    self.session.quiesceStaticRangeForDeferredResume(ratingKey: ratingKey)
+                    self.session.quiesceStaticRangeForDeferredResume(attemptKey: attemptKey)
                     self.deferStaticRangeResume(record: record, reason: "backend_signed_out")
                 case .fail:
                     // Drive the full session-side terminal teardown (purge held segments, supersede live
                     // siblings, advance the train epoch, attempt-fenced `.failed` write) that the range
                     // engine's early handoff skipped — a bare store `.failed` write leaves the train live
                     // and a sibling progress callback auto-promotes the row straight back to `.downloading`.
-                    self.session.failStaticRangeAuthTerminal(ratingKey: ratingKey)
+                    self.session.failStaticRangeAuthTerminal(attemptKey: attemptKey)
                     // Surface the terminal auth failure through the same notAuthenticated remap +
                     // diagnostic as the pre-branch onError flow (A-3): the callback only ever fires for a
                     // deferrable 401/403, so this is exactly the message the remap would have caught. Keep
