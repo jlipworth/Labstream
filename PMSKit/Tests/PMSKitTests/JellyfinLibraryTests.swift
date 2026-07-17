@@ -88,6 +88,11 @@ struct JellyfinLibraryTests {
                                                      identity: identity,
                                                      userId: "user-1",
                                                      itemId: "track-9")
+        let expectedURL = "https://jellyfin.example.test/base/Audio/track-9/universal"
+            + "?UserId=user-1&DeviceId=device-123&MaxStreamingBitrate=140000000"
+            + "&Container=mp3,aac,m4a,m4b,flac,alac,wav,ogg,oga,opus,webma"
+            + "&TranscodingContainer=ts&TranscodingProtocol=hls&AudioCodec=aac"
+        #expect(url.absoluteString == expectedURL)
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
         let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
 
@@ -98,8 +103,7 @@ struct JellyfinLibraryTests {
         #expect(query["MaxStreamingBitrate"] == "140000000")
         #expect(query["AudioCodec"] == "aac")
         #expect(query["TranscodingProtocol"] == "hls")
-        #expect(query["Container"]?.contains("flac") == true)
-        #expect(query["Container"]?.contains("mp3") == true)
+        #expect(query["Container"] == MediaBrowserAudioStreamFacts.directPlayContainers)
         // Token must NOT be baked into the stream URL — auth rides in the asset header.
         #expect(url.absoluteString.contains("token") == false)
         #expect(query["api_key"] == nil)

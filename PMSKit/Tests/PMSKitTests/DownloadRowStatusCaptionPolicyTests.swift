@@ -59,7 +59,6 @@ struct DownloadRowStatusCaptionPolicyTests {
         #expect(paused.hasPrefix("Paused — tap to resume • 50% • "))
     }
 
-
     @Test("Phase classification makes row state machine explicit")
     func phases() {
         #expect(DownloadRowStatusCaptionPolicy.phase(context(
@@ -78,6 +77,29 @@ struct DownloadRowStatusCaptionPolicyTests {
             bytes: 1_000_000,
             isActive: true)) == .activeTransfer)
     }
+
+    @Test("Inactive server prep waits for its unavailable backend while active prep stays visible")
+    func unavailableBackendPrepCaption() {
+        let inactive = context(status: .preparing,
+                               backend: .emby,
+                               resumeMode: .serverPrepThenStatic,
+                               isActive: false,
+                               isBackendConfigured: false,
+                               serverPrepState: "finalizing",
+                               serverPrepProgress: 1.0)
+        #expect(DownloadRowStatusCaptionPolicy.phase(inactive) == .waitingForBackend)
+        #expect(DownloadRowStatusCaptionPolicy.caption(inactive) == "Waiting for Emby…")
+
+        let active = context(status: .preparing,
+                             backend: .plex,
+                             resumeMode: .serverPrepThenStatic,
+                             isActive: true,
+                             isBackendConfigured: false,
+                             serverPrepProgress: 0.42)
+        #expect(DownloadRowStatusCaptionPolicy.phase(active) == .serverPrepProgressing)
+        #expect(DownloadRowStatusCaptionPolicy.caption(active) == "Preparing on server… 42%")
+    }
+
 
     @Test("Compact sheet captions preserve modal phase wording")
     func compactActiveCaptions() {
@@ -133,6 +155,7 @@ struct DownloadRowStatusCaptionPolicyTests {
         #expect(context.progress == 0.25)
         #expect(context.bytes == 1_000)
         #expect(context.captionBytes == 1_000)
+        #expect(context.sideAssetBytes == 0)
         #expect(context.backend == .emby)
         #expect(context.lane == .compatibleRemux)
         #expect(context.resumeMode == .liveForwardOnly)
@@ -188,8 +211,8 @@ struct DownloadRowStatusCaptionPolicyTests {
         #expect(!caption.contains("270 MB"))
     }
 
-    @Test("row captions include side-asset bytes without affecting phase")
-    func rowCaptionIncludesSideAssetBytesWithoutAffectingPhase() {
+    @Test("row captions separate side-asset bytes from media progress bytes")
+    func rowCaptionSeparatesSideAssetBytesFromMediaBytes() {
         let record = DownloadRecord(
             ratingKey: "plex-1",
             title: "Movie",
@@ -220,9 +243,10 @@ struct DownloadRowStatusCaptionPolicyTests {
             failureCaption: nil)
 
         #expect(context.bytes == 0)
-        #expect(context.captionBytes == 21_000_000)
+        #expect(context.captionBytes == 0)
+        #expect(context.sideAssetBytes == 21_000_000)
         #expect(DownloadRowStatusCaptionPolicy.phase(context) == .activeStaticZeroByteTransfer)
-        #expect(DownloadRowStatusCaptionPolicy.caption(context).contains("21 MB"))
+        #expect(DownloadRowStatusCaptionPolicy.caption(context).contains("21 MB extras"))
     }
 
     @Test("active captions use live display bytes when provided")
@@ -275,6 +299,23 @@ struct DownloadRowStatusCaptionPolicyTests {
 
         #expect(caption.hasPrefix("Verifying download… • "))
         #expect(caption.hasSuffix(" • 4K"))
+    }
+
+    @Test("ETA wording exposes estimated-total provenance")
+    func estimatedTotalETAWording() {
+        let estimated = DownloadRowStatusCaptionPolicy.caption(context(
+            bytes: 2_000_000,
+            displayFraction: .init(value: 0.25, isEstimated: true),
+            isActive: true,
+            downloadETA: 90))
+        #expect(estimated.contains("roughly 2 min left"))
+
+        let exact = DownloadRowStatusCaptionPolicy.caption(context(
+            bytes: 2_000_000,
+            displayFraction: .init(value: 0.25, isEstimated: false),
+            isActive: true,
+            downloadETA: 90))
+        #expect(exact.contains("~2 min left"))
     }
 
     private func context(status: DownloadStatus = .downloading,

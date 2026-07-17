@@ -699,14 +699,10 @@ struct RootView: View {
     private func systemEntryChildren(for ratingKey: String) async throws -> [MediaItem] {
         switch appModel.activeBackend {
         case .plex:
-            guard let server = appModel.serverBaseURL,
-                  let token = appModel.serverToken else {
+            guard let service = try? PlexBrowseService(appModel: appModel) else {
                 throw URLError(.userAuthenticationRequired)
             }
-            let req = BrowseAPI.children(server: server, token: token,
-                                         identity: appModel.identity, ratingKey: ratingKey)
-            return try await appModel.client.send(req, as: MetadataResponse.self)
-                .mediaContainer.metadata
+            return try await service.children(ratingKey: ratingKey)
         case .jellyfin:
             return try await JellyfinBrowseService(appModel: appModel)
                 .items(parentId: ratingKey, recursive: false)

@@ -17,6 +17,7 @@ import UIKit
 struct CustomPlayerView: View {
     @Environment(CustomCinemaSessionStore.self) private var cinemaSession
     @Environment(RealityTheaterSessionStore.self) private var realityTheaterSession
+    @Environment(MusicPlayerController.self) private var musicPlayer
     #if os(iOS) || os(macOS)
     /// Only read to build the authenticated Now Playing artwork request; the player
     /// itself never touches browse state.
@@ -41,12 +42,12 @@ struct CustomPlayerView: View {
     @State private var clockTaskID = UUID()
     private let mobileOrientationCoordinator: MobilePlayerOrientationCoordinator
     #if os(iOS)
-    @State private var mobileSystemCoordinator = MobilePlayerSystemCoordinator()
+    @State private var mobileSystemCoordinator: MobilePlayerSystemCoordinator?
     @AppStorage(PlaybackPreferences.Keys.mobileVideoDisplayMode)
     private var mobileVideoDisplayModeRaw = MobileVideoDisplayMode.fit.rawValue
     #endif
     #if os(macOS)
-    @State private var macSystemCoordinator = MacPlayerSystemCoordinator()
+    @State private var macSystemCoordinator: MacPlayerSystemCoordinator?
     #endif
 
     init(item: MediaItem,
@@ -173,11 +174,11 @@ struct CustomPlayerView: View {
         #endif
         .onDisappear {
             #if os(iOS)
-            mobileSystemCoordinator.teardown()
+            mobileSystemCoordinator?.teardown()
             mobileOrientationCoordinator.restoreIfNeeded()
             #endif
             #if os(macOS)
-            macSystemCoordinator.teardown()
+            macSystemCoordinator?.teardown()
             #endif
             if cinemaSession.presentationState == .closed {
                 controller?.stop()
@@ -216,16 +217,22 @@ struct CustomPlayerView: View {
                                                            appModel: appModel,
                                                            pixelWidth: 600,
                                                            pixelHeight: 900)
-            mobileSystemCoordinator.configure(controller: playback, item: item,
-                                              artworkRequest: artworkRequest)
+            let systemCoordinator = MobilePlayerSystemCoordinator(
+                mediaSession: musicPlayer.systemMediaSessionCoordinator)
+            mobileSystemCoordinator = systemCoordinator
+            systemCoordinator.configure(controller: playback, item: item,
+                                        artworkRequest: artworkRequest)
             #endif
             #if os(macOS)
             let artworkRequest = MediaArtwork.imageRequest(path: item.thumb,
                                                            appModel: appModel,
                                                            pixelWidth: 600,
                                                            pixelHeight: 900)
-            macSystemCoordinator.configure(controller: playback, item: item,
-                                           artworkRequest: artworkRequest)
+            let systemCoordinator = MacPlayerSystemCoordinator(
+                mediaSession: musicPlayer.systemMediaSessionCoordinator)
+            macSystemCoordinator = systemCoordinator
+            systemCoordinator.configure(controller: playback, item: item,
+                                         artworkRequest: artworkRequest)
             #endif
             #if os(visionOS)
             cinemaSession.activate(title: item.title,
@@ -249,10 +256,10 @@ struct CustomPlayerView: View {
                 if let controller {
                     refreshScrubberClock(from: controller)
                     #if os(iOS)
-                    mobileSystemCoordinator.updateNowPlayingInfo()
+                    mobileSystemCoordinator?.updateNowPlayingInfo()
                     #endif
                     #if os(macOS)
-                    macSystemCoordinator.updateNowPlayingInfo()
+                    macSystemCoordinator?.updateNowPlayingInfo()
                     #endif
                 }
             }

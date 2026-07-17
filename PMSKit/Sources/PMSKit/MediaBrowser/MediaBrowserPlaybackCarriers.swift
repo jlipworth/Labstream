@@ -9,20 +9,10 @@ public enum MediaBrowserPlayMethod: String, Sendable, Equatable {
     case directStream
     case transcode
 
-    public init(_ method: JellyfinPlayMethod) {
-        switch method {
-        case .directPlay: self = .directPlay
-        case .directStream: self = .directStream
-        case .transcode: self = .transcode
-        }
-    }
-
-    public init(_ method: EmbyPlayMethod) {
-        switch method {
-        case .directPlay: self = .directPlay
-        case .directStream: self = .directStream
-        case .transcode: self = .transcode
-        }
+    /// Source-compatible copy initializer retained for callers that previously converted a
+    /// backend-specific play method into this carrier. The backend spellings are now aliases.
+    public init(_ method: MediaBrowserPlayMethod) {
+        self = method
     }
 }
 
@@ -60,31 +50,13 @@ public struct MediaBrowserPlaybackSourceMetadata: Sendable, Equatable {
         self.audioProfile = audioProfile
     }
 
-    public init(_ source: JellyfinPlaybackSourceMetadata) {
-        self.init(container: source.container,
-                  width: source.width,
-                  height: source.height,
-                  bitrate: source.bitrate,
-                  videoCodec: source.videoCodec,
-                  audioCodec: source.audioCodec,
-                  hdr: source.hdr,
-                  audioProfile: source.audioProfile)
-    }
-
-    public init(_ source: EmbyPlaybackSourceMetadata) {
-        self.init(container: source.container,
-                  width: source.width,
-                  height: source.height,
-                  bitrate: source.bitrate,
-                  videoCodec: source.videoCodec,
-                  audioCodec: source.audioCodec,
-                  hdr: source.hdr,
-                  audioProfile: source.audioProfile)
+    /// Source-compatible copy initializer retained for the former backend-to-neutral bridge.
+    public init(_ source: MediaBrowserPlaybackSourceMetadata) {
+        self = source
     }
 }
 
-/// Backend-neutral playback open result for the app layer. Backend services still construct
-/// their native PMSKit result types; the app explicitly converts those results at its boundary.
+/// Backend-neutral playback open result produced directly by Jellyfin and Emby resolution.
 public struct MediaBrowserPlaybackOpenResult: Sendable, Equatable {
     public let url: URL
     public let playSessionId: String
@@ -110,13 +82,18 @@ public struct MediaBrowserPlaybackOpenResult: Sendable, Equatable {
         self.usesServerEncoding = usesServerEncoding
     }
 
+    /// Source-compatible copy initializer retained for the former backend-to-neutral bridge.
+    public init(_ result: MediaBrowserPlaybackOpenResult) {
+        self = result
+    }
+
     public init(_ result: JellyfinPlaybackOpenResult) {
         self.init(url: result.url,
                   playSessionId: result.playSessionId,
                   mediaSourceId: result.mediaSourceId,
-                  playMethod: MediaBrowserPlayMethod(result.playMethod),
+                  playMethod: result.playMethod,
                   requiredHTTPHeaders: result.requiredHTTPHeaders,
-                  sourceMetadata: MediaBrowserPlaybackSourceMetadata(result.sourceMetadata),
+                  sourceMetadata: result.sourceMetadata,
                   usesServerEncoding: result.playMethod == .transcode)
     }
 
@@ -124,9 +101,9 @@ public struct MediaBrowserPlaybackOpenResult: Sendable, Equatable {
         self.init(url: result.url,
                   playSessionId: result.playSessionId,
                   mediaSourceId: result.mediaSourceId,
-                  playMethod: MediaBrowserPlayMethod(result.playMethod),
+                  playMethod: result.playMethod,
                   requiredHTTPHeaders: result.requiredHTTPHeaders,
-                  sourceMetadata: MediaBrowserPlaybackSourceMetadata(result.sourceMetadata),
+                  sourceMetadata: result.sourceMetadata,
                   usesServerEncoding: result.usesServerEncoding)
     }
 }

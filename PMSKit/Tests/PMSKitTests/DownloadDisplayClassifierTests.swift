@@ -10,12 +10,14 @@ import Foundation
 struct DownloadDisplayClassifierTests {
 
     private func record(lane: DownloadLane, ratingKey: String, progress: Double,
-                        embyConvertJobID: Int? = nil) -> DownloadRecord {
+                        embyConvertJobID: Int? = nil,
+                        resumeMode: DownloadResumeMode? = nil) -> DownloadRecord {
         DownloadRecord(ratingKey: ratingKey, title: "t",
                        localURL: URL(fileURLWithPath: "/tmp/x.mp4"),
                        progress: progress, status: .downloading,
                        metadata: OfflineMetadata(ratingKey: ratingKey, title: "t", type: "movie",
                                                  downloadLane: lane,
+                                                 resumeMode: resumeMode,
                                                  embyConvertJobID: embyConvertJobID))
     }
 
@@ -29,12 +31,18 @@ struct DownloadDisplayClassifierTests {
     }
 
     @Test func plexOptimizeIsGatedOnlyBeforeRenderedPartExists() {
-        // Plex optimize: transcoder-gated until the rendered Part appears (progress <= 0),
-        // then it's a static network-bound download.
+        // Plex optimize: transcoder-gated while still in server prep, then network-bound as soon
+        // as the rendered Part hands off to static Range transfer — even before the first durable
+        // segment makes persisted progress nonzero.
         #expect(DownloadDisplayClassifier.isLiveTranscoderSourced(
-            record(lane: .optimize, ratingKey: "plex:1", progress: 0)))
+            record(lane: .optimize, ratingKey: "plex:1", progress: 0,
+                   resumeMode: .serverPrepThenStatic)))
         #expect(!DownloadDisplayClassifier.isLiveTranscoderSourced(
-            record(lane: .optimize, ratingKey: "plex:1", progress: 0.2)))
+            record(lane: .optimize, ratingKey: "plex:1", progress: 0,
+                   resumeMode: .staticByteRange)))
+        #expect(!DownloadDisplayClassifier.isLiveTranscoderSourced(
+            record(lane: .optimize, ratingKey: "plex:1", progress: 0.2,
+                   resumeMode: .staticByteRange)))
     }
 
     @Test func jellyfinOptimizeIsLiveForWholeTransfer() {
@@ -53,9 +61,14 @@ struct DownloadDisplayClassifierTests {
         // finished File source statically — same display rule as Plex optimize, not a live
         // stream for the whole transfer.
         #expect(DownloadDisplayClassifier.isLiveTranscoderSourced(
-            record(lane: .optimize, ratingKey: "emby:1", progress: 0, embyConvertJobID: 7)))
+            record(lane: .optimize, ratingKey: "emby:1", progress: 0, embyConvertJobID: 7,
+                   resumeMode: .serverPrepThenStatic)))
         #expect(!DownloadDisplayClassifier.isLiveTranscoderSourced(
-            record(lane: .optimize, ratingKey: "emby:1", progress: 0.4, embyConvertJobID: 7)))
+            record(lane: .optimize, ratingKey: "emby:1", progress: 0, embyConvertJobID: 7,
+                   resumeMode: .staticByteRange)))
+        #expect(!DownloadDisplayClassifier.isLiveTranscoderSourced(
+            record(lane: .optimize, ratingKey: "emby:1", progress: 0.4, embyConvertJobID: 7,
+                   resumeMode: .staticByteRange)))
     }
 
     @Test func compatibleRemuxGatedUntilServerReportsSize() {

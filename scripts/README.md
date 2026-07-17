@@ -17,7 +17,11 @@ media details out of commits and public issues.
   sensitive publication regressions without echoing matched secrets.
 - `loc.sh` — informational per-module source line counts.
 - `perf-log-summary.py` — converts privacy-safe performance signposts into summaries/Markdown.
-- `tests/test_perf_log_summary.py` and `tests/test_tooling_hardening.py` — script/tooling tests.
+- `compile-audit.py` — opt-in, isolated arm64 compile-cost baseline for PMSKit and all app schemes;
+  see [`docs/BUILD-PERFORMANCE-AUDIT.md`](../docs/BUILD-PERFORMANCE-AUDIT.md).
+- `tests/test_compile_audit.py`, `tests/test_perf_log_summary.py`, and
+  `tests/test_tooling_hardening.py` — script/tooling tests. They run as part of
+  `scripts/ci-hygiene.sh` when `pyproject.toml` is present.
 
 ## Simulator and worktree helpers
 
@@ -50,6 +54,9 @@ There is no macOS simulator lane. See [`docs/MACOS.md`](../docs/MACOS.md).
 - `provisioning-profile-info.py` — provisioning-profile parsing/filtering shared by deploy scripts.
 - `headset-evidence.sh` — read-only `devicectl` evidence bundle after a headset repro. Output under
   `build/headset-evidence/` can contain private artifacts and must be reviewed before sharing.
+- `diagnostics-summarize.py` — deterministic, privacy-conscious first pass over an evidence bundle.
+  It writes bounded triage/delta artifacts under the bundle's `analysis/` directory so agents do
+  not repeatedly ingest raw rotated JSONL logs. Raw evidence is retained unchanged.
 
 Device deploy scripts mutate the installed app and may replace another build with the same bundle
 identifier. Read their `--help` output and the platform documentation before use.
@@ -80,6 +87,8 @@ gitignored. `live-test-filter.sh` is the shared output/exit-status filter used b
 - `live-playqueue-mutation-probe.sh` — ephemeral queue creation, play-next, and shuffle mutations.
 - `live-download-probe.sh` — direct-original versus optimizer route decision.
 - `live-download-status-probe.sh` — read-only optimizer queue/progress status.
+- `live-phase6-download-candidate-probe.sh` — finds a large original/static Plex item suitable for
+  the static-range transport-fault harness.
 - `live-optimize-probe.sh` — optimizer discovery, creation grammar, and rendered static part.
 - `live-offline-playback-decision-probe.sh` — local completed-row playback routing fixture.
 
@@ -93,7 +102,22 @@ gitignored. `live-test-filter.sh` is the shared output/exit-status filter used b
 
 ### Emby
 
-- `live-emby-probe.sh` — Emby auth/browse/playback request builders and live response decoding.
+- `live-emby-probe.sh` — Emby auth/browse/playback request builders, shared progress-plan 2xx
+  proof, and live response decoding. Copy `emby-live.env.example`. Timeline acceptance always
+  mutates a TEST ACCOUNT resume point and requires both the explicit write opt-in and a distinct
+  offset; the probe verifies the write and verifies restoration before reporting PASS.
+
+### Jellyfin
+
+- `live-jellyfin-browse-timeline-probe.sh` — authoritative shared browse wrappers plus all four
+  shared progress events. Copy `jellyfin-live.env.example`. Timeline acceptance always mutates a
+  TEST ACCOUNT resume point and requires both the explicit write opt-in and a distinct offset; the
+  probe verifies the write and verifies restoration before reporting PASS.
+
+The browse/timeline wrappers print an explicit `VERDICT: SKIP` and exit successfully when their
+ignored credential file or required values are absent. A hermetic test pass containing that
+verdict is readiness evidence only, never live acceptance; acceptance requires a recorded
+`VERDICT: PASS` from a credentialed run.
 
 Before adding a live probe, document every required environment key, fail or skip safely when
 configuration is absent, clean up any server-side mutation, and ensure output redacts tokens,

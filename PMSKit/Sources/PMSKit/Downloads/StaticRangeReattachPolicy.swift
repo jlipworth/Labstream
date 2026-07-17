@@ -9,7 +9,7 @@ public enum StaticRangeReattachDisposition: Sendable, Equatable {
     /// The task carries a download-attempt token that does not match the row's current attempt:
     /// it belongs to a prior attempt/life of the same ratingKey (cancelled, failed, or replaced
     /// at a different quality) and must be cancelled + superseded, never adopted.
-    case rejectAttemptMismatch(taskAttemptID: String, rowAttemptID: String?)
+    case rejectAttemptMismatch(taskAttemptID: DownloadAttemptID, rowAttemptID: DownloadAttemptID?)
     case adopt
     case replaceExisting(existingTaskIdentifier: Int, existingBaseOffset: Int)
     case suppressForExisting(existingTaskIdentifier: Int, existingBaseOffset: Int)
@@ -45,13 +45,53 @@ public enum StaticRangeReattachPolicy {
                             existingTasks: [StaticRangeTaskSnapshot],
                             taskMarker: String? = nil,
                             rowAttemptID: String? = nil) -> StaticRangeReattachPlan {
+        planTyped(
+            taskIdentifier: taskIdentifier,
+            downloadID: downloadID,
+            durableBytes: durableBytes,
+            requestedOffset: requestedOffset,
+            rangeRequestShape: rangeRequestShape,
+            bodyBytesWritten: bodyBytesWritten,
+            existingTasks: existingTasks,
+            taskMarker: taskMarker,
+            rowAttemptID: rowAttemptID.flatMap(DownloadAttemptID.init(rawValue:)),
+            requiresCurrentMarker: false
+        )
+    }
+
+    /// Typed schema-v3 entry point. Kept separately named until the app migration removes the
+    /// source-compatible String overload, avoiding overload ambiguity for legacy `nil` callers.
+    public static func planTyped(taskIdentifier: Int,
+                                 downloadID: String,
+                                 durableBytes: Int,
+                                 requestedOffset: Int?,
+                                 rangeRequestShape: StaticRangeRequestShape,
+                                 bodyBytesWritten: Int,
+                                 existingTasks: [StaticRangeTaskSnapshot],
+                                 taskMarker: String? = nil,
+                                 rowAttemptID: DownloadAttemptID?,
+                                 requiresCurrentMarker: Bool = true) -> StaticRangeReattachPlan {
         let markedOffset = StaticRangeSegmentMarker.parse(taskMarker)
-        let taskAttemptID = BackgroundDownloadTaskIdentity.attemptID(taskDescription: taskMarker)
+        let taskAttemptID = BackgroundDownloadTaskIdentity.attemptIdentity(taskDescription: taskMarker)
         if let taskAttemptID, taskAttemptID != rowAttemptID {
             return StaticRangeReattachPlan(
                 candidateBaseOffset: requestedOffset ?? durableBytes,
                 disposition: .rejectAttemptMismatch(taskAttemptID: taskAttemptID,
                                                     rowAttemptID: rowAttemptID)
+            )
+        }
+        // A schema-v3 row never adopts a pre-migration task merely because its legacy nested token
+        // happens to equal the promoted top-level ID. Old formats are parseable only so reattach can
+        // identify and cancel them deterministically during the one-time upgrade.
+        guard !requiresCurrentMarker
+                || BackgroundDownloadTaskIdentity.markerVersion(taskDescription: taskMarker).isCurrent else {
+            return StaticRangeReattachPlan(
+                candidateBaseOffset: requestedOffset ?? durableBytes,
+                disposition: .dropLegacyRange(
+                    requestedOffset: requestedOffset,
+                    durableBytes: durableBytes,
+                    rangeRequestShape: rangeRequestShape
+                )
             )
         }
         let isAdoptableMarkedSegment = rangeRequestShape == .closed

@@ -38,15 +38,10 @@ enum DetailMetadataLoader {
             return .failure("metadata_unavailable")
 
         case .plex:
-            guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
+            guard let service = try? PlexBrowseService(appModel: appModel) else {
                 return .failure("missing_plex_server")
             }
-            let request = BrowseAPI.metadata(server: server,
-                                             token: token,
-                                             identity: appModel.identity,
-                                             ratingKey: ratingKey)
-            if let response = try? await appModel.client.send(request, as: MetadataResponse.self),
-               let full = response.mediaContainer.metadata.first {
+            if let full = try? await service.metadata(ratingKey: ratingKey) {
                 return .success(full)
             }
             return .failure("metadata_unavailable")

@@ -168,17 +168,16 @@ struct HomeView: View {
             return
         }
 
-        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
+        guard let service = try? PlexBrowseService(appModel: appModel) else {
             span.end(result: "failure", fields: ["error": "missing_plex_server"])
             loadState = .failed("No reachable Plex server selected.")
             return
         }
         loadState = .loading
-        let req = BrowseAPI.hubs(server: server, token: token, identity: appModel.identity)
         do {
-            let resp = try await appModel.client.send(req, as: HubsResponse.self)
+            let loadedHubs = try await service.hubs()
             guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
-            hubs = resp.mediaContainer.hub
+            hubs = loadedHubs
             loadedIdentity = activeIdentity
             loadState = .loaded
             span.end(fields: [
@@ -188,7 +187,7 @@ struct HomeView: View {
             // System integration (#24): make the just-browsed items findable in
             // Spotlight, and refresh the "Play <title> on Labstream" Siri phrase
             // vocabulary (drawn from the entity query's suggestions).
-            SpotlightIndexer.index(hubs.flatMap(\.metadata), server: server)
+            SpotlightIndexer.index(hubs.flatMap(\.metadata), server: service.session.baseURL)
             LabstreamShortcuts.updateAppShortcutParameters()
         } catch {
             guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }

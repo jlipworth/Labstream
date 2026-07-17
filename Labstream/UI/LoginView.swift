@@ -40,6 +40,7 @@ struct LoginView: View {
     @State private var embyPassword = ""
     @State private var embySignInMethod: EmbySignInMethod?
     @State private var selectingEmbyConnectServerID: String?
+    @State private var authTasks = LoginAuthTaskCoordinator()
 
     /// Compact width (iPhone, narrow iPad split view) drops the floating glass card:
     /// phone sign-in should read as one full-screen surface, not a window-in-a-window.
@@ -166,6 +167,7 @@ struct LoginView: View {
             }
         }
         .onDisappear {
+            authTasks.cancel()
             webAuth.cancel()
             authManager.cancelPendingLogin()
         }
@@ -217,6 +219,7 @@ struct LoginView: View {
             }
         }
         .onDisappear {
+            authTasks.cancel()
             webAuth.cancel()
             authManager.cancelPendingLogin()
         }
@@ -254,11 +257,11 @@ struct LoginView: View {
             }
         case .failed where appModel.token != nil:
             PlexRestoreFailureView(isWorking: working,
-                                   onRetry: { Task { await retryPlexRestore() } },
-                                   onSignInAgain: { Task { await startLogin() } })
+            onRetry: { launchAuthTask { await retryPlexRestore() } },
+                                   onSignInAgain: { launchAuthTask { await startLogin() } })
         default:
             PlexSignInStartView(isWorking: working) {
-                Task { await startLogin() }
+                launchAuthTask { await startLogin() }
             }
         }
     }
@@ -275,8 +278,8 @@ struct LoginView: View {
             onUseCredentialsFallback: useJellyfinCredentialsFallback,
             onChooseQuickConnect: chooseJellyfinQuickConnect,
             onChooseCredentials: chooseJellyfinCredentials,
-            onStartQuickConnect: { Task { await startJellyfinQuickConnect() } },
-            onSignInWithCredentials: { Task { await startJellyfinLogin() } },
+            onStartQuickConnect: { launchAuthTask { await startJellyfinQuickConnect() } },
+            onSignInWithCredentials: { launchAuthTask { await startJellyfinLogin() } },
             onChooseDifferentFromQuickConnect: cancelJellyfinAuthorizationAndResetMethod,
             onChooseDifferentFromCredentials: resetJellyfinCredentialsMethod)
     }
@@ -296,15 +299,16 @@ struct LoginView: View {
             onUseServerURLFallback: useEmbyServerURLFallback,
             onChooseConnectPin: chooseEmbyConnectPin,
             onChooseServerCredentials: chooseEmbyServerCredentials,
-            onStartConnectPin: { Task { await startEmbyConnect() } },
+            onStartConnectPin: { launchAuthTask { await startEmbyConnect() } },
             onSelectServer: selectEmbyConnectServer,
             onCancelServerSelection: cancelEmbyServerSelection,
-            onSignInWithCredentials: { Task { await startEmbyLogin() } },
+            onSignInWithCredentials: { launchAuthTask { await startEmbyLogin() } },
             onChooseDifferentFromConnect: cancelEmbyAuthorizationAndResetMethod,
             onChooseDifferentFromCredentials: resetEmbyCredentialsMethod)
     }
 
     private func useJellyfinCredentialsFallback() {
+        authTasks.cancel()
         authManager.cancelCurrentAuthorization()
         jellyfinSignInMethod = .credentials
         working = false
@@ -312,7 +316,7 @@ struct LoginView: View {
 
     private func chooseJellyfinQuickConnect() {
         jellyfinSignInMethod = .quickConnect
-        Task { await startJellyfinQuickConnect() }
+        launchAuthTask { await startJellyfinQuickConnect() }
     }
 
     private func chooseJellyfinCredentials() {
@@ -321,6 +325,7 @@ struct LoginView: View {
     }
 
     private func cancelJellyfinAuthorizationAndResetMethod() {
+        authTasks.cancel()
         errorMessage = nil
         working = false
         authManager.cancelCurrentAuthorization()
@@ -328,12 +333,14 @@ struct LoginView: View {
     }
 
     private func resetJellyfinCredentialsMethod() {
+        authTasks.cancel()
         errorMessage = nil
         working = false
         jellyfinSignInMethod = nil
     }
 
     private func useEmbyServerURLFallback() {
+        authTasks.cancel()
         authManager.cancelCurrentAuthorization()
         embySignInMethod = .credentials
         working = false
@@ -341,7 +348,7 @@ struct LoginView: View {
 
     private func chooseEmbyConnectPin() {
         embySignInMethod = .connectPin
-        Task { await startEmbyConnect() }
+        launchAuthTask { await startEmbyConnect() }
     }
 
     private func chooseEmbyServerCredentials() {
@@ -350,6 +357,7 @@ struct LoginView: View {
     }
 
     private func cancelEmbyAuthorizationAndResetMethod() {
+        authTasks.cancel()
         errorMessage = nil
         working = false
         authManager.cancelCurrentAuthorization()
@@ -357,26 +365,27 @@ struct LoginView: View {
     }
 
     private func resetEmbyCredentialsMethod() {
+        authTasks.cancel()
         errorMessage = nil
         working = false
         embySignInMethod = nil
     }
 
     private func selectEmbyConnectServer(_ server: AuthManager.EmbyConnectServerChoice) {
-        Task {
+        launchAuthTask {
             guard selectingEmbyConnectServerID == nil else { return }
             selectingEmbyConnectServerID = server.id
             working = true
-            await authManager.selectEmbyConnectServer(id: server.id)
-            if case .authenticated = authManager.state {
-                return
+            defer {
+                selectingEmbyConnectServerID = nil
+                working = false
             }
-            selectingEmbyConnectServerID = nil
-            working = false
+            await authManager.selectEmbyConnectServer(id: server.id)
         }
     }
 
     private func cancelEmbyServerSelection() {
+        authTasks.cancel()
         authManager.cancelCurrentAuthorization()
         embySignInMethod = nil
         working = false
@@ -384,6 +393,7 @@ struct LoginView: View {
     }
 
     private func selectBackend(_ backend: MediaBackendKind) {
+        authTasks.cancel()
         errorMessage = nil
         working = false
         webAuth.cancel()
@@ -400,8 +410,10 @@ struct LoginView: View {
             // polling is already running (#16). The web sheet only opens if the
             // user explicitly asks for the on-device path.
             _ = try await authManager.createPin()
+            guard !Task.isCancelled else { return }
             working = false
         } catch {
+            guard !Task.isCancelled else { return }
             errorMessage = friendlyMessage(error)
             working = false
         }
@@ -411,6 +423,7 @@ struct LoginView: View {
         working = true
         errorMessage = nil
         _ = await authManager.restoreSession()
+        guard !Task.isCancelled else { return }
         working = false
     }
 
@@ -432,6 +445,7 @@ struct LoginView: View {
         await authManager.loginToJellyfin(server: server,
                                           username: username,
                                           password: jellyfinPassword)
+        guard !Task.isCancelled else { return }
         working = false
     }
 
@@ -446,6 +460,7 @@ struct LoginView: View {
         }
         working = true
         await authManager.startJellyfinQuickConnect(server: server)
+        guard !Task.isCancelled else { return }
         working = false
     }
 
@@ -453,6 +468,7 @@ struct LoginView: View {
         errorMessage = nil
         working = true
         await authManager.startEmbyConnect()
+        guard !Task.isCancelled else { return }
         working = false
     }
 
@@ -475,7 +491,36 @@ struct LoginView: View {
         await authManager.loginToEmby(server: server,
                                       username: username,
                                       password: embyPassword)
+        guard !Task.isCancelled else { return }
         working = false
+    }
+
+    private func launchAuthTask(_ operation: @escaping @MainActor () async -> Void) {
+        authTasks.launch(operation)
+    }
+}
+
+@MainActor
+final class LoginAuthTaskCoordinator {
+    private var task: Task<Void, Never>?
+    private var generation: UUID?
+
+    func launch(_ operation: @escaping @MainActor () async -> Void) {
+        cancel()
+        let id = UUID()
+        generation = id
+        task = Task { [weak self] in
+            await operation()
+            guard !Task.isCancelled, self?.generation == id else { return }
+            self?.task = nil
+            self?.generation = nil
+        }
+    }
+
+    func cancel() {
+        task?.cancel()
+        task = nil
+        generation = nil
     }
 }
 

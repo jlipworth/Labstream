@@ -40,8 +40,9 @@ context like:
 - backend name (Plex / Jellyfin / Emby) and connection scheme
 - server product/version where known
 - your selected quality settings
+- bucketed download queue and storage state
 - a recent playback snapshot, passive redacted MetricKit diagnostic summaries
-  when available, and recent **redacted** event summaries
+  when available, and up to 80 recent **redacted** events from the current app run
 
 It is designed to **omit** sensitive values, including:
 
@@ -49,7 +50,8 @@ It is designed to **omit** sensitive values, including:
 - your server's hostname, IP address, or full URLs
 - usernames, library paths, filenames, and media titles
 
-Diagnostics are **off by default**, kept in bounded local storage, and **never
+Diagnostics are **off by default**, kept in a bounded in-memory ring and small rotating
+already-redacted local files, and **never
 uploaded automatically by the app** — the report leaves your device only when *you* copy,
 export, or share it. For the full contract, see
 [Diagnostics and privacy](DIAGNOSTICS-PRIVACY.md) and the [Privacy Policy](privacy.md).

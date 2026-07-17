@@ -155,8 +155,12 @@ final class SystemEntryRouter {
         while clock.now < deadline {
             if let appModel, appModel.isBrowseReady { return true }
             if clock.now >= graceUntil, !didKickRestore, let authManager {
-                didKickRestore = true
-                _ = await authManager.restoreSession()
+                // A user-facing authorization attempt owns the auth generation. If admission is
+                // declined, leave the one-shot available so a later loop/call can restore after
+                // that attempt ends instead of permanently consuming the fallback.
+                if await authManager.restoreSessionIfNoAuthorizationInProgress() != nil {
+                    didKickRestore = true
+                }
             }
             try? await Task.sleep(for: .milliseconds(250))
         }

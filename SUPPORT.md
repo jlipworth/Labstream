@@ -14,9 +14,9 @@ released or supported App Store product. Contributors testing that preview shoul
   Plex mode requires a Plex account for PIN/OAuth sign-in; Emby mode can use Emby Connect PIN sign-in or a manual Emby server URL.
 - Labstream does not provide, host, sell, or bundle media. Playback and offline
   downloads are for media you are authorized to access on the server you choose.
-- Local-network playback is free. Plex remote (off-LAN) streaming may require Plex
-  Pass or Remote Watch Pass on your account — this is a Plex server-side
-  requirement, not a Labstream feature.
+- Local-network playback is free. Plex remote (off-LAN) **video** streaming can require
+  Plex Pass or Remote Watch Pass on your account, or Plex Pass on the server owner's
+  account. This is a Plex service policy, not a Labstream feature.
 
 ## Getting started
 
@@ -34,8 +34,8 @@ released or supported App Store product. Contributors testing that preview shoul
   that surfaces a "Playback failed" overlay and rebuilds the player. If it
   persists, confirm the server is reachable and try a lower streaming quality in
   Settings.
-- **Can I watch away from home?** Remote streaming of personal media may require
-  Plex Pass / Remote Watch Pass on your Plex account in Plex mode (a Plex policy).
+- **Can I watch away from home?** Remote Plex video can require Plex Pass / Remote Watch
+  Pass on your account, or Plex Pass on the server owner's account (a Plex policy).
   Jellyfin and Emby remote access depend on your server/network setup.
 
 ## Reporting a problem
@@ -60,8 +60,9 @@ diagnostic report if you're comfortable sharing the redacted preview:
 5. Review the redacted report before sharing it.
 6. Turn diagnostic logging off again if you no longer need it.
 
-Diagnostic event logging is opt-in, stored in bounded local storage, and exported
-only when you tap a copy/export/feedback button. Passive redacted MetricKit
+Diagnostic event logging is opt-in, stored in a bounded in-memory ring plus small rotating
+already-redacted local files, and exported only when you tap a copy/export/feedback button.
+Passive redacted MetricKit
 crash/hang summaries may also be stored locally in a small bounded list for
 inclusion in a user-initiated report. The report intentionally omits sensitive
 values such as tokens, client identifiers, hostnames/IP addresses, full URLs,

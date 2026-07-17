@@ -56,17 +56,25 @@ final class KeychainStore {
     private let fallbackPolicy: SecretFileFallbackPolicy
     private let fileManager: FileManager
     private let usesDevelopmentFileStorage: Bool
+    /// Narrow deterministic seam for secure-write failure tests. Returning nil uses
+    /// the real storage implementation; returning a Bool supplies its outcome.
+    private let writeInterceptor: ((String, String) -> Bool?)?
+    private let deleteInterceptor: ((String) -> Bool?)?
 
     init(service: String = "com.visionplay.app",
          synchronizesPlexToken: Bool = true,
          fallbackPolicy: SecretFileFallbackPolicy = .current,
          fileManager: FileManager = .default,
-         usesDevelopmentFileStorage: Bool = false) {
+         usesDevelopmentFileStorage: Bool = false,
+         writeInterceptor: ((String, String) -> Bool?)? = nil,
+         deleteInterceptor: ((String) -> Bool?)? = nil) {
         self.service = service
         self.synchronizesPlexToken = synchronizesPlexToken
         self.fallbackPolicy = fallbackPolicy
         self.fileManager = fileManager
         self.usesDevelopmentFileStorage = usesDevelopmentFileStorage
+        self.writeInterceptor = writeInterceptor
+        self.deleteInterceptor = deleteInterceptor
     }
 
     /// Whether `account` is stored as an iCloud-synchronizable item.
@@ -92,6 +100,7 @@ final class KeychainStore {
     /// Insert or update the value for `account`.
     @discardableResult
     func save(_ value: String, for account: String) -> Bool {
+        if let outcome = writeInterceptor?(account, value) { return outcome }
         guard let data = value.data(using: .utf8) else { return false }
 
         if usesDevelopmentFileStorage {
@@ -191,6 +200,7 @@ final class KeychainStore {
     /// via iCloud Keychain) and any legacy device-local copy.
     @discardableResult
     func delete(_ account: String) -> Bool {
+        if let outcome = deleteInterceptor?(account) { return outcome }
         if usesDevelopmentFileStorage {
             cleanupFallback(for: account)
             return true
@@ -335,12 +345,26 @@ final class KeychainStore {
 
     var selectedBackend: MediaBackendKind {
         get { read(Self.selectedBackendKey).flatMap(MediaBackendKind.init(rawValue:)) ?? .plex }
-        set { save(newValue.rawValue, for: Self.selectedBackendKey) }
+        set { _ = saveSelectedBackend(newValue) }
+    }
+
+    /// Persist the user-facing backend choice. Authentication code must use this
+    /// result-bearing API rather than the convenience property setter so a failed
+    /// Keychain write cannot be followed by publishing a backend that will silently
+    /// change again on next launch.
+    @discardableResult
+    func saveSelectedBackend(_ backend: MediaBackendKind) -> Bool {
+        save(backend.rawValue, for: Self.selectedBackendKey)
     }
 
     var selectedPlexServerID: String? {
         get { read(Self.selectedPlexServerIDKey) }
-        set { setOptional(newValue, for: Self.selectedPlexServerIDKey) }
+        set { _ = saveSelectedPlexServerID(newValue) }
+    }
+
+    @discardableResult
+    func saveSelectedPlexServerID(_ serverID: String?) -> Bool {
+        setOptional(serverID, for: Self.selectedPlexServerIDKey)
     }
 
     var jellyfinServerURLString: String? {
@@ -383,9 +407,10 @@ final class KeychainStore {
         set { setOptional(newValue, for: Self.embyServerIDKey) }
     }
 
-    private func setOptional(_ value: String?, for key: String) {
-        if let value, !value.isEmpty { save(value, for: key) }
-        else { delete(key) }
+    @discardableResult
+    private func setOptional(_ value: String?, for key: String) -> Bool {
+        if let value, !value.isEmpty { return save(value, for: key) }
+        return delete(key)
     }
 
     @discardableResult
@@ -416,23 +441,46 @@ final class KeychainStore {
             optional: [(Self.embyServerIDKey, serverID)])
     }
 
+    @discardableResult
+    func savePlexSession(token: String, selectedServerID: String?) -> Bool {
+        saveCredentialSet(required: [(Self.tokenKey, token)],
+                          optional: [(Self.selectedPlexServerIDKey, selectedServerID)])
+    }
+
     private func saveCredentialSet(required: [(String, String)],
                                    optional: [(String, String?)]) -> Bool {
         let allKeys = required.map(\.0) + optional.map(\.0)
+        let previous = Dictionary(uniqueKeysWithValues: allKeys.map { ($0, read($0)) })
+        func rollback() {
+            var succeeded = true
+            for key in allKeys {
+                if let value = previous[key] ?? nil {
+                    succeeded = save(value, for: key) && succeeded
+                } else {
+                    succeeded = delete(key) && succeeded
+                }
+            }
+            if !succeeded {
+                NSLog("%@", "KeychainStore: credential-set rollback was incomplete")
+            }
+        }
         for (key, value) in required {
             guard save(value, for: key) else {
-                allKeys.forEach { delete($0) }
+                rollback()
                 return false
             }
         }
         for (key, value) in optional {
             if let value, !value.isEmpty {
                 guard save(value, for: key) else {
-                    allKeys.forEach { delete($0) }
+                    rollback()
                     return false
                 }
             } else {
-                delete(key)
+                guard delete(key) else {
+                    rollback()
+                    return false
+                }
             }
         }
         return true
@@ -440,10 +488,9 @@ final class KeychainStore {
 
     /// Returns the persisted client identifier, generating + storing one on first
     /// access so the value is stable for the lifetime of the install.
-    func clientIdentifier() -> String {
+    func clientIdentifier() -> String? {
         if let existing = read(Self.clientIdentifierKey) { return existing }
         let generated = UUID().uuidString
-        save(generated, for: Self.clientIdentifierKey)
-        return generated
+        return save(generated, for: Self.clientIdentifierKey) ? generated : nil
     }
 }

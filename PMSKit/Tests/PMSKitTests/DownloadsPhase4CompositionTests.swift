@@ -95,7 +95,8 @@ struct DownloadsPhase4CompositionTests {
                 ratingKey: ratingKey, offset: segmentOffset, attemptID: "attempt-old"),
             rowAttemptID: attemptID)
         #expect(priorAttempt.disposition == .rejectAttemptMismatch(
-            taskAttemptID: "attempt-old", rowAttemptID: attemptID))
+            taskAttemptID: DownloadAttemptID(rawValue: "attempt-old")!,
+            rowAttemptID: DownloadAttemptID(rawValue: attemptID)!))
         #expect(StaticRangeResumeDataPolicy.adoptionDecision(
             blobRangeOffset: segmentOffset + 1,
             durableBytes: 0,

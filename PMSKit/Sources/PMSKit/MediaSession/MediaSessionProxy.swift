@@ -11,6 +11,7 @@ public actor MediaSessionProxy {
     private let origin = LoopbackOrigin()
     private let upstreamFetch: @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
     private let rebuildUpstream: @Sendable () -> Void
+    private let now: @Sendable () -> TimeInterval
     private let strippedPlaylistQueryItemNames: Set<String>
     private let injectedPlaylistStartTimeOffsetSeconds: Double?
     /// GH #196 spike (b): DV attributes injected into master playlists (experimental gate).
@@ -42,11 +43,11 @@ public actor MediaSessionProxy {
                              delegate: trustDelegate)
         self.upstreamFetch = { req in try await box.fetch(req) }
         self.rebuildUpstream = { box.rebuild() }
+        self.now = now
         self.strippedPlaylistQueryItemNames = strippedPlaylistQueryItemNames.map { $0.lowercased() }.reduce(into: Set<String>()) { $0.insert($1) }
         self.injectedPlaylistStartTimeOffsetSeconds = injectedPlaylistStartTimeOffsetSeconds
         self.dolbyVisionInjection = dolbyVisionInjection
         self.extraUpstreamHeaders = extraUpstreamHeaders
-        _ = now
     }
 
     /// Test initializer: inject the upstream fetcher directly (no live session). `rebuild` is
@@ -59,11 +60,11 @@ public actor MediaSessionProxy {
          now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         self.upstreamFetch = upstreamFetch
         self.rebuildUpstream = {}
+        self.now = now
         self.strippedPlaylistQueryItemNames = strippedPlaylistQueryItemNames.map { $0.lowercased() }.reduce(into: Set<String>()) { $0.insert($1) }
         self.injectedPlaylistStartTimeOffsetSeconds = injectedPlaylistStartTimeOffsetSeconds
         self.dolbyVisionInjection = dolbyVisionInjection
         self.extraUpstreamHeaders = extraUpstreamHeaders
-        _ = now
     }
 
     /// Bind the app-owned loopback origin in front of `streamURL`'s PMS host and return a
@@ -88,7 +89,7 @@ public actor MediaSessionProxy {
         let mapper = UpstreamURLMapper(upstreamBase: upstreamBase)
         let conn = UpstreamConnection(
             budget: SeekRestartBudget(cooldownSeconds: 5, burstLimit: 3, burstWindowSeconds: 60),
-            now: { ProcessInfo.processInfo.systemUptime },
+            now: now,
             rebuild: rebuildUpstream,
             fetch: upstreamFetch)
         self.connection = conn

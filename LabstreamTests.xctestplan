@@ -1,0 +1,28 @@
+{
+  "configurations" : [
+    {
+      "id" : "6A99A493-A1F5-49C1-A7C9-D0211D6A74DF",
+      "name" : "Default",
+      "options" : {
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "environmentVariableEntries" : [
+      {
+        "key" : "LABSTREAM_UNIT_TEST_HOST",
+        "value" : "1"
+      }
+    ]
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:Labstream.xcodeproj",
+        "identifier" : "AA0000000000000000000040",
+        "name" : "LabstreamTests"
+      }
+    }
+  ],
+  "version" : 1
+}

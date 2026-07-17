@@ -21,7 +21,10 @@ final class BackgroundDownloadCompletionRegistry {
 
     private init() {}
 
-    /// Record a live session so the delegate's identifier resolves to it.
+    /// Record a live session so the delegate's identifier resolves to it. Registration is
+    /// deliberately activation-neutral: during schema migration the session is dormant, and
+    /// constructing/reattaching its URLSession here would admit callbacks before legacy tasks are
+    /// cancelled. The manager alone owns startup activation and the initial reattach.
     func register(_ session: BackgroundDownloadSession) {
         sessions[BackgroundDownloadSession.identifier] = session
         AppDiagnostics.record(.downloads, "downloads.background_session_registered", fields: [
@@ -30,8 +33,6 @@ final class BackgroundDownloadCompletionRegistry {
         ])
         if handlers[BackgroundDownloadSession.identifier] != nil {
             session.noteBackgroundCompletionHandlerStored(identifier: BackgroundDownloadSession.identifier)
-            session.ensureSessionReady()
-            session.reattach()
         }
     }
 
@@ -44,8 +45,13 @@ final class BackgroundDownloadCompletionRegistry {
             "has_session": .bool(sessions[identifier] != nil),
         ])
         sessions[identifier]?.noteBackgroundCompletionHandlerStored(identifier: identifier)
+        // Active sessions need their lazy URLSession bound so the OS can finish delivering events.
+        // This is a safe no-op while startup admission is dormant; never reattach autonomously.
         sessions[identifier]?.ensureSessionReady()
-        sessions[identifier]?.reattach()
+    }
+
+    func hasPendingHandler(identifier: String) -> Bool {
+        handlers[identifier] != nil
     }
 
     /// Invoke and clear the stored completion handler for `identifier`.
@@ -57,4 +63,3 @@ final class BackgroundDownloadCompletionRegistry {
         handler()
     }
 }
-

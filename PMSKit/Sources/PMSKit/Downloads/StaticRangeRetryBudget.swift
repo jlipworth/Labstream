@@ -10,6 +10,18 @@ public struct StaticRangeRetryAttempt: Sendable, Equatable {
     }
 }
 
+/// Ownership key for one static-range retry lifecycle. Kept independent of app-layer download
+/// types so PMSKit callers can supply whichever durable attempt token they persist.
+public struct StaticRangeRetryKey: Hashable, Sendable {
+    public let downloadID: String
+    public let attemptID: String
+
+    public init(downloadID: String, attemptID: String) {
+        self.downloadID = downloadID
+        self.attemptID = attemptID
+    }
+}
+
 /// IO-free retry counters for the static byte-range transfer engine.
 ///
 /// These counters deliberately live outside generic URLSession retry state: progress callbacks can
@@ -19,48 +31,48 @@ public struct StaticRangeRetryBudget: Sendable, Equatable {
     public let maxValidatorChangeRestarts: Int
     public let maxOffsetMismatchRetries: Int
 
-    private var validatorChangeRestarts: [String: Int] = [:]
+    private var validatorChangeRestarts: [StaticRangeRetryKey: Int] = [:]
     /// Offset mismatches are segment-local. Parallel look-ahead segments can be internally resumed
     /// independently by CFNetwork; allowing sibling offsets to consume one row-wide budget made a
     /// valid durable checkpoint terminally fail even though no single segment exhausted its retry
     /// allowance.
-    private var offsetMismatchRetries: [String: [Int: Int]] = [:]
+    private var offsetMismatchRetries: [StaticRangeRetryKey: [Int: Int]] = [:]
 
     public init(maxValidatorChangeRestarts: Int = 3, maxOffsetMismatchRetries: Int = 3) {
         self.maxValidatorChangeRestarts = max(0, maxValidatorChangeRestarts)
         self.maxOffsetMismatchRetries = max(0, maxOffsetMismatchRetries)
     }
 
-    public mutating func reset(downloadID: String) {
-        validatorChangeRestarts[downloadID] = nil
-        offsetMismatchRetries[downloadID] = nil
+    public mutating func reset(key: StaticRangeRetryKey) {
+        validatorChangeRestarts[key] = nil
+        offsetMismatchRetries[key] = nil
     }
 
-    public mutating func resetOffsetMismatch(downloadID: String) {
-        offsetMismatchRetries[downloadID] = nil
+    public mutating func resetOffsetMismatch(key: StaticRangeRetryKey) {
+        offsetMismatchRetries[key] = nil
     }
 
-    public mutating func resetOffsetMismatch(downloadID: String, segmentOffset: Int) {
-        offsetMismatchRetries[downloadID]?[segmentOffset] = nil
-        if offsetMismatchRetries[downloadID]?.isEmpty == true {
-            offsetMismatchRetries[downloadID] = nil
+    public mutating func resetOffsetMismatch(key: StaticRangeRetryKey, segmentOffset: Int) {
+        offsetMismatchRetries[key]?[segmentOffset] = nil
+        if offsetMismatchRetries[key]?.isEmpty == true {
+            offsetMismatchRetries[key] = nil
         }
     }
 
-    public mutating func recordValidatorChange(downloadID: String) -> StaticRangeRetryAttempt {
-        let attempt = (validatorChangeRestarts[downloadID] ?? 0) + 1
-        validatorChangeRestarts[downloadID] = attempt
+    public mutating func recordValidatorChange(key: StaticRangeRetryKey) -> StaticRangeRetryAttempt {
+        let attempt = (validatorChangeRestarts[key] ?? 0) + 1
+        validatorChangeRestarts[key] = attempt
         return StaticRangeRetryAttempt(
             attempt: attempt,
             isExhausted: attempt > maxValidatorChangeRestarts
         )
     }
 
-    public mutating func recordOffsetMismatch(downloadID: String,
+    public mutating func recordOffsetMismatch(key: StaticRangeRetryKey,
                                               segmentOffset: Int) -> StaticRangeRetryAttempt {
-        let attempt = (offsetMismatchRetries[downloadID]?[segmentOffset] ?? 0) + 1
+        let attempt = (offsetMismatchRetries[key]?[segmentOffset] ?? 0) + 1
         if attempt <= maxOffsetMismatchRetries {
-            offsetMismatchRetries[downloadID, default: [:]][segmentOffset] = attempt
+            offsetMismatchRetries[key, default: [:]][segmentOffset] = attempt
         }
         return StaticRangeRetryAttempt(
             attempt: attempt,

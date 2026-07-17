@@ -13,9 +13,14 @@ struct AppServices {
     let downloadManager: DownloadManager
     let musicPlayer: MusicPlayerController
 
-    static func make(keychain providedKeychain: KeychainStore? = nil) -> AppServices {
+    static func make(keychain providedKeychain: KeychainStore? = nil) -> AppServices? {
         let keychain = providedKeychain ?? AppKeychainService.makeStore()
-        let identity = PlatformClientIdentity.make(clientIdentifier: keychain.clientIdentifier())
+        // The client identifier is routing metadata, not a credential. If secure storage is
+        // temporarily unavailable, use a process-local identity so the app can still finish
+        // launching (most importantly, so background URLSession events can be drained). A later
+        // launch retries the durable identifier; credentials themselves remain fail-closed.
+        let clientIdentifier = keychain.clientIdentifier() ?? UUID().uuidString
+        let identity = PlatformClientIdentity.make(clientIdentifier: clientIdentifier)
         let model = AppModel(identity: identity, activeBackend: keychain.selectedBackend)
         return AppServices(
             appModel: model,
@@ -23,6 +28,14 @@ struct AppServices {
             downloadManager: DownloadManager(appModel: model),
             musicPlayer: MusicPlayerController(appModel: model)
         )
+    }
+}
+
+struct SecureStorageUnavailableView: View {
+    var body: some View {
+        ContentUnavailableView("Secure Storage Unavailable",
+                               systemImage: "lock.trianglebadge.exclamationmark",
+                               description: Text("Labstream couldn’t access secure storage. Quit and reopen the app, then try again."))
     }
 }
 
@@ -44,6 +57,16 @@ private enum AppKeychainService {
         }
         #endif
         return KeychainStore()
+    }
+}
+
+enum AppLaunchMode {
+    static var isUnitTestHost: Bool {
+        #if DEBUG
+        ProcessInfo.processInfo.environment["LABSTREAM_UNIT_TEST_HOST"] == "1"
+        #else
+        false
+        #endif
     }
 }
 

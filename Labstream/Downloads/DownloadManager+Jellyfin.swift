@@ -36,9 +36,19 @@ extension DownloadManager {
         }
         let server = backendSession.baseURL
         let token = backendSession.token
+        // Capture continuity before the attempt seed replaces the visible row. Retry payloads may
+        // omit media/part arrays; the prior original-lane extension is then the only trustworthy
+        // container and request shape.
+        let existingOriginalPath = store.record(for: ratingKey).flatMap { record in
+            record.metadata?.resolvedDownloadLane() == .original
+                ? record.localURL.lastPathComponent
+                : nil
+        }
         guard let startAttempt = acquireStartAttempt(ratingKey: ratingKey,
                                                      backend: "Jellyfin",
                                                      allowReplacingExistingActiveRow: allowReplacingExistingActiveRow) else { return }
+        let attemptKey = DownloadAttemptKey(ratingKey: ratingKey,
+                                            attemptID: startAttempt.attemptID)
         lastError[ratingKey] = nil
         // No `defer { activeJobs.remove }` — same in-flight-lifetime fix as the Plex path:
         // `session.start` only kicks off the transfer, so protection is released terminally
@@ -49,7 +59,7 @@ extension DownloadManager {
                                                                   mediaIndex: mediaIndex,
                                                                   partIndex: partIndex,
                                                                   backend: .jellyfin)) {
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             return
         }
 
@@ -71,6 +81,17 @@ extension DownloadManager {
                                             audioStreamIndex: audioStreamIndex,
                                             downloadLane: DownloadChoicePolicy.downloadLane(for: choice),
                                             serverPreparedVersion: DownloadChoicePolicy.isServerPreparedVersion(for: choice))
+        let seedDestination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
+        guard persistAttemptSeed(
+            DownloadRecord(ratingKey: ratingKey, attemptID: startAttempt.attemptID,
+                           title: item.title, localURL: seedDestination,
+                           bytes: 0, progress: 0, metadata: metadata),
+            for: startAttempt,
+            backend: "Jellyfin"
+        ) else {
+            releaseInFlight(for: attemptKey)
+            return
+        }
         recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(
             item: item,
             choice: choice,
@@ -100,10 +121,6 @@ extension DownloadManager {
                 // alone would collapse to ".mp4" and abandon an in-progress non-MP4 partial (its
                 // checkpoint reads 0 against the new destination). The existing ORIGINAL-lane row's
                 // on-disk extension is authoritative for what this transfer already wrote.
-                let existingOriginalPath = store.records
-                    .first { $0.ratingKey == ratingKey
-                        && $0.metadata?.resolvedDownloadLane() == .original }?
-                    .localURL.lastPathComponent
                 let ext = DownloadMediaSelectionPolicy.containerExtension(
                     selection: selection, existingRelativePath: existingOriginalPath)
                 destination = store.destinationURL(ratingKey: ratingKey, ext: ext)
@@ -165,7 +182,7 @@ extension DownloadManager {
                     maxHeight: profile.maxHeight,
                     audioStreamIndex: audioStreamIndex)
                 request = transcodedRequest
-                jellyfinPlaySessionByRatingKey[ratingKey] = decision.playSessionId
+                jellyfinPlaySessionByAttempt[attemptKey] = decision.playSessionId
                 mintedPlaySessionId = sourcePlan.playSessionID
                 expectedBytes = sourcePlan.expectedBytes
                 transferRoute = sourcePlan.route
@@ -252,7 +269,7 @@ extension DownloadManager {
                         maxHeight: fallbackProfile.maxHeight,
                         audioStreamIndex: audioStreamIndex)
                 }
-                jellyfinPlaySessionByRatingKey[ratingKey] = decision.playSessionId
+                jellyfinPlaySessionByAttempt[attemptKey] = decision.playSessionId
                 mintedPlaySessionId = sourcePlan.playSessionID
             }
             // Lens 6 F1: both transcode lanes awaited PlaybackInfo above with NO currency check —
@@ -262,7 +279,7 @@ extension DownloadManager {
             // chain minted.
             guard startAttemptStillCurrent(startAttempt, backend: "Jellyfin",
                                            phase: "post_negotiation") else {
-                jellyfinPlaySessionByRatingKey.removeValue(forKey: ratingKey)
+                jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
                 stopSupersededMediaBrowserEncoder(ratingKey: ratingKey,
                                                   playSessionID: mintedPlaySessionId,
                                                   backendKind: .jellyfin,
@@ -270,6 +287,14 @@ extension DownloadManager {
                 return
             }
         } catch {
+            guard store.ownsAttempt(attemptKey) else {
+                jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
+                stopSupersededMediaBrowserEncoder(ratingKey: ratingKey,
+                                                  playSessionID: mintedPlaySessionId,
+                                                  backendKind: .jellyfin,
+                                                  backendSession: backendSession)
+                return
+            }
             recordDownloadDiagnostic("downloads.start_failed", fields: [
                 "download_id": .identifier(ratingKey),
                 "backend": .label("Jellyfin"),
@@ -277,23 +302,51 @@ extension DownloadManager {
             ])
             lastError[ratingKey] = .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
-            store.setStatus(ratingKey: ratingKey, .failed)
+            _ = store.setStatus(for: attemptKey, .failed)
             clearStaticRangePendingResume(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             refreshRecords()
             return
         }
 
-        store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
-                                    localURL: destination, bytes: 0, progress: 0,
-                                    metadata: metadata))
+        let publishResult = store.createAttemptOwnedRecord(
+            DownloadRecord(ratingKey: ratingKey, attemptID: startAttempt.attemptID,
+                           title: item.title, localURL: destination,
+                           bytes: 0, progress: 0, metadata: metadata),
+            attemptID: startAttempt.attemptID)
+        guard case .committed(let publishedKey) = publishResult,
+              publishedKey == attemptKey else {
+            jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
+            stopSupersededMediaBrowserEncoder(ratingKey: ratingKey,
+                                              playSessionID: mintedPlaySessionId,
+                                              backendKind: .jellyfin,
+                                              backendSession: backendSession)
+            if store.ownsAttempt(attemptKey) {
+                _ = store.setStatus(for: attemptKey, .failed)
+                releaseInFlight(for: attemptKey)
+            }
+            return
+        }
         // #84: persist the minted PlaySessionId onto the now-seeded row so a hard app kill can
         // still tear the encoder down on next launch (was in-memory only).
         if let mintedPlaySessionId {
-            store.setPlaySessionID(ratingKey: ratingKey, mintedPlaySessionId)
+            guard jellyfinMutationAccepted(
+                store.setPlaySessionID(for: attemptKey, mintedPlaySessionId),
+                key: attemptKey, phase: "play_session") else {
+                jellyfinPlaySessionByAttempt.removeValue(forKey: attemptKey)
+                stopSupersededMediaBrowserEncoder(ratingKey: ratingKey,
+                                                  playSessionID: mintedPlaySessionId,
+                                                  backendKind: .jellyfin,
+                                                  backendSession: backendSession)
+                if store.ownsAttempt(attemptKey) {
+                    _ = store.setStatus(for: attemptKey, .failed)
+                    releaseInFlight(for: attemptKey)
+                }
+                return
+            }
             if let mediaSourceID = resolvedJellyfinMediaSourceID,
                let userID = backendSession.userID, !userID.isEmpty {
-                startJellyfinDownloadKeepalive(ratingKey: ratingKey,
+                startJellyfinDownloadKeepalive(attemptKey: attemptKey,
                                                itemId: itemId,
                                                mediaSourceId: mediaSourceID,
                                                playSessionId: mintedPlaySessionId,
@@ -304,35 +357,45 @@ extension DownloadManager {
         }
         if let resolvedJellyfinMediaSourceID,
            resolvedJellyfinMediaSourceID != jellyfinMediaSourceID {
-            store.setMediaSourceID(ratingKey: ratingKey, resolvedJellyfinMediaSourceID)
+            guard jellyfinMutationAccepted(
+                store.updateMetadata(for: attemptKey) {
+                    $0.mediaSourceID = resolvedJellyfinMediaSourceID
+                }, key: attemptKey, phase: "media_source") else {
+                if store.ownsAttempt(attemptKey) {
+                    _ = store.setStatus(for: attemptKey, .failed)
+                    releaseInFlight(for: attemptKey)
+                }
+                return
+            }
         }
         refreshRecords()
         // #102: cache the poster locally (best-effort) so artwork shows offline. Unlike the
         // Plex lane this MUST use the authenticated MediaBrowser image request.
-        cacheJellyfinPoster(ratingKey: ratingKey, item: item, server: server,
+        cacheJellyfinPoster(for: attemptKey, item: item, server: server,
                             token: token, identity: identity)
-        cacheJellyfinTrickPlay(ratingKey: ratingKey, itemId: itemId, mediaSourceId: resolvedJellyfinMediaSourceID,
+        cacheJellyfinTrickPlay(for: attemptKey, itemId: itemId, mediaSourceId: resolvedJellyfinMediaSourceID,
                                server: server, token: token, identity: identity)
-        cacheChapterImages(ratingKey: ratingKey, item: item, backend: .jellyfin,
+        cacheChapterImages(for: attemptKey, item: item, backend: .jellyfin,
                            server: server, token: token)
-        cacheJellyfinTextSubtitles(ratingKey: ratingKey, itemId: itemId, mediaSourceId: resolvedJellyfinMediaSourceID,
+        cacheJellyfinTextSubtitles(for: attemptKey, itemId: itemId, mediaSourceId: resolvedJellyfinMediaSourceID,
                                    part: part, server: server, token: token, identity: identity)
 
         beginBackgroundTransfer(DownloadTransferStartPlan(
-            ratingKey: ratingKey,
+            attemptKey: attemptKey,
             backendLabel: "Jellyfin",
             choiceLabel: DownloadChoicePolicy.diagnosticChoiceLabel(choice),
             urlShape: request.url,
             expectedBytes: expectedBytes,
             releaseInFlightOnFailure: true
         )) {
+            guard store.ownsAttempt(attemptKey) else { throw CancellationError() }
             // A Jellyfin `.optimize`/`.optimizeCompatible` download streams the file directly from
             // the transcoder/remuxer — there is no separate "render then static download" phase, so
             // the byte rate is encoder-gated and the stream is forward-only (not range-resumable).
             // Mark it so the rate isn't misread as a network problem. `.original` is a static file
             // stream → network-bound, range-resumable, not marked.
             if transferRoute.isLiveForwardOnly {
-                transcodeSourcedDownloads.insert(ratingKey)
+                transcodeSourcedDownloads.insert(attemptKey)
             }
             try session.start(ratingKey: ratingKey,
                               with: request,
@@ -340,6 +403,21 @@ extension DownloadManager {
                               expectedBytes: expectedBytes,
                               byteRangeCheckpoint: transferRoute.usesByteRangeCheckpoint,
                               resetRangeRestartCounters: !consumeRangeRestartCounterPreservation(ratingKey: ratingKey))
+        }
+    }
+
+    private func jellyfinMutationAccepted(_ result: DownloadStore.AttemptMutationResult,
+                                           key: DownloadAttemptKey,
+                                           phase: String) -> Bool {
+        switch result {
+        case .applied, .noChange:
+            return true
+        case .staleOrMissing, .persistenceFailed:
+            recordDownloadDiagnostic("downloads.jellyfin_attempt_mutation_rejected", fields: [
+                "download_id": .identifier(key.ratingKey),
+                "phase": .label(phase),
+            ])
+            return false
         }
     }
 
@@ -353,7 +431,7 @@ extension DownloadManager {
     /// playlist, downloads each referenced tile through header auth (stripping ApiKey from tile
     /// URLs in the request builder), then writes a sanitized local playlist whose tile lines are
     /// only local filenames. A miss/corrupt playlist never fails the media download.
-    private func cacheJellyfinTrickPlay(ratingKey: String,
+    private func cacheJellyfinTrickPlay(for attemptKey: DownloadAttemptKey,
                                         itemId: String,
                                         mediaSourceId: String?,
                                         server: URL,
@@ -362,7 +440,8 @@ extension DownloadManager {
                                         width: Int = 320) {
         guard let mediaSourceId, !mediaSourceId.isEmpty else { return }
         let store = self.store
-        Task { [weak self] in
+        downloadWorkRegistry.startIfAbsent(for: attemptKey, kind: .sideCache(.jellyfinTrickPlay)) { [weak self] in
+            guard !Task.isCancelled else { return }
             do {
                 let playlistReq = try JellyfinLibrary.trickPlayPlaylistRequest(server: server,
                                                                                token: token,
@@ -370,78 +449,80 @@ extension DownloadManager {
                                                                                itemId: itemId,
                                                                                mediaSourceId: mediaSourceId,
                                                                                width: width)
-                // Lens 4 F2: trickplay playlist + tiles are data-plane side assets — honor Wi-Fi-only.
-                let (playlistData, playlistResponse) = try await URLSession.shared.data(
-                    for: Self.sideAssetRequest(applyingCellularPolicy: playlistReq))
-                guard let playlistHTTP = playlistResponse as? HTTPURLResponse,
-                      (200..<300).contains(playlistHTTP.statusCode),
-                      let playlistText = String(data: playlistData, encoding: .utf8) else { return }
+                let playlistData = try await self?.fetchOptionalSideAsset(playlistReq, for: attemptKey)
+                guard let playlistData,
+                      let playlistText = String(data: playlistData, encoding: .utf8),
+                      !Task.isCancelled else { return }
                 let playlist = try JellyfinTrickPlayPlaylistParser.parse(playlistText)
-                var tileRelatives: [String] = []
+                var tileRelativeByIndex: [Int: String] = [:]
                 var tileFilenamesByURI: [String: String] = [:]
-                // Bound side-asset fanout (#187). A long movie can have many tile sheets; fetching all
-                // at once and then retaining every Data blob until after the group completes can amplify
-                // overnight memory pressure. Fetch in small concurrent batches and write each batch
-                // before moving on.
-                let batchSize = 4
-                if playlist.tiles.count > batchSize {
-                    await MainActor.run {
-                        self?.recordDownloadDiagnostic("downloads.side_cache_throttled", fields: [
-                            "download_id": .identifier(ratingKey),
-                            "asset": .label("jellyfin_trickplay_tiles"),
-                            "request_count": .int(playlist.tiles.count),
-                            "batch_size": .int(batchSize),
-                        ])
+                var missing: [(index: Int, uri: String, request: URLRequest, destination: URL)] = []
+                for (index, tile) in playlist.tiles.enumerated() {
+                    let destination = store.jellyfinTrickPlayTileDestinationURL(
+                        ratingKey: attemptKey.ratingKey, index: index)
+                    if let relative = store.reusableSideAssetRelativePath(
+                        for: attemptKey, destination: destination) {
+                        tileRelativeByIndex[index] = relative
+                        tileFilenamesByURI[tile.uri] = relative
+                        continue
                     }
+                    guard let request = try? JellyfinLibrary.trickPlayTileRequest(
+                        server: server, token: token, identity: identity, itemId: itemId,
+                        mediaSourceId: mediaSourceId, width: width, tileURI: tile.uri) else { continue }
+                    missing.append((index, tile.uri, request, destination))
                 }
-                var start = 0
-                while start < playlist.tiles.count {
-                    let end = min(start + batchSize, playlist.tiles.count)
-                    let batch = Array(playlist.tiles[start..<end].enumerated()).map { (offset, tile) in
-                        (index: start + offset, tile: tile)
-                    }
-                    let fetched: [(index: Int, uri: String, data: Data)] = await withTaskGroup(of: (Int, String, Data)?.self) { group in
-                        for entry in batch {
-                            guard let tileReq = try? JellyfinLibrary.trickPlayTileRequest(server: server,
-                                                                                          token: token,
-                                                                                          identity: identity,
-                                                                                          itemId: itemId,
-                                                                                          mediaSourceId: mediaSourceId,
-                                                                                          width: width,
-                                                                                          tileURI: entry.tile.uri) else { continue }
-                            let uri = entry.tile.uri
-                            let index = entry.index
-                            group.addTask {
-                                guard let (tileData, tileResponse) = try? await URLSession.shared.data(
-                                        for: Self.sideAssetRequest(applyingCellularPolicy: tileReq)),
-                                      let tileHTTP = tileResponse as? HTTPURLResponse,
-                                      (200..<300).contains(tileHTTP.statusCode),
-                                      !tileData.isEmpty else { return nil }
-                                return (index, uri, tileData)
-                            }
+
+                await withTaskGroup(of: (Int, String, URL, Data)?.self) { group in
+                    for entry in missing {
+                        group.addTask { [weak self] in
+                            guard let self,
+                                  let data = try? await self.fetchOptionalSideAsset(
+                                    entry.request, for: attemptKey) else { return nil }
+                            return (entry.index, entry.uri, entry.destination, data)
                         }
-                        var out: [(index: Int, uri: String, data: Data)] = []
-                        for await result in group { if let result { out.append(result) } }
-                        return out.sorted { $0.index < $1.index }
                     }
-                    for entry in fetched {
-                        let destination = store.jellyfinTrickPlayTileDestinationURL(ratingKey: ratingKey, index: entry.index)
-                        try entry.data.write(to: destination, options: .atomic)
-                        tileFilenamesByURI[entry.uri] = destination.lastPathComponent
-                        tileRelatives.append(destination.lastPathComponent)
+                    for await result in group {
+                        guard let (index, uri, destination, data) = result,
+                              !Task.isCancelled,
+                              let staging = store.attemptStagingURL(
+                                for: attemptKey, stableURL: destination) else { continue }
+                        defer { try? FileManager.default.removeItem(at: staging) }
+                        guard (try? data.write(to: staging, options: .atomic)) != nil,
+                              Self.promoteSideAsset(store: store, key: attemptKey,
+                                                    stagingURL: staging, stableURL: destination) else { continue }
+                        let relative = destination.lastPathComponent
+                        tileRelativeByIndex[index] = relative
+                        tileFilenamesByURI[uri] = relative
+                        _ = store.updateMetadata(for: attemptKey) {
+                            var merged = $0.jellyfinTrickPlayTileRelativePaths ?? []
+                            if !merged.contains(relative) { merged.append(relative) }
+                            $0.jellyfinTrickPlayTileRelativePaths = merged
+                        }
                     }
-                    start = end
                 }
+                let tileRelatives = tileRelativeByIndex.sorted { $0.key < $1.key }.map(\.value)
                 guard !tileRelatives.isEmpty else { return }
                 let sanitized = JellyfinTrickPlayOfflineCachePlanner.sanitizedPlaylist(playlistText, tileFilenamesByURI: tileFilenamesByURI)
                 guard !sanitized.localizedCaseInsensitiveContains("apikey=") else { return }
-                let playlistURL = store.jellyfinTrickPlayPlaylistDestinationURL(ratingKey: ratingKey)
-                try sanitized.data(using: .utf8)?.write(to: playlistURL, options: .atomic)
+                let playlistURL = store.jellyfinTrickPlayPlaylistDestinationURL(
+                    ratingKey: attemptKey.ratingKey)
+                guard let playlistStaging = store.attemptStagingURL(
+                    for: attemptKey, stableURL: playlistURL) else { return }
+                defer { try? FileManager.default.removeItem(at: playlistStaging) }
+                try sanitized.data(using: .utf8)?.write(to: playlistStaging, options: .atomic)
+                guard Self.promoteSideAsset(store: store, key: attemptKey,
+                                            stagingURL: playlistStaging,
+                                            stableURL: playlistURL) else { return }
                 await MainActor.run {
-                    store.setJellyfinTrickPlayRelativePaths(ratingKey: ratingKey,
-                                                            playlist: playlistURL.lastPathComponent,
-                                                            tiles: tileRelatives)
-                    self?.refreshRecords()
+                    let result = store.updateMetadata(for: attemptKey) {
+                        $0.jellyfinTrickPlayPlaylistRelativePath = playlistURL.lastPathComponent
+                        var merged = $0.jellyfinTrickPlayTileRelativePaths ?? []
+                        for relative in tileRelatives where !merged.contains(relative) {
+                            merged.append(relative)
+                        }
+                        $0.jellyfinTrickPlayTileRelativePaths = merged
+                    }
+                    if result == .applied || result == .noChange { self?.refreshRecords() }
                 }
             } catch {
                 // Optional asset cache. Never log token-bearing playlist/tile URLs.

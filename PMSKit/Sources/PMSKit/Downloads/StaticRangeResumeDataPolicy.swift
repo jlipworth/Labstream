@@ -22,6 +22,9 @@ public enum StaticRangeResumeDataPolicy {
 
     public enum FailureResumeRejection: Sendable, Equatable {
         case cancelled
+        /// URLSession resume data is not safe for a closed Range request: CFNetwork may replay it
+        /// as an effectively open-ended transfer after a path/session transition.
+        case closedRange
         case missingResumeData
         case budgetExhausted(nextAttempt: Int, maxResumes: Int)
     }
@@ -54,9 +57,13 @@ public enum StaticRangeResumeDataPolicy {
     public static func failureResumeDecision(errorCode: Int?,
                                              hasResumeData: Bool,
                                              currentBlobResumeCount: Int,
+                                             isClosedRange: Bool = false,
                                              maxBlobResumes: Int = defaultMaxBlobResumes) -> FailureResumeDecision {
         if errorCode == NSURLErrorCancelled {
             return .reject(.cancelled)
+        }
+        if isClosedRange {
+            return .reject(.closedRange)
         }
         guard hasResumeData else {
             return .reject(.missingResumeData)
@@ -77,6 +84,13 @@ public enum StaticRangeResumeDataPolicy {
             return .rejectStale(blobOffset: blobRangeOffset, durableBytes: durableBytes)
         }
         return .adopt(baseOffset: blobRangeOffset)
+    }
+
+    /// Persisted blobs from older builds may still expose their original closed Range header.
+    /// Reject them even when the start offset matches: the field incident proved that header is
+    /// not a guarantee that CFNetwork will preserve the end bound on the resumed wire request.
+    public static func shouldAdoptBlob(hasClosedRangeEnd: Bool) -> Bool {
+        !hasClosedRangeEnd
     }
 
     /// In-process failure retry of a LIVE train segment: the failed entry is known, so the blob is
@@ -129,17 +143,16 @@ public enum StaticRangeResumeDataPolicy {
         hasResumeData && !resumeDataWasRejected
     }
 
-    /// When pausing a pre-queued SEGMENT TRAIN, only ONE of the (up to 8) live segments can ever be
-    /// resumed from its URLSession blob: the segment whose byte offset equals the durable partial
-    /// size. `adoptionDecision` rejects every other offset as stale on Resume, so producing/persisting
-    /// blobs for the off-head segments just thrashes the single per-key blob slot (last writer wins)
-    /// and can only ever surface as `range_blob_resume_stale`. Persist the head segment's blob and
-    /// plain-cancel the rest (their temp bodies are unrecoverable once the process dies anyway).
-    ///
-    /// Open-ended remainders (`segmentBaseOffset == durableBytes` by construction, single task) satisfy
-    /// this trivially, so the pre-segment lane keeps persisting its one blob unchanged.
+    /// Closed Range segments never persist URLSession resume data, including the head segment.
+    /// The resume blob retains the original request for inspection but CFNetwork is free to rebuild
+    /// its wire request; on visionOS 27 a paused `bytes=start-end` task resumed past `end`, downloaded
+    /// gigabytes of duplicate data, and falsely drove the row to 100%. The safe recovery authority is
+    /// the app-owned durable checkpoint plus completed held segments. An unfinished closed segment is
+    /// refetched exactly on Resume. Open-ended remainders use the separate blob policy above.
     public static func shouldPersistSegmentBlobOnPause(segmentBaseOffset: Int,
                                                        durableBytes: Int) -> Bool {
-        segmentBaseOffset == durableBytes
+        _ = segmentBaseOffset
+        _ = durableBytes
+        return false
     }
 }

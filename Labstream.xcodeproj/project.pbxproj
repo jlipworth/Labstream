@@ -12,15 +12,35 @@
 		AA0000000000000000000030 /* PMSKit in Frameworks */ = {isa = PBXBuildFile; productRef = AA0000000000000000000011 /* PMSKit */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		AA0000000000000000000049 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0000000000000000000025;
+			remoteInfo = LabstreamMobile;
+		};
+		AA000000000000000000004A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0000000000000000000035;
+			remoteInfo = LabstreamMac;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		AA0000000000000000000005 /* Labstream.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Labstream.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000020 /* LabstreamMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Labstream.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000031 /* LabstreamMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Labstream.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000041 /* LabstreamTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LabstreamTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000051 /* LabstreamMacTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LabstreamMacTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000013 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		AA0000000000000000000006 /* Labstream */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Labstream; sourceTree = "<group>"; };
+		AA0000000000000000000042 /* LabstreamTests */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = LabstreamTests; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -48,6 +68,20 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA0000000000000000000044 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0000000000000000000053 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -56,6 +90,7 @@
 			children = (
 				AA0000000000000000000013 /* Signing.xcconfig */,
 				AA0000000000000000000006 /* Labstream */,
+				AA0000000000000000000042 /* LabstreamTests */,
 				AA0000000000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -66,6 +101,8 @@
 				AA0000000000000000000005 /* Labstream.app */,
 				AA0000000000000000000020 /* LabstreamMobile.app */,
 				AA0000000000000000000031 /* LabstreamMac.app */,
+				AA0000000000000000000041 /* LabstreamTests.xctest */,
+				AA0000000000000000000051 /* LabstreamMacTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -142,6 +179,52 @@
 			productReference = AA0000000000000000000031 /* LabstreamMac.app */;
 			productType = "com.apple.product-type.application";
 		};
+		AA0000000000000000000040 /* LabstreamTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA0000000000000000000048 /* Build configuration list for PBXNativeTarget "LabstreamTests" */;
+			buildPhases = (
+				AA0000000000000000000043 /* Sources */,
+				AA0000000000000000000044 /* Frameworks */,
+				AA0000000000000000000045 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				AA000000000000000000004B /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				AA0000000000000000000042 /* LabstreamTests */,
+			);
+			name = LabstreamTests;
+			packageProductDependencies = (
+			);
+			productName = LabstreamTests;
+			productReference = AA0000000000000000000041 /* LabstreamTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		AA0000000000000000000050 /* LabstreamMacTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA0000000000000000000058 /* Build configuration list for PBXNativeTarget "LabstreamMacTests" */;
+			buildPhases = (
+				AA0000000000000000000052 /* Sources */,
+				AA0000000000000000000053 /* Frameworks */,
+				AA0000000000000000000054 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				AA000000000000000000004C /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				AA0000000000000000000042 /* LabstreamTests */,
+			);
+			name = LabstreamMacTests;
+			packageProductDependencies = (
+			);
+			productName = LabstreamMacTests;
+			productReference = AA0000000000000000000051 /* LabstreamMacTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -159,6 +242,12 @@
 						CreatedOnToolsVersion = 26.5;
 					};
 					AA0000000000000000000035 = {
+						CreatedOnToolsVersion = 26.5;
+					};
+					AA0000000000000000000040 = {
+						CreatedOnToolsVersion = 26.5;
+					};
+					AA0000000000000000000050 = {
 						CreatedOnToolsVersion = 26.5;
 					};
 				};
@@ -183,6 +272,8 @@
 				AA0000000000000000000004 /* Labstream */,
 				AA0000000000000000000025 /* LabstreamMobile */,
 				AA0000000000000000000035 /* LabstreamMac */,
+				AA0000000000000000000040 /* LabstreamTests */,
+				AA0000000000000000000050 /* LabstreamMacTests */,
 			);
 		};
 /* End PBXProject section */
@@ -203,6 +294,20 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		AA0000000000000000000034 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0000000000000000000045 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0000000000000000000054 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -233,7 +338,34 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA0000000000000000000043 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0000000000000000000052 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		AA000000000000000000004B /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AA0000000000000000000025 /* LabstreamMobile */;
+			targetProxy = AA0000000000000000000049 /* PBXContainerItemProxy */;
+		};
+		AA000000000000000000004C /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AA0000000000000000000035 /* LabstreamMac */;
+			targetProxy = AA000000000000000000004A /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		AA0000000000000000000009 /* Debug */ = {
@@ -561,6 +693,70 @@
 			};
 			name = Release;
 		};
+		AA0000000000000000000046 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.LabstreamTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = iphonesimulator;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Labstream.app/Labstream";
+			};
+			name = Debug;
+		};
+		AA0000000000000000000047 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.LabstreamTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = iphonesimulator;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Labstream.app/Labstream";
+			};
+			name = Release;
+		};
+		AA0000000000000000000056 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.LabstreamMacTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Labstream.app/Contents/MacOS/Labstream";
+			};
+			name = Debug;
+		};
+		AA0000000000000000000057 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.LabstreamMacTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Labstream.app/Contents/MacOS/Labstream";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -597,6 +793,24 @@
 			buildConfigurations = (
 				AA0000000000000000000037 /* Debug */,
 				AA0000000000000000000038 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA0000000000000000000048 /* Build configuration list for PBXNativeTarget "LabstreamTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA0000000000000000000046 /* Debug */,
+				AA0000000000000000000047 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA0000000000000000000058 /* Build configuration list for PBXNativeTarget "LabstreamMacTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA0000000000000000000056 /* Debug */,
+				AA0000000000000000000057 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

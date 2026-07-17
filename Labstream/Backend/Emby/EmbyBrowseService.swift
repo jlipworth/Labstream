@@ -28,19 +28,11 @@ struct EmbyBrowseService {
     }
 
     func userViews() async throws -> [EmbyBaseItemDto] {
-        let context = try context()
-        let req = try EmbyLibrary.userViewsRequest(server: context.server,
-                                                   token: context.token,
-                                                   identity: embyIdentity,
-                                                   userId: context.userID)
-        let response = try await send(req, as: EmbyUserViewsResponse.self)
-        return response.items
+        try await browseCore().userViews()
     }
 
     func userViewLinks() async throws -> [EmbyLibraryLink] {
-        try await userViews().map {
-            EmbyLibraryLink(id: $0.id, title: $0.name, collectionType: $0.collectionType)
-        }
+        try await browseCore().userViewLinks()
     }
 
     func items(parentId: String?,
@@ -81,26 +73,13 @@ struct EmbyBrowseService {
                    albumArtistIds: String? = nil,
                    artistIds: String? = nil,
                    filters: [String] = []) async throws -> (items: [MediaItem], total: Int?) {
-        let context = try context()
-        let req = try EmbyLibrary.itemsRequest(server: context.server,
-                                               token: context.token,
-                                               identity: embyIdentity,
-                                               userId: context.userID,
-                                               parentId: parentId,
-                                               recursive: recursive,
-                                               startIndex: startIndex,
-                                               limit: limit,
-                                               searchTerm: searchTerm,
-                                               nameStartsWith: nameStartsWith,
-                                               sortBy: sortBy,
-                                               sortOrder: sortOrder,
-                                               includeItemTypes: includeItemTypes,
-                                               fields: fields,
-                                               albumArtistIds: albumArtistIds,
-                                               artistIds: artistIds,
-                                               filters: filters)
-        let response = try await send(req, as: EmbyItemsResponse.self)
-        return (response.items.compactMap { $0.toMediaItem() }, response.totalRecordCount)
+        let page = try await browseCore().itemsPage(MediaBrowserItemsQuery(
+            parentID: parentId, recursive: recursive, startIndex: startIndex, limit: limit,
+            searchTerm: searchTerm, nameStartsWith: nameStartsWith, sortBy: sortBy,
+            sortOrder: sortOrder, includeItemTypes: includeItemTypes, fields: fields,
+            albumArtistIDs: albumArtistIds, artistIDs: artistIds, filters: filters
+        ))
+        return (page.items, page.total)
     }
 
     /// Tag-aggregated album artists for a music library (#111), via `/Artists/AlbumArtists`.
@@ -110,67 +89,21 @@ struct EmbyBrowseService {
                           nameStartsWith: String? = nil,
                           sortBy: String = "SortName",
                           sortOrder: String = "Ascending") async throws -> (items: [MediaItem], total: Int?) {
-        let context = try context()
-        let req = try EmbyLibrary.albumArtistsRequest(server: context.server,
-                                                      token: context.token,
-                                                      identity: embyIdentity,
-                                                      userId: context.userID,
-                                                      parentId: parentId,
-                                                      startIndex: startIndex,
-                                                      limit: limit,
-                                                      nameStartsWith: nameStartsWith,
-                                                      sortBy: sortBy,
-                                                      sortOrder: sortOrder)
-        let response = try await send(req, as: EmbyItemsResponse.self)
-        return (response.items.compactMap { $0.toMediaItem() }, response.totalRecordCount)
+        let page = try await browseCore().albumArtistsPage(
+            parentID: parentId, startIndex: startIndex, limit: limit,
+            nameStartsWith: nameStartsWith, sortBy: sortBy, sortOrder: sortOrder
+        )
+        return (page.items, page.total)
     }
 
     /// Ordered tracks of an audio playlist (#111) — see the Jellyfin twin. Playlist order
     /// is preserved by `/Playlists/{id}/Items`, so the caller must not re-sort.
     func playlistItems(playlistId: String) async throws -> [MediaItem] {
-        let context = try context()
-        let req = try EmbyLibrary.playlistItemsRequest(server: context.server,
-                                                       token: context.token,
-                                                       identity: embyIdentity,
-                                                       userId: context.userID,
-                                                       playlistId: playlistId)
-        let response = try await send(req, as: EmbyItemsResponse.self)
-        return response.items.compactMap { $0.toMediaItem() }
+        try await browseCore().playlistItems(playlistID: playlistId)
     }
 
     func searchResults(query: String, limitPerLibrary: Int = 50) async throws -> SearchResults {
-        _ = try context()
-        let views = try await userViewLinks()
-        let groupsByIndex = try await withThrowingTaskGroup(
-            of: (Int, SearchResultGroup?).self,
-            returning: [Int: SearchResultGroup].self
-        ) { taskGroup in
-            for (index, view) in views.enumerated() {
-                taskGroup.addTask {
-                    let items = try await self.items(parentId: view.id,
-                                                     recursive: true,
-                                                     limit: limitPerLibrary,
-                                                     searchTerm: query,
-                                                     sortBy: "SortName",
-                                                     sortOrder: "Ascending",
-                                                     includeItemTypes: mediaBrowserSearchItemTypes(forCollectionType: view.collectionType))
-                    let group = SearchResultGroup.mediaBrowserLibrary(backendID: "emby",
-                                                                      libraryID: view.id,
-                                                                      title: view.title,
-                                                                      items: items)
-                    return (index, group)
-                }
-            }
-
-            var groupsByIndex: [Int: SearchResultGroup] = [:]
-            for try await (index, group) in taskGroup {
-                if let group { groupsByIndex[index] = group }
-            }
-            return groupsByIndex
-        }
-
-        let groups = views.indices.compactMap { groupsByIndex[$0] }
-        return SearchResults(groups: groups)
+        try await browseCore().searchResults(query: query, limitPerLibrary: limitPerLibrary)
     }
 
     func resumeItems(parentId: String? = nil, limit: Int = 20) async throws -> [MediaItem] {
@@ -180,16 +113,9 @@ struct EmbyBrowseService {
     func resumeItemsPage(parentId: String? = nil,
                          startIndex: Int,
                          limit: Int) async throws -> (items: [MediaItem], total: Int?) {
-        let context = try context()
-        let req = try EmbyLibrary.resumeItemsRequest(server: context.server,
-                                                     token: context.token,
-                                                     identity: embyIdentity,
-                                                     userId: context.userID,
-                                                     parentId: parentId,
-                                                     startIndex: startIndex,
-                                                     limit: limit)
-        let response = try await send(req, as: EmbyItemsResponse.self)
-        return (response.items.compactMap { $0.toMediaItem() }, response.totalRecordCount)
+        let page = try await browseCore().resumeItemsPage(
+            parentID: parentId, startIndex: startIndex, limit: limit)
+        return (page.items, page.total)
     }
 
     func nextUp(parentId: String? = nil, limit: Int = 20) async throws -> [MediaItem] {
@@ -199,51 +125,75 @@ struct EmbyBrowseService {
     func nextUpPage(parentId: String? = nil,
                     startIndex: Int,
                     limit: Int) async throws -> (items: [MediaItem], total: Int?) {
-        let context = try context()
-        let req = try EmbyLibrary.nextUpRequest(server: context.server,
-                                                token: context.token,
-                                                identity: embyIdentity,
-                                                userId: context.userID,
-                                                parentId: parentId,
-                                                startIndex: startIndex,
-                                                limit: limit)
-        let response = try await send(req, as: EmbyItemsResponse.self)
-        return (response.items.compactMap { $0.toMediaItem() }, response.totalRecordCount)
+        let page = try await browseCore().nextUpPage(
+            parentID: parentId, startIndex: startIndex, limit: limit)
+        return (page.items, page.total)
     }
 
     func latestItems(parentId: String?,
                      includeItemTypes: String = "Movie,Episode,Video",
                      limit: Int = 20) async throws -> [MediaItem] {
-        let context = try context()
-        let req = try EmbyLibrary.latestItemsRequest(server: context.server,
-                                                     token: context.token,
-                                                     identity: embyIdentity,
-                                                     userId: context.userID,
-                                                     parentId: parentId,
-                                                     includeItemTypes: includeItemTypes,
-                                                     limit: limit)
-        let response = try await send(req, as: [EmbyBaseItemDto].self)
-        return response.compactMap { $0.toMediaItem() }
+        try await browseCore().latestItems(parentID: parentId,
+                                           includeItemTypes: includeItemTypes,
+                                           limit: limit)
     }
 
     func metadata(itemId: String) async throws -> MediaItem {
-        let context = try context()
-        let req = try EmbyLibrary.itemRequest(server: context.server,
-                                              token: context.token,
-                                              identity: embyIdentity,
-                                              userId: context.userID,
-                                              itemId: itemId)
-        let dto = try await send(req, as: EmbyBaseItemDto.self)
-        guard let item = dto.toMediaItem() else { throw ServiceError.noPlayableItem }
+        guard let item = try await browseCore().metadata(itemID: itemId) else {
+            throw ServiceError.noPlayableItem
+        }
+        return item
+    }
+
+    func metadata(itemId: String,
+                  session: BackendSession,
+                  identity: ClientIdentity) async throws -> MediaItem {
+        guard session.kind == .emby,
+              let userID = session.userID else { throw ServiceError.notAuthenticated }
+        let core = MediaBrowserBrowseCore(
+            context: MediaBrowserBrowseContext(server: session.baseURL,
+                                               token: session.token,
+                                               userID: userID,
+                                               identity: identity.emby),
+            adapter: EmbyBrowseCoreAdapter(),
+            send: { request in try await send(request) }
+        )
+        guard let item = try await core.metadata(itemID: itemId) else {
+            throw ServiceError.noPlayableItem
+        }
         return item
     }
 
     func playbackOpen(item: MediaItem,
                       maxVideoBitrateKbps: Int,
                       resumeOffsetMs: Int? = nil,
+                      mediaSourceId: String? = nil,
                       audioStreamIndex: Int? = nil,
-                      subtitleStreamIndex: Int? = nil) async throws -> EmbyPlaybackOpenResult {
+                      subtitleStreamIndex: Int? = nil) async throws -> MediaBrowserPlaybackOpenResult {
         let context = try context()
+        let session = BackendSession(kind: .emby, baseURL: context.server,
+                                     token: context.token, userID: context.userID,
+                                     serverID: appModel.embyServerID)
+        return try await playbackOpen(item: item, session: session, identity: appModel.identity,
+                                      maxVideoBitrateKbps: maxVideoBitrateKbps,
+                                      resumeOffsetMs: resumeOffsetMs,
+                                      mediaSourceId: mediaSourceId,
+                                      audioStreamIndex: audioStreamIndex,
+                                      subtitleStreamIndex: subtitleStreamIndex)
+    }
+
+    func playbackOpen(item: MediaItem,
+                      session playbackSession: BackendSession,
+                      identity: ClientIdentity,
+                      maxVideoBitrateKbps: Int,
+                      resumeOffsetMs: Int? = nil,
+                      mediaSourceId: String? = nil,
+                      audioStreamIndex: Int? = nil,
+                      subtitleStreamIndex: Int? = nil) async throws -> MediaBrowserPlaybackOpenResult {
+        guard playbackSession.kind == .emby,
+              let userID = playbackSession.userID else { throw ServiceError.notAuthenticated }
+        let context = (server: playbackSession.baseURL, token: playbackSession.token, userID: userID)
+        let requestIdentity = identity.emby
         let qualityPolicy = MediaBrowserPlaybackQualityPolicy(maxVideoBitrateKbps: maxVideoBitrateKbps)
         let startTicks = MediaBrowserPlaybackQualityPolicy.startTicks(resumeOffsetMs: resumeOffsetMs ?? item.viewOffset)
         // GH #196 DV P5 guard: a fallback-less DV stream must not travel a video-copy lane.
@@ -268,9 +218,10 @@ struct EmbyBrowseService {
         // DIVERGENCE: Emby PlaybackInfo needs UserId in BOTH query and body.
         let req = try EmbyPlayback.playbackInfoRequest(server: context.server,
                                                        token: context.token,
-                                                       identity: embyIdentity,
+                                                       identity: requestIdentity,
                                                        userId: context.userID,
                                                        itemId: item.ratingKey,
+                                                       mediaSourceId: mediaSourceId,
                                                        startTimeTicks: startTicks,
                                                        maxStreamingBitrate: qualityPolicy.maxStreamingBitrateBps,
                                                        audioStreamIndex: audioStreamIndex,
@@ -278,31 +229,40 @@ struct EmbyBrowseService {
                                                        forcePlaybackTranscode: forceTranscode,
                                                        advertiseDolbyVision: DolbyVisionGuard.shouldAdvertiseDolbyVision(for: item))
         let info = try await send(req, as: EmbyPlaybackInfoResponse.self)
-        return try EmbyPlayback.resolveStream(response: info,
-                                              server: context.server,
-                                              identity: embyIdentity,
-                                              token: context.token,
-                                              userId: context.userID,
-                                              itemId: item.ratingKey,
-                                              startTimeTicks: startTicks,
-                                              maxVideoBitrate: qualityPolicy.maxStreamingBitrateBps,
-                                              maxWidth: qualityPolicy.maxWidth,
-                                              maxHeight: qualityPolicy.maxHeight,
-                                              audioBitrate: qualityPolicy.audioBitrateBps,
-                                              audioStreamIndex: audioStreamIndex,
-                                              subtitleStreamIndex: subtitleStreamIndex)
+        do {
+            return try EmbyPlayback.resolveMediaBrowserStream(
+                response: info,
+                server: context.server,
+                identity: requestIdentity,
+                token: context.token,
+                userId: context.userID,
+                itemId: item.ratingKey,
+                preferredMediaSourceId: mediaSourceId,
+                startTimeTicks: startTicks,
+                maxVideoBitrate: qualityPolicy.maxStreamingBitrateBps,
+                maxWidth: qualityPolicy.maxWidth,
+                maxHeight: qualityPolicy.maxHeight,
+                audioBitrate: qualityPolicy.audioBitrateBps,
+                audioStreamIndex: audioStreamIndex,
+                subtitleStreamIndex: subtitleStreamIndex)
+        } catch {
+            // Emby starts encoding during PlaybackInfo negotiation. If exact-source validation
+            // rejects the response, clean up any alternate-source encoder before surfacing the
+            // original error. Preserve Emby's direct-source contract: only send the active-
+            // encoding stop when PlaybackInfo actually advertised an encoder-backed source.
+            if info.mediaSources.contains(where: { $0.transcodingURL?.isEmpty == false }),
+               let playSessionID = info.playSessionId, !playSessionID.isEmpty {
+                _ = await stopActiveEncoding(playSessionId: playSessionID,
+                                             session: playbackSession,
+                                             identity: identity)
+            }
+            throw error
+        }
     }
 
 
     func setPlayed(itemId: String, played: Bool) async throws {
-        let context = try context()
-        let req = try EmbyLibrary.markPlayedRequest(server: context.server,
-                                                    token: context.token,
-                                                    identity: embyIdentity,
-                                                    userId: context.userID,
-                                                    itemId: itemId,
-                                                    played: played)
-        _ = try await send(req)
+        try await browseCore().setPlayed(itemID: itemId, played: played)
     }
 
     /// Active-encoding cleanup invariant: `/Sessions/Playing/Stopped` does NOT stop the
@@ -323,6 +283,15 @@ struct EmbyBrowseService {
 
     @discardableResult
     func stopActiveEncoding(playSessionId: String, session: BackendSession) async -> Bool {
+        await stopActiveEncoding(playSessionId: playSessionId,
+                                 session: session,
+                                 identity: appModel.identity)
+    }
+
+    @discardableResult
+    func stopActiveEncoding(playSessionId: String,
+                            session: BackendSession,
+                            identity: ClientIdentity) async -> Bool {
         guard let userID = session.userID else { return false }
         // Authenticate against the EXPLICIT session the caller resolved/validated for this job's
         // backend — never re-read the live `context()` lane, which may have been re-pointed at a
@@ -333,9 +302,9 @@ struct EmbyBrowseService {
             makeRequest: {
                 try EmbyLibrary.activeEncodingStopRequest(server: session.baseURL,
                                                           token: session.token,
-                                                          identity: embyIdentity,
+                                                          identity: identity.emby,
                                                           userId: userID,
-                                                          deviceId: appModel.identity.clientIdentifier,
+                                                          deviceId: identity.clientIdentifier,
                                                           playSessionId: playSessionId)
             },
             send: { req in _ = try await send(req) },
@@ -345,6 +314,18 @@ struct EmbyBrowseService {
     nonisolated private static func httpStatus(fromActiveEncodingStopError error: Error) -> Int? {
         guard case ServiceError.http(let status) = error else { return nil }
         return status
+    }
+
+    private func browseCore() throws -> MediaBrowserBrowseCore<EmbyBrowseCoreAdapter> {
+        let values = try context()
+        return MediaBrowserBrowseCore(
+            context: MediaBrowserBrowseContext(server: values.server,
+                                               token: values.token,
+                                               userID: values.userID,
+                                               identity: embyIdentity),
+            adapter: EmbyBrowseCoreAdapter(),
+            send: { request in try await send(request) }
+        )
     }
 
     private func context() throws -> (server: URL, token: String, userID: String) {
@@ -369,10 +350,4 @@ struct EmbyBrowseService {
             throw ServiceError.http(status)
         }
     }
-}
-
-struct EmbyLibraryLink: Identifiable, Hashable {
-    let id: String
-    let title: String
-    let collectionType: String?
 }

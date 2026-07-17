@@ -13,20 +13,10 @@ enum DetailWatchedUpdater {
                           played: Bool) async throws {
         switch backend {
         case .plex:
-            guard let server = appModel.serverBaseURL,
-                  let token = appModel.serverToken else {
+            guard let service = try? PlexBrowseService(appModel: appModel) else {
                 throw DetailWatchedUpdateError.missingPlexSession
             }
-            let request = played
-                ? TimelineRequest.scrobble(server: server,
-                                           token: token,
-                                           identity: appModel.identity,
-                                           ratingKey: item.ratingKey)
-                : TimelineRequest.unscrobble(server: server,
-                                             token: token,
-                                             identity: appModel.identity,
-                                             ratingKey: item.ratingKey)
-            _ = try await appModel.client.send(request)
+            try await service.setPlayed(ratingKey: item.ratingKey, played: played)
         case .jellyfin:
             try await JellyfinBrowseService(appModel: appModel)
                 .setPlayed(itemId: item.ratingKey, played: played)

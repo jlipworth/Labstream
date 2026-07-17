@@ -15,3 +15,38 @@ public enum TrickPlayPreviewGeometry {
         return min(max(pointerX, halfWidth), trackWidth - halfWidth)
     }
 }
+
+/// Pure state policy for resolving asynchronous trick-play thumbnail requests.
+///
+/// The preview's primary timestamp describes the user's seek target, not the capture time of an
+/// approximate thumbnail. Those values are often close for dense Plex/Jellyfin indexes, but may be
+/// many minutes apart for a sparse chapter-image provider such as Emby.
+public enum TrickPlayPreviewResolutionPolicy {
+    public enum Completion: Equatable, Sendable {
+        case ignoredStale
+        case showImage(captureTimeMs: Int)
+        case clearImage
+    }
+
+    public static func displayedTimeMs(targetMs: Int?,
+                                       thumbnailCaptureTimeMs: Int?,
+                                       fallbackMs: Int) -> Int {
+        // Keep the capture time in the API so callers cannot accidentally conflate it with the
+        // target again. It is useful for image-cache identity, but never for the primary seek label.
+        _ = thumbnailCaptureTimeMs
+        return max(0, targetMs ?? fallbackMs)
+    }
+
+    public static func completion(requestGeneration: Int,
+                                  currentGeneration: Int,
+                                  requestTargetMs: Int,
+                                  activeTargetMs: Int?,
+                                  decodedThumbnailTimeMs: Int?) -> Completion {
+        guard requestGeneration == currentGeneration,
+              activeTargetMs == requestTargetMs else {
+            return .ignoredStale
+        }
+        guard let decodedThumbnailTimeMs else { return .clearImage }
+        return .showImage(captureTimeMs: max(0, decodedThumbnailTimeMs))
+    }
+}

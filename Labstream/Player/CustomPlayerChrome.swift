@@ -81,6 +81,7 @@ struct CustomPlayerChrome: View {
     @State private var trickPlayPreviewTask: Task<Void, Never>?
     @State private var trickPlayPreviewImage: UIImage?
     @State private var trickPlayPreviewTimeMs: Int?
+    @State private var trickPlayPreviewCaptureTimeMs: Int?
     @State private var trickPlayPreviewLoading = false
     @State private var trickPlayImageCache = TrickPlayPreviewImageCache(limit: 32)
     @State private var trickPlayRequestGeneration = 0
@@ -171,13 +172,10 @@ struct CustomPlayerChrome: View {
             }
 
             #if os(iOS)
-            // The buffering/reconnect/failure platter owns the center of the iOS player.
-            // Leaving the ordinary transport here puts its glass pause/play button visibly
-            // behind the platter (macOS does not have this centered transport, which is why
-            // the overlap only reproduced on iPhone).
-            if shouldShowChrome,
-               selectedMenu == nil,
-               controller.transportStatus.activeStatus == nil {
+            // The status platter owns the primary transport action while buffering/reconnecting.
+            // Do not leave the ordinary center play/pause button visible through its translucent
+            // material, where it reads as a second action directly behind the dialog.
+            if shouldShowChrome, selectedMenu == nil, !isTransportStatusPresented {
                 iosCenterPlayPauseButton
                     .transition(.scale(scale: 0.92).combined(with: .opacity))
             }
@@ -318,6 +316,10 @@ struct CustomPlayerChrome: View {
 
     private var shouldShowChrome: Bool {
         chromeVisible || controller.transport.showsPausedControl || controller.transportStatus.keepsChromeVisible || selectedMenu != nil
+    }
+
+    private var isTransportStatusPresented: Bool {
+        controller.transportStatus.activeStatus != nil
     }
 
     private var isCompactMobileChrome: Bool {
@@ -601,7 +603,8 @@ struct CustomPlayerChrome: View {
 
     private var macFullscreenButton: some View {
         macTopChromeButton("Toggle Full Screen",
-                           systemImage: "arrow.up.left.and.arrow.down.right") {
+                           systemImage: "arrow.up.left.and.arrow.down.right",
+                           autoHidesChrome: true) {
             macWindowBridge.toggleFullScreen()
         }
         .keyboardShortcut("f", modifiers: [.command, .control])
@@ -609,9 +612,14 @@ struct CustomPlayerChrome: View {
 
     private func macTopChromeButton(_ help: String,
                                     systemImage: String,
+                                    autoHidesChrome: Bool = false,
                                     action: @escaping () -> Void) -> some View {
         Button {
-            revealChrome(keepVisible: true)
+            // A destructive/dismissal action keeps the controls pinned while it completes,
+            // but entering native fullscreen is not a modal interaction. Restart the ordinary
+            // five-second hide timer so the expanded movie does not retain its chrome until the
+            // viewer clicks the playback surface for the first time.
+            revealChrome(keepVisible: !autoHidesChrome)
             action()
         } label: {
             ZStack {
@@ -1249,7 +1257,11 @@ struct CustomPlayerChrome: View {
                 }
             }
 
-            Text(format(ms: trickPlayPreviewTimeMs ?? scrubState.displayedPositionMs))
+            Text(format(ms: TrickPlayPreviewResolutionPolicy.displayedTimeMs(
+                targetMs: trickPlayPreviewTimeMs,
+                thumbnailCaptureTimeMs: trickPlayPreviewCaptureTimeMs,
+                fallbackMs: scrubState.displayedPositionMs
+            )))
                 .font(.caption.monospacedDigit().weight(.semibold))
                 .foregroundStyle(.primary)
                 .padding(.horizontal, 10)
@@ -1724,7 +1736,7 @@ struct CustomPlayerChrome: View {
         if let cached = trickPlayImageCache.nearestImage(to: targetMs, toleranceMs: 15_000) {
             trickPlayPreviewTask?.cancel()
             trickPlayPreviewImage = cached.image
-            trickPlayPreviewTimeMs = cached.timeMs
+            trickPlayPreviewCaptureTimeMs = cached.timeMs
             trickPlayPreviewLoading = false
             return
         }
@@ -1740,13 +1752,27 @@ struct CustomPlayerChrome: View {
             guard !Task.isCancelled else { return }
             let decoded = thumbnail.flatMap { UIImage(data: $0.imageData) }
             await MainActor.run {
-                guard generation == trickPlayRequestGeneration,
-                      activeTrickPlayTargetMs == targetMs else { return }
-                trickPlayPreviewLoading = false
-                guard let thumbnail, let decoded else { return }
-                trickPlayImageCache.insert(decoded, for: thumbnail.timeMs)
-                trickPlayPreviewImage = decoded
-                trickPlayPreviewTimeMs = thumbnail.timeMs
+                let completion = TrickPlayPreviewResolutionPolicy.completion(
+                    requestGeneration: generation,
+                    currentGeneration: trickPlayRequestGeneration,
+                    requestTargetMs: targetMs,
+                    activeTargetMs: activeTrickPlayTargetMs,
+                    decodedThumbnailTimeMs: decoded == nil ? nil : thumbnail?.timeMs
+                )
+                switch completion {
+                case .ignoredStale:
+                    return
+                case .clearImage:
+                    trickPlayPreviewLoading = false
+                    trickPlayPreviewImage = nil
+                    trickPlayPreviewCaptureTimeMs = nil
+                case .showImage(let captureTimeMs):
+                    guard let decoded else { return }
+                    trickPlayPreviewLoading = false
+                    trickPlayImageCache.insert(decoded, for: captureTimeMs)
+                    trickPlayPreviewImage = decoded
+                    trickPlayPreviewCaptureTimeMs = captureTimeMs
+                }
             }
         }
     }
@@ -1768,6 +1794,7 @@ struct CustomPlayerChrome: View {
         trickPlayPreviewLoading = false
         trickPlayPreviewImage = nil
         trickPlayPreviewTimeMs = nil
+        trickPlayPreviewCaptureTimeMs = nil
     }
 
     private func performRelativeSkip(seconds: Int) {

@@ -6,6 +6,27 @@ import PMSKit
 import UIKit
 #endif
 
+/// Interruption resume intent is session authority, not player-item authority. It must
+/// survive observer rebinds performed while swapping an item, but full teardown clears it.
+@MainActor
+final class AudioInterruptionResumeAuthority {
+    private var wasPlaying = false
+
+    func interruptionBegan(wasPlaying: Bool) {
+        self.wasPlaying = wasPlaying
+    }
+
+    func interruptionEnded(shouldResume: Bool) -> Bool {
+        guard wasPlaying else { return false }
+        wasPlaying = false
+        return shouldResume
+    }
+
+    func reset() {
+        wasPlaying = false
+    }
+}
+
 #if os(macOS)
 /// Native macOS has no AVAudioSession. Keep the shared playback controllers calling the
 /// same lifecycle hooks while deferring real Mac media-session behavior to the playback
@@ -19,7 +40,8 @@ final class AudioSessionCoordinator {
 
     func activate() {}
     func deactivate() {}
-    func installObservers() {}
+    func installObservers(isCurrent: @escaping @MainActor () -> Bool = { true }) {}
+    func reinstallObservers(isCurrent: @escaping @MainActor () -> Bool = { true }) {}
     func removeObservers() {}
 }
 #else
@@ -62,7 +84,7 @@ final class AudioSessionCoordinator {
     /// Gates auto-resume after `.ended/.shouldResume`: background pauses deliberately
     /// never set this flag, so returning foreground or a coincident interruption-ended
     /// event cannot restart video behind the user's back.
-    private var wasPlayingBeforeInterruption = false
+    private let interruptionResumeAuthority = AudioInterruptionResumeAuthority()
 
     init(player: AVPlayer,
          mode: PlatformAudioSessionMode = .moviePlayback,
@@ -116,7 +138,7 @@ final class AudioSessionCoordinator {
     /// for this coordinator's lifetime. Idempotent: a second call is a no-op, so we never
     /// double-register. All closures hop to the `@MainActor` before touching player state,
     /// satisfying Swift 6 strict concurrency.
-    func installObservers() {
+    func installObservers(isCurrent: @escaping @MainActor () -> Bool = { true }) {
         guard interruptionObserver == nil else { return }
         let center = NotificationCenter.default
 
@@ -130,6 +152,7 @@ final class AudioSessionCoordinator {
             let typeRaw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
             let optionsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt
             Task { @MainActor in
+                guard isCurrent() else { return }
                 self?.handleInterruption(typeRaw: typeRaw, optionsRaw: optionsRaw)
             }
         }
@@ -141,6 +164,7 @@ final class AudioSessionCoordinator {
         ) { [weak self] note in
             let reasonRaw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
             Task { @MainActor in
+                guard isCurrent() else { return }
                 self?.handleRouteChange(reasonRaw: reasonRaw)
             }
         }
@@ -157,6 +181,7 @@ final class AudioSessionCoordinator {
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor in
+                    guard isCurrent() else { return }
                     self?.pauseForBackground()
                 }
             }
@@ -167,15 +192,31 @@ final class AudioSessionCoordinator {
                 queue: .main
             ) { [weak self] _ in
                 Task { @MainActor in
+                    guard isCurrent() else { return }
                     self?.pauseForBackground()
                 }
             }
         }
     }
 
+    /// Rebind queued-callback authority for a replacement player item without forgetting
+    /// that this session paused for an interruption. An interruption can outlive an item
+    /// reload; only full session teardown should discard its eventual resume decision.
+    func reinstallObservers(isCurrent: @escaping @MainActor () -> Bool = { true }) {
+        removeObservers(resetInterruptionState: false)
+        installObservers(isCurrent: isCurrent)
+    }
+
     /// Tear down the session/lifecycle observers. Called from the controller's `stop()`
     /// (and is safe to call more than once).
     func removeObservers() {
+        removeObservers(resetInterruptionState: true)
+    }
+
+    private func removeObservers(resetInterruptionState: Bool) {
+        if resetInterruptionState {
+            interruptionResumeAuthority.reset()
+        }
         let center = NotificationCenter.default
         if let interruptionObserver {
             center.removeObserver(interruptionObserver)
@@ -209,16 +250,17 @@ final class AudioSessionCoordinator {
         case .began:
             // Only flag for resume if playback was actually running; a paused player should
             // stay paused.
-            wasPlayingBeforeInterruption = player.timeControlStatus != .paused
-            if wasPlayingBeforeInterruption {
+            let wasPlaying = player.timeControlStatus != .paused
+            interruptionResumeAuthority.interruptionBegan(wasPlaying: wasPlaying)
+            if wasPlaying {
                 player.pause()
             }
         case .ended:
-            guard wasPlayingBeforeInterruption else { return }
-            wasPlayingBeforeInterruption = false
             let options: AVAudioSession.InterruptionOptions =
                 optionsRaw.map { AVAudioSession.InterruptionOptions(rawValue: $0) } ?? []
-            if options.contains(.shouldResume) {
+            if interruptionResumeAuthority.interruptionEnded(
+                shouldResume: options.contains(.shouldResume)
+            ) {
                 // Re-activate the session (the interruption may have deactivated it) and
                 // resume only because WE paused while the user had it playing.
                 activate()

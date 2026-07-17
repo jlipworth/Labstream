@@ -16,19 +16,7 @@ public enum MediaBrowserURL {
     /// relative stream URLs returned by PlaybackInfo are joined onto `server.path`, so the
     /// normalizer must not strip it. Default ports are a caller/UX concern.
     public static func normalizedServerURL(_ input: String) -> URL? {
-        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-
-        let candidate = trimmed.contains("://") ? trimmed : "https://\(trimmed)"
-
-        guard let url = URL(string: candidate),
-              let scheme = url.scheme?.lowercased(),
-              (scheme == "https" || scheme == "http"),
-              let host = url.host,
-              !host.isEmpty else {
-            return nil
-        }
-        return url
+        MediaBrowserServerURL(input)?.url
     }
 
     /// Join a server-relative path (or same-origin absolute URL) onto the server base
@@ -102,6 +90,30 @@ public enum MediaBrowserURL {
     }
 }
 
+/// A server address that has passed the shared MediaBrowser-family validation rules.
+///
+/// App and backend APIs continue to traffic in `URL`; this small value keeps validation
+/// centralized behind `JellyfinServerURL` and `EmbyServerURL` without erasing their distinct
+/// thrown error types.
+public struct MediaBrowserServerURL: Sendable, Hashable {
+    public let url: URL
+
+    public init?(_ input: String) {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let candidate = trimmed.contains("://") ? trimmed : "https://\(trimmed)"
+        guard let url = URL(string: candidate),
+              let scheme = url.scheme?.lowercased(),
+              (scheme == "https" || scheme == "http"),
+              let host = url.host,
+              !host.isEmpty else {
+            return nil
+        }
+        self.url = url
+    }
+}
+
 public enum MediaBrowserAuth {
     /// Escape a value for embedding in a quoted authorization-header parameter.
     public static func quote(_ value: String) -> String {
@@ -151,11 +163,37 @@ public enum MediaBrowserLibraryQueryName: Sendable {
     case excludeActiveSessions
     case enableResumable
     case groupItems
+    case deviceId
+    case maxStreamingBitrate
+    case container
+    case transcodingContainer
+    case transcodingProtocol
+    case audioCodec
+    case tag
+    case width
+    case height
+    case fillWidth
+    case fillHeight
+    case playSessionId
+    case streamUserId
+    case activeDeviceId
 }
 
 public enum MediaBrowserLibraryPath: Sendable, Equatable {
     case userViews(userId: String)
     case items(userId: String)
+    case albumArtists
+    case playlistItems(playlistId: String)
+    case resume(userId: String)
+    case nextUp
+    case latest(userId: String)
+    case item(userId: String, itemId: String)
+    case playedItem(userId: String, itemId: String)
+    case textSubtitle(itemId: String, mediaSourceId: String, streamIndex: Int, extension: String)
+    case audio(itemId: String)
+    case image(itemId: String, imageType: String)
+    case chapterImage(itemId: String, chapterIndex: Int)
+    case activeEncodings
 }
 
 public enum MediaBrowserLibraryQueryDialect: Sendable, Equatable {
@@ -172,7 +210,42 @@ public enum MediaBrowserLibraryQueryDialect: Sendable, Equatable {
             return "/Users/\(userId)/Views"
         case (.emby, .items(let userId)):
             return "/Users/\(userId)/Items"
+        case (_, .albumArtists):
+            return "/Artists/AlbumArtists"
+        case (_, .playlistItems(let playlistId)):
+            return "/Playlists/\(playlistId)/Items"
+        case (.jellyfin, .resume):
+            return "/UserItems/Resume"
+        case (.emby, .resume(let userId)):
+            return "/Users/\(userId)/Items/Resume"
+        case (_, .nextUp):
+            return "/Shows/NextUp"
+        case (.jellyfin, .latest):
+            return "/Items/Latest"
+        case (.emby, .latest(let userId)):
+            return "/Users/\(userId)/Items/Latest"
+        case (_, .item(let userId, let itemId)):
+            return "/Users/\(userId)/Items/\(itemId)"
+        case (_, .playedItem(let userId, let itemId)):
+            return "/Users/\(userId)/PlayedItems/\(itemId)"
+        case (_, .textSubtitle(let itemId, let mediaSourceId, let streamIndex, let ext)):
+            return "/Videos/\(itemId)/\(mediaSourceId)/Subtitles/\(streamIndex)/Stream.\(ext)"
+        case (_, .audio(let itemId)):
+            return "/Audio/\(itemId)/universal"
+        case (_, .image(let itemId, let imageType)):
+            return "/Items/\(itemId)/Images/\(imageType)"
+        case (_, .chapterImage(let itemId, let chapterIndex)):
+            return "/Items/\(itemId)/Images/Chapter/\(chapterIndex)"
+        case (_, .activeEncodings):
+            return "/Videos/ActiveEncodings"
         }
+    }
+
+    /// Jellyfin's root-style view/items endpoints require the user id in the query. Emby's
+    /// user-scoped endpoint paths already carry it. Specialized endpoints use `UserId` in both
+    /// dialects and are expressed explicitly by their factory methods.
+    public var includesUserIDInRootQuery: Bool {
+        self == .jellyfin
     }
 
     public func queryName(_ name: MediaBrowserLibraryQueryName) -> String {
@@ -199,6 +272,20 @@ public enum MediaBrowserLibraryQueryDialect: Sendable, Equatable {
             case .excludeActiveSessions: return "excludeActiveSessions"
             case .enableResumable: return "enableResumable"
             case .groupItems: return "groupItems"
+            case .deviceId: return "DeviceId"
+            case .maxStreamingBitrate: return "MaxStreamingBitrate"
+            case .container: return "Container"
+            case .transcodingContainer: return "TranscodingContainer"
+            case .transcodingProtocol: return "TranscodingProtocol"
+            case .audioCodec: return "AudioCodec"
+            case .tag: return "tag"
+            case .width: return "width"
+            case .height: return "height"
+            case .fillWidth: return "fillWidth"
+            case .fillHeight: return "fillHeight"
+            case .playSessionId: return "playSessionId"
+            case .streamUserId: return "UserId"
+            case .activeDeviceId: return "deviceId"
             }
         case .emby:
             switch name {
@@ -222,6 +309,20 @@ public enum MediaBrowserLibraryQueryDialect: Sendable, Equatable {
             case .excludeActiveSessions: return "ExcludeActiveSessions"
             case .enableResumable: return "EnableResumable"
             case .groupItems: return "GroupItems"
+            case .deviceId: return "DeviceId"
+            case .maxStreamingBitrate: return "MaxStreamingBitrate"
+            case .container: return "Container"
+            case .transcodingContainer: return "TranscodingContainer"
+            case .transcodingProtocol: return "TranscodingProtocol"
+            case .audioCodec: return "AudioCodec"
+            case .tag: return "tag"
+            case .width: return "width"
+            case .height: return "height"
+            case .fillWidth: return "fillWidth"
+            case .fillHeight: return "fillHeight"
+            case .playSessionId: return "PlaySessionId"
+            case .streamUserId: return "UserId"
+            case .activeDeviceId: return "DeviceId"
             }
         }
     }

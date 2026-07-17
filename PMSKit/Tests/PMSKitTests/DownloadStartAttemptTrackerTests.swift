@@ -8,7 +8,9 @@ struct DownloadStartAttemptTrackerTests {
     @Test("Minted token is current until cleared or replaced")
     func tokenLifecycle() {
         var tracker = DownloadStartAttemptTracker()
-        let first = tracker.begin("plex:1")
+        let first = DownloadAttemptID(rawValue: "attempt-first")!
+        let second = DownloadAttemptID(rawValue: "attempt-second")!
+        #expect(tracker.begin("plex:1", id: first) == first)
         #expect(tracker.isCurrent("plex:1", id: first))
 
         // Delete/pause path: releaseInFlight clears the token → the awaited chain is stale.
@@ -20,7 +22,7 @@ struct DownloadStartAttemptTrackerTests {
 
         // Delete→re-download: a NEW start mints a new token; the old chain must stay stale even
         // though the key is active again.
-        let second = tracker.begin("plex:1")
+        #expect(tracker.begin("plex:1", id: second) == second)
         #expect(!tracker.isCurrent("plex:1", id: first))
         #expect(tracker.isCurrent("plex:1", id: second))
     }
@@ -28,8 +30,8 @@ struct DownloadStartAttemptTrackerTests {
     @Test("Tokens are per-key")
     func perKeyIsolation() {
         var tracker = DownloadStartAttemptTracker()
-        let a = tracker.begin("jf:a")
-        let b = tracker.begin("emby:b")
+        let a = tracker.begin("jf:a", id: DownloadAttemptID(rawValue: "attempt-a")!)
+        let b = tracker.begin("emby:b", id: DownloadAttemptID(rawValue: "attempt-b")!)
         #expect(tracker.isCurrent("jf:a", id: a))
         #expect(tracker.isCurrent("emby:b", id: b))
         tracker.clear("jf:a")

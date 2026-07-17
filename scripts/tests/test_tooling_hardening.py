@@ -68,6 +68,67 @@ class ToolingHardeningTests(unittest.TestCase):
             args = (root / "xcodebuild-args.txt").read_text()
             self.assertRegex(args, r"LABSTREAM_BUILD_SLUG=.*-dirty")
 
+    def test_macos_deploy_labels_dev_build_and_deletes_all_staged_apps(self):
+        with self.make_repo() as root:
+            self.copy_script(root, "deploy-macos-to-host.sh")
+            args_file = root / "build-args.txt"
+            fake_builder = root / "scripts" / "xcodebuild-versioned.sh"
+            fake_builder.write_text(textwrap.dedent(f"""\
+                #!/usr/bin/env bash
+                set -euo pipefail
+                printf '%s\n' "$@" > {args_file}
+                dd=''
+                while [ "$#" -gt 0 ]; do
+                  if [ "$1" = '-derivedDataPath' ]; then dd="$2"; shift 2; else shift; fi
+                done
+                mkdir -p "$dd/Build/Products/Debug/Labstream.app/Contents"
+                printf '{{}}\n' > "$dd/Build/Products/Debug/Labstream.app/Contents/Info.plist"
+                """))
+            fake_builder.chmod(0o755)
+            (root / "Labstream" / "Existing.swift").write_text("// baseline\n")
+            self.commit_all(root)
+
+            subprocess.run(["scripts/deploy-macos-to-host.sh"], cwd=root, check=True,
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            args = args_file.read_text()
+            self.assertIn("INFOPLIST_KEY_CFBundleDisplayName=Labstream Dev — master", args)
+            staged = root / "build" / "macos-host" / "master" / "Labstream.app"
+            self.assertTrue(staged.is_dir())
+
+            extra = root / "build" / "macos-host" / "other" / "Labstream.app"
+            extra.mkdir(parents=True)
+            subprocess.run(["scripts/deploy-macos-to-host.sh", "--delete-all-staged"],
+                           cwd=root, check=True, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, text=True)
+            self.assertFalse(staged.exists())
+            self.assertFalse(extra.exists())
+
+            fakebin = root / "fakebin"
+            fakebin.mkdir()
+            (fakebin / "codesign").write_text(textwrap.dedent("""\
+                #!/usr/bin/env bash
+                if [[ "$*" == *'-dvvv'* ]]; then
+                  echo 'TeamIdentifier=TESTTEAM' >&2
+                else
+                  echo '<plist version="1.0"><dict><key>keychain-access-groups</key><array><string>TESTTEAM.com.jlipworth.Labstream</string></array></dict></plist>'
+                fi
+                """))
+            (fakebin / "codesign").chmod(0o755)
+            (fakebin / "plutil").write_text("#!/usr/bin/env bash\ncat >/dev/null\n")
+            (fakebin / "plutil").chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{fakebin}:{env['PATH']}"
+            env["LABSTREAM_MAC_DEVELOPMENT_TEAM"] = "TESTTEAM"
+            subprocess.run([
+                "scripts/deploy-macos-to-host.sh", "--use-production-bundle-id"
+            ], cwd=root, env=env, check=True, stdout=subprocess.PIPE,
+               stderr=subprocess.PIPE, text=True)
+            production_args = args_file.read_text()
+            self.assertIn("-allowProvisioningUpdates", production_args)
+            self.assertIn("-allowProvisioningDeviceRegistration", production_args)
+            self.assertIn("DEVELOPMENT_TEAM=TESTTEAM", production_args)
+            self.assertIn("CODE_SIGN_IDENTITY=Apple Development", production_args)
+
     def test_ci_hygiene_rejects_pbx_file_reference_churn(self):
         with self.make_repo() as root:
             self.copy_script(root, "ci-hygiene.sh")

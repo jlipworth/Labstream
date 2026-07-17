@@ -1,5 +1,10 @@
 # Holistic downloads refactor plan
 
+> **Archived:** completed/superseded refactor plan. It preserves the reasoning and branch-era
+> checkpoints; current download architecture and operating guidance live in
+> [`docs/DOWNLOADS-OFFLINE.md`](../../DOWNLOADS-OFFLINE.md). Checkboxes and future-tense text
+> below are historical and do not identify current work.
+
 This branch treats Downloads as one subsystem, not as a narrow `DownloadManager.swift`
 cleanup. The current module already has useful seams (`PMSKit/Downloads` pure policy,
 `DownloadStore`, backend-specific manager extensions, side caches, and

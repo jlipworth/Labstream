@@ -1,5 +1,11 @@
 # Full Downloads-Engine Audit Plan (2026-07-10)
 
+> **Status:** dated audit and execution record. The automatable audit scope is closed as
+> described in section J and the downstream remediation checkpoint in section K; earlier
+> handoff/open-work sections are superseded by those later updates. Current subsystem
+> behavior belongs in [`docs/DOWNLOADS-OFFLINE.md`](../DOWNLOADS-OFFLINE.md). Remaining
+> physical-device evidence is an acceptance gate, not unfinished audit implementation.
+
 Systematic audit plan for the entire downloads subsystem, produced after a full read of
 `Labstream/Downloads/BackgroundDownloadSession.swift` (4409 lines), `DownloadManager.swift`
 (3027) + its 5 backend extensions, `DownloadStore.swift` (1067), the ~80 PMSKit download
@@ -894,3 +900,44 @@ no longer add phantom gigabytes to the toolbar total. Offset-mismatch budgets ar
 download plus segment base offset rather than only by download. Parallel sibling segments therefore
 cannot collectively exhaust Flight's whole-row budget; a complete validated held body clears only
 its own offset history, while durable appends retain the existing row-wide forward-progress reset.
+
+## K. DOWNSTREAM REMEDIATION CHECKPOINT (2026-07-12, through `f05944c`)
+
+This audit remains the characterization/evidence record. The companion
+`docs/research/2026-07-10-codebase-remediation-plan.md` owns the corrective Phase 1 queue and its
+commit-by-commit journal.
+
+The schema-v3 train now carries exact attempt ownership through background-session entries and
+conditional Store mutations. Attempt-keyed side-cache parent-task registration, staged side-cache
+promotion, non-cancellable required-cleanup registration, durable Jellyfin/Emby ActiveEncoding
+intents, and durable known/ambiguous Emby Convert intents have landed. New Convert deletes use the
+generic journal; the legacy tombstone reader/sweep remains for one-train compatibility. Plex
+cleanup behavior is unchanged. Background-session finalizers have exact row ownership but are not
+yet integrated with the manager work registry.
+
+This does **not** close the audit's working-file/recovery risk. Opaque and static-range media still
+use stable row destinations. Store checkpoint/reset/evidence/reconcile and resume/held-body paths
+must move together with any attempt-staged media layout. Existing schema-v3 tasks and partial files
+also require an explicit migration rule. Treat schema v4 (or an equivalent durable working-layout
+marker), live-partial migrate-versus-reset policy, exact resume/checkpoint/held conversions, and the
+physical background-redelivery gates as an unresolved consultation boundary—not follow-up cleanup
+that can safely be split lane by lane.
+
+`d1ec849` added exact-attempt Store primitives for resume data, validators, source sizes, held
+segments, and static checkpoint evidence/reset. The follow-on train through `a8fa19c` converted
+Manager recovery/status, Session recovery/publication, backend record and metadata publication,
+transfer-start plans, Plex async handoff/deadline publication, and offline playback position/
+unverified promotion to captured attempt authority. Ownerless playback fallback is restricted to
+terminal legacy rows; active ownerless rows fail closed pending migration.
+
+The checkpoint primitive's focused six-test suite plus 31 Store fault/persistence/staging
+regressions passed. Later slices added stale-A/B and ownerless playback cases and repeatedly passed
+Mac builds plus focused attempt/start/server-prep, Plex optimize, Store, recovery, and backend
+policy suites. The working-file layout remains open despite this consumer conversion: stable media
+paths, cross-backend Manager teardown ownership, manager-registry ownership of Session finalizers,
+and the physical background-redelivery/device matrix still prevent closure.
+
+Follow-up commits `1ae5f34` and `f05944c` moved Session range/held/halt/grace/retry/truncation state
+and PMSKit validator/offset budgets to exact attempt keys. A multiline audit additionally converted
+16 legacy checkpoint-reset consumers missed by the earlier single-line inventory. Stable media
+paths, finalizer registration, the cross-backend `releaseInFlight` split, and device gates remain.

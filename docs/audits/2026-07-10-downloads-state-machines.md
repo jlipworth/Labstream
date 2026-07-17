@@ -1,5 +1,11 @@
 # Downloads Engine — Extracted State Machines vs Documented Intent (Phase 2)
 
+> **Status:** point-in-time extraction at `347f035`. Later fixes and the schema-v4
+> remediation changed these machines; use this file as audit evidence, not current operating
+> guidance. Current invariants live in [`docs/DOWNLOADS-OFFLINE.md`](../DOWNLOADS-OFFLINE.md),
+> and remediation status lives in
+> [`docs/research/2026-07-10-codebase-remediation-plan.md`](../research/2026-07-10-codebase-remediation-plan.md).
+
 Extraction date 2026-07-10, read at commit `347f035` (includes `00c1dc7` train-supersede and
 `9600fe9` server-job/poller fixes). Concurrent small fixes were landing in
 `BackgroundDownloadSession.swift` / `DownloadManager.swift` while this was written, so line

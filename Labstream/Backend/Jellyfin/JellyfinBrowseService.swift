@@ -25,19 +25,11 @@ struct JellyfinBrowseService {
     }
 
     func userViews() async throws -> [JellyfinBaseItemDto] {
-        let context = try context()
-        let req = try JellyfinLibrary.userViewsRequest(server: context.server,
-                                                       token: context.token,
-                                                       identity: jellyfinIdentity,
-                                                       userId: context.userID)
-        let response = try await send(req, as: JellyfinUserViewsResponse.self)
-        return response.items
+        try await browseCore().userViews()
     }
 
     func userViewLinks() async throws -> [JellyfinLibraryLink] {
-        try await userViews().map {
-            JellyfinLibraryLink(id: $0.id, title: $0.name, collectionType: $0.collectionType)
-        }
+        try await browseCore().userViewLinks()
     }
 
     func items(parentId: String?,
@@ -78,26 +70,13 @@ struct JellyfinBrowseService {
                    albumArtistIds: String? = nil,
                    artistIds: String? = nil,
                    filters: [String] = []) async throws -> (items: [MediaItem], total: Int?) {
-        let context = try context()
-        let req = try JellyfinLibrary.itemsRequest(server: context.server,
-                                                   token: context.token,
-                                                   identity: jellyfinIdentity,
-                                                   userId: context.userID,
-                                                   parentId: parentId,
-                                                   recursive: recursive,
-                                                   startIndex: startIndex,
-                                                   limit: limit,
-                                                   searchTerm: searchTerm,
-                                                   nameStartsWith: nameStartsWith,
-                                                   sortBy: sortBy,
-                                                   sortOrder: sortOrder,
-                                                   includeItemTypes: includeItemTypes,
-                                                   fields: fields,
-                                                   albumArtistIds: albumArtistIds,
-                                                   artistIds: artistIds,
-                                                   filters: filters)
-        let response = try await send(req, as: JellyfinItemsResponse.self)
-        return (response.items.compactMap { $0.toMediaItem() }, response.totalRecordCount)
+        let page = try await browseCore().itemsPage(MediaBrowserItemsQuery(
+            parentID: parentId, recursive: recursive, startIndex: startIndex, limit: limit,
+            searchTerm: searchTerm, nameStartsWith: nameStartsWith, sortBy: sortBy,
+            sortOrder: sortOrder, includeItemTypes: includeItemTypes, fields: fields,
+            albumArtistIDs: albumArtistIds, artistIDs: artistIds, filters: filters
+        ))
+        return (page.items, page.total)
     }
 
     /// Tag-aggregated album artists for a music library (#111), via `/Artists/AlbumArtists`.
@@ -107,67 +86,21 @@ struct JellyfinBrowseService {
                           nameStartsWith: String? = nil,
                           sortBy: String = "SortName",
                           sortOrder: String = "Ascending") async throws -> (items: [MediaItem], total: Int?) {
-        let context = try context()
-        let req = try JellyfinLibrary.albumArtistsRequest(server: context.server,
-                                                          token: context.token,
-                                                          identity: jellyfinIdentity,
-                                                          userId: context.userID,
-                                                          parentId: parentId,
-                                                          startIndex: startIndex,
-                                                          limit: limit,
-                                                          nameStartsWith: nameStartsWith,
-                                                          sortBy: sortBy,
-                                                          sortOrder: sortOrder)
-        let response = try await send(req, as: JellyfinItemsResponse.self)
-        return (response.items.compactMap { $0.toMediaItem() }, response.totalRecordCount)
+        let page = try await browseCore().albumArtistsPage(
+            parentID: parentId, startIndex: startIndex, limit: limit,
+            nameStartsWith: nameStartsWith, sortBy: sortBy, sortOrder: sortOrder
+        )
+        return (page.items, page.total)
     }
 
     /// Ordered tracks of an audio playlist (#111), via `/Playlists/{id}/Items` — playlist
     /// order is preserved by the endpoint, so the caller must not re-sort.
     func playlistItems(playlistId: String) async throws -> [MediaItem] {
-        let context = try context()
-        let req = try JellyfinLibrary.playlistItemsRequest(server: context.server,
-                                                           token: context.token,
-                                                           identity: jellyfinIdentity,
-                                                           userId: context.userID,
-                                                           playlistId: playlistId)
-        let response = try await send(req, as: JellyfinItemsResponse.self)
-        return response.items.compactMap { $0.toMediaItem() }
+        try await browseCore().playlistItems(playlistID: playlistId)
     }
 
     func searchResults(query: String, limitPerLibrary: Int = 50) async throws -> SearchResults {
-        _ = try context()
-        let views = try await userViewLinks()
-        let groupsByIndex = try await withThrowingTaskGroup(
-            of: (Int, SearchResultGroup?).self,
-            returning: [Int: SearchResultGroup].self
-        ) { taskGroup in
-            for (index, view) in views.enumerated() {
-                taskGroup.addTask {
-                    let items = try await self.items(parentId: view.id,
-                                                     recursive: true,
-                                                     limit: limitPerLibrary,
-                                                     searchTerm: query,
-                                                     sortBy: "SortName",
-                                                     sortOrder: "Ascending",
-                                                     includeItemTypes: mediaBrowserSearchItemTypes(forCollectionType: view.collectionType))
-                    let group = SearchResultGroup.mediaBrowserLibrary(backendID: "jellyfin",
-                                                                      libraryID: view.id,
-                                                                      title: view.title,
-                                                                      items: items)
-                    return (index, group)
-                }
-            }
-
-            var groupsByIndex: [Int: SearchResultGroup] = [:]
-            for try await (index, group) in taskGroup {
-                if let group { groupsByIndex[index] = group }
-            }
-            return groupsByIndex
-        }
-
-        let groups = views.indices.compactMap { groupsByIndex[$0] }
-        return SearchResults(groups: groups)
+        try await browseCore().searchResults(query: query, limitPerLibrary: limitPerLibrary)
     }
 
     func resumeItems(parentId: String? = nil, limit: Int = 20) async throws -> [MediaItem] {
@@ -177,16 +110,9 @@ struct JellyfinBrowseService {
     func resumeItemsPage(parentId: String? = nil,
                          startIndex: Int,
                          limit: Int) async throws -> (items: [MediaItem], total: Int?) {
-        let context = try context()
-        let req = try JellyfinLibrary.resumeItemsRequest(server: context.server,
-                                                         token: context.token,
-                                                         identity: jellyfinIdentity,
-                                                         userId: context.userID,
-                                                         parentId: parentId,
-                                                         startIndex: startIndex,
-                                                         limit: limit)
-        let response = try await send(req, as: JellyfinItemsResponse.self)
-        return (response.items.compactMap { $0.toMediaItem() }, response.totalRecordCount)
+        let page = try await browseCore().resumeItemsPage(
+            parentID: parentId, startIndex: startIndex, limit: limit)
+        return (page.items, page.total)
     }
 
     func nextUp(parentId: String? = nil, limit: Int = 20) async throws -> [MediaItem] {
@@ -196,51 +122,75 @@ struct JellyfinBrowseService {
     func nextUpPage(parentId: String? = nil,
                     startIndex: Int,
                     limit: Int) async throws -> (items: [MediaItem], total: Int?) {
-        let context = try context()
-        let req = try JellyfinLibrary.nextUpRequest(server: context.server,
-                                                    token: context.token,
-                                                    identity: jellyfinIdentity,
-                                                    userId: context.userID,
-                                                    parentId: parentId,
-                                                    startIndex: startIndex,
-                                                    limit: limit)
-        let response = try await send(req, as: JellyfinItemsResponse.self)
-        return (response.items.compactMap { $0.toMediaItem() }, response.totalRecordCount)
+        let page = try await browseCore().nextUpPage(
+            parentID: parentId, startIndex: startIndex, limit: limit)
+        return (page.items, page.total)
     }
 
     func latestItems(parentId: String?,
                      includeItemTypes: String = "Movie,Episode,Video",
                      limit: Int = 20) async throws -> [MediaItem] {
-        let context = try context()
-        let req = try JellyfinLibrary.latestItemsRequest(server: context.server,
-                                                         token: context.token,
-                                                         identity: jellyfinIdentity,
-                                                         userId: context.userID,
-                                                         parentId: parentId,
-                                                         includeItemTypes: includeItemTypes,
-                                                         limit: limit)
-        let response = try await send(req, as: [JellyfinBaseItemDto].self)
-        return response.compactMap { $0.toMediaItem() }
+        try await browseCore().latestItems(parentID: parentId,
+                                           includeItemTypes: includeItemTypes,
+                                           limit: limit)
     }
 
     func metadata(itemId: String) async throws -> MediaItem {
-        let context = try context()
-        let req = try JellyfinLibrary.itemRequest(server: context.server,
-                                                  token: context.token,
-                                                  identity: jellyfinIdentity,
-                                                  userId: context.userID,
-                                                  itemId: itemId)
-        let dto = try await send(req, as: JellyfinBaseItemDto.self)
-        guard let item = dto.toMediaItem() else { throw ServiceError.noPlayableItem }
+        guard let item = try await browseCore().metadata(itemID: itemId) else {
+            throw ServiceError.noPlayableItem
+        }
+        return item
+    }
+
+    func metadata(itemId: String,
+                  session: BackendSession,
+                  identity: ClientIdentity) async throws -> MediaItem {
+        guard session.kind == .jellyfin,
+              let userID = session.userID else { throw ServiceError.notAuthenticated }
+        let core = MediaBrowserBrowseCore(
+            context: MediaBrowserBrowseContext(server: session.baseURL,
+                                               token: session.token,
+                                               userID: userID,
+                                               identity: identity.jellyfin),
+            adapter: JellyfinBrowseCoreAdapter(),
+            send: { request in try await send(request) }
+        )
+        guard let item = try await core.metadata(itemID: itemId) else {
+            throw ServiceError.noPlayableItem
+        }
         return item
     }
 
     func playbackOpen(item: MediaItem,
                       maxVideoBitrateKbps: Int,
                       resumeOffsetMs: Int? = nil,
+                      mediaSourceId: String? = nil,
                       audioStreamIndex: Int? = nil,
-                      subtitleStreamIndex: Int? = nil) async throws -> JellyfinPlaybackOpenResult {
+                      subtitleStreamIndex: Int? = nil) async throws -> MediaBrowserPlaybackOpenResult {
         let context = try context()
+        let session = BackendSession(kind: .jellyfin, baseURL: context.server,
+                                     token: context.token, userID: context.userID,
+                                     serverID: appModel.jellyfinServerID)
+        return try await playbackOpen(item: item, session: session, identity: appModel.identity,
+                                      maxVideoBitrateKbps: maxVideoBitrateKbps,
+                                      resumeOffsetMs: resumeOffsetMs,
+                                      mediaSourceId: mediaSourceId,
+                                      audioStreamIndex: audioStreamIndex,
+                                      subtitleStreamIndex: subtitleStreamIndex)
+    }
+
+    func playbackOpen(item: MediaItem,
+                      session playbackSession: BackendSession,
+                      identity: ClientIdentity,
+                      maxVideoBitrateKbps: Int,
+                      resumeOffsetMs: Int? = nil,
+                      mediaSourceId: String? = nil,
+                      audioStreamIndex: Int? = nil,
+                      subtitleStreamIndex: Int? = nil) async throws -> MediaBrowserPlaybackOpenResult {
+        guard playbackSession.kind == .jellyfin,
+              let userID = playbackSession.userID else { throw ServiceError.notAuthenticated }
+        let context = (server: playbackSession.baseURL, token: playbackSession.token, userID: userID)
+        let requestIdentity = identity.jellyfin
         let qualityPolicy = MediaBrowserPlaybackQualityPolicy(maxVideoBitrateKbps: maxVideoBitrateKbps)
         let startTicks = MediaBrowserPlaybackQualityPolicy.startTicks(resumeOffsetMs: resumeOffsetMs ?? item.viewOffset)
         // GH #196 DV P5 guard: a fallback-less DV stream must not travel a video-copy lane.
@@ -256,9 +206,10 @@ struct JellyfinBrowseService {
         }
         let req = try JellyfinPlayback.playbackInfoRequest(server: context.server,
                                                            token: context.token,
-                                                           identity: jellyfinIdentity,
+                                                           identity: requestIdentity,
                                                            itemId: item.ratingKey,
                                                            userId: context.userID,
+                                                           mediaSourceId: mediaSourceId,
                                                            startTimeTicks: startTicks,
                                                            maxStreamingBitrate: qualityPolicy.maxStreamingBitrateBps,
                                                            audioStreamIndex: audioStreamIndex,
@@ -266,31 +217,38 @@ struct JellyfinBrowseService {
                                                            forcePlaybackTranscode: forceTranscode,
                                                            advertiseDolbyVision: DolbyVisionGuard.shouldAdvertiseDolbyVision(for: item))
         let info = try await send(req, as: JellyfinPlaybackInfoResponse.self)
-        return try JellyfinPlayback.resolveStream(response: info,
-                                                  server: context.server,
-                                                  identity: jellyfinIdentity,
-                                                  token: context.token,
-                                                  itemId: item.ratingKey,
-                                                  startTimeTicks: startTicks,
-                                                  maxVideoBitrate: qualityPolicy.maxStreamingBitrateBps,
-                                                  maxWidth: qualityPolicy.maxWidth,
-                                                  maxHeight: qualityPolicy.maxHeight,
-                                                  audioBitrate: qualityPolicy.audioBitrateBps,
-                                                  audioStreamIndex: audioStreamIndex,
-                                                  subtitleStreamIndex: subtitleStreamIndex)
+        do {
+            return try JellyfinPlayback.resolveMediaBrowserStream(
+                response: info,
+                server: context.server,
+                identity: requestIdentity,
+                token: context.token,
+                itemId: item.ratingKey,
+                preferredMediaSourceId: mediaSourceId,
+                startTimeTicks: startTicks,
+                maxVideoBitrate: qualityPolicy.maxStreamingBitrateBps,
+                maxWidth: qualityPolicy.maxWidth,
+                maxHeight: qualityPolicy.maxHeight,
+                audioBitrate: qualityPolicy.audioBitrateBps,
+                audioStreamIndex: audioStreamIndex,
+                subtitleStreamIndex: subtitleStreamIndex)
+        } catch {
+            // PlaybackInfo may mint an encoder before its response proves that the explicitly
+            // selected source is unavailable. Rejecting that response must also tear down the
+            // session it minted rather than leaking an alternate-source transcode.
+            if let playSessionID = info.playSessionId, !playSessionID.isEmpty {
+                _ = await stopActiveEncoding(playSessionId: playSessionID,
+                                             session: playbackSession,
+                                             identity: identity)
+            }
+            throw error
+        }
     }
 
 
 
     func setPlayed(itemId: String, played: Bool) async throws {
-        let context = try context()
-        let req = try JellyfinLibrary.markPlayedRequest(server: context.server,
-                                                        token: context.token,
-                                                        identity: jellyfinIdentity,
-                                                        userId: context.userID,
-                                                        itemId: itemId,
-                                                        played: played)
-        _ = try await send(req)
+        try await browseCore().setPlayed(itemID: itemId, played: played)
     }
 
     func downloadRequest(itemId: String,
@@ -337,6 +295,15 @@ struct JellyfinBrowseService {
 
     @discardableResult
     func stopActiveEncoding(playSessionId: String, session: BackendSession) async -> Bool {
+        await stopActiveEncoding(playSessionId: playSessionId,
+                                 session: session,
+                                 identity: appModel.identity)
+    }
+
+    @discardableResult
+    func stopActiveEncoding(playSessionId: String,
+                            session: BackendSession,
+                            identity: ClientIdentity) async -> Bool {
         // Authenticate against the EXPLICIT session the caller resolved/validated for this job's
         // backend — never re-read the live `context()` lane, which may have been re-pointed at a
         // different server since (the #84 launch sweep validates the server match before calling;
@@ -346,8 +313,8 @@ struct JellyfinBrowseService {
             makeRequest: {
                 try JellyfinLibrary.activeEncodingStopRequest(server: session.baseURL,
                                                               token: session.token,
-                                                              identity: jellyfinIdentity,
-                                                              deviceId: appModel.identity.clientIdentifier,
+                                                              identity: identity.jellyfin,
+                                                              deviceId: identity.clientIdentifier,
                                                               playSessionId: playSessionId)
             },
             send: { req in _ = try await send(req) },
@@ -357,6 +324,18 @@ struct JellyfinBrowseService {
     nonisolated private static func httpStatus(fromActiveEncodingStopError error: Error) -> Int? {
         guard case ServiceError.http(let status) = error else { return nil }
         return status
+    }
+
+    private func browseCore() throws -> MediaBrowserBrowseCore<JellyfinBrowseCoreAdapter> {
+        let values = try context()
+        return MediaBrowserBrowseCore(
+            context: MediaBrowserBrowseContext(server: values.server,
+                                               token: values.token,
+                                               userID: values.userID,
+                                               identity: jellyfinIdentity),
+            adapter: JellyfinBrowseCoreAdapter(),
+            send: { request in try await send(request) }
+        )
     }
 
     private func context() throws -> (server: URL, token: String, userID: String) {
@@ -381,10 +360,4 @@ struct JellyfinBrowseService {
             throw ServiceError.http(status)
         }
     }
-}
-
-struct JellyfinLibraryLink: Identifiable, Hashable {
-    let id: String
-    let title: String
-    let collectionType: String?
 }

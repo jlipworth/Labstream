@@ -30,93 +30,31 @@ struct MediaBrowserPlaybackProgressSession: Equatable {
                  positionMs: Int,
                  isPaused: Bool) throws -> URLRequest {
         let ticks = MediaBrowserPlaybackProgressPolicy.positionTicks(milliseconds: positionMs)
-        switch backend {
-        case .jellyfin:
-            let method = jellyfinPlayMethod
-            switch event {
-            case .playing:
-                return try JellyfinPlayback.playingRequest(server: server,
-                                                           token: token,
-                                                           identity: identity.jellyfin,
-                                                           userId: userID,
-                                                           itemId: itemID,
-                                                           mediaSourceId: mediaSourceID,
-                                                           playSessionId: playSessionID,
-                                                           playMethod: method,
-                                                           positionTicks: ticks)
-            case .progress:
-                return try JellyfinPlayback.progressRequest(server: server,
-                                                            token: token,
-                                                            identity: identity.jellyfin,
-                                                            userId: userID,
-                                                            itemId: itemID,
-                                                            mediaSourceId: mediaSourceID,
-                                                            playSessionId: playSessionID,
-                                                            playMethod: method,
-                                                            positionTicks: ticks,
-                                                            isPaused: isPaused)
-            case .stopped:
-                return try JellyfinPlayback.stoppedRequest(server: server,
-                                                           token: token,
-                                                           identity: identity.jellyfin,
-                                                           userId: userID,
-                                                           itemId: itemID,
-                                                           mediaSourceId: mediaSourceID,
-                                                           playSessionId: playSessionID,
-                                                           playMethod: method,
-                                                           positionTicks: ticks)
-            }
-        case .emby:
-            let method = embyPlayMethod
-            switch event {
-            case .playing:
-                return try EmbyPlayback.playingRequest(server: server,
-                                                       token: token,
-                                                       identity: identity.emby,
-                                                       userId: userID,
-                                                       itemId: itemID,
-                                                       mediaSourceId: mediaSourceID,
-                                                       playSessionId: playSessionID,
-                                                       playMethod: method,
-                                                       positionTicks: ticks)
-            case .progress:
-                return try EmbyPlayback.progressRequest(server: server,
-                                                        token: token,
-                                                        identity: identity.emby,
-                                                        userId: userID,
-                                                        itemId: itemID,
-                                                        mediaSourceId: mediaSourceID,
-                                                        playSessionId: playSessionID,
-                                                        playMethod: method,
-                                                        positionTicks: ticks,
-                                                        isPaused: isPaused)
-            case .stopped:
-                return try EmbyPlayback.stoppedRequest(server: server,
-                                                       token: token,
-                                                       identity: identity.emby,
-                                                       userId: userID,
-                                                       itemId: itemID,
-                                                       mediaSourceId: mediaSourceID,
-                                                       playSessionId: playSessionID,
-                                                       playMethod: method,
-                                                       positionTicks: ticks)
-            }
+        let requestEvent: MediaBrowserPlaybackProgressRequestEvent = switch event {
+        case .playing: .playing
+        case .progress: isPaused ? .paused : .progress
+        case .stopped: .stopped
         }
-    }
-
-    private var jellyfinPlayMethod: JellyfinPlayMethod {
-        switch playMethod {
-        case .directPlay: return .directPlay
-        case .directStream: return .directStream
-        case .transcode: return .transcode
+        guard let url = MediaBrowserURL.join(server: server,
+                                             pathOrURLString: requestEvent.endpoint.rawValue) else {
+            throw URLError(.badURL)
         }
-    }
-
-    private var embyPlayMethod: EmbyPlayMethod {
-        switch playMethod {
-        case .directPlay: return .directPlay
-        case .directStream: return .directStream
-        case .transcode: return .transcode
+        let authDialect: MediaBrowserPlaybackProgressAuthDialect = switch backend {
+        case .jellyfin: .jellyfin(identity.jellyfin)
+        case .emby: .emby(identity.emby)
         }
+        return try MediaBrowserPlaybackProgressRequestPlan(
+            url: url,
+            authDialect: authDialect,
+            event: requestEvent,
+            payload: MediaBrowserPlaybackProgressPayload(
+                userId: userID,
+                itemId: itemID,
+                mediaSourceId: mediaSourceID,
+                playSessionId: playSessionID,
+                playMethod: playMethod,
+                positionTicks: ticks
+            )
+        ).request(token: token)
     }
 }

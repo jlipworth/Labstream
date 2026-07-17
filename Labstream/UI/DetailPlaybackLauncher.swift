@@ -11,232 +11,257 @@ enum DetailPlaybackLauncher {
 
     static func metadataItem(ratingKey: String,
                              fallback: MediaItem,
-                             backend: MediaBackendKind,
+                             context: MediaBrowserPlaybackContext,
                              appModel: AppModel,
                              resumeRewindSeconds: Int) async -> MediaItem {
         let fetched: MediaItem?
-        switch backend {
+        switch context.backend {
         case .plex:
             fetched = nil
         case .jellyfin:
-            fetched = try? await JellyfinBrowseService(appModel: appModel).metadata(itemId: ratingKey)
+            fetched = try? await JellyfinBrowseService(appModel: appModel).metadata(
+                itemId: ratingKey, session: context.session, identity: context.identity)
         case .emby:
-            fetched = try? await EmbyBrowseService(appModel: appModel).metadata(itemId: ratingKey)
+            fetched = try? await EmbyBrowseService(appModel: appModel).metadata(
+                itemId: ratingKey, session: context.session, identity: context.identity)
         }
         return itemWithResumeRewind(fetched ?? fallback, resumeRewindSeconds: resumeRewindSeconds)
     }
 
-    static func openJellyfin(item: MediaItem,
-                             appModel: AppModel,
-                             maxVideoBitrateKbps: Int) async throws -> DetailRemotePlaybackOpen<JellyfinRemotePlayback> {
-        let selection = MediaBrowserPlaybackPreferencePolicy.initialSelection(for: item)
-        let result = try await JellyfinBrowseService(appModel: appModel)
-            .playbackOpen(item: item,
-                          maxVideoBitrateKbps: maxVideoBitrateKbps,
-                          audioStreamIndex: selection.audioStreamIndex,
-                          subtitleStreamIndex: selection.subtitleStreamIndex)
-        return DetailRemotePlaybackOpen(
-            playback: JellyfinRemotePlayback(url: result.url,
-                                             headers: result.requiredHTTPHeaders,
-                                             playSessionId: result.playSessionId,
-                                             mediaSourceId: result.mediaSourceId,
-                                             sourceMetadata: MediaBrowserPlaybackSourceMetadata(result.sourceMetadata),
-                                             playMethod: MediaBrowserPlayMethod(result.playMethod)),
-            playMethod: result.playMethod.rawValue)
+    enum OpenError: Error {
+        case unsupportedBackend
+        case sessionUnavailable
+        case staleSession
     }
 
-    static func openEmby(item: MediaItem,
-                         appModel: AppModel,
-                         maxVideoBitrateKbps: Int) async throws -> DetailRemotePlaybackOpen<EmbyRemotePlayback> {
-        // Mirror openJellyfin: the initial PlaybackInfo must carry an explicit stream
-        // selection. Omitting SubtitleStreamIndex lets Emby's server-side user profile pick a
-        // default subtitle and burn it in while the app's picker shows "Off".
-        let selection = MediaBrowserPlaybackPreferencePolicy.initialSelection(for: item)
-        let result = try await EmbyBrowseService(appModel: appModel)
-            .playbackOpen(item: item,
-                          maxVideoBitrateKbps: maxVideoBitrateKbps,
-                          audioStreamIndex: selection.audioStreamIndex,
-                          subtitleStreamIndex: selection.subtitleStreamIndex)
-        return DetailRemotePlaybackOpen(
-            playback: EmbyRemotePlayback(url: result.url,
-                                         headers: result.requiredHTTPHeaders,
-                                         playSessionId: result.playSessionId,
-                                         mediaSourceId: result.mediaSourceId,
-                                         sourceMetadata: MediaBrowserPlaybackSourceMetadata(result.sourceMetadata),
-                                         playMethod: MediaBrowserPlayMethod(result.playMethod),
-                                         usesServerEncoding: result.usesServerEncoding),
-            playMethod: result.playMethod.rawValue)
-    }
-
-    static func jellyfinPlaybackController(remote: JellyfinRemotePlayback,
-                                           item: MediaItem,
-                                           appModel: AppModel,
-                                           maxVideoBitrateKbps: Int,
-                                           qualityDefaultsKey: String) -> PlaybackController {
-        PlaybackController(remoteStreamURL: remote.url,
-                           item: item,
-                           identity: appModel.identity,
-                           client: appModel.client,
-                           remoteBackendLabel: "Jellyfin",
-                           httpHeaders: remote.headers,
-                           remotePlaySessionId: remote.playSessionId,
-                           sourceMetadata: remote.sourceMetadata,
-                           playMethod: remote.playMethod,
-                           mediaBrowserProgressSession: mediaBrowserProgressSession(
-                               backend: .jellyfin,
-                               item: item,
-                               appModel: appModel,
-                               mediaSourceId: remote.mediaSourceId,
-                               playSessionId: remote.playSessionId,
-                               playMethod: remote.playMethod),
-                           onStopRemoteSession: {
-                               stopJellyfinActiveEncoding(appModel: appModel,
-                                                          playSessionId: remote.playSessionId)
-                           },
-                           remoteStreamReopener: { request in
-                               try await reopenJellyfinStream(item: item,
-                                                             appModel: appModel,
-                                                             request: request)
-                           },
-                           initialAudioStreamIndex: MediaBrowserPlaybackPreferencePolicy
-                               .preferredAudioStreamIndex(for: item),
-                           initialSubtitleStreamIndex: MediaBrowserPlaybackPreferencePolicy
-                               .preferredSubtitleStreamIndex(for: item),
-                           maxVideoBitrateKbps: maxVideoBitrateKbps,
-                           qualityDefaultsKey: qualityDefaultsKey)
-    }
-
-    static func embyPlaybackController(remote: EmbyRemotePlayback,
-                                       item: MediaItem,
-                                       appModel: AppModel,
-                                       maxVideoBitrateKbps: Int,
-                                       qualityDefaultsKey: String) -> PlaybackController {
-        PlaybackController(remoteStreamURL: remote.url,
-                           item: item,
-                           identity: appModel.identity,
-                           client: appModel.client,
-                           remoteBackendLabel: "Emby",
-                           httpHeaders: remote.headers,
-                           remotePlaySessionId: remote.playSessionId,
-                           sourceMetadata: remote.sourceMetadata,
-                           playMethod: remote.playMethod,
-                           mediaBrowserProgressSession: mediaBrowserProgressSession(
-                               backend: .emby,
-                               item: item,
-                               appModel: appModel,
-                               mediaSourceId: remote.mediaSourceId,
-                               playSessionId: remote.playSessionId,
-                               playMethod: remote.playMethod),
-                           onStopRemoteSession: {
-                               stopEmbyActiveEncoding(appModel: appModel,
-                                                      playSessionId: remote.playSessionId,
-                                                      usesServerEncoding: remote.usesServerEncoding)
-                           },
-                           remoteStreamReopener: { request in
-                               try await reopenEmbyStream(item: item,
-                                                          appModel: appModel,
-                                                          request: request)
-                           },
-                           // Seed the overrides with what openEmby actually sent, so the picker
-                           // and the first reopen agree with the running stream (mirror of
-                           // jellyfinPlaybackController).
-                           initialAudioStreamIndex: MediaBrowserPlaybackPreferencePolicy
-                               .preferredAudioStreamIndex(for: item),
-                           initialSubtitleStreamIndex: MediaBrowserPlaybackPreferencePolicy
-                               .preferredSubtitleStreamIndex(for: item),
-                           maxVideoBitrateKbps: maxVideoBitrateKbps,
-                           qualityDefaultsKey: qualityDefaultsKey)
-    }
-
-    private static func reopenJellyfinStream(item: MediaItem,
-                                             appModel: AppModel,
-                                             request: RemoteStreamReopenRequest) async throws -> RemoteStreamOpenResult {
-        let result = try await JellyfinBrowseService(appModel: appModel)
-            .playbackOpen(item: item,
-                          maxVideoBitrateKbps: request.bitrateKbps,
-                          resumeOffsetMs: request.offsetMs,
-                          audioStreamIndex: request.audioStreamIndex,
-                          subtitleStreamIndex: request.subtitleStreamIndex)
-        return RemoteStreamOpenResult(
-            url: result.url,
-            headers: result.requiredHTTPHeaders,
-            playSessionId: result.playSessionId,
-            mediaSourceId: result.mediaSourceId,
-            sourceMetadata: MediaBrowserPlaybackSourceMetadata(result.sourceMetadata),
-            playMethod: MediaBrowserPlayMethod(result.playMethod),
-            onStop: {
-                stopJellyfinActiveEncoding(appModel: appModel,
-                                           playSessionId: result.playSessionId)
-            })
-    }
-
-    private static func reopenEmbyStream(item: MediaItem,
-                                         appModel: AppModel,
-                                         request: RemoteStreamReopenRequest) async throws -> RemoteStreamOpenResult {
-        let result = try await EmbyBrowseService(appModel: appModel)
-            .playbackOpen(item: item,
-                          maxVideoBitrateKbps: request.bitrateKbps,
-                          resumeOffsetMs: request.offsetMs,
-                          audioStreamIndex: request.audioStreamIndex,
-                          subtitleStreamIndex: request.subtitleStreamIndex)
-        return RemoteStreamOpenResult(
-            url: result.url,
-            headers: result.requiredHTTPHeaders,
-            playSessionId: result.playSessionId,
-            mediaSourceId: result.mediaSourceId,
-            sourceMetadata: MediaBrowserPlaybackSourceMetadata(result.sourceMetadata),
-            playMethod: MediaBrowserPlayMethod(result.playMethod),
-            onStop: {
-                stopEmbyActiveEncoding(appModel: appModel,
-                                       playSessionId: result.playSessionId,
-                                       usesServerEncoding: result.usesServerEncoding)
-            })
-    }
-
-    private static func stopJellyfinActiveEncoding(appModel: AppModel, playSessionId: String) {
-        Task {
-            await JellyfinBrowseService(appModel: appModel)
-                .stopActiveEncoding(playSessionId: playSessionId)
+    static func context(backend: MediaBackendKind,
+                        appModel: AppModel) throws -> MediaBrowserPlaybackContext {
+        guard backend != .plex,
+              let session = appModel.backendSession(for: backend.downloadBackendKind) else {
+            throw backend == .plex ? OpenError.unsupportedBackend : OpenError.sessionUnavailable
         }
+        return MediaBrowserPlaybackContext(
+            backend: backend,
+            session: session,
+            authRevision: appModel.authSessionRevision(for: backend),
+            identity: appModel.identity)
     }
 
-    private static func stopEmbyActiveEncoding(appModel: AppModel,
-                                               playSessionId: String,
-                                               usesServerEncoding: Bool) {
-        Task {
-            if usesServerEncoding {
-                await EmbyBrowseService(appModel: appModel)
-                    .stopActiveEncoding(playSessionId: playSessionId)
-            }
+    static func open(item: MediaItem,
+                     backend: MediaBackendKind,
+                     appModel: AppModel,
+                     mediaIndex: Int = 0,
+                     maxVideoBitrateKbps: Int) async throws -> DetailRemotePlaybackOpen {
+        let context = try context(backend: backend, appModel: appModel)
+        return try await open(item: item,
+                              context: context,
+                              appModel: appModel,
+                              mediaIndex: mediaIndex,
+                              maxVideoBitrateKbps: maxVideoBitrateKbps)
+    }
+
+    static func open(item: MediaItem,
+                     context: MediaBrowserPlaybackContext,
+                     appModel: AppModel,
+                     mediaIndex: Int = 0,
+                     maxVideoBitrateKbps: Int) async throws -> DetailRemotePlaybackOpen {
+        let selection = MediaBrowserPlaybackPreferencePolicy.initialSelection(for: item,
+                                                                               mediaIndex: mediaIndex)
+        let mediaSourceID = MediaBrowserPlaybackPreferencePolicy.mediaSourceID(for: item,
+                                                                               mediaIndex: mediaIndex)
+        let result: MediaBrowserPlaybackOpenResult
+        switch context.backend {
+        case .jellyfin:
+            result = try await JellyfinBrowseService(appModel: appModel)
+                .playbackOpen(item: item,
+                              session: context.session,
+                              identity: context.identity,
+                              maxVideoBitrateKbps: maxVideoBitrateKbps,
+                              mediaSourceId: mediaSourceID,
+                              audioStreamIndex: selection.audioStreamIndex,
+                              subtitleStreamIndex: selection.subtitleStreamIndex)
+        case .emby:
+            // The initial PlaybackInfo must carry explicit stream selection. Omitting the
+            // subtitle sentinel lets Emby's server-side user profile burn in a default subtitle
+            // while the app picker still shows Off.
+            result = try await EmbyBrowseService(appModel: appModel)
+                .playbackOpen(item: item,
+                              session: context.session,
+                              identity: context.identity,
+                              maxVideoBitrateKbps: maxVideoBitrateKbps,
+                              mediaSourceId: mediaSourceID,
+                              audioStreamIndex: selection.audioStreamIndex,
+                              subtitleStreamIndex: selection.subtitleStreamIndex)
+        case .plex:
+            throw OpenError.unsupportedBackend
+        }
+        return DetailRemotePlaybackOpen(
+            playback: MediaBrowserRemotePlayback(context: context,
+                                                  result: result,
+                                                  mediaIndex: mediaIndex),
+            playMethod: result.playMethod.rawValue)
+    }
+
+    static func playbackController(remote: MediaBrowserRemotePlayback,
+                                   item: MediaItem,
+                                   appModel: AppModel,
+                                   maxVideoBitrateKbps: Int,
+                                   qualityDefaultsKey: String) -> PlaybackController {
+        let progressBackend: MediaBrowserPlaybackProgressSession.Backend = switch remote.backend {
+        case .jellyfin: .jellyfin
+        case .emby: .emby
+        case .plex: preconditionFailure("Plex cannot produce MediaBrowser remote playback")
+        }
+        return PlaybackController(
+            remoteStreamURL: remote.url,
+            item: item,
+            identity: remote.context.identity,
+            client: appModel.client,
+            remoteBackendLabel: remote.backend.displayName,
+            httpHeaders: remote.headers,
+            remotePlaySessionId: remote.playSessionId,
+            sourceMetadata: remote.sourceMetadata,
+            playMethod: remote.playMethod,
+            mediaBrowserProgressSession: mediaBrowserProgressSession(
+                backend: progressBackend,
+                item: item,
+                context: remote.context,
+                mediaSourceId: remote.mediaSourceId,
+                playSessionId: remote.playSessionId,
+                playMethod: remote.playMethod),
+            onStopRemoteSession: {
+                stopActiveEncoding(remote: remote, appModel: appModel)
+            },
+            remoteStreamReopener: { request in
+                try await reopenStream(context: remote.context,
+                                       item: item,
+                                       appModel: appModel,
+                                       mediaSourceId: remote.mediaSourceId,
+                                       request: request)
+            },
+            initialAudioStreamIndex: MediaBrowserPlaybackPreferencePolicy
+                .initialAudioStreamIndex(for: item, mediaIndex: remote.mediaIndex),
+            initialSubtitleStreamIndex: MediaBrowserPlaybackPreferencePolicy
+                .preferredSubtitleStreamIndex(for: item, mediaIndex: remote.mediaIndex),
+            mediaIndex: remote.mediaIndex,
+            maxVideoBitrateKbps: maxVideoBitrateKbps,
+            qualityDefaultsKey: qualityDefaultsKey)
+    }
+
+    /// Resolve the race between an async PlaybackInfo response and detail/auth replacement. A
+    /// successful stale response may already own an encoder, so rejecting it includes exact-context
+    /// cleanup rather than merely dropping the value.
+    static func acceptInitialOpen(
+        _ opened: DetailRemotePlaybackOpen,
+        requestStillCurrent: Bool,
+        appModel: AppModel,
+        cleanup: @MainActor (MediaBrowserRemotePlayback) async -> Void
+    ) async -> Bool {
+        guard requestStillCurrent, opened.playback.context.isCurrent(in: appModel) else {
+            await cleanup(opened.playback)
+            return false
+        }
+        return true
+    }
+
+    static func shouldSurfaceOpenFailure(requestStillCurrent: Bool,
+                                         context: MediaBrowserPlaybackContext?,
+                                         appModel: AppModel) -> Bool {
+        requestStillCurrent && (context?.isCurrent(in: appModel) ?? true)
+    }
+
+    static func shouldContinueAfterMetadata(requestStillCurrent: Bool,
+                                            context: MediaBrowserPlaybackContext,
+                                            appModel: AppModel) -> Bool {
+        requestStillCurrent && context.isCurrent(in: appModel)
+    }
+
+    private static func reopenStream(context: MediaBrowserPlaybackContext,
+                                     item: MediaItem,
+                                     appModel: AppModel,
+                                     mediaSourceId: String,
+                                     request: RemoteStreamReopenRequest) async throws -> RemoteStreamOpenResult {
+        let result: MediaBrowserPlaybackOpenResult
+        guard context.isCurrent(in: appModel) else { throw OpenError.staleSession }
+        switch context.backend {
+        case .jellyfin:
+            result = try await JellyfinBrowseService(appModel: appModel)
+                .playbackOpen(item: item,
+                              session: context.session,
+                              identity: context.identity,
+                              maxVideoBitrateKbps: request.bitrateKbps,
+                              resumeOffsetMs: request.offsetMs,
+                              mediaSourceId: mediaSourceId,
+                              audioStreamIndex: request.audioStreamIndex,
+                              subtitleStreamIndex: request.subtitleStreamIndex)
+        case .emby:
+            result = try await EmbyBrowseService(appModel: appModel)
+                .playbackOpen(item: item,
+                              session: context.session,
+                              identity: context.identity,
+                              maxVideoBitrateKbps: request.bitrateKbps,
+                              resumeOffsetMs: request.offsetMs,
+                              mediaSourceId: mediaSourceId,
+                              audioStreamIndex: request.audioStreamIndex,
+                              subtitleStreamIndex: request.subtitleStreamIndex)
+        case .plex:
+            throw OpenError.unsupportedBackend
+        }
+        let reopened = MediaBrowserRemotePlayback(context: context, result: result)
+        guard context.isCurrent(in: appModel) else {
+            await stopActiveEncodingNow(remote: reopened, appModel: appModel)
+            throw OpenError.staleSession
+        }
+        return RemoteStreamOpenResult(
+            url: reopened.url,
+            headers: reopened.headers,
+            playSessionId: reopened.playSessionId,
+            mediaSourceId: reopened.mediaSourceId,
+            sourceMetadata: reopened.sourceMetadata,
+            playMethod: reopened.playMethod,
+            onStop: {
+                stopActiveEncoding(remote: reopened, appModel: appModel)
+            })
+    }
+
+    static func stopActiveEncoding(remote: MediaBrowserRemotePlayback,
+                                   appModel: AppModel) {
+        guard remote.requiresActiveEncodingStop else { return }
+        Task { await stopActiveEncodingNow(remote: remote, appModel: appModel) }
+    }
+
+    @discardableResult
+    static func stopActiveEncodingNow(remote: MediaBrowserRemotePlayback,
+                                      appModel: AppModel) async -> Bool {
+        guard remote.requiresActiveEncodingStop else { return true }
+        switch remote.backend {
+        case .jellyfin:
+            return await JellyfinBrowseService(appModel: appModel)
+                .stopActiveEncoding(playSessionId: remote.playSessionId,
+                                    session: remote.context.session,
+                                    identity: remote.context.identity)
+        case .emby:
+            return await EmbyBrowseService(appModel: appModel)
+                .stopActiveEncoding(playSessionId: remote.playSessionId,
+                                    session: remote.context.session,
+                                    identity: remote.context.identity)
+        case .plex:
+            return true
         }
     }
 
     private static func mediaBrowserProgressSession(backend: MediaBrowserPlaybackProgressSession.Backend,
                                                     item: MediaItem,
-                                                    appModel: AppModel,
+                                                    context: MediaBrowserPlaybackContext,
                                                     mediaSourceId: String,
                                                     playSessionId: String,
                                                     playMethod: MediaBrowserPlayMethod) -> MediaBrowserPlaybackProgressSession? {
-        let server: URL?
-        let token: String?
-        let userID: String?
-        switch backend {
-        case .jellyfin:
-            server = appModel.jellyfinServerBaseURL
-            token = appModel.jellyfinAccessToken
-            userID = appModel.jellyfinUserID
-        case .emby:
-            server = appModel.embyServerBaseURL
-            token = appModel.embyAccessToken
-            userID = appModel.embyUserID
-        }
-
-        guard let server, let token, let userID else { return nil }
+        guard let userID = context.session.userID else { return nil }
         return MediaBrowserPlaybackProgressSession(backend: backend,
-                                                   server: server,
-                                                   token: token,
+                                                   server: context.session.baseURL,
+                                                   token: context.session.token,
                                                    userID: userID,
-                                                   identity: appModel.identity,
+                                                   identity: context.identity,
                                                    itemID: item.ratingKey,
                                                    mediaSourceID: mediaSourceId,
                                                    playSessionID: playSessionId,
@@ -268,28 +293,55 @@ enum DetailPlaybackLauncher {
     }
 }
 
-struct DetailRemotePlaybackOpen<Playback> {
-    let playback: Playback
+struct DetailRemotePlaybackOpen {
+    let playback: MediaBrowserRemotePlayback
     let playMethod: String
 }
 
-struct JellyfinRemotePlayback: Identifiable, Equatable {
-    let id = UUID()
-    let url: URL
-    let headers: [String: String]
-    let playSessionId: String
-    let mediaSourceId: String
-    let sourceMetadata: MediaBrowserPlaybackSourceMetadata
-    let playMethod: MediaBrowserPlayMethod
+struct MediaBrowserPlaybackContext: Equatable, Sendable {
+    let backend: MediaBackendKind
+    let session: BackendSession
+    let authRevision: Int
+    let identity: ClientIdentity
+
+    @MainActor
+    func isCurrent(in appModel: AppModel) -> Bool {
+        appModel.backendSession(for: backend.downloadBackendKind) == session
+            && appModel.authSessionRevision(for: backend) == authRevision
+            && appModel.identity == identity
+    }
 }
 
-struct EmbyRemotePlayback: Identifiable, Equatable {
-    let id = UUID()
-    let url: URL
-    let headers: [String: String]
-    let playSessionId: String
-    let mediaSourceId: String
-    let sourceMetadata: MediaBrowserPlaybackSourceMetadata
-    let playMethod: MediaBrowserPlayMethod
-    let usesServerEncoding: Bool
+struct MediaBrowserRemotePlayback: Identifiable, Equatable {
+    let id: UUID
+    let context: MediaBrowserPlaybackContext
+    let result: MediaBrowserPlaybackOpenResult
+    /// Canonical `Media` index whose stream metadata backs the player's track pickers.
+    let mediaIndex: Int
+
+    init(id: UUID = UUID(),
+         context: MediaBrowserPlaybackContext,
+         result: MediaBrowserPlaybackOpenResult,
+         mediaIndex: Int = 0) {
+        precondition(context.backend != .plex, "Plex cannot produce MediaBrowser remote playback")
+        self.id = id
+        self.context = context
+        self.result = result
+        self.mediaIndex = mediaIndex
+    }
+
+    var backend: MediaBackendKind { context.backend }
+    var url: URL { result.url }
+    var headers: [String: String] { result.requiredHTTPHeaders }
+    var playSessionId: String { result.playSessionId }
+    var mediaSourceId: String { result.mediaSourceId }
+    var sourceMetadata: MediaBrowserPlaybackSourceMetadata { result.sourceMetadata }
+    var playMethod: MediaBrowserPlayMethod { result.playMethod }
+    var usesServerEncoding: Bool { result.usesServerEncoding }
+
+    /// Jellyfin historically sends the idempotent active-encoding stop for every remote session;
+    /// Emby must send it only for server-encoded streams. Preserve that backend contract exactly.
+    var requiresActiveEncodingStop: Bool {
+        backend == .jellyfin || usesServerEncoding
+    }
 }

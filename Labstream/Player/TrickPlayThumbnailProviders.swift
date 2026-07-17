@@ -212,9 +212,12 @@ actor JellyfinTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
                                                                            itemId: itemId,
                                                                            mediaSourceId: mediaSourceId,
                                                                            width: width)
-                    let (data, response) = try await session.data(for: req)
-                    guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-                          let text = String(data: data, encoding: .utf8) else { return nil }
+                    let data = try await SideAssetFetchCoordinator.shared.fetch(
+                        request: req,
+                        owner: SideAssetOwner(rawValue: "player-trickplay"),
+                        session: session
+                    )
+                    guard let text = String(data: data, encoding: .utf8) else { return nil }
                     return try JellyfinTrickPlayPlaylistParser.parse(text)
                 } catch {
                     return nil
@@ -236,9 +239,12 @@ actor JellyfinTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
                                                                mediaSourceId: mediaSourceId,
                                                                width: width,
                                                                tileURI: tile.uri)
-            let (data, response) = try await session.data(for: req)
-            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-                  let image = UIImage(data: data) else { return nil }
+            let data = try await SideAssetFetchCoordinator.shared.fetch(
+                request: req,
+                owner: SideAssetOwner(rawValue: "player-trickplay"),
+                session: session
+            )
+            guard let image = UIImage(data: data) else { return nil }
             tileCache.insert(image, for: tile.uri)
             return image
         } catch {
@@ -378,13 +384,13 @@ actor EmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
                                                                 userId: userId,
                                                                 width: 480,
                                                                 height: 270) else { return nil }
-            let (data, response) = try await session.data(for: req)
-            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode), !data.isEmpty else {
-                return nil
-            }
+            let data = try await SideAssetFetchCoordinator.shared.fetch(
+                request: req,
+                owner: SideAssetOwner(rawValue: "player-trickplay"),
+                session: session
+            )
             insert(data, for: frame.index)
-            let contentType = http.value(forHTTPHeaderField: "Content-Type") ?? "image/jpeg"
-            return TrickPlayThumbnail(timeMs: frame.timeMs, imageData: data, contentType: contentType)
+            return TrickPlayThumbnail(timeMs: frame.timeMs, imageData: data, contentType: "image/jpeg")
         } catch {
             // Unavailable chapter images are expected; keep silent and graceful and never log the
             // URL (it carries the auth token on the live request).
@@ -395,9 +401,11 @@ actor EmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     /// The chapter the scrub target falls within: the last chapter whose start is at or before the
     /// target, falling back to the first chapter for targets before the first marker.
     private func nearestFrame(to targetMs: Int) -> Frame? {
-        guard !frames.isEmpty else { return nil }
-        let clamped = max(0, targetMs)
-        return frames.last { $0.timeMs <= clamped } ?? frames.first
+        guard let index = SparseTrickPlayFrameSelectionPolicy.frameIndex(
+            nearMs: targetMs,
+            sortedFrameTimesMs: frames.map(\.timeMs)
+        ) else { return nil }
+        return frames[index]
     }
 
     private func insert(_ data: Data, for index: Int) {
@@ -461,9 +469,11 @@ actor LocalEmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     /// The chapter the scrub target falls within: the last chapter whose start is at or before the
     /// target, falling back to the first for targets before the first marker. Matches the online provider.
     private func nearestFrame(to targetMs: Int) -> Frame? {
-        guard !frames.isEmpty else { return nil }
-        let clamped = max(0, targetMs)
-        return frames.last { $0.timeMs <= clamped } ?? frames.first
+        guard let index = SparseTrickPlayFrameSelectionPolicy.frameIndex(
+            nearMs: targetMs,
+            sortedFrameTimesMs: frames.map(\.timeMs)
+        ) else { return nil }
+        return frames[index]
     }
 
     private func insert(_ data: Data, for index: Int) {

@@ -1,5 +1,8 @@
 # Profiling baselines
 
+Baseline files are immutable, dated evidence. They do not describe current performance or
+replace the current instrumentation and script interfaces.
+
 Keep raw Instruments traces, simulator logs, screenshots, and media-specific notes out of git. They can contain
 private server, account, library, media-title, URL, token, hostname, or local-path data.
 

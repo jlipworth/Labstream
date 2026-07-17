@@ -187,7 +187,8 @@ Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The 
 ### Static segment train
 
 Both visionOS and non-visionOS currently use the closed-segment train. Each segment is
-512 MiB and up to eight segments may be queued per download. Validate on physical devices
+512 MiB segments are used, with at most two live or newly planned segments per download (the
+durable head plus one look-ahead). Validate on physical devices
 when claiming background durability.
 
 - [ ] Background/lock/off-head continuation appends completed segments in order and advances

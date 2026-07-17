@@ -292,22 +292,39 @@ a one-off UI/smoke identity:
 
 ```sh
 scripts/deploy-macos-to-host.sh --delete           # remove this identity's staged app only
+scripts/deploy-macos-to-host.sh --delete-all-staged # remove all apps staged by this worktree
 scripts/deploy-macos-to-host.sh --reset-container  # remove this identity's sandbox container only
 ```
+
+Per-worktree builds are visibly labeled `Labstream Dev — <identity>` in macOS; an intentional
+production-identity build remains `Labstream`. Cleanup commands preserve sandbox containers and
+Keychain credentials unless `--reset-container` is explicitly requested.
+
+`--use-production-bundle-id` is automatically Apple-Development-signed and provisions the Mac so
+the canonical synchronized Plex-token Keychain item is accessible. Do not replace it with an ad-hoc
+build: Security rejects synchronizable token access with OSStatus `-34018`, which surfaces as a
+misleading token/session error.
 
 Production container reset is intentionally guarded and requires both
 `--use-production-bundle-id` and `--allow-production-container-reset`; do not touch the
 production container unless explicitly testing/resetting the App Store identity. For old
 manual identities, inspect `~/Library/Containers/com.jlipworth.Labstream.dev.*` and remove
 only stale dev containers after confirming they do not correspond to an active worktree.
-Details: `docs/MACOS-HOST-DEPLOYMENT.md`.
+Current contributor guidance: `docs/MACOS.md`. The original host-helper rollout note is retained
+as historical context at `docs/archive/macos/MACOS-HOST-DEPLOYMENT.md`.
 
-## Live-testing workflow (semi-automated)
+## Live-testing workflow
 
-The USER performs all simulator interaction (synthetic clicking was tried and shelved —
-see the status note in the **`sim-driving` skill** before considering it). Claude
-self-serves the passive half — screenshots and logs. Don't ask the user for screenshots
-or log dumps:
+Claude self-serves screenshots and logs and may use only the bounded scenarios documented in the
+**`sim-driving` skill** for deterministic synthetic interaction. Free-form clicking remains
+disallowed; hand off authentication, gaze/hover, drag gestures, and flows whose UI change the
+harness cannot prove. Don't ask the user for screenshots or log dumps:
+
+For post-reproduction logs or evidence bundles, use the **`diagnostic-triage` skill**. Do not
+open or paste complete diagnostic JSONL directories or broad unified logs into conversation
+context by default. Run deterministic summarization/deduplication first, read its bounded brief,
+and escalate only to a named source window with a stated reason. Every subsequent evidence pull
+must be diffed against the prior bundle before its raw contents are read.
 
 ```sh
 # SIMID is this worktree's visionOS sim (see Build block / "Worktree simulators"); always target it

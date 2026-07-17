@@ -34,6 +34,7 @@ markdown_extensions:
 
 exclude_docs: |
   research/
+  audits/
   proposals/
   archive/
   superpowers/
@@ -50,6 +51,7 @@ nav:
       - Contributing: CONTRIBUTING.md
       - Development setup: DEVELOPMENT.md
       - Testing strategy: TESTING-STRATEGY.md
+      - Compile performance audit: BUILD-PERFORMANCE-AUDIT.md
       - iOS and iPadOS target: MOBILE-IOS.md
       - macOS development preview: MACOS.md
       - Native macOS CI: MACOS-CI.md
