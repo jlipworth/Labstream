@@ -478,8 +478,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// 401 purely because the user signed out — a post-hoc casualty, not a real error. The manager
     /// (on the main actor) confirms whether the backend session is actually gone and either parks the
     /// row in the deferred "waiting for a valid session" state or, if still signed in, fails it. Lands
-    /// off the main actor; when unset the delegate falls back to its normal `.failed` path.
-    var onRangeAuthHTTPFailure: ((_ ratingKey: String, _ httpStatus: Int) -> Void)?
+    /// off the main actor; when unset the delegate falls back to its normal `.failed` path. Carries the
+    /// failing `attemptKey` so the manager's terminal/quiesce disposition — which runs after a main-actor
+    /// Task hop — can fence on the attempt that actually 401'd and no-op if a newer attempt has since
+    /// taken the row, instead of resolving whatever attempt is current when the hop executes.
+    var onRangeAuthHTTPFailure: ((_ ratingKey: String, _ httpStatus: Int, _ attemptKey: DownloadAttemptKey) -> Void)?
 
     /// True when this process currently owns an opaque or Range URLSession task for the row.
     /// `DownloadManager.activeJobs` is intentionally broader app-level bookkeeping and can survive
@@ -3546,7 +3549,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     "status_code": .int(code),
                     "bytes": .bytes(durableBytes),
                 ])
-                onRangeAuthHTTPFailure(entry.ratingKey, code)
+                onRangeAuthHTTPFailure(entry.ratingKey, code, entry.attemptKey)
                 onChange?()
                 return
             }
@@ -4590,10 +4593,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// teardown back here: otherwise held out-of-order stashes leak in `tmp/`, live siblings keep
     /// transferring and auto-promote the `.failed` row straight back to `.downloading` (the C2 loop), and
     /// the row never fails terminally. Runs the row's current attempt through the identical
-    /// purge + supersede + epoch-advance + attempt-fenced `.failed` write.
-    func failStaticRangeAuthTerminal(ratingKey: String) {
-        guard let attemptID = currentAttemptIdentity(ratingKey: ratingKey) else { return }
-        let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+    /// purge + supersede + epoch-advance + attempt-fenced `.failed` write. Fences on the `attemptKey`
+    /// that actually 401'd (carried through the callback): the manager's disposition runs after a
+    /// main-actor Task hop, so if a newer attempt has taken the row since the failure it no longer owns
+    /// this key and the teardown must no-op — a fresh attempt owns the row, leave it alone.
+    func failStaticRangeAuthTerminal(attemptKey: DownloadAttemptKey) {
         guard store.ownsAttempt(attemptKey) else { return }
         setFailedPurgingHeldSegments(for: attemptKey)
     }
@@ -4607,11 +4611,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// auto-promote the parked `.paused`/`.queued` row back to `.downloading`, and resets the exhausted
     /// retry/rehydration budget so a clean rehydration path exists once the account is signed back in.
     /// The `.pause` halt is cleared by the eventual user/auto resume (`start` removes it), so it cannot
-    /// wedge the deferred continuation. The manager owns the row status write.
-    func quiesceStaticRangeForDeferredResume(ratingKey: String) {
-        guard let attemptID = currentAttemptIdentity(ratingKey: ratingKey) else { return }
-        let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+    /// wedge the deferred continuation. The manager owns the row status write. Fences on the `attemptKey`
+    /// that actually 401'd (carried through the callback): the manager's disposition runs after a
+    /// main-actor Task hop, so if a newer attempt has taken the row since the failure it no longer owns
+    /// this key and the quiescence must no-op — a fresh attempt owns the row, leave it alone.
+    func quiesceStaticRangeForDeferredResume(attemptKey: DownloadAttemptKey) {
         guard store.ownsAttempt(attemptKey) else { return }
+        let ratingKey = attemptKey.ratingKey
         var superseded: [Int] = []
         lock.lock()
         if rangeHaltKinds[attemptKey] != .cancel { rangeHaltKinds[attemptKey] = .pause }
