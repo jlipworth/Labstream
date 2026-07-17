@@ -166,6 +166,7 @@ public struct JellyfinDownloadPlaybackDecision: Sendable, Equatable {
 
 public enum JellyfinPlaybackError: Error, Sendable, Equatable {
     case noMediaSources
+    case preferredMediaSourceUnavailable(String)
     case missingPlaySessionId
     case missingMediaSourceId
     case unsupportedMediaSource
@@ -304,6 +305,11 @@ public enum JellyfinPlayback {
                                      subtitleStreamIndex: Int? = nil) throws -> MediaBrowserPlaybackOpenResult {
         guard let playSessionId = response.playSessionId, !playSessionId.isEmpty else {
             throw JellyfinPlaybackError.missingPlaySessionId
+        }
+        if let preferredMediaSourceId,
+           !preferredMediaSourceId.isEmpty,
+           !response.mediaSources.contains(where: { $0.id == preferredMediaSourceId }) {
+            throw JellyfinPlaybackError.preferredMediaSourceUnavailable(preferredMediaSourceId)
         }
         guard let source = chooseSource(response.mediaSources, preferredMediaSourceId: preferredMediaSourceId) else {
             throw JellyfinPlaybackError.noMediaSources

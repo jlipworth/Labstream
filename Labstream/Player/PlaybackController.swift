@@ -1093,6 +1093,7 @@ final class PlaybackController {
          remoteStreamReopener: RemoteStreamReopener? = nil,
          initialAudioStreamIndex: Int? = nil,
          initialSubtitleStreamIndex: Int? = nil,
+         mediaIndex: Int = 0,
          maxVideoBitrateKbps: Int = 0,
          qualityDefaultsKey: String = PlaybackPreferences.Keys.legacyQualityKbps) {
         self.item = item
@@ -1117,8 +1118,9 @@ final class PlaybackController {
         self.maxVideoBitrateKbps = maxVideoBitrateKbps
         self.userSelectedMaxVideoBitrateKbps = maxVideoBitrateKbps
         self.qualityDefaultsKey = qualityDefaultsKey
-        // A backend-resolved URL is already one concrete stream.
-        self.mediaIndex = 0
+        // The resolved URL is one concrete MediaBrowser source. Keep its canonical Media index so
+        // the track pickers expose stream indices from that same source on every reopen.
+        self.mediaIndex = mediaIndex
         // Non-Plex playback has no Plex play queue to resolve against.
         self.machineIdentifier = nil
         // The backend spike starts at the server-selected offset for now.

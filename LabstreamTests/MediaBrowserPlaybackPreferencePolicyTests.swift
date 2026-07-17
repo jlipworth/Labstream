@@ -54,6 +54,31 @@ struct MediaBrowserPlaybackPreferencePolicyTests {
             for: item, defaults: defaults) == 0)
     }
 
+    @Test func multiVersionSelectionKeepsSourceIdentityAndStreamIndicesTogether() throws {
+        let defaults = try makeDefaults()
+        defaults.set(SubtitleAutoSelectMode.always.rawValue,
+                     forKey: PlaybackPreferences.Keys.subtitleAutoSelectMode)
+        defaults.set("da", forKey: PlaybackPreferences.Keys.preferredSubtitleLanguage)
+        let item = MediaItem(ratingKey: "item-1", title: "Test", type: "movie", media: [
+            Media(id: 1, part: [Part(id: 1,
+                                    key: "emby://item/item-1/media/alternate",
+                                    streams: [audio(id: 2, isDefault: true),
+                                              subtitle(id: 3, languageCode: "eng")])]),
+            Media(id: 2, part: [Part(id: 2,
+                                    key: "emby://item/item-1/media/selected",
+                                    streams: [audio(id: 12, isDefault: true),
+                                              subtitle(id: 19, languageCode: "dan")])]),
+        ])
+
+        #expect(MediaBrowserPlaybackPreferencePolicy.mediaSourceID(for: item, mediaIndex: 1) == "selected")
+        let selected = MediaBrowserPlaybackPreferencePolicy.initialSelection(
+            for: item, mediaIndex: 1, defaults: defaults)
+        #expect(selected.audioStreamIndex == 12)
+        #expect(selected.subtitleStreamIndex == 19)
+        #expect(MediaBrowserPlaybackPreferencePolicy.initialAudioStreamIndex(
+            for: item, mediaIndex: 0, defaults: defaults) == 2)
+    }
+
     private func makeDefaults() throws -> UserDefaults {
         let suite = "MediaBrowserPlaybackPreferencePolicyTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -76,5 +101,11 @@ struct MediaBrowserPlaybackPreferencePolicyTests {
                languageCode: languageCode,
                selected: selected,
                isDefault: isDefault)
+    }
+
+    private func subtitle(id: Int, languageCode: String) -> Stream {
+        Stream(id: id,
+               streamType: StreamType.subtitle.rawValue,
+               languageCode: languageCode)
     }
 }

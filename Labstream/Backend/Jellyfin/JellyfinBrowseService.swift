@@ -164,6 +164,7 @@ struct JellyfinBrowseService {
     func playbackOpen(item: MediaItem,
                       maxVideoBitrateKbps: Int,
                       resumeOffsetMs: Int? = nil,
+                      mediaSourceId: String? = nil,
                       audioStreamIndex: Int? = nil,
                       subtitleStreamIndex: Int? = nil) async throws -> MediaBrowserPlaybackOpenResult {
         let context = try context()
@@ -173,6 +174,7 @@ struct JellyfinBrowseService {
         return try await playbackOpen(item: item, session: session, identity: appModel.identity,
                                       maxVideoBitrateKbps: maxVideoBitrateKbps,
                                       resumeOffsetMs: resumeOffsetMs,
+                                      mediaSourceId: mediaSourceId,
                                       audioStreamIndex: audioStreamIndex,
                                       subtitleStreamIndex: subtitleStreamIndex)
     }
@@ -182,6 +184,7 @@ struct JellyfinBrowseService {
                       identity: ClientIdentity,
                       maxVideoBitrateKbps: Int,
                       resumeOffsetMs: Int? = nil,
+                      mediaSourceId: String? = nil,
                       audioStreamIndex: Int? = nil,
                       subtitleStreamIndex: Int? = nil) async throws -> MediaBrowserPlaybackOpenResult {
         guard playbackSession.kind == .jellyfin,
@@ -206,6 +209,7 @@ struct JellyfinBrowseService {
                                                            identity: requestIdentity,
                                                            itemId: item.ratingKey,
                                                            userId: context.userID,
+                                                           mediaSourceId: mediaSourceId,
                                                            startTimeTicks: startTicks,
                                                            maxStreamingBitrate: qualityPolicy.maxStreamingBitrateBps,
                                                            audioStreamIndex: audioStreamIndex,
@@ -213,19 +217,32 @@ struct JellyfinBrowseService {
                                                            forcePlaybackTranscode: forceTranscode,
                                                            advertiseDolbyVision: DolbyVisionGuard.shouldAdvertiseDolbyVision(for: item))
         let info = try await send(req, as: JellyfinPlaybackInfoResponse.self)
-        return try JellyfinPlayback.resolveMediaBrowserStream(
-            response: info,
-            server: context.server,
-            identity: requestIdentity,
-            token: context.token,
-            itemId: item.ratingKey,
-            startTimeTicks: startTicks,
-            maxVideoBitrate: qualityPolicy.maxStreamingBitrateBps,
-            maxWidth: qualityPolicy.maxWidth,
-            maxHeight: qualityPolicy.maxHeight,
-            audioBitrate: qualityPolicy.audioBitrateBps,
-            audioStreamIndex: audioStreamIndex,
-            subtitleStreamIndex: subtitleStreamIndex)
+        do {
+            return try JellyfinPlayback.resolveMediaBrowserStream(
+                response: info,
+                server: context.server,
+                identity: requestIdentity,
+                token: context.token,
+                itemId: item.ratingKey,
+                preferredMediaSourceId: mediaSourceId,
+                startTimeTicks: startTicks,
+                maxVideoBitrate: qualityPolicy.maxStreamingBitrateBps,
+                maxWidth: qualityPolicy.maxWidth,
+                maxHeight: qualityPolicy.maxHeight,
+                audioBitrate: qualityPolicy.audioBitrateBps,
+                audioStreamIndex: audioStreamIndex,
+                subtitleStreamIndex: subtitleStreamIndex)
+        } catch {
+            // PlaybackInfo may mint an encoder before its response proves that the explicitly
+            // selected source is unavailable. Rejecting that response must also tear down the
+            // session it minted rather than leaking an alternate-source transcode.
+            if let playSessionID = info.playSessionId, !playSessionID.isEmpty {
+                _ = await stopActiveEncoding(playSessionId: playSessionID,
+                                             session: playbackSession,
+                                             identity: identity)
+            }
+            throw error
+        }
     }
 
 

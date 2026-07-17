@@ -14,6 +14,16 @@ enum MediaBrowserPlaybackPreferencePolicy {
     /// (both servers read -1 as "no subtitles") whenever no subtitle should be shown.
     static let subtitleOffStreamIndex = -1
 
+    /// The MediaBrowser `MediaSourceId` represented by the detail screen's selected canonical
+    /// `Media` entry. Jellyfin/Emby stream indices are scoped to one MediaSource, so this identity
+    /// must travel with the selected audio/subtitle indices through every PlaybackInfo request.
+    static func mediaSourceID(for item: MediaItem, mediaIndex: Int) -> String? {
+        let selection = DownloadMediaSelectionPolicy.selection(item: item,
+                                                               mediaIndex: mediaIndex,
+                                                               partIndex: 0)
+        return selection.mediaSourceID
+    }
+
     static func initialSelection(for item: MediaItem,
                                  mediaIndex: Int = 0,
                                  defaults: UserDefaults = .standard) -> MediaBrowserPlaybackStreamSelection {

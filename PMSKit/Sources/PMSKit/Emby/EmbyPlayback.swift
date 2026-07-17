@@ -187,6 +187,7 @@ public struct EmbyMediaSourceInfo: Decodable, Sendable, Equatable {
 
 public enum EmbyPlaybackError: Error, Sendable, Equatable {
     case noMediaSources
+    case preferredMediaSourceUnavailable(String)
     case missingPlaySessionId
     case missingMediaSourceId
     case unsupportedMediaSource
@@ -483,6 +484,11 @@ public enum EmbyPlayback {
                                      subtitleStreamIndex: Int? = nil) throws -> MediaBrowserPlaybackOpenResult {
         guard let playSessionId = response.playSessionId, !playSessionId.isEmpty else {
             throw EmbyPlaybackError.missingPlaySessionId
+        }
+        if let preferredMediaSourceId,
+           !preferredMediaSourceId.isEmpty,
+           !response.mediaSources.contains(where: { $0.id == preferredMediaSourceId }) {
+            throw EmbyPlaybackError.preferredMediaSourceUnavailable(preferredMediaSourceId)
         }
         guard let source = chooseSource(response.mediaSources, preferredMediaSourceId: preferredMediaSourceId) else {
             throw EmbyPlaybackError.noMediaSources
