@@ -167,6 +167,7 @@ struct EmbyBrowseService {
     func playbackOpen(item: MediaItem,
                       maxVideoBitrateKbps: Int,
                       resumeOffsetMs: Int? = nil,
+                      mediaSourceId: String? = nil,
                       audioStreamIndex: Int? = nil,
                       subtitleStreamIndex: Int? = nil) async throws -> MediaBrowserPlaybackOpenResult {
         let context = try context()
@@ -176,6 +177,7 @@ struct EmbyBrowseService {
         return try await playbackOpen(item: item, session: session, identity: appModel.identity,
                                       maxVideoBitrateKbps: maxVideoBitrateKbps,
                                       resumeOffsetMs: resumeOffsetMs,
+                                      mediaSourceId: mediaSourceId,
                                       audioStreamIndex: audioStreamIndex,
                                       subtitleStreamIndex: subtitleStreamIndex)
     }
@@ -185,6 +187,7 @@ struct EmbyBrowseService {
                       identity: ClientIdentity,
                       maxVideoBitrateKbps: Int,
                       resumeOffsetMs: Int? = nil,
+                      mediaSourceId: String? = nil,
                       audioStreamIndex: Int? = nil,
                       subtitleStreamIndex: Int? = nil) async throws -> MediaBrowserPlaybackOpenResult {
         guard playbackSession.kind == .emby,
@@ -218,6 +221,7 @@ struct EmbyBrowseService {
                                                        identity: requestIdentity,
                                                        userId: context.userID,
                                                        itemId: item.ratingKey,
+                                                       mediaSourceId: mediaSourceId,
                                                        startTimeTicks: startTicks,
                                                        maxStreamingBitrate: qualityPolicy.maxStreamingBitrateBps,
                                                        audioStreamIndex: audioStreamIndex,
@@ -225,20 +229,35 @@ struct EmbyBrowseService {
                                                        forcePlaybackTranscode: forceTranscode,
                                                        advertiseDolbyVision: DolbyVisionGuard.shouldAdvertiseDolbyVision(for: item))
         let info = try await send(req, as: EmbyPlaybackInfoResponse.self)
-        return try EmbyPlayback.resolveMediaBrowserStream(
-            response: info,
-            server: context.server,
-            identity: requestIdentity,
-            token: context.token,
-            userId: context.userID,
-            itemId: item.ratingKey,
-            startTimeTicks: startTicks,
-            maxVideoBitrate: qualityPolicy.maxStreamingBitrateBps,
-            maxWidth: qualityPolicy.maxWidth,
-            maxHeight: qualityPolicy.maxHeight,
-            audioBitrate: qualityPolicy.audioBitrateBps,
-            audioStreamIndex: audioStreamIndex,
-            subtitleStreamIndex: subtitleStreamIndex)
+        do {
+            return try EmbyPlayback.resolveMediaBrowserStream(
+                response: info,
+                server: context.server,
+                identity: requestIdentity,
+                token: context.token,
+                userId: context.userID,
+                itemId: item.ratingKey,
+                preferredMediaSourceId: mediaSourceId,
+                startTimeTicks: startTicks,
+                maxVideoBitrate: qualityPolicy.maxStreamingBitrateBps,
+                maxWidth: qualityPolicy.maxWidth,
+                maxHeight: qualityPolicy.maxHeight,
+                audioBitrate: qualityPolicy.audioBitrateBps,
+                audioStreamIndex: audioStreamIndex,
+                subtitleStreamIndex: subtitleStreamIndex)
+        } catch {
+            // Emby starts encoding during PlaybackInfo negotiation. If exact-source validation
+            // rejects the response, clean up any alternate-source encoder before surfacing the
+            // original error. Preserve Emby's direct-source contract: only send the active-
+            // encoding stop when PlaybackInfo actually advertised an encoder-backed source.
+            if info.mediaSources.contains(where: { $0.transcodingURL?.isEmpty == false }),
+               let playSessionID = info.playSessionId, !playSessionID.isEmpty {
+                _ = await stopActiveEncoding(playSessionId: playSessionID,
+                                             session: playbackSession,
+                                             identity: identity)
+            }
+            throw error
+        }
     }
 
 

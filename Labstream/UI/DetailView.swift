@@ -980,6 +980,7 @@ struct DetailView: View {
         guard !detailed.isMusic else { return }
         let launchRatingKey = detailed.ratingKey
         let launchBackend = actionBackend
+        let launchMediaIndex = selectedMediaIndex
         let span = PerformanceInstrumentation.begin(.playbackResolve,
                                                      backend: actionBackend.performanceLabel,
                                                      fields: [
@@ -1014,6 +1015,7 @@ struct DetailView: View {
                     && metadataReadyForActions
                     && actionBackend == launchBackend
                     && detailed.ratingKey == launchRatingKey
+                    && selectedMediaIndex == launchMediaIndex
                 guard DetailPlaybackLauncher.shouldContinueAfterMetadata(
                     requestStillCurrent: metadataRequestStillCurrent,
                     context: capturedContext,
@@ -1026,11 +1028,13 @@ struct DetailView: View {
                     item: playbackItem,
                     context: capturedContext,
                     appModel: appModel,
+                    mediaIndex: launchMediaIndex,
                     maxVideoBitrateKbps: activeMaxVideoBitrateKbps)
                 let requestStillCurrent = playbackRequestID == requestID
                     && metadataReadyForActions
                     && actionBackend == launchBackend
                     && detailed.ratingKey == launchRatingKey
+                    && selectedMediaIndex == launchMediaIndex
                 let accepted = await DetailPlaybackLauncher.acceptInitialOpen(
                     opened,
                     requestStillCurrent: requestStillCurrent,
@@ -1057,6 +1061,7 @@ struct DetailView: View {
                     && metadataReadyForActions
                     && actionBackend == launchBackend
                     && detailed.ratingKey == launchRatingKey
+                    && selectedMediaIndex == launchMediaIndex
                 guard DetailPlaybackLauncher.shouldSurfaceOpenFailure(
                     requestStillCurrent: requestStillCurrent,
                     context: openContext,

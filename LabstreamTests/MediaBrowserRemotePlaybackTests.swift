@@ -21,7 +21,7 @@ struct MediaBrowserRemotePlaybackTests {
                                                     sourceMetadata: source,
                                                     usesServerEncoding: true)
         let context = try playbackContext(backend: .emby)
-        let remote = MediaBrowserRemotePlayback(context: context, result: result)
+        let remote = MediaBrowserRemotePlayback(context: context, result: result, mediaIndex: 2)
 
         #expect(remote.backend == .emby)
         #expect(remote.context == context)
@@ -29,6 +29,7 @@ struct MediaBrowserRemotePlaybackTests {
         #expect(remote.headers == ["X-Required": "yes"])
         #expect(remote.playSessionId == "play-1")
         #expect(remote.mediaSourceId == "source-1")
+        #expect(remote.mediaIndex == 2)
         #expect(remote.playMethod == .transcode)
         #expect(remote.sourceMetadata == source)
         #expect(remote.usesServerEncoding)

@@ -50,19 +50,25 @@ enum DetailPlaybackLauncher {
     static func open(item: MediaItem,
                      backend: MediaBackendKind,
                      appModel: AppModel,
+                     mediaIndex: Int = 0,
                      maxVideoBitrateKbps: Int) async throws -> DetailRemotePlaybackOpen {
         let context = try context(backend: backend, appModel: appModel)
         return try await open(item: item,
                               context: context,
                               appModel: appModel,
+                              mediaIndex: mediaIndex,
                               maxVideoBitrateKbps: maxVideoBitrateKbps)
     }
 
     static func open(item: MediaItem,
                      context: MediaBrowserPlaybackContext,
                      appModel: AppModel,
+                     mediaIndex: Int = 0,
                      maxVideoBitrateKbps: Int) async throws -> DetailRemotePlaybackOpen {
-        let selection = MediaBrowserPlaybackPreferencePolicy.initialSelection(for: item)
+        let selection = MediaBrowserPlaybackPreferencePolicy.initialSelection(for: item,
+                                                                               mediaIndex: mediaIndex)
+        let mediaSourceID = MediaBrowserPlaybackPreferencePolicy.mediaSourceID(for: item,
+                                                                               mediaIndex: mediaIndex)
         let result: MediaBrowserPlaybackOpenResult
         switch context.backend {
         case .jellyfin:
@@ -71,6 +77,7 @@ enum DetailPlaybackLauncher {
                               session: context.session,
                               identity: context.identity,
                               maxVideoBitrateKbps: maxVideoBitrateKbps,
+                              mediaSourceId: mediaSourceID,
                               audioStreamIndex: selection.audioStreamIndex,
                               subtitleStreamIndex: selection.subtitleStreamIndex)
         case .emby:
@@ -82,13 +89,16 @@ enum DetailPlaybackLauncher {
                               session: context.session,
                               identity: context.identity,
                               maxVideoBitrateKbps: maxVideoBitrateKbps,
+                              mediaSourceId: mediaSourceID,
                               audioStreamIndex: selection.audioStreamIndex,
                               subtitleStreamIndex: selection.subtitleStreamIndex)
         case .plex:
             throw OpenError.unsupportedBackend
         }
         return DetailRemotePlaybackOpen(
-            playback: MediaBrowserRemotePlayback(context: context, result: result),
+            playback: MediaBrowserRemotePlayback(context: context,
+                                                  result: result,
+                                                  mediaIndex: mediaIndex),
             playMethod: result.playMethod.rawValue)
     }
 
@@ -126,12 +136,14 @@ enum DetailPlaybackLauncher {
                 try await reopenStream(context: remote.context,
                                        item: item,
                                        appModel: appModel,
+                                       mediaSourceId: remote.mediaSourceId,
                                        request: request)
             },
             initialAudioStreamIndex: MediaBrowserPlaybackPreferencePolicy
-                .initialAudioStreamIndex(for: item),
+                .initialAudioStreamIndex(for: item, mediaIndex: remote.mediaIndex),
             initialSubtitleStreamIndex: MediaBrowserPlaybackPreferencePolicy
-                .preferredSubtitleStreamIndex(for: item),
+                .preferredSubtitleStreamIndex(for: item, mediaIndex: remote.mediaIndex),
+            mediaIndex: remote.mediaIndex,
             maxVideoBitrateKbps: maxVideoBitrateKbps,
             qualityDefaultsKey: qualityDefaultsKey)
     }
@@ -167,6 +179,7 @@ enum DetailPlaybackLauncher {
     private static func reopenStream(context: MediaBrowserPlaybackContext,
                                      item: MediaItem,
                                      appModel: AppModel,
+                                     mediaSourceId: String,
                                      request: RemoteStreamReopenRequest) async throws -> RemoteStreamOpenResult {
         let result: MediaBrowserPlaybackOpenResult
         guard context.isCurrent(in: appModel) else { throw OpenError.staleSession }
@@ -178,6 +191,7 @@ enum DetailPlaybackLauncher {
                               identity: context.identity,
                               maxVideoBitrateKbps: request.bitrateKbps,
                               resumeOffsetMs: request.offsetMs,
+                              mediaSourceId: mediaSourceId,
                               audioStreamIndex: request.audioStreamIndex,
                               subtitleStreamIndex: request.subtitleStreamIndex)
         case .emby:
@@ -187,6 +201,7 @@ enum DetailPlaybackLauncher {
                               identity: context.identity,
                               maxVideoBitrateKbps: request.bitrateKbps,
                               resumeOffsetMs: request.offsetMs,
+                              mediaSourceId: mediaSourceId,
                               audioStreamIndex: request.audioStreamIndex,
                               subtitleStreamIndex: request.subtitleStreamIndex)
         case .plex:
@@ -301,12 +316,18 @@ struct MediaBrowserRemotePlayback: Identifiable, Equatable {
     let id: UUID
     let context: MediaBrowserPlaybackContext
     let result: MediaBrowserPlaybackOpenResult
+    /// Canonical `Media` index whose stream metadata backs the player's track pickers.
+    let mediaIndex: Int
 
-    init(id: UUID = UUID(), context: MediaBrowserPlaybackContext, result: MediaBrowserPlaybackOpenResult) {
+    init(id: UUID = UUID(),
+         context: MediaBrowserPlaybackContext,
+         result: MediaBrowserPlaybackOpenResult,
+         mediaIndex: Int = 0) {
         precondition(context.backend != .plex, "Plex cannot produce MediaBrowser remote playback")
         self.id = id
         self.context = context
         self.result = result
+        self.mediaIndex = mediaIndex
     }
 
     var backend: MediaBackendKind { context.backend }
