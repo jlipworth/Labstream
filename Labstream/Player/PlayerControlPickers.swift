@@ -280,13 +280,10 @@ private struct RequestBackedChapterImage: View {
         if let url = request.url, url.isFileURL {
             return try Data(contentsOf: url)
         }
-        let (data, response) = try await URLSession.shared.data(for: request)
-        if let http = response as? HTTPURLResponse,
-           !(200..<300).contains(http.statusCode) {
-            throw URLError(.badServerResponse)
-        }
-        guard !data.isEmpty else { throw URLError(.zeroByteResource) }
-        return data
+        return try await SideAssetFetchCoordinator.shared.fetch(
+            request: request,
+            owner: SideAssetOwner(rawValue: "player-chapter-thumbnails")
+        )
     }
 }
 
@@ -316,12 +313,10 @@ struct ChaptersTabView: View {
         } else {
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
-                    // Use an eager stack instead of LazyHStack here. Chapter counts are small,
-                    // and the custom popover's horizontal rail otherwise only realizes the
-                    // initially visible cards; AsyncImage then starts/cancels later thumbnail
-                    // requests as the user scrolls, leaving film placeholders for offscreen
-                    // chapters that Plex can actually render.
-                    HStack(alignment: .top, spacing: DS.Space.md) {
+                    // Realize thumbnails on demand. Even though the request broker below also
+                    // paces starts process-wide, eagerly constructing a long Emby chapter list
+                    // needlessly queues every remote image when the panel first opens.
+                    LazyHStack(alignment: .top, spacing: DS.Space.md) {
                         ForEach(Array(chapters.enumerated()), id: \.element.id) { index, chapter in
                             ChapterCard(chapter: chapter,
                                         index: index,

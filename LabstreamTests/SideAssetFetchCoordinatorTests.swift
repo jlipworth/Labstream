@@ -3,6 +3,33 @@ import XCTest
 @testable import Labstream
 
 final class SideAssetFetchCoordinatorTests: XCTestCase {
+    func testRequestGatewayPacesPlayerChapterBurstByOrigin() async throws {
+        let clock = AdvancingSideAssetClock()
+        let recorder = SideAssetStartRecorder(clock: clock)
+        let coordinator = SideAssetFetchCoordinator(
+            policy: .init(maximumRequestStartsPerSecond: 2, maximumConcurrentRequests: 2),
+            clock: clock.dependency
+        )
+        let owner = SideAssetOwner(rawValue: "player-chapter-thumbnails")
+
+        let tasks = (0..<48).map { index in
+            Task {
+                var request = URLRequest(url: URL(string: "https://emby.example/emby/Items/50388/Images/Chapter/\(index)")!)
+                request.setValue("secret", forHTTPHeaderField: "X-Emby-Token")
+                return try await coordinator.fetch(request: request, owner: owner) {
+                    await recorder.record(owner: owner.rawValue)
+                }
+            }
+        }
+        for task in tasks { _ = try await task.value }
+
+        let admissions = await coordinator.recordedAdmissionsForTesting()
+        XCTAssertEqual(admissions.count, 48)
+        XCTAssertTrue(zip(admissions, admissions.dropFirst()).allSatisfy {
+            $1.timeNanoseconds - $0.timeNanoseconds >= 500_000_000
+        })
+    }
+
     func testTwoDownloadIncidentIsGloballyPacedAndFair() async throws {
         let clock = AdvancingSideAssetClock()
         let recorder = SideAssetStartRecorder(clock: clock)
