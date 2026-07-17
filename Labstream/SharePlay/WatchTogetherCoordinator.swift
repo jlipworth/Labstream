@@ -231,8 +231,16 @@ final class WatchTogetherCoordinator {
 
     @discardableResult
     func attachPlaybackCoordinatorIfReady(player: AVPlayer, item: MediaItem) -> Bool {
-        guard let session = activeSession, let payload = activePayload,
-              SharePlayMediaResolver().selectableCandidates(for: payload.identity, in: [item]).count == 1,
+        // Consent boundary. `session.join()` runs early (in `handle`) so we can receive messages and
+        // present the join prompt, but binding a local AVPlayer to the group session is the real
+        // opt-in and must not happen until THIS coordinator has launched the resolved item (initiator
+        // started, or a participant received .started). Gating on `selectableCandidates` — kind plus
+        // 5s-bucketed duration — would group-coordinate a user's private, unrelated playback that
+        // merely shares a duration bucket, so we require the player to be showing the exact resolved
+        // item instead of the coarse pool.
+        guard didLaunchResolvedItem,
+              let session = activeSession, let payload = activePayload,
+              let resolved = resolvedItem, resolved.ratingKey == item.ratingKey,
               let identifier = payload.identity.coordinatorIdentifier,
               let currentItem = player.currentItem else { return false }
         let delegate = WatchTogetherPlaybackCoordinatorDelegate(playerItem: currentItem, coordinatorIdentifier: identifier)
