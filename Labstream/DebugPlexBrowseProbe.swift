@@ -6,7 +6,7 @@ import PMSKit
 @MainActor
 protocol PlexBrowseProbeServing {
     func libraries() async throws -> [PlexSection]
-    func sectionPage(sectionKey: String, startIndex: Int?, limit: Int?, sort: String?, firstCharacter: String?) async throws -> PlexBrowsePage
+    func sectionPage(sectionKey: String, startIndex: Int?, limit: Int?, sort: String?, firstCharacter: String?, browseQuery: LibraryBrowseQuery) async throws -> PlexBrowsePage
     func alphabetCounts(sectionKey: String, type: Int?) async throws -> [(display: String, count: Int)]
     func hubs() async throws -> [Hub]
     func searchWithLibraries(query: String) async throws -> PlexSearchSnapshot
@@ -122,8 +122,8 @@ enum DebugPlexBrowseProbe {
                     ?? libraries.first(where: { !$0.isMusic }) ?? libraries.first else { throw ProbeFailure.assertion }
 
             progress.stage = .page
-            let page = try await service.sectionPage(sectionKey: library.key, startIndex: 0, limit: 10, sort: "titleSort", firstCharacter: nil)
-            let repeated = try await service.sectionPage(sectionKey: library.key, startIndex: 0, limit: 10, sort: "titleSort", firstCharacter: nil)
+            let page = try await service.sectionPage(sectionKey: library.key, startIndex: 0, limit: 10, sort: "titleSort", firstCharacter: nil, browseQuery: .default)
+            let repeated = try await service.sectionPage(sectionKey: library.key, startIndex: 0, limit: 10, sort: "titleSort", firstCharacter: nil, browseQuery: .default)
             e.pageCount = page.items.count
             e.pageTotal = page.total
             let ids = page.items.map(\.ratingKey)
