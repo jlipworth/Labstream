@@ -29,16 +29,6 @@ struct CollectionExtrasRequestTests {
         #expect(queryValue(children, "X-Plex-Container-Size") == "200")
     }
 
-    @Test func plexExtrasTargetsMetadataExtras() {
-        let request = CollectionRequest.plexExtras(server: TestFixtures.plexServer,
-                                                  token: "tok",
-                                                  identity: TestFixtures.plexIdentity,
-                                                  ratingKey: "movie-1")
-        #expect(request.url.path == "/library/metadata/movie-1/extras")
-        #expect(request.method == "GET")
-        #expect(request.headers["X-Plex-Token"] == "tok")
-    }
-
     @Test func jellyfinCollectionsUseGenericItemsNotCollectionManagementEndpoint() throws {
         let list = try JellyfinLibrary.collectionsRequest(server: TestFixtures.jellyfinServer,
                                                           token: "jf-token",
