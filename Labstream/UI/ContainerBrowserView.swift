@@ -107,7 +107,7 @@ struct ContainerBrowserView: View {
                                     .cardLink()
                                     .id(index)
                                 } else {
-                                    LibraryPlaceholderPoster(width: DS.Poster.gridMin)
+                                    LibraryPlaceholderPoster(width: DS.Poster.gridMin(compact: compactWidth))
                                         .id(index)
                                         .onAppear { prefetchCollectionPage(containing: index) }
                                 }
