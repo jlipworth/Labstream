@@ -3535,10 +3535,12 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // remainder may simply be holding a token the user just revoked by signing out. Hand the
             // terminal decision to the manager, which (on the main actor) parks the row in the deferred
             // "waiting for a valid session" state when the backend session is actually gone, or fails
-            // it when still signed in (a genuine auth error). Reset the exhausted retry/rehydrate
-            // counters so a clean rehydration path is available once the account is signed back in.
+            // it when still signed in (a genuine auth error). The manager owns both terminal paths:
+            // `quiesceStaticRangeForDeferredResume` (which resets the exhausted retry/rehydrate budget
+            // for a clean rehydration once signed back in) on deferral, or `failStaticRangeAuthTerminal`
+            // (which runs the normal purge+supersede+`.failed` teardown, budget intact) on real failure.
+            // Do NOT clear the budget here: that reset is intentional only for the deferral path.
             if PostLogoutDownloadFailurePolicy.isDeferrableAuthStatus(code), let onRangeAuthHTTPFailure {
-                clearRetryCount(ratingKey: entry.ratingKey)
                 AppDiagnostics.record(.downloads, "downloads.range_auth_failure_handoff", fields: [
                     "download_id": .identifier(entry.ratingKey),
                     "status_code": .int(code),
@@ -4579,6 +4581,54 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
         _ = acceptedAttemptSubmission(resolveLifecycleSubmission(store.submitStatus(for: key, .failed)),
                                     key: key, phase: "terminal_failed")
+    }
+
+    /// Finding 2: manager-driven terminal teardown for a static-Range remainder whose post-logout auth
+    /// HTTP failure the manager resolved as `.fail` (a genuine auth error — the backend session is still
+    /// live). `finishRangeRemainder` hands the terminal decision to the manager over `onRangeAuthHTTPFailure`
+    /// and returns BEFORE its own `setFailedPurgingHeldSegments`, so the manager must drive that same
+    /// teardown back here: otherwise held out-of-order stashes leak in `tmp/`, live siblings keep
+    /// transferring and auto-promote the `.failed` row straight back to `.downloading` (the C2 loop), and
+    /// the row never fails terminally. Runs the row's current attempt through the identical
+    /// purge + supersede + epoch-advance + attempt-fenced `.failed` write.
+    func failStaticRangeAuthTerminal(ratingKey: String) {
+        guard let attemptID = currentAttemptIdentity(ratingKey: ratingKey) else { return }
+        let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+        guard store.ownsAttempt(attemptKey) else { return }
+        setFailedPurgingHeldSegments(for: attemptKey)
+    }
+
+    /// Finding 2: manager-driven quiescence for a static-Range remainder the manager is parking as
+    /// deferred (post-logout auth failure while the backend session is GONE). Unlike the `.fail`
+    /// teardown this is resume-safe: it PRESERVES held out-of-order segment stashes so the later resume
+    /// can reuse them, and installs a `.pause` (never `.cancel`) halt so a finished body still in the
+    /// delegate→IO hop is kept rather than discarded. It still supersedes + cancels the live sibling
+    /// tasks and advances the train epoch so a same-attempt sibling progress/finish callback cannot
+    /// auto-promote the parked `.paused`/`.queued` row back to `.downloading`, and resets the exhausted
+    /// retry/rehydration budget so a clean rehydration path exists once the account is signed back in.
+    /// The `.pause` halt is cleared by the eventual user/auto resume (`start` removes it), so it cannot
+    /// wedge the deferred continuation. The manager owns the row status write.
+    func quiesceStaticRangeForDeferredResume(ratingKey: String) {
+        guard let attemptID = currentAttemptIdentity(ratingKey: ratingKey) else { return }
+        let attemptKey = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+        guard store.ownsAttempt(attemptKey) else { return }
+        var superseded: [Int] = []
+        lock.lock()
+        if rangeHaltKinds[attemptKey] != .cancel { rangeHaltKinds[attemptKey] = .pause }
+        superseded = supersedeRangeTasksLocked(ratingKey: ratingKey)
+        rangeTrainEpochs[attemptKey] = (rangeTrainEpochs[attemptKey] ?? 0) + 1
+        lock.unlock()
+        for identifier in superseded {
+            cancelURLSessionTask(identifier: identifier)
+        }
+        if !superseded.isEmpty {
+            AppDiagnostics.record(.downloads, "downloads.range_train_superseded", fields: [
+                "download_id": .identifier(ratingKey),
+                "superseded_task_count": .int(superseded.count),
+                "reason": .label("deferred_awaiting_session"),
+            ])
+        }
+        clearRetryCount(for: attemptKey)
     }
 
     /// C2: remove every held out-of-order segment stash for a row AND delete its on-disk temp file.
