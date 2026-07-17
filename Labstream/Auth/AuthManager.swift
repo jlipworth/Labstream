@@ -282,6 +282,7 @@ final class AuthManager {
             if updateState { state = .idle }
             return false
         } catch JellyfinAuthError.identityMismatch {
+            guard isCurrentAuthAttempt(attemptID) else { return false }
             // Ambiguous, not a proven-bad credential: the probe succeeded (2xx) but reported a
             // different user id. Preserve the keychain snapshot for a later retry (a true 401 is the
             // only wipe trigger), but clear the runtime lane so browse/download paths don't act on a
