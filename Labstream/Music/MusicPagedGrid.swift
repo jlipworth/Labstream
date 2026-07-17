@@ -48,23 +48,31 @@ struct MusicPagedGrid: View {
 
     var body: some View {
         ScrollViewReader { proxy in
-            ScrollView {
-                switch paging.loadState {
-                case .idle, .loading:
-                    MusicSkeleton()
-                case .failed(let message):
-                    ContentUnavailableView("Couldn’t load \(libraryTitle)",
-                                           systemImage: "exclamationmark.triangle",
-                                           description: Text(message))
-                        .frame(maxWidth: .infinity, minHeight: 360)
-                case .loaded:
-                    if paging.slots.isEmpty {
-                        ContentUnavailableView(kind == .albums ? "No Albums" : "No Artists",
-                                               systemImage: "music.note",
-                                               description: Text("Nothing to show in \(libraryTitle)."))
+            VStack(alignment: .leading, spacing: 0) {
+                if case .loaded = paging.loadState, !paging.slots.isEmpty {
+                    musicBrowseControls(proxy: proxy)
+                        .padding(.horizontal, DS.pagePadding(compact: compactWidth))
+                        .padding(.vertical, MusicArt.gridVerticalPadding)
+                }
+
+                ScrollView {
+                    switch paging.loadState {
+                    case .idle, .loading:
+                        MusicSkeleton()
+                    case .failed(let message):
+                        ContentUnavailableView("Couldn’t load \(libraryTitle)",
+                                               systemImage: "exclamationmark.triangle",
+                                               description: Text(message))
                             .frame(maxWidth: .infinity, minHeight: 360)
-                    } else {
-                        loadedGrid(proxy: proxy)
+                    case .loaded:
+                        if paging.slots.isEmpty {
+                            ContentUnavailableView(kind == .albums ? "No Albums" : "No Artists",
+                                                   systemImage: "music.note",
+                                                   description: Text("Nothing to show in \(libraryTitle)."))
+                                .frame(maxWidth: .infinity, minHeight: 360)
+                        } else {
+                            loadedGrid
+                        }
                     }
                 }
             }
@@ -83,21 +91,8 @@ struct MusicPagedGrid: View {
         .refreshable { await load(force: true) }
     }
 
-    private func loadedGrid(proxy: ScrollViewProxy) -> some View {
+    private var loadedGrid: some View {
         VStack(alignment: .leading, spacing: DS.Space.lg) {
-            HStack {
-                sortMenu
-                #if os(visionOS)
-                if alphabetRailVisible {
-                    LibraryAlphabetJumpButton(entries: paging.alphabetBuckets) { entry in
-                        jump(to: entry, proxy: proxy)
-                    }
-                }
-                #endif
-                Spacer()
-            }
-            .padding(.horizontal, DS.pagePadding(compact: compactWidth))
-
             LazyVGrid(columns: columns, spacing: MusicArt.gridRowSpacing(compact: compactWidth)) {
                 // Position-keyed: a slot's identity is its place in the listing; its content
                 // arrives when the page loads (same contract as the video grid's slots).
@@ -118,7 +113,21 @@ struct MusicPagedGrid: View {
             // underneath the index.
             .padding(.trailing, alphabetRailGridReservation)
         }
-        .padding(.vertical, MusicArt.gridVerticalPadding)
+        .padding(.bottom, MusicArt.gridVerticalPadding)
+    }
+
+    private func musicBrowseControls(proxy: ScrollViewProxy) -> some View {
+        HStack {
+            sortMenu
+            #if os(visionOS)
+            if alphabetRailVisible {
+                LibraryAlphabetJumpButton(entries: paging.alphabetBuckets) { entry in
+                    jump(to: entry, proxy: proxy)
+                }
+            }
+            #endif
+            Spacer()
+        }
     }
 
     private var alphabetRailGridReservation: CGFloat {

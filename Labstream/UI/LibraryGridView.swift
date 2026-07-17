@@ -447,46 +447,48 @@ struct LibraryGridView: View {
     var body: some View {
         GeometryReader { geometry in
             ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: DS.Space.lg) {
-                        browseControls(proxy: proxy)
-                            .padding(.horizontal, DS.pagePadding(compact: compactWidth))
-                            .padding(.top, DS.Space.lg)
+                VStack(alignment: .leading, spacing: 0) {
+                    browseControls(proxy: proxy)
+                        .padding(.horizontal, DS.pagePadding(compact: compactWidth))
+                        .padding(.vertical, DS.Space.lg)
 
-                        switch paging.loadState {
-                        case .idle, .loading:
-                            SkeletonGrid(availableWidth: geometry.size.width)
-                        case .failed(let message):
-                            ContentUnavailableView("Couldn’t load \(source.title)",
-                                                   systemImage: "exclamationmark.triangle",
-                                                   description: Text(message))
-                                .frame(maxWidth: .infinity, minHeight: 360)
-                        case .loaded:
-                            if paging.slots.isEmpty {
-                                emptyState
-                            } else {
-                                let metrics = compactGridMetrics(availableWidth: geometry.size.width)
-                                LazyVGrid(columns: gridColumns(metrics: metrics),
-                                          spacing: metrics?.rowSpacing ?? DS.Space.xxl) {
-                                    ForEach(Array(paging.slots.enumerated()), id: \.offset) { index, slot in
-                                        LibraryGridSlot(index: index,
-                                                        item: slot,
-                                                        width: metrics?.posterWidth ?? DS.Poster.gridMin(compact: compactWidth),
-                                                        usesDenseLabels: metrics != nil) {
-                                            prefetchPage(containing: index)
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: DS.Space.lg) {
+                            switch paging.loadState {
+                            case .idle, .loading:
+                                SkeletonGrid(availableWidth: geometry.size.width)
+                            case .failed(let message):
+                                ContentUnavailableView("Couldn’t load \(source.title)",
+                                                       systemImage: "exclamationmark.triangle",
+                                                       description: Text(message))
+                                    .frame(maxWidth: .infinity, minHeight: 360)
+                            case .loaded:
+                                if paging.slots.isEmpty {
+                                    emptyState
+                                } else {
+                                    let metrics = compactGridMetrics(availableWidth: geometry.size.width)
+                                    LazyVGrid(columns: gridColumns(metrics: metrics),
+                                              spacing: metrics?.rowSpacing ?? DS.Space.xxl) {
+                                        ForEach(Array(paging.slots.enumerated()), id: \.offset) { index, slot in
+                                            LibraryGridSlot(index: index,
+                                                            item: slot,
+                                                            width: metrics?.posterWidth ?? DS.Poster.gridMin(compact: compactWidth),
+                                                            usesDenseLabels: metrics != nil) {
+                                                prefetchPage(containing: index)
+                                            }
+                                            // Keep the stable sparse-grid offset as the scroll target for
+                                            // the A–Z rail while giving the loaded/placeholder subtrees
+                                            // different identities below. Without the inner identity split,
+                                            // SwiftUI can recycle a placeholder view after a fast alphabet
+                                            // jump and leave the slot blank/missing metadata once the page
+                                            // arrives.
+                                            .id(index)
                                         }
-                                        // Keep the stable sparse-grid offset as the scroll target for
-                                        // the A–Z rail while giving the loaded/placeholder subtrees
-                                        // different identities below. Without the inner identity split,
-                                        // SwiftUI can recycle a placeholder view after a fast alphabet
-                                        // jump and leave the slot blank/missing metadata once the page
-                                        // arrives.
-                                        .id(index)
                                     }
+                                    .padding(.horizontal, metrics?.horizontalPadding ?? DS.pagePadding(compact: compactWidth))
+                                    .padding(.vertical, metrics?.horizontalPadding ?? DS.pagePadding(compact: compactWidth))
+                                    .padding(.trailing, metrics?.trailingReservation ?? 0)
                                 }
-                                .padding(.horizontal, metrics?.horizontalPadding ?? DS.pagePadding(compact: compactWidth))
-                                .padding(.vertical, metrics?.horizontalPadding ?? DS.pagePadding(compact: compactWidth))
-                                .padding(.trailing, metrics?.trailingReservation ?? 0)
                             }
                         }
                     }
