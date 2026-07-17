@@ -89,7 +89,12 @@ private final class PlexBrowseProbeServiceDouble: PlexBrowseProbeServing {
         if includeMusic { result.append(PlexSection(key: "music", title: "Music", type: "artist")) }
         return result
     }
-    func sectionPage(sectionKey: String, startIndex: Int?, limit: Int?, sort: String?, firstCharacter: String?) async throws -> PlexBrowsePage {
+    func sectionPage(sectionKey: String,
+                     startIndex: Int?,
+                     limit: Int?,
+                     sort: String?,
+                     firstCharacter: String?,
+                     browseQuery: LibraryBrowseQuery) async throws -> PlexBrowsePage {
         calls.append("sectionPage"); return PlexBrowsePage(items: [show], total: 1)
     }
     func alphabetCounts(sectionKey: String, type: Int?) async throws -> [(display: String, count: Int)] {
