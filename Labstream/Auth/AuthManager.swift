@@ -47,6 +47,11 @@ final class AuthManager {
     private let authNow: () -> ContinuousClock.Instant
     private let authSleep: (Duration) async throws -> Void
 
+    /// App-lifetime collaborators that must stop credential-bearing work before this manager
+    /// clears the active backend's runtime session. The callback carries only the backend kind;
+    /// it must never receive credentials. `AppServices` wires the download manager here.
+    @ObservationIgnored var onBackendWillSignOut: ((MediaBackendKind) -> Void)?
+
     /// Poll cadence and ceiling for the PIN flow.
     private let pollInterval: Duration = .seconds(1)
     private let pollTimeout: Duration = .seconds(300)
@@ -212,6 +217,10 @@ final class AuthManager {
             "update_state": .bool(updateState)
         ]
         guard let saved = keychain.token else {
+            // A background URLSession task can outlive the process that performed sign-out.
+            // Keychain is the durable authority at restore time: no saved token means any
+            // surviving Plex task must be parked before it can keep streaming a retired request.
+            onBackendWillSignOut?(.plex)
             recordAuthDiagnostic("auth.plex.restore.missing_token", fields: restoreFields)
             return false
         }
@@ -245,6 +254,7 @@ final class AuthManager {
             guard updateState else { return false }
             SpotlightIndexer.deleteAll()
             appModel.isSwitchingBackend = false
+            onBackendWillSignOut?(.plex)
             signOutPlex()
             state = .idle
             return false
@@ -261,7 +271,13 @@ final class AuthManager {
     private func restoreJellyfinSession(validateReachability: Bool = true,
                                         updateState: Bool = true,
                                         attemptID: AuthAttemptID) async -> Bool {
-        guard let snapshot = readJellyfinSessionSnapshot() else { return false }
+        guard let snapshot = readJellyfinSessionSnapshot() else {
+            // The durable Jellyfin credential has already been removed (for example, a
+            // sign-out immediately before process termination). Do not let a reattached
+            // background request continue with the old header.
+            onBackendWillSignOut?(.jellyfin)
+            return false
+        }
         guard validateReachability else {
             applyJellyfinSessionSnapshot(snapshot)
             return true
@@ -278,6 +294,7 @@ final class AuthManager {
             guard isCurrentAuthAttempt(attemptID) else { return false }
             NSLog("[#93] restoreJellyfinSession wiping creds: probe returned unauthorized (updateState=%@)",
                   updateState ? "true" : "false")
+            onBackendWillSignOut?(.jellyfin)
             signOutJellyfin()
             if updateState { state = .idle }
             return false
@@ -358,6 +375,9 @@ final class AuthManager {
             "update_state": .bool(updateState)
         ]
         guard let snapshot = readEmbySessionSnapshot() else {
+            // See the matching Jellyfin case: a background task may have survived a prior
+            // process while secure storage records that the account is signed out.
+            onBackendWillSignOut?(.emby)
             recordAuthDiagnostic("auth.emby.restore.missing_snapshot", fields: restoreFields)
             return false
         }
@@ -395,6 +415,7 @@ final class AuthManager {
         } catch EmbyAuthError.unauthorized {
             guard isCurrentAuthAttempt(attemptID) else { return false }
             // Invalid/expired creds — drop the saved session and require re-login.
+            onBackendWillSignOut?(.emby)
             signOutEmby()
             if updateState { state = .idle }
             recordAuthDiagnostic("auth.emby.restore.unauthorized", fields: restoreFields)
@@ -1545,7 +1566,13 @@ final class AuthManager {
         // Library titles must not linger in system search after sign-out (#24).
         SpotlightIndexer.deleteAll()
         appModel.isSwitchingBackend = false
-        switch appModel.activeBackend {
+        let backend = appModel.activeBackend
+        // A URLSession request retains its auth header after it has been created. Pause every
+        // affected download synchronously while the backend session is still available so the
+        // range task can produce resume data and its server-side encoder can be torn down. The
+        // local credential clear immediately below then prevents a new authenticated request.
+        onBackendWillSignOut?(backend)
+        switch backend {
         case .plex:
             signOutPlex()
         case .jellyfin:
