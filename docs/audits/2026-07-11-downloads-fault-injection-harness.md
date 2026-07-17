@@ -1,5 +1,10 @@
 # Downloads Engine Fault-Injection Harness (Phase 6)
 
+> **Status:** completed Phase-6 harness record and usage snapshot from 2026-07-11. Scenario
+> names below still document retained probes, but code and `--help` output are authoritative
+> for invocation details. This file does not replace the current testing strategy in
+> [`docs/TESTING-STRATEGY.md`](../TESTING-STRATEGY.md).
+
 Phase 6 now has a smallest-real transport harness: a DEBUG-only `URLProtocol` drives the
 foreground `URLSession` owned by the real `BackgroundDownloadSession`. It does not model or call
 the range policies directly. Real download tasks, delegate ordering, temp-file stashing, durable

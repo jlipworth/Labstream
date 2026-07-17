@@ -12,7 +12,11 @@ import PMSKit
 /// coordinator is a thin platform-named facade.
 @MainActor
 final class MacPlayerSystemCoordinator {
-    private let core = VideoNowPlayingCore(defaultSkipIntervalSeconds: 30)
+    private let core: VideoNowPlayingCore
+
+    init(mediaSession: SystemMediaSessionCoordinator) {
+        core = VideoNowPlayingCore(defaultSkipIntervalSeconds: 30, mediaSession: mediaSession)
+    }
 
     func configure(controller: PlaybackController, item: MediaItem, artworkRequest: URLRequest? = nil) {
         core.configure(controller: controller, item: item, artworkRequest: artworkRequest)

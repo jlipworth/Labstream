@@ -14,6 +14,11 @@ public enum PlexPhotoTranscode {
                            imagePath: String,
                            width: Int,
                            height: Int) -> URL? {
+        guard let scheme = server.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = server.host, !host.isEmpty,
+              !imagePath.isEmpty,
+              width > 0, height > 0 else { return nil }
         guard var comps = URLComponents(url: server.appendingPathComponent("/photo/:/transcode"),
                                         resolvingAgainstBaseURL: false) else { return nil }
         PlexURLQueryEncoder.replaceQueryItems([

@@ -17,8 +17,6 @@ public struct ParsedChapterImageKey: Equatable, Sendable {
 /// Fetching, auth, atomic writes, and store mutation stay in the app layer. This policy pins the
 /// reusable selection/parsing rules that decide which side assets are worth attempting offline.
 public enum DownloadSideAssetPolicy {
-    public static let chapterImageBatchSize = 4
-
     /// Artwork reference for the Offline tab's small portrait tile. Episodes prefer show/season
     /// posters before the episode still/backdrop to avoid stretching landscape stills into portrait.
     public static func offlinePosterRef(for item: MediaItem) -> String? {
@@ -47,7 +45,4 @@ public enum DownloadSideAssetPolicy {
         return ParsedChapterImageKey(itemID: parts[0], index: index, tag: tag)
     }
 
-    public static func shouldLogChapterImageThrottling(requestCount: Int) -> Bool {
-        requestCount > chapterImageBatchSize
-    }
 }

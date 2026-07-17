@@ -1,5 +1,9 @@
 # visionOS Video Playback: The Theater Experience for a Plex Client
 
+> **Archived research snapshot:** retained as dated evidence, not current architecture, feature
+> status, or implementation guidance. Verify any reusable detail against the active docs and
+> current source; old `VisionPlay` names, issue links, branches, and paths below are historical.
+
 Research date: June 2026. Target: Apple Vision Pro, visionOS 2.x and visionOS 26 era APIs.
 Scope: play a standard HLS (`.m3u8`) stream from a Plex transcode session on a giant
 virtual cinema screen, with minimal custom code. We do **not** need true 180/360/MV-HEVC

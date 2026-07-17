@@ -3,46 +3,13 @@ import Foundation
 import FoundationNetworking
 #endif
 
-public enum EmbyPlayMethod: String, Sendable, Equatable {
-    case directPlay
-    case directStream
-    case transcode
-}
+// Source-compatible backend spellings. Playback resolution now produces the neutral carriers
+// directly while retaining Emby's explicit `usesServerEncoding` cleanup fact.
+public typealias EmbyPlayMethod = MediaBrowserPlayMethod
+public typealias EmbyPlaybackSourceMetadata = MediaBrowserPlaybackSourceMetadata
 
-public struct EmbyPlaybackSourceMetadata: Sendable, Equatable {
-    public static let empty = EmbyPlaybackSourceMetadata()
-
-    public let container: String?
-    public let width: Int?
-    public let height: Int?
-    /// Kbps, matching Plex `Media.bitrate` units used by the diagnostics UI.
-    public let bitrate: Int?
-    public let videoCodec: String?
-    public let audioCodec: String?
-    /// Source HDR facts from the selected video stream, when the server exposed any. (#195)
-    public let hdr: VideoHDRMetadata?
-    /// Audio codec profile of the selected audio stream, e.g. "DTS-HD MA". (#195)
-    public let audioProfile: String?
-
-    public init(container: String? = nil,
-                width: Int? = nil,
-                height: Int? = nil,
-                bitrate: Int? = nil,
-                videoCodec: String? = nil,
-                audioCodec: String? = nil,
-                hdr: VideoHDRMetadata? = nil,
-                audioProfile: String? = nil) {
-        self.container = container
-        self.width = width
-        self.height = height
-        self.bitrate = bitrate
-        self.videoCodec = videoCodec
-        self.audioCodec = audioCodec
-        self.hdr = hdr
-        self.audioProfile = audioProfile
-    }
-}
-
+/// Source-compatible Emby spelling retained while app callers migrate to
+/// `resolveMediaBrowserStream`. The explicit encoding-cleanup fact is never inferred away.
 public struct EmbyPlaybackOpenResult: Sendable, Equatable {
     public let url: URL
     public let playSessionId: String
@@ -50,8 +17,6 @@ public struct EmbyPlaybackOpenResult: Sendable, Equatable {
     public let playMethod: EmbyPlayMethod
     public let requiredHTTPHeaders: [String: String]
     public let sourceMetadata: EmbyPlaybackSourceMetadata
-    /// True when the chosen source uses server-side encoding (transcode/HLS) — the caller
-    /// must `DELETE /Videos/ActiveEncodings` on stop (cleanup invariant).
     public let usesServerEncoding: Bool
 
     public init(url: URL,
@@ -68,6 +33,16 @@ public struct EmbyPlaybackOpenResult: Sendable, Equatable {
         self.requiredHTTPHeaders = requiredHTTPHeaders
         self.sourceMetadata = sourceMetadata
         self.usesServerEncoding = usesServerEncoding
+    }
+
+    init(_ result: MediaBrowserPlaybackOpenResult) {
+        self.init(url: result.url,
+                  playSessionId: result.playSessionId,
+                  mediaSourceId: result.mediaSourceId,
+                  playMethod: result.playMethod,
+                  requiredHTTPHeaders: result.requiredHTTPHeaders,
+                  sourceMetadata: result.sourceMetadata,
+                  usesServerEncoding: result.usesServerEncoding)
     }
 }
 
@@ -212,6 +187,7 @@ public struct EmbyMediaSourceInfo: Decodable, Sendable, Equatable {
 
 public enum EmbyPlaybackError: Error, Sendable, Equatable {
     case noMediaSources
+    case preferredMediaSourceUnavailable(String)
     case missingPlaySessionId
     case missingMediaSourceId
     case unsupportedMediaSource
@@ -492,7 +468,7 @@ public enum EmbyPlayback {
     /// per-child `Authorization` header is injected. Stream URLs are RELATIVE
     /// (`/videos/{id}/master.m3u8`, lowercase) and prepended onto the server base URL,
     /// preserving any base path. REDACT `api_key` in logs.
-    public static func resolveStream(response: EmbyPlaybackInfoResponse,
+    public static func resolveMediaBrowserStream(response: EmbyPlaybackInfoResponse,
                                      server: URL,
                                      identity: EmbyClientIdentity,
                                      token: String,
@@ -505,9 +481,14 @@ public enum EmbyPlayback {
                                      maxHeight: Int? = nil,
                                      audioBitrate: Int? = nil,
                                      audioStreamIndex: Int? = nil,
-                                     subtitleStreamIndex: Int? = nil) throws -> EmbyPlaybackOpenResult {
+                                     subtitleStreamIndex: Int? = nil) throws -> MediaBrowserPlaybackOpenResult {
         guard let playSessionId = response.playSessionId, !playSessionId.isEmpty else {
             throw EmbyPlaybackError.missingPlaySessionId
+        }
+        if let preferredMediaSourceId,
+           !preferredMediaSourceId.isEmpty,
+           !response.mediaSources.contains(where: { $0.id == preferredMediaSourceId }) {
+            throw EmbyPlaybackError.preferredMediaSourceUnavailable(preferredMediaSourceId)
         }
         guard let source = chooseSource(response.mediaSources, preferredMediaSourceId: preferredMediaSourceId) else {
             throw EmbyPlaybackError.noMediaSources
@@ -526,7 +507,7 @@ public enum EmbyPlayback {
             // Jellyfin's appendTranscodeOverrides audio handling.
             let url = try applyingAudioStreamIndex(resolvedAudioStreamIndex,
                                                    to: embyURL(server: server, pathOrURLString: transcodingURL))
-            return EmbyPlaybackOpenResult(
+            return MediaBrowserPlaybackOpenResult(
                 url: url,
                 playSessionId: playSessionId,
                 mediaSourceId: mediaSourceId,
@@ -555,7 +536,7 @@ public enum EmbyPlayback {
                 h["X-Emby-Token"] = token
                 headers = h
             }
-            return EmbyPlaybackOpenResult(
+            return MediaBrowserPlaybackOpenResult(
                 url: url,
                 playSessionId: playSessionId,
                 mediaSourceId: mediaSourceId,
@@ -586,7 +567,7 @@ public enum EmbyPlayback {
         }
         comps.queryItems = query
         guard let built = comps.url else { throw EmbyPlaybackError.invalidURL }
-        return EmbyPlaybackOpenResult(
+        return MediaBrowserPlaybackOpenResult(
             url: built,
             playSessionId: playSessionId,
             mediaSourceId: mediaSourceId,
@@ -594,6 +575,38 @@ public enum EmbyPlayback {
             requiredHTTPHeaders: source.requiredHTTPHeaders ?? [:],
             sourceMetadata: source.playbackSourceMetadata(audioStreamIndex: audioStreamIndex),
             usesServerEncoding: false)
+    }
+
+    /// Source-compatible wrapper. New app-facing code should consume the neutral resolver above.
+    public static func resolveStream(response: EmbyPlaybackInfoResponse,
+                                     server: URL,
+                                     identity: EmbyClientIdentity,
+                                     token: String,
+                                     userId: String,
+                                     itemId: String,
+                                     preferredMediaSourceId: String? = nil,
+                                     startTimeTicks: Int? = nil,
+                                     maxVideoBitrate: Int? = nil,
+                                     maxWidth: Int? = nil,
+                                     maxHeight: Int? = nil,
+                                     audioBitrate: Int? = nil,
+                                     audioStreamIndex: Int? = nil,
+                                     subtitleStreamIndex: Int? = nil) throws -> EmbyPlaybackOpenResult {
+        EmbyPlaybackOpenResult(try resolveMediaBrowserStream(
+            response: response,
+            server: server,
+            identity: identity,
+            token: token,
+            userId: userId,
+            itemId: itemId,
+            preferredMediaSourceId: preferredMediaSourceId,
+            startTimeTicks: startTimeTicks,
+            maxVideoBitrate: maxVideoBitrate,
+            maxWidth: maxWidth,
+            maxHeight: maxHeight,
+            audioBitrate: audioBitrate,
+            audioStreamIndex: audioStreamIndex,
+            subtitleStreamIndex: subtitleStreamIndex))
     }
 
     static func chooseSource(_ sources: [EmbyMediaSourceInfo],
@@ -648,10 +661,10 @@ public enum EmbyPlayback {
                                       playMethod: EmbyPlayMethod,
                                       positionTicks: Int = 0) throws -> URLRequest {
         try progressBody(server: server, token: token, identity: identity, userId: userId,
-                         path: "/Sessions/Playing",
+                         event: .playing,
                          itemId: itemId, mediaSourceId: mediaSourceId,
                          playSessionId: playSessionId, playMethod: playMethod,
-                         positionTicks: positionTicks, isPaused: false)
+                         positionTicks: positionTicks)
     }
 
     /// `POST /Sessions/Playing/Progress`
@@ -666,10 +679,10 @@ public enum EmbyPlayback {
                                        positionTicks: Int,
                                        isPaused: Bool) throws -> URLRequest {
         try progressBody(server: server, token: token, identity: identity, userId: userId,
-                         path: "/Sessions/Playing/Progress",
+                         event: isPaused ? .paused : .progress,
                          itemId: itemId, mediaSourceId: mediaSourceId,
                          playSessionId: playSessionId, playMethod: playMethod,
-                         positionTicks: positionTicks, isPaused: isPaused)
+                         positionTicks: positionTicks)
     }
 
     /// `POST /Sessions/Playing/Stopped`
@@ -683,10 +696,10 @@ public enum EmbyPlayback {
                                       playMethod: EmbyPlayMethod,
                                       positionTicks: Int) throws -> URLRequest {
         try progressBody(server: server, token: token, identity: identity, userId: userId,
-                         path: "/Sessions/Playing/Stopped",
+                         event: .stopped,
                          itemId: itemId, mediaSourceId: mediaSourceId,
                          playSessionId: playSessionId, playMethod: playMethod,
-                         positionTicks: positionTicks, isPaused: false)
+                         positionTicks: positionTicks)
     }
 
     /// `POST /Sessions/Playing/Ping?PlaySessionId=..`
@@ -709,88 +722,53 @@ public enum EmbyPlayback {
                                      token: String,
                                      identity: EmbyClientIdentity,
                                      userId: String,
-                                     path: String,
+                                     event: MediaBrowserPlaybackProgressRequestEvent,
                                      itemId: String,
                                      mediaSourceId: String,
                                      playSessionId: String,
                                      playMethod: EmbyPlayMethod,
-                                     positionTicks: Int,
-                                     isPaused: Bool) throws -> URLRequest {
-        let url = try embyURL(server: server, path: path)
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Accept")
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        EmbyAuth.applyAuth(to: &req, identity: identity, userId: userId, token: token)
-        let body: [String: Any] = [
-            "ItemId": itemId,
-            "MediaSourceId": mediaSourceId,
-            "PlaySessionId": playSessionId,
-            "PositionTicks": positionTicks,
-            "IsPaused": isPaused,
-            "PlayMethod": embyPlayMethodWireValue(playMethod),
-        ]
-        req.httpBody = try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
-        return req
-    }
-
-    private static func embyPlayMethodWireValue(_ method: EmbyPlayMethod) -> String {
-        switch method {
-        case .directPlay: return "DirectPlay"
-        case .directStream: return "DirectStream"
-        case .transcode: return "Transcode"
-        }
+                                     positionTicks: Int) throws -> URLRequest {
+        let url = try embyURL(server: server, path: event.endpoint.rawValue)
+        return try MediaBrowserPlaybackProgressRequestPlan(
+            url: url,
+            authDialect: .emby(identity),
+            event: event,
+            payload: MediaBrowserPlaybackProgressPayload(
+                userId: userId,
+                itemId: itemId,
+                mediaSourceId: mediaSourceId,
+                playSessionId: playSessionId,
+                playMethod: MediaBrowserPlayMethod(playMethod),
+                positionTicks: positionTicks
+            )
+        ).request(token: token)
     }
 
     static func streamingDeviceProfile(maxStreamingBitrate: Int,
                                        advertiseDolbyVision: Bool = false) -> [String: Any] {
+        let subtitlePolicy: MediaBrowserStreamingSubtitlePolicy = .embyEncodeSelected
         var profile: [String: Any] = [
             "Name": "Labstream",
             "MaxStreamingBitrate": maxStreamingBitrate,
-            "DirectPlayProfiles": [
-                ["Type": "Video", "Container": "mp4,m4v,mov", "VideoCodec": "h264,hevc", "AudioCodec": "aac,ac3,eac3"],
-                ["Type": "Video", "Container": "mpegts", "VideoCodec": "h264", "AudioCodec": "aac,ac3,eac3"],
-            ],
-            "TranscodingProfiles": [
-                [
-                    "Type": "Video",
-                    "Container": "ts",
-                    "Protocol": "hls",
-                    // h264 first (encode target); hevc enables VIDEO COPY of HEVC MKV
-                    // remuxes instead of a source-bitrate h264 re-encode. See the matching
-                    // comment in JellyfinPlayback.streamingDeviceProfile (GH #196 retest).
-                    "VideoCodec": "h264,hevc",
-                    "AudioCodec": "aac,ac3",
-                    "Context": "Streaming",
-                    "MinSegments": 2,
-                    "BreakOnNonKeyFrames": false,
-                ],
-            ],
+            "DirectPlayProfiles": MediaBrowserDeviceProfileFacts.directPlayProfiles,
+            "TranscodingProfiles": MediaBrowserDeviceProfileFacts.streamingHLSTranscodingProfiles(
+                subtitlePolicy: subtitlePolicy),
             // We do not render external sidecars or in-manifest WebVTT (Emby 4.9.3 does not embed
             // subtitle renditions in its HLS manifest), so every subtitle we ask for must be
             // burned into the video by the server. Declaring all common text and image subtitle
             // formats with Method "Encode" makes Emby resolve a selected `SubtitleStreamIndex` to
             // a burn-in transcode deterministically, for both text (SRT/ASS) and image (PGS/VOBSUB)
             // subtitles. Only consulted when a subtitle is actually selected.
-            "SubtitleProfiles": [
-                ["Format": "srt", "Method": "Encode"],
-                ["Format": "subrip", "Method": "Encode"],
-                ["Format": "ass", "Method": "Encode"],
-                ["Format": "ssa", "Method": "Encode"],
-                ["Format": "vtt", "Method": "Encode"],
-                ["Format": "webvtt", "Method": "Encode"],
-                ["Format": "sub", "Method": "Encode"],
-                ["Format": "idx", "Method": "Encode"],
-                ["Format": "pgssub", "Method": "Encode"],
-                ["Format": "dvdsub", "Method": "Encode"],
-                ["Format": "dvbsub", "Method": "Encode"],
-            ],
         ]
+        if let subtitleProfiles = MediaBrowserDeviceProfileFacts.subtitleProfiles(
+            policy: subtitlePolicy) {
+            profile["SubtitleProfiles"] = subtitleProfiles
+        }
         if advertiseDolbyVision {
             // GH #196 spike (a): mirror Jellyfin's DOVI-range advertising. Emby's DeviceProfile
             // schema tolerates the same CodecProfiles shape (unknown conditions are ignored).
             // Experimental, default-off, device-unverified.
-            profile["CodecProfiles"] = JellyfinPlayback.dolbyVisionCodecProfiles
+            profile["CodecProfiles"] = MediaBrowserDeviceProfileFacts.dolbyVisionCodecProfiles
         }
         return profile
     }
@@ -840,25 +818,8 @@ public enum EmbyPlayback {
     }
 
     static func compatibleRemuxDownloadDeviceProfile(maxStaticBitrate: Int) -> [String: Any] {
-        [
-            "Name": "Labstream-Compatible-Download",
-            "MaxStaticBitrate": maxStaticBitrate,
-            "MaxStreamingBitrate": maxStaticBitrate,
-            "DirectPlayProfiles": [
-                ["Type": "Video", "Container": "mp4,m4v,mov", "VideoCodec": "h264,hevc", "AudioCodec": "aac,ac3,eac3"],
-            ],
-            "TranscodingProfiles": [
-                [
-                    "Type": "Video",
-                    "Container": "mp4",
-                    "Protocol": "http",
-                    "VideoCodec": "h264,hevc",
-                    "AudioCodec": "aac",
-                    "Context": "Static",
-                    "BreakOnNonKeyFrames": false,
-                ],
-            ],
-        ]
+        MediaBrowserDeviceProfileFacts.compatibleRemuxDownloadProfile(
+            maxStaticBitrate: maxStaticBitrate)
     }
 
     // MARK: - URL joining (base-path preserving)

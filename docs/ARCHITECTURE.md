@@ -57,7 +57,10 @@ shared login/detail UI. Whole-platform adapters remain in small files where poss
 
 ## App-lifetime composition
 
-Every target calls `AppServices.make()` from its `App` initializer. `AppServices`
+Every target guards the optional result of `AppServices.make()` in its `App` initializer
+and has a `SecureStorageUnavailableView` fallback. The current factory returns a service
+bundle even when the durable client identifier cannot be read by using a process-local
+identifier for that launch; credentials themselves still fail closed. `AppServices`
 constructs the same four long-lived services:
 
 - `AppModel`: active backend and the three live server/session lanes.
@@ -79,9 +82,13 @@ manager, and music player into the view environment.
 
 `AppModel` keeps separate Plex, Jellyfin, and Emby session state. Switching the active
 backend does not overwrite another backend's credentials. At launch,
-`AuthManager.restoreSession()` restores the selected user-facing lane and also hydrates
-saved inactive lanes so an offline job can continue against its own backend while a
-different backend is active.
+`AuthManager.restoreSession()` runs under one generation-scoped authorization attempt,
+restores the selected user-facing lane, and then hydrates saved inactive lanes so an
+offline job can continue against its own backend while a different backend is active.
+Login, Quick Connect/Connect, restore, and server selection cannot publish stale results
+from an older authorization attempt. System-entry fallback restore uses
+`restoreSessionIfNoAuthorizationInProgress()` rather than taking authority from a login the
+user is completing.
 
 Token-free identities serve two different purposes:
 
@@ -127,10 +134,13 @@ details remain explicit.
 
 ## Browse, search, and music
 
-- Plex browse requests are assembled through `Labstream/Backend/PlexBrowseAPI.swift`
-  and executed by the shared actor `PlexClient`.
-- Jellyfin and Emby use their concrete browse services under
-  `Labstream/Backend/Jellyfin/` and `Labstream/Backend/Emby/`.
+- Pure Plex browse requests are built by `PlexBrowseRequest` in PMSKit (through the small
+  app facade in `Labstream/Backend/PlexBrowseAPI.swift`). `PlexBrowseService` pins one
+  immutable backend session, executes through the shared `PlexClient`, decodes responses,
+  and is the app-facing browse boundary.
+- Jellyfin and Emby retain concrete facades under `Labstream/Backend/Jellyfin/` and
+  `Labstream/Backend/Emby/`, backed by `MediaBrowserBrowseCore` only for their genuinely
+  shared browse execution/decode/map behavior.
 - Paging and grouped search models in `Labstream/Backend/Paging/` and
   `Labstream/Backend/Search/` feed shared SwiftUI grids and rails.
 - `MusicProvider` is the backend-neutral music boundary. Plex supplies richer native
@@ -165,12 +175,14 @@ The download pipeline has four layers:
 
 1. backend-specific `DownloadManager` extensions select a source and perform any Plex
    optimize, Jellyfin transcode/remux, or Emby Convert preparation;
-2. `DownloadManager` owns queue policy, retries, storage limits, diagnostics, and the
-   observable Offline snapshot;
+2. `DownloadManager` owns queue policy, retries, storage limits, diagnostics, the
+   observable Offline snapshot, and attempt-scoped work/cleanup coordination;
 3. `BackgroundDownloadSession` owns background URLSession work and durable static
-   byte-range recovery;
-4. `DownloadStore` owns the locked relative-path JSON index and offline side assets in
-   Application Support.
+   byte-range recovery, with every adoptable task stamped by its exact download attempt;
+4. `DownloadStore` owns the locked relative-path JSON index and transactional artifact
+   state in Application Support. `DownloadArtifactLifecycleCoordinator` orders filesystem
+   work with index persistence, while `DownloadCleanupIntentJournal` independently keeps
+   credential-free server cleanup durable across deletion and process death.
 
 Device builds use a background URLSession that can relaunch the app. Simulator builds
 normally substitute a foreground session because the visionOS simulator background

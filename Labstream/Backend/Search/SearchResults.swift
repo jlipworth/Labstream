@@ -58,12 +58,12 @@ struct SearchResults: Sendable {
         }
 
         var groups = libraryOrder.compactMap { sectionKey -> SearchResultGroup? in
-            SearchResultGroup.mediaBrowserLibrary(backendID: "plex",
+            SearchResultGroup.mediaBrowserLibrary(backendID: .plex,
                                                   libraryID: sectionKey,
                                                   title: sectionTitles[sectionKey] ?? "Library \(sectionKey)",
                                                   items: itemsByLibrary[sectionKey] ?? [])
         }
-        if let fallback = SearchResultGroup.mediaBrowserLibrary(backendID: "plex",
+        if let fallback = SearchResultGroup.mediaBrowserLibrary(backendID: .plex,
                                                                 libraryID: "unattributed",
                                                                 title: "All Plex Libraries",
                                                                 items: fallbackItems) {
@@ -104,17 +104,17 @@ struct SearchResultGroup: Identifiable, Sendable {
         self.libraryID = libraryID
     }
 
-    static func mediaBrowserLibrary(backendID: String,
+    static func mediaBrowserLibrary(backendID: MediaBackendID,
                                     libraryID: String,
                                     title: String,
                                     items: [MediaItem]) -> SearchResultGroup? {
         let hubs = SearchResultGrouping.mediaTypeHubs(items: items,
-                                                      identifierPrefix: "\(backendID)-\(libraryID)")
+                                                      identifierPrefix: "\(backendID.rawValue)-\(libraryID)")
         guard !hubs.isEmpty else { return nil }
-        return SearchResultGroup(id: "\(backendID)-library-\(libraryID)",
+        return SearchResultGroup(id: "\(backendID.rawValue)-library-\(libraryID)",
                                  title: title,
                                  hubs: hubs,
-                                 backendID: backendID,
+                                 backendID: backendID.rawValue,
                                  libraryID: libraryID)
     }
 }

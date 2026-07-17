@@ -69,8 +69,12 @@ and backend. See the platform and backend status tables below for the current su
 
 ### Privacy and diagnostics
 
-- Tokens and server credentials are stored in Keychain.
-- Diagnostic logging is off by default, local-only, bounded, and user-exported only.
+- Canonical app builds store tokens and server credentials in Keychain. The Plex account token is
+  the one synchronizable Keychain item; per-device client identity, Jellyfin/Emby tokens, and server
+  selection remain device-local. Per-worktree Mac preview builds use isolated, backup-excluded
+  credential files instead.
+- Diagnostic logging is off by default and local-only. When enabled, events are kept in a bounded
+  in-memory ring and small rotating redacted files; reports leave the device only after a user action.
 - Built-in bug-report diagnostics redact tokens, client identifiers, hostnames/IPs, full URLs, usernames, library paths, filenames, and media titles.
 
 ## Supported backends
@@ -90,7 +94,7 @@ Labstream is unofficial and independent. It is not affiliated with, endorsed by,
 | Apple Vision Pro / visionOS 26 | `Labstream` | Primary development and validation path. Includes the app-owned immersive cinema surface. |
 | iPhone / iOS 26.1+ | `LabstreamMobile` | Native adaptive mobile shell in active development. Local simulator and signed-device builds are supported. |
 | iPad / iPadOS 26.1+ | `LabstreamMobile` | The same universal mobile target, using the regular-width sidebar layout. Local simulator and signed-device builds are supported. |
-| Apple-silicon Mac / macOS 26 | `LabstreamMac` | Local-build development preview only; not a supported distribution target or compatibility promise. Real sign-in, playback, media-key, and background-download coverage remains incomplete. |
+| Apple-silicon Mac / macOS 26 | `LabstreamMac` | Local-build development preview only; not a supported distribution target or compatibility promise. Shared sign-in, playback, media-key, and background-download code is present, but live Mac validation is not yet equivalent to the primary visionOS lane. |
 
 ## Tech stack
 
@@ -190,6 +194,7 @@ Labstream/
 │   ├── Downloads/         # offline transfers, offline index, download UI state
 │   ├── Music/             # music browse, queue, and audio playback
 │   ├── Networking/        # shared app networking helpers
+│   ├── Platform/          # cross-platform pasteboard and compatibility adapters
 │   ├── Player/            # custom player, diagnostics, restart/reopen logic
 │   ├── SystemIntegration/ # App Intents, Spotlight, system-entry routing
 │   ├── Theater/           # immersive playback surface support
@@ -211,6 +216,7 @@ Labstream/
 - Playback: [`docs/PLAYBACK-ARCHITECTURE.md`](docs/PLAYBACK-ARCHITECTURE.md)
 - Downloads/offline: [`docs/DOWNLOADS-OFFLINE.md`](docs/DOWNLOADS-OFFLINE.md)
 - Diagnostics/privacy: [`docs/DIAGNOSTICS-PRIVACY.md`](docs/DIAGNOSTICS-PRIVACY.md)
+- Compile performance audit: [`docs/BUILD-PERFORMANCE-AUDIT.md`](docs/BUILD-PERFORMANCE-AUDIT.md)
 
 Public docs describe the current app. Internal research notes, old implementation plans, and superseded validation notes are kept under `docs/research/` or `docs/archive/` and are not part of the published navigation.
 

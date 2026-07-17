@@ -1,5 +1,9 @@
 # Mobile Media-Server Client UX Reference
 
+> **Archived research snapshot:** retained as dated evidence, not current architecture, feature
+> status, or implementation guidance. Verify any reusable detail against the active docs and
+> current source; old `VisionPlay` names, issue links, branches, and paths below are historical.
+
 **Purpose:** Catalog the feature set, menu structure, and information architecture of mature native iOS/iPadOS media-server clients (Plex, Emby, Jellyfin/Swiftfin) to serve as a UX/feature vocabulary for a planned, personal-use **Apple Vision Pro (visionOS) Plex client**. The goal is to understand what a "complete" client looks like, then deliberately choose a focused subset for an MVP.
 
 **Date:** June 2026. All UI described below is sourced from official support docs, App Store listings, project documentation, and reviews (see Sources). Nothing here is invented; where a feature's presence on iOS specifically was uncertain, it is flagged.

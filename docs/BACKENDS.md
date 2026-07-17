@@ -55,6 +55,10 @@ The MediaBrowser layer currently shares:
 - request execution, poster/chapter reference handling, library visibility/grid policy,
   playback quality math, progress-event mapping, and neutral playback-result carriers.
 
+In the app target, `MediaBrowserBrowseCore` is the browse-only execution/decode/map core
+behind the thin `JellyfinBrowseService` and `EmbyBrowseService` facades. It does not own
+PlaybackInfo, device profiles, active-encoding cleanup, authentication, or downloads.
+
 It is not a complete backend service. `JellyfinLibrary`/`EmbyLibrary` and
 `JellyfinPlayback`/`EmbyPlayback` still construct native requests and return native result
 types. Their path spelling, query casing, auth headers, PlaybackInfo bodies, stream URL
@@ -67,8 +71,10 @@ rules, server capabilities, and download guarantees remain distinct. In particul
 - A user-entered MediaBrowser base path such as `/emby` is part of server identity and must
   survive normalization and relative-stream URL resolution.
 
-Plex remains a separate request family. Its request descriptors, canonical response DTOs,
-timeline, music, optimizer, and universal-transcode APIs are spread across the root PMSKit
+Plex remains a separate request family. Pure native browse builders now live in
+`PlexBrowseRequest`; the app's `PlexBrowseService` pins an immutable Plex session and owns
+browse execution/decoding. Other Plex request descriptors, canonical response DTOs,
+timeline, optimizer, and universal-transcode APIs remain spread across the root PMSKit
 folders rather than a `Plex/` directory.
 
 ## Package boundary

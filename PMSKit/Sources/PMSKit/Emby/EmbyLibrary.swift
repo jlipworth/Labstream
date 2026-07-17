@@ -4,16 +4,15 @@ import FoundationNetworking
 #endif
 
 public enum EmbyLibrary {
-    private static let dialect = MediaBrowserLibraryQueryDialect.emby
+    private static let requestFactory = MediaBrowserLibraryRequestFactory(dialect: .emby)
 
     /// `GET /Users/{UserId}/Views` — the user's libraries/views.
     public static func userViewsRequest(server: URL,
                                         token: String,
                                         identity: EmbyClientIdentity,
                                         userId: String) throws -> URLRequest {
-        let url = try url(server: server, path: dialect.path(.userViews(userId: userId)), queryItems: [
-            dialect.queryItem(.includeExternalContent, value: "false"),
-        ])
+        let shape = requestFactory.userViews(userId: userId)
+        let url = try url(server: server, shape: shape)
         return get(url: url, token: token, identity: identity, userId: userId)
     }
 
@@ -35,30 +34,23 @@ public enum EmbyLibrary {
                                     albumArtistIds: String? = nil,
                                     artistIds: String? = nil,
                                     filters: [String] = []) throws -> URLRequest {
-        var query = baseItemsQuery(fields: fields)
-        if let parentId { query.append(dialect.queryItem(.parentId, value: parentId)) }
-        query.append(dialect.queryItem(.recursive, value: recursive ? "true" : "false"))
-        if let startIndex { query.append(dialect.queryItem(.startIndex, value: String(startIndex))) }
-        if let limit { query.append(dialect.queryItem(.limit, value: String(limit))) }
-        if let searchTerm, !searchTerm.isEmpty {
-            query.append(dialect.queryItem(.searchTerm, value: searchTerm))
-        }
-        if let nameStartsWith, !nameStartsWith.isEmpty {
-            query.append(dialect.queryItem(.nameStartsWith, value: nameStartsWith))
-        }
-        // An album-artist entity is a tag aggregate, not a folder, so its albums/tracks are
-        // reached by these filters rather than `ParentId` (#111).
-        if let albumArtistIds, !albumArtistIds.isEmpty {
-            query.append(dialect.queryItem(.albumArtistIds, value: albumArtistIds))
-        }
-        if let artistIds, !artistIds.isEmpty {
-            query.append(dialect.queryItem(.artistIds, value: artistIds))
-        }
-        replaceQueryItem(named: dialect.queryName(.includeItemTypes), with: includeItemTypes, in: &query)
-        if !filters.isEmpty { query.append(dialect.queryItem(.filters, value: filters.joined(separator: ","))) }
-        replaceQueryItem(named: dialect.queryName(.sortBy), with: sortBy, in: &query)
-        replaceQueryItem(named: dialect.queryName(.sortOrder), with: sortOrder, in: &query)
-        let url = try url(server: server, path: dialect.path(.items(userId: userId)), queryItems: query)
+        let shape = requestFactory.items(
+            userId: userId,
+            parentId: parentId,
+            recursive: recursive,
+            startIndex: startIndex,
+            limit: limit,
+            searchTerm: searchTerm,
+            nameStartsWith: nameStartsWith,
+            sortBy: sortBy,
+            sortOrder: sortOrder,
+            includeItemTypes: includeItemTypes,
+            fields: fields,
+            albumArtistIds: albumArtistIds,
+            artistIds: artistIds,
+            filters: filters
+        )
+        let url = try url(server: server, shape: shape)
         return get(url: url, token: token, identity: identity, userId: userId)
     }
 
@@ -75,24 +67,17 @@ public enum EmbyLibrary {
                                            sortBy: String = "SortName",
                                            sortOrder: String = "Ascending",
                                            fields: String = gridItemFields) throws -> URLRequest {
-        var query = [
-            URLQueryItem(name: "UserId", value: userId),
-            URLQueryItem(name: "Fields", value: fields),
-            URLQueryItem(name: "EnableUserData", value: "true"),
-            URLQueryItem(name: "EnableImages", value: "true"),
-            URLQueryItem(name: "Recursive", value: "true"),
-            URLQueryItem(name: "SortBy", value: sortBy),
-            URLQueryItem(name: "SortOrder", value: sortOrder),
-        ]
-        if let parentId { query.append(URLQueryItem(name: "ParentId", value: parentId)) }
-        if let startIndex { query.append(URLQueryItem(name: "StartIndex", value: String(startIndex))) }
-        if let limit { query.append(URLQueryItem(name: "Limit", value: String(limit))) }
-        // The A–Z rail probes each letter's album-artist count with a `NameStartsWith=X`,
-        // `Limit=1` request and reads the envelope's `TotalRecordCount` (#111).
-        if let nameStartsWith, !nameStartsWith.isEmpty {
-            query.append(URLQueryItem(name: "NameStartsWith", value: nameStartsWith))
-        }
-        let url = try url(server: server, path: "/Artists/AlbumArtists", queryItems: query)
+        let shape = requestFactory.albumArtists(
+            userId: userId,
+            parentId: parentId,
+            startIndex: startIndex,
+            limit: limit,
+            nameStartsWith: nameStartsWith,
+            sortBy: sortBy,
+            sortOrder: sortOrder,
+            fields: fields
+        )
+        let url = try url(server: server, shape: shape)
         return get(url: url, token: token, identity: identity, userId: userId)
     }
 
@@ -107,15 +92,14 @@ public enum EmbyLibrary {
                                             startIndex: Int? = nil,
                                             limit: Int? = nil,
                                             fields: String = fullItemFields) throws -> URLRequest {
-        var query = [
-            URLQueryItem(name: "UserId", value: userId),
-            URLQueryItem(name: "Fields", value: fields),
-            URLQueryItem(name: "EnableUserData", value: "true"),
-            URLQueryItem(name: "EnableImages", value: "true"),
-        ]
-        if let startIndex { query.append(URLQueryItem(name: "StartIndex", value: String(startIndex))) }
-        if let limit { query.append(URLQueryItem(name: "Limit", value: String(limit))) }
-        let url = try url(server: server, path: "/Playlists/\(playlistId)/Items", queryItems: query)
+        let shape = requestFactory.playlistItems(
+            userId: userId,
+            playlistId: playlistId,
+            startIndex: startIndex,
+            limit: limit,
+            fields: fields
+        )
+        let url = try url(server: server, shape: shape)
         return get(url: url, token: token, identity: identity, userId: userId)
     }
 
@@ -127,16 +111,14 @@ public enum EmbyLibrary {
                                           parentId: String? = nil,
                                           startIndex: Int? = nil,
                                           limit: Int = 20) throws -> URLRequest {
-        var query = [
-            URLQueryItem(name: "Limit", value: String(limit)),
-            URLQueryItem(name: "IncludeItemTypes", value: "Movie,Episode,Video"),
-            URLQueryItem(name: "Fields", value: fullItemFields),
-            URLQueryItem(name: "EnableUserData", value: "true"),
-            URLQueryItem(name: "EnableImages", value: "true"),
-        ]
-        if let parentId { query.append(URLQueryItem(name: "ParentId", value: parentId)) }
-        if let startIndex { query.append(URLQueryItem(name: "StartIndex", value: String(startIndex))) }
-        let url = try url(server: server, path: "/Users/\(userId)/Items/Resume", queryItems: query)
+        let shape = requestFactory.resumeItems(
+            userId: userId,
+            parentId: parentId,
+            startIndex: startIndex,
+            limit: limit,
+            fields: fullItemFields
+        )
+        let url = try url(server: server, shape: shape)
         return get(url: url, token: token, identity: identity, userId: userId)
     }
 
@@ -148,16 +130,14 @@ public enum EmbyLibrary {
                                      parentId: String? = nil,
                                      startIndex: Int? = nil,
                                      limit: Int = 20) throws -> URLRequest {
-        var query = [
-            URLQueryItem(name: "UserId", value: userId),
-            URLQueryItem(name: "Limit", value: String(limit)),
-            URLQueryItem(name: "Fields", value: fullItemFields),
-            URLQueryItem(name: "EnableUserData", value: "true"),
-            URLQueryItem(name: "EnableImages", value: "true"),
-        ]
-        if let parentId { query.append(URLQueryItem(name: "ParentId", value: parentId)) }
-        if let startIndex { query.append(URLQueryItem(name: "StartIndex", value: String(startIndex))) }
-        let url = try url(server: server, path: "/Shows/NextUp", queryItems: query)
+        let shape = requestFactory.nextUp(
+            userId: userId,
+            parentId: parentId,
+            startIndex: startIndex,
+            limit: limit,
+            fields: fullItemFields
+        )
+        let url = try url(server: server, shape: shape)
         return get(url: url, token: token, identity: identity, userId: userId)
     }
 
@@ -169,16 +149,14 @@ public enum EmbyLibrary {
                                           parentId: String? = nil,
                                           includeItemTypes: String = "Movie,Episode,Video",
                                           limit: Int = 20) throws -> URLRequest {
-        var query = [
-            URLQueryItem(name: "Limit", value: String(limit)),
-            URLQueryItem(name: "IncludeItemTypes", value: includeItemTypes),
-            URLQueryItem(name: "Fields", value: fullItemFields),
-            URLQueryItem(name: "EnableUserData", value: "true"),
-            URLQueryItem(name: "EnableImages", value: "true"),
-            URLQueryItem(name: "GroupItems", value: "false"),
-        ]
-        if let parentId { query.append(URLQueryItem(name: "ParentId", value: parentId)) }
-        let url = try url(server: server, path: "/Users/\(userId)/Items/Latest", queryItems: query)
+        let shape = requestFactory.latestItems(
+            userId: userId,
+            parentId: parentId,
+            includeItemTypes: includeItemTypes,
+            limit: limit,
+            fields: fullItemFields
+        )
+        let url = try url(server: server, shape: shape)
         return get(url: url, token: token, identity: identity, userId: userId)
     }
 
@@ -188,9 +166,8 @@ public enum EmbyLibrary {
                                    identity: EmbyClientIdentity,
                                    userId: String,
                                    itemId: String) throws -> URLRequest {
-        let url = try url(server: server, path: "/Users/\(userId)/Items/\(itemId)", queryItems: [
-            URLQueryItem(name: "Fields", value: fullItemFields),
-        ])
+        let shape = requestFactory.item(userId: userId, itemId: itemId, fields: fullItemFields)
+        let url = try url(server: server, shape: shape)
         return get(url: url, token: token, identity: identity, userId: userId)
     }
 
@@ -201,11 +178,10 @@ public enum EmbyLibrary {
                                          userId: String,
                                          itemId: String,
                                          played: Bool) throws -> URLRequest {
-        let url = try url(server: server,
-                          path: "/Users/\(userId)/PlayedItems/\(itemId)",
-                          queryItems: [])
+        let shape = requestFactory.markPlayed(userId: userId, itemId: itemId, played: played)
+        let url = try url(server: server, shape: shape)
         var req = authenticatedRequest(url: url, token: token, identity: identity, userId: userId)
-        req.httpMethod = played ? "POST" : "DELETE"
+        req.httpMethod = shape.httpMethod
         return req
     }
 
@@ -257,15 +233,15 @@ public enum EmbyLibrary {
                                            mediaSourceId: String,
                                            streamIndex: Int,
                                            format: String) throws -> URLRequest {
-        let cleanFormat = format.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
-        let ext = ["srt", "vtt"].contains(cleanFormat) ? cleanFormat : "vtt"
-        let url = try EmbyPlayback.embyURL(
-            server: server,
-            path: "/Videos/\(itemId)/\(mediaSourceId)/Subtitles/\(streamIndex)/Stream.\(ext)"
+        let shape = requestFactory.textSubtitle(
+            itemId: itemId,
+            mediaSourceId: mediaSourceId,
+            streamIndex: streamIndex,
+            format: format
         )
+        let url = try url(server: server, shape: shape)
         var req = authenticatedRequest(url: url, token: token, identity: identity, userId: userId)
-        req.setValue(ext == "srt" ? "application/x-subrip,text/plain,*/*" : "text/vtt,text/plain,*/*",
-                     forHTTPHeaderField: "Accept")
+        req.setValue(shape.accept, forHTTPHeaderField: "Accept")
         return req
     }
 
@@ -391,15 +367,14 @@ public enum EmbyLibrary {
                                       userId: String,
                                       itemId: String,
                                       maxStreamingBitrate: Int = 140_000_000) throws -> URL {
-        try url(server: server, path: "/Audio/\(itemId)/universal", queryItems: [
-            URLQueryItem(name: "UserId", value: userId),
-            URLQueryItem(name: "DeviceId", value: identity.deviceId),
-            URLQueryItem(name: "MaxStreamingBitrate", value: String(maxStreamingBitrate)),
-            URLQueryItem(name: "Container", value: JellyfinLibrary.musicDirectPlayContainers),
-            URLQueryItem(name: "TranscodingContainer", value: "ts"),
-            URLQueryItem(name: "TranscodingProtocol", value: "hls"),
-            URLQueryItem(name: "AudioCodec", value: "aac"),
-        ])
+        let shape = requestFactory.audioStream(
+            userId: userId,
+            deviceId: identity.deviceId,
+            itemId: itemId,
+            maxStreamingBitrate: maxStreamingBitrate,
+            containers: MediaBrowserAudioStreamFacts.directPlayContainers
+        )
+        return try url(server: server, shape: shape)
     }
 
     /// Bare image URL — token is NOT baked in (mirror Jellyfin's no-token-in-stored-URL
@@ -411,11 +386,14 @@ public enum EmbyLibrary {
                                 tag: String?,
                                 width: Int? = nil,
                                 height: Int? = nil) throws -> URL {
-        var query: [URLQueryItem] = []
-        if let tag, !tag.isEmpty { query.append(URLQueryItem(name: "tag", value: tag)) }
-        if let width { query.append(URLQueryItem(name: "width", value: String(width))) }
-        if let height { query.append(URLQueryItem(name: "height", value: String(height))) }
-        return try url(server: server, path: "/Items/\(itemId)/Images/\(imageType.rawValue)", queryItems: query)
+        let shape = requestFactory.image(
+            itemId: itemId,
+            imageType: imageType.rawValue,
+            tag: tag,
+            width: width,
+            height: height
+        )
+        return try url(server: server, shape: shape)
     }
 
     public static func chapterImageURL(server: URL,
@@ -424,11 +402,14 @@ public enum EmbyLibrary {
                                        tag: String?,
                                        width: Int? = nil,
                                        height: Int? = nil) throws -> URL {
-        var query: [URLQueryItem] = []
-        if let tag, !tag.isEmpty { query.append(URLQueryItem(name: "tag", value: tag)) }
-        if let width { query.append(URLQueryItem(name: "fillWidth", value: String(width))) }
-        if let height { query.append(URLQueryItem(name: "fillHeight", value: String(height))) }
-        return try url(server: server, path: "/Items/\(itemId)/Images/Chapter/\(chapterIndex)", queryItems: query)
+        let shape = requestFactory.chapterImage(
+            itemId: itemId,
+            chapterIndex: chapterIndex,
+            tag: tag,
+            width: width,
+            height: height
+        )
+        return try url(server: server, shape: shape)
     }
 
     /// `DELETE /Videos/ActiveEncodings?DeviceId=..&PlaySessionId=..`
@@ -442,12 +423,13 @@ public enum EmbyLibrary {
                                                  userId: String,
                                                  deviceId: String,
                                                  playSessionId: String) throws -> URLRequest {
-        let url = try url(server: server, path: "/Videos/ActiveEncodings", queryItems: [
-            URLQueryItem(name: "DeviceId", value: deviceId),
-            URLQueryItem(name: "PlaySessionId", value: playSessionId),
-        ])
+        let shape = requestFactory.activeEncodingStop(
+            deviceId: deviceId,
+            playSessionId: playSessionId
+        )
+        let url = try url(server: server, shape: shape)
         var req = authenticatedRequest(url: url, token: token, identity: identity, userId: userId)
-        req.httpMethod = "DELETE"
+        req.httpMethod = shape.httpMethod
         return req
     }
 
@@ -470,22 +452,11 @@ public enum EmbyLibrary {
         return req
     }
 
-    private static func baseItemsQuery(fields: String = fullItemFields) -> [URLQueryItem] {
-        [
-            dialect.queryItem(.includeItemTypes, value: "Movie,Series,Season,Episode,Video"),
-            dialect.queryItem(.fields, value: fields),
-            dialect.queryItem(.enableUserData, value: "true"),
-            dialect.queryItem(.sortBy, value: "SortName"),
-            dialect.queryItem(.sortOrder, value: "Ascending"),
-        ]
-    }
-
     public static let gridItemFields = MediaBrowserLibraryFields.gridItem
     public static let fullItemFields = MediaBrowserLibraryFields.fullItem
 
-    private static func replaceQueryItem(named name: String, with value: String, in query: inout [URLQueryItem]) {
-        query.removeAll { $0.name == name }
-        query.append(URLQueryItem(name: name, value: value))
+    private static func url(server: URL, shape: MediaBrowserLibraryRequestShape) throws -> URL {
+        try url(server: server, path: shape.path, queryItems: shape.queryItems)
     }
 
     private static func url(server: URL, path: String, queryItems: [URLQueryItem]) throws -> URL {

@@ -1254,8 +1254,7 @@ struct DownloadOptionsSheet: View {
                     dismiss()
                 }
             }
-            if let bitrate = DownloadRowDisplayPolicy.downloadBitrateText(kbps: record.metadata?.downloadBitrateKbps,
-                                                                           requestedProfileLabel: record.metadata?.requestedProfileLabel) {
+            if let bitrate = DownloadRowDisplayPolicy.downloadQualityText(for: record) {
                 Text(bitrate)
                     .font(.caption)
                     .foregroundStyle(.secondary)

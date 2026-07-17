@@ -59,7 +59,7 @@ extension DownloadManager {
             case .retainTombstone:
                 return
             case .discardTombstone:
-                discardEmbyCleanupTombstone(id: tombstone.id)
+                _ = removeEmbyConvertCleanupTombstoneDurably(tombstone)
                 return
             case .cancel(let jobId):
                 let deleteRequest = try EmbyConvertRequest.deleteJobRequest(
@@ -68,11 +68,12 @@ extension DownloadManager {
                 guard let deleteHTTP = deleteResponse as? HTTPURLResponse,
                       (200..<300).contains(deleteHTTP.statusCode) || [404, 410].contains(deleteHTTP.statusCode)
                 else { return }
-                discardEmbyCleanupTombstone(id: tombstone.id)
-                recordDownloadDiagnostic("downloads.convert_cleanup_recovered", fields: [
-                    "download_id": .identifier(tombstone.ratingKey),
-                    "job_id": .int(jobId),
-                ])
+                if removeEmbyConvertCleanupTombstoneDurably(tombstone) {
+                    recordDownloadDiagnostic("downloads.convert_cleanup_recovered", fields: [
+                        "download_id": .identifier(tombstone.ratingKey),
+                        "job_id": .int(jobId),
+                    ])
+                }
             }
         } catch {
             // Retain the durable tombstone; a later backend-ready/lifecycle pass retries it.
@@ -82,22 +83,35 @@ extension DownloadManager {
         }
     }
 
-    /// Drop a completed/expired cleanup tombstone from both the durable store queue and the
-    /// in-memory deferred queue (tombstones whose persist failed at delete() time live only there).
-    func discardEmbyCleanupTombstone(id: UUID) {
-        store.removeEmbyConvertCleanupTombstone(id: id)
-        deferredEmbyCleanupTombstones.removeAll { $0.id == id }
+    @discardableResult
+    private func removeEmbyConvertCleanupTombstoneDurably(
+        _ tombstone: DownloadStore.EmbyConvertCleanupTombstone
+    ) -> Bool {
+        switch store.removeEmbyConvertCleanupTombstone(id: tombstone.id) {
+        case .committed:
+            deferredEmbyCleanupTombstones.removeAll { $0.id == tombstone.id }
+            return true
+        case .failed(let failure):
+            recordDownloadDiagnostic("downloads.convert_cleanup_deferred", fields: [
+                "download_id": .identifier(tombstone.ratingKey),
+                "reason": .label("tombstone_\(failure.stage.rawValue)_failed"),
+                "error_type": .label(failure.errorType),
+            ])
+            return false
+        }
     }
 
-    func beginEmbyConvertAttempt(ratingKey: String) -> UUID {
-        serverPrepAttempts.beginEmbyConvertAttempt(forRecordKey: ratingKey)
+    func beginEmbyConvertAttempt(for key: DownloadAttemptKey) -> UUID {
+        serverPrepAttempts.beginEmbyConvertAttempt(for: key)
     }
 
     func embyConvertAttemptIsCurrent(ratingKey: String, attemptID: UUID,
                                      targetName: String? = nil, jobId: Int? = nil) -> Bool {
-        guard activeJobs.contains(ratingKey),
-              serverPrepAttempts.isCurrentEmbyConvertAttempt(forRecordKey: ratingKey, id: attemptID),
-              let row = store.records.first(where: { $0.ratingKey == ratingKey }),
+        guard let key = inFlightAttempts.owner(forRatingKey: ratingKey),
+              activeJobs.contains(ratingKey),
+              serverPrepAttempts.isCurrentEmbyConvertAttempt(for: key, id: attemptID),
+              !store.isDeletionPending(for: key),
+              let row = store.record(for: ratingKey),
               row.status == .preparing else { return false }
         if let targetName, row.metadata?.optimizeTargetName != targetName { return false }
         if let jobId, row.metadata?.embyConvertJobID != jobId { return false }
@@ -134,17 +148,18 @@ extension DownloadManager {
     func triggerConvertAndDownload(item: MediaItem, targetName: String,
                                            metadata: OfflineMetadata,
                                            session: BackendSession,
+                                           attemptKey storeAttemptKey: DownloadAttemptKey,
                                            audioStreamIndex: Int? = nil) async {
         let itemId = item.ratingKey
-        let ratingKey = DownloadRecordIdentity.recordKey(for: itemId, backend: .emby)
+        let ratingKey = storeAttemptKey.ratingKey
         let server = session.baseURL
         let token = session.token
         let identity = appModel.identity.emby
         guard let userId = session.userID else {
-            failEmbyConvert(ratingKey: ratingKey, .notAuthenticated)
+            failEmbyConvert(for: storeAttemptKey, .notAuthenticated)
             return
         }
-        let attemptID = beginEmbyConvertAttempt(ratingKey: ratingKey)
+        let attemptID = beginEmbyConvertAttempt(for: storeAttemptKey)
 
         // Carry the convert preset + a `.preparing`-grade metadata snapshot. `optimizeTargetName`
         // doubles as the server-prep marker the UI/resume paths key off (parity with Plex).
@@ -159,9 +174,16 @@ extension DownloadManager {
         // before handing off to the static `.existingVersion` lane. If the app dies before the
         // Sync job is created, launch reconciliation keeps the row `.preparing` and the resume path
         // fails it as a retryable "conversion did not finish starting" row because it has no job id.
-        store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
-                                    localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
-                                    bytes: 0, progress: 0, status: .preparing, metadata: convertMetadata))
+        guard persistEmbyAttemptRecord(
+            DownloadRecord(ratingKey: ratingKey, attemptID: storeAttemptKey.attemptID,
+                           title: item.title,
+                           localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
+                           bytes: 0, progress: 0, status: .preparing,
+                           metadata: convertMetadata),
+            for: storeAttemptKey, context: "convert_seed") else {
+            failCurrentEmbyConvertPersistence(for: storeAttemptKey, context: "convert_seed")
+            return
+        }
         optimizeState[ratingKey] = DownloadOptimizeStateLabel.queued
         refreshRecords()
 
@@ -204,11 +226,11 @@ extension DownloadManager {
             // Keep the `.preparing` row until the static lane replaces it. Removing first left a
             // process-kill window with no durable row and no way to resume this accepted download.
             clearOptimizeProgress(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: storeAttemptKey)
             await downloadEmby(item, choice: .existingVersion, audioStreamIndex: audioStreamIndex,
                                mediaSourceIDOverride: reuseId,
                                deferStaticStartWhenQueuePaused: true,
-                               requestedProfileLabelOverride: metadata.requestedProfileLabel ?? targetName,
+                               requestedProfileLabelOverride: targetName,
                                allowReplacingExistingActiveRow: true)
             return
         }
@@ -237,11 +259,11 @@ extension DownloadManager {
                 return
             }
             clearOptimizeProgress(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: storeAttemptKey)
             await downloadEmby(item, choice: .existingVersion, audioStreamIndex: audioStreamIndex,
                                mediaSourceIDOverride: reuseId,
                                deferStaticStartWhenQueuePaused: true,
-                               requestedProfileLabelOverride: metadata.requestedProfileLabel ?? targetName,
+                               requestedProfileLabelOverride: targetName,
                                allowReplacingExistingActiveRow: true)
             return
         }
@@ -294,7 +316,7 @@ extension DownloadManager {
                 "phase": .label("baseline"),
                 "error": .error(error),
             ])
-            failEmbyConvert(ratingKey: ratingKey,
+            failEmbyConvert(for: storeAttemptKey,
                             (error as? DownloadError) ?? .transferFailed(
                                 DiagnosticRedactor.safeUserFacingErrorMessage(error,
                                                                               operation: "Transfer")))
@@ -320,9 +342,16 @@ extension DownloadManager {
 
         // Refresh the visible `.preparing` row with the full pre-conversion snapshot before creating
         // the server job.
-        store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
-                                    localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
-                                    bytes: 0, progress: 0, status: .preparing, metadata: convertMetadata))
+        guard persistEmbyAttemptRecord(
+            DownloadRecord(ratingKey: ratingKey, attemptID: storeAttemptKey.attemptID,
+                           title: item.title,
+                           localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
+                           bytes: 0, progress: 0, status: .preparing,
+                           metadata: convertMetadata),
+            for: storeAttemptKey, context: "convert_snapshot") else {
+            failCurrentEmbyConvertPersistence(for: storeAttemptKey, context: "convert_snapshot")
+            return
+        }
         refreshRecords()
 
         // 1. Create the convert job.
@@ -339,10 +368,14 @@ extension DownloadManager {
             // Persist dispatch ambiguity BEFORE handing POST to URLSession. A kill after this point
             // must recover by bounded list identity; `.prepared` rows can never adopt a job.
             convertMetadata.embyConvertRecoveryPhase = .dispatchAmbiguous
-            store.upsert(DownloadRecord(
-                ratingKey: ratingKey, title: item.title,
+            guard persistEmbyAttemptRecord(DownloadRecord(
+                ratingKey: ratingKey, attemptID: storeAttemptKey.attemptID, title: item.title,
                 localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
-                bytes: 0, progress: 0, status: .preparing, metadata: convertMetadata))
+                bytes: 0, progress: 0, status: .preparing, metadata: convertMetadata),
+                for: storeAttemptKey, context: "convert_dispatch") else {
+                failCurrentEmbyConvertPersistence(for: storeAttemptKey, context: "convert_dispatch")
+                return
+            }
             refreshRecords()
             postWasDispatched = true
             let (data, response) = try await URLSession.shared.data(for: req)
@@ -369,9 +402,10 @@ extension DownloadManager {
             if EmbyConvertRecoveryPolicy.createFailureDisposition(
                 postWasDispatched: postWasDispatched,
                 httpStatusCode: createHTTPStatus) == .clearRecovery {
-                store.clearEmbyConvertRecovery(ratingKey: ratingKey)
+                guard clearEmbyConvertRecoveryIfExact(
+                    for: storeAttemptKey, expected: convertMetadata) else { return }
             }
-            failEmbyConvert(ratingKey: ratingKey,
+            failEmbyConvert(for: storeAttemptKey,
                             (error as? DownloadError) ?? .transferFailed(
                                 DiagnosticRedactor.safeUserFacingErrorMessage(error,
                                                                               operation: "Transfer")))
@@ -391,15 +425,23 @@ extension DownloadManager {
             return
         }
         convertMetadata.adoptEmbyConvertJobID(job.id)
-        store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
-                                    localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
-                                    bytes: 0, progress: 0, status: .preparing, metadata: convertMetadata))
+        guard persistEmbyAttemptRecord(
+            DownloadRecord(ratingKey: ratingKey, attemptID: storeAttemptKey.attemptID,
+                           title: item.title,
+                           localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
+                           bytes: 0, progress: 0, status: .preparing,
+                           metadata: convertMetadata),
+            for: storeAttemptKey, context: "convert_job") else {
+            failCurrentEmbyConvertPersistence(for: storeAttemptKey, context: "convert_job")
+            return
+        }
         refreshRecords()
 
         await pollAndDownloadEmbyConvertJob(item: item, ratingKey: ratingKey, jobId: job.id,
                                             snapshotIds: snapshotIds, targetName: targetName,
                                             server: server, token: token, identity: identity,
                                             userId: userId, audioStreamIndex: audioStreamIndex,
+                                            attemptKey: storeAttemptKey,
                                             attemptID: attemptID)
     }
 
@@ -413,7 +455,9 @@ extension DownloadManager {
                                         snapshotIds: Set<String>, targetName: String,
                                         server: URL, token: String,
                                         identity: EmbyClientIdentity, userId: String,
-                                        audioStreamIndex: Int?, attemptID: UUID) async {
+                                        audioStreamIndex: Int?,
+                                        attemptKey storeAttemptKey: DownloadAttemptKey,
+                                        attemptID: UUID) async {
         let list: EmbyConvertJobList
         do {
             let req = try EmbyConvertRequest.jobListRequest(
@@ -437,7 +481,7 @@ extension DownloadManager {
                 "phase": .label("recovery_list"),
                 "error": .error(error),
             ])
-            failEmbyConvert(ratingKey: ratingKey,
+            failEmbyConvert(for: storeAttemptKey,
                             .transferFailed("Server conversion could not be recovered safely; retry."))
             return
         }
@@ -458,14 +502,14 @@ extension DownloadManager {
                 "candidate_count": .int(matchingIDs.count),
                 "baseline_count": .int(baselineJobIDs.count),
             ])
-            failEmbyConvert(ratingKey: ratingKey,
+            failEmbyConvert(for: storeAttemptKey,
                             .transferFailed("Server conversion could not be identified safely; retry."))
             return
         }
 
         // Persist ownership BEFORE polling or publishing recovery. A second kill after this upsert
         // follows the ordinary job-id resume path and can safely cancel this exact job on delete.
-        guard var row = store.records.first(where: { $0.ratingKey == ratingKey }),
+        guard var row = store.record(for: storeAttemptKey),
               var metadata = row.metadata,
               metadata.embyConvertJobID == nil else {
             recordStaleEmbyConvertAttempt(ratingKey: ratingKey, phase: "recovery_persist", jobId: jobId)
@@ -473,7 +517,11 @@ extension DownloadManager {
         }
         metadata.adoptEmbyConvertJobID(jobId)
         row.metadata = metadata
-        store.upsert(row)
+        guard persistEmbyAttemptRecord(
+            row, for: storeAttemptKey, context: "convert_recovery") else {
+            failCurrentEmbyConvertPersistence(for: storeAttemptKey, context: "convert_recovery")
+            return
+        }
         refreshRecords()
         recordDownloadDiagnostic("downloads.convert_resume", fields: [
             "download_id": .identifier(ratingKey),
@@ -484,7 +532,8 @@ extension DownloadManager {
         await pollAndDownloadEmbyConvertJob(
             item: item, ratingKey: ratingKey, jobId: jobId, snapshotIds: snapshotIds,
             targetName: targetName, server: server, token: token, identity: identity,
-            userId: userId, audioStreamIndex: audioStreamIndex, attemptID: attemptID)
+            userId: userId, audioStreamIndex: audioStreamIndex,
+            attemptKey: storeAttemptKey, attemptID: attemptID)
     }
 
     /// Poll an Emby convert job to a terminal state, surfacing `Progress` through the optimize
@@ -495,6 +544,7 @@ extension DownloadManager {
                                                server: URL, token: String,
                                                identity: EmbyClientIdentity, userId: String,
                                                audioStreamIndex: Int? = nil,
+                                               attemptKey storeAttemptKey: DownloadAttemptKey,
                                                attemptID: UUID) async {
         // Relaunch/resume recovery: the Sync job can be effectively done (or even no longer useful
         // to poll) while Emby has already exposed the converted MP4 as a File MediaSource. Check for
@@ -530,13 +580,11 @@ extension DownloadManager {
             cancelEmbyConvertJob(jobId: jobId, ratingKey: ratingKey,
                                  server: server, token: token, identity: identity)
             clearOptimizeProgress(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
-            let requestedProfileLabel = records.first { $0.ratingKey == ratingKey }?
-                .metadata?.requestedProfileLabel ?? targetName
+            releaseInFlight(for: storeAttemptKey)
             await downloadEmby(item, choice: .existingVersion, audioStreamIndex: audioStreamIndex,
                                mediaSourceIDOverride: reuseId,
                                deferStaticStartWhenQueuePaused: true,
-                               requestedProfileLabelOverride: requestedProfileLabel,
+                               requestedProfileLabelOverride: targetName,
                                allowReplacingExistingActiveRow: true)
             return
         }
@@ -581,9 +629,10 @@ extension DownloadManager {
                         // fresh job instead of re-polling a dead one forever. 401/403 is an AUTH
                         // problem — keep the id so re-login + Retry resumes polling the live job.
                         if [404, 410].contains(http.statusCode) {
-                            store.clearEmbyConvertJobID(ratingKey: ratingKey)
+                            guard clearEmbyConvertJobIDIfExact(
+                                for: storeAttemptKey, expectedJobID: jobId) else { return }
                         }
-                        failEmbyConvert(ratingKey: ratingKey,
+                        failEmbyConvert(for: storeAttemptKey,
                                         .transferFailed("Server conversion is no longer available (HTTP \(http.statusCode))."))
                         return
                     }
@@ -613,7 +662,7 @@ extension DownloadManager {
                         "phase": .label("poll_unreachable"),
                         "consecutive_failures": .int(pollHealth.consecutiveFailures),
                     ])
-                    failEmbyConvert(ratingKey: ratingKey,
+                    failEmbyConvert(for: storeAttemptKey,
                                     .transferFailed("Server conversion status stayed unreachable. Retry to continue."))
                     return
                 }
@@ -671,6 +720,7 @@ extension DownloadManager {
                                             snapshotIds: snapshotIds, targetName: targetName,
                                             server: server, token: token, identity: identity,
                                             userId: userId, audioStreamIndex: audioStreamIndex,
+                                            attemptKey: storeAttemptKey,
                                             attemptID: attemptID)
                 } else {
                     // Server-side Failed/Cancelled → fail the row (retry-only; the server job
@@ -684,8 +734,9 @@ extension DownloadManager {
                     // The job reached a terminal state: clear the persisted id so Retry creates a
                     // fresh job. A `.failed` row that keeps its id resumes POLLING on retry (the
                     // offline-recovery path), which for a terminal job would just re-fail forever.
-                    store.clearEmbyConvertJobID(ratingKey: ratingKey)
-                    failEmbyConvert(ratingKey: ratingKey,
+                    guard clearEmbyConvertJobIDIfExact(
+                        for: storeAttemptKey, expectedJobID: jobId) else { return }
+                    failEmbyConvert(for: storeAttemptKey,
                                     .transferFailed("Server conversion \(job.status.rawValue.lowercased())."))
                 }
                 return
@@ -706,17 +757,79 @@ extension DownloadManager {
     /// keeping this helper Emby-local rather than folding both lanes into one shared finalizer.
     /// `clearOptimizeProgress`/`setStatus` are no-ops when no row/progress exists yet, so the
     /// pre-seed `notAuthenticated` site can use this too.
-    private func failEmbyConvert(ratingKey: String, _ error: DownloadError) {
-        lastError[ratingKey] = error
+    private func failCurrentEmbyConvertPersistence(
+        for key: DownloadAttemptKey,
+        context: String
+    ) {
+        // Persistence can fail after Store memory accepted the exact-owner mutation. Do not leave
+        // that `.preparing` row holding an active slot with no poller. A stale/replaced owner is a
+        // no-op so this tail cannot surface an error on a newer attempt.
+        guard store.ownsAttempt(key) else { return }
+        lastError[key.ratingKey] = .transferFailed(
+            "Download preparation could not be saved. Free storage if needed, then retry.")
+        _ = store.setStatus(for: key, .failed)
+        clearOptimizeProgress(ratingKey: key.ratingKey)
+        releaseInFlight(for: key)
+        recordDownloadDiagnostic("downloads.convert_persistence_failed", fields: [
+            "download_id": .identifier(key.ratingKey),
+            "context": .label(context),
+        ])
+        refreshRecords()
+    }
+
+    private func failEmbyConvert(for key: DownloadAttemptKey, _ error: DownloadError) {
+        guard store.ownsAttempt(key) else { return }
+        lastError[key.ratingKey] = error
         // Do not blanket-clear the pre-POST baseline/fingerprint here. An ambiguous dispatched
         // POST or a zero/multiple/list-error recovery must retain ownership evidence so Relaunch/
         // Retry re-enters recovery rather than creating and orphaning another server job. The
         // definitive pre-dispatch/non-2xx create branch clears explicitly; exact adoption clears
         // atomically with persisting the recovered job id.
-        store.setStatus(ratingKey: ratingKey, .failed)
-        clearOptimizeProgress(ratingKey: ratingKey)
-        releaseInFlight(ratingKey: ratingKey)
+        _ = setEmbyAttemptStatus(.failed, for: key, context: "convert_failure")
+        clearOptimizeProgress(ratingKey: key.ratingKey)
+        releaseInFlight(for: key)
         refreshRecords()
+    }
+
+    func clearEmbyConvertJobIDIfExact(
+        for key: DownloadAttemptKey,
+        expectedJobID: Int
+    ) -> Bool {
+        var matched = false
+        let result = store.updateMetadata(for: key) { metadata in
+            guard metadata.embyConvertJobID == expectedJobID else { return }
+            matched = true
+            metadata.embyConvertJobID = nil
+        }
+        switch result {
+        case .applied: return true
+        case .noChange: return matched
+        case .staleOrMissing, .persistenceFailed: return false
+        }
+    }
+
+    func clearEmbyConvertRecoveryIfExact(
+        for key: DownloadAttemptKey,
+        expected: OfflineMetadata
+    ) -> Bool {
+        var matched = false
+        let result = store.updateMetadata(for: key) { metadata in
+            guard metadata.embyConvertJobID == nil,
+                  metadata.embyConvertJobBaselineIDs == expected.embyConvertJobBaselineIDs,
+                  metadata.embyConvertRecoveryFingerprint == expected.embyConvertRecoveryFingerprint,
+                  metadata.embyConvertRecoveryStartedAtEpochSeconds
+                    == expected.embyConvertRecoveryStartedAtEpochSeconds,
+                  metadata.embyConvertRecoveryPhase == expected.embyConvertRecoveryPhase else {
+                return
+            }
+            matched = true
+            metadata.clearEmbyConvertRecoveryIdentity()
+        }
+        switch result {
+        case .applied: return true
+        case .noChange: return matched
+        case .staleOrMissing, .persistenceFailed: return false
+        }
     }
 
     private static func isTerminalEmbyConvertPollStatus(_ statusCode: Int) -> Bool {
@@ -752,6 +865,7 @@ extension DownloadManager {
                                    server: URL, token: String,
                                    identity: EmbyClientIdentity, userId: String,
                                    audioStreamIndex: Int?,
+                                   attemptKey storeAttemptKey: DownloadAttemptKey,
                                    attemptID: UUID) async {
         // Cancel race (entry guard): bail if the row was deleted/cancelled before we got here.
         guard embyConvertAttemptIsCurrent(ratingKey: ratingKey, attemptID: attemptID,
@@ -833,7 +947,7 @@ extension DownloadManager {
                 "phase": .label("no_converted_source"),
                 "source_count": .int(fileSources.count),
             ])
-            failEmbyConvert(ratingKey: ratingKey,
+            failEmbyConvert(for: storeAttemptKey,
                             .transferFailed("Converted source not found after completion."))
             return
         }
@@ -855,9 +969,7 @@ extension DownloadManager {
         // Clear the prep progress + release THIS lane's bookkeeping so the handoff `downloadEmby`
         // re-acquires the `activeJobs` slot cleanly and drives the row from 0% on the static lane.
         clearOptimizeProgress(ratingKey: ratingKey)
-        releaseInFlight(ratingKey: ratingKey)
-        let requestedProfileLabel = records.first { $0.ratingKey == ratingKey }?
-            .metadata?.requestedProfileLabel ?? targetName
+        releaseInFlight(for: storeAttemptKey)
         // Keep the seeded `.preparing` row until the static handoff atomically replaces it. A crash
         // here can then resume the completed job/source lookup instead of losing the download.
         // Hand off to the existing resumable `.original` static lane. `.existingVersion` addresses a
@@ -867,7 +979,7 @@ extension DownloadManager {
         await downloadEmby(item, choice: .existingVersion, audioStreamIndex: audioStreamIndex,
                            mediaSourceIDOverride: newSourceId,
                            deferStaticStartWhenQueuePaused: true,
-                           requestedProfileLabelOverride: requestedProfileLabel,
+                           requestedProfileLabelOverride: targetName,
                            allowReplacingExistingActiveRow: true)
     }
 
@@ -946,7 +1058,8 @@ extension DownloadManager {
         let maxAttempts = 6 // ~30 seconds at the shared 5s poll cadence; bounded before new convert.
         var lastSourceCount = 0
         for attempt in 0..<maxAttempts {
-            guard serverPrepAttempts.isCurrentEmbyConvertAttempt(forRecordKey: ratingKey, id: attemptID),
+            guard let key = inFlightAttempts.owner(forRatingKey: ratingKey),
+                  serverPrepAttempts.isCurrentEmbyConvertAttempt(for: key, id: attemptID),
                   activeJobs.contains(ratingKey) else { return nil }
             let sources = await embyFileSources(server: server, token: token, identity: identity,
                                                 userId: userId, itemId: itemId)

@@ -6,5 +6,12 @@
 	<true/>
 	<key>com.apple.security.network.client</key>
 	<true/>
+	<!-- The canonical Mac build stores the synchronized Plex token in the same default
+	     application keychain group as the iOS/visionOS app. Xcode expands the prefix from
+	     the selected signing team and injects application/team identifiers from the profile. -->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	</array>
 </dict>
 </plist>

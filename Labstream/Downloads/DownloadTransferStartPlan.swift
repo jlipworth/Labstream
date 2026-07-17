@@ -5,12 +5,14 @@ import PMSKit
 /// shared background transfer engine.
 ///
 /// Backends still own source resolution, server-prep, keepalive, and cleanup quirks. This value
-/// captures only the common transfer-start surface: diagnostics, expected-byte accounting, and the
-/// per-lane failure-release policy. Keeping it explicit makes it harder for a new lane to bypass
+/// captures only the common transfer-start surface: exact seeded ownership, diagnostics,
+/// expected-byte accounting, and the per-lane failure-release policy. Keeping it explicit makes it
+/// harder for a new lane to bypass
 /// `downloads.start` / `downloads.start_failed` or forget which paths release the in-flight slot on
 /// immediate URLSession start failure.
 struct DownloadTransferStartPlan {
-    let ratingKey: String
+    let attemptKey: DownloadAttemptKey
+    var ratingKey: String { attemptKey.ratingKey }
     let backendLabel: String
     let choiceLabel: String
     let urlShape: URL?
@@ -18,14 +20,14 @@ struct DownloadTransferStartPlan {
     let releaseInFlightOnFailure: Bool
     let extraDiagnosticFields: [String: DiagnosticFieldValue]
 
-    init(ratingKey: String,
+    init(attemptKey: DownloadAttemptKey,
          backendLabel: String,
          choiceLabel: String,
          urlShape: URL?,
          expectedBytes: Int?,
          releaseInFlightOnFailure: Bool,
          extraDiagnosticFields: [String: DiagnosticFieldValue] = [:]) {
-        self.ratingKey = ratingKey
+        self.attemptKey = attemptKey
         self.backendLabel = backendLabel
         self.choiceLabel = choiceLabel
         self.urlShape = urlShape

@@ -178,10 +178,9 @@ struct SearchView: View {
         }
     }
 
-    private func plexSearchSections(server: URL, token: String) async -> [PlexSection] {
-        let req = BrowseAPI.sections(server: server, token: token, identity: appModel.identity)
-        let response = try? await appModel.client.send(req, as: SectionsResponse.self)
-        return response?.mediaContainer.directory ?? []
+    private var currentSearchAuthorityKey: String {
+        let currentQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "\(appModel.activeBrowseSessionKey):\(currentQuery)"
     }
 
     private func runSearch() async {
@@ -197,7 +196,9 @@ struct SearchView: View {
         if searchKey == loadedQuery, case .loaded = loadState { return }
         // Light debounce so we don't fire a request per keystroke.
         try? await Task.sleep(for: .milliseconds(300))
-        if Task.isCancelled { return }
+        guard SearchRequestAuthority.accepts(capturedKey: searchKey,
+                                             currentKey: currentSearchAuthorityKey,
+                                             isCancelled: Task.isCancelled) else { return }
 
         if appModel.activeBackend == .jellyfin {
             loadState = .loading
@@ -231,26 +232,31 @@ struct SearchView: View {
             return
         }
 
-        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
+        guard let service = try? PlexBrowseService(appModel: appModel) else {
             loadState = .failed("No server selected.")
             return
         }
         loadState = .loading
-        let req = BrowseAPI.search(server: server, token: token,
-                                   identity: appModel.identity, query: trimmed)
         do {
-            async let searchResponse = appModel.client.send(req, as: HubsResponse.self)
-            async let sections = plexSearchSections(server: server, token: token)
-            let resp = try await searchResponse
-            let plexSections = await sections
-            if Task.isCancelled { return }
-            results = .plexNativeHubs(resp.mediaContainer.hub, sections: plexSections)
+            let snapshot = try await service.searchWithLibraries(query: trimmed)
+            guard SearchRequestAuthority.accepts(capturedKey: searchKey,
+                                                 currentKey: currentSearchAuthorityKey,
+                                                 isCancelled: Task.isCancelled) else { return }
+            results = .plexNativeHubs(snapshot.hubs, sections: snapshot.libraries)
             loadedQuery = searchKey
             loadState = .loaded
         } catch {
-            if Task.isCancelled { return }
+            guard SearchRequestAuthority.accepts(capturedKey: searchKey,
+                                                 currentKey: currentSearchAuthorityKey,
+                                                 isCancelled: Task.isCancelled) else { return }
             loadState = .failed(friendlyMessage(error))
         }
+    }
+}
+
+enum SearchRequestAuthority {
+    static func accepts(capturedKey: String, currentKey: String, isCancelled: Bool) -> Bool {
+        !isCancelled && capturedKey == currentKey
     }
 }
 
@@ -441,13 +447,10 @@ private struct SearchSongsSection: View {
         }
 
         // Plex: hydrate the skinny search row into a full track (Media/Part) first.
-        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else { return }
-        let req = BrowseAPI.metadata(server: server, token: token,
-                                     identity: appModel.identity,
-                                     ratingKey: track.ratingKey)
+        guard let service = try? PlexBrowseService(appModel: appModel) else { return }
         do {
-            let resp = try await appModel.client.send(req, as: MetadataResponse.self)
-            guard let full = resp.mediaContainer.metadata.first(where: { $0.kind == .track }) else {
+            guard let full = try await service.metadataItems(ratingKeys: track.ratingKey)
+                .first(where: { $0.kind == .track }) else {
                 playError = "Couldn’t load that song."
                 return
             }
@@ -477,17 +480,14 @@ private struct SearchSongsSection: View {
 
         // Plex search rows are skinny (no Media/Part) — re-fetch full metadata so the
         // tracks carry a playable part key.
-        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else { return }
+        guard let service = try? PlexBrowseService(appModel: appModel) else { return }
         // Queue = the song results (capped), starting at the tapped one; if the
         // tapped track somehow falls outside the cap, play it alone.
         var keys = tracks.prefix(songsQueueCap).map(\.ratingKey)
         if !keys.contains(tapped.ratingKey) { keys = [tapped.ratingKey] }
-        let req = BrowseAPI.metadata(server: server, token: token,
-                                     identity: appModel.identity,
-                                     ratingKey: keys.joined(separator: ","))
         do {
-            let resp = try await appModel.client.send(req, as: MetadataResponse.self)
-            let full = resp.mediaContainer.metadata.filter { $0.kind == .track }
+            let full = try await service.metadataItems(ratingKeys: keys.joined(separator: ","))
+                .filter { $0.kind == .track }
             guard !full.isEmpty else {
                 playError = "Couldn’t load that song."
                 return

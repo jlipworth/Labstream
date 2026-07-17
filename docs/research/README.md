@@ -18,8 +18,14 @@ Historical or superseded research belongs in `docs/archive/research/`. Do not pu
   staged implementation plan for the whole-repository correctness, concurrency,
   performance, backend/platform sharing, and build-cost audit. It remains active until
   every audit ID is closed or explicitly superseded.
-- [`offline-playback-compatibility.md`](offline-playback-compatibility.md) — unresolved
-  cross-backend/device compatibility evidence for offline artifacts. Implemented routing
-  and transfer behavior is canonical in
-  [`DOWNLOADS-OFFLINE.md`](../DOWNLOADS-OFFLINE.md); retain this note only for the
-  compatibility questions that still require real-device proof.
+## Closed review snapshots
+
+- [`2026-07-12-remediation-branch-review.md`](2026-07-12-remediation-branch-review.md) and
+  [`2026-07-12-remediation-delta-review.md`](2026-07-12-remediation-delta-review.md) record
+  point-in-time reviews of the remediation branch. Their confirmed code findings were
+  subsequently fixed; consult their resolution banners and the remediation plan's current
+  status table rather than treating their finding sections as open instructions.
+- [`offline-playback-compatibility.md`](offline-playback-compatibility.md) records the
+  implementation research for closed issue #167. Its codec/container rationale remains
+  useful history, while current routing, finalization, and revalidation behavior is
+  canonical in [`DOWNLOADS-OFFLINE.md`](../DOWNLOADS-OFFLINE.md).

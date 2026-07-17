@@ -53,6 +53,8 @@ extension DownloadManager {
         guard let startAttempt = acquireStartAttempt(ratingKey: ratingKey,
                                                      backend: "Emby",
                                                      allowReplacingExistingActiveRow: allowReplacingExistingActiveRow) else { return }
+        let attemptKey = DownloadAttemptKey(
+            ratingKey: ratingKey, attemptID: startAttempt.attemptID)
         lastError[ratingKey] = nil
         // No `defer { activeJobs.remove }` — same in-flight-lifetime contract as the other lanes:
         // `session.start` only kicks off the transfer, so protection (and the encoder-teardown
@@ -63,7 +65,7 @@ extension DownloadManager {
                                                                   mediaIndex: mediaIndex,
                                                                   partIndex: partIndex,
                                                                   backend: .emby)) {
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             return
         }
 
@@ -87,6 +89,17 @@ extension DownloadManager {
                                             audioStreamIndex: audioStreamIndex,
                                             downloadLane: DownloadChoicePolicy.downloadLane(for: choice),
                                             serverPreparedVersion: DownloadChoicePolicy.isServerPreparedVersion(for: choice))
+        let seedDestination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
+        guard persistAttemptSeed(
+            DownloadRecord(ratingKey: ratingKey, attemptID: startAttempt.attemptID,
+                           title: item.title, localURL: seedDestination,
+                           bytes: 0, progress: 0, metadata: metadata),
+            for: startAttempt,
+            backend: "Emby"
+        ) else {
+            releaseInFlight(for: attemptKey)
+            return
+        }
         recordDownloadDiagnostic("downloads.enqueue", fields: downloadDiagnosticFields(
             item: item,
             choice: choice,
@@ -141,9 +154,9 @@ extension DownloadManager {
             ])
             lastError[ratingKey] = (error as? DownloadError) ?? .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
-            store.setStatus(ratingKey: ratingKey, .failed)
+            _ = setEmbyAttemptStatus(.failed, for: attemptKey, context: "playback_info")
             clearStaticRangePendingResume(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             refreshRecords()
             return
         }
@@ -180,9 +193,9 @@ extension DownloadManager {
             ])
             lastError[ratingKey] = .transferFailed(
                 "The requested server version is no longer available. Choose another version and retry.")
-            store.setStatus(ratingKey: ratingKey, .failed)
+            _ = setEmbyAttemptStatus(.failed, for: attemptKey, context: "source_mismatch")
             clearStaticRangePendingResume(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             refreshRecords()
             return
         }
@@ -237,6 +250,7 @@ extension DownloadManager {
         case .rerouteConvert(let targetName):
             await triggerConvertAndDownload(item: item, targetName: targetName,
                                             metadata: metadata, session: backendSession,
+                                            attemptKey: attemptKey,
                                             audioStreamIndex: audioStreamIndex)
             return
         case .fail(let reason):
@@ -255,9 +269,9 @@ extension DownloadManager {
             }
             recordDownloadDiagnostic(event, fields: fields)
             lastError[ratingKey] = .transferFailed(reason.userMessage)
-            store.setStatus(ratingKey: ratingKey, .failed)
+            _ = setEmbyAttemptStatus(.failed, for: attemptKey, context: "route_rejected")
             clearStaticRangePendingResume(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             refreshRecords()
             return
         }
@@ -325,31 +339,43 @@ extension DownloadManager {
             ])
             lastError[ratingKey] = (error as? DownloadError) ?? .transferFailed(
                 DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Transfer"))
-            store.setStatus(ratingKey: ratingKey, .failed)
+            _ = setEmbyAttemptStatus(.failed, for: attemptKey, context: "request_build")
             clearStaticRangePendingResume(ratingKey: ratingKey)
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             refreshRecords()
             return
         }
 
-        store.upsert(DownloadRecord(ratingKey: ratingKey, title: item.title,
-                                    localURL: destination, bytes: 0, progress: 0,
-                                    metadata: metadata))
+        guard persistEmbyAttemptRecord(
+            DownloadRecord(ratingKey: ratingKey, attemptID: startAttempt.attemptID,
+                           title: item.title,
+                           localURL: destination, bytes: 0, progress: 0,
+                           metadata: metadata),
+            for: attemptKey, context: "resolved_destination") else {
+            releaseInFlight(for: attemptKey)
+            return
+        }
         // #84: the authoritative media-source id comes from the PlaybackInfo decision; persist it
         // (replacing the pre-decision hint) so a retry can re-issue without re-deriving.
         if !decision.mediaSourceId.isEmpty, decision.mediaSourceId != embyMediaSourceHint {
-            store.setMediaSourceID(ratingKey: ratingKey, decision.mediaSourceId)
+            guard updateEmbyAttemptMetadata(
+                for: attemptKey, context: "media_source", mutate: {
+                    $0.mediaSourceID = decision.mediaSourceId
+                }) else {
+                releaseInFlight(for: attemptKey)
+                return
+            }
         }
         refreshRecords()
         // #102: cache the poster locally (best-effort) so artwork shows offline. The Emby image
         // endpoint needs the authenticated request (token + userId in the header), unlike Plex.
-        cacheEmbyPoster(ratingKey: ratingKey, item: item, server: server,
+        cacheEmbyPoster(for: attemptKey, item: item, server: server,
                         token: token, identity: identity, userId: userId)
         // #88/#89: cache per-chapter images for the offline Chapters rail AND the Emby offline
         // scrubber. This is a static `/Items/{id}/Images/Chapter/{index}` GET — no PlaySessionId /
         // encoder negotiation — so it is safe to fire here independent of the media transfer.
-        cacheChapterImages(ratingKey: ratingKey, item: item, backend: .emby,
-                           server: server, token: token)
+        cacheChapterImages(for: attemptKey, item: item, backend: .emby,
+                           server: server, token: token, userID: userId)
         // Emby optimized/converted downloads are often handed off as a new static MediaSource that
         // does not carry subtitle streams. Cache compatible text sidecars from the source
         // MediaSource when this call is a convert-then-static override; otherwise use the
@@ -357,14 +383,15 @@ extension DownloadManager {
         // server to bake subtitles into the optimized MP4.
         let subtitleMediaSourceID = mediaSourceIDOverride == nil ? decision.mediaSourceId
             : (selection.mediaSourceID ?? decision.mediaSourceId)
-        cacheEmbyTextSubtitles(ratingKey: ratingKey, itemId: itemId,
+        cacheEmbyTextSubtitles(for: attemptKey, itemId: itemId,
                                mediaSourceId: subtitleMediaSourceID, part: part,
                                server: server, token: token, identity: identity, userId: userId)
 
         if deferStaticStartWhenQueuePaused, isQueuePaused, route == .original {
-            store.setStatus(ratingKey: ratingKey, .paused)
+            guard setEmbyAttemptStatus(
+                .paused, for: attemptKey, context: "queue_paused") else { return }
             lastError[ratingKey] = .interruptedResumable
-            releaseInFlight(ratingKey: ratingKey)
+            releaseInFlight(for: attemptKey)
             recordDownloadDiagnostic("downloads.start_deferred_queue_paused", fields: [
                 "download_id": .identifier(ratingKey),
                 "backend": .label("Emby"),
@@ -377,7 +404,7 @@ extension DownloadManager {
         }
 
         beginBackgroundTransfer(DownloadTransferStartPlan(
-            ratingKey: ratingKey,
+            attemptKey: attemptKey,
             backendLabel: "Emby",
             choiceLabel: EmbyDownloadRoutePlan.diagnosticChoiceLabel(
                 route: route,
@@ -392,9 +419,15 @@ extension DownloadManager {
                 // (not range-resumable), and the minted PlaySessionId MUST be torn down on terminal
                 // transition. #84: persist it onto the row so a hard app kill can still tear the
                 // encoder down on next launch.
-                transcodeSourcedDownloads.insert(ratingKey)
-                embyPlaySessionByRatingKey[ratingKey] = decision.playSessionId
-                store.setPlaySessionID(ratingKey: ratingKey, decision.playSessionId)
+                transcodeSourcedDownloads.insert(attemptKey)
+                embyPlaySessionByAttempt[attemptKey] = decision.playSessionId
+                guard updateEmbyAttemptMetadata(
+                    for: attemptKey, context: "play_session", mutate: {
+                        $0.playSessionID = decision.playSessionId
+                    }) else {
+                    throw DownloadError.transferFailed(
+                        "Download ownership changed before transfer start.")
+                }
             }
             try session.start(ratingKey: ratingKey,
                               with: request,
@@ -408,6 +441,75 @@ extension DownloadManager {
                 // candidate path used when a background task is reattached after process death.
                 refreshRecords()
             }
+        }
+    }
+
+    @discardableResult
+    func setEmbyAttemptStatus(
+        _ status: DownloadStatus,
+        for key: DownloadAttemptKey,
+        context: String
+    ) -> Bool {
+        switch store.setStatus(for: key, status) {
+        case .applied, .noChange:
+            return true
+        case .staleOrMissing:
+            recordDownloadDiagnostic("downloads.emby_status_owner_stale", fields: [
+                "download_id": .identifier(key.ratingKey),
+                "context": .label(context),
+            ])
+            return false
+        case .persistenceFailed(let failure):
+            recordDownloadDiagnostic("downloads.emby_status_persist_failed", fields: [
+                "download_id": .identifier(key.ratingKey),
+                "context": .label(context),
+                "failure": .label(String(describing: failure)),
+            ])
+            return false
+        }
+    }
+
+    @discardableResult
+    func updateEmbyAttemptMetadata(
+        for key: DownloadAttemptKey,
+        context: String,
+        mutate: (inout OfflineMetadata) -> Void
+    ) -> Bool {
+        switch store.updateMetadata(for: key, mutate: mutate) {
+        case .applied, .noChange:
+            return true
+        case .staleOrMissing:
+            recordDownloadDiagnostic("downloads.emby_metadata_owner_stale", fields: [
+                "download_id": .identifier(key.ratingKey), "context": .label(context),
+            ])
+            return false
+        case .persistenceFailed:
+            recordDownloadDiagnostic("downloads.emby_metadata_persist_failed", fields: [
+                "download_id": .identifier(key.ratingKey), "context": .label(context),
+            ])
+            return false
+        }
+    }
+
+    @discardableResult
+    func persistEmbyAttemptRecord(
+        _ record: DownloadRecord,
+        for key: DownloadAttemptKey,
+        context: String
+    ) -> Bool {
+        switch store.createAttemptOwnedRecord(record, attemptID: key.attemptID) {
+        case .committed:
+            return true
+        case .rejectedOwnership:
+            recordDownloadDiagnostic("downloads.emby_record_owner_stale", fields: [
+                "download_id": .identifier(key.ratingKey), "context": .label(context),
+            ])
+            return false
+        case .failed:
+            recordDownloadDiagnostic("downloads.emby_record_persist_failed", fields: [
+                "download_id": .identifier(key.ratingKey), "context": .label(context),
+            ])
+            return false
         }
     }
 

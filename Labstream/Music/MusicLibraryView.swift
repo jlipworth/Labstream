@@ -104,16 +104,15 @@ struct MusicLibraryView: View {
         if !force, loadedIdentity == activeIdentity, case .loaded = loadState { return }
         loadGeneration += 1
         let generation = loadGeneration
-        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
+        guard let service = try? PlexBrowseService(appModel: appModel) else {
             loadState = .failed("No reachable Plex server selected.")
             return
         }
         if case .loaded = loadState {} else { loadState = .loading }
-        let req = BrowseAPI.sections(server: server, token: token, identity: appModel.identity)
         do {
-            let resp = try await appModel.client.send(req, as: SectionsResponse.self)
+            let libraries = try await service.libraries()
             guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
-            sections = resp.mediaContainer.directory.filter(\.isMusic)
+            sections = libraries.filter(\.isMusic)
             if selectedSectionKey == nil { selectedSectionKey = sections.first?.key }
             loadedIdentity = activeIdentity
             loadState = .loaded
@@ -271,7 +270,7 @@ private struct MusicHomePivot: View {
         if !force, case .loaded = loadState { return }
         loadGeneration += 1
         let generation = loadGeneration
-        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
+        guard let service = try? PlexBrowseService(appModel: appModel) else {
             loadState = .failed("No server selected.")
             return
         }
@@ -279,12 +278,9 @@ private struct MusicHomePivot: View {
         do {
             // Rung 1 — server hubs, rendered generically. v1 keeps artist/album hub
             // items only (track rows need play affordances first — v2); empty hubs drop.
-            let hubsReq = MusicRequest.sectionHubs(server: server, token: token,
-                                                   identity: appModel.identity,
-                                                   sectionKey: section.key)
-            let resp = try await appModel.client.send(hubsReq, as: HubsResponse.self)
+            let sectionHubs = try await service.musicSectionHubs(sectionKey: section.key)
             guard generation == loadGeneration, !Task.isCancelled else { return }
-            hubs = resp.mediaContainer.hub.compactMap { hub in
+            hubs = sectionHubs.compactMap { hub in
                 // The played hub carries ARTISTS; our history-songs rail replaces it.
                 // Prefix-match the identifier; exact ids drift across PMS versions.
                 if (hub.hubIdentifier ?? "").hasPrefix("music.recent.played") { return nil }
@@ -295,7 +291,7 @@ private struct MusicHomePivot: View {
                            size: items.count, metadata: items)
             }
 
-            let freshHistoryTracks = await loadHistoryTracks(server: server, token: token)
+            let freshHistoryTracks = await loadHistoryTracks(service: service)
             guard generation == loadGeneration, !Task.isCancelled else { return }
             historyTracks = freshHistoryTracks
             fallbackAlbums = []
@@ -305,22 +301,19 @@ private struct MusicHomePivot: View {
             guard generation == loadGeneration, !Task.isCancelled else { return }
             hubs = []
             historyTracks = []
-            await loadFallback(server: server, token: token, generation: generation)
+            await loadFallback(service: service, generation: generation)
         }
     }
 
     /// Play history → unique recently-played SONGS, newest first. History rows are
     /// skinny (no Media/Part) — the rail re-fetches full metadata on tap to play.
-    private func loadHistoryTracks(server: URL, token: String) async -> [MediaItem] {
-        let req = MusicRequest.playHistory(server: server, token: token,
-                                           identity: appModel.identity,
-                                           librarySectionID: section.key, count: 40)
-        guard let resp = try? await appModel.client.send(req, as: MetadataResponse.self)
+    private func loadHistoryTracks(service: PlexBrowseService) async -> [MediaItem] {
+        guard let history = try? await service.playHistory(librarySectionID: section.key, count: 40)
         else { return [] }
 
         var seen = Set<String>()
         var tracks: [MediaItem] = []
-        for item in resp.mediaContainer.metadata where item.kind == .track {
+        for item in history where item.kind == .track {
             guard seen.insert(item.ratingKey).inserted else { continue }
             tracks.append(item)
             if tracks.count >= 20 { break }
@@ -328,14 +321,11 @@ private struct MusicHomePivot: View {
         return tracks
     }
 
-    private func loadFallback(server: URL, token: String, generation: Int) async {
-        let req = MusicRequest.recentlyAddedAlbums(server: server, token: token,
-                                                   identity: appModel.identity,
-                                                   sectionKey: section.key)
+    private func loadFallback(service: PlexBrowseService, generation: Int) async {
         do {
-            let resp = try await appModel.client.send(req, as: MetadataResponse.self)
+            let albums = try await service.recentlyAddedAlbums(sectionKey: section.key)
             guard generation == loadGeneration, !Task.isCancelled else { return }
-            fallbackAlbums = resp.mediaContainer.metadata
+            fallbackAlbums = albums
             loadState = .loaded
         } catch {
             guard generation == loadGeneration, !Task.isCancelled else { return }
@@ -346,16 +336,12 @@ private struct MusicHomePivot: View {
     /// ONE un-paged random page → shuffle-play. Never page `sort=random`: PMS
     /// re-randomizes per container page, producing duplicates (MUSIC-DESIGN §3.1).
     private func shuffleLibrary() async {
-        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else { return }
+        guard let service = try? PlexBrowseService(appModel: appModel) else { return }
         isShuffling = true
         shuffleError = nil
         defer { isShuffling = false }
-        let req = MusicRequest.randomTracks(server: server, token: token,
-                                            identity: appModel.identity,
-                                            sectionKey: section.key)
         do {
-            let resp = try await appModel.client.send(req, as: MetadataResponse.self)
-            let tracks = resp.mediaContainer.metadata.filter { $0.kind == .track }
+            let tracks = try await service.randomTracks(sectionKey: section.key)
             guard !tracks.isEmpty else {
                 shuffleError = "No tracks to shuffle."
                 return
@@ -450,15 +436,12 @@ private struct MusicTrackRail: View {
     }
 
     private func play(from tapped: MediaItem) async {
-        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else { return }
+        guard let service = try? PlexBrowseService(appModel: appModel) else { return }
         isStarting = true
         defer { isStarting = false }
         let keys = tracks.prefix(20).map(\.ratingKey).joined(separator: ",")
-        let req = BrowseAPI.metadata(server: server, token: token,
-                                     identity: appModel.identity, ratingKey: keys)
         do {
-            let resp = try await appModel.client.send(req, as: MetadataResponse.self)
-            let full = resp.mediaContainer.metadata.filter { $0.kind == .track }
+            let full = try await service.metadataItems(ratingKeys: keys).filter { $0.kind == .track }
             guard !full.isEmpty else { return }
             let index = full.firstIndex { $0.ratingKey == tapped.ratingKey } ?? 0
             player.play(tracks: full, startingAt: index)

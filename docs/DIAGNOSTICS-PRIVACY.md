@@ -4,10 +4,11 @@ Labstream diagnostics are for user-initiated debugging, not analytics.
 
 ```mermaid
 flowchart TD
-  Toggle[User enables logging] --> Ring[Bounded local event buffer]
+  Toggle[User enables logging] --> Ring[300-event in-memory ring]
   Runtime[Runtime events] --> Fields[Typed diagnostic fields]
   Fields --> Redactor[Redaction]
   Redactor --> Ring
+  Redactor --> Files[Rotating redacted JSONL files]
   MetricKit[MetricKit diagnostic summaries] --> MXRedact[Redacted local summaries]
   Ring --> Report[Diagnostic report]
   MXRedact --> Report
@@ -18,7 +19,9 @@ flowchart TD
 ## Contract
 
 - Diagnostic event logging is off by default.
-- Events stay local in a bounded buffer.
+- Events stay local in a 300-event process ring and, while logging is enabled, one
+  approximately 1 MB JSONL file plus up to three rotated archives. The disk copy is
+  already redacted and exists for user-initiated headset evidence after suspension or termination.
 - Reports are copied, exported, or shared only after a user action.
 - The app does not upload diagnostic reports.
 - Reports must omit or redact tokens, client identifiers, hostnames/IP addresses, full URLs, usernames, library paths, filenames, and media titles.
@@ -46,9 +49,13 @@ A report may include:
 - connection scheme, not host;
 - selected quality settings;
 - Adaptive Bitrate state;
+- bucketed download counts, queue state, storage totals, and conservative orphan-candidate totals;
 - recent playback snapshot;
 - passive redacted MetricKit crash/hang/CPU/disk-write diagnostic summaries;
-- recent redacted event summaries.
+- up to 80 recent redacted events from the current process ring.
+
+The in-app report does not reload the rotating JSONL files. Those files are collected only by the
+repository's explicit evidence tooling, and still require the user to review anything before sharing it.
 
 The Mac development preview uses the same typed/redacted report pipeline and may add safe platform,
 effective bundle-identity, sandbox-storage, download, and playback facts. Per-worktree bundle IDs

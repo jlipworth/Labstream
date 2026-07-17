@@ -25,7 +25,7 @@ flowchart LR
 
 ## What the site is for
 
-These pages describe the app as it exists for its first public source release: how to build it, how to report problems safely, and how the major subsystems fit together. Historical research, implementation plans, and superseded design notes are kept out of the published navigation so the site reads as product documentation rather than a project diary.
+These pages describe the current source tree: how to build it, how to report problems safely, and how the major subsystems fit together. Historical research, implementation plans, and superseded design notes are kept out of the published navigation so the site reads as product documentation rather than a project diary.
 
 ## Repository
 

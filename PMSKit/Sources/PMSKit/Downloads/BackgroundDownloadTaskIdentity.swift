@@ -6,6 +6,19 @@ import Foundation
 /// survived relaunch without that description. Plex static part URLs generally cannot be reverse
 /// mapped from `/library/parts/...`, so they intentionally require the explicit task description.
 public enum BackgroundDownloadTaskIdentity {
+    public enum MarkerVersion: Sendable, Equatable {
+        case unmarked
+        case legacySegmentV1
+        case legacySegmentV2
+        case currentSegmentV3
+        case legacyAttemptV1
+        case currentAttemptV2
+
+        public var isCurrent: Bool {
+            self == .currentSegmentV3 || self == .currentAttemptV2
+        }
+    }
+
     public static func ratingKey(taskDescription: String?,
                                  requestURL: URL?,
                                  knownKeys: Set<String>) -> String? {
@@ -41,7 +54,39 @@ public enum BackgroundDownloadTaskIdentity {
     /// (v2 segment marker, or the opaque/open-ended attempt stamp). `nil` means a legacy task
     /// created before attempt tokens existed — never adoptable where identity matters.
     public static func attemptID(taskDescription: String?) -> String? {
-        StaticRangeSegmentMarker.attemptID(taskDescription)
-            ?? DownloadAttemptMarker.attemptID(fromTaskDescription: taskDescription)
+        attemptIdentity(taskDescription: taskDescription)?.rawValue
+    }
+
+    /// Typed ownership token from either current task-description format. `nil` identifies a
+    /// one-time legacy task that may be cancelled/rebuilt but must not become new durable authority.
+    public static func attemptIdentity(taskDescription: String?) -> DownloadAttemptID? {
+        StaticRangeSegmentMarker.attemptIdentity(taskDescription)
+            ?? DownloadAttemptMarker.attemptIdentity(fromTaskDescription: taskDescription)
+    }
+
+    public static func markerVersion(taskDescription: String?) -> MarkerVersion {
+        switch StaticRangeSegmentMarker.version(taskDescription) {
+        case .legacyV1: return .legacySegmentV1
+        case .legacyV2: return .legacySegmentV2
+        case .currentV3: return .currentSegmentV3
+        case nil: break
+        }
+        switch DownloadAttemptMarker.version(fromTaskDescription: taskDescription) {
+        case .legacyV1: return .legacyAttemptV1
+        case .currentV2: return .currentAttemptV2
+        case nil: return .unmarked
+        }
+    }
+
+    /// Startup admission is deliberately stricter than steady-state reattach. A task must use the
+    /// current marker format, map to a durable row, and not belong to an approved legacy-reset row.
+    public static func shouldPurgeBeforeAdmission(
+        taskDescription: String?,
+        mapsToKnownRow: Bool,
+        mapsToApprovedResetKey: Bool
+    ) -> Bool {
+        !markerVersion(taskDescription: taskDescription).isCurrent
+            || !mapsToKnownRow
+            || mapsToApprovedResetKey
     }
 }

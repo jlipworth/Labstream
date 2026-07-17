@@ -53,8 +53,18 @@ Clean up host preview state after a one-off test or before removing its worktree
 
 ```sh
 scripts/deploy-macos-to-host.sh --delete
+scripts/deploy-macos-to-host.sh --delete-all-staged
 scripts/deploy-macos-to-host.sh --reset-container
 ```
+
+Development identities use the visible display name `Labstream Dev — <identity>`, while an
+intentional production-identity build remains `Labstream`. `--delete-all-staged` terminates and
+removes every Mac app staged by the current worktree but preserves containers and Keychain data.
+
+The production-identity host path is Apple-Development-signed and provisions the Mac because its
+canonical service reads the synchronized Plex-token Keychain item. An ad-hoc canonical build lacks
+an application identifier/keychain group and fails that access with OSStatus `-34018`; use the
+helper rather than launching a generic ad-hoc product for signed-in testing.
 
 `--delete` removes only the staged app for the effective identity. `--reset-container` removes
 only that identity's sandbox container. The helper never deletes `/Applications/Labstream.app`,
@@ -63,6 +73,16 @@ and resetting the canonical container requires both `--use-production-bundle-id`
 
 ## Validation
 
+The Mac scheme owns the `LabstreamMacTests` target and `LabstreamMacTests.xctestplan`. The plan
+hosts the shared `LabstreamTests/` sources in `LabstreamMac`; run it directly when changing
+app-owned persistence, lifecycle, auth-storage, or playback/system-media seams:
+
+```sh
+scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
+  -scheme LabstreamMac -testPlan LabstreamMacTests \
+  -destination 'platform=macOS,arch=arm64' test CODE_SIGNING_ALLOWED=NO
+```
+
 The current repeatable Mac sweep is:
 
 ```sh
@@ -70,9 +90,10 @@ scripts/validate-macos-228.sh
 ```
 
 The script retains its issue-era filename for now. It covers static identity checks, the Mac
-build, shared-platform builds, focused diagnostics tests, and a bounded host launch smoke through
-`scripts/smoke-macos-host.sh`. It does not prove real sign-in, subjective UI quality, live media
-playback, system media keys, or background-download durability.
+build, visionOS and iPhone-simulator builds, focused PMSKit diagnostics tests, and a bounded host
+launch smoke through `scripts/smoke-macos-host.sh`. It does not prove real sign-in, subjective UI
+quality, live media playback, system media keys, background-download durability, or the full
+app-hosted test plan.
 
 See [Testing strategy](TESTING-STRATEGY.md) for the repository-wide validation layers.
 

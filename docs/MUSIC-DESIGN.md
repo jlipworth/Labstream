@@ -46,6 +46,11 @@ shuffle/repeat traversal, failure auto-advance, and per-track observer cleanup. 
 backend-resolved track URLs from `MusicStreamResolver`, then drives playback independently
 from the video `PlaybackController`.
 
+Track replacement advances `MusicPlaybackLifecycle` and rebinds player, item, and audio
+session observers to that generation. Queued callbacks and artwork completions must still
+match the current generation/request before they mutate state; observer removal alone does
+not grant that authority.
+
 Plex streams a direct part URL with its token in the URL. Jellyfin and Emby resolve their
 audio endpoints and attach the required authorization headers to `AVURLAsset`; credentials
 must not be copied into logs. The queue records the browse-session identity that created it
@@ -59,8 +64,11 @@ progress or scrobble; do not claim otherwise in backend or playback documentatio
 
 ## System integration
 
-The controller publishes track metadata, artwork, duration, playhead, and rate through
-`MPNowPlayingInfoCenter`, and registers play/pause/next/previous/scrub commands through
-`MPRemoteCommandCenter`. In-app Now Playing artist/album navigation returns to the Music
-tab. The current Spotlight and App Intent index deliberately excludes music items; those
-surfaces remain video-only.
+The controller acquires a music lease from the shared `SystemMediaSessionCoordinator`,
+which publishes track metadata, artwork, duration, playhead, and rate to
+`MPNowPlayingInfoCenter` and installs play/pause/next/previous/scrub handlers on
+`MPRemoteCommandCenter`. Video can temporarily take the process-wide lease; when video
+releases it, the coordinator restores the surviving music owner and republishes its current
+state. In-app Now Playing artist/album navigation returns to the Music tab. The current
+Spotlight and App Intent index deliberately excludes music items; those surfaces remain
+video-only.

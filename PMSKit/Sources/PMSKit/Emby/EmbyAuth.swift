@@ -3,42 +3,6 @@ import Foundation
 import FoundationNetworking
 #endif
 
-public struct EmbyClientIdentity: Sendable, Equatable {
-    public let client: String
-    public let device: String
-    public let deviceId: String
-    public let version: String
-
-    public init(client: String, device: String, deviceId: String, version: String) {
-        self.client = client
-        self.device = device
-        self.deviceId = deviceId
-        self.version = version
-    }
-}
-
-public struct EmbyAuthenticatedUser: Decodable, Sendable, Equatable {
-    public let id: String
-    public let name: String?
-
-    enum CodingKeys: String, CodingKey {
-        case id = "Id"
-        case name = "Name"
-    }
-}
-
-public struct EmbyAuthenticationResult: Decodable, Sendable, Equatable {
-    public let user: EmbyAuthenticatedUser?
-    public let accessToken: String?
-    public let serverId: String?
-
-    enum CodingKeys: String, CodingKey {
-        case user = "User"
-        case accessToken = "AccessToken"
-        case serverId = "ServerId"
-    }
-}
-
 /// `/System/Info/Public` shape — unauthenticated, used for pre-login validation.
 public struct EmbyServerInfo: Decodable, Sendable, Equatable {
     public let serverName: String?

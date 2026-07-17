@@ -1,5 +1,9 @@
 # Plex API: Auth, Browsing, Server-Side Transcoded HLS, and Offline Download
 
+> **Archived research snapshot:** retained as dated evidence, not current architecture, feature
+> status, or implementation guidance. Verify any reusable detail against the active docs and
+> current source; old `VisionPlay` names, issue links, branches, and paths below are historical.
+
 Research for a personal-use Apple Vision Pro (visionOS) Plex client. Date: 2026-06-08.
 
 Scope: how a *custom native client* authenticates, browses libraries, and — the key part — requests a **server-side transcoded HLS stream** (not direct play). Plus a verdict on the `plexswift` Swift SDK and on offline downloads.

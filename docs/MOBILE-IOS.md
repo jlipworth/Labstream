@@ -107,6 +107,25 @@ A compatible installed iOS Simulator runtime is required. The mobile target is i
 before app code compiles; install the matching platform/runtime in Xcode Settings before
 treating the mobile target as broken.
 
+## App-hosted unit tests
+
+`LabstreamMobile` owns the `LabstreamTests` test target through `LabstreamTests.xctestplan`.
+The test sources live in `LabstreamTests/` and cover app-owned deterministic behavior rather than
+UI automation or live-server acceptance. With the chosen worktree simulator booted:
+
+```sh
+scripts/worktree-sim.sh --platform iphone setup
+SIMID=$(scripts/worktree-sim.sh --platform iphone id)
+xcrun simctl boot "$SIMID" 2>/dev/null || true
+scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
+  -scheme LabstreamMobile -testPlan LabstreamTests \
+  -destination "platform=iOS Simulator,id=$SIMID" test CODE_SIGNING_ALLOWED=NO
+```
+
+Use the iPad worktree simulator instead for platform-specific regular-width cases. Shared app
+infrastructure should also run the macOS-hosted counterpart described in
+[Testing strategy](TESTING-STRATEGY.md).
+
 ## Install on a physical iPhone or iPad
 
 Simulator builds use `CODE_SIGNING_ALLOWED=NO` and cannot install on hardware. For a real iPhone or iPad, use the mobile device wrapper; it builds the `LabstreamMobile` scheme for `iphoneos`, applies normal Apple Development signing/provisioning, installs with `devicectl`, and optionally launches the app:

@@ -176,20 +176,19 @@ struct LibrariesView: View {
             return
         }
 
-        guard let server = appModel.serverBaseURL, let token = appModel.serverToken else {
+        guard let service = try? PlexBrowseService(appModel: appModel) else {
             span.end(result: "failure", fields: ["error": "missing_plex_server"])
             loadState = .failed("No server selected.")
             return
         }
-        let req = BrowseAPI.sections(server: server, token: token, identity: appModel.identity)
         do {
-            let resp = try await appModel.client.send(req, as: SectionsResponse.self)
+            let libraries = try await service.libraries()
             guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
             // Music sections deliberately stay out of this tab even after the #17
             // un-hide: the Music tab is their dedicated entry point and listing the
             // section twice is noise (MUSIC-DESIGN §2 — a considered exception to
             // #17's original "remove the !isMusic filter" checklist item).
-            let nonMusic = resp.mediaContainer.directory.filter { !$0.isMusic }
+            let nonMusic = libraries.filter { !$0.isMusic }
             appModel.migrateLibraryVisibilityKeysIfNeeded(store: visibilityStore)
             let backendKey = appModel.libraryVisibilityBackendKey
             maybePresentFirstRunPrompt(backendKey: backendKey,

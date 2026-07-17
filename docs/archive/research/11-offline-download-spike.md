@@ -1,5 +1,9 @@
 # 11 — Offline Downloads Feasibility Spike (visionOS Plex client)
 
+> **Archived research snapshot:** retained as dated evidence, not current architecture, feature
+> status, or implementation guidance. Verify any reusable detail against the active docs and
+> current source; old `VisionPlay` names, issue links, branches, and paths below are historical.
+
 **Date:** 2026-06-08
 **Question:** Can a third-party visionOS Plex client store a movie **offline at a capped ~8 Mbps bitrate** (not the full 80 GB original)?
 **Verdict (short):** **Yes — and the best path is the server-side Media Optimizer ("Optimized for TV – 8 Mbps 1080p"), which runs in the FREE edition.** It produces a normal MP4 you then download with the free `?download=1` fetch. The custom HLS-segment transcode-walker is the fallback if you can't or don't want to write to the server's library. A true one-request capped-transcode "single file" download (`start.mkv`) is **mostly a myth** — see Option 3.

@@ -283,12 +283,12 @@ IDs, device IDs, and playSession IDs before sharing.
 
 ## Suggested triage order
 
-1. Read \`summary.json\` for failed commands, classified failures, and copied files.
-2. If \`classified_failures\` contains \`developer_disk_image_mount_unauthorized\`, ask the human to wear/unlock/trust the headset and check Xcode Devices, then retry this script.
-3. Inspect \`app-container-files/Library/Application Support/Labstream/Downloads/index.json\` if present.
-4. Inspect any copied diagnostics report or diagnostics directory if present.
-5. Use the app-container JSON listings to decide whether another bounded file should be copied manually.
-6. Only then try heavier host unified-log/sysdiagnose paths; those may be unreliable for headset repros.
+1. Read \`analysis/triage.md\`, then \`analysis/summary.json\`. These are bounded and safe to load before raw logs.
+2. Read the collection \`summary.json\` for command failures, classified failures, and copied files.
+3. For repeated pulls, inspect \`analysis/novel-events.jsonl\`; do not re-ingest unchanged diagnostics.
+4. Use \`analysis/compact-events.jsonl\` source references to open only a bounded raw window when causal detail is required.
+5. Inspect the download index or other raw files only for a specific unresolved question.
+6. Try host unified-log/sysdiagnose only opportunistically; those may be unreliable for headset repros.
 README
 
 python3 - "$OUT" "$TS" "$BUNDLE_ID" "$DEVICE_ID" "$COMMANDS_TSV" "$COPIED_TSV" "$MISSES_TSV" <<'PY'
@@ -358,5 +358,17 @@ with open(os.path.join(out, "summary.json"), "w", encoding="utf-8") as f:
     f.write("\n")
 PY
 
+# Collection and analysis are separate stages. Generate a bounded deterministic
+# index so agents do not ingest the raw diagnostics directory by default. Failure
+# is soft: the raw evidence bundle remains valid and inspectable.
+if [ -x "$REPO/scripts/diagnostics-summarize.py" ]; then
+  if ! "$REPO/scripts/diagnostics-summarize.py" "$OUT" --auto-baseline; then
+    log "WARNING: diagnostic summarization failed; raw evidence remains at $OUT"
+  fi
+fi
+
 log "Bundle written: $OUT"
 log "Summary: $OUT/summary.json"
+if [ -f "$OUT/analysis/triage.md" ]; then
+  log "Triage: $OUT/analysis/triage.md"
+fi

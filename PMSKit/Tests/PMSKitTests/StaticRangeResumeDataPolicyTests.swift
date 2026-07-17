@@ -50,6 +50,16 @@ struct StaticRangeResumeDataPolicyTests {
         ) == .reject(.missingResumeData))
     }
 
+    @Test("Closed range never blob-resumes even when URLSession supplies resume data")
+    func closedRangeNeverBlobResumes() {
+        #expect(StaticRangeResumeDataPolicy.failureResumeDecision(
+            errorCode: NSURLErrorNetworkConnectionLost,
+            hasResumeData: true,
+            currentBlobResumeCount: 0,
+            isClosedRange: true
+        ) == .reject(.closedRange))
+    }
+
     @Test("Blob resume budget exhausts")
     func blobResumeBudgetExhausts() {
         #expect(StaticRangeResumeDataPolicy.failureResumeDecision(
@@ -64,6 +74,12 @@ struct StaticRangeResumeDataPolicyTests {
         #expect(StaticRangeResumeDataPolicy.adoptionDecision(
             blobRangeOffset: 1_000, durableBytes: 1_000
         ) == .adopt(baseOffset: 1_000))
+    }
+
+    @Test("Persisted closed-range blobs are rejected before adoption")
+    func closedRangeBlobAdoptionIsRefused() {
+        #expect(!StaticRangeResumeDataPolicy.shouldAdoptBlob(hasClosedRangeEnd: true))
+        #expect(StaticRangeResumeDataPolicy.shouldAdoptBlob(hasClosedRangeEnd: false))
     }
 
     @Test("Blob whose Range offset disagrees with the durable partial is stale")
@@ -148,29 +164,16 @@ struct StaticRangeResumeDataPolicyTests {
         ))
     }
 
-    @Test("Only the head segment (baseOffset == durable) persists its blob on a train pause")
-    func onlyHeadSegmentBlobPersistsOnPause() {
-        // B2: pausing an 8-segment train (durable = 0, segments at 0, 512Mi, 1Gi, …). Only the
-        // segment whose offset equals the durable partial can survive `adoptionDecision`; every other
-        // offset is guaranteed `rejectStale`, so persisting its blob just thrashes the one blob slot.
+    @Test("No closed segment persists URLSession resume data on pause")
+    func closedSegmentsNeverPersistBlobOnPause() {
         let seg = 512 * 1_024 * 1_024
         let durable = 0
-        #expect(StaticRangeResumeDataPolicy.shouldPersistSegmentBlobOnPause(
-            segmentBaseOffset: 0, durableBytes: durable))
-        for index in 1..<8 {
+        for index in 0..<8 {
             #expect(!StaticRangeResumeDataPolicy.shouldPersistSegmentBlobOnPause(
                 segmentBaseOffset: index * seg, durableBytes: durable),
-                "off-head segment at offset \(index * seg) must NOT persist a (guaranteed-stale) blob")
+                "closed segment at offset \(index * seg) must not persist a URLSession blob")
         }
-        // Cross-check: exactly the persisted offset is the one `adoptionDecision` will later adopt.
-        #expect(StaticRangeResumeDataPolicy.adoptionDecision(
-            blobRangeOffset: 0, durableBytes: durable) == .adopt(baseOffset: 0))
-
-        // With a non-zero durable checkpoint the resumable segment is the one at that offset, and an
-        // open-ended remainder (single task at baseOffset == durable) persists unchanged.
-        #expect(StaticRangeResumeDataPolicy.shouldPersistSegmentBlobOnPause(
-            segmentBaseOffset: 1_048_576, durableBytes: 1_048_576))
         #expect(!StaticRangeResumeDataPolicy.shouldPersistSegmentBlobOnPause(
-            segmentBaseOffset: 0, durableBytes: 1_048_576))
+            segmentBaseOffset: 1_048_576, durableBytes: 1_048_576))
     }
 }

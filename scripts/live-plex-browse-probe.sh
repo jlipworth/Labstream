@@ -19,8 +19,8 @@ cd "$repo_root"
 
 env_file="${PLEX_LIVE_ENV:-scripts/plex-live.env}"
 if [[ ! -f "$env_file" ]]; then
-  echo "ERROR: $env_file not found. Copy scripts/plex-live.env.example to it and fill in creds." >&2
-  exit 1
+  echo ">>> BROWSE VERDICT: SKIP — $env_file is absent; copy scripts/plex-live.env.example and fill in the browse values."
+  exit 0
 fi
 
 # Refuse to run if the creds file is somehow tracked — it must never be committed.
@@ -33,6 +33,12 @@ set -a
 # shellcheck disable=SC1090
 source "$env_file"
 set +a
+
+if [[ -z "${PLEX_LIVE_SERVER:-}" || -z "${PLEX_LIVE_TOKEN:-}" ||
+      -z "${PLEX_LIVE_SECTION_KEY:-}" || -z "${PLEX_LIVE_SHOW_METADATA_KEY:-}" ]]; then
+  echo ">>> BROWSE VERDICT: SKIP — PLEX_LIVE_SERVER / PLEX_LIVE_TOKEN / PLEX_LIVE_SECTION_KEY / PLEX_LIVE_SHOW_METADATA_KEY are required."
+  exit 0
+fi
 
 cd PMSKit
 ../scripts/live-test-filter.sh '^>>> BROWSE|error:|Test run' swift test --filter LivePlexBrowseProbe

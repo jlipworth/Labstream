@@ -4,7 +4,8 @@ Labstream uses layered validation. Fast, hermetic tests protect the codebase by 
 
 ```mermaid
 flowchart TD
-  Change[Code or docs change] --> Unit[PMSKit unit tests]
+  Change[Code or docs change] --> Unit[PMSKit package tests]
+  Change --> AppUnit[App-hosted unit tests]
   Change --> Hygiene[ci-hygiene]
   Change --> Docs[mkdocs build --strict]
   Unit --> VisionSim[visionOS simulator build/smoke]
@@ -12,6 +13,9 @@ flowchart TD
   Unit --> MacHost[Mac preview host build/smoke]
   VisionSim --> Device[Physical-device checks]
   Unit --> Live[Optional live-server probes]
+  AppUnit --> VisionSim
+  AppUnit --> MobileSim
+  AppUnit --> MacHost
 ```
 
 ## Required local checks
@@ -25,18 +29,45 @@ scripts/ci-hygiene.sh
 uv run --with-requirements requirements.txt mkdocs build --strict
 ```
 
+Production changes should also run focused tests from the owning layer. Pure request/model/policy
+coverage belongs in `PMSKit/Tests/PMSKitTests`. App-owned deterministic coverage lives in
+`LabstreamTests/`; the same sources are hosted by `LabstreamTests` on an iOS simulator and
+`LabstreamMacTests` on macOS. Run the affected host, or both hosts for shared app infrastructure:
+
+```sh
+scripts/worktree-sim.sh --platform iphone setup
+SIMID=$(scripts/worktree-sim.sh --platform iphone id)
+xcrun simctl boot "$SIMID" 2>/dev/null || true
+scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
+  -scheme LabstreamMobile -testPlan LabstreamTests \
+  -destination "platform=iOS Simulator,id=$SIMID" test CODE_SIGNING_ALLOWED=NO
+
+scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
+  -scheme LabstreamMac -testPlan LabstreamMacTests \
+  -destination 'platform=macOS,arch=arm64' test CODE_SIGNING_ALLOWED=NO
+```
+
+The app suites are host-app unit tests. They do not replace install/launch/screenshot smoke,
+interactive UI checks, live-server probes, or physical-device acceptance.
+
 ## CI checks
 
-The default public CI surface is intentionally portable:
+Woodpecker provides the repository's default public, portable CI surface:
 
-- MkDocs builds with `mkdocs build --strict` and deploys the static site.
-- Repo hygiene scans for common secret, signing, and placeholder regressions.
-- PMSKit's hermetic tests run without media-server credentials.
+- `.woodpecker/docs.yml` builds MkDocs strictly and deploys the static site on relevant pushes to
+  `main` (or a manual run).
+- `.woodpecker/hygiene.yml` runs `scripts/ci-hygiene.sh`, including its Python tooling tests, on
+  pushes, pull requests, and manual runs.
+- `.woodpecker/pmskit.yml` runs PMSKit's hermetic Linux suite without credentials. XCTest and
+  Swift Testing are separate invocations because their combined runner deadlocks under
+  swift-corelibs-foundation; see that pipeline for the exact flags.
 
-A separate [native macOS CI lane](MACOS-CI.md) is prepared for unsigned
-visionOS and iOS/iPadOS builds. It remains manual/main-only and cannot execute
-until the explicitly labelled physical runner is enrolled; fork pull requests
-are permanently outside that local-backend trust boundary.
+There is currently no enrolled macOS CI runner for Xcode app builds, app-hosted tests, simulator
+smoke, or host-Mac smoke, so those remain local validation gates and must not be inferred from
+portable CI. A separate [native macOS CI lane](MACOS-CI.md) is prepared for unsigned visionOS and
+iOS/iPadOS builds. It remains manual/main-only and cannot execute until the explicitly labelled
+physical runner is enrolled; fork pull requests are permanently outside that local-backend trust
+boundary.
 
 ## Simulator checks
 

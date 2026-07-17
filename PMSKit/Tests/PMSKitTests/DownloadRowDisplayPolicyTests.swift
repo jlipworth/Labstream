@@ -4,6 +4,30 @@ import Testing
 
 @Suite("Download row display policy")
 struct DownloadRowDisplayPolicyTests {
+    @Test("Route badge follows artifact provenance across server-prep handoff and terminal states")
+    func routeBadgeTransition() {
+        #expect(DownloadRowDisplayPolicy.routeBadge(
+            lane: .optimize, isServerPreparedVersion: false) == .transcode)
+        #expect(DownloadRowDisplayPolicy.routeBadge(
+            lane: .original, isServerPreparedVersion: true) == .optimized)
+        #expect(DownloadRowDisplayPolicy.routeBadge(
+            lane: .original, isServerPreparedVersion: false) == .original)
+        #expect(DownloadRowDisplayPolicy.routeBadge(
+            lane: .compatibleRemux, isServerPreparedVersion: false) == .remux)
+
+        // Jellyfin's optimized download remains a live-forward encoder stream; completion changes
+        // durable status, not the route that produced the artifact.
+        for status in [DownloadStatus.queued, .downloading, .paused, .complete, .unverified, .failed] {
+            #expect(DownloadRowDisplayPolicy.routeBadge(for: routeRecord(
+                status: status, lane: .optimize, serverPrepared: false)) == .transcode)
+        }
+        // A handed-off Plex/Emby static artifact remains Optimized across the same lifecycle.
+        for status in [DownloadStatus.queued, .downloading, .paused, .complete, .unverified, .failed] {
+            #expect(DownloadRowDisplayPolicy.routeBadge(for: routeRecord(
+                status: status, lane: .original, serverPrepared: true)) == .optimized)
+        }
+    }
+
     @Test("Active heads preserve backend and lane nuance")
     func activeHeads() {
         #expect(DownloadRowDisplayPolicy.activeHead(lane: .original,
@@ -88,9 +112,10 @@ struct DownloadRowDisplayPolicyTests {
     func completeCaption() {
         let caption = DownloadRowDisplayPolicy.completeCaption(isUnverified: true,
                                                                bytes: 1_000_000,
+                                                               sideAssetBytes: 25_000,
                                                                resolutionLabel: "1080p")
-        #expect(caption.hasPrefix("Downloaded — playback not verified • "))
-        #expect(caption.contains("MB"))
+        #expect(caption.hasPrefix("Downloaded — playback not verified • 1 MB media • "))
+        #expect(caption.contains("25 KB extras"))
         #expect(caption.hasSuffix(" • 1080p"))
     }
 
@@ -115,16 +140,66 @@ struct DownloadRowDisplayPolicyTests {
                                                               status: .unverified) == nil)
     }
 
-    @Test("Download bitrate text prefers persisted bitrate and can infer Mbps presets")
-    func downloadBitrateText() {
-        #expect(DownloadRowDisplayPolicy.downloadBitrateText(kbps: 40_000,
-                                                             requestedProfileLabel: "Existing server version") == "Bitrate: 40.0 Mbps")
-        #expect(DownloadRowDisplayPolicy.downloadBitrateText(kbps: nil,
-                                                             requestedProfileLabel: "1080p 8 Mbps") == "Bitrate: 8.0 Mbps")
-        #expect(DownloadRowDisplayPolicy.downloadBitrateText(kbps: nil,
-                                                             requestedProfileLabel: "480p 1.5 Mbps") == "Bitrate: 1.5 Mbps")
-        #expect(DownloadRowDisplayPolicy.downloadBitrateText(kbps: nil,
-                                                             requestedProfileLabel: "Existing server version") == nil)
+    @Test("Active quality text shows requested intent instead of ambiguous backend bitrate")
+    func activeQualityTextShowsRequestedIntent() {
+        let metadata = OfflineMetadata(ratingKey: "emby:item",
+                                       title: "Title",
+                                       type: "movie",
+                                       duration: 3_019_584,
+                                       requestedProfileLabel: "1080p 8 Mbps",
+                                       downloadBitrateKbps: 33_309)
+        let active = DownloadRecord(ratingKey: "emby:item",
+                                    title: "Title",
+                                    localURL: URL(fileURLWithPath: "/tmp/title.mp4"),
+                                    bytes: 1_000_000,
+                                    progress: 0.1,
+                                    status: .downloading,
+                                    metadata: metadata)
+
+        #expect(DownloadRowDisplayPolicy.downloadQualityText(for: active)
+                == "Requested: 1080p 8 Mbps")
+    }
+
+    @Test("Completed quality text derives average from local media bytes and runtime")
+    func completedQualityTextUsesLocalArtifactAverage() {
+        let metadata = OfflineMetadata(ratingKey: "plex:item",
+                                       title: "Title",
+                                       type: "movie",
+                                       duration: 8_891_008,
+                                       requestedProfileLabel: "1080p 8 Mbps",
+                                       downloadBitrateKbps: 8_000)
+        let complete = DownloadRecord(ratingKey: "plex:item",
+                                      title: "Title",
+                                      localURL: URL(fileURLWithPath: "/tmp/title.mp4"),
+                                      bytes: 2_985_243_717,
+                                      progress: 1,
+                                      status: .complete,
+                                      metadata: metadata)
+
+        #expect(DownloadRowDisplayPolicy.averageDownloadedBitrateKbps(
+            bytes: complete.bytes, durationMs: metadata.duration) == 2_686)
+        #expect(DownloadRowDisplayPolicy.downloadQualityText(for: complete)
+                == "Downloaded: 2.7 Mbps avg")
+    }
+
+    @Test("Completed quality text ignores stale converted-source bitrate")
+    func completedQualityTextIgnoresStaleBackendBitrate() {
+        let metadata = OfflineMetadata(ratingKey: "emby:item",
+                                       title: "Title",
+                                       type: "episode",
+                                       duration: 3_019_584,
+                                       requestedProfileLabel: "1080p 12 Mbps",
+                                       downloadBitrateKbps: 33_309)
+        let complete = DownloadRecord(ratingKey: "emby:item",
+                                      title: "Title",
+                                      localURL: URL(fileURLWithPath: "/tmp/title.mp4"),
+                                      bytes: 2_164_047_744,
+                                      progress: 1,
+                                      status: .complete,
+                                      metadata: metadata)
+
+        #expect(DownloadRowDisplayPolicy.downloadQualityText(for: complete)
+                == "Downloaded: 5.7 Mbps avg")
     }
 
     private func record(bytes: Int,
@@ -144,5 +219,19 @@ struct DownloadRowDisplayPolicyTests {
                         title: "Title",
                         type: "movie",
                         resumeMode: resumeMode)
+    }
+
+    private func routeRecord(status: DownloadStatus,
+                             lane: DownloadLane,
+                             serverPrepared: Bool) -> DownloadRecord {
+        DownloadRecord(ratingKey: "route",
+                       title: "Route",
+                       localURL: URL(fileURLWithPath: "/tmp/route.mp4"),
+                       status: status,
+                       metadata: OfflineMetadata(ratingKey: "route",
+                                                 title: "Route",
+                                                 type: "movie",
+                                                 downloadLane: lane,
+                                                 serverPreparedVersion: serverPrepared ? true : nil))
     }
 }

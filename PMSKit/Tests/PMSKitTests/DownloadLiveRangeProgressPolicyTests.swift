@@ -193,4 +193,16 @@ struct DownloadLiveRangeProgressPolicyTests {
             baseOffset: 0,
             resumeDisplayBytes: nil) == 2_000)
     }
+
+    @Test("Optimistic range coverage cannot claim 100 percent before the file is durable")
+    func activeDisplayDoesNotClaimPrematureCompletion() {
+        #expect(DownloadLiveRangeProgressPolicy.activeDisplayBytes(
+            optimisticBytes: 3_500, expectedBytes: 3_000, durableBytes: 1_000) == 2_999)
+        #expect(DownloadLiveRangeProgressPolicy.activeDisplayBytes(
+            optimisticBytes: 3_000, expectedBytes: 3_000, durableBytes: 2_999) == 2_999)
+        #expect(DownloadLiveRangeProgressPolicy.activeDisplayBytes(
+            optimisticBytes: 3_500, expectedBytes: 3_000, durableBytes: 3_000) == 3_000)
+        #expect(DownloadLiveRangeProgressPolicy.activeDisplayBytes(
+            optimisticBytes: 3_500, expectedBytes: nil, durableBytes: 1_000) == 3_500)
+    }
 }

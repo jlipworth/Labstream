@@ -19,6 +19,9 @@ struct MediaBrowserLibraryDialectTests {
 
         #expect(jellyfin.path(.userViews(userId: "user-1")) == "/UserViews")
         #expect(jellyfin.path(.items(userId: "user-1")) == "/Items")
+        #expect(jellyfin.path(.albumArtists) == "/Artists/AlbumArtists")
+        #expect(jellyfin.path(.playlistItems(playlistId: "playlist-1")) == "/Playlists/playlist-1/Items")
+        #expect(jellyfin.includesUserIDInRootQuery)
         #expect(jellyfin.queryName(.userId) == "userId")
         #expect(jellyfin.queryName(.parentId) == "parentId")
         #expect(jellyfin.queryName(.includeItemTypes) == "includeItemTypes")
@@ -26,6 +29,9 @@ struct MediaBrowserLibraryDialectTests {
 
         #expect(emby.path(.userViews(userId: "user-9")) == "/path/to/user/Views")
         #expect(emby.path(.items(userId: "user-9")) == "/path/to/user/Items")
+        #expect(emby.path(.albumArtists) == "/Artists/AlbumArtists")
+        #expect(emby.path(.playlistItems(playlistId: "playlist-9")) == "/Playlists/playlist-9/Items")
+        #expect(!emby.includesUserIDInRootQuery)
         #expect(emby.queryName(.userId) == "UserId")
         #expect(emby.queryName(.parentId) == "ParentId")
         #expect(emby.queryName(.includeItemTypes) == "IncludeItemTypes")

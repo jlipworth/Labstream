@@ -1,8 +1,12 @@
 # Codebase remediation plan
 
-Status: **active implementation plan**
+Status: **active implementation and acceptance journal**. The summary table near the top is
+the current status source within this file; dated journal entries preserve earlier states and
+must not be read as current instructions when they conflict with that summary.
 
-Audit baseline: app/PMSKit code through `edf2d27`; documentation baseline `5d106fd`
+Audit baseline: original app/PMSKit review through `edf2d27`; latest reconciled `main`
+baseline `5d369c2`; implementation journal reconciled through review-remediation checkpoint
+`f165daf`
 
 Scope: correctness, concurrency, reliability, performance, Swift idioms, testability,
 backend sharing, platform sharing, conditional compilation, and build cost.
@@ -12,6 +16,1194 @@ downloads-engine audit that feeds `COR-01`/`COR-02`/`COR-03`/`COR-07`; this plan
 remediation queue for those findings — do not treat the two documents as independent work
 lists. Line references in both documents are as of the audit baseline and may drift a few
 lines past it.
+
+## Implementation checkpoint — 2026-07-11 after the downloads audit
+
+### 2026-07-12 rebase onto the continued download-state-machine work
+
+The 43-commit remediation stack is now rebased onto `main` at `5d369c2`. The seven incoming
+commits since `640c906` harden Emby recovery, Jellyfin keepalive ownership, Plex optimize
+matching, range-fault fixtures, held-manifest batching, live-progress accounting, and durable
+background range-task behavior. They improve the download engine, but do not replace the
+remaining Phase 1 migration boundaries.
+
+`git range-diff` reports 39 remediation commits replayed identically and four intentionally
+adapted to the incoming code:
+
+- held-body replacement ownership now also preserves main's per-offset mismatch reset and its
+  batched manifest removals;
+- the narrow single-row lookup keeps main's shared crash-window identity predicate;
+- batched held-manifest removal retains one persistence attempt while exposing the exact
+  revision outcome and preserving every current, persisted, fallback, and retained body owner;
+- Emby tombstones retain fail-closed observable persistence while also preserving main's
+  delete-on-ENOSPC behavior, exact-ID deferred retry, live-job exclusion, and expired-recovery
+  handoff. A cleanup success is reported only after the tombstone removal is durably proved.
+
+Post-rebase evidence is green: the complete macOS app plan passed 78/78, the complete iPadOS
+plan passed 78/78 under Thread Sanitizer, the focused tombstone/held-manifest suites passed
+18/18, and PMSKit passed 1,409 tests across 170 suites. Both worktree simulators were shut down
+after validation.
+
+**Plan adjustment:** Phase 1A remains partial at the same explicit strong-transaction boundary.
+Main's batch removal reduces write amplification but does not make body deletion conditional on
+manifest commit; its background-task work does not make synchronous mutations literally bounded;
+and the in-memory Emby fallback intentionally cannot provide cross-launch delete replay until its
+exact tombstone commits. Phase 1B and 1C also remain atomic migrations: none of the incoming work
+introduces schema-v3 typed attempt identity, task rebinding, attempt-conditional finalization, or
+the work registry. Do not reopen the now-closed incremental 1A slices; the next correctness work is
+the reviewed 1B/1C migration (or an explicit decision to defer it), followed by Phases 3–5.
+
+The remediation stack was rebased onto `main` at `e757bb1` after auditing the 29 reachable
+incoming commits from `6a523cf..e757bb1`. Those commits are overwhelmingly downloads-engine
+characterization and hardening. They add useful fault infrastructure and several attempt-aware
+guards, but they do not complete the release-blocking persistence/ownership work below.
+
+Current status at this checkpoint:
+
+| Slice | Status | Evidence / remaining boundary |
+| --- | --- | --- |
+| 0A–0B | Complete | Repeatable compile audit plus nonzero macOS/iOS app test plans are on the rebased branch. |
+| 1A | Implementation-complete / physical verification pending | The revisioned index committer and every destructive resume, held-body, checkpoint, promotion, legacy-reset, and whole-row artifact lifecycle are durable, nonblocking, replayable, and reviewed through `6266994c`. Current combined simulator/host gates pass; physical background-redelivery, migration/reattach, and lock/off-head transfer remain mandatory. |
+| 1B | Headless-complete / device verification pending | Typed ownership, durable reset admission, current-task callback survival, private media working paths, retry checkpoint handoff, validated-intent publication, and exact callback/finalizer mutations are implemented through `f165daf`. Schema v4 intentionally resets pre-v4 nonterminal partials. `COR-01` remains open only for physical background-redelivery and cancel/delete/re-add gates. |
+| 1C | Implementation-complete / physical verification pending | Exact work ownership, attempt-private publication, durable required-cleanup ordering, side-cache/finalizer fencing, and terminal row deletion are implemented and adversarially reviewed. Suspended delete/re-add and hard-kill/relaunch are covered headlessly; physical iPad/Vision Pro background and migration races remain mandatory. |
+| 1D | Complete | Unified auth authority and fail-closed secure/runtime commits are covered by deterministic held-response and stale-attempt tests. |
+| 1E | Headless-complete / physical verification pending | Media ownership leases, target ownership, stale artwork rejection, and interruption authority are covered headlessly. Physical iPad and Mac Control Center/lock-screen/media-key/route/interruption validation remains required. |
+| 1F | Headless-complete / hardware verification pending | Callback generations and reconnect/interruption-specific authority are covered headlessly; affected-hardware checks can share the 1E physical matrix. |
+| 2A | Complete | Plex photo coverage, modern Mac decoding, the effective MediaSession clock, and `PERF-01` are complete. The regenerated inventory found and mechanically removed exactly the four original definition-only helpers (`2fb3d00`, `5a5f050`, `cf1f919`, `6bff1c8`); no production deprecation remains. |
+| 2B | Complete | Locked record/metadata/duration/presence accessors and the existing ownership accessor now serve every single-key store read (`3a86b15`, `22fcf81`, `ff046e9`, `be507d6`). Exactly 12 intentional batch/UI snapshots remain. |
+| 2C | Complete | Latest-rail execution is bounded and order preserving. |
+| 2D | Complete | Optimizer flexible-ID decoding is explicit and the Offline root view is split at behavior-neutral opaque boundaries (`b33ccea`, `f1bdec1`). Both cliffs disappeared from the compile audit; retained medians improved and the required Offline body threshold is below 300 ms. |
+| 3A | Complete | Canonical `MediaBackendID` plus compatibility aliases and legacy identity fixtures landed in `25b7548`. |
+| 3B | Complete | Shared MediaBrowser client identity, authenticated user/result, validated server URL, origin, and auth-header primitives landed in `1779a5f`; backend schemes and token placement remain explicit. |
+| 3C | Implementation-complete | `91f0642` makes neutral results authoritative; `57582e9e` adds one backend-tagged app remote-playback value and unified Detail launch/reopen/cleanup path while retaining compatibility wrappers. |
+| 3D | Headless-complete / credentialed live PASS pending | Shared backend-dialect progress request plans and app dispatch landed in `2aa19e9`, with backend × event goldens. `0f5d0ae`/`20738e0`/`160e001` add test-account-gated real PlaybackInfo timeline/readback/verified-restore probes; missing credentials still mean SKIP rather than acceptance. |
+| 3E | Implementation-complete | `147ce6af` and `6ad0cc53` share direct-play, HLS, remux, Dolby Vision, subtitle-policy, and audio-stream facts while preserving Emby static-download restrictions. Golden fixtures cover the retained backend deltas. |
+| 4A | Headless-complete / credentialed live PASS pending | Shared Jellyfin/Emby library request shapes, identity/auth application, URL joining, and public wrapper delegation landed in `7ebbe77` and `1779a5f`, with dialect/request goldens. The hardened Emby/Jellyfin browse probes are executable but have not produced credentialed PASS evidence. |
+| 4B | Implementation-complete | `36a9dcee` and `bbc89166` share execution, decode/map/page, metadata/watched, and order-preserving search fanout behind thin Jellyfin/Emby adapters. |
+| 4C | Implementation-complete / live evidence partial | Pure Plex builders live in PMSKit with equivalence tests. A signed-in privacy-safe in-app probe passes the authoritative browse service lanes; credential-file Jellyfin/Emby live PASS evidence remains absent. |
+| 4D | Implementation-complete / live evidence partial | The narrow `PlexBrowseService` owns browse execution across UI, paging, intents, system entry, Home/search, and music. `d19f6222` removes the last rail-paging escape; the scoped zero-direct-send scan passes. Signed-in Plex browse passes, while Jellyfin/Emby credentialed live PASS remains open. |
+| 5E | Higher priority after correctness | `BackgroundDownloadSession` grew from about 4,994 to 5,755 lines, `DownloadManager` from 3,264 to 3,749, and `DownloadStore` from 1,091 to 1,271. Extract mechanically only after 1A–1C. |
+
+The audited engine added two durability domains that 1A–1C must model explicitly:
+
+- attempt-bearing held-range manifests and persisted held response bodies;
+- Emby ambiguous-create cleanup tombstones and their retry/clear lifecycle.
+
+Do not serialize only the main download index while leaving these adjacent durable artifacts
+unordered relative to terminal/background-completion promises. Likewise, do not introduce a
+second attempt authority beside the current server-prep/marker identities; document and test
+their relationship during the schema-v3 migration.
+
+### Revised execution order from the incoming diff
+
+1. Record a new post-audit compile/static-reference baseline and regenerate the warning/dead-helper inventory.
+2. Land the isolated `PERF-01` filesystem-stat change with a large sparse-file test.
+3. Implement 1A revisioned persistence/dirty retry/bounded flush, including background completion and the adjacent held-manifest/tombstone durability boundaries.
+4. Implement 1B typed attempt identity and the atomic schema-v3/dual-read migration.
+5. Implement 1C attempt-conditional mutations, work registry, side-asset staging, and compare-and-clear cleanup using the new audit fixtures.
+6. Add 2B narrow lookups and benchmarks, then land the two 2D compiler fixes as separate measured changes.
+7. Continue at 3C and 3E plus 4B and 4D. Treat 3C/4B/4D as broad app-state or execution
+   blast radii and 3E as download-adjacent; consult before implementation. Close the live-probe
+   evidence still pending for the headless-complete 3D/4A/4C slices.
+8. Move the download portion of 5E ahead of broad platform presentation decomposition, but keep each extraction behavior-neutral and separately reviewed.
+
+### Implementation journal
+
+#### 2026-07-11 — `PERF-01` filesystem-stat boundary
+
+- **Status:** complete.
+- **Commit:** `3378211` (`Use file metadata for HTTP error body size`).
+- **Changed boundary:** failed HTTP download diagnostics now obtain the temporary body's logical
+  byte count from filesystem attributes instead of allocating the entire body. HTTP handling,
+  failure transitions, privacy-safe bucketing, raw-body handling, lifecycle ownership, and
+  persisted schemas are unchanged. A stat failure still produces `body_bytes=unknown`.
+- **Regression evidence:** app tests create a 16 GiB sparse file and prove its exact logical size
+  reaches the existing `10GB+` bucket without materializing its contents. Zero-byte, missing,
+  denied, malformed, negative, overflowing, fractional, non-finite, and boolean attribute shapes
+  are also covered.
+- **Validation:** focused stat tests passed 5/5; the complete macOS and iPadOS app plans passed
+  42/42 each, with Thread Sanitizer enabled on iPadOS. Clean Mac, iOS Simulator, and visionOS
+  Simulator builds passed. The clean visionOS product matched the installed UUID, launched into
+  the signed-in Home surface, returned HTTP 200 during startup, and had no crash, assertion, or
+  sanitizer signature in the smoke log. PMSKit passed 1,399 tests across 170 suites, and the
+  repository hygiene gate plus its 20 Python tooling tests passed.
+- **Known remaining boundary:** the post-audit dead-helper/warning inventory remains part of 2A;
+  it is not coupled to this production fix.
+
+#### 2026-07-11 — Phase 1A durability discovery
+
+- **Status:** characterized; implementation open.
+- **Current index boundary:** `DownloadStore.persist()` snapshots under `NSLock`, then encodes and
+  atomically writes outside the lock with no revision, serialization, dirty retry, result,
+  diagnostic, or flush. Eleven mutation paths call it. Subtitle repair writes the index directly
+  and swallows failure, bypassing that path.
+- **Background completion boundary:** `BackgroundDownloadCompletionGate` waits for in-memory
+  range I/O/finalization only. `urlSessionDidFinishEvents` can therefore release the OS handler
+  without proving that the required index revision reached disk.
+- **Adjacent durability boundaries:** held bodies are moved before their manifests mutate, but a
+  successful `persistHeldRangeSegment` currently means only an in-memory mutation; callers cannot
+  know that the manifest committed before replacing an older body. Emby cleanup tombstones use a
+  separate synchronous JSON file under the store lock; add failure is visible, remove failure is
+  silent, and decode failure is currently treated as an empty collection.
+- **Existing evidence/seams:** schema-v2 and legacy/corrupt-row coding have PMSKit coverage, and
+  the completion gate has in-memory tests. There is no index write/encode/replace fault seam or
+  deterministic stale-write, dirty-retry, fresh-store restore, terminal/delete durability, or
+  completion-versus-flush app test.
+- **Next commit boundary:** introduce a fault-injectable, revision-fenced index writer plus app
+  characterization tests, route normal persistence and subtitle repair through it, preserve
+  schema v2, retain the newest failed snapshot as dirty, and expose a bounded internal flush.
+  Background-completion integration, held-manifest tickets, and tombstone semantics remain
+  separate follow-up commits.
+- **Unable to determine without an explicit implementation choice:** whether index and tombstones
+  share one revision domain or aggregate separate tickets; whether held-manifest calls block or
+  return tickets; the exact revision terminal/delete/background completion must await; flush
+  timeout and timeout-handler policy; corrupt tombstone quarantine policy; delete ordering;
+  shutdown handling for dirty revisions; and the public result shape for terminal/delete failures.
+
+#### 2026-07-11 — Phase 1A revisioned-writer primitive
+
+- **Status:** primitive complete; production integration open.
+- **Commit:** `0bbcb5d` (`Add revisioned persistence writer primitive`).
+- **Changed boundary:** added a generic internal full-snapshot writer with synchronous revision
+  acceptance, one serial encode/atomic-commit worker, pending-snapshot coalescing, dirty retention,
+  later-mutation/flush retry, privacy-safe encode-versus-commit failures, and bounded async flush.
+  It is deliberately not wired into `DownloadStore` yet, so this commit cannot weaken the current
+  synchronous index-write or background-completion behavior by itself.
+- **Regression evidence:** deterministic tests cover coalescing while an older encode is suspended,
+  late obsolete submission, commit and encode failure, dirty retry, newer-snapshot supersession,
+  timeout without abandonment, and invalid timeout values. The focused seven-test suite passed
+  repeatedly on macOS and passed under Thread Sanitizer on iPadOS.
+- **Reviewed invariant:** a revision superseded before its opaque atomic commit is skipped. If a
+  newer revision arrives only after an atomic commit has begun, the older operation may finish,
+  but the single worker guarantees the newer accepted snapshot is the final replacement.
+- **Next commit boundary:** add the app-level index I/O seam, assign revisions with the store lock,
+  route all index persistence and subtitle repair through this writer while retaining synchronous
+  durability at existing call sites, and prove fresh-store restore plus schema-v2 compatibility.
+  Only after that characterization is green should ordinary mutations become asynchronous and
+  explicit terminal/delete/background-completion tickets own the required flushes.
+
+#### 2026-07-11 — Phase 1A download-index integration
+
+- **Status:** main index integration complete; lifecycle and adjacent durability work remains.
+- **Commit:** `f5ecf95` (`Serialize download index persistence`).
+- **Changed boundary:** all eleven existing `DownloadStore.persist()` paths now assign a revision
+  and capture their full snapshot together under the store lock, then serialize schema-v2 encoding
+  and atomic commit outside that lock. Load-time subtitle repair uses the same writer instead of a
+  failure-swallowing direct write. A failed newest snapshot remains dirty and a later mutation or
+  bounded flush retries it; diagnostics retain only stage, revision, and error type.
+- **Compatibility decision:** existing mutation methods still wait without a timeout for their
+  submitted write attempt to commit or fail. This preserves the pre-integration contract for held
+  manifests and other synchronous callers. The bounded async flush exists separately and will be
+  used only after lifecycle APIs own explicit durability tickets.
+- **Regression evidence:** app tests prove fresh-store restoration with schema version 2, recovery
+  from an injected first atomic-write failure by a later full-state mutation, durable subtitle
+  repair through the injected writer, and that a mutation cannot return while its atomic write is
+  deliberately suspended. Together with the writer cases, the focused persistence suites passed
+  11/11; the complete macOS and iPadOS plans passed 53/53, with Thread Sanitizer enabled on iPadOS.
+- **Runtime validation:** clean Mac, iOS Simulator, and visionOS Simulator builds passed. The clean
+  visionOS product matched the installed UUID, launched to the signed-in populated Home surface,
+  and produced no crash, assertion, or sanitizer signature in the smoke log.
+- **Known remaining boundary:** mutation APIs do not yet surface the private persistence ticket,
+  so background completion cannot name an exact required revision. Held manifest/body replacement
+  promises and Emby tombstones remain separate durability domains. The injected atomic-write seam
+  also cannot distinguish temp-write, replace, and cleanup crash stages.
+- **Next commit boundary:** surface exact tickets from the terminal/delete transitions that require
+  durability, then make background-session completion await a bounded flush through the required
+  ticket before releasing the OS handler. Timeout/failure must be diagnosed without abandoning the
+  dirty snapshot. Ordinary progress writes remain synchronous until that lifecycle path is proven.
+
+#### 2026-07-11 — Follow-up rebase onto download fix `640c906`
+
+- **Status:** rebased cleanly onto local `main`; no remediation patch changed according to
+  `git range-diff`. Safety ref: `codex/remediation-nondownloads-pre-main-20260711-190118`.
+- **Incoming boundary:** main now retains off-head static-range progress, counts persisted held
+  bodies in live progress, and keeps zero-byte paused static-range rows manually restartable. Its
+  only `DownloadStore` edit is the new reconciliation input; it does not alter the writer, index
+  schema, completion gate, or persistence lifecycle. The in-memory live-progress overlay must not
+  become index state or a persistence revision source.
+- **Compatibility evidence:** the incoming reconciliation call and all revisioned persistence code
+  survived together. PMSKit passed 1,401 tests across 170 suites; the full macOS and iPadOS app
+  plans passed 53/53, with Thread Sanitizer enabled on iPadOS.
+- **Newly elevated pre-existing risk:** `persistHeldRangeSegment` currently reports only that its
+  row mutated, not whether the synchronous manifest write committed. The caller can then delete the
+  previously referenced body even though disk still contains the old manifest. Because a failed
+  newest snapshot remains dirty, deleting the new body as rollback is also unsafe: a later retry
+  could commit a manifest pointing to that deleted body. Main's smaller held segments increase the
+  frequency of this durability boundary even though they did not create it.
+- **Adjusted next boundary:** before making ordinary index mutations asynchronous, make held-body
+  replacement commit-aware. Retain the new body because a dirty snapshot may commit it; delete the
+  previous body only after the replacement revision commits; on failure retain both and diagnose.
+  Add replacement/removal failure injection plus a store-level zero-byte static-pause reload and
+  reconcile test. Then gate background completion by capturing the exact latest store revision when
+  the in-memory completion gate becomes ready and performing a bounded retry/flush before firing.
+- **Known bound limitation:** while mutations preserve the old unbounded synchronous write attempt,
+  a truly hung initial atomic write can prevent the gate from becoming ready before the later bounded
+  flush runs. A literal end-to-end bound requires a separate migration of lifecycle mutations to
+  nonblocking ticket-returning submissions; merely returning a ticket after the current wait does
+  not solve that case.
+
+#### 2026-07-11 — Phase 1A held-manifest replacement ownership
+
+- **Status:** replacement failure/cancel ownership complete; removal-result semantics remain.
+- **Commit:** `7005fd5` (`Keep held range bodies valid across manifest failures`).
+- **Changed boundary:** held-manifest persistence now distinguishes an accepted in-memory mutation
+  from a committed revision. A failed replacement keeps the new body because the dirty snapshot may
+  later commit it, and retains same-run ownership of every predecessor because disk may still name
+  the old generation. Predecessors are deleted only after a committed replacement, or together with
+  the current body during remove/purge/cancel. Orphan sweeping protects both current-map and retained
+  generations across the non-atomic store/session ownership transition.
+- **Cancel race:** the post-persistence halt check and live-map install are now one session-lock
+  decision. A cancel that lands during the synchronous manifest attempt refuses reinstall, submits
+  a superseding removal, and owns the new, persisted-previous, live-map, and retained body URLs.
+  Pause remains preservative.
+- **Regression evidence:** a production-used pure ownership policy covers failed replacement,
+  later committed cleanup, cancel disposition, per-offset removal, and key purge across multiple
+  generations. Store tests prove failed replacement leaves disk on the old manifest while a later
+  mutation commits the new manifest, with both bodies valid throughout. A new store-level fixture
+  also proves main's zero-byte static pause survives reload/reconcile while a live-forward row still
+  fails closed. The complete macOS and iPadOS plans passed 59/59, with Thread Sanitizer enabled on
+  iPadOS.
+- **Runtime validation:** clean Mac, iOS Simulator, and visionOS Simulator builds passed. The clean
+  visionOS product matched the installed UUID, launched to the signed-in populated Home surface,
+  and produced no crash, assertion, or sanitizer signature in the smoke log.
+- **Known remaining boundary:** manifest removal/take still return values without a commit outcome;
+  a failed removal therefore remains a diagnosable lost-work/refetch case rather than a proven
+  transactional delete. Background completion still fires without the explicit bounded retry/flush.
+- **Next commit boundary:** capture the exact latest store ticket when the in-memory background
+  completion gate becomes ready, bounded-flush/retry through it, diagnose committed/failed/timeout,
+  and always release the OS handler. Keep the hung-initial-synchronous-write limitation explicit;
+  nonblocking lifecycle mutations are a separate migration.
+
+#### 2026-07-11 — Phase 1A background-completion persistence barrier
+
+- **Status:** exact accepted-revision retry/flush before OS handler release complete.
+- **Commit:** `e4e4fd4` (`Flush persistence before background completion`).
+- **Changed boundary:** when the in-memory completion gate drains, the session captures the
+  store's exact latest accepted revision and performs one bounded five-second retry/flush before
+  releasing every ready background-session handler. Committed, failed, and timeout outcomes are
+  privacy-safely diagnosed and all release the OS handler; failed/timed-out snapshots remain dirty.
+- **Replay safety:** `BackgroundDownloadCompletionGate` now ignores finish events without an
+  awaiting handler. Duplicate or stale callbacks therefore cannot launch a delayed barrier that
+  consumes a future handler using the same fixed session identifier.
+- **Regression evidence:** PMSKit gate tests cover absent and duplicate finish events. App tests
+  block a real dirty retry and prove no release before commit, exercise a real bounded timeout,
+  verify observation-before-release ordering, and prove the timed-out dirty revision can still
+  commit later. PMSKit passed 1,403 tests across 170 suites; complete macOS and iPadOS app plans
+  passed 62/62, with Thread Sanitizer enabled on iPadOS.
+- **Runtime validation:** clean Mac, iOS Simulator, and visionOS Simulator builds passed. The clean
+  visionOS product matched the installed UUID, launched to the signed-in populated Home surface,
+  and produced no crash, assertion, or sanitizer signature in the smoke log.
+- **Explicit limitation:** five seconds bounds the persistence flush wait, not synchronous
+  diagnostic-sink latency. More importantly, a write already hung inside an ordinary synchronous
+  mutation can prevent the in-memory gate from draining before this barrier begins. Making that
+  end-to-end lifecycle literally bounded requires a separately reviewed nonblocking mutation/ticket
+  migration rather than disguising a large download-engine refactor inside this slice.
+- **Next 1A boundary:** make held-manifest remove/take results commit-aware, then resolve Emby
+  tombstone corruption/removal ordering and add explicit temp-write/replace crash seams. If those
+  require broad mutation API conversion, leave the remainder incomplete for consultation.
+
+#### 2026-07-11 — Phase 1A held-removal observability and fail-closed cleanup
+
+- **Status:** bounded result/diagnostic slice complete; strong transaction intentionally incomplete.
+- **Commit:** `0be7aac` (`Expose held manifest removal durability`).
+- **Changed boundary:** per-offset remove and whole-row take now return their exact revision ticket,
+  persistence result, removed manifest(s), and derived committed state. A repeated no-op after a
+  failed write retries the dirty full snapshot; an already durable no-op adds no redundant write.
+  Every session caller diagnoses an uncommitted removal explicitly.
+- **Safety decision:** body deletion deliberately retains the previous fail-closed behavior when
+  removal is uncommitted. Blindly retaining an old body is unsafe today: changed-resource and
+  whole-file restart paths can alter the destination/validator before purge, after which a crash
+  could reload and splice stale-resource bytes. The current path may refetch lost work, but it
+  cannot knowingly mix old bytes.
+- **Evidence:** injected remove/take failures prove a fresh store still sees the old manifest,
+  a no-op retry commits the removal, and a later durable no-op performs no write.
+- **Consultation boundary:** true delete-only-after-manifest-commit semantics require purge ordering
+  or revision-keyed deferred deletion across cancel, finalization, terminal failure,
+  changed-resource restart, whole-file replacement, oversize recovery, and held drain. That is a
+  broad download-lifecycle refactor and was not started silently.
+
+#### 2026-07-11 — Phase 1A Emby cleanup-tombstone hardening
+
+- **Status:** single-domain persistence hardening complete; cross-domain delete replay incomplete.
+- **Commit:** `08cebaa` (`Fail closed on Emby cleanup persistence errors`).
+- **Changed boundary:** missing queue files decode as empty, while read/decode/encode/commit failures
+  are distinct, privacy-safe results. Corrupt or unreadable canonical bytes refuse add/remove rather
+  than being overwritten as an empty queue. Removal is observable and the manager publishes
+  recovered only after durable removal. A commit that throws after atomic replacement is reconciled
+  under the same lock by checking the generated UUID's exact presence/absence.
+- **Evidence:** six app tests cover missing/ordered/same-key entries, malformed and read failures,
+  encode failures, temp-written/pre-replace failure, replace-then-throw add/removal reconciliation,
+  sibling preservation, and fresh-store results.
+- **Consultation boundary:** an add whose replacement succeeded but whose canonical re-read is also
+  unavailable can still leave both the old row and tombstone durable. Replaying the user's delete
+  intent without deleting a newer same-key attempt requires the Phase 1B durable attempt identity
+  and attempt-conditional row removal; an ad hoc rating-key identity was not introduced.
+
+#### 2026-07-11 — Phase 1A persistence fault/stress expansion
+
+- **Status:** test-only safe tranche complete; live explicit committer intentionally incomplete.
+- **Commit:** `24e179c` (`Expand download persistence fault coverage`).
+- **Evidence:** deterministic app tests now cover a blocked older commit followed by a newer full
+  snapshot and fresh-store restore; concurrent disjoint progress/status/metadata/delete mutations;
+  before-temp, temp-written/pre-replace, and replace-then-throw index states; permission and
+  out-of-space equivalents; dirty retry; and backing-file removal failure without row resurrection.
+- **Live-I/O boundary:** production still uses Foundation's same-volume `.atomic` write behind the
+  existing injected opaque commit seam. Replacing it with manual temp plus rename/`replaceItemAt`
+  changes file-protection/metadata inheritance, missing-destination behavior, stale-temp cleanup,
+  post-replace ambiguity, and fsync policy. That semantic change requires review rather than being
+  hidden inside fault-test work.
+- **Validation:** complete macOS and iPadOS plans passed 78/78, with Thread Sanitizer enabled on
+  iPadOS. Clean Mac, iOS Simulator, and visionOS builds passed. The visionOS product matched the
+  installed UUID, stayed alive, reached the signed-in populated Home surface, and emitted no crash,
+  assertion, or sanitizer signature. PMSKit remained green at 1,404 tests across 170 suites.
+
+#### 2026-07-11 — Phase 1B/1C scope gate
+
+- **Status:** implementation intentionally not started; explicit user consultation required.
+- **Phase 1B atomic boundary:** the current authority remains an optional metadata-nested String
+  under schema v2, minted lazily during task creation. Session registration/reattach can begin
+  before an ID assignment is proven durable; opaque/range/finalizer entries and roughly 150
+  callback mutations remain rating-key-only; Emby Convert keeps a separate UUID authority. The
+  minimum safe migration must land typed top-level ownership, schema-v3 dual-read/legacy assignment,
+  durable-before-admission startup, legacy task rebinding, attempt-bearing work entries,
+  attempt-conditional mutations, and Emby identity pairing together. It touches approximately
+  12–20 production/test files and requires force-quit/reattach plus signed-device gates.
+- **Phase 1C coupled boundary:** the remaining shared work registry, attempt-specific finalizer and
+  side-asset staging, durable ActiveEncoding teardown intent, compare-and-clear PlaySessionId,
+  expected-ID metadata writes, startup sweep, and delete/re-add suspension tests depend on 1B.
+  Current side-cache tasks are unretained and write stable rating-key paths; finalization and
+  encoder cleanup remain rating-key-owned. A row-exists check or finalizer-only key change would
+  leave TOCTOU/file-alias races and can worsen concurrent finalization.
+- **Decision:** do not land unused typed-ID scaffolding or partial guarded overloads merely to show
+  progress. They do not fix `COR-01`, add interim churn, and violate the plan's atomic migration
+  requirement. Await approval for the coordinated download-engine migration and its rollback/test
+  plan.
+
+#### 2026-07-12 — Phase 1B/1C coordinated migration approved
+
+- **Status:** approved for coordinated implementation. Phase 1B and 1C remain one compatibility
+  train: intermediate commits may establish reviewed seams and tests, but production must not admit
+  background work through a partially migrated ownership model.
+- **Upgrade policy:** preserve completed downloads and their referenced playable/side-asset files.
+  Do not rebind or adopt any pre-v3 active `URLSession` task. After the schema-v3 attempt IDs are
+  durably committed, cancel every pre-v3 active task and discard/reset that row's partial media,
+  resume blob, held-range bodies/manifests, and recognized network/staging temp state. The row
+  remains retryable from a clean checkpoint under its new attempt identity. This intentionally
+  trades resumable pre-v3 progress for an unambiguous ownership boundary; completed media is not
+  part of that discard.
+- **Admission and persistence:** attempt-ID migration and every new attempt-ID assignment fail
+  closed. Session registration, task creation/admission, recovery, and callback mutation may not
+  proceed until the owning ID is durably committed. A write failure leaves the prior canonical
+  index readable, reports a redacted actionable failure, and permits a later retry; it must not
+  fall back to rating-key-only ownership or an in-memory-only ID.
+- **Files and side assets:** asynchronous media/finalizer/side-cache work writes only to
+  attempt-scoped staging paths. After a final ownership check, current work atomically promotes to
+  the existing stable final filename and commits metadata conditionally for that same attempt.
+  Delete, retry, supersede, and startup sweeps remove old-attempt staging without touching a newer
+  attempt's stable file.
+- **Compatibility window:** for one release train, write the schema-v3 top-level typed attempt ID
+  while retaining the metadata-nested shadow needed by the compatibility reader, and retain legacy
+  index/task-marker parsing. The top-level schema-v3 value is authoritative; disagreement with the
+  nested shadow fails closed and is diagnosed rather than guessed. New work is never emitted in a
+  rating-key-only marker format.
+- **Required server cleanup:** use a generic, attempt-keyed durable cleanup-intent schema carrying
+  backend, persisted server identity, and expected session/job ID. Initially migrate only
+  Jellyfin/Emby ActiveEncoding teardown and the existing Emby Convert cleanup lifecycle; this
+  approval adds no new Plex cleanup behavior. Required teardown is not cancelled with ordinary
+  finalizer/side-cache work, and an intent clears only after the exact operation is confirmed gone.
+  If the required intent cannot be durably persisted, block final row/file deletion so the last
+  cleanup handle is not lost; surface the failure and allow retry.
+- **Rollout and rollback:** exercise the migration first in internal/device builds with the named
+  schema, cancellation/reset, delete/re-add, cleanup, force-quit, background-redelivery, iPad, and
+  Vision Pro gates. There is no blind rollback to a pre-v3 binary after schema-v3 rows or markers
+  are emitted. A rollback build must retain the v3 reader, nested-shadow and legacy parsers, and
+  fail-closed ownership rules, or first quiesce/cancel and reconcile all new-format tasks and
+  durable cleanup intents.
+
+#### 2026-07-12 — Phase 1B durable ownership and startup admission
+
+- **Status:** in progress; the production session remains deliberately fail-closed at each new
+  ownership boundary while the remaining callback mutations are converted.
+- **Commits:** `cbe443c` (`Add durable schema-v3 download attempt ownership`) and `e301dbb`
+  (`Gate download startup on durable attempt ownership`).
+- **Schema and migration:** `DownloadAttemptID`/`DownloadAttemptKey` are typed, schema v3 writes an
+  authoritative top-level owner plus the one-train nested shadow, and shadow disagreement or a
+  missing required v3 owner fails closed. Legacy active rows receive a durable owner, then every
+  pre-v3 task is cancelled and drained before their partial media/resume/held artifacts are reset.
+  Completed rows are preserved; cleanup-bearing completed rows become attempt-keyed cleanup-only
+  work instead of being rebound to URLSession.
+- **Admission:** the background session is inert until explicit activation. Registration no longer
+  reattaches autonomously; mutating delegate callbacks reject pre-admission tasks and delete any
+  delivered temporary body. Activation repeatedly enumerates and cancels legacy/current-orphan
+  work, commits exact-key resets on a serial utility queue, and only then opens task creation and
+  the manager-owned initial reattach/reconcile pass.
+- **New attempts:** Plex, Jellyfin, and Emby entry paths now durably seed the exact attempt owner
+  before preflight, PlaybackInfo, server encoder/Convert creation, side work, or URLSession task
+  creation. Store creation is an exact compare/swap: a fresh row requires no owner, same-ID retry
+  is idempotent, and B may replace only the expected A. Persistence failure rejects the start with
+  no in-memory owner fallback.
+- **Terminal ownership:** failure and cancellation retain attempt A on an existing row so explicit
+  Retry can perform an exact A→B replacement and late A work remains classifiable. Delete removes
+  the row rather than creating an intermediate ownerless v3 revision. A dormant cancel cannot
+  instantiate URLSession. Cleanup-only legacy rows cannot be deleted until their required cleanup
+  handle has moved into the approved attempt-aware durable journal.
+- **Evidence:** startup admission/migration, store CAS/fault, and marker policy fixtures pass in the
+  complete macOS plan (90/90). PMSKit passes 1,418 tests across 171 suites. No simulator was booted
+  for this headless boundary.
+- **Remaining atomic boundary:** carry `DownloadAttemptKey` through every in-memory transfer,
+  retry, finalizer, and side-cache entry; convert all callback/store mutations to exact-owner APIs;
+  stage files per attempt; add the work registry and generic cleanup-intent journal; migrate
+  Jellyfin/Emby ActiveEncoding and Emby Convert teardown; then run delete/re-add, force-quit,
+  background-redelivery, device, and simulator gates before declaring 1B/1C complete.
+
+#### 2026-07-12 — Phase 1B/1C conditional ownership seams
+
+- **Status:** in progress; these commits establish and exercise the exact-owner primitives, but
+  stable media/side-asset paths and several rating-key-only recovery maps still prevent a Phase 1
+  completion verdict.
+- **Commits:** `4bcc023` (`Add attempt-conditional download store mutations`), `eb8deae`
+  (`Carry exact owners through download session work`), `5db34bf` (`Guard download session
+  mutations by attempt`), `b68b0a2` (`Add attempt-scoped download staging primitives`), `c107669`
+  (`Model durable attempt-scoped cleanup intents`), and `e2ecf85` (`Add durable download cleanup
+  intent journal`).
+- **Conditional row authority:** the Store now exposes exact-attempt record/ownership lookup plus
+  conditional status, progress, metadata, and removal. Stale A mutations cannot affect B. Stable
+  artifact deletion and row removal share the Store lock, with a deterministic blocked-delete/
+  re-add fixture proving B cannot publish into A's deletion window. Persistence failure remains a
+  dirty observable state rather than being reported as success.
+- **Session entries:** opaque transfers, range transfers, retry entries, reattached tasks, and the
+  finalization registry carry `DownloadAttemptKey`. New tasks use one durable-owner snapshot for
+  both their current marker and in-memory entry; reattach/dead-finish adoption requires the typed
+  marker to equal the authoritative top-level owner. Entry-driven progress, status, terminal, and
+  finalizer mutations now use exact-attempt Store APIs, and dependent UI/error/retry work stops on
+  stale ownership or an unproved persistence result.
+- **Staging:** deterministic same-directory staging names contain a full SHA-256 over the
+  length-delimited unsanitized rating key, attempt ID, and stable relative path. Promotion validates
+  the derived path, rechecks the exact row owner under the Store lock, and uses same-directory
+  `rename` so A cannot replace B's stable file. Startup inventory/sweep recognizes only the exact
+  staging filename grammar and preserves current or explicitly-live references. The primitive does
+  not fsync the staged file/directory and does not transactionally couple rename with index commit;
+  callers must preserve the existing dirty-writer recovery boundary.
+- **Cleanup authority:** the versioned, credential-free generic intent supports Jellyfin/Emby
+  ActiveEncoding, known Emby Convert jobs, and Emby's accepted-but-response-lost ambiguous-create
+  identity. It carries exact attempt/backend/server/user/operation authority, excludes Plex, and
+  compare-clears only the exact intent. The standalone journal fails closed on read/decode,
+  duplicate IDs, conflicts, encode, and commit failures; post-replace throws are accepted only when
+  an exact re-read proves add/removal won.
+- **Remaining blast radius at this earlier checkpoint:** opaque/range media and all side caches did
+  not yet write to the new staging paths; therefore a narrow check→stable-file-operation alias
+  window remained. Resume data, validators, held manifests/bodies, range checkpoint reset,
+  halt/retry maps, and compare-cancel were still partly rating-key-owned. The cleanup journal was
+  not yet wired into deletion, launch sweep, ActiveEncoding teardown, or the existing Emby Convert
+  tombstone migration. The next journal entry records the side-cache and cleanup consumers that
+  subsequently landed; media/checkpoint migration and the full force-quit/background/device matrix
+  remain open.
+
+#### 2026-07-12 — Phase 1C side-cache and required-cleanup integration
+
+- **Status:** side-cache and required server-cleanup ownership are implemented; media working-file
+  migration remains an explicit consultation boundary, so Phase 1C and `COR-01` are not closed.
+- **Commits through this checkpoint:** `343c602` (`Journal conditional download ownership seams`),
+  `6fc70a7` (`Add attempt-keyed download work registry`), `0f11642` (`Stage side assets by download
+  attempt`), `d01f8e4` (`Track side-cache work by download attempt`), `62f59cf` (`Journal required
+  download encoder cleanup`), `66bfc41` (`Retain required cleanup work across cancellation`), and
+  `a7f6fee` (`Migrate Emby Convert cleanup into attempt journal`).
+- **Work registry and side assets:** poster, subtitle, Plex BIF, Jellyfin trickplay, and
+  chapter-image parent tasks are registered against an exact `DownloadAttemptKey`. Replacing or
+  deleting A cancels only A's registered cancellable side-cache work. Side assets write to
+  deterministic attempt staging, promote only while the Store still reports that exact owner, and
+  conditionally publish metadata for the same attempt. Required-cleanup tasks use the registry's
+  non-cancellable kind; the registry entry ends when the exact task naturally finishes, while any
+  unresolved durable intent remains journaled for retry. Session finalizers carry exact ownership
+  and conditional Store mutations, but are not yet integrated with this manager work registry.
+- **Active encoders:** Jellyfin/Emby ActiveEncoding teardown first persists or reuses a
+  credential-free intent containing the exact attempt, backend, server/user authority, and
+  PlaySessionId. Delete fails closed if that intent cannot commit. Execution requires a matching
+  live `BackendSession`; only the existing confirmed-gone stop semantics permit an exact
+  compare-clear of the row handle and exact journal removal. Plex receives no new cleanup behavior.
+- **Emby Convert:** known Sync job IDs and complete ambiguous-create recovery identities now use
+  the same journal. Delete blocks before row/file removal if the exact intent is not durable.
+  Launch migrates cleanup-only row authority before releasing its barrier. Known jobs issue an
+  exact DELETE; ambiguous work uses the existing full-baseline/fingerprint/time-window policy and
+  excludes every job owned by a live row. Transport, truncated-list, multiple-match, user/server
+  mismatch, and unconfirmed DELETE outcomes retain the intent. Confirmed delete/gone or a
+  policy-proven discard conditionally clears only the matching attempt and expected job/recovery
+  identity before compare-removing the journal entry. The legacy tombstone reader/sweep remains for
+  the one-train compatibility window; new deletes do not create legacy tombstones.
+- **Evidence at this checkpoint:** the macOS app build and focused cleanup-journal tests passed;
+  PMSKit's 36-test Emby Convert request/recovery suite passed, including live-row exclusion and
+  retain/cancel/discard policy cases. These are headless correctness gates, not substitutes for the
+  outstanding force-quit, background-redelivery, iPad, and Vision Pro validation.
+- **Exact checkpoint primitives (`d1ec849`):** Store APIs now condition resume blobs, validators,
+  source sizes, held manifests/purge, and static checkpoint reset/evidence on an exact attempt. Their
+  ownership check, mutation, and full-snapshot submission linearize under the Store lock; disk wait
+  remains outside it. A later overlapping full snapshot may subsume an earlier revision, so an
+  accepted mutation is not a lease—dependent file/task work must still perform fresh exact-owner
+  admission. The focused six-test suite and 31 Store fault/persistence/staging regressions passed.
+  At this checkpoint, background-session and manager consumers were still being migrated to these
+  primitives; the next journal entry records the completed consumer train.
+- **Unresolved media staging / schema boundary:** routing opaque and static-range media through
+  attempt staging is not a safe `BackgroundDownloadSession`-only edit. Store checkpoint reset,
+  durable-size evidence, reconciliation, resume planning, and recovery still read the row's stable
+  `relativePath`, while the range engine appends and derives offsets from its working destination.
+  Pointing only the session at staging would report zero durable bytes, rebuild from the wrong
+  offset, or operate on the wrong file. Existing schema-v3 background tasks and partials also point
+  at the stable path; silently deriving a new empty staging path on upgrade can discard progress or
+  mismatch an already-issued Range request.
+- **Consultation required before the next production slice:** choose a schema-v4 (or equivalent
+  durable layout/version marker) policy for the attempt working file and for live schema-v3 stable
+  partials: exact-owner migrate-to-stage, or cancel/reset under an explicit compatibility rule.
+  Then convert checkpoint size/reset/evidence/reconcile, opaque resume data, static request offsets,
+  held-body manifest/drain ownership, retry/halt recovery, reattach/dead-finish adoption, final
+  validation/promotion, deletion, and startup sweep as one reviewed train. Store rows must continue
+  to reference stable final URLs; terminal complete/unverified publication may occur only after
+  validation and exact-owner promotion. Until that design lands, do not partially stage only the
+  opaque lane or claim that the stable-file alias race is closed.
+
+#### 2026-07-12 — Phase 1 exact-attempt consumer train
+
+- **Status:** the available exact-owner Store primitives are now consumed across recovery, status
+  publication, backend preparation, transfer admission, and offline playback. This closes the known
+  row-recapture/publication seams, but not the stable media working-path migration, remaining
+  rating-key in-memory generations, finalizer registration, or physical gates.
+- **Commits:** `d1ec849` (`Add exact download checkpoint mutations`), `e2babfb` (`Use exact attempts
+  for download recovery`), `398f932` (`Scope download recovery state by attempt`), `2c7bd71`
+  (`Publish download state by exact attempt`), `2d4bea9` (`Carry exact ownership through transfer
+  start`), `b765698` (`Scope backend download mutations by attempt`), `052a0e2` (`Make Emby download
+  metadata attempt-owned`), `247e4d3` (`Make Plex download publication attempt-owned`), and
+  `a8fa19c` (`Scope offline playback state by attempt`).
+- **Store checkpoint surface (`d1ec849`):** resume blobs/display watermarks, validators, source
+  sizes, held manifests and purges, and static checkpoint reset/size/evidence now have exact
+  `DownloadAttemptKey` APIs. Owner comparison, mutation, and snapshot submission linearize under
+  the Store lock; persistence waiting stays outside it. The APIs report stale ownership and
+  unproved persistence instead of silently treating either as success.
+- **Manager and Session consumers (`e2babfb`, `398f932`, `2c7bd71`):** Manager recovery, queue
+  deferral, blob resume/clear, incomplete-size audit, and terminal status paths retain the row key
+  they inspected and stop when an exact checkpoint/status mutation is stale or unproved. Session
+  start/pause/resume, held-body persistence/drain/purge, storage failure, retry, and recovery paths
+  carry their entry's key rather than looking up whichever row currently owns the rating key.
+  Finalizing progress, held-drain halt settlement, terminal status, and continuation publication
+  likewise use exact attempt mutation results before dependent work proceeds.
+- **Transfer admission (`2d4bea9`):** `DownloadTransferStartPlan` contains a nonoptional attempt key
+  and derives its rating key from that authority. Plex, Jellyfin, Emby, and Plex Optimize construct
+  it from the already-durable seed. Immediate start failures set `.failed` only for that captured
+  attempt; they never re-read a replacement row to decide which owner to fail. Plex rendered-Part
+  handoff also requires its captured key.
+- **Backend publication (`b765698`, `052a0e2`, `247e4d3`):** Jellyfin and Emby status/publication
+  paths use exact record creation and mutation admission. Emby download and Convert snapshots,
+  job adoption/clearing, recovery identity, PlaySession/media-source selection, and handoff metadata
+  are conditional on the captured owner and expected job/recovery values. Plex Optimize's successive
+  prep/rendered snapshots and abandoned-seed removal are same-owner operations; static Plex
+  publication and resumed optimize-deadline persistence use atomic same-owner record creation.
+  Async Plex poller awaits are bracketed by checks of the originally captured key, so an old chain
+  cannot publish into or terminally release B.
+- **Offline playback (`a8fa19c`):** local position and `.unverified`→`.complete` promotion use the
+  downloaded record's exact key. Compatibility fallbacks are deliberately narrow: only terminal
+  v1/v2 rows that legitimately have no owner may use the ownerless methods. Active ownerless rows
+  are rejected and must pass startup ownership migration; a fallback cannot mutate a schema-v3
+  replacement.
+- **Evidence:** the checkpoint slice added six focused exact-owner cases and ran 31 Store
+  fault/persistence/staging regressions. The offline-playback slice added stale-A/B, active-ownerless
+  rejection, and legacy-terminal compatibility tests. Consumer slices repeatedly passed the Mac
+  build plus focused attempt/start/server-prep, Plex optimize, Store, recovery, and backend policy
+  suites; the transfer/Plex sequence included 17- and 23-test focused runs. These headless gates do
+  not replace background-redelivery or signed-device validation. At `a8fa19c`, the full Mac plan
+  passed 123 tests with zero failures and the full PMSKit run passed 1,424 tests in 172 suites.
+- **Remaining exactness work at this checkpoint:** opaque and static media still read/write stable row destinations;
+  the schema-v4-or-equivalent working-layout and live schema-v3 partial migration policy remain the
+  primary blast-radius consultation. Session maps/budgets including range train epochs, halt kinds,
+  retry/truncation/HTTP/blob counters, request-rebuild grace, and `StaticRangeRetryBudget` are still
+  rating-keyed and required an attempt-generation audit before A could influence B through
+  memory-only state. The next entry records their migration. Background-session finalizer tasks
+  carry exact Store authority but are not yet registered
+  in the manager work registry or cooperatively cancellable. Force-quit/background-redelivery,
+  iPad, and Vision Pro gates remain required before Phase 1B/1C or `COR-01` can close.
+
+#### 2026-07-12 — Phase 1 in-memory range ownership
+
+- **Commits:** `1ae5f34` (`Key range session state by attempt`) and `f05944c` (`Isolate
+  download retry budgets by attempt`).
+- Session held-body maps, predecessor ownership, train epochs, halt state, HTTP/blob recovery
+  counts, request-rebuild grace, transient retries, and truncation-finalizer counts are now keyed by
+  `DownloadAttemptKey`. A multiline audit also found and converted 16 checkpoint-reset consumers
+  that the earlier single-line grep had missed; stale or unproved exact resets now stop the caller.
+- PMSKit's range budget uses an app-independent `StaticRangeRetryKey(downloadID, attemptID)`, so
+  validator-change and per-offset mismatch budgets cannot leak from A into replacement B. The new
+  same-download A/B isolation case passed within the full 1,425-test PMSKit run; the focused Mac
+  Session/Store suites and Mac build also passed.
+- **New consultation boundary:** Manager encoder/keepalive maps cannot be safely converted alone.
+  `releaseInFlight(ratingKey:)` is a roughly 55-call cross-backend teardown funnel that mixes
+  attempt-owned encoder/keepalive resources with the current rating-key slot, server-prep, stall,
+  and presentation state. Safe work requires splitting exact-attempt teardown from conditionally
+  admitted current-slot cleanup, threading captured keys through every backend release call, and
+  adding A/B release-isolation tests. No asymmetric partial was made.
+
+#### 2026-07-12 — Phase 1 schema-v4 media publication and exact release
+
+- **Status:** the two approved consultation boundaries are implemented; finalizer-registry wiring,
+  startup sweep invocation, full stress/redelivery evidence, and physical gates remain.
+- **Commits:** `364fea3` (`Define exact download release ownership`), `3a4cb65` (`Stage download
+  media by attempt`), `01f47e6` (`Release download resources by attempt`), `72c4b83` (`Fix exact
+  release call sites`), and `fab440c` (`Publish validated downloads by attempt`).
+- **Migration policy:** schema v4 deliberately discards every pre-v4 nonterminal partial after its
+  exact legacy task is cancelled. Stable media, resume blobs, held bodies, and derived attempt
+  staging are removed behind the durable reset/admission barrier; completed and unverified stable
+  media survive. This is the user-approved compatibility policy: partial-download survival is no
+  longer a Phase 1 acceptance requirement for pre-v4 rows.
+- **Private working layout:** new rows persist an exact-attempt media working path while continuing
+  to publish only the stable `DownloadRecord.localURL`. Opaque resume, static range checkpoints,
+  reattach/adoption, held-body assembly, progress evidence, retries, and validation use the private
+  path. Held bodies are themselves exact-attempt staging and remain referenced by their manifests.
+- **Publication protocol:** validation first commits an exact-attempt validated-promotion intent,
+  atomically renames the working body over the stable path, then commits the terminal row and drops
+  the working reference. Relaunch completes only an intent-proven promotion; it never infers file
+  ownership from a shared stable filename, byte count, or playability. This covers both static and
+  forward-only lanes and closes the rename-to-terminal-snapshot hard-kill window.
+- **Release split:** the 55-call teardown funnel now requires `DownloadAttemptKey`. Encoder
+  sessions, keepalives, transcode markers, server-prep pollers, queue-title protection, and work
+  cancellation release A exactly; active-slot/presentation state clears only when A is still the
+  tracked current owner. Two explicit ownerless repair paths remain for diagnosed corruption and
+  legacy state. Credential-generation auth quarantine intentionally remains rating-keyed.
+- **Evidence at commit:** exact release/server-prep policy suites passed 11/11; the Mac app build
+  and visionOS build-for-testing passed; the new Store/Session tests compile in the app test target.
+  The shared app schemes currently expose the test target to build-for-testing but not to the test
+  action, so executable focused Store tests remain part of the Phase 1 gate rather than being
+  misreported as run. No simulator was left booted.
+
+#### 2026-07-12 — Phase 1 finalizer registry and headless closeout
+
+- **Commits:** `7b1e88d` (`Sweep orphaned attempt staging on reattach`), `ba583b9` (`Harden
+  attempt staging regression tests`), and `813254f` (`Register download finalizers by attempt`).
+- Reattach now sweeps only unreferenced attempt staging after recovering any exact validated
+  promotion. Media finalization synchronously claims one exact request before scheduling, then the
+  Manager admits one `.finalizer` registry lease. Duplicate delegate/recovery/revalidation requests
+  cannot create parallel probes; execute or abandon balances the background-completion gate once.
+- Delete removes A's exact row/files before cooperative finalizer cancellation, so a task already
+  between cancellation checks still fails every Store mutation. Terminal refresh preserves its own
+  finalizer lease while cancelling side-cache work; retry/replacement/delete cancel all cancellable
+  A work without reaching B. Unverified revalidation suppression is exact-attempt keyed.
+- The validation limiter removes cancelled waiters without leaking its permit. Finalizers check
+  cancellation at admission, limiter/sleep/AV await boundaries, after HEVC fixup, and immediately
+  before verdict, file, Store, retry-state, and callback effects. Synchronous AVFoundation/HEVC
+  calls cannot be preempted mid-call, but no cancelled verdict can publish afterward.
+- **Headless evidence at `813254f`:** finalizer/registry/limiter/startup suites passed 14 tests in
+  three suites; the complete Mac plan passed 133 tests in 20 suites; the complete iPad simulator
+  plan passed the same 133 tests with Thread Sanitizer enabled; PMSKit passed 1,441 tests in 176
+  suites after the concurrent Phase 3A/4A slices. A full-clean visionOS build installed with matching
+  UUID, launched to the signed-in populated Home surface, returned successful server responses, and
+  had no fatal/assertion/sanitizer/crash match. Both worktree simulators were shut down.
+- **Remaining Phase 1 gates:** background-session completion/redelivery and cancel/delete/re-add
+  races on physical iPad and Vision Pro remain the user's post-headless validation half. Until they
+  pass, Phase 1 and `COR-01` stay verification-pending rather than complete.
+
+#### 2026-07-12 — adversarial review remediation checkpoint
+
+- **Commit:** `f165daf` (`Resolve remediation branch review findings`).
+- **Review source:** `docs/research/2026-07-12-remediation-branch-review.md`; every C1/C2,
+  M1–M12, and minor finding was revalidated against `2aa19e9` before remediation. The review's
+  claim that finalizer-registry integration remained open was stale because `813254f` had already
+  landed it.
+- **Phase 1 corrections:** healthy current exact-attempt callbacks survive the startup purge
+  window; ownerless legacy terminal rows demoted by reconcile enter a durable reset barrier rather
+  than globally wedging downloads; disk-full and held-segment persistence failures surface and
+  terminate without livelock; retry carries durable static partials; successful/pause transitions
+  preserve side-cache work; terminal static audits read the stable media; startup recovery has
+  bounded automatic retry plus a visible manual action; and delete falls back to exact in-memory
+  cleanup authority when the separate journal is unavailable.
+- **Auth/player corrections:** a successfully authorized or already-saved Plex account token is
+  retained across discovery failure without publishing stale server readiness; background restore
+  no longer cancels interactive auth; media artwork and interruption authority survive temporary
+  ownership/item transitions; and reconnect watchdog authority spans its recovery reload instead
+  of being invalidated by the ordinary playback generation.
+- **Validation at `f165daf`:** full Mac app plan passed; full iPad simulator plan passed with Thread
+  Sanitizer; PMSKit passed 1,450 tests in 178 suites; compile-audit tests passed 7/7; full-clean iPad
+  and visionOS builds installed with matching UUIDs and launched without fatal/assertion/sanitizer/
+  crash evidence. The visionOS clone reached signed-in populated Home. All worktree simulators were
+  shut down. Physical background-redelivery gates remain open.
+
+#### 2026-07-12 — Phase 3/4 headless request-seam checkpoint
+
+- **Commits:** `25b7548` (3A canonical backend identity), `1d577b7` (4C Plex request builders),
+  `7ebbe77` and `1779a5f` (3B/4A MediaBrowser identity, URL/auth, and library request factories),
+  and `2aa19e9` (3D playback-progress request plans and app dispatch).
+- **Closed headless slices:** 3A and 3B are implementation-complete with compatibility aliases;
+  3D, 4A, and 4C are headless-complete with wire-shape golden tests and source-compatible backend
+  or app wrappers. Backend-specific auth schemes, token placement, query dialects, and Plex-native
+  hub semantics remain explicit.
+- **Acceptance evidence still open:** secret-gated Jellyfin/Emby progress and browse probes plus the
+  live Plex browse probe have not been claimed by hermetic test success. Record PASS rather than
+  SKIP before declaring the corresponding Phase 3/4 acceptance bullets complete.
+- **Next implementation boundaries:** 3C neutral playback/app state, 3E shared device-profile
+  facts, 4B shared decode/map/page/search core, and 4D Plex service/direct-send migration. These are
+  intentionally not represented as started; consult on their UI, download-profile, and execution
+  blast radii before editing.
+
+#### 2026-07-12 — scoped Phase 1/3/4 resumption audit
+
+- **Scope decision:** finish Phases 1, 3, and 4. Phase 2 remains closed unless a regression gate
+  contradicts its recorded evidence. Checkpoint `5043ede` remains the clean integration base.
+- **Phase 1 correction:** 1A is incomplete rather than a documentation-only consultation item.
+  Completion requires an explicit staged index committer, a bounded lifecycle-ticket protocol that
+  cannot wedge before the background-completion barrier, recoverable held-body deferred deletion,
+  and durable cleanup/index ordering. The `f165daf` process-only cleanup fallback is not sufficient:
+  a crash after local deletion can lose the last server-cleanup authority. 1C also still needs
+  production-wired suspended delete/re-add coverage for poster, text subtitle, Plex BIF, Jellyfin
+  trick-play, and chapter-image tails. 1B/1C physical background-redelivery gates and the 1E/1F
+  physical media-ownership matrix remain open.
+- **Phase 3 correction:** 3A/3B were reverified with focused compatibility tests. 3C's neutral
+  carriers exist but are still conversion-only; backend resolvers, two app remote-playback values,
+  and duplicate Detail launch/reopen/state paths remain. Land the neutral resolver seam, then the
+  single backend-tagged app value/UI path. Do 3E afterward because it edits the same playback files;
+  share only direct-play/HLS/remux/Dolby Vision facts and keep Emby's stricter static-download profile
+  separate. The existing DEBUG playback probes do not close 3D's live timeline acceptance gate.
+- **Phase 4 correction:** shared DTO mapping already exists, but Jellyfin/Emby service execution,
+  paging, and search orchestration remain duplicated for 4B. Implement the common browse core in
+  characterized vertical slices that explicitly exclude playback/download/active-encoding deltas.
+  For 4D, migrate metadata/watched/children, libraries/paging, search/system entry, native Plex Home,
+  and music as separate capabilities; finish with a static zero-direct-send gate. The current scoped
+  baseline is 35 direct sends across 15 files plus 26 `BrowseAPI` call-site references.
+- **Evidence readiness:** update the Plex live browse test to call the authoritative PMSKit builders;
+  add Jellyfin browse/timeline coverage; extend Emby browse/timeline coverage; require real PASS rather
+  than credential-missing SKIP before closing 3D/4A/4C.
+- **Fan-out boundaries:** isolated branches from `5043ede` own Phase 1 suspended-race tests, the first
+  3C neutral-resolver slice, and live-probe readiness. Simulator work remains serialized by the lead;
+  these initial slices are hermetic and must not boot a simulator.
+
+#### 2026-07-12 — first scoped resumption implementation wave
+
+- **Phase 1 tail evidence (`fa49de2`):** deterministic suspended A→replacement B tests now cross
+  the production side-asset promotion and attempt-conditional metadata boundaries for poster, text
+  subtitle, Plex BIF, Jellyfin trick-play, and chapter images. Separate cases cover delayed validated
+  finalization and exact PlaySession compare-clear. The focused registry suite passed 15 parameterized
+  runs and the full Mac app plan passed 165 runs. These tests do not replace physical background
+  redelivery, real encoder DELETE, hard-kill, or device delete/re-add evidence.
+- **Phase 1 explicit index committer (`6ed8b00`):** live index persistence now writes a unique
+  same-directory `0600` temp, applies background-safe protection and backup exclusion, performs
+  `F_FULLFSYNC`, atomically renames, and syncs the directory. Aged temp cleanup runs only before Store
+  load; live commits never sweep a sibling writer. Fault seams cover full-sync/directory-sync and
+  pre/post-replace ambiguity, and a Store integration case proves a post-replace failure stays dirty
+  and commits on bounded retry. Focused persistence/fault tests passed 41 cases; the full Mac plan
+  passed 159 tests, targeted iPad Simulator TSAN passed 8/8, PMSKit passed 1,450 tests, hygiene passed,
+  and a full-clean visionOS product installed with matching UUID and reached signed-in Home without
+  fatal/assertion/sanitizer/crash evidence. Physical protection readback remains part of the device
+  gate. Bounded lifecycle tickets, held-body deferred deletion, and cleanup/index ordering remain 1A.
+- **Phase 3 neutral resolver seam (`91f0642`):** neutral play method/source metadata are canonical
+  aliases and both backends now resolve directly to `MediaBrowserPlaybackOpenResult`; compatibility
+  wrappers retain every public signature and exact header/source/encoding-cleanup field. Full PMSKit
+  passed 1,453 tests after adversarial review. The app still has duplicate remote-playback state and
+  launch/reopen paths; those are the next 3C slice.
+- **Live evidence readiness (`0f5d0ae`, `20738e0`, `160e001`):** the Plex probe now calls all eight
+  authoritative moved builders. Jellyfin and Emby probes use real PlaybackInfo sessions and shared
+  browse/timeline builders; timeline acceptance requires explicit test-account mutation opt-in,
+  exact readback, verified restoration, and observable target-session stop cleanup. Assertions and
+  logs retain only privacy-safe booleans/counts/statuses. Full PMSKit passed 1,452 tests after the
+  review fixes. All three live lanes currently report credential-missing SKIP, so 3D/4A/4C live
+  acceptance remains open.
+- **Next fan-out:** cleanup/index deletion ordering, the remaining 3C app migration, and 4B's shared
+  browse execution core proceed in isolated worktrees from `160e001`. Phase 1's bounded lifecycle
+  tickets and held-body transaction remain subsequent correctness slices.
+
+#### 2026-07-12 — Phase 1 cleanup/index deletion ordering
+
+- **Boundary:** required Jellyfin/Emby cleanup is journaled before destructive row/file deletion.
+  If that queue cannot commit, the exact credential-free operations are persisted on attempt A's
+  index row with a deletion-pending reservation; live transfer/finalizer/side-cache work is cancelled,
+  but the row and files remain until retry or relaunch moves every operation into the journal.
+- **Crash/ownership invariant:** the reservation captures transient PlaySession authority as well as
+  row metadata, rejects attempt-B replacement and ordinary removal, and can be destructively completed
+  only through the dedicated post-journal Store API. A partially committed multi-operation journal is
+  idempotently completed without duplicate operations. If both journal and index writes fail, no local
+  destruction occurs and the previously durable row remains the retry authority.
+- **Schema and rollback:** schema v4 gains only optional row keys (`deletionPending` and
+  `deletionPendingCleanupIntents`); old rows decode unchanged and new readers default absent keys to
+  false/empty. Unknown-key tolerance keeps decoding backward compatible, but an operational rollback
+  must retain the deletion-pending replacement/removal guards, or first migrate every pending operation
+  to the cleanup journal. A blind older binary can otherwise ignore the reservation and is unsafe.
+- **Remaining Phase 1A boundary:** this closes cleanup/index ordering only. Held-body deferred deletion
+  and bounded lifecycle mutation tickets remain separate incomplete slices.
+
+#### 2026-07-12 — Phase 1 resume and held-body artifact lifecycle tickets
+
+- **Commits:** `3837be41`, `ae918098`, `0da4de1d`, `697f1876`, and `867242d3` add the
+  durable resume-artifact transaction and its deterministic lifecycle coordinator; `a4373941`,
+  `1ac9267a`, `2a18539c`, `1d90f1c7`, `14ae4d1f`, and `685509af` migrate held-manifest/body
+  cleanup and close its failure/restart races.
+- **Resume boundary:** schema-v4 rows carry optional ordered artifact intents and generations. Resume
+  blob replacement/clear is prepared durably, performed off the Store lock with full-file and
+  directory synchronization, and terminally retired only after the clearing index revision commits.
+  Relaunch recovers only the queue head; a failed retirement restores the exact intent before a
+  same-intent retry. Strict aged-temp cleanup ignores fresh, unrelated, and near-pattern files.
+- **Held boundary:** manifest replacement/removal and deferred body deletion are one queued lifecycle.
+  The prepared row revision owns every predecessor path before deletion; an in-memory reservation
+  prevents any manifest API from adopting a path until terminal retirement succeeds or failure
+  restoration completes. Filesystem deletion runs on the artifact worker through the injected seam,
+  never under the Store lock. Production session call sites return to their serialized queue before
+  waiting, then replan from the durable checkpoint on failure and re-enter held draining after
+  successful asynchronous removal. Ownerless legacy deletion authority is staged immediately after
+  durable attempt-ownership migration and before callback admission.
+- **Failure/liveness proof:** successor submission detects and restarts an inactive failed queue head
+  through an operation-aware dispatcher. Direct-ticket regressions cover a prepared resume failure
+  followed by a held successor and a held terminal-retirement failure followed by production-shaped
+  replan; neither test invokes the independent watermark recovery path. Adversarial review is clean.
+- **Evidence:** focused attempt-owned checkpoint tests passed 18/18, the full Mac plan passed 225/225,
+  and PMSKit passed 1,487 tests across 188 suites. The direct-ticket coverage amendment passed the
+  focused suite again.
+- **Remaining Phase 1A artifact boundary:** static checkpoint copy/stat/reset, validated promotion,
+  legacy-reset deletion, and whole-row/pending-deletion artifact removal are not migrated by this
+  slice. Physical background redelivery and device migration gates also remain open.
+
+#### 2026-07-12 — Phase 1 static checkpoint artifact lifecycle
+
+- **Commits:** `6c3b73f0` stages static checkpoint reset/copy/stat through the artifact lifecycle;
+  `cc093fd7` retains one typed outcome for every accepted live ticket until its required resolver
+  consumes it; `482675ba` adds a deterministic post-copy/pre-terminal hard-kill proof.
+- **Transaction:** an exact-attempt `.staticCheckpoint` intent durably records the private working
+  path, optional stable source and copy temp, expected bytes, and terminal-reconstruction flag. The
+  worker waits for prepared durability, performs the terminal stable-to-working durable copy and
+  file stat off the Store lock, then publishes the working path/bytes/progress and retires the intent
+  only behind the terminal index revision. Copy uses a same-directory temp, protection/backup
+  attributes, full file sync, atomic rename, and directory sync. Relaunch replays the queue head
+  idempotently whether the crash lands before copy, after rename, or before terminal publication.
+- **Production liveness:** all four MainActor Manager reset paths submit nonblocking work and receive
+  results through a per-attempt ordered async coordinator. Same-owner requests retain distinct
+  continuations; unrelated attempts proceed independently; exact ownership is rechecked before
+  manager trackers, diagnostics, or status are mutated. Static submissions reject legacy reset,
+  deletion-pending, and validated-promotion reservations.
+- **Failure/evidence:** tests block copy and stat while proving Store reads remain responsive; cover
+  prepared persistence failure, terminal failure with restored-head/same-process successor retry,
+  deletion/promotion fences, ordered overlapping continuations, and 140 delayed accepted outcomes
+  without eviction. The hard-kill test blocks the original worker immediately after the real durable
+  copy and before stat/terminal enqueue, launches an independent Store from only the prepared disk
+  snapshot, and proves replay plus idempotent convergence after the original worker is released.
+  Adversarial review is clean.
+- **Gates:** the focused attempt-owned suite passed 27/27 before the hard-kill amendment; PMSKit
+  passed 1,487/1,487 and the full Mac plan passed 234/234. The deterministic hard-kill amendment was
+  separately reviewed against its exact boundary. Two high-load full-plan attempts exposed the known
+  MediaBrowser browse-order timing flake; an immediate complete rerun passed, so this is recorded as
+  test-infrastructure evidence rather than hidden.
+- **Rollback:** `.staticCheckpoint` is a new exhaustive artifact-intent operation. Downgrade to a
+  reader that lacks that enum case requires draining every pending static lifecycle intent first (or
+  retaining the new decoder); a blind rollback while an intent is pending cannot decode the row.
+- **Remaining Phase 1A artifact boundary:** validated promotion, legacy-reset deletion, and whole-row/
+  pending-deletion artifact removal remain outside this slice.
+
+#### 2026-07-12 — Phase 1 validated-promotion artifact lifecycle
+
+- **Commits:** `a4788111` stages validated publication through the artifact queue; `e8a01ddd`
+  closes the post-rename/pre-directory-sync recovery window and makes the promotion/checkpoint
+  reservation test deterministic.
+- **Transaction:** `.validatedPromotion` durably records the exact attempt's working/stable paths and
+  terminal status, then captures and commits the validated source size before publication. The worker
+  full-syncs the source, atomically renames over the stable path, syncs the parent directory, verifies
+  the stable size against captured authority, publishes bytes/progress/status, and retires the intent
+  only behind terminal index durability. All filesystem work and persistence waits stay off the Store
+  lock. Background finalization now submits and asynchronously resolves the ticket rather than
+  synchronously blocking its caller.
+- **Crash/replay:** working-present replay repeats full-sync → rename → directory-sync. Working-absent
+  replay accepts stable bytes only from the durable exact-attempt recipe and captured size, and still
+  re-syncs the parent directory before terminal publication. The latter is required when a crash or
+  error lands after rename but before the original directory sync. Legacy schema-v4
+  `pendingValidatedPromotionStatus` rows remain readable/drainable and use the identical filesystem
+  ordering; the compatibility field is not removed by this migration.
+- **Evidence:** tests cover prepared failure with working/stable authority preserved, terminal failure
+  with restored-head same-process retry, source full-sync failure preventing rename, ordered
+  full-sync/rename/directory-sync seams, filesystem work off the Store lock, legacy recovery, and a
+  real rename-before-terminal hard-kill boundary. A sole-survivor replay test additionally fails the
+  first recovery directory sync, proves the raw on-disk intent remains queued, then launches an
+  independent Store that syncs and terminally converges. Static checkpoint submission is proven to
+  reject the promotion reservation using the nonblocking submit API, eliminating the prior loaded-
+  suite global-scheduling timeout. Adversarial review is clean.
+- **Gates:** focused promotion staging passed 17/17, focused promotion plus checkpoint suites passed
+  46/46 after the replay fix, the full Mac plan passed 242/242, and PMSKit passed 1,487/1,487.
+- **Rollback:** the new exhaustive intent operation must be drained before installing a reader that
+  lacks it. Legacy pending-promotion decoding remains supported specifically to preserve forward
+  migration and operational recovery.
+- **Remaining Phase 1A artifact boundary:** legacy-reset deletion and whole-row/pending-deletion
+  artifact removal remain incomplete.
+
+#### 2026-07-12 — Phase 1 foreground revalidation liveness correction
+
+- **Observed symptom:** a download completed while the headset is off can remain
+  `.unverified`/“Playback not verified” after wear/foreground and become `.complete` only after the
+  user presses Play. Playback-position advancement explicitly promotes the row, so that UI symptom
+  is consistent with the state machine rather than evidence that server verification completed.
+- **Current-head finding:** revalidation is local and server-independent, but it enters the same
+  finalizer pipeline as initial validation. Any globally pending background URLSession completion
+  handler makes that pipeline defer the AVFoundation probe and preserve `.unverified`. The Manager
+  nevertheless treats every admitted request as a real in-flight probe for 90 seconds. During that
+  interval both `session_change` and `scene_active` triggers are suppressed; expiry merely removes
+  the key and schedules no retry. A single finalizer often releases its own hold before the queued
+  Manager callback runs, so the race is timing-dependent, but another held/stored global handler or
+  a scene-active event during the suppression window reproduces the indefinite state.
+- **Expected local timing:** one item uses an 8-second local probe, a 2-second delay and 15-second
+  retry, plus an optional 4-second local asset/frame fallback. Probes are serialized, so several
+  items may queue, but no media-server round trip is required.
+- **Commits:** `8838e2a6` distinguishes gate deferral from real admission and delivers exact drain/
+  finish callbacks; `99a9b8c5` adds the deterministic retry/dedupe coordinator; `3b9e18cd` gates every
+  new retry on a known-active scene and carries request generations; `60a0b90d` cancels an already-
+  running revalidation probe when the scene becomes inactive without touching publishing finalizers.
+- **Corrected behavior:** background gate deferral never enters the true in-flight suppression state.
+  Deferred exact attempts are delivered once when the global gate drains, but remain parked while the
+  scene is inactive. `scene_active` consumes the desired edge and starts the local probe. Gate-drain,
+  broker rejection, cancellation, finalizer completion, and watchdog callbacks carry exact attempt,
+  request ID, and opaque timer tokens, so an old completion cannot clear a newer request. A completed
+  inconclusive probe receives one delayed automatic retry per foreground activation; cancellation and
+  overtaken lifecycle edges retry promptly; the watchdog requeues instead of merely erasing state.
+- **Background budget:** revalidation and publishing now have distinct work-registry kinds. On
+  active→inactive, only `.revalidationFinalizer` tasks are parked/cancelled; publishing finalizers
+  continue to reach durable `.unverified` and release the OS wake. A queued broker hop rechecks scene
+  state, closing admission→inactive overtaking. AVFoundation polling and fallback paths observe task
+  cancellation before any terminal verdict/status mutation.
+- **Evidence:** 15 coordinator/session/Manager tests first proved inactive drain/session-change,
+  active-before/after-drain, broker rejection, multi-download global gating, exact dedupe, stale
+  generations/timers, bounded inconclusive retry, cancellation, and Play promotion. Final tests add
+  held-probe active→inactive cancellation, inactive-before-broker registration, publishing-finalizer
+  preservation, and active exactly-once retry. Full Mac passed 262 tests before the final cancellation
+  amendment; the final serial full app gate and focused suites passed. PMSKit passed 1,487 tests across
+  188 suites. Parallel runs exposed only the separately tracked MediaBrowser reverse-completion
+  timing flake, which passed focused and in the serial full run. Final adversarial review is clean.
+
+#### 2026-07-12 — Phase 1 legacy-reset deletion lifecycle
+
+- **Commits:** `92a290df` stages legacy-reset deletion behind the artifact lifecycle; `563ffb08`
+  closes recovered-head admission and cross-row path-reservation races.
+- **Ordering:** startup first enumerates and cancels every pre-v4 task. Only the post-cancellation
+  submission can durably write `.legacyResetDeletion`, reset the row to the approved failed/zero-byte
+  policy, and record the complete deletion recipe. The worker waits for prepared durability, deletes
+  off the Store lock, then clears the legacy barrier and retires the intent only behind terminal
+  persistence. Startup callback admission remains closed until the exact lifecycle ticket completes.
+- **Relaunch:** Store startup may begin recovery before URLSession task cancellation finishes. The
+  post-cancellation submission now joins an already-active recovered head and awaits its actual
+  result rather than treating it as `.notPending`; success and failure races therefore cannot open
+  admission early. Prepared, partial-cleanup, and terminal failures keep exact durable retry
+  authority, and deletion-before-terminal crashes replay idempotently.
+- **Path safety:** candidate paths are filtered against every other row's published and pending-
+  intent authority, then reserved atomically under the Store lock across filesystem deletion and
+  terminal persistence. Record creation/replacement, metadata and side-asset publication, held
+  manifest adoption, checkpoint, and promotion APIs reject reserved paths. Shared/corrupt legacy
+  references are preserved for the surviving row.
+- **Evidence:** deterministic tests cover prepared failure with zero deletion, partial failure and
+  exact retry, blocked deletion with responsive Store reads and relaunch, terminal failure/relaunch,
+  active recovered-head joining while startup remains barred, concurrent held-path adoption
+  rejection, shared-path preservation, and the completed/current-partial migration policy.
+  Adversarial review is clean.
+- **Gates:** focused persistence passed 33/33 before reservation amendments; combined startup and
+  persistence passed 41/41; PMSKit passed 1,487/1,487; focused reservation/join tests and Mac build
+  passed after review fixes. Whole-plan runs reached all slice suites clean but encountered the
+  separately tracked MediaBrowser reverse-completion timing flake.
+- **Remaining Phase 1A artifact boundary:** whole-row and post-journal pending-deletion artifact
+  removal remain incomplete.
+
+#### 2026-07-12 — Phase 1 whole-row and pending-deletion artifact lifecycle
+
+- **Commits:** `7f998d38` stages whole-row removal; `074af07a` hardens legacy recovery tests;
+  `17098b9a` and `c0ed635a` broadcast joined outcomes per exact retry epoch; `bede7832` makes row
+  deletion a terminal artifact barrier; `d36dad49` closes remaining working/held authority;
+  `6266994c` queues the terminal operation behind predecessor work and adds destructive directory
+  durability. Intermediate review fixes are intentionally retained as separate audit boundaries.
+- **Cleanup ordering:** ordinary exact deletion and the post-journal `deletionPending` destructive
+  half both prepare a durable `.rowDeletion` recipe before local destruction. Required Jellyfin/Emby
+  cleanup still enters the independent journal first; only then may pending deletion submit the row
+  lifecycle. Manager launch, user-delete, retry, and Plex-Optimize paths submit nonblocking work,
+  cancel exact cancellable tails once the durable terminal barrier is accepted, and await exact
+  `.removed` before executing journal cleanup or releasing final in-flight bookkeeping.
+- **Terminal queue semantics:** deletion may append behind existing resume, held, static-checkpoint,
+  or promotion work, and repeated Delete joins the exact terminal ticket. No artifact/path successor
+  can append after it. Predecessor success advances normally; predecessor artifact/persistence failure
+  is durably superseded because the terminal recipe already captures all predecessor paths. If that
+  head transition itself cannot commit, the deletion ticket fails observably and a later exact retry
+  re-registers/restarts the same queue without duplicate intents or an unbounded waiter.
+- **Authority and concurrency:** pending row deletion immediately revokes `ownsAttempt` and persisted
+  working-layout/URL authority. Resume replace/clear, all held APIs (including compatibility takes),
+  static checkpoints, validated promotion, generic metadata/side assets, direct staging promotion,
+  legacy resume publication, and startup held-job staging reject the terminal barrier. Candidate
+  paths are filtered against every other row's published and pending-intent authority, reserved under
+  the Store lock across off-lock deletion and terminal persistence, and released on every exit.
+- **Durability:** row, held-body, legacy-reset, resume-clear, and resume-predecessor deletion now fsync
+  the parent directory before retiring index authority. Sync failure is a lifecycle failure: the
+  durable intent remains retryable even when the unlink already occurred. A hard kill before terminal
+  persistence reloads the prepared row/recipe; a hard kill after terminal commit finds the row absent.
+  Ownerless completed legacy rows receive a private exact owner only inside the prepared delete recipe,
+  with same-process failure/retry and relaunch recovery preserved.
+- **Outcome liveness:** live results and waiter counts are scoped by `(intentID, preparedRevision)`.
+  Same-ticket double taps and startup joins receive the identical broadcast result, while an unresolved
+  failed epoch cannot be overwritten by a later successful retry. Typed failures remain bounded and
+  privacy-safe.
+- **Evidence:** tests cover prepared/delete/directory-sync/terminal failures, hard-kill relaunch,
+  ownerless and deletion-pending migration, cross-row shared paths, blocked Store responsiveness,
+  same-ticket multiwaiters, reverse-order retry epochs, terminal successor/adoption rejection,
+  immediate authority revocation, resume/static/held predecessor success and failure, failed-head
+  transition persistence and exact retry, and held/row directory-sync replay. Focused Store passed
+  49 tests; full Mac passed 285 tests (297 parameterized executions) with parallel testing disabled;
+  PMSKit passed 1,487 tests. Default parallel execution continues to expose the separately tracked
+  timing-sensitive browse/retry tests, both green focused and in the serialized full run. Final
+  adversarial closeout review is clean.
+- **Rollback:** `.rowDeletion` is a new exhaustive schema-v4 artifact operation. Downgrade requires
+  draining every pending terminal intent or retaining its decoder and terminal guards. A blind older
+  binary can otherwise fail row decode or ignore deletion/path reservations and is unsafe.
+- **Phase 1A implementation status:** the planned resume, held, checkpoint, promotion, legacy-reset,
+  and whole-row destructive artifact lifecycles are implementation-complete. Combined concurrency,
+  simulator/device, background-redelivery, and migration acceptance gates remain below.
+
+#### 2026-07-12 — Phase 1/3/4 combined closeout evidence
+
+- **Scope and status:** implementation for Phases 1, 3, and 4 is complete on the remediation
+  branch through `fd1abcb5`; Phase 2 remains unchanged. This is not acceptance completion: the
+  credentialed Jellyfin/Emby live lanes and the required physical Phase 1 matrix remain open and
+  cannot be replaced by hermetic or simulator evidence.
+- **Phase 4 terminal escape (`d19f6222`):** the last acceptance-scoped direct Plex execution,
+  recently-added rail paging, now runs through the immutable-session `PlexBrowseService`. Its focused
+  test preserves path, ordered start/size/type query items, decoding, and reported total. A scoped
+  scan of `Labstream/UI`, `Labstream/Backend/Paging`, `Labstream/SystemIntegration`, and
+  `Labstream/Music` finds zero `appModel.client.send`/equivalent direct executions and no executable
+  `BrowseAPI` call (one documentation comment remains). Playback, authentication, downloads, and
+  intentional Debug/live probes remain outside the browse-service acceptance scope.
+- **Combined tests:** the current iPad Simulator app plan passed 287/287 with Thread Sanitizer
+  enabled. The serialized full Mac plan passed 287 tests and 299 parameterized executions. PMSKit
+  passed 1,487 tests across 188 suites. `43753710` removes the artifact-lifecycle Swift concurrency
+  warnings exposed by the combined build; the subsequent affected builds and test lanes were green.
+- **Compile evidence:** the three-run arm64 audit at
+  `build/compile-audit/remediation-final/summary.md` records medians of 16.01 s Mac clean, 12.86 s
+  mobile clean, 13.43 s visionOS clean, and 5.09 s PMSKit cold. Against the retained Phase 2 medians
+  (14.85/12.29/12.21/5.16 s), these are approximately +7.8%, +4.6%, +10.0%, and -1.4%; no clean lane
+  exceeds the Phase 0 10% review threshold. Representative incremental medians are 4.02/1.77/4.00 s
+  on Mac, 4.26/1.77/4.25 s on mobile, and 4.03/1.74/4.00 s on visionOS. The audit still reports
+  type-check review triggers in pre-existing large playback/UI expressions; it does not disguise
+  those triggers as warning-free type checking.
+- **Build and smoke matrix:** `scripts/validate-macos-228.sh` passed its PMSKit diagnostic, Mac,
+  visionOS Simulator, iOS Simulator, and bounded Mac-host lanes. Separate current-head iPhone and
+  iPad Simulator builds installed and launched with retained screenshots/logs, and the clean
+  visionOS Simulator product installed and launched to the signed-in app. All simulator use was
+  serialized and the worktree simulators were shut down after capture.
+- **Live evidence:** the signed-in visionOS privacy-safe `PlexBrowseService` probe reports PASS for
+  libraries/paging, ordering/identity, alphabet counts, hubs, search, On Deck, metadata/children,
+  and applicable music capabilities without logging server identity or credentials. The ignored
+  Jellyfin and Emby credential files are absent, so their browse and playback/timeline probes remain
+  **SKIP, not proof**. Phase 3's Jellyfin/Emby timeline acceptance and Phase 4's corresponding live
+  browse acceptance therefore remain open.
+- **Physical acceptance still open:** `devicectl` sees the paired iPad and Vision Pro but both are
+  unavailable. Before enabling/merging the unguarded lifecycle train, physical iPad and Vision Pro
+  must pass schema/marker migration, exact-task reattach, force-quit/background completion
+  redelivery, cancel/delete/re-add, and lock/off-head transfer. Physical iPad and Mac must also pass
+  the media-owner matrix: Control Center/lock screen, headphones/media keys, route/interruption, and
+  background/foreground transitions; affected hardware must cover stale player/audio callbacks.
+  Protection-class readback and existing-completed/current-partial migration survival remain part of
+  that device exercise.
+- **Rollback boundary:** schema-v4 `deletionPending` and artifact intents, including
+  `.staticCheckpoint`, `.validatedPromotion`, `.legacyResetDeletion`, and `.rowDeletion`, make a
+  blind downgrade unsafe. A rollback build must retain the v4 decoder, attempt-marker dual readers,
+  deletion/path guards, and cleanup journal semantics, or first quiesce and reconcile new-format
+  background tasks, drain every pending artifact intent, and migrate every pending cleanup operation.
+  Reverting Phase 3/4 service/value slices remains independently possible only while retaining the
+  compatibility wrappers and regression fixtures.
+
+#### 2026-07-11 — Phase 2D compiler-cliff removal
+
+- **Status:** complete.
+- **Commits (current rebased IDs):** `b33ccea` (`Simplify optimizer item ID decoding`) and `f1bdec1`
+  (`Split Offline library view type-check boundaries`).
+- **Optimizer boundary:** replaced the nested throwing optional/coalescing expression with explicit
+  String-then-Int decoding while preserving nil for null, malformed, and missing IDs. The flexible
+  ID fixture covers every accepted/rejected shape. A clean PMSKit build with 50 ms thresholds emits
+  no `OptimizeRequest.Item` expression or initializer warning, down from about 2,084/2,090 ms.
+  The retained summary records zero PMSKit cold-build warnings, but the ignored raw log that would
+  identify the exact post-fix expression time was not retained; do not cite a precise sub-50 ms
+  number from this artifact alone.
+- **Offline boundary:** split rows/empty state, scroll/navigation behavior, platform presentation,
+  row actions, and deletion confirmation into opaque helper boundaries without moving state or
+  changing modifier order. Independent review found navigation, toolbar, focus, row identity,
+  swipe/delete, Mac presentation, full-screen cover, and dialog behavior unchanged. Clean Mac,
+  iOS, and visionOS builds removed the old root-body cliff, which measured about 2,073 ms. The
+  contemporaneous review observed the extracted boundaries below the 300 ms acceptance target,
+  but the retained summary does not preserve per-boundary warning rows; the earlier stronger claim
+  that every extracted boundary was durably evidenced below 50 ms is therefore intentionally not
+  repeated.
+- **Build evidence:** the three-run arm64 audit at
+  `build/compile-audit/phase2d-43ba92b/summary.md` records clean medians of 14.85 s Mac, 12.29 s
+  mobile, 12.21 s visionOS, and 5.16 s PMSKit. Against the same-machine pre-fix checkpoint these are
+  improvements of roughly 11%, 13%, 21%, and 26%, so no clean-build regression was introduced.
+- **Current-head recheck (`86000d6`):** all 18 scenarios in the single-run audit at
+  `build/compile-audit/phase2-current-20260711T234818Z/summary.md` passed. This is a smoke recheck,
+  not a replacement for the retained three-run medians. Standard 300 ms probes emitted no
+  `OfflineLibraryView` warning on Mac, mobile, or visionOS. Supplemental 50 ms probes measured only
+  `row(for:)` at 81/90/81 ms, confirming the required threshold while disproving any blanket
+  sub-50 ms claim. `OptimizeRequest` emitted no warning even at 50 ms, freshly supporting its
+  preferred target. Single clean observations were 15.12 s Mac, 12.59 s mobile, 14.00 s visionOS,
+  and 6.69 s PMSKit cold; they are not comparable medians. A separate full-clean visionOS build at
+  `637db75` installed with a matching UUID, launched through the signed-in connection screen to a
+  populated Home surface, and produced no fatal/assertion/sanitizer/crash match. The simulator was
+  shut down immediately afterward.
+- **Validation:** PMSKit passed 1,404 tests across 170 suites. Complete macOS and iPadOS app plans
+  passed 62/62, with Thread Sanitizer enabled on iPadOS. A clean visionOS build matched the installed
+  UUID, launched to the signed-in populated Home surface, and produced no crash/assertion/sanitizer
+  signature in its smoke log.
+
+#### 2026-07-11 — Phase 2A warning and dead-helper closeout
+
+- **Status:** complete.
+- **Commits (current rebased IDs):** `ab2b049`, `7b429ea`, `b14f3a0`, and `bef60e9` remove the four
+  original private definition-only helpers one at a time. The other 2A changes are `d2566b3`
+  (Plex photo coverage), `2dfb88c` (filesystem error-body size), `5eefc87` (modern decoding), and
+  `5fe0978` (injected restart clock). Static reference checks prove each removed
+  symbol now has zero production occurrences; their active snapshot, retry-attempt, and polling
+  primitives remain in use.
+- **Warning inventory:** the current production corpus has no `String(cString:)`, deprecated
+  declaration, or deprecated-call occurrence. Parsing every raw Phase 2D compile-audit warning
+  found no ordinary source compiler/deprecation warning; the remaining messages are exclusively
+  custom type-check review triggers. The `DetailView` trigger overlaps Phase 2B's narrow lookup
+  rather than representing unfinished 2A cleanup.
+- **Validation:** the complete macOS plan passed 62/62. The complete iPadOS plan passed 62/62
+  with Thread Sanitizer enabled. A clean visionOS build matched the installed UUID, stayed alive,
+  reached the signed-in populated Home surface, and emitted no crash, assertion, or sanitizer
+  signature. The deletions change no reachable behavior, schema, persistence, or download state
+  transition.
+
+#### 2026-07-11 — Phase 2B narrow Offline lookups
+
+- **Status:** complete.
+- **Commits (current rebased IDs):** `3a86b15` adds the narrow accessors and regression/benchmark
+  fixture; `22fcf81`, `ff046e9`, and `be507d6` mechanically migrate scalar, manager, and
+  background-session reads in separate review boundaries.
+- **Behavior boundary:** `record(for:)` copies one value under the existing store lock and hydrates
+  it only after unlocking through the same helper as `records`. Metadata, duration, presence,
+  status, keys, and the existing attempt-ownership read remain direct locked value lookups. There
+  is no schema, persistence, mutation, state-machine, task-ownership, or cache-invalidation change.
+- **Static evidence:** the current app corpus has zero `store.records.first`/`contains` single-key
+  scans. The 12 remaining `store.records` reads are intentional full-library restore, recovery,
+  refresh, ownership, or UI publication snapshots; the twelfth is the Phase 1 Emby batch
+  ownership lookup, not a scalar callback regression. Independent review found the keyed substitutions
+  semantically equivalent and found no new lock inversion, deadlock, or cache race.
+- **Operation evidence:** a cold keyed lookup in a 1,000-row fixture stats only its one target
+  poster; metadata/duration/presence/attempt reads stat no file. Rich, legacy, and missing rows are
+  equal to the former full-snapshot lookup behavior.
+- **Benchmark:** 31-iteration debug medians on the arm64 Mac were 6.7 µs versus 136.8 µs at 10
+  rows, 7.2 µs versus 2.45 ms at 100 rows, and 6.5 µs versus 22.78 ms at 1,000 rows. The narrow
+  path remains approximately constant while the former hydrate/sort/filter path grows with the
+  library (roughly 20×, 341×, and 3,504× slower respectively in this fixture).
+- **Validation:** the complete clean macOS and iPadOS plans passed 65/65, with Thread Sanitizer
+  enabled on iPadOS. PMSKit passed 1,404 tests across 170 suites. Clean macOS, iOS Simulator, and
+  visionOS builds passed; the visionOS product matched the installed UUID, stayed alive, reached
+  the signed-in populated Home surface, and emitted no crash, assertion, or sanitizer signature.
+
+The three-run arm64 checkpoint at rebased commit `cf21073` is recorded locally under
+`build/compile-audit/post-main-e757bb1/` (raw logs remain ignored because they contain local
+paths). Median clean builds were 15.37 s visionOS, 14.10 s mobile, 16.73 s Mac, and 7.02 s
+PMSKit; no-op medians were 1.51 s, 1.19 s, 1.26 s, and 0.57 s respectively. The measurement
+confirms both 2D cliffs rather than merely carrying forward the old estimate:
+
+- `OfflineLibraryView.body` took about 2,073 ms to type-check;
+- `OptimizeRequest.Item.init(from:)` took about 2,090 ms, with its ID expression about 2,084 ms.
+
+The app clean lanes also reported smaller review-trigger warnings in `AppServices`,
+`ContentView`, `DebugPlexDownloadProbe`, `DetailView`, and `SettingsView`. Treat these as the
+new warning inventory; do not conflate them with the original four dead private helpers.
+
+Two pending feature branches need explicit integration review rather than blind conflict
+resolution. Saved sessions must preserve 1D's fail-closed client identity, transactional secret
+semantics, and post-await auth-attempt checks; same-server/different-profile changes must also
+invalidate the new download pollers/keepalives by profile identity. Music-experience changes are
+mostly additive, but must retain the 1E lease and 1F lifecycle guards and rerun their ownership,
+repeat/shuffle, and Up Next tests.
 
 This plan turns the July 2026 whole-repository audit into independently reviewable work.
 It is intentionally staged: correctness and test seams come before broad deduplication,
@@ -304,7 +1496,10 @@ mutate markers, report after final stopped, resume audio, or touch Now Playing.
 - Thread Sanitizer passes targeted download/auth/ownership stress suites.
 - No old attempt/generation can mutate a newer one.
 - Relaunch restores the newest durable download state.
-- Existing partial/completed downloads survive migration and background tasks reattach.
+- Existing completed downloads survive migration. Under the approved schema-v4 reset policy,
+  pre-v4 nonterminal partials are intentionally discarded only after their legacy tasks are
+  cancelled; current exact-attempt partials and healthy background tasks survive relaunch and
+  reattach.
 - Exactly one media owner controls Now Playing/remote commands.
 - A cancelled auth attempt can never later authenticate or persist credentials.
 
@@ -482,12 +1677,81 @@ Incrementally extract along existing seams, not as rewrites:
 
 Every extraction is a mechanical move followed by separately reviewed behavior changes.
 
+### 5F. Audit diagnostics comprehensiveness after decomposition
+
+Run the full diagnostics audit only after 5A–5E stabilize presentation and coordinator ownership;
+an exhaustive call-site inventory before those moves would immediately become stale. Before and
+during the mechanical extractions, preserve existing event names, categories, fields, severity,
+privacy behavior, and critical failure/recovery coverage. Treat diagnostic removal, renaming, or
+semantic changes as separately reviewed behavior changes rather than hiding them inside file moves.
+
+**Before 5A–5E begin** (this is the one 5F piece that must not wait): land a mechanical
+rename/removal guard in `scripts/ci-hygiene.sh` that inventories production diagnostic event
+names against a checked-in allowlist. The preservation rule above otherwise relies on reviewer
+discipline across hundreds of moved call sites; the gate is small, needs no stabilized ownership,
+and makes an accidentally dropped or renamed event a hygiene failure instead of a review escape.
+Intentional changes update the allowlist in the same reviewed commit.
+
+At the stabilized Phase 5 boundary:
+
+- inventory production diagnostic events and their owning call sites;
+- map critical auth, download, playback, browse, and media-ownership state machines across success,
+  failure, parked/deferred, cancellation, retry, recovery, and terminal transitions;
+- identify silent or overwritten failures, missing recovery evidence, duplicate/noisy events, and
+  inconsistencies between user-visible errors and internal diagnostics;
+- audit the user-visible error channel itself for clobber races, not just internal events:
+  enumerate every write and every clear of shared error state (`lastError`-style slots), define
+  precedence so disclosure-class messages survive unrelated success-path clears, and test the
+  set-then-cleared race directly (the D8 encoder-leak disclosure was set correctly and then wiped
+  moments later by the deletion success path — a missing-event inventory would never catch it);
+- require a correlation-key contract on downloads events: every event carries the hashed
+  ratingKey plus attemptID, artifact intentID, and retry/deletion epoch where applicable, so one
+  row's lifecycle across DownloadStore, BackgroundDownloadSession, and DownloadManager is
+  reconstructable from `app-diagnostics.jsonl` alone (both remediation reviews had to hand-trace
+  which epoch/attempt an outcome belonged to). Name the FNV-1a hashed `download_id` scheme and
+  its `scripts/` lookup tooling as a compatibility surface the audit must keep in sync;
+- verify Plex, Jellyfin, and Emby use coherent categories, severities, and privacy-safe fields while
+  retaining backend-specific failure meaning;
+- enforce bounded-cardinality fields and the existing prohibition on hosts, tokens, titles,
+  filenames, paths, and raw device IDs;
+- bound event *rate*, not just field cardinality: retry loops and per-epoch outcomes can storm
+  the log during exactly the incident being debugged, so per-retry/per-epoch event classes need a
+  coalescing or sampling policy with the drop count recorded;
+- record monotonic time alongside wall-clock on background-wake events — suspension makes
+  wall-clock deltas lie about stall durations;
+- treat diagnostics durability as its own hard-kill problem: the failures most worth diagnosing
+  (suspension or hard kill inside a commit window) are the ones where memory-buffered events are
+  lost, so critical terminal/lifecycle events need an append-durable sink whose flush participates
+  in (or precedes) the background-completion barrier, plus a hard-kill replay test proving the
+  *evidence* survives, not just the state — and, the flip side, diagnostics flushes must never run
+  on the URLSession delegate queue;
+- add deterministic sink/report tests proving that background/off-head failures survive long enough
+  to diagnose artifact replay, stalled transfers, playback revalidation, auth races, and media-owner
+  conflicts; and
+- record intentional non-events so later work does not turn expected cancellation or degradation
+  into support-log noise. Seed the list with the intentionally quiet states this branch already
+  created: reconcile skipping rows with pending artifact intents, retired-failure FIFO eviction in
+  the lifecycle coordinator (cap 512; an evicted ticket later reads completed), abandoned-intent
+  retirement, and startup intent-replay outcomes. A once-per-launch summary event with counts
+  (replayed/abandoned/skipped/evicted) is bounded-cardinality and covers these without per-item
+  noise.
+
+Keep diagnostic implementation with the coordinator or platform responsibility that owns the
+event. The audit may improve diagnostics after the mechanical moves, but those behavior changes
+must remain independently reviewable and preserve report/redaction compatibility.
+
 ### Phase 5 acceptance
 
 - visionOS, iPhone, iPad, and Mac builds/smokes pass.
 - Player layout, menus, scrub, Cinema, PiP/AirPlay, keyboard/fullscreen, and media ownership
   keep explicit platform validation.
 - Conditional density and representative incremental-build fanout improve measurably.
+- The diagnostic event-name allowlist gate is in `scripts/ci-hygiene.sh` before the first 5A–5E
+  extraction lands, and stays green through the moves.
+- The post-decomposition diagnostics inventory and state-machine coverage matrix are complete;
+  critical silent/parked/retry/recovery gaps have deterministic report-level coverage, and privacy,
+  cardinality, naming, severity, user-error clobber, correlation-key, and rate-bound consistency
+  checks pass, and diagnostics-durability hard-kill evidence tests pass.
 
 ## Phase 6 — optional PMSKit/module decomposition
 

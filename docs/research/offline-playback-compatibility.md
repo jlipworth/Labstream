@@ -1,7 +1,11 @@
 # Offline playback compatibility on Apple Vision Pro
 
-Status: active research for [#167](https://github.com/jlipworth/Labstream/issues/167).
-Last reviewed: 2026-06-27.
+Status: **closed implementation-research snapshot** for
+[#167](https://github.com/jlipworth/Labstream/issues/167), which closed on 2026-06-30.
+Last source review: 2026-06-27. The routing summary below explains the original policy
+decision but is not an exhaustive description of the subsequently expanded finalization,
+attempt-ownership, or revalidation machinery. Current behavior and invariants live in
+[`docs/DOWNLOADS-OFFLINE.md`](../DOWNLOADS-OFFLINE.md) and the current source.
 
 This note documents the compatibility checks Labstream applies before, during, and after an offline download. The important distinction is:
 

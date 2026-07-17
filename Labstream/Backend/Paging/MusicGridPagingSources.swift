@@ -150,13 +150,7 @@ private func embyMusicAlphabetCounts(kind: MusicGridKind,
 private func plexMusicAlphabetCounts(kind: MusicGridKind,
                                      sectionKey: String,
                                      appModel: AppModel) async -> [(display: String, count: Int)] {
-    guard let server = appModel.serverBaseURL, let token = appModel.serverToken else { return [] }
+    guard let service = try? PlexBrowseService(appModel: appModel) else { return [] }
     let type = kind == .artists ? 8 : 9
-    let req = BrowseAPI.firstCharacters(server: server,
-                                        token: token,
-                                        identity: appModel.identity,
-                                        sectionKey: sectionKey,
-                                        type: type)
-    let response = try? await appModel.client.send(req, as: FirstCharacterResponse.self)
-    return response?.libraryCounts() ?? []
+    return (try? await service.alphabetCounts(sectionKey: sectionKey, type: type)) ?? []
 }

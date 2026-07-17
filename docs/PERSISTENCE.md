@@ -29,7 +29,9 @@ token removes both sync domains so a stale local token cannot be promoted after 
 
 Do not write tokens to logs, diagnostics, issue templates, UserDefaults, or JSON profile indexes.
 
-Shipping device builds fail closed if Keychain persistence fails. A protected,
+Credential and selected-backend/session writes fail closed if Keychain persistence fails.
+The non-secret Plex client identifier may fall back to a process-local value for one launch
+so background events can still drain; a later launch retries durable storage. A protected,
 backup-excluded secret-file fallback is allowed only for DEBUG simulator workflows. Native
 macOS development apps with non-canonical, per-worktree keychain service identities may opt
 into the same development file storage to avoid repeated prompts; the canonical shipping
@@ -64,8 +66,11 @@ The app container's temporary directory also holds short-lived range-response an
 out-of-order segment stashes. They are transfer intermediates, not durable index state, and
 are consumed or swept rather than relied on across relaunch.
 
-The download index is a versioned envelope and retains backward-compatible decoding for
-older row shapes. Media and side-asset paths are persisted as validated one-level paths
+The download index is currently a schema-v4 versioned envelope and retains
+backward-compatible decoding/migration for older row shapes. Active rows carry a typed
+`DownloadAttemptID`; asynchronous tasks, artifact reservations, and cleanup compare the
+full rating-key/attempt key so stale work cannot mutate a retry or re-download of the same
+item. Media and side-asset paths are persisted as validated one-level paths
 relative to the Downloads directory, then re-hydrated against the live container. Never
 persist an absolute sandbox path; the container location can change across installs.
 
@@ -74,6 +79,13 @@ backend/server identity, a server base URL, MediaBrowser user ID where applicabl
 media/play-session IDs, source selection, route, validators, and server-prep job metadata.
 Treat it as private app data. Cached Jellyfin trick-play playlists are rewritten to local
 filenames so token-bearing server URLs are not retained.
+
+Index writes are revisioned and serialized; filesystem publication/checkpoint/resume/delete
+work is registered before it starts and reaches a terminal index outcome before its
+lifecycle ticket is released. Required Jellyfin/Emby active-encoding or Emby Convert cleanup
+also has an independent `download-cleanup-intents.json` journal containing an exact attempt,
+credential-free server identity, and cleanup operation. The journal deliberately does not
+share the index transaction domain, so row deletion cannot erase the only cleanup authority.
 
 The Downloads directory, resume blobs, and development credential artifacts are excluded
 from backup. PMSKit's `CredentialArtifactStorage` applies appropriate file protection on

@@ -20,10 +20,11 @@ The script is read-only. It does not install, launch, delete, or mutate the head
 ## Evidence priority
 
 1. Run `scripts/headset-evidence.sh` first.
-2. Inspect `summary.json` for command failures, `classified_failures`, copied-file paths, and misses.
-3. Inspect copied app-owned diagnostics and `app-container-files/Library/Application Support/Labstream/Downloads/index.json` before guessing from UI symptoms.
-4. Use the app-container JSON listings to decide whether another bounded file should be copied manually.
-5. Try host unified-log/sysdiagnose paths only opportunistically; prior headset runs found them less reliable than devicectl process/container evidence plus app-owned diagnostics.
+2. Read `analysis/triage.md`, then `analysis/summary.json`; the collector generates both automatically.
+3. For a repeated pull, read the bounded `analysis/novel-events.jsonl`. If the brief reports no new events, do not re-ingest the raw files.
+4. Follow the `diagnostic-triage` skill to select a bounded source window. Never broadly read copied diagnostics or `logs/devicectl/` first.
+5. Inspect the download index or another raw artifact only for a specific unresolved question.
+6. Try host unified-log/sysdiagnose paths only opportunistically; prior headset runs found them less reliable than devicectl process/container evidence plus app-owned diagnostics.
 
 ## Privacy rules
 
