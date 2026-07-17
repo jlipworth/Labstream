@@ -1572,6 +1572,33 @@ public final class DownloadManager {
         refreshRecords()
     }
 
+    /// Stop only the incomplete rows that belong to a backend which is being signed out.
+    ///
+    /// An open URLSession download has already copied its Authorization header into the request,
+    /// so remote logout alone cannot be relied on to stop the currently streaming response. This
+    /// is deliberately a normal resumable pause rather than a destructive cancel: static Range
+    /// downloads ask URLSession for resume data, and forward-only/server-prep lanes are parked
+    /// without allowing more bytes to flow under the retired session. AuthManager invokes this
+    /// while the backend credentials still exist, immediately before it clears them, which also
+    /// lets `releaseInFlight` perform any best-effort encoder teardown against the right server.
+    func pauseDownloadsForBackendSignOut(_ backend: MediaBackendKind) {
+        let candidates = records.filter { record in
+            guard record.status.isActiveWork else { return false }
+            let rowBackend = record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
+                ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
+            return rowBackend == backend.downloadBackendKind
+        }
+        guard !candidates.isEmpty else { return }
+
+        for record in candidates {
+            recordDownloadDiagnostic("downloads.pause_for_sign_out", fields: [
+                "download_id": .identifier(record.ratingKey),
+                "backend": .label(backend.rawValue),
+            ])
+            pause(ratingKey: record.ratingKey)
+        }
+    }
+
     /// Pause all non-terminal work and persist the queue gate across relaunch.
     public func pauseQueue() {
         isQueuePaused = true

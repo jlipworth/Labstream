@@ -5,6 +5,30 @@ import Testing
 
 @MainActor
 struct AuthSecureStorageTests {
+    @Test func signOutNotifiesDownloadHandoffBeforeClearingRuntimeSession() throws {
+        let store = KeychainStore(
+            service: "com.visionplay.tests.signout-handoff.\(UUID().uuidString)",
+            synchronizesPlexToken: false)
+        let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "signout-handoff"),
+                             activeBackend: .plex,
+                             token: "account-token")
+        model.serverBaseURL = URL(string: "https://plex.example.invalid")!
+        model.serverToken = "server-token"
+        let manager = AuthManager(appModel: model, keychain: store)
+        var callbackBackend: MediaBackendKind?
+        var hadLiveSessionDuringCallback = false
+        manager.onBackendWillSignOut = { backend in
+            callbackBackend = backend
+            hadLiveSessionDuringCallback = model.backendSession(for: .plex) != nil
+        }
+
+        manager.signOut()
+
+        #expect(callbackBackend == .plex)
+        #expect(hadLiveSessionDuringCallback)
+        #expect(model.backendSession(for: .plex) == nil)
+    }
+
     @Test func clientIdentityWriteFailureStillBuildsServicesForBackgroundDrain() throws {
         let store = KeychainStore(
             service: "com.visionplay.tests.identity.\(UUID().uuidString)",

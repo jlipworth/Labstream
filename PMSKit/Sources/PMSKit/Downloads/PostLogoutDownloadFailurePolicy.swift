@@ -3,11 +3,10 @@ import Foundation
 /// Pure decision for how an in-flight background download should land when its transfer fails with an
 /// auth HTTP status.
 ///
-/// Logout proactively revokes the Jellyfin/Emby access token server-side (the logout path stays
-/// instant — it does not pause or await in-flight transfers first). A background remainder task that
-/// is still holding the pre-revocation token then 401/403s on its next bytes. That is not a real
-/// error the user must act on: the download should park in the existing "waiting for a valid session"
-/// deferred/paused state and resume once the account is signed back in.
+/// Logout proactively pauses affected downloads before it clears the local session, but a
+/// background remainder can still race that handoff and receive a 401/403 with the pre-revocation
+/// token. That is not a real error the user must act on: the download should park in the existing
+/// "waiting for a valid session" deferred/paused state and resume once the account is signed back in.
 ///
 /// The distinction that matters: only an auth status WITH the backend session actually gone maps to a
 /// deferral. A genuine 401/403 while still signed in is a real authorization error and must still

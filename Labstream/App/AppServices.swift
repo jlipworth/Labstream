@@ -22,10 +22,18 @@ struct AppServices {
         let clientIdentifier = keychain.clientIdentifier() ?? UUID().uuidString
         let identity = PlatformClientIdentity.make(clientIdentifier: clientIdentifier)
         let model = AppModel(identity: identity, activeBackend: keychain.selectedBackend)
+        let authManager = AuthManager(appModel: model, keychain: keychain)
+        let downloadManager = DownloadManager(appModel: model)
+        // Sign-out is the one lifecycle edge where an already-open URLSession request can retain
+        // a just-revoked authorization header. Pause that backend's work before AuthManager
+        // clears its runtime session; weak capture keeps the service graph acyclic.
+        authManager.onBackendWillSignOut = { [weak downloadManager] backend in
+            downloadManager?.pauseDownloadsForBackendSignOut(backend)
+        }
         return AppServices(
             appModel: model,
-            authManager: AuthManager(appModel: model, keychain: keychain),
-            downloadManager: DownloadManager(appModel: model),
+            authManager: authManager,
+            downloadManager: downloadManager,
             musicPlayer: MusicPlayerController(appModel: model)
         )
     }
