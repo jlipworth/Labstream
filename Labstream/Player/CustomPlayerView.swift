@@ -302,30 +302,44 @@ struct CustomPlayerView: View {
     #if os(visionOS)
     @MainActor
     private func attachWatchTogetherCoordinatorWhenReady(for playback: PlaybackController) async {
-        // Lifetime observer rather than a bounded poll: the SharePlay session can activate at
-        // any time (the user may linger on the FaceTime activation sheet), the first player
-        // item can take arbitrarily long to mint on a slow remote transcode decision, and
-        // PlaybackController.load() replaces player.currentItem on quality/track switches,
-        // retries, and stall recovery — every replacement item must be re-attached or
-        // AVPlayerPlaybackCoordinator silently stops syncing it (the delegate pins one
-        // AVPlayerItem by identity). A failed attach marks that item as tried so it isn't
-        // hammered; losing the session resets so a later session attaches fresh.
-        var attemptedItemID: ObjectIdentifier?
-        while !Task.isCancelled {
-            guard controller === playback else { return }
-            if !watchTogetherCoordinator.hasActiveSession {
-                attemptedItemID = nil
-            } else if let currentItem = playback.player.currentItem,
-                      ObjectIdentifier(currentItem) != attemptedItemID {
-                attemptedItemID = ObjectIdentifier(currentItem)
-                _ = watchTogetherCoordinator.attachPlaybackCoordinatorIfReady(player: playback.player,
-                                                                              item: item)
-            }
-            try? await Task.sleep(for: .milliseconds(250))
-        }
+        await maintainWatchTogetherAttachment(coordinator: watchTogetherCoordinator,
+                                              controller: playback,
+                                              item: item) { controller === playback }
     }
     #endif
 }
+
+#if os(visionOS)
+/// Keep the group-session playback coordinator bound to `controller.player` for as long as `isOwner`
+/// holds. A lifetime observer rather than a bounded poll: the SharePlay session can activate at any
+/// time (the user may linger on the FaceTime activation sheet), the first player item can take
+/// arbitrarily long to mint on a slow remote transcode decision, and PlaybackController.load()
+/// replaces player.currentItem on quality/track switches, retries, and stall recovery — every
+/// replacement item must be re-attached or AVPlayerPlaybackCoordinator silently stops syncing it
+/// (the delegate pins one AVPlayerItem by identity). Only a SUCCESSFUL attach marks that item done,
+/// so a not-yet-consented player retries once participation is granted; losing the session resets so
+/// a later session attaches fresh. The `isOwner` predicate lets both the windowed player and the
+/// Cinema scaffold run this against the same live controller across a window→immersive handoff
+/// without the loop outliving the surface that started it.
+@MainActor
+func maintainWatchTogetherAttachment(coordinator: WatchTogetherCoordinator,
+                                     controller: PlaybackController,
+                                     item: MediaItem,
+                                     isOwner: @escaping @MainActor () -> Bool) async {
+    var attachedItemID: ObjectIdentifier?
+    while !Task.isCancelled {
+        guard isOwner() else { return }
+        if !coordinator.hasActiveSession {
+            attachedItemID = nil
+        } else if let currentItem = controller.player.currentItem,
+                  ObjectIdentifier(currentItem) != attachedItemID,
+                  coordinator.attachPlaybackCoordinatorIfReady(player: controller.player, item: item) {
+            attachedItemID = ObjectIdentifier(currentItem)
+        }
+        try? await Task.sleep(for: .milliseconds(250))
+    }
+}
+#endif
 
 #if os(macOS)
 /// Minimal AppKit bridge whose backing layer is AVPlayerLayer.

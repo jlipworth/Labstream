@@ -79,6 +79,7 @@ struct Labstream: App {
             CustomCinemaScaffoldView()
                 .environment(customCinemaSession)
                 .environment(realityTheaterSession)
+                .environment(watchTogetherCoordinator)
                 .task { recordScenePhase(scenePhase) }
                 .onChange(of: scenePhase) { _, newPhase in
                     recordScenePhase(newPhase)
