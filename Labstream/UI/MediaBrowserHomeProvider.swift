@@ -30,23 +30,41 @@ struct MediaBrowserHomeContent {
 @MainActor
 struct MediaBrowserHomeProvider {
     let appModel: AppModel
+    /// Snapshot the lane at task creation. `HomeView` cancels/replaces its task when the browse
+    /// identity changes, but an already-running async child can still resume briefly after the
+    /// user switches Emby/Jellyfin -> Plex. Reading `appModel.activeBackend` at that point used to
+    /// route the stale MediaBrowser task into a Plex precondition failure.
+    let backend: MediaBackendKind
+    private let browser: any MediaBrowserHomeBrowsing
+    private let sessionIdentity: String
+    private let visibilityBackendKey: String?
+    private let visibilityLegacyBackendKeys: [String]
 
-    private var browser: any MediaBrowserHomeBrowsing {
+    init?(appModel: AppModel) {
+        self.appModel = appModel
+        backend = appModel.activeBackend
+        sessionIdentity = appModel.activeBrowseSessionKey
+        visibilityBackendKey = appModel.libraryVisibilityBackendKey
+        visibilityLegacyBackendKeys = appModel.libraryVisibilityLegacyBackendKeys
+
         switch appModel.activeBackend {
         case .emby:
-            return EmbyBrowseService(appModel: appModel)
+            browser = EmbyBrowseService(appModel: appModel)
         case .jellyfin:
-            return JellyfinBrowseService(appModel: appModel)
+            browser = JellyfinBrowseService(appModel: appModel)
         case .plex:
-            preconditionFailure("MediaBrowserHomeProvider does not handle Plex Home")
+            return nil
         }
     }
 
     func loadHome() async throws -> MediaBrowserHomeContent {
+        // Use the captured backend keys rather than mutable active-backend state. A stale task may
+        // finish after a switch, but HomeView's generation/identity guard will discard its result.
         let allLibraries = try await browser.homeLibraryLinks()
         let visibilityStore = LibraryVisibilityStore()
-        appModel.migrateLibraryVisibilityKeysIfNeeded(store: visibilityStore)
-        let hidden = visibilityStore.hiddenIDs(forBackendKey: appModel.libraryVisibilityBackendKey)
+        visibilityStore.migrateLegacyBackendKeys(visibilityLegacyBackendKeys,
+                                                 toBackendKey: visibilityBackendKey)
+        let hidden = visibilityStore.hiddenIDs(forBackendKey: visibilityBackendKey)
         let libraries = LibraryVisibility.visible(allLibraries, hiddenIDs: hidden) { $0.id }
         let load = try await homeRails(for: libraries)
 
@@ -57,8 +75,6 @@ struct MediaBrowserHomeProvider {
 
     private func homeRails(for libraries: [MediaBrowserHomeLibraryLink]) async throws -> HomeRailsLoad<MediaBrowserHomeRail> {
         var rails: [MediaBrowserHomeRail] = []
-        let sessionIdentity = appModel.activeBrowseSessionKey
-        let backend = appModel.activeBackend
         // Track per-rail errors so a partial MediaBrowser Home is displayed but not pinned as
         // authoritative; a pop-back / later `.task` can recover missing rails (#93).
         var tracker = HomeRailsLoadTracker()
@@ -114,7 +130,7 @@ struct MediaBrowserHomeProvider {
 
         if tracker.isDegraded {
             NSLog("[#93] %@ homeRails degraded: %d of up to %d rails returned; will not pin loaded identity",
-                  appModel.activeBackend.displayName,
+                  backend.displayName,
                   rails.count,
                   libraries.prefix(8).count + 2)
         }

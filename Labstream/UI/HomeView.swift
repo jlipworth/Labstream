@@ -139,7 +139,10 @@ struct HomeView: View {
                 // Jellyfin/Emby Home rails are library-scoped (built from `views`), so filtering
                 // `views` here keeps Home consistent. (Plex Home uses non-library `/hubs` and is
                 // deferred — see #104.)
-                let content = try await MediaBrowserHomeProvider(appModel: appModel).loadHome()
+                // The backend can change while an earlier Home task is unwinding. A Plex task uses
+                // native hubs and must never enter the Jellyfin/Emby provider.
+                guard let provider = MediaBrowserHomeProvider(appModel: appModel) else { return }
+                let content = try await provider.loadHome()
                 guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
                 mediaBrowserLibraries = content.libraries
                 mediaBrowserRails = content.rails
