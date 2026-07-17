@@ -76,6 +76,11 @@ final class WatchTogetherCoordinator {
     @ObservationIgnored private var resolvedItem: MediaItem?
     @ObservationIgnored private var pendingLocalShare: PendingLocalShare?
     @ObservationIgnored private var participantStatuses: [UUID: SharePlayParticipantReadiness] = [:]
+    @ObservationIgnored private var knownParticipantIDs: Set<UUID> = []
+    /// True once this participant has actually launched the resolved item (initiator started, or a
+    /// participant received `.started` while resolved). Serves as the launch idempotency guard AND
+    /// the consent boundary for coordinating a local player with the group session.
+    @ObservationIgnored private var didLaunchResolvedItem = false
     @ObservationIgnored private var playbackCoordinatorDelegate: WatchTogetherPlaybackCoordinatorDelegate?
     @ObservationIgnored private var candidateLookup: (@MainActor (String) async -> [MediaItem])?
 
@@ -195,7 +200,12 @@ final class WatchTogetherCoordinator {
         state = .ready(context(for: payload))
         setLocalStatus(.ready)
         sendStatus(.ready)
-        if sessionStarted { launchResolvedItem() }
+        // Late joiner: the session may already have started before we resolved. The initiator's
+        // one-shot `.started` is not replayed by GroupSessionMessenger, but `sessionStarted` is
+        // already true here if we received a fresh re-broadcast (see handleActiveParticipants).
+        if SharePlayReadinessSummary.shouldLaunchLocally(sessionStarted: sessionStarted, localResolved: true) {
+            launchResolvedItem()
+        }
     }
 
     func startWithReadyParticipants(acknowledgeUnresolved: Bool) {
@@ -208,7 +218,8 @@ final class WatchTogetherCoordinator {
     }
 
     private func launchResolvedItem() {
-        guard let item = resolvedItem else { return }
+        guard let item = resolvedItem, !didLaunchResolvedItem else { return }
+        didLaunchResolvedItem = true
         joinPrompt = nil
         SystemEntryRouter.shared.open(item: item, autoPlay: true)
     }
@@ -258,7 +269,7 @@ final class WatchTogetherCoordinator {
         participantTask = Task { [weak self, weak session] in
             guard let session else { return }
             for await participants in session.$activeParticipants.values {
-                self?.pruneStatuses(to: participants.map(\.id), localID: session.localParticipant.id)
+                self?.handleActiveParticipants(participants.map(\.id), localID: session.localParticipant.id)
             }
         }
         if let messenger {
@@ -276,9 +287,24 @@ final class WatchTogetherCoordinator {
         if message.status == .started {
             sessionStarted = true
             if let payload = activePayload { state = resolvedItem == nil ? .resolving(context(for: payload)) : .active(context(for: payload)) }
-            launchResolvedItem()
+            if SharePlayReadinessSummary.shouldLaunchLocally(sessionStarted: true, localResolved: resolvedItem != nil) {
+                launchResolvedItem()
+            }
         }
         refreshCounts()
+    }
+
+    /// Prune departed participants and, as the initiator, re-announce `.started` to any newcomer.
+    /// GroupSessionMessenger never replays past messages, so a participant who joins the FaceTime
+    /// call after playback started would otherwise wait forever on "Waiting for the initiator…".
+    /// Restricting the re-broadcast to the initiator keeps it a single message per newcomer.
+    private func handleActiveParticipants(_ activeIDs: [UUID], localID: UUID) {
+        let newcomers = Set(activeIDs).subtracting(knownParticipantIDs).subtracting([localID])
+        knownParticipantIDs = Set(activeIDs)
+        pruneStatuses(to: activeIDs, localID: localID)
+        if isLocalInitiator, sessionStarted, !newcomers.isEmpty {
+            sendStatus(.started)
+        }
     }
 
     private func sendStatus(_ status: SharePlayParticipantReadiness) {
@@ -311,8 +337,8 @@ final class WatchTogetherCoordinator {
         activeSessionStateTask?.cancel(); participantTask?.cancel(); messageTask?.cancel(); lookupTask?.cancel()
         activeSessionStateTask = nil; participantTask = nil; messageTask = nil; lookupTask = nil
         activeSession = nil; messenger = nil; activePayload = nil; resolvedItem = nil; joinPrompt = nil
-        participantStatuses = [:]; readyParticipantCount = 0; resolvingParticipantCount = 0
-        sessionStarted = false; isLocalInitiator = false
+        participantStatuses = [:]; knownParticipantIDs = []; readyParticipantCount = 0; resolvingParticipantCount = 0
+        sessionStarted = false; isLocalInitiator = false; didLaunchResolvedItem = false
         playbackCoordinatorDelegate = nil
         state = .inactive
     }
