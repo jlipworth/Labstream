@@ -53,6 +53,16 @@ public struct BackendSession: Codable, Sendable, Equatable {
     /// identity. Legacy/partial metadata with no server identity returns `true` (best-effort cleanup
     /// rather than permanently leaking a known PlaySessionId).
     public func matchesPersistedServer(_ metadata: OfflineMetadata) -> Bool {
+        if let persistedUserID = Self.nonEmpty(metadata.backendUserID) {
+            // Even with one saved session per backend, signing out and later authenticating as a
+            // different user must not let that replacement credential resume or clean up the old
+            // user's download. Jellyfin/Emby may reformat the same GUID, so compare identity rather
+            // than raw bytes.
+            guard let liveUserID = Self.nonEmpty(userID),
+                  MediaBrowserUserIdentity.sameUser(liveUserID, persistedUserID) else {
+                return false
+            }
+        }
         if let persistedID = metadata.backendServerID?.trimmingCharacters(in: .whitespacesAndNewlines),
            !persistedID.isEmpty {
             return serverID == persistedID
@@ -62,6 +72,12 @@ public struct BackendSession: Codable, Sendable, Equatable {
             return true
         }
         return BackendURLIdentity.sameBaseURL(persistedURL, baseURL)
+    }
+
+    private static func nonEmpty(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        return value
     }
 }
 
