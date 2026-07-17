@@ -37,17 +37,6 @@ public enum CollectionRequest {
                            headers: PlexHeaders.standard(identity: identity, token: token))
     }
 
-    /// `GET /library/metadata/{ratingKey}/extras` — playable Plex trailers/extras for one
-    /// metadata item. The response is the usual `MetadataResponse`.
-    public static func plexExtras(server: URL,
-                                  token: String,
-                                  identity: ClientIdentity,
-                                  ratingKey: String) -> PlexRequest {
-        PlexRequest(url: server.appendingPathComponent("/library/metadata/\(ratingKey)/extras"),
-                    method: "GET",
-                    headers: PlexHeaders.standard(identity: identity, token: token))
-    }
-
     private static func appendPlexPaging(start: Int?, size: Int?, to queryItems: inout [URLQueryItem]) {
         guard let start, let size else { return }
         queryItems.append(.init(name: "X-Plex-Container-Start", value: String(start)))
