@@ -305,11 +305,16 @@ final class CustomCinemaSessionStore {
 /// hand-drawn rail did, which is hostile to attachments).
 struct CustomCinemaScaffoldView: View {
     @Environment(CustomCinemaSessionStore.self) private var session
+    @Environment(WatchTogetherCoordinator.self) private var watchTogetherCoordinator
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Environment(\.openWindow) private var openWindow
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var scrubState = PlaybackScrubState(durationMs: 0, livePositionMs: 0)
+    /// Watch Together attach maintenance moves here for the Cinema session: the windowed player's
+    /// task is cancelled when its window dismisses for the immersive handoff, but playback (and its
+    /// item replacements) continues here, so the coordinator must keep re-attaching from Cinema.
+    @State private var watchTogetherAttachTask: Task<Void, Never>?
 
     /// Holds the live attachment entity so the scrubber clock can re-run placement until RealityKit
     /// has laid the attachment out (and thus reports a real intrinsic size to calibrate against).
@@ -347,8 +352,11 @@ struct CustomCinemaScaffoldView: View {
         .onAppear {
             session.presentationState = .open
             bindCinemaCallbacks()
+            startWatchTogetherAttachMaintenance()
         }
         .onDisappear {
+            watchTogetherAttachTask?.cancel()
+            watchTogetherAttachTask = nil
             finishCinemaDismissal()
         }
         .task { await runScrubberClock() }
@@ -358,6 +366,19 @@ struct CustomCinemaScaffoldView: View {
         while !Task.isCancelled {
             await MainActor.run { tick() }
             try? await Task.sleep(for: .milliseconds(500))
+        }
+    }
+
+    @MainActor
+    private func startWatchTogetherAttachMaintenance() {
+        guard let controller = session.controller, let item = session.item else { return }
+        watchTogetherAttachTask?.cancel()
+        watchTogetherAttachTask = Task { @MainActor in
+            await maintainWatchTogetherAttachment(coordinator: watchTogetherCoordinator,
+                                                  controller: controller,
+                                                  item: item) {
+                session.controller === controller && session.presentationState != .closed
+            }
         }
     }
 
