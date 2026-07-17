@@ -1,6 +1,24 @@
 import SwiftUI
 import PMSKit
 
+/// Shared presentation state lets the visionOS dimmed surround and the explicit X
+/// take the exact same dismissal path. RootView owns this value because a sheet's
+/// dimmed area is outside the presenting ornament's bounds.
+struct NowPlayingPresentationState: Equatable {
+    var isPresented = false
+    var scrollToQueue = false
+
+    mutating func present(scrollToQueue: Bool = false) {
+        self.scrollToQueue = scrollToQueue
+        isPresented = true
+    }
+
+    mutating func dismiss() {
+        isPresented = false
+        scrollToQueue = false
+    }
+}
+
 /// Compact persistent playback bar, mounted as `RootView`'s bottom scene ornament so
 /// music keeps playing (and stays controllable) while browsing. Renders nothing when
 /// the queue is empty; tapping anywhere outside the transport buttons opens the full
@@ -9,10 +27,11 @@ struct MiniPlayerBar: View {
     @Environment(MusicPlayerController.self) private var player
     @Environment(\.labstreamCompactWidth) private var compactWidth
 
-    @State private var presentNowPlaying = false
-    /// When true, the next NowPlaying presentation pre-scrolls to Up Next (the ☰
-    /// queue button's behavior); reset on dismiss so a plain tap opens at the top.
-    @State private var scrollToQueue = false
+    @Binding private var presentation: NowPlayingPresentationState
+
+    init(presentation: Binding<NowPlayingPresentationState>) {
+        _presentation = presentation
+    }
 
     /// Artwork size inside the bar (64-pt visionOS ornament; the iOS 26 tab-view
     /// bottom accessory is shorter, so its art is smaller).
@@ -27,20 +46,21 @@ struct MiniPlayerBar: View {
         // itself is gone — scene ornaments float ABOVE window sheets, so leaving the
         // bar visible under NowPlayingView reads as a dead duplicate control.
         ZStack {
-            if let current = player.current, !presentNowPlaying {
+            if let current = player.current, !presentation.isPresented {
                 bar(for: current)
             }
         }
-        .sheet(isPresented: $presentNowPlaying, onDismiss: { scrollToQueue = false }) {
+        .sheet(isPresented: $presentation.isPresented,
+               onDismiss: { presentation.dismiss() }) {
             #if os(iOS)
             // Mobile: standard resizable sheet with system drag-to-dismiss. The fixed
             // 620×700 platter and explicit close/stop overlays below are visionOS
             // affordances (its sheets have no system dismiss control); stop stays on
             // the bar's ✕ here.
-            NowPlayingView(scrollToQueue: scrollToQueue)
+            NowPlayingView(scrollToQueue: presentation.scrollToQueue)
                 .presentationDragIndicator(.visible)
             #else
-            NowPlayingView(scrollToQueue: scrollToQueue)
+            NowPlayingView(scrollToQueue: presentation.scrollToQueue)
                 // Fixed content size + .fitted: the default sheet (and .form —
                 // live-tested, no effect on visionOS) tracks the wide window and
                 // leaves acres of glass either side of the 300pt art column.
@@ -54,7 +74,7 @@ struct MiniPlayerBar: View {
                 // and gets clipped out of the fitted sheet (live-verified).
                 .overlay(alignment: .topTrailing) {
                     Button {
-                        presentNowPlaying = false
+                        presentation.dismiss()
                     } label: {
                         Image(systemName: "xmark")
                             .font(.body.weight(.semibold))
@@ -70,7 +90,7 @@ struct MiniPlayerBar: View {
                 .overlay(alignment: .topLeading) {
                     Button {
                         player.stop()
-                        presentNowPlaying = false
+                        presentation.dismiss()
                     } label: {
                         Image(systemName: "stop.fill")
                             .font(.body.weight(.semibold))
@@ -82,6 +102,12 @@ struct MiniPlayerBar: View {
                     .accessibilityLabel("Stop music")
                 }
                 .presentationSizing(.fitted)
+                #if os(visionOS)
+                // The dimmed surround is system-owned, outside this ornament and
+                // sheet frame. Let RootView's full-window dismissal catcher receive
+                // that tap instead of allowing it to navigate underlying content.
+                .presentationBackgroundInteraction(.enabled)
+                #endif
             #endif
         }
     }
@@ -104,7 +130,7 @@ struct MiniPlayerBar: View {
                                                            style: .continuous))
             // Whole bar opens Now Playing; the explicit Buttons above still win the tap.
             .contentShape(RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
-            .onTapGesture { presentNowPlaying = true }
+            .onTapGesture { presentation.present() }
             .hoverEffect(.highlight)
         #else
         // Inside the iOS 26 tab-view bottom accessory: the system supplies the Liquid
@@ -113,7 +139,7 @@ struct MiniPlayerBar: View {
             .padding(.horizontal, DS.Space.md)
             .overlay(alignment: .bottom) { progressHairline }
             .contentShape(Rectangle())
-            .onTapGesture { presentNowPlaying = true }
+            .onTapGesture { presentation.present() }
         #endif
     }
 
@@ -251,8 +277,7 @@ struct MiniPlayerBar: View {
 
     private var queueButton: some View {
         Button {
-            scrollToQueue = true
-            presentNowPlaying = true
+            presentation.present(scrollToQueue: true)
         } label: {
             Image(systemName: "list.bullet")
                 .font(.title3)

@@ -99,8 +99,9 @@ not necessarily the backend currently visible in the UI.
 - `Labstream/Backend/Paging/` owns backend-neutral paging sources/models and the
   Plex/Jellyfin/Emby grid and rail adapters. `RailPagingModel`, `RailPagingSource`, and
   `RailViewAllDestination` power paged Home “View All” destinations.
-- `Labstream/Backend/Search/SearchResults.swift` owns the grouped, deduplicated search
-  presentation model.
+- `PMSKit/Sources/PMSKit/Search/SearchResults.swift` owns the pure grouped,
+  deduplicated, library-aware search presentation model; `Labstream/UI/SearchView.swift`
+  renders its backend-neutral sections and routes standard versus music results.
 - `Labstream/UI/HomeView.swift` uses Plex native hubs or
   `Labstream/UI/MediaBrowserHomeProvider.swift` for shared Jellyfin/Emby Home rails.
 - `Labstream/UI/LibraryGridView.swift` owns library roots and the shared sparse grid;
@@ -238,7 +239,9 @@ the documented foreground substitute.
   global MediaPlayer state independently of video.
 - `MusicLibraryView.swift`, `MediaBrowserMusicView.swift`, `MusicPagedGrid.swift`, and
   the album/artist/playlist detail views own presentation.
-- `MiniPlayerBar.swift` and `NowPlayingView.swift` are the compact/full playback surfaces.
+- `MiniPlayerBar.swift` and `NowPlayingView.swift` are the compact/full playback surfaces;
+  `RootView.swift` owns their shared presentation state so a visionOS sheet-surround tap
+  and the explicit close control use the same dismissal path.
 - `PMSKit/Sources/PMSKit/Music/` contains Plex music request builders and pure queue
   mutation behavior.
 

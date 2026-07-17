@@ -27,6 +27,9 @@ struct RootView: View {
     /// browse tab's detail instead of always Home (#87) — same pattern as `homePath`.
     @State private var librariesPath = NavigationPath()
     @State private var searchPath = NavigationPath()
+    /// Shared with the ornament-backed mini player so visionOS can treat a tap in
+    /// the system sheet's dimmed surround exactly like its explicit close button.
+    @State private var nowPlayingPresentation = NowPlayingPresentationState()
     /// One-shot focus request for Cinema exits that came from an offline download. The Offline
     /// tab owns the list/row UI; RootView only foregrounds the tab and hands it the ratingKey to
     /// scroll/highlight after the window is recreated.
@@ -93,6 +96,20 @@ struct RootView: View {
 
     var body: some View {
         rootContent
+        .overlay {
+            #if os(visionOS)
+            if nowPlayingPresentation.isPresented {
+                // `.presentationBackgroundInteraction(.enabled)` passes an outside-
+                // sheet tap through to this full-window catcher. It dismisses instead
+                // of letting the obscured browse UI navigate or activate controls.
+                Rectangle()
+                    .fill(.clear)
+                    .contentShape(Rectangle())
+                    .onTapGesture { nowPlayingPresentation.dismiss() }
+                    .accessibilityHidden(true)
+            }
+            #endif
+        }
         .background {
             // App-wide ⌘F → Search tab, then focus its field. A zero-size, invisible
             // button keeps the shortcut in the responder chain without occupying layout;
@@ -225,7 +242,7 @@ struct RootView: View {
             .navigationSplitViewStyle(.balanced)
             .safeAreaInset(edge: .bottom) {
                 if musicPlayer.current != nil, !macPlayerPresenter.isPresented {
-                    MiniPlayerBar()
+                    MiniPlayerBar(presentation: $nowPlayingPresentation)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 8)
                         .background(.regularMaterial)
@@ -467,7 +484,7 @@ struct RootView: View {
         // (verified live: body ran with a current track, nothing rendered). The
         // ornament floats below the window glass, the platform idiom for transport.
         .ornament(attachmentAnchor: .scene(.bottom)) {
-            MiniPlayerBar()
+            MiniPlayerBar(presentation: $nowPlayingPresentation)
         }
     }
     #endif
@@ -497,7 +514,7 @@ struct RootView: View {
         // `isEnabled:` (not a conditional inside the builder, which leaves an empty
         // glass bubble on screen) removes the accessory entirely when no music is loaded.
         .tabViewBottomAccessory(isEnabled: musicPlayer.current != nil) {
-            MiniPlayerBar()
+            MiniPlayerBar(presentation: $nowPlayingPresentation)
         }
         .sheet(isPresented: $showsSettingsSheet) {
             NavigationStack {
