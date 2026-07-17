@@ -109,7 +109,7 @@ struct MediaBrowserLibraryRequestFactoryTests {
                     artistIds: "",
                     filters: []
                 ),
-                expected: "GET https://jellyfin.example.test/root-base/Items?userId=u&fields=Overview,Genres,MediaSources,People,Studios,ProviderIds,ParentId,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,CriticRating,Taglines,Chapters,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags,ParentPrimaryImageItemId,ParentPrimaryImageTag,SeriesPrimaryImageTag&enableUserData=true&recursive=false&includeItemTypes=Movie,Series,Season,Episode,Video&sortBy=SortName&sortOrder=Ascending [Accept:application/json|Authorization:MediaBrowser Client=\"Lab stream\", Device=\"Vision/Pro\", DeviceId=\"device+1\", Version=\"1.2.3\", Token=\"t\"] body=nil"
+                expected: "GET https://jellyfin.example.test/root-base/Items?userId=u&fields=Overview,Genres,MediaSources,People,Studios,ProviderIds,ParentId,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,CriticRating,Taglines,Chapters,ExtraIds,LocalTrailerCount,SpecialFeatureCount,RemoteTrailers,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags,ParentPrimaryImageItemId,ParentPrimaryImageTag,SeriesPrimaryImageTag&enableUserData=true&recursive=false&includeItemTypes=Movie,Series,Season,Episode,Video&sortBy=SortName&sortOrder=Ascending [Accept:application/json|Authorization:MediaBrowser Client=\"Lab stream\", Device=\"Vision/Pro\", DeviceId=\"device+1\", Version=\"1.2.3\", Token=\"t\"] body=nil"
             ),
             GoldenCase(
                 name: "Emby items omit empty optionals",
@@ -124,7 +124,7 @@ struct MediaBrowserLibraryRequestFactoryTests {
                     artistIds: "",
                     filters: []
                 ),
-                expected: "GET https://emby.example.test/emby-base/Users/u/Items?Fields=Overview,Genres,MediaSources,People,Studios,ProviderIds,ParentId,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,CriticRating,Taglines,Chapters,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags,ParentPrimaryImageItemId,ParentPrimaryImageTag,SeriesPrimaryImageTag&EnableUserData=true&Recursive=false&IncludeItemTypes=Movie,Series,Season,Episode,Video&SortBy=SortName&SortOrder=Ascending [Accept:application/json|Authorization:Emby UserId=\"u\", Client=\"Lab stream\", Device=\"Vision/Pro\", DeviceId=\"device+1\", Version=\"1.2.3\", Token=\"t\"|X-Emby-Token:t] body=nil"
+                expected: "GET https://emby.example.test/emby-base/Users/u/Items?Fields=Overview,Genres,MediaSources,People,Studios,ProviderIds,ParentId,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,CriticRating,Taglines,Chapters,ExtraIds,LocalTrailerCount,SpecialFeatureCount,RemoteTrailers,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags,ParentPrimaryImageItemId,ParentPrimaryImageTag,SeriesPrimaryImageTag&EnableUserData=true&Recursive=false&IncludeItemTypes=Movie,Series,Season,Episode,Video&SortBy=SortName&SortOrder=Ascending [Accept:application/json|Authorization:Emby UserId=\"u\", Client=\"Lab stream\", Device=\"Vision/Pro\", DeviceId=\"device+1\", Version=\"1.2.3\", Token=\"t\"|X-Emby-Token:t] body=nil"
             ),
             GoldenCase(
                 name: "Jellyfin album artists",

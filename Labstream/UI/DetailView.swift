@@ -1014,7 +1014,11 @@ struct DetailView: View {
         // shelf extras too.
         let launchDetailKey = detailed.ratingKey
         let launchBackend = actionBackend
-        let launchMediaIndex = selectedMediaIndex
+        // A shelf extra owns its own media list and must not inherit the parent page's
+        // selected version index. The page-selection freshness guard is likewise only
+        // relevant when launching the page item itself.
+        let launchUsesPageMediaSelection = target == nil
+        let launchMediaIndex = launchUsesPageMediaSelection ? selectedMediaIndex : 0
         let span = PerformanceInstrumentation.begin(.playbackResolve,
                                                      backend: actionBackend.performanceLabel,
                                                      fields: [
@@ -1041,15 +1045,15 @@ struct DetailView: View {
                 openContext = capturedContext
                 let playbackItem = await DetailPlaybackLauncher.metadataItem(
                     ratingKey: launchRatingKey,
-                    fallback: detailed,
+                    fallback: subject,
                     context: capturedContext,
                     appModel: appModel,
                     resumeRewindSeconds: resumeRewindSeconds)
                 let metadataRequestStillCurrent = playbackRequestID == requestID
                     && metadataReadyForActions
                     && actionBackend == launchBackend
-                    && detailed.ratingKey == launchRatingKey
-                    && selectedMediaIndex == launchMediaIndex
+                    && detailed.ratingKey == launchDetailKey
+                    && (!launchUsesPageMediaSelection || selectedMediaIndex == launchMediaIndex)
                 guard DetailPlaybackLauncher.shouldContinueAfterMetadata(
                     requestStillCurrent: metadataRequestStillCurrent,
                     context: capturedContext,
@@ -1067,8 +1071,8 @@ struct DetailView: View {
                 let requestStillCurrent = playbackRequestID == requestID
                     && metadataReadyForActions
                     && actionBackend == launchBackend
-                    && detailed.ratingKey == launchRatingKey
-                    && selectedMediaIndex == launchMediaIndex
+                    && detailed.ratingKey == launchDetailKey
+                    && (!launchUsesPageMediaSelection || selectedMediaIndex == launchMediaIndex)
                 let accepted = await DetailPlaybackLauncher.acceptInitialOpen(
                     opened,
                     requestStillCurrent: requestStillCurrent,
@@ -1094,8 +1098,8 @@ struct DetailView: View {
                 let requestStillCurrent = playbackRequestID == requestID
                     && metadataReadyForActions
                     && actionBackend == launchBackend
-                    && detailed.ratingKey == launchRatingKey
-                    && selectedMediaIndex == launchMediaIndex
+                    && detailed.ratingKey == launchDetailKey
+                    && (!launchUsesPageMediaSelection || selectedMediaIndex == launchMediaIndex)
                 guard DetailPlaybackLauncher.shouldSurfaceOpenFailure(
                     requestStillCurrent: requestStillCurrent,
                     context: openContext,
