@@ -71,7 +71,7 @@ private func searchItem(_ key: String, _ type: String,
     // an explicitly-labeled photo playlist land in the standard/video path so they
     // route to DetailView instead of the empty audio PlaylistDetailView.
     let group = try #require(SearchResultGroup.mediaBrowserLibrary(
-        backendID: "plex", libraryID: "3", title: "Mixed",
+        backendID: .plex, libraryID: "3", title: "Mixed",
         items: [searchItem("audio", "playlist", playlistType: "audio"),
                 searchItem("video", "playlist", playlistType: "video"),
                 searchItem("photo", "playlist", playlistType: "photo")]))
@@ -91,7 +91,7 @@ private func searchItem(_ key: String, _ type: String,
     // A playlist with no `playlistType` label is the lenient audio default (matches
     // `MediaItem.isAudioPlaylist`), so it keeps the music treatment.
     let group = try #require(SearchResultGroup.mediaBrowserLibrary(
-        backendID: "plex", libraryID: "3", title: "Mixed",
+        backendID: .plex, libraryID: "3", title: "Mixed",
         items: [searchItem("bare", "playlist")]))
 
     let sections = SearchResults(groups: [group]).presentationGroups[0].sections
