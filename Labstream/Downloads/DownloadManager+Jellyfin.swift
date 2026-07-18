@@ -431,7 +431,7 @@ extension DownloadManager {
     /// playlist, downloads each referenced tile through header auth (stripping ApiKey from tile
     /// URLs in the request builder), then writes a sanitized local playlist whose tile lines are
     /// only local filenames. A miss/corrupt playlist never fails the media download.
-    private func cacheJellyfinTrickPlay(for attemptKey: DownloadAttemptKey,
+    func cacheJellyfinTrickPlay(for attemptKey: DownloadAttemptKey,
                                         itemId: String,
                                         mediaSourceId: String?,
                                         server: URL,

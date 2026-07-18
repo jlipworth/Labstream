@@ -11,6 +11,86 @@ import os
 
 extension DownloadManager {
 
+    /// Retry the optional side assets that were cancelled when a media transfer failed.
+    ///
+    /// Clean-restart retries pass through the normal backend download entry points, which already
+    /// enqueue side assets. Resume-data retries do not: they restart URLSession directly and return.
+    /// All cache functions are missing-file aware and attempt fenced, so this is safe for a partial
+    /// first pass and does not redownload assets that already reached durable storage.
+    func rehydrateOptionalSideAssetsAfterTransferResume(record: DownloadRecord,
+                                                         attemptKey: DownloadAttemptKey) {
+        guard let metadata = record.metadata,
+              let backendSession = appModel.backendSession(for: metadata.resolvedBackendKind(
+                ratingKey: record.ratingKey)),
+              backendSession.matchesPersistedServer(metadata) else { return }
+
+        let item = metadata.makeMediaItem()
+        let server = backendSession.baseURL
+        let token = backendSession.token
+        let backend = metadata.resolvedBackendKind(ratingKey: record.ratingKey)
+        recordDownloadDiagnostic("downloads.side_assets_rehydrate", fields: [
+            "download_id": .identifier(record.ratingKey),
+            "backend": .label(backend.rawValue),
+            "reason": .label("transfer_resume"),
+        ])
+        switch backend {
+        case .plex:
+            // Poster and chapter refs are present in OfflineMetadata, so restart them immediately.
+            cachePoster(for: attemptKey, thumb: DownloadSideAssetPolicy.offlinePosterRef(for: item),
+                        server: server, token: token)
+            cacheChapterImages(for: attemptKey, item: item, backend: .plex,
+                               server: server, token: token)
+
+            // Stream/index detail is intentionally not persisted. Refresh the current Plex item
+            // before retrying BIF and text subtitles; ownership/status guards prevent a delayed
+            // response from reviving work after Delete, Pause, or another terminal failure.
+            let mediaIndex = metadata.mediaIndex ?? 0
+            let partIndex = metadata.partIndex ?? 0
+            downloadWorkRegistry.startIfAbsent(
+                for: attemptKey, kind: .sideCache(.sourceMetadataRefresh)
+            ) { [weak self] in
+                guard let self,
+                      !Task.isCancelled,
+                      let currentItem = await self.fetchCurrentMediaItem(
+                        ratingKey: metadata.ratingKey, server: server, token: token,
+                        identity: self.appModel.identity),
+                      !Task.isCancelled,
+                      let currentRecord = self.store.record(for: attemptKey),
+                      currentRecord.status != .failed,
+                      currentRecord.status != .paused else { return }
+                self.cachePoster(for: attemptKey,
+                                 thumb: DownloadSideAssetPolicy.offlinePosterRef(for: currentItem),
+                                 server: server, token: token)
+                self.cachePlexBIF(for: attemptKey, item: currentItem, mediaIndex: mediaIndex,
+                                  server: server, token: token)
+                self.cacheChapterImages(for: attemptKey, item: currentItem, backend: .plex,
+                                        server: server, token: token)
+                if let part = currentItem.media?[safe: mediaIndex]?.part[safe: partIndex] {
+                    self.cachePlexTextSubtitles(for: attemptKey, part: part,
+                                                server: server, token: token)
+                }
+            }
+
+        case .jellyfin:
+            let identity = appModel.identity.jellyfin
+            let itemID = DownloadRecordIdentity.jellyfinItemID(fromRecordKey: record.ratingKey)
+            cacheJellyfinPoster(for: attemptKey, item: item, server: server,
+                                token: token, identity: identity)
+            cacheChapterImages(for: attemptKey, item: item, backend: .jellyfin,
+                               server: server, token: token)
+            cacheJellyfinTrickPlay(for: attemptKey, itemId: itemID,
+                                   mediaSourceId: metadata.mediaSourceID,
+                                   server: server, token: token, identity: identity)
+
+        case .emby:
+            guard let userID = backendSession.userID, !userID.isEmpty else { return }
+            cacheEmbyPoster(for: attemptKey, item: item, server: server, token: token,
+                            identity: appModel.identity.emby, userId: userID)
+            cacheChapterImages(for: attemptKey, item: item, backend: .emby,
+                               server: server, token: token, userID: userID)
+        }
+    }
+
     /// Lens 4 F2: side assets (posters, text subtitles, chapter images, Plex BIF, JF trickplay)
     /// are DATA-PLANE payloads — multi-MB in aggregate — and must honor the same Wi-Fi-only
     /// download setting as the media transfer itself. Mirrors the transfer engine's
