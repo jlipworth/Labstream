@@ -71,6 +71,7 @@ which publishes track metadata, artwork, duration, playhead, and rate to
 releases it, the coordinator restores the surviving music owner and republishes its current
 state. In-app Now Playing artist/album navigation returns to the Music tab. The current
 Spotlight and App Intent index deliberately excludes music items; those surfaces remain
-video-only. On visionOS, Now Playing uses a fitted sheet: its explicit close control and a
-tap in the dimmed surround both dismiss the presentation without stopping playback or
-activating the obscured browse UI.
+video-only. On visionOS, Now Playing uses an app-owned player panel and inert dimmed
+backdrop: its top-leading close control and a tap in the surround both dismiss without
+stopping playback or activating the obscured browse UI; Stop remains a distinct trailing
+playback action.

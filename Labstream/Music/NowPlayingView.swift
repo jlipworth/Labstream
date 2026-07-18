@@ -6,9 +6,12 @@ import PMSKit
 /// Up Next queue. All state lives in `MusicPlayerController`; the only local state
 /// is the in-flight scrub position so a drag never fights the playback clock.
 struct NowPlayingView: View {
-    /// When true, the sheet opens pre-scrolled to the Up Next card (the mini bar's
+    /// When true, the presentation opens pre-scrolled to the Up Next card (the mini bar's
     /// ☰ queue button); default presentation opens at the top as before.
     var scrollToQueue: Bool = false
+    /// App-owned visionOS presentation supplies its own dismissal action; system
+    /// sheets continue to use the environment dismissal when this is nil.
+    var onRequestDismiss: (() -> Void)? = nil
 
     @Environment(MusicPlayerController.self) private var player
     @Environment(\.dismiss) private var dismiss
@@ -173,7 +176,11 @@ struct NowPlayingView: View {
     private func goTo(_ item: MediaItem?) {
         guard let item else { return }
         player.navigationRequest = item
-        dismiss()
+        if let onRequestDismiss {
+            onRequestDismiss()
+        } else {
+            dismiss()
+        }
     }
 
     /// Compact warning when the controller surfaces a playback error.
@@ -444,4 +451,3 @@ struct NowPlayingView: View {
             .scrollTargetLayout()
     }
 }
-
