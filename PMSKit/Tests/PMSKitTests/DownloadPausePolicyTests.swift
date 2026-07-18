@@ -66,6 +66,15 @@ struct DownloadPausePolicyTests {
         }
     }
 
+    @Test("Queued Plex server preparation parks synchronously without URLSession work")
+    func queuedPlexServerPrepParksSynchronously() {
+        #expect(DownloadPausePolicy.rowAction(status: .queued,
+                                             isStaticRangeRecord: false,
+                                             isTrackingTransfer: false,
+                                             isServerPrepRecord: true)
+                == .parkPreparing)
+    }
+
     @Test("Queue pause keeps persistent Emby server prep polling but pauses other active rows")
     func queuePauseSkipsPersistentEmbyConvertPolling() {
         let embyConvert = record(status: .preparing,

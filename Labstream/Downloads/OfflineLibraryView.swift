@@ -451,7 +451,7 @@ public struct OfflineLibraryView: View {
                 } else if isPaused {
                     // #95: paused (recoverably interrupted). Show how far it got and that it
                     // resumes, in secondary (not red) — it's not a failure.
-                    Text(rowSnapshot.statusCaption)
+                    Text(rowSnapshot.errorMessage ?? rowSnapshot.statusCaption)
                         .font(.caption)
                         .monospacedDigit()
                         .lineLimit(1)
