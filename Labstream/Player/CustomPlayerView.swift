@@ -333,15 +333,19 @@ func maintainWatchTogetherAttachment(coordinator: WatchTogetherCoordinator,
                                      controller: PlaybackController,
                                      item: MediaItem,
                                      isOwner: @escaping @MainActor () -> Bool) async {
-    var attachedItemID: ObjectIdentifier?
+    var attachedRevision: SharePlayPlaybackAttachmentRevision<ObjectIdentifier>?
     while !Task.isCancelled {
         guard isOwner() else { return }
         if !coordinator.hasActiveSession {
-            attachedItemID = nil
-        } else if let currentItem = controller.player.currentItem,
-                  ObjectIdentifier(currentItem) != attachedItemID,
-                  coordinator.attachPlaybackCoordinatorIfReady(player: controller.player, item: item) {
-            attachedItemID = ObjectIdentifier(currentItem)
+            attachedRevision = nil
+        } else if let currentItem = controller.player.currentItem {
+            let revision = SharePlayPlaybackAttachmentRevision(
+                sessionGeneration: coordinator.playbackSessionGeneration,
+                itemID: ObjectIdentifier(currentItem))
+            if revision != attachedRevision,
+               coordinator.attachPlaybackCoordinatorIfReady(player: controller.player, item: item) {
+                attachedRevision = revision
+            }
         }
         try? await Task.sleep(for: .milliseconds(250))
     }
