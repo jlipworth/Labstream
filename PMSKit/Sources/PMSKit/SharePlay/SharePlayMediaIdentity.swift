@@ -382,6 +382,26 @@ public enum SharePlayParticipantReadiness: String, Codable, Sendable {
     case resolving, ready, unable, started
 }
 
+/// Reconciles readiness messages with the authoritative GroupSession participant roster.
+/// A participant is considered resolving from the moment they appear in the session, rather
+/// than only after their first messenger status arrives. This closes the race where an initiator
+/// could see zero unresolved participants and start immediately while a newly joined participant's
+/// `.resolving` message was still in flight. Departed participants are removed deterministically.
+public enum SharePlayReadinessRoster {
+    public static func reconcile(statuses: [UUID: SharePlayParticipantReadiness],
+                                 activeParticipantIDs: Set<UUID>,
+                                 localParticipantID: UUID) -> [UUID: SharePlayParticipantReadiness] {
+        let allowed = activeParticipantIDs.union([localParticipantID])
+        var reconciled = statuses.filter { allowed.contains($0.key) }
+        for participantID in activeParticipantIDs where participantID != localParticipantID {
+            if reconciled[participantID] == nil {
+                reconciled[participantID] = .resolving
+            }
+        }
+        return reconciled
+    }
+}
+
 /// Pure policy for the readiness gate. An unresolved capable participant requires
 /// explicit acknowledgement, while unable participants never block forever. A late
 /// participant launches locally once it resolves after the group has started.

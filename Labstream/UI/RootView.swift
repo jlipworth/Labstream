@@ -159,6 +159,10 @@ struct RootView: View {
         // prevents the fresh stacks from immediately re-appending old snapshots. Offline's path is
         // intentionally left alone — Downloads is cross-backend (#100).
         .onChange(of: appModel.activeBrowseSessionKey) { _, _ in
+            // A resolved ratingKey belongs only to the backend/account that produced it. Never
+            // carry an active SharePlay session across a server, account, or backend switch even
+            // if the next backend happens to reuse the same local identifier.
+            watchTogetherCoordinator.leave()
             cancelSystemEntryTask()
             homePath = NavigationPath()
             librariesPath = NavigationPath()

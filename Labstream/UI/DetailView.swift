@@ -717,20 +717,31 @@ struct DetailView: View {
                         .font(.callout)
                         .foregroundStyle(.green)
                     if watchTogetherCoordinator.isLocalInitiator {
-                        Button(watchTogetherCoordinator.requiresStartAcknowledgement
-                               ? "Start with ready participants" : "Start Watching") {
-                            watchTogetherCoordinator.startWithReadyParticipants(
-                                acknowledgeUnresolved: watchTogetherCoordinator.requiresStartAcknowledgement)
+                        HStack(spacing: DS.Space.sm) {
+                            Button(watchTogetherCoordinator.requiresStartAcknowledgement
+                                   ? "Start with ready participants" : "Start Watching") {
+                                watchTogetherCoordinator.startWithReadyParticipants(
+                                    acknowledgeUnresolved: watchTogetherCoordinator.requiresStartAcknowledgement)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            Button("Cancel Watch Together", role: .cancel) {
+                                watchTogetherCoordinator.leave()
+                            }
+                            .buttonStyle(.bordered)
                         }
-                        .buttonStyle(.borderedProminent)
                     }
                 }
             }
         case .active:
             if stateApplies {
-                Label("Watch Together active", systemImage: "shareplay")
-                    .font(.callout)
-                    .foregroundStyle(.green)
+                HStack(spacing: DS.Space.sm) {
+                    Label("Watch Together active · \(watchTogetherCoordinator.readyParticipantCount) ready",
+                          systemImage: "shareplay")
+                        .font(.callout)
+                        .foregroundStyle(.green)
+                    Button("Leave") { watchTogetherCoordinator.leave() }
+                        .buttonStyle(.bordered)
+                }
             }
         case .unavailable(_, let reason):
             if stateApplies {

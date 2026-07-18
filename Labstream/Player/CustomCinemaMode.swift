@@ -408,6 +408,11 @@ struct CustomCinemaScaffoldView: View {
     @MainActor
     private func finishCinemaDismissal() {
         let returnItem = session.pendingReturnItem ?? session.item
+        if let sharedItem = session.item {
+            // Leaving the immersive player ends this single-item Watch Together participation.
+            // This runs only on Cinema exit, never during the window-to-Cinema handoff.
+            watchTogetherCoordinator.leaveIfPlaying(sharedItem)
+        }
         let destination = CinemaExitRouting.resolve(origin: session.origin,
                                                     hasReturnItem: returnItem != nil,
                                                     autoPlay: session.pendingReturnAutoPlay,

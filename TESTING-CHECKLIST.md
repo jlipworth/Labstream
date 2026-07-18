@@ -150,6 +150,42 @@ Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The 
       menu commands, media keys, Now Playing ownership, and restoration to the prior split-view
       state all behave natively.
 
+### Watch Together / SharePlay (physical Vision Pro only)
+
+This feature is visionOS-only. A simulator build can prove compile, launch, routing, and sheet
+lifecycle, but synchronized transport and participant semantics require two physical Apple Vision
+Pro devices in the same FaceTime SharePlay session. Use non-sensitive media descriptions in notes;
+never capture account names, server addresses, provider IDs, item IDs, or activity payloads.
+
+- [ ] Install the same signed build on two headsets. Sign each participant into their own account
+      and server session; include one same-backend run and, where equivalent catalog media exists,
+      one cross-backend Plex/Jellyfin/Emby resolution run.
+- [ ] From headset A, start Watch Together for one movie or episode. Headset B sees the disclosed
+      title/catalog-matching explanation, resolves only through B's current authenticated backend,
+      and either auto-matches deterministically or requires explicit local selection.
+- [ ] While B is resolving, A reports it as resolving and requires an explicit “start with ready
+      participants” acknowledgement. Cancel once from the activation UI and once from A's ready
+      state; neither device should launch playback or retain an active/ghost participant.
+- [ ] With both ready, start from A. Each headset negotiates and reports playback through its own
+      credentials/server session, then play, pause, absolute seek/scrub, relative skip, and playback
+      rate remain coordinated without duplicate transport actions or a private server identifier.
+- [ ] Join B after A has already started. B must resolve locally, launch exactly once after becoming
+      ready, attach to the current group timeline, and not wait forever for an old one-shot message.
+- [ ] Enter and exit Custom Cinema on each headset independently. The window-to-Cinema handoff keeps
+      the same controller and SharePlay coordination; quality/track changes or a retry that replaces
+      `AVPlayerItem` reattach and remain synchronized. Exiting the player leaves participation rather
+      than keeping a ghost session.
+- [ ] Have B leave, lose media availability, and disconnect from FaceTime in separate runs. A prunes
+      B from readiness/participant state and continues or leaves clearly; B shows a non-sensitive
+      unavailable/ended state and can later start a fresh session.
+- [ ] Switch backend/server/account on one participant while ready or active. That device leaves the
+      old activity before any same-shaped local item can be treated as active. Ordinary non-SharePlay
+      playback, progress reporting, transcode cleanup, and music Now Playing remain unchanged after
+      the session ends.
+- [ ] Review the GroupActivity invitation, in-app disclosure, diagnostics, unified log, and any
+      exported evidence for tokens, URLs/hosts, account/library/item IDs, filenames, media-source or
+      play-session IDs, device identifiers, and private paths. Record only a privacy-reviewed result.
+
 ## 5. Downloads and Offline
 
 ### Route and presentation matrix

@@ -191,6 +191,13 @@ struct CustomPlayerView: View {
             watchTogetherAttachTask = nil
             #endif
             if cinemaSession.presentationState == .closed {
+                #if os(visionOS)
+                // An actual player dismissal (including single-item playback ending/advancing)
+                // leaves SharePlay so peers never retain a ghost participant. The Cinema handoff
+                // sets a non-closed presentation state before this view disappears, so it keeps
+                // the session and live PlaybackController coordinated in the immersive scaffold.
+                watchTogetherCoordinator.leaveIfPlaying(item)
+                #endif
                 controller?.stop()
                 cinemaSession.clear()
                 realityTheaterSession.clear()
