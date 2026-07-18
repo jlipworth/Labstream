@@ -63,6 +63,11 @@ final class WatchTogetherCoordinator {
     private(set) var sessionStarted = false
     private(set) var isLocalInitiator = false
     var hasActiveSession: Bool { activeSession != nil }
+    /// Advances whenever a newly delivered GroupSession becomes the active coordination target.
+    /// A replacement session can be installed synchronously without the attachment-maintenance
+    /// loop observing an intermediate inactive state, so player-item identity alone is insufficient
+    /// to decide whether `coordinateWithSession` must run again.
+    private(set) var playbackSessionGeneration: UInt64 = 0
     var requiresStartAcknowledgement: Bool { resolvingParticipantCount > 0 }
 
     @ObservationIgnored private var observationTask: Task<Void, Never>?
@@ -131,6 +136,7 @@ final class WatchTogetherCoordinator {
         clearActiveSession(leaving: activeSession != nil)
         let payload = session.activity.payload
         activeSession = session
+        playbackSessionGeneration &+= 1
         isLocalInitiator = session.isLocallyInitiated
         activePayload = payload
         messenger = GroupSessionMessenger(session: session)
