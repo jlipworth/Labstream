@@ -20,9 +20,14 @@ public enum DownloadPausePolicy {
 
     public static func rowAction(status: DownloadStatus,
                                  isStaticRangeRecord: Bool,
-                                 isTrackingTransfer: Bool) -> RowAction {
+                                 isTrackingTransfer: Bool,
+                                 isServerPrepRecord: Bool = false) -> RowAction {
         switch status {
         case .queued, .downloading:
+            // Plex persists server preparation as `.queued` even though no URLSession task exists.
+            // Park it synchronously; routing it through the async no-task URLSession pause path can
+            // race refresh-time poller reattachment and leave contradictory paused/active state.
+            if isServerPrepRecord { return .parkPreparing }
             if isStaticRangeRecord {
                 return isTrackingTransfer ? .cancelTaskOnly : .parkStaticWithoutLiveTask
             }

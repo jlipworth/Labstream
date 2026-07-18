@@ -1536,7 +1536,8 @@ public final class DownloadManager {
         let pauseAction = DownloadPausePolicy.rowAction(
             status: record.status,
             isStaticRangeRecord: StaticRangeRecoveryPolicy.isStaticRangeRecord(record),
-            isTrackingTransfer: session.isTrackingTransfer(ratingKey: ratingKey)
+            isTrackingTransfer: session.isTrackingTransfer(ratingKey: ratingKey),
+            isServerPrepRecord: DownloadRetryPolicy.isPlexServerPrepResumeCandidate(record)
         )
         guard pauseAction != .ignore else { return }
 
@@ -3095,21 +3096,50 @@ public final class DownloadManager {
             guard !originalPartIDs.isEmpty else {
                 throw DownloadError.optimizeFailed("No source media parts found while resuming optimize.")
             }
-            // Resume only the in-flight queue item below; do not grab some older Plex Version as a
-            // substitute for the requested target. A future UI can offer those versions explicitly.
+            let sourceHeight = currentItem.media?[safe: metadata.mediaIndex ?? 0]?.height
+                ?? metadata.sourceMediaHeight
+            // Reconcile the rendered artifact BEFORE inspecting/recreating queue work. Plex may
+            // already have completed and removed the type-42 item while the app was suspended; in
+            // that state a missing queue entry is not evidence that another optimize POST is needed.
+            if let renderedPart = Self.optimizedDownloadCandidate(
+                from: currentItem.media ?? [],
+                baselinePartIDs: originalPartIDs,
+                targetName: targetName,
+                sourceHeight: sourceHeight
+            ) {
+                recordDownloadDiagnostic("downloads.optimize_resume_adopt_completed", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "target": .label(targetName),
+                ])
+                try startOptimizedPartDownload(attemptKey: key,
+                                               title: record.title,
+                                               part: renderedPart,
+                                               metadata: metadata,
+                                               server: server,
+                                               token: token)
+                return
+            }
+            // No matching rendered artifact is visible yet. Inspect the exact persisted queue item
+            // before deciding whether its work disappeared and needs to be recreated.
             let backgroundProcessingKey = await bgKeyForPolling(server: server,
                                                                  token: token,
                                                                  identity: identity)
             guard store.ownsAttempt(key) else {
                 throw DownloadLifecycleCancellation.staleOptimizeAttempt
             }
-            if let backgroundProcessingKey,
-               let queueTitle = metadata.optimizeQueueTitle,
-               await optimizerQueueStatus(backgroundProcessingKey: backgroundProcessingKey,
-                                          queueTitle: queueTitle,
-                                          server: server,
-                                          token: token,
-                                          identity: identity) == nil {
+            let persistedQueueStatus: OptimizerQueueResponse.Status?
+            if let backgroundProcessingKey, let queueTitle = metadata.optimizeQueueTitle {
+                persistedQueueStatus = await optimizerQueueStatus(
+                    backgroundProcessingKey: backgroundProcessingKey,
+                    queueTitle: queueTitle,
+                    server: server,
+                    token: token,
+                    identity: identity)
+            } else {
+                persistedQueueStatus = nil
+            }
+            if persistedQueueStatus == nil,
+               let queueTitle = metadata.optimizeQueueTitle {
                 guard store.ownsAttempt(key) else {
                     throw DownloadLifecycleCancellation.staleOptimizeAttempt
                 }
@@ -3140,8 +3170,6 @@ public final class DownloadManager {
             guard store.ownsAttempt(key) else {
                 throw DownloadLifecycleCancellation.staleOptimizeAttempt
             }
-            let sourceHeight = currentItem.media?[safe: metadata.mediaIndex ?? 0]?.height
-                ?? metadata.sourceMediaHeight
             let part = try await pollForOptimizedPart(ratingKey: ratingKey,
                                                       originalPartIDs: originalPartIDs,
                                                       targetName: targetName,
@@ -4726,8 +4754,13 @@ public final class DownloadManager {
             downloadSpeed: downloadSpeed,
             displayBytes: { record in displayBytes(for: record) },
             errorMessage: { record in
-                guard record.status == .failed else { return nil }
-                return lastError[record.ratingKey].map(message(for:))
+                guard record.status == .failed || record.status == .paused,
+                      let error = lastError[record.ratingKey] else { return nil }
+                // Ordinary paused rows keep the richer progress/byte caption. A blocked Resume,
+                // however, must surface why the tap could not reattach to Plex instead of looking
+                // like an inert control that remains "Paused — tap to resume" forever.
+                if record.status == .paused, error == .interruptedResumable { return nil }
+                return message(for: error)
             },
             displayProgress: { record in rowDisplayProgress(for: record) },
             statusCaption: { record, backend in statusCaption(for: record, backend: backend) },
@@ -4800,6 +4833,8 @@ public final class DownloadManager {
                                       token: String,
                                       identity: ClientIdentity) async throws -> Part {
         var pollHealth = PlexOptimizePollHealthPolicy.State()
+        var successfulCompletionObservedAt: TimeInterval?
+        var resolvedBackgroundProcessingKey = backgroundProcessingKey
         while !Task.isCancelled {
             if PlexOptimizeDeadlinePolicy.isExpired(
                 startedAtEpochSeconds: startedAtEpochSeconds,
@@ -4891,19 +4926,55 @@ public final class DownloadManager {
             // tokens only — never a media title/path/URL.
             await recordServerQueueProbe(ratingKey: ratingKey, mediaTitle: mediaTitle, server: server,
                                          token: token, identity: identity)
-            if let backgroundProcessingKey,
+            // The type-42 key lookup is best-effort at enqueue/resume time. Retry it here after a
+            // transient miss so losing one early request cannot also lose successful-completion
+            // detection and fall back to the legacy 24-hour metadata-only loop.
+            if resolvedBackgroundProcessingKey == nil {
+                resolvedBackgroundProcessingKey = await bgKeyForPolling(
+                    server: server, token: token, identity: identity)
+            }
+            if let backgroundProcessingKey = resolvedBackgroundProcessingKey,
                let queueTitle,
                let status = await optimizerQueueStatus(backgroundProcessingKey: backgroundProcessingKey,
                                                        queueTitle: queueTitle, server: server,
-                                                       token: token, identity: identity),
-               status.isFailed {
-                downloadLog.error("optimizer-failed failed=\(status.itemsFailedCount ?? -1, privacy: .public) successful=\(status.itemsSuccessfulCount ?? -1, privacy: .public)")
-                recordDownloadDiagnostic("downloads.optimize_status_failed", fields: [
-                    "download_id": .identifier(ratingKey),
-                    "failed_count": .int(status.itemsFailedCount ?? -1),
-                    "successful_count": .int(status.itemsSuccessfulCount ?? -1),
-                ])
-                throw DownloadError.optimizeFailed("Plex server could not create an optimized version; optimized-version storage may be read-only.")
+                                                       token: token, identity: identity) {
+                switch status.outcome {
+                case .failed:
+                    downloadLog.error("optimizer-failed failed=\(status.itemsFailedCount ?? -1, privacy: .public) successful=\(status.itemsSuccessfulCount ?? -1, privacy: .public)")
+                    recordDownloadDiagnostic("downloads.optimize_status_failed", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "failed_count": .int(status.itemsFailedCount ?? -1),
+                        "successful_count": .int(status.itemsSuccessfulCount ?? -1),
+                    ])
+                    throw DownloadError.optimizeFailed("Plex server could not create an optimized version; optimized-version storage may be read-only.")
+                case .succeeded:
+                    let now = Date().timeIntervalSince1970
+                    if successfulCompletionObservedAt == nil {
+                        successfulCompletionObservedAt = now
+                        markServerPrepFinalizing(ratingKey: ratingKey)
+                        refreshRecords()
+                        recordDownloadDiagnostic("downloads.optimize_status_completed", fields: [
+                            "download_id": .identifier(ratingKey),
+                            "successful_count": .int(status.itemsSuccessfulCount ?? -1),
+                            "metadata_grace_seconds": .int(
+                                Int(PlexOptimizeCompletionPolicy.metadataIndexingGraceSeconds)),
+                        ])
+                    }
+                    if PlexOptimizeCompletionPolicy.missingPartAction(
+                        outcome: .succeeded,
+                        firstSuccessObservedAt: successfulCompletionObservedAt,
+                        now: now
+                    ) == .failMissingOutput {
+                        recordDownloadDiagnostic("downloads.optimize_completed_part_missing", fields: [
+                            "download_id": .identifier(ratingKey),
+                            "target": .label(targetName),
+                        ])
+                        throw DownloadError.optimizeFailed(
+                            "Plex finished optimizing, but Labstream could not locate the resulting version.")
+                    }
+                case .active:
+                    break
+                }
             }
             do {
                 try await Task.sleep(nanoseconds: UInt64(optimizePollInterval * 1_000_000_000))
@@ -5001,9 +5072,11 @@ public final class DownloadManager {
             let itemsSuccessfulCount: Int?
             let itemsFailedCount: Int?
             let state: String?
-            var isFailed: Bool {
-                (itemsFailedCount ?? 0) > 0 && (itemsSuccessfulCount ?? 0) == 0
-                    && state?.lowercased() == "complete"
+            var outcome: PlexOptimizeCompletionPolicy.Outcome {
+                PlexOptimizeCompletionPolicy.outcome(
+                    state: state,
+                    successfulCount: itemsSuccessfulCount,
+                    failedCount: itemsFailedCount)
             }
         }
         let mediaContainer: Container
