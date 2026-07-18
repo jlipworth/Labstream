@@ -240,8 +240,9 @@ the documented foreground substitute.
 - `MusicLibraryView.swift`, `MediaBrowserMusicView.swift`, `MusicPagedGrid.swift`, and
   the album/artist/playlist detail views own presentation.
 - `MiniPlayerBar.swift` and `NowPlayingView.swift` are the compact/full playback surfaces;
-  `RootView.swift` owns their shared presentation state so a visionOS sheet-surround tap
-  and the explicit close control use the same dismissal path.
+  `RootView.swift` owns their shared presentation state and app-owned visionOS backdrop
+  so a surround tap and the explicit leading-edge close control use the same dismissal
+  path without activating obscured content.
 - `PMSKit/Sources/PMSKit/Music/` contains Plex music request builders and pure queue
   mutation behavior.
 

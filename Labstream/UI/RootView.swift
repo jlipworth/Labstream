@@ -96,17 +96,36 @@ struct RootView: View {
 
     var body: some View {
         rootContent
+        // A custom visionOS presentation must make the obscured hierarchy inert;
+        // otherwise gaze/pinch can fall through even when an overlay is visible.
+        .allowsHitTesting(!nowPlayingPresentation.isPresented)
         .overlay {
             #if os(visionOS)
             if nowPlayingPresentation.isPresented {
-                // `.presentationBackgroundInteraction(.enabled)` passes an outside-
-                // sheet tap through to this full-window catcher. It dismisses instead
-                // of letting the obscured browse UI navigate or activate controls.
-                Rectangle()
-                    .fill(.clear)
-                    .contentShape(Rectangle())
-                    .onTapGesture { nowPlayingPresentation.dismiss() }
-                    .accessibilityHidden(true)
+                ZStack {
+                    // Use a real full-window control, not a gesture on a decorative
+                    // Color: visionOS may pass the latter through to an underlying
+                    // button. The root content is also inert while this is present.
+                    Button {
+                        nowPlayingPresentation.dismiss()
+                    } label: {
+                        Rectangle()
+                            .fill(Color.black.opacity(0.28))
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Close Now Playing")
+                    .zIndex(0)
+
+                    VisionNowPlayingPanel(
+                        scrollToQueue: nowPlayingPresentation.scrollToQueue,
+                        onDismiss: { nowPlayingPresentation.dismiss() }
+                    )
+                    .zIndex(1)
+                }
+                .ignoresSafeArea()
+                .transition(.opacity)
             }
             #endif
         }

@@ -1,9 +1,9 @@
 import SwiftUI
 import PMSKit
 
-/// Shared presentation state lets the visionOS dimmed surround and the explicit X
-/// take the exact same dismissal path. RootView owns this value because a sheet's
-/// dimmed area is outside the presenting ornament's bounds.
+/// Shared presentation state lets the visionOS backdrop and the explicit X take the
+/// exact same dismissal path. RootView owns this value because the mini player lives
+/// in a scene ornament outside the main window hierarchy.
 struct NowPlayingPresentationState: Equatable {
     var isPresented = false
     var scrollToQueue = false
@@ -19,10 +19,63 @@ struct NowPlayingPresentationState: Equatable {
     }
 }
 
+#if os(visionOS)
+/// Window-owned Now Playing platter. Unlike a system sheet, its sibling backdrop is
+/// an actual hit target, so tapping the dimmed surround can dismiss deterministically.
+struct VisionNowPlayingPanel: View {
+    @Environment(MusicPlayerController.self) private var player
+
+    let scrollToQueue: Bool
+    let onDismiss: () -> Void
+
+    var body: some View {
+        NowPlayingView(scrollToQueue: scrollToQueue, onRequestDismiss: onDismiss)
+            // 700 stays within the existing window grant while retaining the full
+            // queue and transport layout used by the former fitted sheet.
+            .frame(width: 620, height: 700)
+            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.card,
+                                        style: .continuous))
+            .labstreamGlassBackground(in: RoundedRectangle(cornerRadius: DS.Radius.card,
+                                                            style: .continuous))
+            // Player-level dismissal follows Labstream's visionOS video-player
+            // convention: Close is the leading navigation/cancellation affordance.
+            .overlay(alignment: .topLeading) {
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.body.weight(.semibold))
+                        .padding(DS.Space.md)
+                }
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.circle)
+                .frame(minWidth: 60, minHeight: 60)
+                .padding(DS.Space.lg)
+                .accessibilityLabel("Close")
+            }
+            // Stop is a playback action, not navigation, so it occupies the
+            // trailing utility-action position rather than displacing Close.
+            .overlay(alignment: .topTrailing) {
+                Button {
+                    player.stop()
+                    onDismiss()
+                } label: {
+                    Image(systemName: "stop.fill")
+                        .font(.body.weight(.semibold))
+                        .padding(DS.Space.md)
+                }
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.circle)
+                .frame(minWidth: 60, minHeight: 60)
+                .padding(DS.Space.lg)
+                .accessibilityLabel("Stop music")
+            }
+    }
+}
+#endif
+
 /// Compact persistent playback bar, mounted as `RootView`'s bottom scene ornament so
 /// music keeps playing (and stays controllable) while browsing. Renders nothing when
 /// the queue is empty; tapping anywhere outside the transport buttons opens the full
-/// `NowPlayingView` sheet.
+/// `NowPlayingView` presentation.
 struct MiniPlayerBar: View {
     @Environment(MusicPlayerController.self) private var player
     @Environment(\.labstreamCompactWidth) private var compactWidth
@@ -42,74 +95,68 @@ struct MiniPlayerBar: View {
     #endif
 
     var body: some View {
+        #if os(visionOS)
+        barBody
+        #else
         // The sheet must hang off a node that stays in the hierarchy while the bar
-        // itself is gone — scene ornaments float ABOVE window sheets, so leaving the
-        // bar visible under NowPlayingView reads as a dead duplicate control.
+        // itself is gone — leaving the bar visible under NowPlayingView reads as a
+        // dead duplicate control.
+        barBody
+        .sheet(isPresented: $presentation.isPresented,
+               onDismiss: { presentation.dismiss() }) {
+            #if os(iOS)
+            NowPlayingView(scrollToQueue: presentation.scrollToQueue)
+                .presentationDragIndicator(.visible)
+            #else
+            nowPlayingPanel
+                .presentationSizing(.fitted)
+            #endif
+        }
+        #endif
+    }
+
+    private var barBody: some View {
         ZStack {
             if let current = player.current, !presentation.isPresented {
                 bar(for: current)
             }
         }
-        .sheet(isPresented: $presentation.isPresented,
-               onDismiss: { presentation.dismiss() }) {
-            #if os(iOS)
-            // Mobile: standard resizable sheet with system drag-to-dismiss. The fixed
-            // 620×700 platter and explicit close/stop overlays below are visionOS
-            // affordances (its sheets have no system dismiss control); stop stays on
-            // the bar's ✕ here.
-            NowPlayingView(scrollToQueue: presentation.scrollToQueue)
-                .presentationDragIndicator(.visible)
-            #else
-            NowPlayingView(scrollToQueue: presentation.scrollToQueue)
-                // Fixed content size + .fitted: the default sheet (and .form —
-                // live-tested, no effect on visionOS) tracks the wide window and
-                // leaves acres of glass either side of the 300pt art column.
-                // ⚠️ Height is capped by the sheet: 760 exceeded it and the overflow
-                // was CLIPPED top-and-bottom (live: art and the close button vanished,
-                // leaving no way to dismiss). 700 must stay under the grant.
-                .frame(width: 620, height: 700)
-                // visionOS sheets have no system dismiss affordance, so every sheet
-                // needs an explicit close control. It MUST hang off this exact frame:
-                // inside NowPlayingView the overlay anchors to the oversized backdrop
-                // and gets clipped out of the fitted sheet (live-verified).
-                .overlay(alignment: .topTrailing) {
-                    Button {
-                        presentation.dismiss()
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.body.weight(.semibold))
-                            .padding(DS.Space.md)
-                    }
-                    .buttonStyle(.bordered)
-                    .buttonBorderShape(.circle)
-                    .padding(DS.Space.lg)
-                    .accessibilityLabel("Close")
-                }
-                // Stop ends the session outright (vs ✕, which just tucks the sheet
-                // away and leaves the music playing behind the mini bar).
-                .overlay(alignment: .topLeading) {
-                    Button {
-                        player.stop()
-                        presentation.dismiss()
-                    } label: {
-                        Image(systemName: "stop.fill")
-                            .font(.body.weight(.semibold))
-                            .padding(DS.Space.md)
-                    }
-                    .buttonStyle(.bordered)
-                    .buttonBorderShape(.circle)
-                    .padding(DS.Space.lg)
-                    .accessibilityLabel("Stop music")
-                }
-                .presentationSizing(.fitted)
-                #if os(visionOS)
-                // The dimmed surround is system-owned, outside this ornament and
-                // sheet frame. Let RootView's full-window dismissal catcher receive
-                // that tap instead of allowing it to navigate underlying content.
-                .presentationBackgroundInteraction(.enabled)
-                #endif
-            #endif
+    }
+
+    #if os(macOS)
+    private var nowPlayingPanel: some View {
+        NowPlayingView(scrollToQueue: presentation.scrollToQueue)
+            .frame(width: 620, height: 700)
+            .overlay(alignment: .topTrailing) { closeButton }
+            .overlay(alignment: .topLeading) { stopButton }
+    }
+    #endif
+
+    private var closeButton: some View {
+        Button { presentation.dismiss() } label: {
+            Image(systemName: "xmark")
+                .font(.body.weight(.semibold))
+                .padding(DS.Space.md)
         }
+        .buttonStyle(.bordered)
+        .buttonBorderShape(.circle)
+        .padding(DS.Space.lg)
+        .accessibilityLabel("Close")
+    }
+
+    private var stopButton: some View {
+        Button {
+            player.stop()
+            presentation.dismiss()
+        } label: {
+            Image(systemName: "stop.fill")
+                .font(.body.weight(.semibold))
+                .padding(DS.Space.md)
+        }
+        .buttonStyle(.bordered)
+        .buttonBorderShape(.circle)
+        .padding(DS.Space.lg)
+        .accessibilityLabel("Stop music")
     }
 
     @ViewBuilder
@@ -121,7 +168,7 @@ struct MiniPlayerBar: View {
             .frame(maxWidth: 560)
             // Passive progress hairline along the bottom edge — explicitly NOT a
             // scrub target (a 3-pt drag violates the 60-pt rule; scrubbing lives in
-            // the sheet — MUSIC-DESIGN §4.1). Inset past the glass corner radius so
+            // Now Playing — MUSIC-DESIGN §4.1). Inset past the glass corner radius so
             // it never pokes outside the platter shape.
             .overlay(alignment: .bottom) { progressHairline }
             // Ornament content gets its platter look from glassBackgroundEffect —
@@ -204,7 +251,7 @@ struct MiniPlayerBar: View {
                 }
                 .buttonStyle(.plain)
 
-                // Queue shortcut: same sheet as a bar tap, pre-scrolled to Up Next.
+                // Queue shortcut: same presentation as a bar tap, pre-scrolled to Up Next.
                 #if os(visionOS)
                 queueButton
                 #else
@@ -370,7 +417,7 @@ struct MiniPlayerBar: View {
 
     /// Minimum hit side for the bar's transport buttons. On touch platforms the bare
     /// title3/footnote glyphs are far under the 44-pt HIG minimum and near-misses fall
-    /// through to the whole-bar tap (opening the sheet instead); visionOS keeps the
+    /// through to the whole-bar tap (opening Now Playing instead); visionOS keeps the
     /// ornament's density — gaze targeting doesn't need the padding.
     #if os(visionOS)
     private static let transportHit: CGFloat = 0
