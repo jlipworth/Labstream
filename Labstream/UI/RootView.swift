@@ -133,6 +133,14 @@ struct RootView: View {
             if newSelection != .search {
                 lastNonSearchSelection = newSelection
             }
+            #if os(iOS)
+            // Selecting the dedicated Search role should behave like a search action,
+            // not merely navigate to an idle screen: reveal the keyboard and place the
+            // insertion point in SearchView's searchable field.
+            if newSelection == .search {
+                searchFocusRequest += 1
+            }
+            #endif
         }
         // Now Playing's "go to artist/album": land on the Music tab and push.
         .onChange(of: musicPlayer.navigationRequest) { _, item in
