@@ -3138,7 +3138,12 @@ public final class DownloadManager {
             } else {
                 persistedQueueStatus = nil
             }
-            if persistedQueueStatus == nil,
+            // Recreate only when the queue was actually inspected and the item is provably
+            // absent. A nil backgroundProcessingKey means the key lookup itself failed (bgKey
+            // fetch swallows transient errors), which is "could not inspect", not "vanished" —
+            // re-POSTing there would enqueue a duplicate optimize beside a still-running job.
+            if backgroundProcessingKey != nil,
+               persistedQueueStatus == nil,
                let queueTitle = metadata.optimizeQueueTitle {
                 guard store.ownsAttempt(key) else {
                     throw DownloadLifecycleCancellation.staleOptimizeAttempt
@@ -4759,7 +4764,14 @@ public final class DownloadManager {
                 // Ordinary paused rows keep the richer progress/byte caption. A blocked Resume,
                 // however, must surface why the tap could not reattach to Plex instead of looking
                 // like an inert control that remains "Paused — tap to resume" forever.
-                if record.status == .paused, error == .interruptedResumable { return nil }
+                if record.status == .paused {
+                    if error == .interruptedResumable { return nil }
+                    // lastError is attempt-scoped and nothing clears it on sign-in, so a
+                    // blocked-resume auth reason goes stale the moment the session returns.
+                    // Fall back to the normal paused caption instead of demanding sign-in
+                    // from a signed-in user.
+                    if error == .notAuthenticated, isBackendConfigured(for: record) { return nil }
+                }
                 return message(for: error)
             },
             displayProgress: { record in rowDisplayProgress(for: record) },
@@ -4835,6 +4847,7 @@ public final class DownloadManager {
         var pollHealth = PlexOptimizePollHealthPolicy.State()
         var successfulCompletionObservedAt: TimeInterval?
         var resolvedBackgroundProcessingKey = backgroundProcessingKey
+        var bgKeyRetriesRemaining = 3
         while !Task.isCancelled {
             if PlexOptimizeDeadlinePolicy.isExpired(
                 startedAtEpochSeconds: startedAtEpochSeconds,
@@ -4928,8 +4941,12 @@ public final class DownloadManager {
                                          token: token, identity: identity)
             // The type-42 key lookup is best-effort at enqueue/resume time. Retry it here after a
             // transient miss so losing one early request cannot also lose successful-completion
-            // detection and fall back to the legacy 24-hour metadata-only loop.
-            if resolvedBackgroundProcessingKey == nil {
+            // detection and fall back to the legacy 24-hour metadata-only loop. Bounded: a server
+            // that never exposes the type-42 playlist must not eat an extra failing request every
+            // poll tick for the whole (up to 24h) window, and without a queueTitle the key could
+            // never be used anyway.
+            if resolvedBackgroundProcessingKey == nil, queueTitle != nil, bgKeyRetriesRemaining > 0 {
+                bgKeyRetriesRemaining -= 1
                 resolvedBackgroundProcessingKey = await bgKeyForPolling(
                     server: server, token: token, identity: identity)
             }
@@ -4938,6 +4955,11 @@ public final class DownloadManager {
                let status = await optimizerQueueStatus(backgroundProcessingKey: backgroundProcessingKey,
                                                        queueTitle: queueTitle, server: server,
                                                        token: token, identity: identity) {
+                // Pause/delete may have landed while this task was suspended in the await above
+                // (releaseInFlight cancels the task, but an already-produced result still resumes
+                // the continuation). Do not stamp finalizing display state or throw terminal
+                // errors on behalf of a superseded attempt.
+                guard !Task.isCancelled else { throw CancellationError() }
                 switch status.outcome {
                 case .failed:
                     downloadLog.error("optimizer-failed failed=\(status.itemsFailedCount ?? -1, privacy: .public) successful=\(status.itemsSuccessfulCount ?? -1, privacy: .public)")
@@ -4963,7 +4985,8 @@ public final class DownloadManager {
                     if PlexOptimizeCompletionPolicy.missingPartAction(
                         outcome: .succeeded,
                         firstSuccessObservedAt: successfulCompletionObservedAt,
-                        now: now
+                        now: now,
+                        metadataInspected: fetch.item != nil
                     ) == .failMissingOutput {
                         recordDownloadDiagnostic("downloads.optimize_completed_part_missing", fields: [
                             "download_id": .identifier(ratingKey),
@@ -4973,7 +4996,10 @@ public final class DownloadManager {
                             "Plex finished optimizing, but Labstream could not locate the resulting version.")
                     }
                 case .active:
-                    break
+                    // A success reading that flaps back to active was spurious (e.g. a stale
+                    // same-title queue row matched by `.last(where:)`); disarm the deadline so
+                    // only a stable succeeded status ages toward failMissingOutput.
+                    successfulCompletionObservedAt = nil
                 }
             }
             do {
