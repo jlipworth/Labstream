@@ -22,20 +22,34 @@ struct PlexOptimizeCompletionPolicyTests {
         #expect(PlexOptimizeCompletionPolicy.missingPartAction(
             outcome: .succeeded,
             firstSuccessObservedAt: observed,
-            now: observed + PlexOptimizeCompletionPolicy.metadataIndexingGraceSeconds - 1
+            now: observed + PlexOptimizeCompletionPolicy.metadataIndexingGraceSeconds - 1,
+            metadataInspected: true
         ) == .keepPolling)
         #expect(PlexOptimizeCompletionPolicy.missingPartAction(
             outcome: .succeeded,
             firstSuccessObservedAt: observed,
-            now: observed + PlexOptimizeCompletionPolicy.metadataIndexingGraceSeconds
+            now: observed + PlexOptimizeCompletionPolicy.metadataIndexingGraceSeconds,
+            metadataInspected: true
         ) == .failMissingOutput)
+    }
+
+    @Test("The deadline cannot fire on an iteration whose metadata fetch failed")
+    func metadataFetchFailureKeepsPolling() {
+        let observed: TimeInterval = 1_000
+        #expect(PlexOptimizeCompletionPolicy.missingPartAction(
+            outcome: .succeeded,
+            firstSuccessObservedAt: observed,
+            now: observed + PlexOptimizeCompletionPolicy.metadataIndexingGraceSeconds * 10,
+            metadataInspected: false
+        ) == .keepPolling)
     }
 
     @Test("Active and failed states do not use the successful indexing deadline")
     func nonSuccessStates() {
         for outcome in [PlexOptimizeCompletionPolicy.Outcome.active, .failed] {
             #expect(PlexOptimizeCompletionPolicy.missingPartAction(
-                outcome: outcome, firstSuccessObservedAt: 0, now: 10_000) == .keepPolling)
+                outcome: outcome, firstSuccessObservedAt: 0, now: 10_000,
+                metadataInspected: true) == .keepPolling)
         }
     }
 }

@@ -28,10 +28,18 @@ public enum PlexOptimizeCompletionPolicy {
         return .succeeded
     }
 
+    /// `metadataIndexed` is whether THIS poll iteration successfully fetched the item's library
+    /// metadata and still found no rendered part. The deadline may only fire on such an
+    /// iteration: wall time spent while the metadata endpoint is failing proves nothing about the
+    /// part being missing, and failing there would contradict the poll-health policy's tolerance
+    /// of long degraded windows.
     public static func missingPartAction(outcome: Outcome,
                                          firstSuccessObservedAt: TimeInterval?,
-                                         now: TimeInterval) -> MissingPartAction {
-        guard outcome == .succeeded, let firstSuccessObservedAt else { return .keepPolling }
+                                         now: TimeInterval,
+                                         metadataInspected: Bool) -> MissingPartAction {
+        guard outcome == .succeeded, let firstSuccessObservedAt, metadataInspected else {
+            return .keepPolling
+        }
         let elapsed = max(0, now - firstSuccessObservedAt)
         return elapsed >= metadataIndexingGraceSeconds ? .failMissingOutput : .keepPolling
     }
