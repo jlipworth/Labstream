@@ -2179,6 +2179,12 @@ public final class DownloadManager {
             if resumed {
                 activeJobs.insert(ratingKey)
                 inFlightAttempts.acquire(retryAttemptKey)
+                // The original terminal failure released and cancelled best-effort side-cache
+                // work. A resume-data retry restarts only the media URLSession task and returns
+                // before the normal backend entry points run, so explicitly restart any missing
+                // poster/chapter/trick-play/subtitle hydration for this exact persisted attempt.
+                rehydrateOptionalSideAssetsAfterTransferResume(record: record,
+                                                                attemptKey: retryAttemptKey)
                 refreshRecords()
                 return
             }
