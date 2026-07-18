@@ -80,6 +80,7 @@ struct CustomPlayerView: View {
     init(localFile: URL,
          item: MediaItem,
          trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
+         offlinePosterURL: URL? = nil,
          offlineTextSubtitles: [OfflineTextSubtitleTrack] = [],
          offlineChapterImageURLs: [Int: URL] = [:],
          cinemaOrigin: CinemaOrigin? = nil,
@@ -96,6 +97,7 @@ struct CustomPlayerView: View {
                                          item: item,
                                          identity: identity,
                                          client: client,
+                                         offlinePosterURL: offlinePosterURL,
                                          offlineTextSubtitles: offlineTextSubtitles,
                                          offlineChapterImageURLs: offlineChapterImageURLs,
                                          onLocalPlaybackProgress: onLocalPlaybackProgress)

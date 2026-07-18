@@ -129,6 +129,9 @@ final class PlaybackController {
 
     /// The local file URL, when playing offline content.
     private let localFile: URL?
+    /// Locally cached poster for offline playback. Unlike `item.thumb`, this remains readable
+    /// without a server/token and can populate player chrome plus system Now Playing artwork.
+    private let offlinePosterURL: URL?
     /// Persists local-file playback progress for offline downloads. nil for online streams.
     private let localPlaybackProgress: ((Int, Int?) -> Void)?
     /// Cached per-chapter image file URLs (chapter index → file), for offline playback only (#88).
@@ -1016,6 +1019,7 @@ final class PlaybackController {
         self.identity = identity
         self.client = client
         self.localFile = nil
+        self.offlinePosterURL = nil
         self.localPlaybackProgress = nil
         self.offlineChapterImageURLs = [:]
         self.offlineTextSubtitles = []
@@ -1044,6 +1048,7 @@ final class PlaybackController {
          item: MediaItem,
          identity: ClientIdentity,
          client: PlexClient,
+         offlinePosterURL: URL? = nil,
          offlineTextSubtitles: [OfflineTextSubtitleTrack] = [],
          offlineChapterImageURLs: [Int: URL] = [:],
          onLocalPlaybackProgress: ((Int, Int?) -> Void)? = nil,
@@ -1051,6 +1056,7 @@ final class PlaybackController {
          qualityDefaultsKey: String = PlaybackPreferences.Keys.legacyQualityKbps) {
         self.item = item
         self.localFile = localFile
+        self.offlinePosterURL = offlinePosterURL
         self.localPlaybackProgress = onLocalPlaybackProgress
         self.offlineChapterImageURLs = offlineChapterImageURLs
         self.offlineTextSubtitles = offlineTextSubtitles
@@ -1103,6 +1109,7 @@ final class PlaybackController {
          qualityDefaultsKey: String = PlaybackPreferences.Keys.legacyQualityKbps) {
         self.item = item
         self.localFile = nil
+        self.offlinePosterURL = nil
         self.localPlaybackProgress = nil
         self.offlineChapterImageURLs = [:]
         self.offlineTextSubtitles = []
@@ -3166,8 +3173,9 @@ final class PlaybackController {
     /// fetches the poster image off the main actor (best-effort) and appends it once it
     /// arrives. Never blocks playback: on any failure the chrome simply shows no artwork.
     ///
-    /// Artwork is only fetched for streaming sessions (where we have the server + token to hit
-    /// `/photo/:/transcode`); local-file playback gets the text items only.
+    /// Streaming sessions fetch through `/photo/:/transcode`; downloaded playback reads the
+    /// poster side asset already cached beside the media file. Older downloads without a cached
+    /// poster keep the text-only fallback.
     private func attachExternalMetadata(to playerItem: AVPlayerItem,
                                         observedPlaybackGeneration: Int) {
         #if os(macOS)
@@ -3186,16 +3194,23 @@ final class PlaybackController {
                                                          defaultPlaybackRate: Double(playbackSpeed))
         #endif
 
-        guard let server, let token else { return }
-        let imagePath = item.thumb ?? item.art
-        guard let imagePath, !imagePath.isEmpty,
-              let url = Self.posterTranscodeURL(imagePath: imagePath, server: server, token: token)
-        else { return }
+        let artworkURL: URL?
+        if let offlinePosterURL {
+            artworkURL = offlinePosterURL
+        } else if let server, let token {
+            let imagePath = item.thumb ?? item.art
+            artworkURL = imagePath.flatMap {
+                Self.posterTranscodeURL(imagePath: $0, server: server, token: token)
+            }
+        } else {
+            artworkURL = nil
+        }
+        guard let artworkURL else { return }
 
         Task { [weak self, weak playerItem] in
             // Fetch returns Sendable Data off-actor; metadata is then built/set on the main
             // actor where AVMetadataItem / AVPlayerItem live.
-            guard let data = await Self.fetchArtworkData(url: url) else { return }
+            guard let data = await Self.fetchArtworkData(url: artworkURL) else { return }
             await MainActor.run {
                 guard let self, let playerItem else { return }
                 guard self.isCurrentPlaybackLifecycle(observedPlaybackGeneration) else { return }
@@ -3221,6 +3236,9 @@ final class PlaybackController {
     /// Best-effort artwork fetch. Returns `nil` (never throws) on any failure so it can't
     /// black-hole playback. `nonisolated` + returns Sendable `Data`.
     private nonisolated static func fetchArtworkData(url: URL) async -> Data? {
+        if url.isFileURL {
+            return try? Data(contentsOf: url)
+        }
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
             if let http = response as? HTTPURLResponse,
