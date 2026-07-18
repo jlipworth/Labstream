@@ -126,7 +126,9 @@ final class WatchTogetherCoordinator {
     }
 
     private func handle(_ session: GroupSession<WatchTogetherActivity>) {
-        clearActiveSession(leaving: false)
+        // A newly delivered activity replaces any previous one. Explicitly leave the old session
+        // before adopting the new payload so it cannot retain this device as a ghost participant.
+        clearActiveSession(leaving: activeSession != nil)
         let payload = session.activity.payload
         activeSession = session
         isLocalInitiator = session.isLocallyInitiated
@@ -252,13 +254,37 @@ final class WatchTogetherCoordinator {
 
     func stateApplies(to item: MediaItem) -> Bool {
         guard let context = state.context else { return false }
+        // Once this participant has resolved the activity, only its exact backend-local item may
+        // display/consume active session state. `selectableCandidates` is deliberately coarse
+        // (kind plus timeline bucket) for an explicit user-confirmation list; using it here made an
+        // unrelated same-length item look SharePlay-active and risked attaching after navigation.
+        if let resolvedItem {
+            return resolvedItem.ratingKey == item.ratingKey
+        }
         if let active = activePayload?.identity {
-            return SharePlayMediaResolver().selectableCandidates(for: active, in: [item]).count == 1
+            if case .resolved = SharePlayMediaResolver().resolve(active, in: [item]) {
+                return true
+            }
+            return false
         }
         return context.title == item.title
     }
 
-    func leave() { clearActiveSession(leaving: true) }
+    func leave() {
+        // Explicit cancellation also revokes an activation that has prepared but whose session
+        // has not been delivered yet. Internal session replacement intentionally preserves this
+        // value long enough to match the newly activated activity in `handle`.
+        pendingLocalShare = nil
+        clearActiveSession(leaving: true)
+    }
+
+    /// End coordination when the exact locally resolved item leaves the player. This is kept
+    /// separate from generic view dismissal because the window disappears during the Cinema
+    /// handoff while the same controller and SharePlay session intentionally continue there.
+    func leaveIfPlaying(_ item: MediaItem) {
+        guard resolvedItem?.ratingKey == item.ratingKey else { return }
+        leave()
+    }
 
     private func context(for payload: SharePlayMediaActivityPayload) -> PresentationContext {
         if let identifier = payload.identity.coordinatorIdentifier {
@@ -329,8 +355,10 @@ final class WatchTogetherCoordinator {
     }
 
     private func pruneStatuses(to activeIDs: [UUID], localID: UUID) {
-        let allowed = Set(activeIDs).union([localID])
-        participantStatuses = participantStatuses.filter { allowed.contains($0.key) }
+        participantStatuses = SharePlayReadinessRoster.reconcile(
+            statuses: participantStatuses,
+            activeParticipantIDs: Set(activeIDs),
+            localParticipantID: localID)
         refreshCounts()
     }
 

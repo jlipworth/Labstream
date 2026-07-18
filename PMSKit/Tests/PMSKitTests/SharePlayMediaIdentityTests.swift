@@ -320,4 +320,32 @@ struct SharePlayMediaIdentityTests {
         #expect(SharePlayReadinessSummary.shouldLaunchLocally(sessionStarted: true, localResolved: true))
         #expect(!SharePlayReadinessSummary.shouldLaunchLocally(sessionStarted: false, localResolved: true))
     }
+
+    @Test func activeParticipantIsResolvingBeforeFirstStatusMessageArrives() {
+        let local = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+        let newcomer = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+
+        let statuses = SharePlayReadinessRoster.reconcile(
+            statuses: [local: .ready],
+            activeParticipantIDs: [local, newcomer],
+            localParticipantID: local)
+
+        #expect(statuses == [local: .ready, newcomer: .resolving])
+        let summary = SharePlayReadinessSummary(statuses: Array(statuses.values))
+        #expect(!summary.canStart(acknowledgingUnresolved: false))
+        #expect(summary.canStart(acknowledgingUnresolved: true))
+    }
+
+    @Test func participantRosterPrunesDeparturesAndPreservesKnownReadiness() {
+        let local = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+        let remaining = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+        let departed = UUID(uuidString: "99999999-8888-7777-6666-555555555555")!
+
+        let statuses = SharePlayReadinessRoster.reconcile(
+            statuses: [local: .started, remaining: .ready, departed: .unable],
+            activeParticipantIDs: [local, remaining],
+            localParticipantID: local)
+
+        #expect(statuses == [local: .started, remaining: .ready])
+    }
 }
