@@ -31,11 +31,11 @@
 
 /* Begin PBXFileReference section */
 		AA0000000000000000000005 /* Labstream.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Labstream.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		AA0000000000000000000020 /* LabstreamMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Labstream.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		AA0000000000000000000031 /* LabstreamMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Labstream.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000013 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
+		AA0000000000000000000020 /* Labstream.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Labstream.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000031 /* Labstream.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Labstream.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000041 /* LabstreamTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LabstreamTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000051 /* LabstreamMacTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LabstreamMacTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		AA0000000000000000000013 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -99,8 +99,8 @@
 			isa = PBXGroup;
 			children = (
 				AA0000000000000000000005 /* Labstream.app */,
-				AA0000000000000000000020 /* LabstreamMobile.app */,
-				AA0000000000000000000031 /* LabstreamMac.app */,
+				AA0000000000000000000020 /* Labstream.app */,
+				AA0000000000000000000031 /* Labstream.app */,
 				AA0000000000000000000041 /* LabstreamTests.xctest */,
 				AA0000000000000000000051 /* LabstreamMacTests.xctest */,
 			);
@@ -153,7 +153,7 @@
 				AA0000000000000000000011 /* PMSKit */,
 			);
 			productName = Labstream;
-			productReference = AA0000000000000000000020 /* LabstreamMobile.app */;
+			productReference = AA0000000000000000000020 /* Labstream.app */;
 			productType = "com.apple.product-type.application";
 		};
 		AA0000000000000000000035 /* LabstreamMac */ = {
@@ -176,7 +176,7 @@
 				AA0000000000000000000011 /* PMSKit */,
 			);
 			productName = Labstream;
-			productReference = AA0000000000000000000031 /* LabstreamMac.app */;
+			productReference = AA0000000000000000000031 /* Labstream.app */;
 			productType = "com.apple.product-type.application";
 		};
 		AA0000000000000000000040 /* LabstreamTests */ = {
@@ -233,7 +233,7 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 2650;
-				LastUpgradeCheck = 2650;
+				LastUpgradeCheck = 2700;
 				TargetAttributes = {
 					AA0000000000000000000004 = {
 						CreatedOnToolsVersion = 26.5;
@@ -424,6 +424,7 @@
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = xros;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 6.0;
@@ -480,6 +481,7 @@
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = xros;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_VERSION = 6.0;
 				XROS_DEPLOYMENT_TARGET = 26.0;
@@ -501,6 +503,8 @@
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				"INFOPLIST_KEY_UISupportedInterfaceOrientations[sdk=xros*]" = UIInterfaceOrientationPortrait;
+				LABSTREAM_BUILD_DATE_UTC = unknown;
+				LABSTREAM_BUILD_SLUG = dev;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -512,8 +516,6 @@
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = 7;
-				LABSTREAM_BUILD_DATE_UTC = unknown;
-				LABSTREAM_BUILD_SLUG = dev;
 				XROS_DEPLOYMENT_TARGET = 26.0;
 			};
 			name = Debug;
@@ -533,6 +535,8 @@
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				"INFOPLIST_KEY_UISupportedInterfaceOrientations[sdk=xros*]" = UIInterfaceOrientationPortrait;
+				LABSTREAM_BUILD_DATE_UTC = unknown;
+				LABSTREAM_BUILD_SLUG = dev;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -544,13 +548,10 @@
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = 7;
-				LABSTREAM_BUILD_DATE_UTC = unknown;
-				LABSTREAM_BUILD_SLUG = dev;
 				XROS_DEPLOYMENT_TARGET = 26.0;
 			};
 			name = Release;
 		};
-
 		AA0000000000000000000027 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = AA0000000000000000000013 /* Signing.xcconfig */;
@@ -564,11 +565,13 @@
 				INFOPLIST_FILE = Config/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Labstream;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIBackgroundModes = audio;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UIBackgroundModes = audio;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				LABSTREAM_BUILD_DATE_UTC = unknown;
+				LABSTREAM_BUILD_SLUG = dev;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -581,8 +584,6 @@
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				LABSTREAM_BUILD_DATE_UTC = unknown;
-				LABSTREAM_BUILD_SLUG = dev;
 			};
 			name = Debug;
 		};
@@ -599,11 +600,13 @@
 				INFOPLIST_FILE = Config/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Labstream;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIBackgroundModes = audio;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UIBackgroundModes = audio;
 				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				LABSTREAM_BUILD_DATE_UTC = unknown;
+				LABSTREAM_BUILD_SLUG = dev;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -616,35 +619,32 @@
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
-				LABSTREAM_BUILD_DATE_UTC = unknown;
-				LABSTREAM_BUILD_SLUG = dev;
 			};
 			name = Release;
 		};
-
 		AA0000000000000000000037 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = AA0000000000000000000013 /* Signing.xcconfig */;
 			buildSettings = {
-				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = MacAppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Config/LabstreamMac.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Config/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Labstream;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.entertainment";
+				LABSTREAM_BUILD_DATE_UTC = unknown;
+				LABSTREAM_BUILD_SLUG = dev;
+				LABSTREAM_KEYCHAIN_SERVICE = com.visionplay.app;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				LABSTREAM_BUILD_DATE_UTC = unknown;
-				LABSTREAM_BUILD_SLUG = dev;
-				LABSTREAM_KEYCHAIN_SERVICE = com.visionplay.app;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.Labstream;
@@ -661,25 +661,25 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = AA0000000000000000000013 /* Signing.xcconfig */;
 			buildSettings = {
-				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = MacAppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = Config/LabstreamMac.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Config/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = Labstream;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.entertainment";
+				LABSTREAM_BUILD_DATE_UTC = unknown;
+				LABSTREAM_BUILD_SLUG = dev;
+				LABSTREAM_KEYCHAIN_SERVICE = com.visionplay.app;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				LABSTREAM_BUILD_DATE_UTC = unknown;
-				LABSTREAM_BUILD_SLUG = dev;
-				LABSTREAM_KEYCHAIN_SERVICE = com.visionplay.app;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.Labstream;
@@ -730,6 +730,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
+				DEAD_CODE_STRIPPING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.LabstreamMacTests;
@@ -746,6 +747,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
+				DEAD_CODE_STRIPPING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.LabstreamMacTests;
@@ -778,7 +780,6 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-
 		AA0000000000000000000026 /* Build configuration list for PBXNativeTarget "LabstreamMobile" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
