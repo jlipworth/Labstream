@@ -166,6 +166,7 @@ public struct OfflineLibraryView: View {
         CustomPlayerView(localFile: record.localURL,
                          item: offlineItem(from: record),
                          trickPlayProvider: localTrickPlayProvider(for: record),
+                         offlinePosterURL: record.posterURL,
                          offlineTextSubtitles: record.metadata?.offlineTextSubtitles ?? [],
                          offlineChapterImageURLs: record.chapterImageURLs,
                          cinemaOrigin: .offline(ratingKey: record.ratingKey),

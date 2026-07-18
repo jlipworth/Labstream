@@ -599,6 +599,7 @@ struct DetailView: View {
                                                                    url: request.trickPlayURL,
                                                                    chapterImageURLs: request.chapterImageURLs,
                                                                    offlineChapters: request.offlineChapters),
+                         offlinePosterURL: request.posterURL,
                          offlineTextSubtitles: request.offlineTextSubtitles,
                          offlineChapterImageURLs: request.chapterImageURLs,
                          cinemaOrigin: .offline(ratingKey: request.downloadRatingKey),
@@ -756,6 +757,7 @@ struct DetailView: View {
                                                    item: DetailPlaybackLauncher.itemWithResumeRewind(offlineItem, resumeRewindSeconds: resumeRewindSeconds),
                                                    trickPlayURL: trickPlayURL,
                                                    trickPlayKind: trickPlayKind,
+                                                   posterURL: record?.posterURL,
                                                    chapterImageURLs: chapterImageURLs,
                                                    offlineChapters: record?.metadata?.chapters ?? [],
                                                    offlineTextSubtitles: record?.metadata?.offlineTextSubtitles ?? [],
@@ -1151,6 +1153,7 @@ struct DetailView: View {
         let item: MediaItem
         let trickPlayURL: URL?
         let trickPlayKind: LocalTrickPlayKind?
+        let posterURL: URL?
         let chapterImageURLs: [Int: URL]
         let offlineChapters: [OfflineChapter]
         let offlineTextSubtitles: [OfflineTextSubtitleTrack]
