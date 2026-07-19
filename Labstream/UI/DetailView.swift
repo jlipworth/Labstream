@@ -688,6 +688,7 @@ struct DetailView: View {
         .buttonStyle(.bordered)
         .disabled(isResolvingPlayback
                   || !metadataReadyForActions
+                  || !watchTogetherCoordinator.canRequestWatchTogether
                   || detailed.sharePlayMediaIdentity?.coordinatorIdentifier == nil)
     }
 

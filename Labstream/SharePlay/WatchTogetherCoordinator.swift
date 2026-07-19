@@ -63,6 +63,17 @@ final class WatchTogetherCoordinator {
     private(set) var sessionStarted = false
     private(set) var isLocalInitiator = false
     var hasActiveSession: Bool { activeSession != nil }
+    /// A SharePlay activation is single-flight. Repeated taps while the system activation sheet is
+    /// resolving (or while an existing activity is ready/active) would otherwise replace the live
+    /// GroupSession and briefly tear playback coordination down before the replacement arrives.
+    var canRequestWatchTogether: Bool {
+        switch state {
+        case .inactive, .unavailable:
+            true
+        case .resolving, .selectionRequired, .ready, .active:
+            false
+        }
+    }
     /// Advances whenever a newly delivered GroupSession becomes the active coordination target.
     /// A replacement session can be installed synchronously without the attachment-maintenance
     /// loop observing an intermediate inactive state, so player-item identity alone is insufficient
@@ -102,6 +113,7 @@ final class WatchTogetherCoordinator {
     }
 
     func requestWatchTogether(for item: MediaItem) async {
+        guard canRequestWatchTogether else { return }
         guard let payload = SharePlayMediaActivityPayload(mediaItem: item),
               payload.identity.coordinatorIdentifier != nil else {
             state = .unavailable(.unavailable(title: item.title), reason: .unsupportedItem)
