@@ -338,6 +338,19 @@ public final class DownloadManager {
     /// until a fresh window is available (#224).
     private var rateEstimatorForegroundGraceUntil: [String: Date] = [:]
 
+    /// Static rows awaiting their first live Range watermark after scene activation. The original
+    /// #224 fix started a fixed four-second grace at the scene event, but current device evidence
+    /// shows reattach/retry can deliver the first range callback 7-15 seconds later. Keep the
+    /// activation time so that first callback can explicitly rebaseline the estimator at the data
+    /// boundary rather than relying on a wall-clock guess.
+    private var rateEstimatorForegroundProgressPending: [String: Date] = [:]
+
+    /// One-shot evidence marker: after the first post-foreground callback rebaselines a row, record
+    /// the first rate the UI is allowed to publish. This makes physical validation compare the
+    /// hidden catch-up boundary with the subsequent settled computed rate without logging every
+    /// one-second estimator sample.
+    private var rateEstimatorForegroundSettledPending: Set<String> = []
+
     /// A headset wake can leave static Range tasks untracked until the background session is
     /// enumerated again. Coalesce the recovery sweep so repeated active/inactive scene events
     /// cannot race duplicate reattach/retry work.
@@ -599,11 +612,31 @@ public final class DownloadManager {
         self.session.onRangeLiveProgress = { [weak self] ratingKey, liveBytes, expectedBytes in
             Task { @MainActor in
                 guard let self else { return }
+                let now = Date()
                 self.liveRangeProgress[ratingKey] = DownloadLiveRangeProgressPolicy.mergedSample(
                     liveBytes: liveBytes,
                     expectedBytes: expectedBytes,
                     previous: self.liveRangeProgress[ratingKey],
-                    updatedAt: Date())
+                    updatedAt: now)
+                if self.isAppSceneActive,
+                   let foregroundedAt = self.rateEstimatorForegroundProgressPending
+                    .removeValue(forKey: ratingKey) {
+                    let baselineBytes = self.liveRangeProgress[ratingKey]?.bytes ?? liveBytes
+                    var estimator = self.rateEstimators[ratingKey]
+                        ?? DownloadRateEstimator(rebaselineSuppressWindow: 4.0)
+                    estimator.rebaseline(bytes: baselineBytes, at: now)
+                    self.rateEstimators[ratingKey] = estimator
+                    self.rateEstimatorForegroundGraceUntil[ratingKey] = now.addingTimeInterval(4)
+                    self.rateEstimatorForegroundSettledPending.insert(ratingKey)
+                    self.downloadSpeed.removeValue(forKey: ratingKey)
+                    self.downloadETA.removeValue(forKey: ratingKey)
+                    self.recordDownloadDiagnostic("downloads.rate_foreground_rebaseline", fields: [
+                        "download_id": .identifier(ratingKey),
+                        "foreground_delay_ms": .int(
+                            max(0, Int(now.timeIntervalSince(foregroundedAt) * 1_000))),
+                        "baseline_bytes": .bytes(baselineBytes),
+                    ])
+                }
                 // Range delegates can fire many times per second across several active downloads.
                 // Publishing the whole offline snapshot at the default 500 ms cadence made the
                 // headset main thread alternate between smooth frames and 300+ ms microhangs while
@@ -1677,6 +1710,7 @@ public final class DownloadManager {
     func noteAppScenePhase(_ phase: String) {
         isAppSceneActive = phase == "active"
         if phase == "active" {
+            beginDownloadRateForegroundRebaseline()
             // #187: headset reattach can deliver a burst of background-session progress and scene
             // activation events while the Offline window is being reconstructed. Coalesce the first
             // refresh onto the next run-loop turn instead of invalidating the whole downloads list
@@ -1697,6 +1731,30 @@ public final class DownloadManager {
         }
     }
 
+    /// Start the UI-rate lifecycle boundary independently of task recovery readiness. On a cold
+    /// foreground launch, `startupRecoveryState` is not ready yet and the old placement inside
+    /// `recoverStaticRangeTransfersAfterForeground` skipped #224 protection entirely. Include
+    /// queued static rows captured before reconcile as well as rows already downloading; either can
+    /// be the row whose first reattached/restarted callback exposes accumulated background bytes.
+    private func beginDownloadRateForegroundRebaseline() {
+        let now = Date()
+        let interruptedStaticKeys = Set(store.interruptedStaticByteRangeKeys())
+        let downloadingRecords = store.records.filter { $0.status == .downloading }
+        for ratingKey in downloadingRecords.map(\.ratingKey) {
+            rateEstimatorForegroundGraceUntil[ratingKey] = now.addingTimeInterval(4)
+            downloadSpeed.removeValue(forKey: ratingKey)
+            downloadETA.removeValue(forKey: ratingKey)
+        }
+        let downloadingStaticKeys = downloadingRecords.compactMap { record -> String? in
+            record.metadata?.resolvedResumeMode(ratingKey: record.ratingKey) == .staticByteRange
+                ? record.ratingKey
+                : nil
+        }
+        for ratingKey in interruptedStaticKeys.union(downloadingStaticKeys) {
+            rateEstimatorForegroundProgressPending[ratingKey] = now
+        }
+    }
+
     /// Re-run the same authoritative task reconciliation used at launch when a headset returns
     /// from sleep. A missing background task is converted to a resumable paused row and restarted
     /// automatically, which is the recovery users previously got only by Pause All → Resume All.
@@ -1705,13 +1763,7 @@ public final class DownloadManager {
         guard !foregroundStaticRangeRecoveryInFlight else { return }
         foregroundStaticRangeRecoveryInFlight = true
 
-        let now = Date()
         let interruptedStaticKeys = store.interruptedStaticByteRangeKeys()
-        for record in store.records where record.status == .downloading {
-            rateEstimatorForegroundGraceUntil[record.ratingKey] = now.addingTimeInterval(4)
-            downloadSpeed.removeValue(forKey: record.ratingKey)
-            downloadETA.removeValue(forKey: record.ratingKey)
-        }
 
         // B.13: same snapshot rule as launch — rows created while `getAllTasks` runs are skipped.
         let snapshotRatingKeys = store.allRatingKeys
@@ -4082,12 +4134,21 @@ public final class DownloadManager {
             downloadSpeed[record.ratingKey] = (rate ?? 0) > 0 ? rate : nil
             downloadETA[record.ratingKey] = estimator.eta(expectedTotal: expectedTotal)
             rateEstimators[record.ratingKey] = estimator
+            if let rate, rate > 0,
+               rateEstimatorForegroundSettledPending.remove(record.ratingKey) != nil {
+                recordDownloadDiagnostic("downloads.rate_foreground_settled", fields: [
+                    "download_id": .identifier(record.ratingKey),
+                    "sample_bytes": .bytes(sampleBytes),
+                    "rate_bytes_per_second": .int(Int(rate.rounded())),
+                ])
+            }
         }
         let forwardOnlyRestarts = detectForwardOnlyStreamStalls(
             in: recoveryEligibleFresh, now: now)
         // Drop estimators/derived values for rows no longer downloading (complete / failed / removed).
         rateEstimators = rateEstimators.filter { activeKeys.contains($0.key) }
         rateEstimatorForegroundGraceUntil = rateEstimatorForegroundGraceUntil.filter { activeKeys.contains($0.key) }
+        rateEstimatorForegroundSettledPending.formIntersection(activeKeys)
         downloadSpeed = downloadSpeed.filter { activeKeys.contains($0.key) }
         downloadETA = downloadETA.filter { activeKeys.contains($0.key) }
         updateDownloadWatchdog(for: recoveryEligibleFresh)

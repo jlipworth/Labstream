@@ -158,4 +158,28 @@ struct DownloadRateEstimatorTests {
         let rate = est.sample(bytes: 80_000_000, at: Self.t(6.1))
         #expect((rate ?? 0) > 0)
     }
+
+    @Test("explicit forward rebaseline anchors a late post-foreground progress burst")
+    func explicitForwardRebaselineAnchorsLateForegroundBurst() throws {
+        var unanchored = DownloadRateEstimator(firstEmitWindow: 0.5,
+                                               rebaselineSuppressWindow: 4.0)
+        // This mirrors the manager's old fixed scene-activation grace: its last replacement
+        // baseline lands near the end of the four-second grace, then the first URLSession progress
+        // callback arrives later with bytes accumulated while the app was suspended.
+        _ = unanchored.sample(bytes: 100_000_000, at: Self.t(3.9))
+        _ = unanchored.sample(bytes: 100_000_000, at: Self.t(4.1))
+        let inflatedSample = unanchored.sample(bytes: 500_000_000, at: Self.t(5.0))
+        let inflated = try #require(inflatedSample)
+        #expect(inflated > 300_000_000) // background catch-up misread as >300 MB/s
+
+        var anchored = DownloadRateEstimator(firstEmitWindow: 0.5,
+                                             rebaselineSuppressWindow: 4.0)
+        _ = anchored.sample(bytes: 100_000_000, at: Self.t(3.9))
+        _ = anchored.sample(bytes: 100_000_000, at: Self.t(4.1))
+        anchored.rebaseline(bytes: 500_000_000, at: Self.t(5.0))
+        #expect(anchored.sample(bytes: 510_000_000, at: Self.t(6.0)) == nil)
+        let settledSample = anchored.sample(bytes: 541_000_000, at: Self.t(9.1))
+        let settled = try #require(settledSample)
+        #expect(abs(settled - 10_000_000) < 1) // 41 MB / 4.1 s, only post-wake bytes
+    }
 }
