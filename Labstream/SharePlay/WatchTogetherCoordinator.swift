@@ -97,6 +97,12 @@ final class WatchTogetherCoordinator {
     /// participant received `.started` while resolved). Serves as the launch idempotency guard AND
     /// the consent boundary for coordinating a local player with the group session.
     @ObservationIgnored private var didLaunchResolvedItem = false
+    /// Set when `launchResolvedItem` opens a player for a resolved item the user may already have been
+    /// watching privately: `SystemEntryRouter.open` resets the tab path and tears down that old player,
+    /// whose dismissal would otherwise call `leaveIfPlaying` and destroy the session we just joined.
+    /// The flag suppresses exactly that superseded dismissal and is cleared once the replacement player
+    /// attaches (see `attachPlaybackCoordinatorIfReady`), so a later genuine close still leaves.
+    @ObservationIgnored private var supersededPlayerPendingDismissal = false
     @ObservationIgnored private var playbackCoordinatorDelegate: WatchTogetherPlaybackCoordinatorDelegate?
     @ObservationIgnored private var candidateLookup: (@MainActor (String) async -> [MediaItem])?
 
@@ -120,7 +126,6 @@ final class WatchTogetherCoordinator {
             return
         }
         let context = context(for: payload)
-        let previousState = state
         state = .resolving(context)
         let activity = WatchTogetherActivity(payload: payload)
         do {
@@ -128,18 +133,24 @@ final class WatchTogetherCoordinator {
             case .activationPreferred:
                 pendingLocalShare = PendingLocalShare(activityID: payload.activityID, item: item)
                 if try await activity.activate() == false {
-                    failActivation(context, reason: .activationCancelled, restoring: previousState)
+                    failActivation(context, reason: .activationCancelled)
                 }
-            case .activationDisabled: failActivation(context, reason: .activationDisabled, restoring: previousState)
-            case .cancelled: failActivation(context, reason: .activationCancelled, restoring: previousState)
-            @unknown default: failActivation(context, reason: .activationFailed, restoring: previousState)
+            case .activationDisabled: failActivation(context, reason: .activationDisabled)
+            case .cancelled: failActivation(context, reason: .activationCancelled)
+            @unknown default: failActivation(context, reason: .activationFailed)
             }
-        } catch { failActivation(context, reason: .activationFailed, restoring: previousState) }
+        } catch { failActivation(context, reason: .activationFailed) }
     }
 
-    private func failActivation(_ context: PresentationContext, reason: UnavailableReason, restoring previousState: State) {
+    private func failActivation(_ context: PresentationContext, reason: UnavailableReason) {
         pendingLocalShare = nil
-        state = activeSession != nil ? previousState : .unavailable(context, reason: reason)
+        // A GroupSession may have been installed while activation was suspended — a remote activity
+        // arrived, or our own activity resolved — in which case `handle` already set `state` from that
+        // live session. A failed/cancelled activation must not stamp anything over it: replaying a
+        // pre-suspension snapshot here would hide the joined session and re-enable
+        // `canRequestWatchTogether`, letting a second tap replace the live activity for everyone.
+        guard activeSession == nil else { return }
+        state = .unavailable(context, reason: reason)
     }
 
     private func handle(_ session: GroupSession<WatchTogetherActivity>) {
@@ -233,7 +244,6 @@ final class WatchTogetherCoordinator {
         guard acknowledgeUnresolved || !requiresStartAcknowledgement else { return }
         sessionStarted = true
         state = .active(context(for: payload))
-        sendStatus(.started)
         launchResolvedItem()
     }
 
@@ -241,6 +251,13 @@ final class WatchTogetherCoordinator {
         guard let item = resolvedItem, !didLaunchResolvedItem else { return }
         didLaunchResolvedItem = true
         joinPrompt = nil
+        // Advertise `.started` from every participant that launches, not just the initiator, so peers
+        // agree on the started set and can pick a single re-announcer for newcomers (see
+        // handleActiveParticipants). Receivers are idempotent, so the extra sends never re-trigger a launch.
+        sendStatus(.started)
+        // `open` supersedes any player the user was privately watching for this same item; suppress the
+        // resulting dismissal so it can't tear down the freshly joined session (see the flag's definition).
+        supersededPlayerPendingDismissal = true
         SystemEntryRouter.shared.open(item: item, autoPlay: true)
     }
 
@@ -267,6 +284,10 @@ final class WatchTogetherCoordinator {
         playbackCoordinatorDelegate = delegate
         player.playbackCoordinator.delegate = delegate
         player.playbackCoordinator.coordinateWithSession(session)
+        // The replacement player is now live on the session, so any later dismissal of the resolved
+        // item is a genuine close: stop suppressing it (also covers the case where the superseded
+        // player's dismissal never arrived, e.g. there was no prior private playback).
+        supersededPlayerPendingDismissal = false
         return true
     }
 
@@ -300,8 +321,16 @@ final class WatchTogetherCoordinator {
     /// separate from generic view dismissal because the window disappears during the Cinema
     /// handoff while the same controller and SharePlay session intentionally continue there.
     func leaveIfPlaying(_ item: MediaItem) {
-        guard resolvedItem?.ratingKey == item.ratingKey else { return }
-        leave()
+        switch SharePlayLeaveDecision.evaluate(
+            resolvedMatchesItem: resolvedItem?.ratingKey == item.ratingKey,
+            supersededDismissalPending: supersededPlayerPendingDismissal) {
+        case .ignore:
+            return
+        case .suppressSupersededDismissal:
+            supersededPlayerPendingDismissal = false
+        case .leave:
+            leave()
+        }
     }
 
     private func context(for payload: SharePlayMediaActivityPayload) -> PresentationContext {
@@ -338,7 +367,13 @@ final class WatchTogetherCoordinator {
         participantStatuses[participantID] = message.status
         if message.status == .started {
             sessionStarted = true
-            if let payload = activePayload { state = resolvedItem == nil ? .resolving(context(for: payload)) : .active(context(for: payload)) }
+            if let payload = activePayload {
+                // With Finding 3's newcomer re-announce, `.started` is delivered repeatedly. Only ever
+                // advance state — never downgrade a participant who is mid-selection (`.selectionRequired`)
+                // or further back to `.resolving`.
+                let target: State = resolvedItem == nil ? .resolving(context(for: payload)) : .active(context(for: payload))
+                if progressRank(of: target) > progressRank(of: state) { state = target }
+            }
             if SharePlayReadinessSummary.shouldLaunchLocally(sessionStarted: true, localResolved: resolvedItem != nil) {
                 launchResolvedItem()
             }
@@ -346,15 +381,31 @@ final class WatchTogetherCoordinator {
         refreshCounts()
     }
 
-    /// Prune departed participants and, as the initiator, re-announce `.started` to any newcomer.
-    /// GroupSessionMessenger never replays past messages, so a participant who joins the FaceTime
-    /// call after playback started would otherwise wait forever on "Waiting for the initiator…".
-    /// Restricting the re-broadcast to the initiator keeps it a single message per newcomer.
+    /// Monotonic ordering of presentation progress. Used so a re-broadcast `.started` can move state
+    /// forward without ever undoing a participant's own further-progressed selection/readiness.
+    private func progressRank(of state: State) -> Int {
+        switch state {
+        case .inactive, .unavailable: 0
+        case .resolving: 1
+        case .selectionRequired: 2
+        case .ready: 3
+        case .active: 4
+        }
+    }
+
+    /// Prune departed participants and re-announce `.started` to any newcomer. GroupSessionMessenger
+    /// never replays past messages, so a participant who joins the FaceTime call after playback started
+    /// would otherwise wait forever on "Waiting for the initiator…". The re-broadcast is not restricted
+    /// to the initiator — they may have left (Leave/close/backend switch/dropped call) — but the pure
+    /// selector keeps it to a single message per newcomer (lowest-id started participant).
     private func handleActiveParticipants(_ activeIDs: [UUID], localID: UUID) {
         let newcomers = Set(activeIDs).subtracting(knownParticipantIDs).subtracting([localID])
         knownParticipantIDs = Set(activeIDs)
         pruneStatuses(to: activeIDs, localID: localID)
-        if isLocalInitiator, sessionStarted, !newcomers.isEmpty {
+        guard sessionStarted, didLaunchResolvedItem, !newcomers.isEmpty else { return }
+        var startedIDs = Set(participantStatuses.filter { $0.value == .started }.map(\.key))
+        startedIDs.insert(localID)
+        if SharePlayStartedBroadcast.shouldRebroadcast(localID: localID, startedParticipantIDs: startedIDs) {
             sendStatus(.started)
         }
     }
@@ -393,6 +444,7 @@ final class WatchTogetherCoordinator {
         activeSession = nil; messenger = nil; activePayload = nil; resolvedItem = nil; joinPrompt = nil
         participantStatuses = [:]; knownParticipantIDs = []; readyParticipantCount = 0; resolvingParticipantCount = 0
         sessionStarted = false; isLocalInitiator = false; didLaunchResolvedItem = false
+        supersededPlayerPendingDismissal = false
         playbackCoordinatorDelegate = nil
         state = .inactive
     }

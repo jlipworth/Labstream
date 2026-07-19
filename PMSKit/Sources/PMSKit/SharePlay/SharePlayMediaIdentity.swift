@@ -425,6 +425,41 @@ public struct SharePlayReadinessSummary: Sendable, Equatable {
     }
 }
 
+/// Decision for a player dismissal that reports it was showing the session's resolved item.
+/// A dismissal only ends the session when it is a genuine user-driven close. When the coordinator
+/// itself supersedes a pre-session player by launching its own player for the same item, the old
+/// player's teardown fires a matching dismissal that must be swallowed once — otherwise the freshly
+/// joined session is destroyed. The pending flag is cleared by the swallow OR once the replacement
+/// player attaches, so it is robust to which of those happens first.
+public enum SharePlayLeaveDecision {
+    public enum Outcome: Equatable, Sendable {
+        /// The dismissed item is not the resolved item; ignore it entirely.
+        case ignore
+        /// The dismissal is the coordinator's own superseded player tearing down; suppress the leave
+        /// and consume the pending flag.
+        case suppressSupersededDismissal
+        /// A genuine end of participation; leave the session.
+        case leave
+    }
+
+    public static func evaluate(resolvedMatchesItem: Bool, supersededDismissalPending: Bool) -> Outcome {
+        guard resolvedMatchesItem else { return .ignore }
+        if supersededDismissalPending { return .suppressSupersededDismissal }
+        return .leave
+    }
+}
+
+/// Selects which started participant re-announces `.started` to a newcomer. Any participant that has
+/// launched may re-broadcast (not only the initiator, who may have left), but only the one with the
+/// lowest identifier does so, so N started participants don't each send a duplicate. Receivers stay
+/// idempotent, so a transient disagreement about the started set is harmless.
+public enum SharePlayStartedBroadcast {
+    public static func shouldRebroadcast(localID: UUID, startedParticipantIDs: Set<UUID>) -> Bool {
+        guard startedParticipantIDs.contains(localID) else { return false }
+        return startedParticipantIDs.min(by: { $0.uuidString < $1.uuidString }) == localID
+    }
+}
+
 private enum SharePlayPrivacyGuard {
     static func shareableComparableText(_ raw: String?) -> String? {
         guard let raw, !containsProhibitedContent(raw) else { return nil }
