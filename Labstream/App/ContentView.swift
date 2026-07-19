@@ -68,6 +68,8 @@ struct ContentView: View {
             await authManager.restoreSession()
             bootstrap.isRestoring = false
             downloadManager.resumePendingServerPrepDownloads()
+            downloadManager.rehydrateMissingOptionalSideAssetsForCompletedRows(
+                reason: "session_restored")
             downloadManager.scheduleServerPrepResumeRetries()
             downloadManager.teardownOrphanedEncodersOnLaunch()
 #if DEBUG
@@ -107,6 +109,8 @@ struct ContentView: View {
                 // mounted (BrowseUIGate) instead of bouncing through the restore splash.
                 bootstrap.hasEverBeenBrowseReady = true
                 downloadManager.resumePendingServerPrepDownloads()
+                downloadManager.rehydrateMissingOptionalSideAssetsForCompletedRows(
+                    reason: "backend_ready")
                 downloadManager.scheduleServerPrepResumeRetries()
             }
         }
@@ -134,6 +138,8 @@ struct ContentView: View {
         .onChange(of: appModel.isSwitchingBackend) { wasSwitching, isSwitching in
             guard wasSwitching, !isSwitching, appModel.isBrowseReady else { return }
             downloadManager.resumePendingServerPrepDownloads()
+            downloadManager.rehydrateMissingOptionalSideAssetsForCompletedRows(
+                reason: "backend_switched")
             downloadManager.scheduleServerPrepResumeRetries()
             downloadManager.teardownOrphanedEncodersOnLaunch()
         }

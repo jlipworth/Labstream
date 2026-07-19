@@ -11,14 +11,51 @@ import os
 
 extension DownloadManager {
 
-    /// Retry the optional side assets that were cancelled when a media transfer failed.
+    /// Retry optional side assets that were cancelled or never finished before media completion.
     ///
     /// Clean-restart retries pass through the normal backend download entry points, which already
     /// enqueue side assets. Resume-data retries do not: they restart URLSession directly and return.
     /// All cache functions are missing-file aware and attempt fenced, so this is safe for a partial
-    /// first pass and does not redownload assets that already reached durable storage.
-    func rehydrateOptionalSideAssetsAfterTransferResume(record: DownloadRecord,
-                                                         attemptKey: DownloadAttemptKey) {
+    /// first pass and does not redownload assets that already reached durable storage. Completed-row
+    /// scans are limited to rows with a known missing poster/chapter file; unsupported optional
+    /// assets must not turn every foreground activation into server traffic.
+    func rehydrateMissingOptionalSideAssetsForCompletedRows(reason: String) {
+        guard !isQueuePaused else { return }
+        for record in store.records where record.isComplete {
+            guard let attemptID = record.attemptID else { continue }
+            let key = DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
+            guard hasMissingKnownOptionalSideAssets(record: record, attemptKey: key) else { continue }
+            rehydrateMissingOptionalSideAssets(record: record, attemptKey: key, reason: reason)
+        }
+    }
+
+    private func hasMissingKnownOptionalSideAssets(record: DownloadRecord,
+                                                    attemptKey: DownloadAttemptKey) -> Bool {
+        guard let metadata = record.metadata else { return false }
+        let item = metadata.makeMediaItem()
+        if DownloadSideAssetPolicy.offlinePosterRef(for: item)?.isEmpty == false,
+           store.reusableSideAssetRelativePath(
+            for: attemptKey,
+            destination: store.posterDestinationURL(ratingKey: record.ratingKey)
+           ) == nil {
+            return true
+        }
+        for (index, chapter) in (item.chapters ?? []).enumerated()
+            where chapter.thumb?.isEmpty == false {
+            if store.reusableSideAssetRelativePath(
+                for: attemptKey,
+                destination: store.chapterImageDestinationURL(
+                    ratingKey: record.ratingKey, index: index)
+            ) == nil {
+                return true
+            }
+        }
+        return false
+    }
+
+    func rehydrateMissingOptionalSideAssets(record: DownloadRecord,
+                                            attemptKey: DownloadAttemptKey,
+                                            reason: String) {
         guard let metadata = record.metadata,
               let backendSession = appModel.backendSession(for: metadata.resolvedBackendKind(
                 ratingKey: record.ratingKey)),
@@ -31,7 +68,7 @@ extension DownloadManager {
         recordDownloadDiagnostic("downloads.side_assets_rehydrate", fields: [
             "download_id": .identifier(record.ratingKey),
             "backend": .label(backend.rawValue),
-            "reason": .label("transfer_resume"),
+            "reason": .label(reason),
         ])
         switch backend {
         case .plex:
@@ -461,6 +498,8 @@ extension DownloadManager {
                 }
             }
             var relativesByIndex = reusableRelatives
+            var downloadedCount = 0
+            var failedCount = 0
             await withTaskGroup(
                 of: (Int, URL, Data)?.self
             ) { group in
@@ -472,15 +511,26 @@ extension DownloadManager {
                     }
                 }
                 for await result in group {
-                    guard let (index, destination, data) = result,
+                    guard let (index, destination, data) = result else {
+                        failedCount += 1
+                        continue
+                    }
+                    guard
                           !Task.isCancelled,
                           let staging = store.attemptStagingURL(
-                            for: attemptKey, stableURL: destination) else { continue }
+                            for: attemptKey, stableURL: destination) else {
+                        failedCount += 1
+                        continue
+                    }
                     defer { try? FileManager.default.removeItem(at: staging) }
                     guard (try? data.write(to: staging, options: .atomic)) != nil,
                           Self.promoteSideAsset(store: store, key: attemptKey,
-                                                stagingURL: staging, stableURL: destination) else { continue }
+                                                stagingURL: staging, stableURL: destination) else {
+                        failedCount += 1
+                        continue
+                    }
                     let relative = destination.lastPathComponent
+                    downloadedCount += 1
                     relativesByIndex[index] = relative
                     _ = store.updateMetadata(for: attemptKey) {
                         var merged = $0.chapterImageRelativePaths ?? [:]
@@ -488,6 +538,16 @@ extension DownloadManager {
                         $0.chapterImageRelativePaths = merged
                     }
                 }
+            }
+            await MainActor.run {
+                self.recordDownloadDiagnostic("downloads.side_cache_complete", fields: [
+                    "download_id": .identifier(attemptKey.ratingKey),
+                    "asset": .label("chapter_images"),
+                    "requested_count": .int(pendingRequests.count),
+                    "downloaded_count": .int(downloadedCount),
+                    "reused_count": .int(reusableRelatives.count),
+                    "failed_count": .int(failedCount),
+                ])
             }
             guard !relativesByIndex.isEmpty else { return }
             await MainActor.run {
