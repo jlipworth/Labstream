@@ -14,6 +14,11 @@ Historical or superseded research belongs in `docs/archive/research/`. Do not pu
 
 ## Active notes
 
+- [`2026-07-20-tvos-implementation-plan.md`](2026-07-20-tvos-implementation-plan.md) —
+  staged plan for a first-class tvOS target, ten-foot focus and Siri Remote UX,
+  capability-driven playback negotiation, physical Apple TV validation, and
+  TestFlight/App Store acceptance tracked by
+  [issue #246](https://github.com/jlipworth/Labstream/issues/246).
 - [`2026-07-10-codebase-remediation-plan.md`](2026-07-10-codebase-remediation-plan.md) —
   staged implementation plan for the whole-repository correctness, concurrency,
   performance, backend/platform sharing, and build-cost audit. It remains active until
