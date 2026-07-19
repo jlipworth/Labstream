@@ -14,6 +14,9 @@ Historical or superseded research belongs in `docs/archive/research/`. Do not pu
 
 ## Active notes
 
+- [`2026-07-20-main-documentation-alignment-plan.md`](2026-07-20-main-documentation-alignment-plan.md) —
+  evidence-backed plan to align contributor setup, architecture, playback, downloads,
+  and validation guidance with the behavior currently shipped on `main`.
 - [`2026-07-20-tvos-implementation-plan.md`](2026-07-20-tvos-implementation-plan.md) —
   staged plan for a first-class tvOS target, ten-foot focus and Siri Remote UX,
   capability-driven playback negotiation, physical Apple TV validation, and
