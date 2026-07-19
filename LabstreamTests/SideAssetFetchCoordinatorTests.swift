@@ -335,3 +335,28 @@ private actor SideAssetCounter {
     private(set) var value = 0
     func increment() { value += 1 }
 }
+
+final class CompletedRowSideAssetRehydrateBudgetTests: XCTestCase {
+    func testGivesUpPerRowKindAfterMaxAttemptsPerLaunch() {
+        var budget = CompletedRowSideAssetRehydrateBudget()
+        let max = CompletedRowSideAssetRehydrateBudget.maxAttemptsPerLaunch
+
+        for _ in 0..<max {
+            XCTAssertTrue(budget.canOffer(ratingKey: "row", kind: .poster))
+            budget.recordAttempt(ratingKey: "row", kind: .poster)
+        }
+        // Exhausted: the permanently-missing poster stops being offered this launch.
+        XCTAssertFalse(budget.canOffer(ratingKey: "row", kind: .poster))
+    }
+
+    func testGiveUpIsScopedToRowAndKind() {
+        var budget = CompletedRowSideAssetRehydrateBudget()
+        for _ in 0..<CompletedRowSideAssetRehydrateBudget.maxAttemptsPerLaunch {
+            budget.recordAttempt(ratingKey: "row", kind: .poster)
+        }
+        XCTAssertFalse(budget.canOffer(ratingKey: "row", kind: .poster))
+        // A different kind on the same row and the same kind on a different row keep their budget.
+        XCTAssertTrue(budget.canOffer(ratingKey: "row", kind: .chapterImages))
+        XCTAssertTrue(budget.canOffer(ratingKey: "other", kind: .poster))
+    }
+}
