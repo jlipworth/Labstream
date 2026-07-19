@@ -89,11 +89,7 @@ public struct DownloadRateEstimator: Sendable, Equatable {
         // from this lower point rather than emit a negative/garbage rate. The stall clock also resets —
         // the restart IS forward progress relative to the new baseline.
         if let last = window.last, bytes < last.bytes {
-            window = [Observation(bytes: bytes, time: now)]
-            lastForwardTime = now
-            rebaselineSuppressUntil = rebaselineSuppressWindow > 0
-                ? now.addingTimeInterval(rebaselineSuppressWindow)
-                : nil
+            rebaseline(bytes: bytes, at: now)
             return nil
         }
 
@@ -125,6 +121,30 @@ public struct DownloadRateEstimator: Sendable, Equatable {
         guard dt >= firstEmitWindow, db >= 0 else { return nil }
         let rate = Double(db) / dt
         return rate.isFinite ? rate : nil
+    }
+
+    /// Explicitly start a fresh measurement window at a cumulative byte watermark.
+    ///
+    /// A foreground callback can expose bytes transferred while the app was suspended. That is a
+    /// valid *forward* byte count, so the automatic backwards-jump protection in `sample` cannot
+    /// identify it. Owners that know the sample crosses a lifecycle boundary use this method to
+    /// anchor the estimator to the first post-boundary watermark instead of measuring background
+    /// work over a short foreground interval.
+    ///
+    /// - Parameters:
+    ///   - bytes: cumulative bytes at the new measurement boundary.
+    ///   - now: the caller's clock.
+    ///   - suppressFor: optional override for the post-baseline grace. When omitted, uses
+    ///     `rebaselineSuppressWindow`.
+    public mutating func rebaseline(bytes: Int,
+                                    at now: Date,
+                                    suppressFor: TimeInterval? = nil) {
+        window = [Observation(bytes: bytes, time: now)]
+        lastForwardTime = now
+        let duration = max(0, suppressFor ?? rebaselineSuppressWindow)
+        rebaselineSuppressUntil = duration > 0
+            ? now.addingTimeInterval(duration)
+            : nil
     }
 
     /// Estimated seconds remaining given the expected final size, using the most recent windowed
