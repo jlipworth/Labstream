@@ -85,6 +85,7 @@ struct CustomPlayerChrome: View {
     @State private var trickPlayPreviewLoading = false
     @State private var trickPlayImageCache = TrickPlayPreviewImageCache(limit: 32)
     @State private var trickPlayRequestGeneration = 0
+    @State private var trickPlayInFlightTargetMs: Int?
     @State private var hoverPreviewTargetMs: Int?
     @State private var hoverPreviewX: CGFloat?
     @State private var mobileDisplayStatus: String?
@@ -1728,26 +1729,39 @@ struct CustomPlayerChrome: View {
             return
         }
 
-        trickPlayRequestGeneration &+= 1
-        let generation = trickPlayRequestGeneration
         trickPlayPreviewTimeMs = targetMs
         guard let provider = trickPlayProvider else {
+            trickPlayRequestGeneration &+= 1
             trickPlayPreviewTask?.cancel()
+            trickPlayInFlightTargetMs = nil
             trickPlayPreviewLoading = false
             trickPlayPreviewImage = nil
             return
         }
 
         if let cached = trickPlayImageCache.nearestImage(to: targetMs, toleranceMs: 15_000) {
+            trickPlayRequestGeneration &+= 1
             trickPlayPreviewTask?.cancel()
+            trickPlayInFlightTargetMs = nil
             trickPlayPreviewImage = cached.image
             trickPlayPreviewCaptureTimeMs = cached.timeMs
             trickPlayPreviewLoading = false
             return
         }
 
+        // A continuous pointer stream (including stationary hover ticks) can repeat the exact
+        // same target while a fetch for it is already in flight. Cancelling and firing another
+        // identical request wouldn't stop the first one's URLSession task anyway (cancellation
+        // only stops us from acting on it), so it would just fan out duplicate network fetches.
+        // Let the in-flight request finish rather than racing a copy of itself; a genuinely new
+        // target below still cancels and replaces immediately.
+        guard trickPlayInFlightTargetMs != targetMs else { return }
+
+        trickPlayRequestGeneration &+= 1
+        let generation = trickPlayRequestGeneration
         trickPlayPreviewLoading = true
         trickPlayPreviewTask?.cancel()
+        trickPlayInFlightTargetMs = targetMs
         trickPlayPreviewTask = Task {
             if debounce {
                 try? await Task.sleep(for: .milliseconds(60))
@@ -1757,6 +1771,9 @@ struct CustomPlayerChrome: View {
             guard !Task.isCancelled else { return }
             let decoded = thumbnail.flatMap { UIImage(data: $0.imageData) }
             await MainActor.run {
+                if trickPlayInFlightTargetMs == targetMs {
+                    trickPlayInFlightTargetMs = nil
+                }
                 let completion = TrickPlayPreviewResolutionPolicy.completion(
                     requestGeneration: generation,
                     currentGeneration: trickPlayRequestGeneration,
@@ -1796,6 +1813,7 @@ struct CustomPlayerChrome: View {
     private func clearTrickPlayPreview() {
         trickPlayRequestGeneration &+= 1
         trickPlayPreviewTask?.cancel()
+        trickPlayInFlightTargetMs = nil
         trickPlayPreviewLoading = false
         trickPlayPreviewImage = nil
         trickPlayPreviewTimeMs = nil
