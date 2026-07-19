@@ -1701,7 +1701,12 @@ struct CustomPlayerChrome: View {
             hoverPreviewTargetMs = targetMs
             revealChrome(keepVisible: true)
             guard !scrubState.isDragging else { return }
-            updateTrickPlayPreview(for: targetMs, debounce: true)
+            // Continuous pointer movement commonly arrives faster than the preview debounce.
+            // Cancelling and restarting that delay on every event starves the provider entirely,
+            // leaving the card shimmering until the pointer becomes perfectly still. Start the
+            // request immediately; provider/index caching plus generation checks still prevent
+            // duplicate network loads and stale images.
+            updateTrickPlayPreview(for: targetMs, debounce: false)
         case .ended:
             endHoverPreview()
             if !scrubState.isDragging { scheduleChromeHideIfNeeded() }
