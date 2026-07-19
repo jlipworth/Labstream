@@ -9,6 +9,35 @@ import os
 // best-effort cache that never fails the media download. (Stage 7 will further unify these into one
 // fetch→write→persist→refresh helper; this is the file-level separation.)
 
+/// Launch-scoped, in-memory bound on how many times a COMPLETED row's optional side-asset rehydrate
+/// re-issues a fetch that never lands. `missingKnownOptionalSideAssetKinds` stays non-empty for the
+/// life of a row whose metadata references an optional asset the server can never produce (a 404'd
+/// poster, a chapter-thumb ref with no generated thumbnail), so without a bound every
+/// foreground/backend-ready/scene-active trigger re-arms the same failing fetch forever. After
+/// `maxAttemptsPerLaunch` rehydrate passes leave a given (row, kind) still missing, stop offering
+/// that kind until the process restarts. Deliberately in-memory and not persisted: a fresh launch
+/// retries once, which is the intended behavior for a genuinely transient (offline) miss.
+struct CompletedRowSideAssetRehydrateBudget {
+    /// The optional-asset kinds the completed-row scan tracks (mirrors the `metadata`-derived refs
+    /// the gate inspects: the poster and the per-chapter thumbnails).
+    enum Kind: Hashable { case poster, chapterImages }
+
+    static let maxAttemptsPerLaunch = 5
+
+    private struct Key: Hashable { let ratingKey: String; let kind: Kind }
+    private var attempts: [Key: Int] = [:]
+
+    /// Whether this (row, kind) still has retry budget this launch.
+    func canOffer(ratingKey: String, kind: Kind) -> Bool {
+        (attempts[Key(ratingKey: ratingKey, kind: kind)] ?? 0) < Self.maxAttemptsPerLaunch
+    }
+
+    /// Record that a rehydrate pass offered this (row, kind) while it was still missing.
+    mutating func recordAttempt(ratingKey: String, kind: Kind) {
+        attempts[Key(ratingKey: ratingKey, kind: kind), default: 0] += 1
+    }
+}
+
 extension DownloadManager {
 
     /// Retry optional side assets that were cancelled or never finished before media completion.
@@ -18,27 +47,42 @@ extension DownloadManager {
     /// All cache functions are missing-file aware and attempt fenced, so this is safe for a partial
     /// first pass and does not redownload assets that already reached durable storage. Completed-row
     /// scans are limited to rows with a known missing poster/chapter file; unsupported optional
-    /// assets must not turn every foreground activation into server traffic.
+    /// assets must not turn every foreground activation into server traffic. A per-launch budget
+    /// (`completedRowSideAssetRehydrateBudget`) stops re-arming a (row, kind) whose asset the server
+    /// can never produce, so a permanently-404'd poster/chapter ref does not re-issue forever.
     func rehydrateMissingOptionalSideAssetsForCompletedRows(reason: String) {
         guard !isQueuePaused else { return }
         for record in store.records where record.isComplete {
             guard let attemptID = record.attemptID else { continue }
             let key = DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
-            guard hasMissingKnownOptionalSideAssets(record: record, attemptKey: key) else { continue }
+            let missing = missingKnownOptionalSideAssetKinds(record: record, attemptKey: key)
+            // Only offer kinds that still have per-launch retry budget. A row whose remaining missing
+            // kinds have all exhausted their budget stops triggering rehydrate entirely, which is the
+            // whole point: `reusableSideAssetRelativePath` never becomes non-nil for an asset the
+            // server can't produce, so the missing state alone would re-arm the fetch forever.
+            let offerable = missing.filter {
+                completedRowSideAssetRehydrateBudget.canOffer(ratingKey: record.ratingKey, kind: $0)
+            }
+            guard !offerable.isEmpty else { continue }
+            for kind in offerable {
+                completedRowSideAssetRehydrateBudget.recordAttempt(ratingKey: record.ratingKey, kind: kind)
+            }
             rehydrateMissingOptionalSideAssets(record: record, attemptKey: key, reason: reason)
         }
     }
 
-    private func hasMissingKnownOptionalSideAssets(record: DownloadRecord,
-                                                    attemptKey: DownloadAttemptKey) -> Bool {
-        guard let metadata = record.metadata else { return false }
+    private func missingKnownOptionalSideAssetKinds(record: DownloadRecord,
+                                                    attemptKey: DownloadAttemptKey)
+        -> Set<CompletedRowSideAssetRehydrateBudget.Kind> {
+        guard let metadata = record.metadata else { return [] }
         let item = metadata.makeMediaItem()
+        var kinds: Set<CompletedRowSideAssetRehydrateBudget.Kind> = []
         if DownloadSideAssetPolicy.offlinePosterRef(for: item)?.isEmpty == false,
            store.reusableSideAssetRelativePath(
             for: attemptKey,
             destination: store.posterDestinationURL(ratingKey: record.ratingKey)
            ) == nil {
-            return true
+            kinds.insert(.poster)
         }
         for (index, chapter) in (item.chapters ?? []).enumerated()
             where chapter.thumb?.isEmpty == false {
@@ -47,10 +91,11 @@ extension DownloadManager {
                 destination: store.chapterImageDestinationURL(
                     ratingKey: record.ratingKey, index: index)
             ) == nil {
-                return true
+                kinds.insert(.chapterImages)
+                break
             }
         }
-        return false
+        return kinds
     }
 
     func rehydrateMissingOptionalSideAssets(record: DownloadRecord,

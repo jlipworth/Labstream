@@ -267,6 +267,11 @@ public final class DownloadManager {
     /// queue-paused manual resumes, and one-shot restart-counter
     /// preservation.
     private var staticRangeRecovery = StaticRangeRecoveryTracker()
+    /// Launch-scoped bound on completed-row optional side-asset rehydrate so a row referencing an
+    /// asset the server can never produce (a 404'd poster, a chapter-thumb ref with no generated
+    /// thumbnail) stops re-arming the same failing fetch on every foreground/scene-active trigger.
+    /// See `rehydrateMissingOptionalSideAssetsForCompletedRows`.
+    @ObservationIgnored var completedRowSideAssetRehydrateBudget = CompletedRowSideAssetRehydrateBudget()
     @ObservationIgnored private let staticCheckpointResolutions =
         OrderedAsyncWorkCoordinator<
             DownloadAttemptKey, DownloadStore.AttemptStaticRangeCheckpointResetResult>()
@@ -543,6 +548,14 @@ public final class DownloadManager {
             Task { @MainActor in
                 guard let self,
                       let record = self.store.records.first(where: { $0.ratingKey == ratingKey }) else { return }
+                // A stale attempt's off-main 401 can emit this handoff after the `Task { @MainActor }`
+                // hop, by which point the user's Retry may have minted a newer attempt for the row.
+                // The session-side quiesce/fail calls below are already fenced on `attemptKey`, but the
+                // manager-side writes (deferStaticRangeResume re-derives the row's CURRENT attempt;
+                // the `.fail` branch stamps `.notAuthenticated`) are not — a superseded handoff would
+                // park or fail the newer, healthy attempt. Gate the whole handoff on the failing attempt
+                // still owning the row so a superseded handoff becomes a full no-op.
+                guard self.store.ownsAttempt(attemptKey) else { return }
                 let kind = DownloadJobSnapshot(record: record).backend
                 let hasLiveSession = self.appModel.backendSession(for: kind) != nil
                 switch PostLogoutDownloadFailurePolicy.disposition(httpStatus: httpStatus,
