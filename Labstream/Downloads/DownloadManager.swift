@@ -1626,6 +1626,7 @@ public final class DownloadManager {
             .filter { DownloadQueueToolbarPolicy.shouldRetryWhenResumingQueue($0.status) }
             .map(\.ratingKey)
         for key in retryKeys { retry(ratingKey: key) }
+        rehydrateMissingOptionalSideAssetsForCompletedRows(reason: "queue_resumed")
         resumePendingServerPrepDownloads()
         resumePendingStaticRangeDownloads()
         refreshRecords()
@@ -1664,6 +1665,7 @@ public final class DownloadManager {
             // refresh onto the next run-loop turn instead of invalidating the whole downloads list
             // synchronously during scene activation.
             scheduleRefreshRecords(reason: "scene_active")
+            rehydrateMissingOptionalSideAssetsForCompletedRows(reason: "scene_active")
             resetUnverifiedAutomaticRetryBudget()
             revalidateUnverifiedDownloads(reason: "scene_active")
             recoverStaticRangeTransfersAfterForeground()
@@ -2183,8 +2185,9 @@ public final class DownloadManager {
                 // work. A resume-data retry restarts only the media URLSession task and returns
                 // before the normal backend entry points run, so explicitly restart any missing
                 // poster/chapter/trick-play/subtitle hydration for this exact persisted attempt.
-                rehydrateOptionalSideAssetsAfterTransferResume(record: record,
-                                                                attemptKey: retryAttemptKey)
+                rehydrateMissingOptionalSideAssets(record: record,
+                                                    attemptKey: retryAttemptKey,
+                                                    reason: "transfer_resume")
                 refreshRecords()
                 return
             }

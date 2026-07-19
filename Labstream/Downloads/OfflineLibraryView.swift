@@ -406,6 +406,7 @@ public struct OfflineLibraryView: View {
             // D5: show the locally-cached poster when present (works fully offline);
             // otherwise fall back to a small offline glyph tile.
             OfflinePosterTile(posterURL: record.posterURL,
+                              reloadVersion: record.sideAssetBytes,
                               isComplete: isComplete,
                               isFailed: isFailed,
                               isUnverified: isUnverified)
@@ -706,6 +707,7 @@ public struct OfflineLibraryView: View {
 /// read, and decode poster files while the user scrolls.
 private struct OfflinePosterTile: View {
     let posterURL: URL?
+    let reloadVersion: Int
     let isComplete: Bool
     let isFailed: Bool
     let isUnverified: Bool
@@ -725,7 +727,7 @@ private struct OfflinePosterTile: View {
         }
         .frame(width: 44, height: 66)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .task(id: posterURL) {
+        .task(id: PosterLoadID(url: posterURL, version: reloadVersion)) {
             await loadPoster()
         }
     }
@@ -768,6 +770,11 @@ private struct OfflinePosterTile: View {
         image = decoded
         loadedPosterURL = posterURL
     }
+}
+
+private struct PosterLoadID: Hashable {
+    let url: URL?
+    let version: Int
 }
 
 @MainActor
