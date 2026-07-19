@@ -1,9 +1,11 @@
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parents[2]
+VALIDATOR = REPO / "scripts" / "validate-macos-pipeline.py"
 
 
 class MacOSCIContractTests(unittest.TestCase):
@@ -26,6 +28,45 @@ class MacOSCIContractTests(unittest.TestCase):
         self.assertIn("--scratch-path", wrapper)
         self.assertIn("trap cleanup EXIT", wrapper)
         self.assertIn("check_result_bundle", wrapper)
+
+    def test_validator_passes_the_real_pipeline(self):
+        result = subprocess.run(
+            [
+                "python3",
+                str(VALIDATOR),
+                str(REPO / ".woodpecker" / "macos.yml"),
+                "--default-branch",
+                "main",
+            ],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_validator_rejects_a_duplicate_top_level_when_block(self):
+        # A duplicated top-level `when:` mapping key is valid YAML (last-wins on
+        # duplicate keys), so Woodpecker would honor the second, looser block while
+        # this line-scanning validator would otherwise only ever see the first,
+        # restrictive one. The validator must reject the file outright instead of
+        # silently validating the wrong block.
+        pipeline = (REPO / ".woodpecker" / "macos.yml").read_text()
+        smuggled = pipeline + (
+            "\nwhen:\n"
+            "  event: [manual, push]\n"
+            "  branch: '*'\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "macos.yml"
+            path.write_text(smuggled)
+            result = subprocess.run(
+                ["python3", str(VALIDATOR), str(path), "--default-branch", "main"],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("duplicate top-level when", result.stderr)
 
     def test_help_is_available_without_a_macos_host(self):
         result = subprocess.run(

@@ -16,12 +16,16 @@ REQUIRED_LABELS = {
 
 
 def block(lines: list[str], name: str) -> list[str]:
-    start = next(
-        (index for index, line in enumerate(lines) if line.rstrip() == f"{name}:"),
-        None,
-    )
-    if start is None:
+    occurrences = [index for index, line in enumerate(lines) if line.rstrip() == f"{name}:"]
+    if not occurrences:
         raise ValueError(f"missing top-level {name}: block")
+    if len(occurrences) > 1:
+        raise ValueError(
+            f"duplicate top-level {name}: block at lines "
+            f"{[index + 1 for index in occurrences]}; YAML last-wins on duplicate "
+            "mapping keys, so this file would validate the wrong block"
+        )
+    start = occurrences[0]
     result: list[str] = []
     for line in lines[start + 1 :]:
         if line.strip() and not line.startswith((" ", "\t", "#")):
