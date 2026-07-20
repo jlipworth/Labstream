@@ -5,12 +5,13 @@
 **Approved decision record:** [post-audit Mac shell plan](https://github.com/jlipworth/Labstream/issues/232#issuecomment-5023765952)
 **Acceptance boundary:** Keep #232 open until the user approves the redesigned shell visually and interactively.
 
-**Current checkpoint:** Implementation and local verification are complete in the assigned linked
-worktree on `codex/issue-232-mac-sidebar`, created from detached commit `7fc0cc63`. The completed
-implementation is being committed as this changeset. Native normal- and narrow-width evidence has
-been captured; the remaining boundary is the #232 progress handoff and user visual/interaction
-acceptance. The checklist and dated journal below are the current status source; older journal
-entries are historical evidence, not newer instructions.
+**Current checkpoint:** Implementation and local verification are complete in commit `69465a4c8990`
+on `codex/issue-232-mac-sidebar`, created from detached commit `7fc0cc63`. Native normal- and
+narrow-width evidence has been captured and the
+[#232 progress handoff](https://github.com/jlipworth/Labstream/issues/232#issuecomment-5024304901)
+is posted. The remaining boundary is user visual/interaction acceptance. The checklist and dated
+journal below are the current status source; older journal entries are historical evidence, not
+newer instructions.
 
 ## Objective
 
@@ -118,7 +119,7 @@ Replace the sparse first-pass Mac sidebar with a deliberate, native macOS source
 - [x] Review scope/public-data hygiene and promote proven durable behavior into current docs where
   appropriate.
 - [x] Commit the coherent completed implementation, tests, plan, and evidence references.
-- [ ] Post a concise #232 progress comment with commit, builds/tests, UI evidence, delegated
+- [x] Post a concise #232 progress comment with commit, builds/tests, UI evidence, delegated
   decisions, and remaining user acceptance. Do not close #232.
 - [ ] Record user visual/interaction acceptance. Until then this plan remains active and #232 stays
   open.
@@ -221,8 +222,10 @@ hostnames, library paths, and private media titles.
   Cross-library artist/album aggregation was not trustworthy on current APIs, so all backends use
   the explicit selected-library context; Plex playlists are account-level, while Jellyfin/Emby
   Playlists require a discoverable playlist view.
-- The implementation is committed as this changeset. The issue progress comment and user
-  visual/interaction acceptance remain; #232 stays open and this plan remains active.
+- The implementation is committed as `69465a4c8990`. The concise
+  [#232 progress comment](https://github.com/jlipworth/Labstream/issues/232#issuecomment-5024304901)
+  records the build/test evidence and delegated decisions. User visual/interaction acceptance
+  remains; #232 stays open and this plan remains active.
 
 ## Lifecycle
 
