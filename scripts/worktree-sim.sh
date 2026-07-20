@@ -6,7 +6,7 @@
 # logged-in "golden" simulator (<main>/.simid) and LINKED worktrees get vpwt-* clones of
 # that golden, created SHUT DOWN.
 #
-# iPhone/iPadOS work can opt into an independent iOS simulator instead of cloning the
+# iPhone/iPadOS/tvOS work can opt into an independent simulator instead of cloning the
 # visionOS golden. Select it with either:
 #   LABSTREAM_SIM_PLATFORM=iphone scripts/worktree-sim.sh id
 #   scripts/worktree-sim.sh --platform iphone id
@@ -19,18 +19,24 @@
 # or write `ipad` to a gitignored <worktree>/.simplatform. iPad simulators are named
 # ipadwt-<branch>-<hash> and recorded in <worktree>/.simid-ipad.
 #
+# tvOS work uses the current supported Apple TV generation only:
+#   LABSTREAM_SIM_PLATFORM=tvos scripts/worktree-sim.sh id
+#   scripts/worktree-sim.sh --platform tvos id
+# or write `tvos` to a gitignored <worktree>/.simplatform. Apple TV simulators are named
+# tvwt-<branch>-<hash> and recorded in <worktree>/.simid-tvos.
+#
 # Subcommands:
 #   setup         provision this worktree's sim; idempotent.
 #                 visionOS: no-op in main or clone golden in linked worktrees.
-#                 iPhone/iPadOS: create/reuse a shutdown iOS simulator for this worktree.
+#                 iPhone/iPadOS/tvOS: create/reuse a shutdown simulator for this worktree.
 #   teardown      delete the current worktree's owned sim for the selected platform and
 #                 remove its simid file. Use --all to delete every linked-worktree sim
 #                 owned by this worktree (never the main golden sim).
 #   closeout      safe finish command: teardown all sims for an existing linked worktree
 #                 path, then prune orphaned worktree sims.
-#   prune         delete every vpwt-* / ipadwt-* / iphonewt-* sim no live worktree references.
+#   prune         delete every vpwt-* / ipadwt-* / iphonewt-* / tvwt-* sim no live worktree references.
 #   id            print the current worktree's sim UDID (seeds/setups if needed).
-#   platform      print the effective platform (visionos, iphone, or ipad).
+#   platform      print the effective platform (visionos, iphone, ipad, or tvos).
 #   install-hook  install a post-checkout hook that runs `setup` after `git worktree add`.
 #
 set -euo pipefail
@@ -38,6 +44,7 @@ set -euo pipefail
 VISION_PREFIX="vpwt-"
 IPAD_PREFIX="ipadwt-"
 IPHONE_PREFIX="iphonewt-"
+TV_PREFIX="tvwt-"
 DEFAULT_PLATFORM="visionos"
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 PLATFORM_OVERRIDE=""
@@ -65,8 +72,16 @@ IPHONE_DEVICE_TYPE_CANDIDATES=(
   "com.apple.CoreSimulator.SimDeviceType.iPhone-15"
 )
 
+# Initial tvOS support is deliberately limited to the latest shipping Apple TV 4K
+# generation. The 1080p simulator is the same hardware generation and remains a layout
+# fallback; do not silently select an older Apple TV device type.
+TV_DEVICE_TYPE_CANDIDATES=(
+  "com.apple.CoreSimulator.SimDeviceType.Apple-TV-4K-3rd-generation-4K"
+  "com.apple.CoreSimulator.SimDeviceType.Apple-TV-4K-3rd-generation-1080p"
+)
+
 die() { echo "worktree-sim: $*" >&2; exit 1; }
-usage() { printf '%s\n' "usage: worktree-sim.sh [--platform visionos|iphone|ipad] {setup|teardown [--all]|closeout [PATH]|prune|id|platform|install-hook|-h|--help}"; }
+usage() { printf '%s\n' "usage: worktree-sim.sh [--platform visionos|iphone|ipad|tvos] {setup|teardown [--all]|closeout [PATH]|prune|id|platform|install-hook|-h|--help}"; }
 
 worktree_root() { git rev-parse --show-toplevel; }
 
@@ -82,7 +97,8 @@ normalize_platform() {
     ""|vision|visionos|xros|xr|vp) printf 'visionos' ;;
     ipad|ipados) printf 'ipad' ;;
     iphone|ios|mobile) printf 'iphone' ;;
-    *) die "unknown simulator platform '$p' (expected visionos, iphone, or ipad)" ;;
+    tv|tvos|appletv|apple-tv) printf 'tvos' ;;
+    *) die "unknown simulator platform '$p' (expected visionos, iphone, ipad, or tvos)" ;;
   esac
 }
 
@@ -109,6 +125,7 @@ name_prefix_for_platform() {
     visionos) printf '%s' "$VISION_PREFIX" ;;
     ipad) printf '%s' "$IPAD_PREFIX" ;;
     iphone) printf '%s' "$IPHONE_PREFIX" ;;
+    tvos) printf '%s' "$TV_PREFIX" ;;
   esac
 }
 
@@ -120,6 +137,7 @@ simid_file_for_platform() {
     visionos) printf '%s/.simid' "$root" ;;
     ipad) printf '%s/.simid-ipad' "$root" ;;
     iphone) printf '%s/.simid-iphone' "$root" ;;
+    tvos) printf '%s/.simid-tvos' "$root" ;;
   esac
 }
 
@@ -224,6 +242,32 @@ if choices:
 '
 }
 
+available_tvos_runtime() {
+  xcrun simctl list runtimes -j | python3 -c '
+import json, re, sys
+runtimes = json.load(sys.stdin).get("runtimes", [])
+def version_tuple(r):
+    text = r.get("version") or r.get("name", "")
+    return tuple(int(x) for x in re.findall(r"\d+", text))
+choices = [r for r in runtimes
+           if r.get("isAvailable", True)
+           and ".SimRuntime.tvOS-" in r.get("identifier", "")]
+choices.sort(key=version_tuple, reverse=True)
+if choices:
+    print(choices[0]["identifier"])
+'
+}
+
+available_tvos_device_type() {
+  local candidate
+  for candidate in "${TV_DEVICE_TYPE_CANDIDATES[@]}"; do
+    if xcrun simctl list devicetypes -j | python3 -c 'import json,sys; target=sys.argv[1]; print(any(d.get("identifier")==target and d.get("isAvailable", True) for d in json.load(sys.stdin).get("devicetypes", [])))' "$candidate" | grep -q True; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+}
+
 available_device_type() {
   local family="$1"
   local candidate
@@ -263,6 +307,16 @@ create_ios_sim() {
   printf '%s' "$udid"
 }
 
+create_tvos_sim() {
+  local name="$1" runtime device udid
+  runtime=$(available_tvos_runtime)
+  [ -n "$runtime" ] || die "no available tvOS simulator runtime found"
+  device=$(available_tvos_device_type)
+  [ -n "$device" ] || die "no supported Apple TV 4K (3rd generation) simulator device type found"
+  udid=$(xcrun simctl create "$name" "$device" "$runtime") || die "create Apple TV simulator failed"
+  printf '%s' "$udid"
+}
+
 cmd_setup_platform() {
   local platform root simid_file name udid
   platform=$(normalize_platform "$1")
@@ -282,6 +336,7 @@ cmd_setup_platform() {
       visionos) udid=$(clone_golden "$name") ;;
       ipad) udid=$(create_ios_sim ipad "$name") ;;
       iphone) udid=$(create_ios_sim iphone "$name") ;;
+      tvos) udid=$(create_tvos_sim "$name") ;;
     esac
   fi
   printf '%s\n' "$udid" > "$simid_file"
@@ -318,6 +373,7 @@ cmd_teardown() {
     cmd_teardown_platform visionos
     cmd_teardown_platform ipad
     cmd_teardown_platform iphone
+    cmd_teardown_platform tvos
     return 0
   fi
   cmd_teardown_platform "$(effective_platform)"
@@ -329,6 +385,7 @@ cmd_prune() {
     if [ -f "$wt/.simid" ]; then refs+="$(cat "$wt/.simid") "; fi
     if [ -f "$wt/.simid-ipad" ]; then refs+="$(cat "$wt/.simid-ipad") "; fi
     if [ -f "$wt/.simid-iphone" ]; then refs+="$(cat "$wt/.simid-iphone") "; fi
+    if [ -f "$wt/.simid-tvos" ]; then refs+="$(cat "$wt/.simid-tvos") "; fi
   done < <(git worktree list --porcelain | awk '/^worktree /{print $2}')
   tmp=$(mktemp "${TMPDIR:-/tmp}/worktree-sim-prune.XXXXXX")
   xcrun simctl list devices -j | python3 -c '
@@ -339,10 +396,10 @@ for devs in json.load(sys.stdin)["devices"].values():
     for d in devs:
         if d["name"].startswith(prefixes) and d["udid"] not in refs:
             print(d["udid"], d["name"])
-' "$VISION_PREFIX,$IPAD_PREFIX,$IPHONE_PREFIX" "$refs" > "$tmp"
+' "$VISION_PREFIX,$IPAD_PREFIX,$IPHONE_PREFIX,$TV_PREFIX" "$refs" > "$tmp"
   count=$(wc -l < "$tmp" | tr -d ' ')
   if [ "$count" = "0" ]; then
-    echo "worktree-sim: no orphaned ${VISION_PREFIX}* / ${IPAD_PREFIX}* / ${IPHONE_PREFIX}* simulators found"
+    echo "worktree-sim: no orphaned ${VISION_PREFIX}* / ${IPAD_PREFIX}* / ${IPHONE_PREFIX}* / ${TV_PREFIX}* simulators found"
     rm -f "$tmp"
     return 0
   fi

@@ -152,6 +152,13 @@ class ToolingHardeningTests(unittest.TestCase):
 
             pbx.write_text(pbx.read_text().replace(
                 "\t/* End PBXFileReference section */",
+                "\t\tCC0000000000000000000001 /* LabstreamTV.app */ = {isa = PBXFileReference; path = LabstreamTV.app; };\n\t/* End PBXFileReference section */",
+            ))
+            allowed = subprocess.run(["scripts/ci-hygiene.sh"], cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertEqual(allowed.returncode, 0, allowed.stderr)
+
+            pbx.write_text(pbx.read_text().replace(
+                "\t/* End PBXFileReference section */",
                 "\t\tBB0000000000000000000001 /* NewView.swift */ = {isa = PBXFileReference; path = NewView.swift; };\n\t/* End PBXFileReference section */",
             ))
             result = subprocess.run(["scripts/ci-hygiene.sh"], cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -173,6 +180,7 @@ class ToolingHardeningTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("usage: worktree-sim.sh", result.stdout)
             self.assertIn("closeout [PATH]", result.stdout)
+            self.assertIn("visionos|iphone|ipad|tvos", result.stdout)
             self.assertIn("-h|--help", result.stdout)
             self.assertEqual(result.stderr, "")
 
@@ -368,6 +376,102 @@ class ToolingHardeningTests(unittest.TestCase):
                 self.assertIn("iphonewt-feature-iphone-", args)
                 self.assertIn("com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro", args)
                 self.assertIn("com.apple.CoreSimulator.SimRuntime.iOS-27-0", args)
+
+    def test_worktree_sim_tvos_platform_creates_current_apple_tv_without_golden_clone(self):
+        with self.make_repo() as root:
+            self.copy_script(root, "worktree-sim.sh")
+            (root / ".simid").write_text("GOLDEN-0000-0000-0000-000000000000\n")
+            (root / "Labstream" / "Existing.swift").write_text("// baseline\n")
+            self.commit_all(root)
+            with tempfile.TemporaryDirectory(prefix=f"{root.name}-linked-", dir=root.parent) as linked_tmp:
+                linked = Path(linked_tmp)
+                subprocess.run(["git", "worktree", "add", "-q", "-b", "feature/tvos", str(linked)], cwd=root, check=True)
+                (linked / ".simplatform").write_text("tvos\n")
+                (linked / ".simid").unlink(missing_ok=True)
+
+                state = root / "xcrun-state"
+                create_args = root / "xcrun-create-args"
+                fakebin = root / "fakebin"
+                fakebin.mkdir()
+                (fakebin / "xcrun").write_text(textwrap.dedent(f"""\
+                    #!/usr/bin/env bash
+                    set -euo pipefail
+                    state={state}
+                    create_args={create_args}
+                    if [ "$1 $2 $3" = "simctl list devices" ] && [ "${{4:-}}" = "-j" ]; then
+                      if [ -f "$state" ]; then
+                        extra='{{"name":"tvwt-feature-tvos-created","udid":"TVOS-0000-0000-0000-000000000000","state":"Shutdown"}}'
+                      else
+                        extra=''
+                      fi
+                      printf '{{"devices":{{"com.apple.CoreSimulator.SimRuntime.tvOS-27-0":[%s],"com.apple.CoreSimulator.SimRuntime.xrOS-26-5":[{{"name":"Golden","udid":"GOLDEN-0000-0000-0000-000000000000","state":"Shutdown"}}]}}}}\n' "$extra"
+                      exit 0
+                    fi
+                    if [ "$1 $2 $3" = "simctl list runtimes" ] && [ "${{4:-}}" = "-j" ]; then
+                      printf '{{"runtimes":[{{"identifier":"com.apple.CoreSimulator.SimRuntime.tvOS-27-0","version":"27.0","isAvailable":true}}]}}\n'
+                      exit 0
+                    fi
+                    if [ "$1 $2 $3" = "simctl list devicetypes" ] && [ "${{4:-}}" = "-j" ]; then
+                      printf '{{"devicetypes":[{{"identifier":"com.apple.CoreSimulator.SimDeviceType.Apple-TV-4K-3rd-generation-4K","name":"Apple TV 4K (3rd generation) (at 4K)","isAvailable":true}}]}}\n'
+                      exit 0
+                    fi
+                    if [ "$1 $2" = "simctl create" ]; then
+                      printf '%s\n' "$@" > "$create_args"
+                      printf '%s\n' created > "$state"
+                      printf '%s\n' "TVOS-0000-0000-0000-000000000000"
+                      exit 0
+                    fi
+                    if [ "$1 $2" = "simctl clone" ]; then
+                      echo "unexpected golden clone for tvOS platform" >&2
+                      exit 2
+                    fi
+                    echo "unexpected xcrun $*" >&2
+                    exit 2
+                    """))
+                (fakebin / "xcrun").chmod(0o755)
+                env = os.environ.copy()
+                env["PATH"] = f"{fakebin}:{env['PATH']}"
+
+                result = subprocess.run(["scripts/worktree-sim.sh", "id"], cwd=linked, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+                self.assertEqual(result.stdout.strip(), "TVOS-0000-0000-0000-000000000000")
+                self.assertEqual((linked / ".simid-tvos").read_text().strip(), "TVOS-0000-0000-0000-000000000000")
+                self.assertFalse((linked / ".simid").exists())
+                args = create_args.read_text()
+                self.assertIn("simctl\ncreate", args)
+                self.assertIn("tvwt-feature-tvos-", args)
+                self.assertIn("com.apple.CoreSimulator.SimDeviceType.Apple-TV-4K-3rd-generation-4K", args)
+                self.assertIn("com.apple.CoreSimulator.SimRuntime.tvOS-27-0", args)
+
+    def test_worktree_sim_tvos_fails_cleanly_without_runtime(self):
+        with self.make_repo() as root:
+            self.copy_script(root, "worktree-sim.sh")
+            (root / "Labstream" / "Existing.swift").write_text("// baseline\n")
+            self.commit_all(root)
+            (root / ".simplatform").write_text("tvos\n")
+            fakebin = root / "fakebin"
+            fakebin.mkdir()
+            (fakebin / "xcrun").write_text(textwrap.dedent("""\
+                #!/usr/bin/env bash
+                set -euo pipefail
+                if [ "$1 $2 $3" = "simctl list devices" ] && [ "${4:-}" = "-j" ]; then
+                  printf '{"devices":{}}\n'
+                  exit 0
+                fi
+                if [ "$1 $2 $3" = "simctl list runtimes" ] && [ "${4:-}" = "-j" ]; then
+                  printf '{"runtimes":[{"identifier":"com.apple.CoreSimulator.SimRuntime.iOS-27-0","version":"27.0","isAvailable":true}]}\n'
+                  exit 0
+                fi
+                echo "unexpected xcrun $*" >&2
+                exit 2
+                """))
+            (fakebin / "xcrun").chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{fakebin}:{env['PATH']}"
+
+            result = subprocess.run(["scripts/worktree-sim.sh", "id"], cwd=root, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("no available tvOS simulator runtime found", result.stderr)
+            self.assertFalse((root / ".simid-tvos").exists())
 
     def test_deploy_masks_device_and_team_ids_by_default(self):
         device = "12345678-1234-1234-1234-123456789ABC"

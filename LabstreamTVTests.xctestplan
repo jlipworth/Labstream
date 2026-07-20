@@ -1,0 +1,35 @@
+{
+  "configurations" : [
+    {
+      "id" : "6EAF1125-3C00-4D08-A5B7-A3C0BD4BD291",
+      "name" : "Default",
+      "options" : {
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "environmentVariableEntries" : [
+      {
+        "key" : "LABSTREAM_UNIT_TEST_HOST",
+        "value" : "1"
+      }
+    ]
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:Labstream.xcodeproj",
+        "identifier" : "1C671135434BAB92288B1C40",
+        "name" : "LabstreamTVTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:Labstream.xcodeproj",
+        "identifier" : "A635D3631C20FC5BD7D78D94",
+        "name" : "LabstreamTVUITests"
+      }
+    }
+  ],
+  "version" : 1
+}

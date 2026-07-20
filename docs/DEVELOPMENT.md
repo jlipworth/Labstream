@@ -6,6 +6,7 @@ This page is the shortest path from a clean checkout to a running Labstream buil
 
 - macOS with Xcode and the visionOS SDK installed for the `Labstream` target.
 - The iOS/iPadOS 26.1+ SDK/runtime for the `LabstreamMobile` target.
+- The tvOS 26+ SDK and an installed tvOS simulator runtime for the in-progress `LabstreamTV` target.
 - macOS 26 on an Apple-silicon host when testing the optional `LabstreamMac` development preview.
 - A visionOS 26 or newer Apple Vision Pro simulator runtime compatible with the active Xcode.
 - Swift Package Manager for `PMSKit` tests (included with Xcode).
@@ -174,6 +175,47 @@ The visionOS and mobile targets use `com.jlipworth.Labstream` for the intended u
 identity. Local installs with that bundle identifier can replace an existing install and its app
 state.
 
+## Build for an Apple TV simulator
+
+The in-progress tvOS target is named/schemed `LabstreamTV`. It supports only the current Apple TV
+4K third-generation simulator types; the helper intentionally does not fall back to older Apple TV
+hardware. Unlike visionOS, tvOS creates a fresh shutdown simulator rather than cloning the Vision
+Pro golden simulator:
+
+```sh
+scripts/worktree-sim.sh --platform tvos setup
+SIMID=$(scripts/worktree-sim.sh --platform tvos id)
+xcrun simctl boot "$SIMID" 2>/dev/null || true
+DD="$PWD/build/DerivedData-tvos"
+rm -rf "$DD"
+
+scripts/xcodebuild-versioned.sh \
+  -project Labstream.xcodeproj \
+  -scheme LabstreamTV \
+  -destination "platform=tvOS Simulator,id=$SIMID" \
+  -configuration Debug \
+  -derivedDataPath "$DD" \
+  build CODE_SIGNING_ALLOWED=NO
+
+APP="$DD/Build/Products/Debug-appletvsimulator/Labstream.app"
+test -x "$APP/Labstream"
+```
+
+If `worktree-sim.sh` reports `no available tvOS simulator runtime found`, install the matching tvOS
+runtime in Xcode Settings. The SDK alone can still prove the compile foundation with a generic
+destination, but it cannot satisfy the launch/smoke gate:
+
+```sh
+scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamTV \
+  -destination 'generic/platform=tvOS Simulator' \
+  -derivedDataPath "$PWD/build/DerivedData-tvos-generic" \
+  build CODE_SIGNING_ALLOWED=NO
+```
+
+Continue with [Install and observe a simulator smoke](#install-and-observe-a-simulator-smoke) only
+when a concrete tvOS simulator runtime and `$SIMID` are available. The tvOS product deliberately has
+no downloads, Offline destination, or download-storage settings.
+
 ## Install and observe a simulator smoke
 
 After either simulator build above, `$SIMID` and `$APP` identify the exact simulator and product.
@@ -217,7 +259,7 @@ worktree's golden visionOS simulator.
 
 ## Linked-worktree simulator cleanup
 
-Linked worktrees own their `vpwt-*`, `iphonewt-*`, and `ipadwt-*` simulators. Before removing a
+Linked worktrees own their `vpwt-*`, `iphonewt-*`, `ipadwt-*`, and `tvwt-*` simulators. Before removing a
 linked worktree, delete all of its simulators and then remove the worktree:
 
 ```sh
@@ -258,12 +300,15 @@ uv run --with-requirements requirements.txt mkdocs build --strict
 ```
 
 `PMSKit/Tests/PMSKitTests` is the portable package suite. App-owned deterministic tests live in
-`LabstreamTests/` and are hosted by two Xcode test targets over the same test sources:
+`LabstreamTests/` and are hosted by platform-specific Xcode test targets over the same test sources:
 
 - `LabstreamTests`, selected by the `LabstreamMobile` scheme and `LabstreamTests.xctestplan`, runs
   on an iPhone/iPad simulator;
 - `LabstreamMacTests`, selected by the `LabstreamMac` scheme and
-  `LabstreamMacTests.xctestplan`, runs on the macOS host.
+  `LabstreamMacTests.xctestplan`, runs on the macOS host;
+- `LabstreamTVTests`, selected together with `LabstreamTVUITests` by the `LabstreamTV` scheme and
+  `LabstreamTVTests.xctestplan`, compiles the shared app tests for tvOS. The initial UI target is a
+  launch harness; focus/remote fixtures remain part of the active tvOS implementation plan.
 
 Run the app suite for the platform affected by a change (both for shared app infrastructure):
 
@@ -281,12 +326,17 @@ xcrun simctl shutdown "$SIMID"
 scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
   -scheme LabstreamMac -testPlan LabstreamMacTests \
   -destination 'platform=macOS,arch=arm64' test CODE_SIGNING_ALLOWED=NO
+
+# tvOS test build (works with the SDK even before a runtime is installed).
+scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
+  -scheme LabstreamTV -testPlan LabstreamTVTests \
+  -destination 'generic/platform=tvOS Simulator' build-for-testing CODE_SIGNING_ALLOWED=NO
 ```
 
-These are host-app unit tests, not UI automation or live-server acceptance tests. Keep policy and
+The shared app suites are host-app unit tests, not live-server acceptance tests. Keep policy and
 wire-format logic in PMSKit tests; use the app suites for app-owned persistence/filesystem,
 credential adapters, lifecycle coordination, playback ownership, and other platform integration
-seams.
+seams. Running the tvOS tests and UI launch harness requires a concrete tvOS simulator runtime.
 
 ## Physical Apple Vision Pro install
 
