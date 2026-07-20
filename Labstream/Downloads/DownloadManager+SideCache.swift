@@ -64,10 +64,16 @@ extension DownloadManager {
                 completedRowSideAssetRehydrateBudget.canOffer(ratingKey: record.ratingKey, kind: $0)
             }
             guard !offerable.isEmpty else { continue }
+            // Charge the budget only when a fetch was actually dispatched. Rehydrate bails without
+            // issuing work when the row's backend has no live session or a different server is
+            // signed in (routine while another backend is active) — burning the launch budget on
+            // those passes would permanently block the asset from rehydrating once its own backend
+            // comes back, while real dispatched-but-failed fetches still exhaust it as intended.
+            guard rehydrateMissingOptionalSideAssets(record: record, attemptKey: key,
+                                                     reason: reason) else { continue }
             for kind in offerable {
                 completedRowSideAssetRehydrateBudget.recordAttempt(ratingKey: record.ratingKey, kind: kind)
             }
-            rehydrateMissingOptionalSideAssets(record: record, attemptKey: key, reason: reason)
         }
     }
 
@@ -98,13 +104,16 @@ extension DownloadManager {
         return kinds
     }
 
+    /// Returns whether side-asset work was actually dispatched, so the completed-row scan's
+    /// per-launch budget only charges for real fetch attempts (see the caller above).
+    @discardableResult
     func rehydrateMissingOptionalSideAssets(record: DownloadRecord,
                                             attemptKey: DownloadAttemptKey,
-                                            reason: String) {
+                                            reason: String) -> Bool {
         guard let metadata = record.metadata,
               let backendSession = appModel.backendSession(for: metadata.resolvedBackendKind(
                 ratingKey: record.ratingKey)),
-              backendSession.matchesPersistedServer(metadata) else { return }
+              backendSession.matchesPersistedServer(metadata) else { return false }
 
         let item = metadata.makeMediaItem()
         let server = backendSession.baseURL
@@ -165,12 +174,15 @@ extension DownloadManager {
                                    server: server, token: token, identity: identity)
 
         case .emby:
-            guard let userID = backendSession.userID, !userID.isEmpty else { return }
+            // No usable user id means no request can be built — report no dispatch so the
+            // completed-row budget is not charged for a pass that fetched nothing.
+            guard let userID = backendSession.userID, !userID.isEmpty else { return false }
             cacheEmbyPoster(for: attemptKey, item: item, server: server, token: token,
                             identity: appModel.identity.emby, userId: userID)
             cacheChapterImages(for: attemptKey, item: item, backend: .emby,
                                server: server, token: token, userID: userID)
         }
+        return true
     }
 
     /// Lens 4 F2: side assets (posters, text subtitles, chapter images, Plex BIF, JF trickplay)
