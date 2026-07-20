@@ -241,7 +241,8 @@ struct DownloadItemPlanner {
             let primary = selectedMediaSourceID
                 ?? (try? EmbyPlayback.downloadDecision(response: info))?.mediaSourceId
             return DownloadExistingVersionOptionPolicy.embyOptions(
-                response: info, primaryMediaSourceId: primary)
+                response: info, primaryMediaSourceId: primary,
+                durationMilliseconds: item.duration)
         }
         let initial = try await fetch()
         if !initial.isEmpty { return initial }

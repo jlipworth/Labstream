@@ -34,14 +34,50 @@ struct DownloadExistingVersionOptionPolicyTests {
             audioCodec: "aac", size: nil, width: nil, height: nil, bitrate: nil,
             supportsDirectPlay: true)
 
-        let options = DownloadExistingVersionOptionPolicy.embyOptions(versions: [playable, blocked])
+        let options = DownloadExistingVersionOptionPolicy.embyOptions(
+            versions: [playable, blocked], durationMilliseconds: 4_800_000)
         #expect(options.count == 2)
-        #expect(options[0].label == "640×368 · H264 · 2.1 Mbps")
+        #expect(options[0].bitrateKbps == 2_147)
+        #expect(options[0].label == "640×368 · H264 · 2.1 Mbps avg")
         #expect(options[0].detail?.hasPrefix("MP4") == true)
         #expect(options[0].playableOffline)
         #expect(options[0].target == .embyMediaSource(id: "converted-mp4", sizeBytes: 1_288_179_275))
         #expect(options[1].label == "Still blocked")
         #expect(!options[1].playableOffline)
+    }
+
+    @Test("Emby matching derives whole-file average instead of raw MediaSource bitrate")
+    func embyDerivedAverageBitrate() {
+        #expect(DownloadExistingVersionOptionPolicy.averageWholeFileBitrateKbps(
+            sizeBytes: 1_000_000_000, durationMilliseconds: 1_000_000) == 8_000)
+
+        let version = EmbyPlayback.EmbyExistingVersion(
+            mediaSourceId: "converted", name: "Converted", container: "mp4", videoCodec: "h264",
+            audioCodec: "aac", size: 1_000_000_000, width: 1920, height: 1080,
+            bitrate: 99_000_000, supportsDirectPlay: true)
+        let option = DownloadExistingVersionOptionPolicy.embyOptions(
+            versions: [version], durationMilliseconds: 1_000_000)[0]
+        #expect(option.bitrateKbps == 8_000)
+        #expect(option.label == "1080p · H264 · 8.0 Mbps avg")
+        #expect(!option.label.contains("99.0"))
+    }
+
+    @Test(arguments: [
+        (Optional<Int>.none, Optional(1_000)),
+        (Optional(1_000_000), Optional<Int>.none),
+        (Optional(1_000_000), Optional(0)),
+        (Optional(0), Optional(1_000)),
+    ])
+    func embyUnavailableFactsDoNotUseRawBitrate(size: Int?, duration: Int?) {
+        let version = EmbyPlayback.EmbyExistingVersion(
+            mediaSourceId: "converted", name: "Converted", container: "mp4", videoCodec: "h264",
+            audioCodec: "aac", size: size, width: 1280, height: 720,
+            bitrate: 88_000_000, supportsDirectPlay: true)
+        let option = DownloadExistingVersionOptionPolicy.embyOptions(
+            versions: [version], durationMilliseconds: duration)[0]
+        #expect(option.bitrateKbps == nil)
+        #expect(option.label == "720p · H264")
+        #expect(!option.label.contains("Mbps"))
     }
 
     @Test("MediaSource id extraction prefers selected part then other media parts")
