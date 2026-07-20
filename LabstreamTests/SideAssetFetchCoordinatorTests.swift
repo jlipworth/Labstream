@@ -1,4 +1,5 @@
 import Foundation
+import PMSKit
 import XCTest
 @testable import Labstream
 
@@ -358,5 +359,98 @@ final class CompletedRowSideAssetRehydrateBudgetTests: XCTestCase {
         // A different kind on the same row and the same kind on a different row keep their budget.
         XCTAssertTrue(budget.canOffer(ratingKey: "row", kind: .chapterImages))
         XCTAssertTrue(budget.canOffer(ratingKey: "other", kind: .poster))
+    }
+}
+
+/// Pins WHEN the completed-row rehydrate scan charges the per-launch budget: only for passes that
+/// actually dispatch fetch work. A trigger while the row's backend has no live session must not
+/// burn the budget (previously each such pass charged every offerable kind while
+/// `rehydrateMissingOptionalSideAssets` early-returned without fetching, so the asset could never
+/// rehydrate once its backend became active again).
+@MainActor
+final class CompletedRowSideAssetRehydrateBudgetChargingTests: XCTestCase {
+    func testTriggersWithoutLiveBackendSessionDoNotConsumeBudget() throws {
+        let harness = try makeHarness()
+        defer { harness.tearDown() }
+
+        // No Plex session configured on the AppModel: rehydrate cannot dispatch anything.
+        for _ in 0..<(CompletedRowSideAssetRehydrateBudget.maxAttemptsPerLaunch * 2) {
+            harness.manager.rehydrateMissingOptionalSideAssetsForCompletedRows(reason: "test_no_session")
+        }
+        XCTAssertTrue(harness.manager.completedRowSideAssetRehydrateBudget.canOffer(
+            ratingKey: harness.ratingKey, kind: .poster))
+    }
+
+    func testDispatchedRehydratePassesStillExhaustBudget() throws {
+        let harness = try makeHarness()
+        defer { harness.tearDown() }
+
+        // A live matching Plex session makes each pass dispatch real (failing) fetch work, so the
+        // bounded-retry intent is preserved: the budget still runs out for a permanently missing asset.
+        harness.model.serverBaseURL = URL(string: "https://media.example.invalid")
+        harness.model.serverToken = "not-a-real-token"
+        for _ in 0..<CompletedRowSideAssetRehydrateBudget.maxAttemptsPerLaunch {
+            XCTAssertTrue(harness.manager.completedRowSideAssetRehydrateBudget.canOffer(
+                ratingKey: harness.ratingKey, kind: .poster))
+            harness.manager.rehydrateMissingOptionalSideAssetsForCompletedRows(reason: "test_failing_fetch")
+        }
+        XCTAssertFalse(harness.manager.completedRowSideAssetRehydrateBudget.canOffer(
+            ratingKey: harness.ratingKey, kind: .poster))
+    }
+
+    private struct Harness {
+        let directory: URL
+        let model: AppModel
+        let manager: DownloadManager
+        let session: BackgroundDownloadSession
+        let ratingKey: String
+
+        func tearDown() {
+            session.invalidateInjectedSessionForTesting()
+            try? FileManager.default.removeItem(at: directory)
+        }
+    }
+
+    /// One completed Plex row whose metadata references a poster that is not on disk, so the scan
+    /// always sees `.poster` as a missing offerable kind.
+    private func makeHarness() throws -> Harness {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "rehydrate-budget-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        // The manager reads the persisted queue-paused flag at init; the scan is a no-op while paused.
+        UserDefaults.standard.set(false, forKey: "downloads.queuePaused")
+
+        let store = DownloadStore(baseDirectory: directory)
+        let ratingKey = "12345"
+        let attemptID = try XCTUnwrap(DownloadAttemptID(rawValue: "attempt-\(ratingKey)"))
+        let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+        let record = DownloadRecord(
+            ratingKey: ratingKey,
+            attemptID: attemptID,
+            title: "Test item",
+            localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
+            bytes: 10,
+            progress: 1,
+            status: .complete,
+            metadata: OfflineMetadata(
+                ratingKey: ratingKey,
+                title: "Test item",
+                type: "movie",
+                thumb: "/library/metadata/12345/thumb/1",
+                sourcePartSize: 100,
+                backendKind: .plex,
+                backendBaseURLString: "https://media.example.invalid",
+                backendServerID: nil,
+                backendUserID: nil,
+                resumeMode: .staticByteRange))
+        XCTAssertEqual(store.createAttemptOwnedRecord(record, attemptID: attemptID), .committed(key))
+
+        let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "rehydrate-budget"))
+        let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+        let manager = DownloadManager(appModel: model, store: store, session: session,
+                                      registerForBackgroundEvents: false)
+        return Harness(directory: directory, model: model, manager: manager,
+                       session: session, ratingKey: ratingKey)
     }
 }
