@@ -21,4 +21,12 @@ When the investigation resolves:
 - promote proven behavior into the relevant current published pages; and
 - move a closed investigation to `docs/archive/research/` when its historical reasoning is still worth retaining.
 
-There are currently no active research notes in this lane.
+## Active research notes
+
+- [`2026-07-20-tvos-screen-audit.md`](2026-07-20-tvos-screen-audit.md) — exhaustive tvOS
+  screen/interaction audit for [issue #246](https://github.com/jlipworth/Labstream/issues/246),
+  tracking per-defect status; open items remain (search input, physical-device sweep).
+- [`2026-07-21-tvos-session-report.md`](2026-07-21-tvos-session-report.md) — evidence-first
+  session record for the tvOS focus/remote-input work, including the parked TVUI-004
+  search-keyboard investigation. The tvOS implementation plan itself lives in
+  [`docs/plans/2026-07-20-tvos-implementation.md`](../plans/2026-07-20-tvos-implementation.md).
