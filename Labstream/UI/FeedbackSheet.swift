@@ -97,6 +97,7 @@ struct FeedbackSheet: View {
                 }
 
                 SwiftUI.Section {
+                    #if !os(tvOS)
                     Button {
                         PlatformPasteboard.copy(reportText)
                         openURL(githubIssueURL)
@@ -119,14 +120,27 @@ struct FeedbackSheet: View {
                     ) {
                         Label("Share report…", systemImage: "square.and.arrow.up")
                     }
+                    #else
+                    Button {
+                        openURL(githubIssueURL)
+                    } label: {
+                        Label("Open a GitHub issue", systemImage: "ant")
+                    }
+                    #endif
                 } footer: {
+                    #if os(tvOS)
+                    Text("The issue form opens with your description, versions, and the redacted report when it fits. Everything in a GitHub issue is public — review the preview below first.")
+                    #else
                     Text("Open a GitHub issue fills in the form with your description and versions, attaches the report when it fits, and copies it to your clipboard either way so you can paste it into the report field. Everything in a GitHub issue is public — review the preview below first.")
+                    #endif
                 }
 
                 SwiftUI.Section {
                     Text(reportText)
                         .font(.system(.footnote, design: .monospaced))
+                        #if !os(tvOS)
                         .textSelection(.enabled)
+                        #endif
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } header: {
                     Text("Diagnostic report (exactly what is shared)")

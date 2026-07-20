@@ -13,6 +13,19 @@ import UIKit
 /// so no `callbackURLScheme` ever fires. Instead the sheet is dismissed
 /// programmatically by calling `cancel()` once the app becomes authenticated —
 /// that's what makes the web sheet auto-close after a successful sign-in.
+#if os(tvOS)
+/// tvOS authentication uses the room-readable Plex link code instead of an embedded
+/// browser sheet. Keep the shared login state machine typed while making an accidental
+/// attempt to open the unavailable presentation path fail back to the pairing UI.
+@MainActor
+final class WebAuthSession {
+    func start(_ url: URL, onCancel: @escaping () -> Void) {
+        onCancel()
+    }
+
+    func cancel() {}
+}
+#else
 @MainActor
 final class WebAuthSession: NSObject, ASWebAuthenticationPresentationContextProviding {
     private var session: ASWebAuthenticationSession?
@@ -57,3 +70,4 @@ final class WebAuthSession: NSObject, ASWebAuthenticationPresentationContextProv
         #endif
     }
 }
+#endif

@@ -139,6 +139,7 @@ struct RootView: View {
             #endif
         }
         .background {
+            #if !os(tvOS)
             // App-wide ⌘F → Search tab, then focus its field. A zero-size, invisible
             // button keeps the shortcut in the responder chain without occupying layout;
             // works with an iPad hardware keyboard and the visionOS Magic Keyboard.
@@ -147,6 +148,7 @@ struct RootView: View {
                 .opacity(0)
                 .frame(width: 0, height: 0)
                 .accessibilityHidden(true)
+            #endif
 
             #if os(macOS)
             EmptyView()
@@ -216,12 +218,14 @@ struct RootView: View {
             guard let route else { return }
             handleSystemEntry(route)
         }
+        #if !os(tvOS)
         // Cinema exit from an offline download (#87): land on the Offline tab and focus the
         // download with no server fetch. Separate channel from `pending` (which is online-only).
         .onChange(of: SystemEntryRouter.shared.offlinePending) { _, route in
             guard let route else { return }
             handleOfflineReturn(route)
         }
+        #endif
         .task {
             // Consume a route that arrived BEFORE RootView mounted (cold launch
             // from an intent/Spotlight: it was set while the restore splash was up).
@@ -231,9 +235,11 @@ struct RootView: View {
             // `offlinePending` can also be set while the main window is absent during Cinema
             // teardown. `.onChange` only observes future mutations, so consume a pre-existing
             // offline return here just like the online/system-entry route.
+            #if !os(tvOS)
             if let route = SystemEntryRouter.shared.offlinePending {
                 handleOfflineReturn(route)
             }
+            #endif
         }
         #if os(visionOS)
         .sheet(isPresented: Binding(
@@ -255,10 +261,54 @@ struct RootView: View {
         macRootContent
         #elseif os(iOS)
         mobileRootContent
+        #elseif os(tvOS)
+        tvRootContent
         #else
         visionRootContent
         #endif
     }
+
+    #if os(tvOS)
+    /// Apple TV keeps the shared browse and music destinations but owns a dedicated
+    /// focus-driven shell. Downloads are intentionally absent because tvOS local media
+    /// storage is purgeable and cannot satisfy Labstream's durable-offline contract.
+    private var tvRootContent: some View {
+        TabView(selection: $selection) {
+            Tab("Home", systemImage: "house", value: AppTab.home) {
+                NavigationStack(path: $homePath) { HomeView() }
+                    .environment(\.cinemaOriginTab, .home)
+                    .environment(\.pushMediaItem, { (item: MediaItem) in homePath.append(item) })
+                    .id(appModel.activeBrowseSessionKey)
+            }
+            Tab("Libraries", systemImage: "rectangle.stack", value: AppTab.libraries) {
+                NavigationStack(path: $librariesPath) { LibrariesView() }
+                    .environment(\.cinemaOriginTab, .libraries)
+                    .environment(\.pushMediaItem, { (item: MediaItem) in librariesPath.append(item) })
+                    .id(appModel.activeBrowseSessionKey)
+            }
+            Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
+                NavigationStack(path: $searchPath) {
+                    SearchView(focusRequest: searchFocusRequest, onClearSearch: exitSearch)
+                }
+                .environment(\.cinemaOriginTab, .search)
+                .environment(\.pushMediaItem, { (item: MediaItem) in searchPath.append(item) })
+                .id(appModel.activeBrowseSessionKey)
+            }
+            Tab("Music", systemImage: "music.note", value: AppTab.music) {
+                NavigationStack(path: $musicPath) { MusicLibraryView() }
+                    .id(appModel.activeBrowseSessionKey)
+            }
+            Tab("Settings", systemImage: "gearshape", value: AppTab.settings) {
+                NavigationStack { SettingsView(authManager: authManager) }
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            if musicPlayer.current != nil {
+                MiniPlayerBar(presentation: $nowPlayingPresentation)
+            }
+        }
+    }
+    #endif
 
     #if os(macOS)
     private var macRootContent: some View {

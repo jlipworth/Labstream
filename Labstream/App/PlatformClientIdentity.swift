@@ -14,6 +14,8 @@ enum PlatformClientIdentity {
     static var deviceName: String {
         #if os(visionOS)
         "Apple Vision Pro"
+        #elseif os(tvOS)
+        "Apple TV"
         #elseif os(iOS)
         UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
         #elseif os(macOS)
@@ -26,6 +28,8 @@ enum PlatformClientIdentity {
     static var plexPlatform: String {
         #if os(visionOS)
         "visionOS"
+        #elseif os(tvOS)
+        "tvOS"
         #elseif os(iOS)
         "iOS"
         #elseif os(macOS)

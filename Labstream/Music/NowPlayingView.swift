@@ -200,6 +200,10 @@ struct NowPlayingView: View {
 
     private var scrubber: some View {
         VStack(spacing: DS.Space.xs) {
+            #if os(tvOS)
+            ProgressView(value: isScrubbing ? scrubSeconds : player.elapsedSeconds,
+                         total: max(player.durationSeconds, 1))
+            #else
             Slider(
                 value: Binding(
                     get: { isScrubbing ? scrubSeconds : player.elapsedSeconds },
@@ -216,6 +220,7 @@ struct NowPlayingView: View {
                 }
             }
             .disabled(player.current == nil)
+            #endif
 
             HStack {
                 Text(formatTrackDuration(seconds: isScrubbing ? scrubSeconds : player.elapsedSeconds))

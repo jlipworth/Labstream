@@ -242,9 +242,13 @@ public struct OfflineLibraryView: View {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 offlineToolbarInlineItems(snapshot: snapshot)
             }
-            #else
+            #elseif os(visionOS)
             ToolbarItem(placement: .topBarTrailing) {
                 offlineToolbarCluster(snapshot: snapshot)
+            }
+            #else
+            ToolbarItemGroup {
+                offlineToolbarInlineItems(snapshot: snapshot)
             }
             #endif
         }

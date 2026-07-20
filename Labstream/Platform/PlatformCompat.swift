@@ -59,6 +59,19 @@ enum PlatformAudioSessionMode {
     case moviePlayback
 }
 
+#elseif os(tvOS)
+import UIKit
+import AVFAudio
+
+typealias PlatformImage = UIImage
+typealias PlatformAudioSessionMode = AVAudioSession.Mode
+
+/// tvOS has no general pasteboard. Feedback UI must use a TV-native handoff;
+/// this compatibility seam deliberately performs no copy operation.
+enum PlatformPasteboard {
+    static func copy(_ string: String) {}
+}
+
 #elseif canImport(UIKit)
 import UIKit
 import AVFAudio

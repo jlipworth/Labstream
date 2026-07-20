@@ -529,6 +529,9 @@ struct BackendServerURLField: View {
             .textFieldStyle(.roundedBorder)
             .controlSize(.regular)
             .frame(maxWidth: BackendAuthMetrics.fieldWidth)
+        #elseif os(tvOS)
+        TextField(placeholder, text: $text)
+            .frame(maxWidth: BackendAuthMetrics.fieldWidth)
         #else
         TextField(placeholder, text: $text)
             .textInputAutocapitalization(.never)
@@ -727,6 +730,12 @@ struct BackendCredentialsSignInForm: View {
                 .textFieldStyle(.roundedBorder)
                 .controlSize(.regular)
                 .frame(maxWidth: BackendAuthMetrics.fieldWidth)
+            #elseif os(tvOS)
+            TextField("Username", text: username)
+                .backendAuthControlWidth(BackendAuthMetrics.fieldWidth)
+
+            SecureField("Password", text: password)
+                .backendAuthControlWidth(BackendAuthMetrics.fieldWidth)
             #else
             TextField("Username", text: username)
                 .textInputAutocapitalization(.never)

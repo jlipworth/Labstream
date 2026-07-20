@@ -8,6 +8,7 @@ enum DiagnosticReportArtifact {
     static let exportFilename = DiagnosticReportArtifactMetadata.exportFilename
     static let feedbackFilename = DiagnosticReportArtifactMetadata.feedbackFilename
 
+    #if !os(tvOS)
     struct Document: FileDocument {
         static var readableContentTypes: [UTType] { [.plainText] }
 
@@ -25,6 +26,7 @@ enum DiagnosticReportArtifact {
             FileWrapper(regularFileWithContents: Data(text.utf8))
         }
     }
+    #endif
 
     struct ShareFile: Transferable {
         let text: String

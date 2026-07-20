@@ -123,7 +123,7 @@ struct MiniPlayerBar: View {
         }
     }
 
-    #if os(macOS)
+    #if os(macOS) || os(tvOS)
     private var nowPlayingPanel: some View {
         NowPlayingView(scrollToQueue: presentation.scrollToQueue)
             .frame(width: 620, height: 700)

@@ -449,7 +449,7 @@ struct CustomPlayerChrome: View {
                     .buttonStyle(.bordered)
                     #elseif os(macOS)
                     EmptyView()
-                    #else
+                    #elseif os(iOS)
                     // iOS system players use a subdued monochrome glass circle for
                     // dismiss, not a large accent-tinted platter.
                     Button(action: {
@@ -467,6 +467,18 @@ struct CustomPlayerChrome: View {
                     // Sit a touch lower than the visionOS chrome so the circle clears
                     // the status-bar corner radius comfortably.
                     .padding(.top, topUtilityButtonExtraTopPadding)
+                    #else
+                    Button(action: {
+                        revealChrome()
+                        onClose()
+                    }) {
+                        Label("Close", systemImage: "xmark")
+                            .labelStyle(.iconOnly)
+                            .font(.title3.weight(.semibold))
+                            .frame(width: 64, height: 64)
+                    }
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel("Close")
                     #endif
                 }
 
@@ -1312,6 +1324,11 @@ struct CustomPlayerChrome: View {
     /// not an overlay, so pointer previews never steal click/drag hit testing from `Slider`.
     private var timelineSlider: some View {
         GeometryReader { geometry in
+            #if os(tvOS)
+            ProgressView(value: scrubberBinding.wrappedValue, total: 1)
+                .disabled(scrubState.durationMs <= 0)
+                .frame(maxHeight: .infinity)
+            #else
             Slider(value: scrubberBinding, in: 0...1) { editing in
                 handleScrubEditingChanged(editing)
             }
@@ -1338,6 +1355,7 @@ struct CustomPlayerChrome: View {
                         .zIndex(20)
                 }
             }
+            #endif
         }
         .frame(minWidth: 40, minHeight: 32, idealHeight: 32, maxHeight: 32)
     }

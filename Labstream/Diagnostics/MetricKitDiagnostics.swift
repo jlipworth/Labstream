@@ -1,7 +1,18 @@
 import Foundation
-import MetricKit
 import os
 import PMSKit
+
+#if os(tvOS)
+/// MetricKit's crash/diagnostic subscriber API is unavailable on tvOS. Preserve the
+/// diagnostics-report boundary with an empty provider until a TV-native channel exists.
+final class MetricKitDiagnostics: @unchecked Sendable {
+    static let shared = MetricKitDiagnostics()
+
+    func register() {}
+    func storedSummaries() -> [MetricKitDiagnosticSummary] { [] }
+}
+#else
+import MetricKit
 
 /// Passive crash/hang channel (#116).
 ///
@@ -191,3 +202,4 @@ private extension JSONEncoder {
         return encoder
     }()
 }
+#endif

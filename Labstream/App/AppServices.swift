@@ -23,11 +23,16 @@ struct AppServices {
         let identity = PlatformClientIdentity.make(clientIdentifier: clientIdentifier)
         let model = AppModel(identity: identity, activeBackend: keychain.selectedBackend)
         let authManager = AuthManager(appModel: model, keychain: keychain)
-        let downloadManager = DownloadManager(appModel: model)
+        // ContentView still shares the manager type across platforms, but tvOS must never
+        // activate its background transfer session because downloads are not a TV product.
+        let downloadManager = DownloadManager(
+            appModel: model,
+            registerForBackgroundEvents: PlatformFeaturePolicy.supportsDownloads)
         // Sign-out is the one lifecycle edge where an already-open URLSession request can retain
         // a just-revoked authorization header. Pause that backend's work before AuthManager
         // clears its runtime session; weak capture keeps the service graph acyclic.
         authManager.onBackendWillSignOut = { [weak downloadManager] backend in
+            guard PlatformFeaturePolicy.supportsDownloads else { return }
             downloadManager?.pauseDownloadsForBackendSignOut(backend)
         }
         return AppServices(
@@ -83,8 +88,10 @@ enum AppStartup {
     /// One process-start hook shared by the app entrypoints. Registration is safe to call
     /// exactly once per process and deliberately avoids logging credentials or server details.
     static func prepareForLaunch() {
+        #if !os(tvOS)
         LabstreamShortcuts.updateAppShortcutParameters()
         MetricKitDiagnostics.shared.register()
+        #endif
         AppDiagnostics.record(.downloads, "app.process_launch", fields: [
             "launch_source": .label("process_start"),
         ])
@@ -101,6 +108,8 @@ enum AppStartup {
         AppDiagnostics.record(.downloads, "app.scene_phase", fields: [
             "phase": .label(label),
         ])
-        downloadManager.noteAppScenePhase(label)
+        if PlatformFeaturePolicy.supportsDownloads {
+            downloadManager.noteAppScenePhase(label)
+        }
     }
 }
