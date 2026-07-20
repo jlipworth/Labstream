@@ -7,9 +7,28 @@ public enum SeasonEpisodeWatchedState: String, Sendable, Equatable, Codable {
     case unwatched
     case unavailable
 
-    public init(viewCount: Int?) {
-        guard let viewCount else { self = .unavailable; return }
+    /// Maps a raw view count to watched state. `nilMeansUnwatched` captures the backend's
+    /// semantic for a missing count: Jellyfin/Emby expose a genuinely three-valued
+    /// `UserData.Played`, so a missing value is unknown (`.unavailable`); Plex omits `viewCount`
+    /// entirely for never-watched items, so for Plex a missing value means `.unwatched`.
+    public init(viewCount: Int?, nilMeansUnwatched: Bool) {
+        guard let viewCount else {
+            self = nilMeansUnwatched ? .unwatched : .unavailable
+            return
+        }
         self = viewCount > 0 ? .watched : .unwatched
+    }
+
+    /// Convenience for callers that know their backend. Only Plex treats a missing view count
+    /// as unwatched; every other backend preserves the three-valued semantic.
+    public init(viewCount: Int?, backend: MediaBackendID) {
+        self.init(viewCount: viewCount, nilMeansUnwatched: backend == .plex)
+    }
+
+    /// Retained three-valued mapping (missing → `.unavailable`) for backends whose payload is
+    /// genuinely three-valued.
+    public init(viewCount: Int?) {
+        self.init(viewCount: viewCount, nilMeansUnwatched: false)
     }
 }
 

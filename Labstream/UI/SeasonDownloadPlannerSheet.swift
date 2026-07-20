@@ -24,14 +24,14 @@ struct SeasonDownloadPlannerSheet: View {
     private var backend: DownloadBackendKind { appModel.activeBackend.downloadBackendKind }
     private var watchedSummary: SeasonDownloadSelectionSummary {
         SeasonDownloadSelectionPolicy.select(
-            states: episodes.map { SeasonEpisodeWatchedState(viewCount: $0.viewCount) },
+            states: episodes.map { SeasonEpisodeWatchedState(viewCount: $0.viewCount, backend: backend) },
             scope: scope)
     }
     private var usableWatchedCount: Int {
         watchedSummary.watchedCount + watchedSummary.unwatchedCount
     }
     private var serverUnwatchedCount: Int {
-        episodes.filter { SeasonEpisodeWatchedState(viewCount: $0.viewCount) == .unwatched }.count
+        episodes.filter { SeasonEpisodeWatchedState(viewCount: $0.viewCount, backend: backend) == .unwatched }.count
     }
     private var qualityNames: [String] {
         let presets = backend == .plex

@@ -12,6 +12,31 @@ struct SeasonDownloadPlanningPolicyTests {
         #expect(SeasonEpisodeWatchedState(viewCount: nil) == .unavailable)
     }
 
+    @Test func watchedStateIsBackendAwareForMissingViewCount() {
+        // Plex omits viewCount for never-watched items, so nil means unwatched.
+        #expect(SeasonEpisodeWatchedState(viewCount: nil, backend: .plex) == .unwatched)
+        #expect(SeasonEpisodeWatchedState(viewCount: 0, backend: .plex) == .unwatched)
+        #expect(SeasonEpisodeWatchedState(viewCount: 3, backend: .plex) == .watched)
+
+        // Jellyfin/Emby expose a genuinely three-valued Played, so nil stays unavailable.
+        for backend in [MediaBackendID.jellyfin, .emby] {
+            #expect(SeasonEpisodeWatchedState(viewCount: nil, backend: backend) == .unavailable)
+            #expect(SeasonEpisodeWatchedState(viewCount: 0, backend: backend) == .unwatched)
+            #expect(SeasonEpisodeWatchedState(viewCount: 2, backend: backend) == .watched)
+        }
+    }
+
+    @Test func plexAllNilSeasonSelectsEveryEpisodeAsUnwatched() {
+        let states = [Int?](repeating: nil, count: 8).map {
+            SeasonEpisodeWatchedState(viewCount: $0, backend: .plex)
+        }
+        let unwatched = SeasonDownloadSelectionPolicy.select(states: states, scope: .unwatched)
+        #expect(unwatched.selectedIndices == Array(0..<8))
+        #expect(unwatched.unwatchedCount == 8)
+        #expect(unwatched.unavailableCount == 0)
+        #expect(!unwatched.selectedIndices.isEmpty)
+    }
+
     @Test func existingRowsAreIdempotentAndPausedRowsStayPaused() {
         #expect(SeasonDownloadDedupPolicy.action(status: nil) == .add)
         #expect(SeasonDownloadDedupPolicy.action(status: .complete) == .alreadyAvailable)
