@@ -66,6 +66,7 @@ IPHONE_DEVICE_TYPE_CANDIDATES=(
 )
 
 die() { echo "worktree-sim: $*" >&2; exit 1; }
+usage() { printf '%s\n' "usage: worktree-sim.sh [--platform visionos|iphone|ipad] {setup|teardown [--all]|closeout [PATH]|prune|id|platform|install-hook|-h|--help}"; }
 
 worktree_root() { git rev-parse --show-toplevel; }
 
@@ -437,7 +438,8 @@ main() {
     id)           cmd_id "$@" ;;
     platform)     cmd_platform "$@" ;;
     install-hook) cmd_install_hook "$@" ;;
-    *) die "usage: worktree-sim.sh [--platform visionos|iphone|ipad] {setup|teardown [--all]|closeout|prune|id|platform|install-hook}" ;;
+    -h|--help)    usage ;;
+    *) die "$(usage)" ;;
   esac
 }
 

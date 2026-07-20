@@ -13,12 +13,15 @@ Thanks for helping improve Labstream. This project touches private media servers
 ## Local workflow
 
 ```sh
-git clone git@github.com:jlipworth/Labstream.git
+git clone https://github.com/jlipworth/Labstream.git
 cd Labstream
-scripts/worktree-sim.sh setup
 ```
 
-Build and test with the commands in [Development setup](DEVELOPMENT.md). Use the worktree simulator ID for the platform you are testing rather than `booted`.
+A new clone does not contain the machine-local `.simid` file. Before the first visionOS build,
+follow [Bootstrap the first visionOS simulator](DEVELOPMENT.md#bootstrap-the-first-visionos-simulator).
+Then use the platform-specific build, exact-product install, observable smoke, shutdown, and cleanup
+procedures in [Development setup](DEVELOPMENT.md). Always resolve a concrete worktree simulator UDID
+rather than targeting `booted`.
 
 ## Pull request expectations
 
@@ -30,20 +33,13 @@ A good PR includes:
 - Mac host build/smoke notes when a change touches the `LabstreamMac` preview;
 - screenshots only when they do not reveal private server or media details.
 
-Run the basic checks before opening or updating a PR:
-
-```sh
-cd PMSKit && swift test
-cd ..
-scripts/ci-hygiene.sh
-uv run --with-requirements requirements.txt mkdocs build --strict
-```
-
-For app-owned changes, also run the affected host-app unit suite: `LabstreamTests` through the
-`LabstreamMobile` scheme on an iOS simulator and/or `LabstreamMacTests` through the
+Run the [core validation commands](DEVELOPMENT.md#core-validation-commands) before opening or
+updating a PR. For app-owned changes, also run the affected host-app unit suite: `LabstreamTests`
+through the `LabstreamMobile` scheme on an iOS simulator and/or `LabstreamMacTests` through the
 `LabstreamMac` scheme on the host. Exact commands and test-plan names are in
 [Development setup](DEVELOPMENT.md). Shared app infrastructure should exercise both hosts; these
-tests supplement rather than replace the affected app build/smoke.
+tests supplement rather than replace the affected app build and
+[observable simulator smoke](DEVELOPMENT.md#install-and-observe-a-simulator-smoke).
 
 ## Privacy and secrets
 
@@ -61,7 +57,10 @@ Use placeholders such as `plex.example.internal`, `192.0.2.10`, `<server-url>`, 
 ## Architecture guidelines
 
 - Keep backend-specific wire behavior explicit.
-- Put pure decisions in `PMSKit` where they can be unit-tested.
-- Keep SwiftUI, AVFoundation, URLSession side effects, files, and Keychain in the app target.
+- Put reusable request, model, and policy decisions in `PMSKit`; keep its exceptional effectful
+  infrastructure limited to narrow, injectable seams such as the media-session proxy and
+  credential-artifact writer.
+- Keep SwiftUI, `AVPlayer` ownership, target lifecycle, background-session delegation, app
+  persistence/filesystem orchestration, and Keychain access in the app target.
 - Use typed diagnostic fields and redaction helpers for anything that can reach a report.
 - Archive research, implementation plans, and historical validation notes instead of publishing them as current docs.

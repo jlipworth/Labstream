@@ -139,11 +139,20 @@ Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The 
       Cinema keeps the same controller/playhead/chrome, dismisses/reopens the main window
       cleanly, and returns to the originating detail or Offline row. The hidden RealityKit
       Theater prototype must not appear as a normal user option.
+- [ ] **visionOS Now Playing:** Video publishes title/context, duration, elapsed time, playback
+      rate, and authenticated artwork. System play, pause, toggle, 10-second back, 30-second
+      forward, and absolute-position seek control the current video. Closing clears item metadata
+      and the scoped session's command targets; repeated video sessions do not accumulate targets,
+      and resuming music republishes its own Now Playing information and commands.
 - [ ] **iPhone:** Full-screen video requests the intended landscape orientation and restores
       the prior orientation policy on close. Ordinary backgrounding pauses, while active PiP
       or AirPlay is allowed to continue.
 - [ ] **iPadOS:** Player layout and menus work in regular and compact multitasking widths;
       PiP, AirPlay, keyboard controls, and the adaptive sidebar do not strand presentation.
+- [ ] **iPad pointer preview:** Continuous pointer movement over the timeline advances the
+      preview without waiting for the pointer to become still. Repeated events for the same target
+      share one in-flight thumbnail request, rapid target changes reject stale completions, and
+      hover never steals touch/drag slider interaction.
 - [ ] **iOS/iPadOS hardware:** Control Center, lock screen, headphones, route changes, and
       interruptions control the active video rather than resuming suspended music underneath.
 - [ ] **macOS preview:** overlay/full-screen presentation, Escape/Close, toolbar visibility,
@@ -160,6 +169,9 @@ never capture account names, server addresses, provider IDs, item IDs, or activi
 - [ ] Install the same signed build on two headsets. Sign each participant into their own account
       and server session; include one same-backend run and, where equivalent catalog media exists,
       one cross-backend Plex/Jellyfin/Emby resolution run.
+- [ ] While the system activation flow from A is still pending, invoke Watch Together again.
+      Activation remains single-flight: there is one prepared/activated activity, and ready or active
+      state cannot replace the live session with a second request.
 - [ ] From headset A, start Watch Together for one movie or episode. Headset B sees the disclosed
       title/catalog-matching explanation, resolves only through B's current authenticated backend,
       and either auto-matches deterministically or requires explicit local selection.
@@ -169,12 +181,15 @@ never capture account names, server addresses, provider IDs, item IDs, or activi
 - [ ] With both ready, start from A. Each headset negotiates and reports playback through its own
       credentials/server session, then play, pause, absolute seek/scrub, relative skip, and playback
       rate remain coordinated without duplicate transport actions or a private server identifier.
-- [ ] Join B after A has already started. B must resolve locally, launch exactly once after becoming
-      ready, attach to the current group timeline, and not wait forever for an old one-shot message.
+- [ ] Join B after A has already started. Exactly one already-started participant re-broadcasts
+      the current started state, even if the initiator has left; B resolves locally, launches exactly
+      once, and attaches to the current group timeline instead of waiting for an old one-shot message.
 - [ ] Enter and exit Custom Cinema on each headset independently. The window-to-Cinema handoff keeps
       the same controller and SharePlay coordination; quality/track changes or a retry that replaces
-      `AVPlayerItem` reattach and remain synchronized. Exiting the player leaves participation rather
-      than keeping a ghost session.
+      `AVPlayerItem` reattach and remain synchronized.
+- [ ] While the same item is already playing privately, join its Watch Together session so routing
+      opens the coordinated replacement player. Dismissal of the superseded private player does not
+      leave the new session; a later genuine Close does leave instead of keeping a ghost session.
 - [ ] Have B leave, lose media availability, and disconnect from FaceTime in separate runs. A prunes
       B from readiness/participant state and continues or leaves clearly; B shows a non-sensitive
       unavailable/ended state and can later start a fresh session.
@@ -223,9 +238,9 @@ never capture account names, server addresses, provider IDs, item IDs, or activi
 ### Static segment train
 
 Both visionOS and non-visionOS currently use the closed-segment train. Each segment is
-512 MiB segments are used, with at most two live or newly planned segments per download (the
-durable head plus one look-ahead). Validate on physical devices
-when claiming background durability.
+512 MiB, with at most two live or newly planned segments per download (the durable head plus
+one look-ahead), for roughly 1 GiB of queued runway per row. Validate on physical devices when
+claiming background durability.
 
 - [ ] Background/lock/off-head continuation appends completed segments in order and advances
       only the durable partial checkpoint; optimistic URLSession temp bytes are not persisted
@@ -235,8 +250,15 @@ when claiming background durability.
       accumulated bytes.
 - [ ] Pause/Resume mid-train cancels or adopts every task safely and replans from the durable
       checkpoint without a progress jump.
+- [ ] Resume-data recovery adopts only a valid open-ended Range blob whose offset matches the
+      durable partial; closed-segment blobs are neither persisted on pause nor adopted. A missing,
+      malformed, stale-offset, or deleted-temp-file blob is cleared with its display watermark and
+      falls back to the durable partial without losing already assembled bytes.
 - [ ] Cancel, immediately re-download the same item, and relaunch: stale tasks from the prior
       attempt are rejected rather than appended to the new file.
+- [ ] Hold a static Range 401/403 response, start a newer Retry attempt for the same row, then
+      release the delayed old response. The stale auth handoff is a complete no-op: it cannot park,
+      fail, quiesce, or take ownership from the newer attempt.
 - [ ] A changed validator, malformed/misaligned Range response, 416, network loss, and low
       storage fail or retry without marking an incomplete file complete.
 - [ ] Long locked/off-head soak loses at most current non-durable work after interruption;
@@ -251,6 +273,15 @@ when claiming background durability.
       does not prove device background relaunch/continuation.
 - [ ] Completed rows retain backend, resolution/route, poster, subtitles, chapters, and
       trick-play side assets when available; missing optional side assets do not fail the media.
+- [ ] Complete a row while its poster or one or more chapter images are missing. With its matching
+      backend available and retry budget remaining, foreground or relaunch the app. The completed
+      row repairs only missing assets without re-downloading media or replacing files already cached
+      successfully.
+- [ ] Keep one completed row's poster permanently unavailable through repeated ready/foreground
+      scans. That `(row, poster)` pair is offered for rehydrate at most five times in one process;
+      scans consume offers even when no matching backend session is available, the row's
+      chapter-image kind and posters on other rows retain independent budgets, and a new process
+      receives fresh counts.
 - [ ] Offline playback works with the server unreachable, persists a local playhead, uses local
       side assets only, and never attempts online timeline reporting.
 - [ ] Relaunch reconciliation demotes missing, truncated, or unplayable files and preserves
@@ -294,12 +325,12 @@ them.
       1,543,398,509 and 2,351,788,230 bytes respectively. Deferred callbacks arrived at wake, including
       a completed 512 MiB held segment. No process death, auth failure, or connectivity-wait event was
       recorded; task metrics reported HTTP/3 over a constrained, non-cellular path.
-- [ ] **Retest user-visible/durable off-head progress after the follow-up fix.** The first run exposed
-      34 simultaneous 512 MiB tasks across five rows, stale live-overlay expiry, held-stash omission
-      from the aggregate, and zero-checkpoint paused rows reconciling to failed/red. The follow-up uses
-      64 MiB segments at depth two, keeps active overlays monotonic, counts held bodies, and preserves
-      static paused intent without an opaque resume blob. Require another off-head interval before
-      checking this presentation/durable-checkpoint cell.
+- [ ] **Retest user-visible/durable off-head progress under the current static-range regime.** The
+      first run exposed 34 simultaneous tasks across five rows, stale live-overlay expiry, held-stash
+      omission from the aggregate, and zero-checkpoint paused rows reconciling to failed/red. Current
+      code uses 512 MiB segments at depth two, keeps active overlays monotonic, counts held bodies, and
+      preserves static paused intent without an opaque resume blob. Require another off-head interval
+      before checking this presentation/durable-checkpoint cell.
 - The first collector attempt selected a connected iPad because of a loose `vision` substring match;
   it is invalid evidence. Headset collection now requires exact visionOS/realityDevice identity and is
   regression-tested with mixed iPad/Vision Pro inventory.

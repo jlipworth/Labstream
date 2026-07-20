@@ -13,17 +13,21 @@ flowchart LR
   Services --> Auth[AuthManager]
   Services --> Downloads[DownloadManager]
   Services --> Music[MusicPlayerController]
+  Entry --> SharePlay[visionOS live WatchTogetherCoordinator]
 
   UI[SwiftUI UI] --> Model
   UI --> Auth
   UI --> Downloads
   UI --> Music
   UI --> Player[PlaybackController]
+  UI --> SharePlay
+  SharePlay --> Player
 
   Auth --> PMSKit[PMSKit requests, models, policies]
   Player --> PMSKit
   Downloads --> PMSKit
   Music --> PMSKit
+  SharePlay --> PMSKit
 
   Player --> AV[AVFoundation]
   Downloads --> Store[DownloadStore]
@@ -68,15 +72,19 @@ constructs the same four long-lived services:
 - `DownloadManager`: the cross-backend offline queue and transfer orchestration.
 - `MusicPlayerController`: the app-lifetime audio queue and player.
 
-The platform `App` also owns `SessionBootstrap`, `CustomCinemaSessionStore`, and
-`RealityTheaterSessionStore`. Keeping these objects above the main window matters on
-visionOS: entering Cinema can dismiss the window, but the authenticated session and
-active player must survive until the window is reopened.
+Each platform `App` also owns `SessionBootstrap`, `CustomCinemaSessionStore`,
+`RealityTheaterSessionStore`, and the `WatchTogetherCoordinator` required by the shared root
+initializers. Only the visionOS entry point configures that coordinator from the app model,
+starts `GroupSession` observation, and injects the same live instance into the main window and
+Custom Cinema; the iOS/iPadOS and macOS compatibility instances remain unconfigured and never
+start session observation. Keeping the live visionOS objects above the main window matters
+because entering Cinema can dismiss the window while the authenticated session, active player,
+and SharePlay coordination must survive until it reopens.
 
 `ContentView` is the launch gate. It registers system-entry routing, restores saved
 sessions once, presents restore/login/browse UI, and starts download reconciliation.
 `RootView` is the authenticated navigation shell and injects the app model, download
-manager, and music player into the view environment.
+manager, music player, and shared coordinator dependencies into the view environment.
 
 ## Session and backend model
 
@@ -107,22 +115,23 @@ The dominant boundary keeps app-lifecycle effects in the app target:
 - SwiftUI observation, navigation, presentation, and target lifecycle;
 - Keychain and UserDefaults access;
 - live `URLSession` execution and background-session delegates;
-- files and offline-index persistence;
-- `AVPlayer`, audio sessions, Picture in Picture, Now Playing, and RealityKit;
+- app-owned file mutation, offline-index persistence, and filesystem orchestration;
+- `AVPlayer`, audio sessions, Picture in Picture, Now Playing, RealityKit, and live
+  GroupActivities/AVPlayerPlaybackCoordinator attachment;
 - MetricKit, Spotlight, App Intents, and share/export UI.
 
 PMSKit primarily owns behavior that can be expressed as input-to-output decisions:
 
 - Plex, Jellyfin, and Emby request construction and response decoding;
 - shared media and offline models;
-- playback, download, retry, paging, routing, and redaction policies;
+- playback, download, retry, paging, routing, redaction, and SharePlay identity/readiness
+  policies;
 - state-machine decisions that can be exercised by `swift test`.
 
-There are deliberate package-side exceptions. `PMSKit/Sources/PMSKit/MediaSession/`
-owns the reusable, effectful loopback HLS proxy and upstream connection machinery used
-by the player, and
-`PMSKit/Sources/PMSKit/Security/CredentialArtifactStorage.swift` performs shared
-protected-file writes.
+There are deliberate package-side exceptions. Examples include the reusable, effectful
+loopback HLS proxy and upstream connection machinery in
+`PMSKit/Sources/PMSKit/MediaSession/`, and the shared protected-file writes in
+`PMSKit/Sources/PMSKit/Security/CredentialArtifactStorage.swift`.
 These types keep framework effects behind narrow, injectable/testable APIs; they do not
 move SwiftUI, AVPlayer ownership, background-session delegation, or app persistence into
 the package.
@@ -141,8 +150,11 @@ details remain explicit.
 - Jellyfin and Emby retain concrete facades under `Labstream/Backend/Jellyfin/` and
   `Labstream/Backend/Emby/`, backed by `MediaBrowserBrowseCore` only for their genuinely
   shared browse execution/decode/map behavior.
-- Paging and grouped search models in `Labstream/Backend/Paging/` and
-  `Labstream/Backend/Search/` feed shared SwiftUI grids and rails.
+- Backend-neutral paging models live in `Labstream/Backend/Paging/`. The grouped,
+  deduplicated search-result model lives in
+  `PMSKit/Sources/PMSKit/Search/SearchResults.swift`, while `Labstream/UI/SearchView.swift`
+  executes the active backend search, renders the sections, and routes music versus standard
+  results.
 - `MusicProvider` is the backend-neutral music boundary. Plex supplies richer native
   artist metadata; Jellyfin and Emby share `MediaBrowserMusicProvider`.
 - `MusicPlayerController` survives navigation. Its queue is tied to the browse-session
@@ -150,18 +162,21 @@ details remain explicit.
 
 ## Video playback and theater surfaces
 
-`PlaybackController` owns one `AVPlayer` for one presentation. It supports three inputs
-through the same lifecycle and chrome:
+Three input lanes converge on one `PlaybackController` and its shared item observation,
+transport state, diagnostics, seek UI, and chrome, while source negotiation, reopen,
+progress, and server cleanup remain lane-specific:
 
 1. Plex streaming resolved by the controller's Plex path;
 2. an already-negotiated Jellyfin or Emby remote stream with reopen/progress/cleanup
    callbacks;
 3. a local downloaded file.
 
-`CustomPlayerView` and `CustomPlayerChrome` are the only shipping video-player surface.
-There is no selectable native `AVPlayerViewController` path. Platform coordinators add
-iOS/iPadOS PiP, AirPlay, orientation, and Now Playing behavior or native Mac media-key
-and presentation behavior; visionOS owns its player chrome directly.
+`PlaybackController` owns the `AVPlayer`; `CustomPlayerView` and the Cinema attachment own
+their `AVPlayerLayer` presenters, with `CustomPlayerChrome` as the only shipping video chrome.
+There is no selectable native `AVPlayerViewController` path. iOS/iPadOS and macOS platform
+coordinators use the process-wide music/video system-media lease, while visionOS video uses a
+controller-scoped `MPNowPlayingSession` and routes its commands directly back to the controller.
+See [Playback architecture](PLAYBACK-ARCHITECTURE.md) for lifecycle and cleanup invariants.
 
 The visionOS **Custom Cinema** immersive space is the user-visible app-owned Cinema
 path and reuses the same controller and chrome. The separate RealityKit theater in
@@ -192,11 +207,14 @@ hatch, not a current platform difference.
 
 ## System integration and diagnostics
 
-`SystemEntryRouter` bridges App Intents, Spotlight, and Cinema exit back into SwiftUI
-navigation. System media identifiers are backend/server scoped, authoritative metadata
-is refetched before navigation, and music is intentionally excluded from the current
-system-video surface. Spotlight indexing is best-effort and index-as-you-browse rather
-than a full-library crawl.
+`SystemEntryRouter` bridges App Intents, Spotlight, Cinema exit, and SharePlay launches that
+have already been resolved on the participant's device back into SwiftUI navigation.
+Identifier-based system entries are backend/server scoped and refetch authoritative metadata
+before navigation; SharePlay routing carries the participant-locally resolved item. Music
+is intentionally excluded from the current system-video surface. Spotlight indexing is
+best-effort and index-as-you-browse rather than a full-library crawl. The cross-device SharePlay
+privacy and authenticated local-resolution boundary is canonical in
+[System integration](SYSTEM-INTEGRATION.md#shareplay-watch-together).
 
 Structured app diagnostics are local, bounded, redacted, and opt-in. MetricKit is a
 separate passive crash/hang channel: it keeps at most five redacted summaries, uploads

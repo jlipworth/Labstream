@@ -10,6 +10,7 @@ flowchart TD
   Intent[App Intent] --> Router[SystemEntryRouter]
   Spotlight[Spotlight result] --> Router
   Activity[User activity] --> Router
+  SharePlay[Locally resolved SharePlay item] --> Router
   Router --> Restore{App ready?}
   Restore -->|no| Queue[Queue route]
   Restore -->|yes| Navigate[Open browse/detail/player path]
@@ -41,6 +42,33 @@ a separate migration plan.
 ## User activities
 
 User activities follow the same routing path as App Intents and Spotlight. Add new external-entry behavior to the router first, then connect the system surface to that route.
+
+## SharePlay / Watch Together
+
+Watch Together is currently a visionOS GroupActivity surface. Its app-generated cross-device
+payload is intentionally not a backend playback descriptor: it contains a random activity id
+plus a sanitized, allowlisted public-catalog identity and display label. The payload schema has
+no dedicated fields for backend item/library ids, server URLs, credentials, filenames,
+media-source ids, or play-session ids. Media-item payload construction rejects an unsafe display
+title; unsafe optional display/comparable text and non-allowlisted or unsafe provider values are
+omitted rather than transmitted. Readiness messages carry only the activity id and participant
+state.
+
+Each participant resolves the activity locally. `WatchTogetherMediaLookup` searches only that
+participant's currently authenticated active online backend, attempts to hydrate candidate
+metadata using their own credentials, and excludes offline downloads. Automatic PMSKit resolution
+requires compatible logical identity and an exact rounded-timeline match. When automatic
+resolution is absent or ambiguous, the UI offers only same-kind, timeline-compatible local
+candidates for explicit selection instead of sending a server identifier between participants. A
+payload that cannot produce a supported safe coordinator identity fails closed.
+
+`WatchTogetherCoordinator` joins the GroupSession early enough to receive readiness messages and
+present the join prompt. That message-level join is not consent to synchronize private local
+playback: the coordinator does not bind a local `AVPlayer` until the participant has resolved and
+launched the exact local item. The launch goes through `SystemEntryRouter.open`, so it uses the
+normal authenticated navigation/player route rather than a parallel playback stack. The
+coordinator is app-lifetime on visionOS; player attachment and Cinema continuity are described in
+[Playback architecture](PLAYBACK-ARCHITECTURE.md#shareplay-on-visionos).
 
 ## Mac development preview
 

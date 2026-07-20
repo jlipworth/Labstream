@@ -111,76 +111,30 @@ Labstream is unofficial and independent. It is not affiliated with, endorsed by,
 
 - macOS with Xcode 26 plus the visionOS 26 SDK and an iOS/iPadOS 26.1+ SDK/runtime for mobile builds.
 - A compatible Apple Vision Pro simulator runtime for visionOS builds, a compatible iPhone/iPad simulator runtime for mobile builds, or paired Apple Vision Pro / iPhone / iPad hardware for device installs.
+- Python 3 and [`uv`](https://docs.astral.sh/uv/getting-started/installation/) for documentation and repository tooling checks.
 - A Plex, Jellyfin, or Emby server you control or have permission to access.
 
 The optional `LabstreamMac` development preview builds directly for an Apple-silicon Mac running
 macOS 26; it has no simulator lane.
 
-### Build for the visionOS simulator
+### Build and smoke
 
-```sh
-SIMID=$(scripts/worktree-sim.sh --platform visionos id)
-xcrun simctl boot "$SIMID" 2>/dev/null || true
+[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) is the canonical executable workflow:
 
-scripts/xcodebuild-versioned.sh \
-  -project Labstream.xcodeproj \
-  -scheme Labstream \
-  -destination "platform=visionOS Simulator,id=$SIMID" \
-  -configuration Debug \
-  build CODE_SIGNING_ALLOWED=NO
-```
+- Before the first visionOS build or linked visionOS worktree, [select or create and record the initial visionOS simulator](docs/DEVELOPMENT.md#bootstrap-the-first-visionos-simulator). Mobile-only work does not require this bootstrap.
+- Build the primary [`Labstream` visionOS scheme](docs/DEVELOPMENT.md#build-for-the-visionos-simulator), or build the universal [`LabstreamMobile` iPhone/iPad scheme](docs/DEVELOPMENT.md#build-for-an-iphone-or-ipad-simulator) with the selected mobile platform.
+- Complete the [exact-product install, observable launch/log/screenshot smoke, and simulator shutdown](docs/DEVELOPMENT.md#install-and-observe-a-simulator-smoke).
+- Run the [core validation commands](docs/DEVELOPMENT.md#core-validation-commands) and clean up any [linked-worktree simulators](docs/DEVELOPMENT.md#linked-worktree-simulator-cleanup).
 
-### Build for an iPhone simulator
+### Physical devices and Mac preview
 
-```sh
-printf 'iphone\n' > .simplatform   # gitignored per-worktree default
-SIMID=$(scripts/worktree-sim.sh id)
-xcrun simctl boot "$SIMID" 2>/dev/null || true
+- Apple Vision Pro: complete the [first-use pairing, Developer Mode, Xcode account/signing, install, and launch procedure](docs/DEVELOPMENT.md#physical-apple-vision-pro-install).
+- iPhone/iPad: use the canonical [signed hardware install procedure](docs/DEVELOPMENT.md#physical-iphone-or-ipad-install).
+- Apple-silicon Mac: use the [host development-preview procedure](docs/DEVELOPMENT.md#build-and-run-the-macos-development-preview).
 
-scripts/xcodebuild-versioned.sh \
-  -project Labstream.xcodeproj \
-  -scheme LabstreamMobile \
-  -destination "platform=iOS Simulator,id=$SIMID" \
-  -configuration Debug \
-  build CODE_SIGNING_ALLOWED=NO
-```
-
-Use `printf 'ipad\n' > .simplatform` or `scripts/worktree-sim.sh --platform ipad id`
-for the iPad build/smoke path. Both variants build the universal `LabstreamMobile`
-target.
-
-### Run core checks
-
-```sh
-cd PMSKit && swift test
-cd ..
-scripts/ci-hygiene.sh
-uv run --with-requirements requirements.txt mkdocs build --strict
-```
-
-### Install on a physical Apple Vision Pro
-
-```sh
-scripts/deploy-to-device.sh            # build + install
-scripts/deploy-to-device.sh --launch   # also launch while the headset is awake/worn
-```
-
-### Install on a physical iPhone or iPad
-
-```sh
-scripts/deploy-mobile-to-device.sh            # build + install
-scripts/deploy-mobile-to-device.sh --launch   # also launch after install
-```
-
-### Build and launch the macOS development preview
-
-```sh
-scripts/deploy-macos-to-host.sh --launch
-```
-
-The visionOS and mobile app targets use `com.jlipworth.Labstream` for the intended unified
-product identity. The Mac helper defaults to a per-worktree development bundle identifier so
-local host builds do not collide; see [macOS development preview](docs/MACOS.md).
+The visionOS and mobile app targets use `com.jlipworth.Labstream` for the intended unified product
+identity. The Mac helper defaults to a per-worktree development bundle identifier so local host
+builds do not collide; see [macOS development preview](docs/MACOS.md).
 
 ## Project structure
 
@@ -225,8 +179,8 @@ Public docs describe the current app. Internal research notes, old implementatio
 Start with [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md). In short:
 
 - keep backend-specific wire behavior explicit;
-- put pure decisions in `PMSKit`;
-- keep SwiftUI, AVFoundation, URLSession, Keychain, and filesystem side effects in the app target;
+- put reusable request, model, and policy decisions in `PMSKit`, keeping its few effectful networking/storage utilities narrow and injectable;
+- keep SwiftUI, `AVPlayer` ownership, target lifecycle, background-session delegation, Keychain, and app persistence in the app target;
 - never commit tokens, server URLs, private IPs, media titles, local signing files, or diagnostic artifacts.
 
 For a quick module size readout, run:
