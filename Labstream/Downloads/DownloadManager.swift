@@ -220,6 +220,10 @@ public final class DownloadManager {
     @ObservationIgnored private var startupRecoveryErrorKeys: Set<String> = []
     @ObservationIgnored private var startupRecoveryRetryTask: Task<Void, Never>?
     @ObservationIgnored private var startupRecoveryRetryCount = 0
+    /// Short-lived worker for ordinary episode rows carrying the durable one-time planner marker.
+    /// No season/batch entity is retained; relaunch simply rediscovers marked rows.
+    @ObservationIgnored var seasonPlannerAdmissionTask: Task<Void, Never>?
+    @ObservationIgnored var seasonPlannerAdmittingKeys: Set<String> = []
 
     /// Coarse, pre-derived UI state for `OfflineLibraryView`.
     ///
@@ -2325,6 +2329,7 @@ public final class DownloadManager {
                 // existing-version retries forget side materials and appear to restart from scratch.
                 await self.download(currentItem, choice: retryChoice,
                                     mediaIndex: resolved.mediaIndex, partIndex: resolved.partIndex,
+                                    audioStreamIndex: metadata?.audioStreamIndex,
                                     allowReplacingExistingActiveRow: allowActiveRowReplacement)
                 self.refreshRecords()
                 return
@@ -2340,6 +2345,7 @@ public final class DownloadManager {
                 // upsert updates transfer fields without deleting cached assets.
                 await self.download(currentItem, choice: .existingVersion,
                                     mediaIndex: mediaIndex, partIndex: partIndex,
+                                    audioStreamIndex: metadata?.audioStreamIndex,
                                     allowReplacingExistingActiveRow: allowActiveRowReplacement)
                 self.refreshRecords()
                 return
@@ -2359,6 +2365,7 @@ public final class DownloadManager {
                 guard await self.removeAttempt(retryAttemptKey, context: "retry_replace") else { return }
             }
             await self.download(currentItem, choice: choice, mediaIndex: mediaIndex, partIndex: partIndex,
+                                audioStreamIndex: metadata?.audioStreamIndex,
                                 allowReplacingExistingActiveRow: allowActiveRowReplacement)
             self.refreshRecords()
         }
@@ -2485,7 +2492,8 @@ public final class DownloadManager {
                 guard await self.removeAttempt(key, context: "plex_optimize_replace") else { return }
             }
             await self.download(currentItem, choice: .optimize(targetName: targetName),
-                                mediaIndex: mediaIndex, partIndex: partIndex)
+                                mediaIndex: mediaIndex, partIndex: partIndex,
+                                audioStreamIndex: record.metadata?.audioStreamIndex)
             self.refreshRecords()
         }
     }
@@ -3850,7 +3858,8 @@ public final class DownloadManager {
         let now = Date()
         var fresh = store.records
         let staleQueuedStaticPartials = fresh.filter { record in
-            guard !isDeletionPending(record) else { return false }
+            guard !isDeletionPending(record), !seasonPlannerAdmittingKeys.contains(record.ratingKey),
+                  record.metadata?.seasonPlannerPendingAdmission != true else { return false }
             return DownloadRetryPolicy.shouldDemoteStaleQueuedStaticPartial(
                 record,
                 isActive: session.isTrackingTransfer(ratingKey: record.ratingKey),
@@ -3929,7 +3938,14 @@ public final class DownloadManager {
             fresh = store.records
         }
         let serverPrepKickIsRecent = lastServerPrepRefreshKickAt.map { now.timeIntervalSince($0) < 5 } ?? false
-        let recoveryEligibleFresh = fresh.filter { !isDeletionPending($0) }
+        // Season-planned rows are durably queued but intentionally have no task/poller until the
+        // bounded admission worker selects them. Ordinary stale/relaunch recovery must not race
+        // that marker and start the entire season at once.
+        let recoveryEligibleFresh = fresh.filter {
+            !isDeletionPending($0)
+                && !seasonPlannerAdmittingKeys.contains($0.ratingKey)
+                && $0.metadata?.seasonPlannerPendingAdmission != true
+        }
         let serverPrepKeysByRatingKey = Dictionary(uniqueKeysWithValues: recoveryEligibleFresh.compactMap { record in
             attemptKey(for: record).map { (record.ratingKey, $0) }
         })
@@ -4121,6 +4137,9 @@ public final class DownloadManager {
             Task { @MainActor [weak self] in
                 self?.restartStalledForwardOnlyStream(restart)
             }
+        }
+        if fresh.contains(where: { $0.metadata?.seasonPlannerPendingAdmission == true }) {
+            scheduleSeasonPlannerAdmission()
         }
     }
 

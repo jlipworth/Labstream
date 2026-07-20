@@ -21,6 +21,7 @@ extension DownloadManager {
     public func download(_ item: MediaItem, choice: DownloadChoice,
                          mediaIndex: Int = 0,
                          partIndex: Int = 0,
+                         audioStreamIndex: Int? = nil,
                          allowReplacingExistingActiveRow: Bool = false) async {
         let ratingKey = item.ratingKey
         // #84: resolve the Plex session ONCE from its own lane (never `appModel.activeBackend`),
@@ -71,6 +72,7 @@ extension DownloadManager {
                                             mediaIndex: mediaIndex, partIndex: partIndex,
                                             optimizeTargetName: optimizeTargetName,
                                             session: backendSession,
+                                            audioStreamIndex: audioStreamIndex,
                                             downloadLane: DownloadChoicePolicy.downloadLane(for: choice),
                                             serverPreparedVersion: DownloadChoicePolicy.isServerPreparedVersion(for: choice))
         let seedDestination = store.destinationURL(ratingKey: ratingKey, ext: "mp4")
@@ -156,6 +158,9 @@ extension DownloadManager {
                     "download_id": .identifier(ratingKey),
                     "target": .label(fallback),
                 ])
+                await selectPlexAudioForPreparedDownloadIfNeeded(
+                    part: part, audioStreamIndex: audioStreamIndex,
+                    server: server, token: token)
                 await triggerOptimizeAndDownload(item: item, targetName: fallback,
                                                  metadata: metadata, session: backendSession,
                                                  attemptKey: attemptKey)
@@ -179,9 +184,34 @@ extension DownloadManager {
                                         server: server, token: token)
 
         case .optimize(let targetName):
+            await selectPlexAudioForPreparedDownloadIfNeeded(
+                part: staticPart, audioStreamIndex: audioStreamIndex,
+                server: server, token: token)
             await triggerOptimizeAndDownload(item: item, targetName: targetName,
                                              metadata: metadata, session: backendSession,
                                              attemptKey: attemptKey)
+        }
+    }
+
+    /// Plex optimizer output follows the Part's selected audio stream. Apply the user's preferred
+    /// stream immediately before the bounded server-prep start; failure deliberately falls back to
+    /// Plex's selected/default stream rather than failing an otherwise valid season episode.
+    private func selectPlexAudioForPreparedDownloadIfNeeded(
+        part: Part?, audioStreamIndex: Int?, server: URL, token: String
+    ) async {
+        guard let part, let audioStreamIndex,
+              part.audioStreams.contains(where: {
+                  $0.id == audioStreamIndex || $0.index == audioStreamIndex
+              }) else { return }
+        do {
+            try await appModel.client.send(StreamSelectionRequest.selectAudioStream(
+                server: server, token: token, identity: appModel.identity,
+                partID: part.id, audioStreamID: audioStreamIndex))
+        } catch {
+            recordDownloadDiagnostic("downloads.audio_preference_fallback", fields: [
+                "backend": .label("Plex"),
+                "reason": .label("selection_request_failed"),
+            ])
         }
     }
 

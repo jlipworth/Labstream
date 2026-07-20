@@ -2208,6 +2208,11 @@ final class DownloadStore: @unchecked Sendable {
         return row.deletionPending
     }
 
+    func isDeletionPending(ratingKey: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return rows[ratingKey]?.deletionPending == true
+    }
+
     func deletionPendingCleanupIntents(
         for key: DownloadAttemptKey
     ) -> [DurableDownloadCleanupIntent]? {
@@ -2621,6 +2626,55 @@ final class DownloadStore: @unchecked Sendable {
         sideAssetHydrationCache.removeValue(forKey: record.ratingKey)
         lock.unlock()
         persist()
+    }
+
+    /// Atomically publish a set of brand-new, ordinary queued rows for one season-plan action.
+    /// One full-snapshot persistence revision contains every row; callers admit no network/server
+    /// work unless this returns true. Existing identities fail closed instead of being overwritten.
+    func createSeasonPlannedRecordsAtomically(_ records: [DownloadRecord]) -> Bool {
+        guard !records.isEmpty else { return true }
+        lock.lock()
+        let keys = records.map(\.ratingKey)
+        guard Set(keys).count == keys.count,
+              records.allSatisfy({ $0.attemptID != nil && rows[$0.ratingKey] == nil }) else {
+            lock.unlock()
+            return false
+        }
+        let previous = rows
+        for record in records {
+            guard let attemptID = record.attemptID else { continue }
+            let relativePath = record.localURL.lastPathComponent
+            var metadata = record.metadata
+            metadata?.downloadAttemptID = attemptID.rawValue
+            rows[record.ratingKey] = Row(
+                ratingKey: record.ratingKey,
+                attemptID: attemptID,
+                title: record.title,
+                relativePath: relativePath,
+                attemptWorkingRelativePath: Self.attemptStagingRelativePath(
+                    for: DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID),
+                    stableRelativePath: relativePath),
+                bytes: 0,
+                progress: 0,
+                status: record.status,
+                metadata: metadata,
+                legacyResetPending: false,
+                legacyResetArtifactRelativePaths: nil,
+                heldRangeBodyDeletionIntents: [])
+            sideAssetHydrationCache.removeValue(forKey: record.ratingKey)
+        }
+        let ticket = enqueuePersistenceLocked()
+        lock.unlock()
+        let attempt = waitForPersistence(through: ticket)
+        guard attempt.result.committed(through: ticket) else {
+            lock.lock()
+            rows = previous
+            let rollback = enqueuePersistenceLocked()
+            lock.unlock()
+            _ = waitForPersistence(through: rollback)
+            return false
+        }
+        return true
     }
 
     /// Create (or retry persistence of) a row owned by one exact attempt. A different existing

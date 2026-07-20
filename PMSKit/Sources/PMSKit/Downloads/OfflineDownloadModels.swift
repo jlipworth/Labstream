@@ -544,6 +544,9 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// artifact retry intent; transfer/resume/rate mechanics remain lane- and resume-mode-driven.
     /// `nil`/false for a genuine original (and every pre-existing row).
     public var serverPreparedVersion: Bool?
+    /// Durable one-time season-planner admission marker. It belongs to the ordinary episode row,
+    /// not a batch entity, and is cleared before that row enters its normal backend lane.
+    public var seasonPlannerPendingAdmission: Bool?
     /// #169: HTTP validator (`ETag`, else `Last-Modified`) captured from the first static byte-range
     /// range body. Sent as `If-Range` on later static Range requests so that if the server-side
     /// resource changes mid-download the server returns the whole NEW resource (200) — which the
@@ -623,6 +626,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 embyConvertRecoveryPhase: EmbyConvertRecoveryPolicy.Phase? = nil,
                 embyConvertSnapshotIDs: [String]? = nil,
                 serverPreparedVersion: Bool? = nil,
+                seasonPlannerPendingAdmission: Bool? = nil,
                 rangeValidator: String? = nil,
                 downloadAttemptID: String? = nil,
                 heldRangeSegments: [OfflineHeldRangeSegment]? = nil) {
@@ -688,6 +692,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.embyConvertRecoveryPhase = embyConvertRecoveryPhase
         self.embyConvertSnapshotIDs = embyConvertSnapshotIDs
         self.serverPreparedVersion = serverPreparedVersion
+        self.seasonPlannerPendingAdmission = seasonPlannerPendingAdmission
         self.rangeValidator = rangeValidator
         self.downloadAttemptID = downloadAttemptID
         self.heldRangeSegments = heldRangeSegments
@@ -761,6 +766,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
             EmbyConvertRecoveryPolicy.Phase.self, forKey: .embyConvertRecoveryPhase)
         embyConvertSnapshotIDs = try c.decodeIfPresent([String].self, forKey: .embyConvertSnapshotIDs)
         serverPreparedVersion = try c.decodeIfPresent(Bool.self, forKey: .serverPreparedVersion)
+        seasonPlannerPendingAdmission = try c.decodeIfPresent(
+            Bool.self, forKey: .seasonPlannerPendingAdmission)
         rangeValidator = try c.decodeIfPresent(String.self, forKey: .rangeValidator)
         downloadAttemptID = try c.decodeIfPresent(String.self, forKey: .downloadAttemptID)
         heldRangeSegments = try c.decodeIfPresent([OfflineHeldRangeSegment].self, forKey: .heldRangeSegments)

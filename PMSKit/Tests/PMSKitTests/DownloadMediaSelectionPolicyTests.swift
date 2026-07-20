@@ -69,6 +69,10 @@ struct DownloadMediaSelectionPolicyTests {
         #expect(selected?.streamIndex == 4)
         #expect(selected?.displayName == "Japanese DTS-HD MA 5.1")
 
+        let preferred = DownloadAudioSelectionPolicy.selectedAudioTrack(
+            part: part, preferredLanguage: "en")
+        #expect(preferred?.streamIndex == 1)
+
         let override = DownloadAudioSelectionPolicy.selectedAudioTrack(part: part, overrideStreamIndex: 1)
         #expect(override?.streamIndex == 1)
         #expect(override?.displayName == "English · AAC 2.0")

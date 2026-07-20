@@ -459,327 +459,31 @@ struct DownloadOptionsSheet: View {
 
     private func runProbe() async {
         guard existingRecord == nil else { return }
-        downloadLog.notice("download-sheet-run-probe item=\(item.ratingKey, privacy: .public) activeBackend=\(String(describing: sheetBackend), privacy: .public) mediaIndex=\(mediaIndex, privacy: .public)")
-        if sheetBackend == .jellyfin {
-            await runJellyfinProbe()
-            return
+        let result = await DownloadItemPlanner(appModel: appModel, downloadManager: downloadManager)
+            .options(for: item,
+                     mediaIndex: mediaIndex,
+                     partIndex: partIndex,
+                     audioStreamIndexOverride: audioStreamIndexOverride,
+                     preferredAudioLanguage: UserDefaults.standard.string(
+                        forKey: PlaybackPreferences.Keys.preferredAudioLanguage),
+                     backend: sheetBackend)
+        let original = result.original.map {
+            OriginalOption(sizeBytes: $0.sizeBytes, resolution: $0.resolution)
         }
-        if sheetBackend == .emby {
-            await runEmbyProbe()
-            return
+        let compatible = result.compatibleRemux.map {
+            CompatibleRemuxOption(codecSummary: $0.codecSummary)
         }
-        guard let token = appModel.serverToken, let server = appModel.serverBaseURL else {
-            let presets = defaultPresets
-            selectedChoice = presets.first.map { .optimize($0) }
-            probeState = .ready(original: nil, compatibleRemux: nil, presets: presets, probeFailed: true,
-                                originalStreamableButOfflineUnsupported: false,
-                                existingVersions: plexExistingVersions())
-            return
-        }
-
-        async let probeTask = downloadManager.directPlayProbe(
-            for: item, server: server, token: token,
-            mediaIndex: mediaIndex, partIndex: partIndex)
-        async let presetsTask = downloadManager.optimizePresetNames(server: server, token: token)
-
-        let probe = await probeTask
-        let fetchedPresets = await presetsTask
-        let presets = fetchedPresets.isEmpty ? defaultPresets : fetchedPresets
-        let media = item.media?[safe: mediaIndex]
-        let part = probe.part ?? media?.part[safe: partIndex]
-        let original = (probe.direct && OfflineDownloadDecision.isLocallyPlayableOriginal(part: part))
-            ? OriginalOption(sizeBytes: part?.size,
-                             resolution: DownloadPresetPolicy.resolutionLabel(for: media))
-            : nil
-        let unsupportedOriginal = probe.direct && original == nil
-
-        // Plex uses its optimized-version model (no client-side remux lane); never offer it here.
-        // Source-quality defaulting is PRESERVED: existing server versions are an explicit extra,
-        // never the default — `preferredSelection` is unchanged and ignores them.
         selectedChoice = preferredSelection(originalAvailable: original != nil,
-                                            compatibleRemuxAvailable: false, presets: presets)
-        probeState = .ready(original: original, compatibleRemux: nil, presets: presets, probeFailed: false,
-                            originalStreamableButOfflineUnsupported: unsupportedOriginal,
-                            existingVersions: plexExistingVersions())
+                                            compatibleRemuxAvailable: compatible != nil,
+                                            presets: result.presets)
+        probeState = .ready(
+            original: original,
+            compatibleRemux: compatible,
+            presets: result.presets,
+            probeFailed: result.probeFailed,
+            originalStreamableButOfflineUnsupported: result.originalStreamableButOfflineUnsupported,
+            existingVersions: result.existingVersions)
     }
-
-    private func runJellyfinProbe() async {
-        let selection = DownloadMediaSelectionPolicy.selection(item: item, mediaIndex: mediaIndex, partIndex: partIndex)
-        let media = selection.media
-        let part = selection.part
-        let originalLocallyPlayable = OfflineDownloadDecision.isLocallyPlayableOriginal(part: part)
-        let original = originalLocallyPlayable
-            ? OriginalOption(sizeBytes: part?.size,
-                             resolution: DownloadPresetPolicy.resolutionLabel(for: media))
-            : nil
-        let mediaSourceId = selection.mediaSourceID
-        let audioStreamIndex = selectedDownloadAudioStreamIndex
-        // The list/detail MediaItem may not carry full stream codec metadata for Jellyfin, so do
-        // not decide remux eligibility from the local Part alone. Ask PlaybackInfo whenever the
-        // raw file is not already locally playable, then use the server's authoritative codec and
-        // codec/container verdict to decide whether "Original quality (compatible)" can be offered.
-        let shouldProbeRemux = !originalLocallyPlayable
-        downloadLog.notice("download-sheet-jellyfin-probe-start item=\(item.ratingKey, privacy: .public) originalPlayable=\(originalLocallyPlayable, privacy: .public) mediaSource=\(mediaSourceId ?? "nil", privacy: .public)")
-        var probeFailed = false
-        var compatibleRemux: CompatibleRemuxOption?
-        if shouldProbeRemux {
-            guard let server = appModel.jellyfinServerBaseURL,
-                  let token = appModel.jellyfinAccessToken,
-                  let userId = appModel.jellyfinUserID else {
-                probeFailed = true
-                compatibleRemux = nil
-                let presets = jellyfinPresets
-                selectedChoice = preferredSelection(originalAvailable: original != nil,
-                                                    compatibleRemuxAvailable: false,
-                                                    presets: presets)
-                probeState = .ready(original: original,
-                                    compatibleRemux: nil,
-                                    presets: presets,
-                                    probeFailed: true,
-                                    originalStreamableButOfflineUnsupported: original == nil,
-                                    existingVersions: [])
-                return
-            }
-            var didRetryCancellation = false
-            while true {
-                do {
-                    let req = try JellyfinPlayback.downloadPlaybackInfoRequest(
-                        server: server, token: token, identity: appModel.identity.jellyfin,
-                        itemId: item.ratingKey, userId: userId, mediaSourceId: mediaSourceId,
-                        maxStaticBitrate: 200_000_000,
-                        audioStreamIndex: audioStreamIndex)
-                    let (data, response) = try await URLSession.shared.data(for: req)
-                    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                        throw URLError(.badServerResponse)
-                    }
-                    let info = try JellyfinPlaybackInfoResponse.decode(from: data)
-                    let decision = try JellyfinPlayback.downloadDecision(response: info,
-                                                                         preferredMediaSourceId: mediaSourceId)
-                    let remuxEligibility = OfflineDownloadDecision.compatibleRemuxEligibility(
-                        videoCodec: decision.videoCodec,
-                        audioCodec: decision.audioCodec,
-                        sourceContainer: decision.container)
-                    compatibleRemux = remuxEligibility.shouldOffer(originalLocallyPlayable: originalLocallyPlayable)
-                        ? CompatibleRemuxOption(codecSummary: remuxEligibility.codecSummary)
-                        : nil
-                    downloadLog.notice("download-sheet-jellyfin-probe-result item=\(item.ratingKey, privacy: .public) directStream=\(decision.supportsDirectStream, privacy: .public) video=\(remuxEligibility.videoCodec ?? "nil", privacy: .public) audio=\(remuxEligibility.audioCodec ?? "nil", privacy: .public) container=\(remuxEligibility.sourceContainer, privacy: .public) offer=\(compatibleRemux != nil, privacy: .public)")
-                    break
-                } catch {
-                    if isCancellation(error) {
-                        if Task.isCancelled {
-                            downloadLog.notice("download-sheet-jellyfin-probe-cancelled item=\(item.ratingKey, privacy: .public) taskCancelled=true")
-                            return
-                        }
-                        if !didRetryCancellation {
-                            didRetryCancellation = true
-                            downloadLog.notice("download-sheet-jellyfin-probe-cancelled item=\(item.ratingKey, privacy: .public) retry=true")
-                            continue
-                        }
-                    }
-                    probeFailed = true
-                    compatibleRemux = nil
-                    downloadLog.error("download-sheet-jellyfin-probe-failed item=\(item.ratingKey, privacy: .public) error=\(DiagnosticRedactor.safeErrorSummary(error), privacy: .public)")
-                    break
-                }
-            }
-        }
-        let presets = jellyfinPresets
-        downloadLog.notice("download-sheet-jellyfin-ready item=\(item.ratingKey, privacy: .public) probeFailed=\(probeFailed, privacy: .public) original=\(original != nil, privacy: .public) remux=\(compatibleRemux != nil, privacy: .public)")
-        selectedChoice = preferredSelection(originalAvailable: original != nil,
-                                            compatibleRemuxAvailable: compatibleRemux != nil,
-                                            presets: presets)
-        probeState = .ready(original: original,
-                            compatibleRemux: compatibleRemux,
-                            presets: presets,
-                            probeFailed: probeFailed,
-                            originalStreamableButOfflineUnsupported: original == nil && compatibleRemux == nil,
-                            existingVersions: [])
-    }
-
-    private func isCancellation(_ error: Error) -> Bool {
-        if error is CancellationError { return true }
-        let nsError = error as NSError
-        return nsError.domain == NSURLErrorDomain && nsError.code == URLError.cancelled.rawValue
-    }
-
-    /// Emby probe: POST the DOWNLOAD PlaybackInfo (Static-mp4 device profile) and read the
-    /// AUTHORITATIVE negotiated verdict — `SupportsDirectPlay` + container — to decide whether to
-    /// offer the original. Mirrors `runJellyfinProbe`'s outcome shape but, unlike Jellyfin (which
-    /// only checks the container locally), Emby must ask the server because the naked-item
-    /// direct-play flag is optimistic and untrustworthy. On any failure we fall back to presets
-    /// only (probeFailed), exactly like the Plex path.
-    private func runEmbyProbe() async {
-        let selection = DownloadMediaSelectionPolicy.selection(item: item, mediaIndex: mediaIndex, partIndex: partIndex)
-        let media = selection.media
-        let part = selection.part
-        let presets = embyPresets
-        let mediaSourceId = selection.mediaSourceID
-        let audioStreamIndex = selectedDownloadAudioStreamIndex
-        guard let server = appModel.embyServerBaseURL,
-              let token = appModel.embyAccessToken,
-              let userId = appModel.embyUserID else {
-            selectedChoice = .optimize(presets[0])
-            probeState = .ready(original: nil, compatibleRemux: nil, presets: presets, probeFailed: true,
-                                originalStreamableButOfflineUnsupported: false,
-                                existingVersions: [])
-            return
-        }
-
-        let identity = appModel.identity.emby
-        var negotiatedDirectPlay = false
-        var negotiatedContainer: String?
-        var negotiatedVideoCodec: String?
-        var negotiatedAudioCodec: String?
-        var probeFailed = false
-        // #126: existing server-side converted versions ("Convert Media" copies) surfaced from the
-        // SAME PlaybackInfo call that probes the primary source — no extra round trip.
-        var existingVersions: [DownloadExistingVersionOption] = []
-        do {
-            let req = try EmbyPlayback.downloadPlaybackInfoRequest(
-                server: server, token: token, identity: identity,
-                userId: userId, itemId: item.ratingKey,
-                mediaSourceId: mediaSourceId,
-                maxStaticBitrate: 200_000_000,
-                audioStreamIndex: audioStreamIndex)
-            let (data, response) = try await URLSession.shared.data(for: req)
-            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                throw URLError(.badServerResponse)
-            }
-            let info = try EmbyPlaybackInfoResponse.decode(from: data)
-            let decision = try EmbyPlayback.downloadDecision(response: info)
-            negotiatedDirectPlay = decision.supportsDirectPlay
-            negotiatedContainer = decision.container
-            negotiatedVideoCodec = decision.videoCodec
-            negotiatedAudioCodec = decision.audioCodec
-        } catch {
-            probeFailed = true
-        }
-
-        // #126/#133: enumerate existing converted versions from an UNFILTERED PlaybackInfo. Emby
-        // filters the response to a single source when a MediaSourceId is supplied (the primary
-        // probe above passes one, so it can NEVER see the alternates), so this dedicated call passes
-        // nil to get every source. If nothing is visible, ask Emby to refresh just this item and poll
-        // briefly: live testing showed completed Sync/Convert MP4 files can exist on disk while
-        // PlaybackInfo remains stale. Best-effort: a failure here just means no existing-version rows,
-        // never a failed sheet. The primary (offered above via Original/Remux/Optimize) is
-        // `mediaSourceId`.
-        do {
-            existingVersions = try await embyExistingVersionsWithRefresh(
-                server: server, token: token, identity: identity, userId: userId,
-                itemId: item.ratingKey, selectedMediaSourceId: mediaSourceId)
-        } catch {
-            // Leave existingVersions empty; the sheet still offers the normal lanes.
-        }
-
-        let containerPlayable = EmbyDownloadRouter.containerGate(part: part, negotiatedContainer: negotiatedContainer)
-        let original = (negotiatedDirectPlay && containerPlayable)
-            ? OriginalOption(sizeBytes: part?.size,
-                             resolution: DownloadPresetPolicy.resolutionLabel(for: media))
-            : nil
-        // #83: use the dedicated compatible-remux PlaybackInfo profile for codec/container probing.
-        // The normal download profile remains conservative for the forced-transcode lane.
-        var compatibleRemux: CompatibleRemuxOption?
-        if !probeFailed, original == nil {
-            do {
-                let remuxReq = try EmbyPlayback.compatibleRemuxDownloadPlaybackInfoRequest(
-                    server: server, token: token, identity: identity,
-                    userId: userId, itemId: item.ratingKey,
-                    mediaSourceId: mediaSourceId,
-                    maxStaticBitrate: 200_000_000,
-                    audioStreamIndex: audioStreamIndex)
-                let (data, response) = try await URLSession.shared.data(for: remuxReq)
-                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                    throw URLError(.badServerResponse)
-                }
-                let info = try EmbyPlaybackInfoResponse.decode(from: data)
-                let decision = try EmbyPlayback.downloadDecision(response: info,
-                                                                 preferredMediaSourceId: mediaSourceId)
-                negotiatedVideoCodec = decision.videoCodec
-                negotiatedAudioCodec = decision.audioCodec
-                negotiatedContainer = decision.container
-                let remuxEligibility = OfflineDownloadDecision.compatibleRemuxEligibility(
-                    videoCodec: negotiatedVideoCodec,
-                    audioCodec: negotiatedAudioCodec,
-                    sourceContainer: negotiatedContainer)
-                compatibleRemux = remuxEligibility.shouldOffer(originalLocallyPlayable: false)
-                    ? CompatibleRemuxOption(codecSummary: remuxEligibility.codecSummary)
-                    : nil
-            } catch {
-                probeFailed = true
-                compatibleRemux = nil
-            }
-        }
-        // "Streamable but offline-unsupported" = the server would direct-play it but the container
-        // can't be a raw offline local file (e.g. mkv) and no compatible remux is offered.
-        let unsupportedOriginal = !probeFailed && negotiatedDirectPlay && original == nil && compatibleRemux == nil
-
-        selectedChoice = preferredSelection(originalAvailable: original != nil,
-                                            compatibleRemuxAvailable: compatibleRemux != nil,
-                                            presets: presets)
-        probeState = .ready(original: original,
-                            compatibleRemux: compatibleRemux,
-                            presets: presets,
-                            probeFailed: probeFailed,
-                            originalStreamableButOfflineUnsupported: unsupportedOriginal,
-                            existingVersions: existingVersions)
-    }
-
-    private func embyExistingVersionsWithRefresh(server: URL,
-                                                 token: String,
-                                                 identity: EmbyClientIdentity,
-                                                 userId: String,
-                                                 itemId: String,
-                                                 selectedMediaSourceId: String?) async throws -> [DownloadExistingVersionOption] {
-        func fetch() async throws -> [DownloadExistingVersionOption] {
-            let allReq = try EmbyPlayback.downloadPlaybackInfoRequest(
-                server: server, token: token, identity: identity,
-                userId: userId, itemId: itemId,
-                mediaSourceId: nil,
-                maxStaticBitrate: 200_000_000)
-            let (data, response) = try await URLSession.shared.data(for: allReq)
-            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                throw URLError(.badServerResponse)
-            }
-            let info = try EmbyPlaybackInfoResponse.decode(from: data)
-            // Exclude the source the main options already cover. Prefer the selected source id; fall
-            // back to the unfiltered decision's chosen primary when none was resolved.
-            let primaryId = selectedMediaSourceId
-                ?? (try? EmbyPlayback.downloadDecision(response: info))?.mediaSourceId
-            return DownloadExistingVersionOptionPolicy.embyOptions(response: info, primaryMediaSourceId: primaryId)
-        }
-
-        let initial = try await fetch()
-        if !initial.isEmpty { return initial }
-
-        let refresh = try EmbyConvertRequest.itemRefreshRequest(server: server, token: token,
-                                                                identity: identity, userId: userId,
-                                                                itemId: itemId)
-        let (_, refreshResponse) = try await URLSession.shared.data(for: refresh)
-        if let http = refreshResponse as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            return []
-        }
-        for attempt in 0..<2 {
-            let refreshed = try await fetch()
-            if !refreshed.isEmpty { return refreshed }
-            if attempt < 1 { try? await Task.sleep(for: .seconds(5)) }
-        }
-        return []
-    }
-
-    private var defaultPresets: [String] {
-        DownloadPresetPolicy.visiblePresetNames(serverTargets: [])
-    }
-
-    private var jellyfinPresets: [String] {
-        DownloadPresetPolicy.bitratePresetNames
-    }
-
-    // Emby has no server-side optimize-target list (Plex-only), so the picker uses the same
-    // bitrate ladder as Jellyfin; the manager maps each preset to a transcode profile.
-    private var embyPresets: [String] {
-        DownloadPresetPolicy.bitratePresetNames
-    }
-
 
     private func plexOriginalOptimizePreset(in presets: [String]) -> String? {
         guard sheetBackend == .plex else { return nil }
@@ -789,22 +493,6 @@ struct DownloadOptionsSheet: View {
     private func optimizePresetsExcludingPlexOriginal(_ presets: [String]) -> [String] {
         guard sheetBackend == .plex else { return presets }
         return DownloadPresetPolicy.presetsExcludingPlexOriginalQuality(presets)
-    }
-
-    // MARK: - Existing server versions (#112)
-
-    /// Existing server-generated Plex Versions to offer as explicit download choices, derived from
-    /// the item's `Media` array SEPARATELY from the source media at `mediaIndex`. Every other
-    /// `Media` entry that carries a downloadable part is surfaced — these are the redundant/
-    /// pre-rendered versions Plex already keeps on the server. Plex-only (Jellyfin/Emby model the
-    /// alternate versions differently and use the compatible-remux lane), and never offered when
-    /// the item has a single version.
-    private func plexExistingVersions() -> [DownloadExistingVersionOption] {
-        let result = DownloadExistingVersionOptionPolicy.plexOptions(media: item.media,
-                                                                    sourceMediaIndex: mediaIndex)
-        let blocked = result.filter { !$0.playableOffline }.count
-        downloadLog.notice("download-sheet-existing-versions item=\(item.ratingKey, privacy: .public) mediaCount=\(item.media?.count ?? 0, privacy: .public) sourceMediaIndex=\(mediaIndex, privacy: .public) offered=\(result.count, privacy: .public) blockedOffline=\(blocked, privacy: .public) labels=\(result.map(\.label).joined(separator: " | "), privacy: .public)")
-        return result
     }
 
     // MARK: - Sections
@@ -1164,7 +852,6 @@ struct DownloadOptionsSheet: View {
         case .original, .existingVersion, .embyExistingVersion, .plexOriginalQuality:
             return nil
         case .optimize, .optimizeCompatible:
-            guard sheetBackend == .jellyfin || sheetBackend == .emby else { return nil }
             return selectedDownloadAudioStreamIndex
         }
     }
@@ -1384,7 +1071,8 @@ struct DownloadOptionsSheet: View {
         switch sheetBackend {
         case .plex:
             Task { await downloadManager.download(item, choice: choice,
-                                                  mediaIndex: downloadMediaIndex, partIndex: downloadPartIndex) }
+                                                  mediaIndex: downloadMediaIndex, partIndex: downloadPartIndex,
+                                                  audioStreamIndex: audioStreamIndex) }
         case .jellyfin:
             Task { await downloadManager.downloadJellyfin(item, choice: choice,
                                                           mediaIndex: downloadMediaIndex,
