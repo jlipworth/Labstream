@@ -5,7 +5,7 @@ import os
 // GH #135 Stage 5c: the offline SIDE-ASSET caching cluster, split out of the DownloadManager
 // god-object into its own file. Behavior-unchanged — the same @MainActor methods (an extension of a
 // @MainActor class inherits its isolation), relocated verbatim: poster art (Plex/Jellyfin/Emby),
-// text subtitles (Plex/Jellyfin), the Plex BIF trick-play index, and per-chapter images — each a
+// text subtitles (Plex/Jellyfin), Plex/Emby BIF trick-play indices, and per-chapter images — each a
 // best-effort cache that never fails the media download. (Stage 7 will further unify these into one
 // fetch→write→persist→refresh helper; this is the file-level separation.)
 
@@ -19,8 +19,8 @@ import os
 /// retries once, which is the intended behavior for a genuinely transient (offline) miss.
 struct CompletedRowSideAssetRehydrateBudget {
     /// The optional-asset kinds the completed-row scan tracks (mirrors the `metadata`-derived refs
-    /// the gate inspects: the poster and the per-chapter thumbnails).
-    enum Kind: Hashable { case poster, chapterImages }
+    /// the gate inspects: the poster, generated preview index, and per-chapter thumbnails).
+    enum Kind: Hashable { case poster, embyBIF, chapterImages }
 
     static let maxAttemptsPerLaunch = 5
 
@@ -89,6 +89,14 @@ extension DownloadManager {
             destination: store.posterDestinationURL(ratingKey: record.ratingKey)
            ) == nil {
             kinds.insert(.poster)
+        }
+        if metadata.resolvedBackendKind(ratingKey: record.ratingKey) == .emby,
+           metadata.mediaSourceID?.isEmpty == false,
+           store.reusableSideAssetRelativePath(
+            for: attemptKey,
+            destination: store.embyBIFDestinationURL(ratingKey: record.ratingKey)
+           ) == nil {
+            kinds.insert(.embyBIF)
         }
         for (index, chapter) in (item.chapters ?? []).enumerated()
             where chapter.thumb?.isEmpty == false {
@@ -179,13 +187,17 @@ extension DownloadManager {
             guard let userID = backendSession.userID, !userID.isEmpty else { return false }
             cacheEmbyPoster(for: attemptKey, item: item, server: server, token: token,
                             identity: appModel.identity.emby, userId: userID)
+            cacheEmbyBIF(for: attemptKey, itemId: metadata.ratingKey,
+                         mediaSourceId: metadata.mediaSourceID,
+                         server: server, token: token,
+                         identity: appModel.identity.emby, userId: userID)
             cacheChapterImages(for: attemptKey, item: item, backend: .emby,
                                server: server, token: token, userID: userID)
         }
         return true
     }
 
-    /// Lens 4 F2: side assets (posters, text subtitles, chapter images, Plex BIF, JF trickplay)
+    /// Lens 4 F2: side assets (posters, text subtitles, chapter images, Plex/Emby BIF, JF trickplay)
     /// are DATA-PLANE payloads — multi-MB in aggregate — and must honor the same Wi-Fi-only
     /// download setting as the media transfer itself. Mirrors the transfer engine's
     /// `requestApplyingCellularPolicy` (replicated here; that helper is private to
@@ -474,6 +486,54 @@ extension DownloadManager {
             } catch {
                 // Expected for items/servers without BIFs, auth churn, or cache races.
                 // Keep silent and never log token-bearing URLs.
+            }
+        }
+    }
+
+    /// Best-effort selected-source Emby BIF cache for offline fine-grained previews. The request is
+    /// authenticated with the existing Emby resolver and includes the authoritative download
+    /// `MediaSourceId`; only a parseable Roku BIF is promoted. Missing/unsupported assets are silent
+    /// and chapter images remain available as the offline fallback.
+    func cacheEmbyBIF(for attemptKey: DownloadAttemptKey,
+                      itemId: String,
+                      mediaSourceId: String?,
+                      server: URL,
+                      token: String,
+                      identity: EmbyClientIdentity,
+                      userId: String,
+                      width: Int = EmbyTrickPlayRequest.canonicalWidth) {
+        guard let mediaSourceId, !mediaSourceId.isEmpty else { return }
+        let destination = store.embyBIFDestinationURL(ratingKey: attemptKey.ratingKey)
+        if store.reusableSideAssetRelativePath(for: attemptKey, destination: destination) != nil { return }
+        guard let staging = store.attemptStagingURL(for: attemptKey, stableURL: destination),
+              let request = try? EmbyTrickPlayRequest.bifIndex(
+                server: server, token: token, identity: identity, userId: userId,
+                itemId: itemId, mediaSourceId: mediaSourceId, width: width) else { return }
+        let bifRequest = Self.sideAssetRequest(applyingCellularPolicy: request)
+        let store = self.store
+        downloadWorkRegistry.startIfAbsent(
+            for: attemptKey, kind: .sideCache(.embyBIF)
+        ) { [weak self] in
+            guard let self, !Task.isCancelled else { return }
+            defer { try? FileManager.default.removeItem(at: staging) }
+            do {
+                let data = try await self.fetchOptionalSideAsset(bifRequest, for: attemptKey)
+                guard !Task.isCancelled,
+                      !data.isEmpty,
+                      (try? BIFParser.parse(data)) != nil else { return }
+                try data.write(to: staging, options: .atomic)
+                guard !Task.isCancelled,
+                      store.record(for: attemptKey)?.metadata?.mediaSourceID == mediaSourceId,
+                      Self.promoteSideAsset(store: store, key: attemptKey,
+                                            stagingURL: staging, stableURL: destination) else { return }
+                await MainActor.run {
+                    let result = store.updateMetadata(for: attemptKey) {
+                        $0.embyBIFRelativePath = destination.lastPathComponent
+                    }
+                    if result == .applied || result == .noChange { self.refreshRecords() }
+                }
+            } catch {
+                // Optional asset miss/auth churn/cancellation. Never log the authenticated URL.
             }
         }
     }

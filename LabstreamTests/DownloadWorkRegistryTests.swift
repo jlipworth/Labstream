@@ -369,6 +369,7 @@ enum SuspendedSideAssetCase: String, CaseIterable, Sendable {
     case poster
     case textSubtitles
     case plexBIF
+    case embyBIF
     case jellyfinTrickPlay
     case chapterImages
 
@@ -380,6 +381,8 @@ enum SuspendedSideAssetCase: String, CaseIterable, Sendable {
             store.textSubtitleDestinationURL(ratingKey: ratingKey, streamID: 7, ext: "vtt")
         case .plexBIF:
             store.plexBIFDestinationURL(ratingKey: ratingKey)
+        case .embyBIF:
+            store.embyBIFDestinationURL(ratingKey: ratingKey)
         case .jellyfinTrickPlay:
             store.jellyfinTrickPlayPlaylistDestinationURL(ratingKey: ratingKey)
         case .chapterImages:
@@ -396,6 +399,8 @@ enum SuspendedSideAssetCase: String, CaseIterable, Sendable {
                 id: 7, displayName: "English", codec: "vtt", relativePath: relative)]
         case .plexBIF:
             metadata.plexBIFRelativePath = relative
+        case .embyBIF:
+            metadata.embyBIFRelativePath = relative
         case .jellyfinTrickPlay:
             metadata.jellyfinTrickPlayPlaylistRelativePath = relative
             metadata.jellyfinTrickPlayTileRelativePaths = [relative]
@@ -413,6 +418,8 @@ enum SuspendedSideAssetCase: String, CaseIterable, Sendable {
             !(metadata.offlineTextSubtitles?.isEmpty ?? true)
         case .plexBIF:
             metadata.plexBIFRelativePath != nil
+        case .embyBIF:
+            metadata.embyBIFRelativePath != nil
         case .jellyfinTrickPlay:
             metadata.jellyfinTrickPlayPlaylistRelativePath != nil
                 || !(metadata.jellyfinTrickPlayTileRelativePaths?.isEmpty ?? true)

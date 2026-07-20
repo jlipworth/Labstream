@@ -4,6 +4,39 @@ import Testing
 @testable import Labstream
 
 struct DownloadStoreLookupTests {
+    @Test func embyBIFHydratesCountsAuditsAndDeletesWithItsRecord() throws {
+        try withTemporaryDirectory { directory in
+            let bifName = "item.emby.bif"
+            let metadata = OfflineMetadata(
+                ratingKey: "emby:item", title: "Title", type: "movie",
+                embyBIFRelativePath: bifName, downloadAttemptID: "attempt-a")
+            try DownloadIndexCoding.encode([
+                SeedRow(ratingKey: "emby:item", title: "Title", relativePath: "item.mp4",
+                        bytes: 3, progress: 1, status: .complete, metadata: metadata),
+            ]).write(to: directory.appendingPathComponent("index.json"), options: .atomic)
+            try Data([1, 2, 3]).write(to: directory.appendingPathComponent("item.mp4"))
+            try Data([4, 5, 6, 7]).write(to: directory.appendingPathComponent(bifName))
+            let store = DownloadStore(baseDirectory: directory)
+
+            let record = try #require(store.record(for: "emby:item"))
+            #expect(record.embyBIFURL?.lastPathComponent == bifName)
+            #expect(record.sideAssetBytes == 4)
+            #expect(store.embyBIFURL(for: "emby:item")?.lastPathComponent == bifName)
+            let audit = store.storageAudit()
+            #expect(audit.referencedRelativePaths.contains(bifName))
+            #expect(audit.referencedBytes == 7)
+
+            let attemptKey = DownloadAttemptKey(
+                ratingKey: "emby:item",
+                attemptID: try #require(DownloadAttemptID(rawValue: "attempt-a")))
+            #expect(store.remove(for: attemptKey) == .applied)
+            #expect(store.resolveArtifactSynchronouslyForTests(
+                through: store.currentArtifactLifecycleWatermark()) == .completed)
+            #expect(!FileManager.default.fileExists(atPath: directory.appendingPathComponent(bifName).path))
+            #expect(store.record(for: "emby:item") == nil)
+        }
+    }
+
     @Test func sideAssetReuseRequiresExactAttemptMetadataAndNonemptyRegularFile() throws {
         try withTemporaryDirectory { directory in
             let relative = "chapter-0.jpg"

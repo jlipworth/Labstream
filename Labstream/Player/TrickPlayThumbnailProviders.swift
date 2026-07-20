@@ -6,16 +6,48 @@ import AppKit
 import UIKit
 #endif
 
-/// Plex BIF-backed trick-play provider.
-///
-/// Fetches at most one BIF index for the selected Part and serves all scrub previews from that
-/// in-memory index. This is intentionally independent of `PlaybackController` stream rebuilds so
-/// dragging the scrubber cannot create extra transcode/reconnect pressure.
-actor PlexBIFTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
-    private let request: PlexRequest
-    private let client: PlexClient
+/// Shared one-load BIF frame source used by Plex, Emby, and local offline providers. Parsing,
+/// malformed-asset fallback, nearest-frame lookup, and cancellation retry behavior live here so
+/// backend wrappers cannot drift or introduce a second Roku BIF implementation.
+actor BIFBackedTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
+    typealias DataLoader = @Sendable () async throws -> Data
+
+    private let dataLoader: DataLoader
     private var loadedIndex: BIFIndex?
-    private var loadTask: Task<BIFIndex?, Never>?
+    private var resolved = false
+
+    init(dataLoader: @escaping DataLoader) {
+        self.dataLoader = dataLoader
+    }
+
+    func thumbnail(nearMs targetMs: Int) async -> TrickPlayThumbnail? {
+        guard let index = await index(), let frame = index.frame(nearMs: targetMs) else { return nil }
+        return TrickPlayThumbnail(timeMs: frame.timeMs,
+                                  imageData: frame.data,
+                                  contentType: "image/jpeg")
+    }
+
+    private func index() async -> BIFIndex? {
+        if resolved { return loadedIndex }
+        do {
+            let parsed = try BIFParser.parse(try await dataLoader())
+            guard !Task.isCancelled else { return nil }
+            loadedIndex = parsed
+            resolved = true
+            return parsed
+        } catch is CancellationError {
+            return nil
+        } catch {
+            resolved = true
+            return nil
+        }
+    }
+}
+
+/// Plex wrapper that resolves the selected Part request and delegates BIF behavior to the shared
+/// frame source. It remains independent of playback session rebuilds.
+actor PlexBIFTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
+    private let provider: BIFBackedTrickPlayThumbnailProvider
 
     init?(item: MediaItem,
           mediaIndex: Int,
@@ -27,40 +59,18 @@ actor PlexBIFTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
               part.hasStandardDefinitionBIFIndex else {
             return nil
         }
-        self.request = TrickPlayRequest.plexBIFIndex(server: server,
-                                                     token: token,
-                                                     identity: identity,
-                                                     partID: part.id,
-                                                     quality: "sd")
-        self.client = client
+        let request = TrickPlayRequest.plexBIFIndex(server: server,
+                                                    token: token,
+                                                    identity: identity,
+                                                    partID: part.id,
+                                                    quality: "sd")
+        self.provider = BIFBackedTrickPlayThumbnailProvider {
+            try await client.send(request)
+        }
     }
 
     func thumbnail(nearMs targetMs: Int) async -> TrickPlayThumbnail? {
-        guard let index = await index(), let frame = index.frame(nearMs: targetMs) else { return nil }
-        return TrickPlayThumbnail(timeMs: frame.timeMs,
-                                  imageData: frame.data,
-                                  contentType: "image/jpeg")
-    }
-
-    private func index() async -> BIFIndex? {
-        if let loadedIndex { return loadedIndex }
-        if loadTask == nil {
-            let request = request
-            let client = client
-            loadTask = Task {
-                do {
-                    let data = try await client.send(request)
-                    return try BIFParser.parse(data)
-                } catch {
-                    // Unavailable BIFs are expected for some items/servers. Keep this silent and
-                    // graceful; do not log URLs because the request carries an auth token in query.
-                    return nil
-                }
-            }
-        }
-        let value = await loadTask?.value
-        loadedIndex = value ?? nil
-        return value ?? nil
+        await provider.thumbnail(nearMs: targetMs)
     }
 
     private static func selectedPart(from item: MediaItem, mediaIndex: Int) -> Part? {
@@ -76,38 +86,17 @@ actor PlexBIFTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
 /// Loads the cached `.bif` once from disk and then serves scrub previews without any
 /// server/client dependency. Missing or corrupt cache files simply produce no previews.
 actor LocalBIFTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
-    private let bifURL: URL
-    private var loadedIndex: BIFIndex?
-    private var loadTask: Task<BIFIndex?, Never>?
+    private let provider: BIFBackedTrickPlayThumbnailProvider
 
     init?(bifURL: URL?) {
         guard let bifURL else { return nil }
-        self.bifURL = bifURL
+        self.provider = BIFBackedTrickPlayThumbnailProvider {
+            try Data(contentsOf: bifURL)
+        }
     }
 
     func thumbnail(nearMs targetMs: Int) async -> TrickPlayThumbnail? {
-        guard let index = await index(), let frame = index.frame(nearMs: targetMs) else { return nil }
-        return TrickPlayThumbnail(timeMs: frame.timeMs,
-                                  imageData: frame.data,
-                                  contentType: "image/jpeg")
-    }
-
-    private func index() async -> BIFIndex? {
-        if let loadedIndex { return loadedIndex }
-        if loadTask == nil {
-            let bifURL = bifURL
-            loadTask = Task {
-                do {
-                    let data = try Data(contentsOf: bifURL)
-                    return try BIFParser.parse(data)
-                } catch {
-                    return nil
-                }
-            }
-        }
-        let value = await loadTask?.value
-        loadedIndex = value ?? nil
-        return value ?? nil
+        await provider.thumbnail(nearMs: targetMs)
     }
 }
 
@@ -316,18 +305,147 @@ actor LocalJellyfinTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     }
 }
 
-/// Emby chapter-image trick-play provider.
+/// Emby generated-preview hierarchy for online playback.
 ///
-/// Emby exposes no Jellyfin-style trickplay tile sheets (`/Trickplay/.../tiles.m3u8` 404s), so
-/// there is no fine-grained sprite source. Emby DOES expose a per-chapter image endpoint, which
-/// is exactly the data the chapter list already uses. This provider reuses the item's chapter
-/// markers (each carries a synthetic `emby://item/{id}/Chapter/{index}?tag=` thumb key plus a
-/// `startTimeOffset`) to serve a coarse, chapter-granularity scrub preview: it maps the scrub
-/// target to the chapter it falls within and fetches that chapter's image once, caching it.
+/// Availability is read from the selected PlaybackInfo source's `ThumbnailSet`. When present, one
+/// authenticated parseable BIF is preferred. An unavailable/malformed BIF falls back to bounded
+/// per-position images from the same selected source, and any generated-preview failure falls back
+/// silently to the existing chapter-image provider. Every request passes through the shared
+/// side-asset coordinator and remains independent of playback/transcode sessions.
+actor EmbyTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
+    private let itemId: String
+    private let mediaSourceId: String
+    private let server: URL
+    private let token: String
+    private let identity: EmbyClientIdentity
+    private let userId: String?
+    private let width: Int
+    private let session: URLSession
+    private let coordinator: SideAssetFetchCoordinator
+    private let chapterFallback: (any TrickPlayThumbnailProviding)?
+    private let bifProvider: BIFBackedTrickPlayThumbnailProvider
+
+    private var thumbnailSet: EmbyThumbnailSetInfo?
+    private var thumbnailSetResolved = false
+    private var imageCache: [Int64: Data] = [:]
+    private var imageCacheOrder: [Int64] = []
+    private let imageCacheLimit = 12
+
+    init?(item: MediaItem,
+          mediaSourceId: String,
+          server: URL?,
+          token: String?,
+          identity: EmbyClientIdentity,
+          userId: String?,
+          width: Int = EmbyTrickPlayRequest.canonicalWidth,
+          session: URLSession = .shared,
+          coordinator: SideAssetFetchCoordinator = .shared) {
+        guard let server, let token, !token.isEmpty, !mediaSourceId.isEmpty else { return nil }
+        guard let bifRequest = try? EmbyTrickPlayRequest.bifIndex(
+            server: server, token: token, identity: identity, userId: userId,
+            itemId: item.ratingKey, mediaSourceId: mediaSourceId, width: width) else { return nil }
+        self.itemId = item.ratingKey
+        self.mediaSourceId = mediaSourceId
+        self.server = server
+        self.token = token
+        self.identity = identity
+        self.userId = userId
+        self.width = width
+        self.session = session
+        self.coordinator = coordinator
+        self.bifProvider = BIFBackedTrickPlayThumbnailProvider {
+            try await coordinator.fetch(
+                request: bifRequest,
+                owner: SideAssetOwner(rawValue: "player-trickplay"),
+                session: session)
+        }
+        self.chapterFallback = EmbyChapterTrickPlayThumbnailProvider(
+            item: item, server: server, token: token, identity: identity,
+            userId: userId, session: session, coordinator: coordinator)
+    }
+
+    func thumbnail(nearMs targetMs: Int) async -> TrickPlayThumbnail? {
+        guard !Task.isCancelled else { return nil }
+        guard let set = await resolvedThumbnailSet(), !set.thumbnails.isEmpty else {
+            return await chapterFallback?.thumbnail(nearMs: targetMs)
+        }
+        if let frame = await bifProvider.thumbnail(nearMs: targetMs) {
+            return frame
+        }
+        if let advertised = set.thumbnail(nearMs: targetMs),
+           let data = await perPositionImage(advertised) {
+            return TrickPlayThumbnail(timeMs: advertised.timeMs,
+                                      imageData: data,
+                                      contentType: "image/jpeg")
+        }
+        return await chapterFallback?.thumbnail(nearMs: targetMs)
+    }
+
+    private func resolvedThumbnailSet() async -> EmbyThumbnailSetInfo? {
+        if thumbnailSetResolved { return thumbnailSet }
+        do {
+            let request = try EmbyTrickPlayRequest.thumbnailSet(
+                server: server, token: token, identity: identity, userId: userId,
+                itemId: itemId, mediaSourceId: mediaSourceId, width: width)
+            let data = try await coordinator.fetch(
+                request: request,
+                owner: SideAssetOwner(rawValue: "player-trickplay"),
+                session: session)
+            guard !Task.isCancelled else { return nil }
+            let decoded = try EmbyThumbnailSetInfo.decode(from: data)
+            thumbnailSet = decoded
+            thumbnailSetResolved = true
+            return decoded
+        } catch is CancellationError {
+            return nil
+        } catch {
+            thumbnailSetResolved = true
+            return nil
+        }
+    }
+
+    private func perPositionImage(_ advertised: EmbyThumbnailInfo) async -> Data? {
+        if let cached = imageCache[advertised.positionTicks] {
+            promoteCachedPosition(advertised.positionTicks)
+            return cached
+        }
+        do {
+            let request = try EmbyTrickPlayRequest.thumbnailImage(
+                server: server, token: token, identity: identity, userId: userId,
+                itemId: itemId, mediaSourceId: mediaSourceId,
+                thumbnail: advertised, width: width)
+            let data = try await coordinator.fetch(
+                request: request,
+                owner: SideAssetOwner(rawValue: "player-trickplay"),
+                session: session)
+            guard !Task.isCancelled, UIImage(data: data) != nil else { return nil }
+            insertImage(data, for: advertised.positionTicks)
+            return data
+        } catch {
+            return nil
+        }
+    }
+
+    private func promoteCachedPosition(_ positionTicks: Int64) {
+        imageCacheOrder.removeAll { $0 == positionTicks }
+        imageCacheOrder.append(positionTicks)
+    }
+
+    private func insertImage(_ data: Data, for positionTicks: Int64) {
+        imageCache[positionTicks] = data
+        promoteCachedPosition(positionTicks)
+        while imageCacheOrder.count > imageCacheLimit {
+            imageCache[imageCacheOrder.removeFirst()] = nil
+        }
+    }
+}
+
+/// Coarse Emby chapter-image fallback used only after generated previews are unavailable.
 ///
-/// This is intentionally coarse (one frame per chapter, not per-second) — matching the project's
-/// design constraint of never pressuring the transcoder for previews. Like the other providers it
-/// is playback-passive: it only fetches images and never touches the media session.
+/// The item's chapter markers carry a synthetic `emby://item/{id}/Chapter/{index}?tag=` ref and a
+/// `startTimeOffset`; this provider maps the target to that sparse frame and caches bounded JPEGs.
+///
+/// It remains playback-passive and never touches the media session.
 actor EmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     private struct Frame: Sendable {
         let timeMs: Int
@@ -341,6 +459,7 @@ actor EmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     private let identity: EmbyClientIdentity
     private let userId: String?
     private let session: URLSession
+    private let coordinator: SideAssetFetchCoordinator
 
     private var imageCache: [Int: Data] = [:]
     private var cacheOrder: [Int] = []
@@ -351,7 +470,8 @@ actor EmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
           token: String?,
           identity: EmbyClientIdentity,
           userId: String?,
-          session: URLSession = .shared) {
+          session: URLSession = .shared,
+          coordinator: SideAssetFetchCoordinator = .shared) {
         guard let server, let token, !token.isEmpty else { return nil }
         let frames = (item.chapters ?? []).compactMap { chapter -> Frame? in
             guard let thumb = chapter.thumb,
@@ -369,6 +489,7 @@ actor EmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
         self.identity = identity
         self.userId = userId
         self.session = session
+        self.coordinator = coordinator
     }
 
     func thumbnail(nearMs targetMs: Int) async -> TrickPlayThumbnail? {
@@ -384,7 +505,7 @@ actor EmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
                                                                 userId: userId,
                                                                 width: 480,
                                                                 height: 270) else { return nil }
-            let data = try await SideAssetFetchCoordinator.shared.fetch(
+            let data = try await coordinator.fetch(
                 request: req,
                 owner: SideAssetOwner(rawValue: "player-trickplay"),
                 session: session
@@ -421,11 +542,8 @@ actor EmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
 
 /// Local Emby chapter-image trick-play provider for offline downloads (#89).
 ///
-/// Emby exposes no Jellyfin-style trickplay tiles, so offline scrub previews are served from the
-/// per-chapter images cached at download time (#88/#89 share that cache). This mirrors the online
-/// `EmbyChapterTrickPlayThumbnailProvider`'s coarse, chapter-granularity behaviour — map the scrub
-/// target to the chapter it falls within — but loads each chapter's cached JPEG from disk instead
-/// of issuing a request, so it has no server/network dependency.
+/// Cached chapter images remain the offline fallback when a cached Emby BIF is absent or invalid.
+/// This mirrors the online coarse provider but loads JPEGs from disk with no network dependency.
 actor LocalEmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     private struct Frame: Sendable {
         let timeMs: Int

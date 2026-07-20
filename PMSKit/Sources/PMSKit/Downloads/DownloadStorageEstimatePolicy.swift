@@ -29,10 +29,8 @@ public enum DownloadStorageEstimatePolicy {
                                                chapterImageCount: Int) -> Int {
         let chapterImages = estimatedChapterImageBytes(chapterImageCount: chapterImageCount)
         switch backend {
-        case .jellyfin, .plex:
+        case .jellyfin, .plex, .emby:
             return JellyfinTrickPlayOfflineCachePlanner.estimatedTileBytes(durationMs: durationMs) + chapterImages
-        case .emby:
-            return chapterImages
         }
     }
 

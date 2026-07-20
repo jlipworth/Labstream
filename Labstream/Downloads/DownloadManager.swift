@@ -1245,6 +1245,11 @@ public final class DownloadManager {
         store.plexBIFURL(for: ratingKey)
     }
 
+    /// Absolute cached selected-source Emby BIF URL for a completed download, if present on disk.
+    public func embyBIFURL(for ratingKey: String) -> URL? {
+        store.embyBIFURL(for: ratingKey)
+    }
+
     /// Absolute cached Jellyfin trickplay playlist URL for a completed download, if present on disk.
     public func jellyfinTrickPlayPlaylistURL(for ratingKey: String) -> URL? {
         store.jellyfinTrickPlayPlaylistURL(for: ratingKey)

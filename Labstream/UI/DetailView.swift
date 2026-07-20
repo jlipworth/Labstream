@@ -836,10 +836,8 @@ struct DetailView: View {
                     trickPlayURL = downloadManager.jellyfinTrickPlayPlaylistURL(for: key)
                     trickPlayKind = .jellyfinTiles
                 } else if key.hasPrefix("emby:") {
-                    // Emby has no scrub-preview tiles; its offline scrubber is fed by the cached
-                    // per-chapter images (#89).
-                    trickPlayURL = nil
-                    trickPlayKind = .embyChapterImages
+                    trickPlayURL = downloadManager.embyBIFURL(for: key)
+                    trickPlayKind = .embyBIF
                 } else {
                     trickPlayURL = downloadManager.plexBIFURL(for: key)
                     trickPlayKind = .plexBIF
@@ -990,10 +988,9 @@ struct DetailView: View {
                                         maxVideoBitrateKbps: activeMaxVideoBitrateKbps,
                                         qualityDefaultsKey: appModel.activeStreamingQualityDefaultsKey)
                                  },
-                                 // Emby has no Jellyfin-style trickplay tiles; serve coarse,
-                                 // chapter-granularity scrub previews instead.
-                                 trickPlayProvider: EmbyChapterTrickPlayThumbnailProvider(
+                                 trickPlayProvider: EmbyTrickPlayThumbnailProvider(
                                     item: playing,
+                                    mediaSourceId: remote.mediaSourceId,
                                     server: appModel.embyServerBaseURL,
                                     token: appModel.embyAccessToken,
                                     identity: appModel.identity.emby,
@@ -1238,7 +1235,7 @@ struct DetailView: View {
     private enum LocalTrickPlayKind {
         case plexBIF
         case jellyfinTiles
-        case embyChapterImages
+        case embyBIF
     }
 
     private struct LocalPlaybackRequest: Identifiable {
@@ -1266,9 +1263,13 @@ struct DetailView: View {
             return LocalBIFTrickPlayThumbnailProvider(bifURL: url)
         case .jellyfinTiles:
             return LocalJellyfinTrickPlayThumbnailProvider(playlistURL: url)
-        case .embyChapterImages:
-            return LocalEmbyChapterTrickPlayThumbnailProvider(chapters: offlineChapters,
-                                                              imageURLsByChapterIndex: chapterImageURLs)
+        case .embyBIF:
+            let providers = ([
+                LocalBIFTrickPlayThumbnailProvider(bifURL: url),
+                LocalEmbyChapterTrickPlayThumbnailProvider(
+                    chapters: offlineChapters, imageURLsByChapterIndex: chapterImageURLs),
+            ] as [(any TrickPlayThumbnailProviding)?]).compactMap { $0 }
+            return providers.isEmpty ? nil : HierarchicalTrickPlayThumbnailProvider(providers)
         case nil:
             return nil
         }

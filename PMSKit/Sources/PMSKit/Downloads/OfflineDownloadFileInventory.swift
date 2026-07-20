@@ -91,6 +91,7 @@ public enum OfflineDownloadFileInventory {
         if lowercased.hasSuffix(".resume")
             || lowercased.hasSuffix(".poster.jpg")
             || lowercased.hasSuffix(".plex-sd.bif")
+            || lowercased.hasSuffix(".emby.bif")
             || lowercased.hasSuffix(".jf-trickplay.m3u8") {
             return safePrefix(beforeFirstDotIn: relativePath)
         }
@@ -118,6 +119,7 @@ public enum OfflineDownloadFileInventory {
         var relatives = [
             metadata.posterRelativePath,
             metadata.plexBIFRelativePath,
+            metadata.embyBIFRelativePath,
             metadata.jellyfinTrickPlayPlaylistRelativePath,
             metadata.resumeDataRelativePath,
         ].compactMap { $0 }

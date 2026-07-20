@@ -54,6 +54,7 @@ struct OfflineDownloadModelsTests {
         #expect(meta.year == nil)
         #expect(meta.posterRelativePath == nil)
         #expect(meta.plexBIFRelativePath == nil)
+        #expect(meta.embyBIFRelativePath == nil)
         #expect(meta.jellyfinTrickPlayPlaylistRelativePath == nil)
         #expect(meta.jellyfinTrickPlayTileRelativePaths == nil)
         #expect(meta.chapterImageRelativePaths == nil)
@@ -206,6 +207,7 @@ struct OfflineDownloadModelsTests {
             plexOptimizeStartedAtEpochSeconds: 1_700_000_000,
             posterRelativePath: "555.poster.jpg",
             plexBIFRelativePath: "555.plex-sd.bif",
+            embyBIFRelativePath: "555.emby.bif",
             jellyfinTrickPlayPlaylistRelativePath: "555.jf-trickplay.m3u8",
             jellyfinTrickPlayTileRelativePaths: ["555.jf-trickplay-0.jpg"],
             chapterImageRelativePaths: [0: "555.chapter-0.jpg", 3: "555.chapter-3.jpg"],
@@ -239,6 +241,7 @@ struct OfflineDownloadModelsTests {
             type: "episode",
             sourcePartSize: 9_876_543_210,
             posterRelativePath: "emby_63117.poster.jpg",
+            embyBIFRelativePath: "emby_63117.emby.bif",
             chapterImageRelativePaths: [0: "emby_63117.chapter-0.jpg"],
             offlineTextSubtitles: [
                 OfflineTextSubtitleTrack(id: 8,
@@ -268,6 +271,8 @@ struct OfflineDownloadModelsTests {
         #expect(incoming.mediaSourceID == "mediasource_89488")
         #expect(incoming.serverPreparedVersion == true)
         #expect(incoming.posterRelativePath == "emby_63117.poster.jpg")
+        // Source-scoped previews must not cross a replacement/renegotiated media source.
+        #expect(incoming.embyBIFRelativePath == nil)
         #expect(incoming.chapterImageRelativePaths == [0: "emby_63117.chapter-0.jpg"])
         #expect(incoming.offlineTextSubtitles == previous.offlineTextSubtitles)
         #expect(incoming.sourcePartSize == 9_876_543_210)
@@ -295,6 +300,23 @@ struct OfflineDownloadModelsTests {
         #expect(incoming.chapterImageRelativePaths == [
             0: "chapter-0.jpg", 1: "chapter-new-1.jpg", 2: "chapter-2.jpg",
         ])
+    }
+
+    @Test("Emby BIF preservation is selected-media-source scoped")
+    func embyBIFPreservationRequiresSameMediaSource() {
+        let previous = OfflineMetadata(
+            ratingKey: "item", title: "Title", type: "movie",
+            embyBIFRelativePath: "item.emby.bif", mediaSourceID: "source-a")
+        var sameSource = OfflineMetadata(
+            ratingKey: "item", title: "Title", type: "movie", mediaSourceID: "source-a")
+        var replacementSource = OfflineMetadata(
+            ratingKey: "item", title: "Title", type: "movie", mediaSourceID: "source-b")
+
+        sameSource.preserveCachedSideAssets(from: previous)
+        replacementSource.preserveCachedSideAssets(from: previous)
+
+        #expect(sameSource.embyBIFRelativePath == "item.emby.bif")
+        #expect(replacementSource.embyBIFRelativePath == nil)
     }
 
     @Test("chapterImageRelativePaths (index-keyed dict) round-trips through encode/decode")
@@ -408,6 +430,7 @@ struct OfflineDownloadModelsTests {
                                       plexBIFRelativePath: "1.plex-sd.bif"),
             posterURL: URL(fileURLWithPath: "/tmp/1.poster.jpg"),
             plexBIFURL: URL(fileURLWithPath: "/tmp/1.plex-sd.bif"),
+            embyBIFURL: URL(fileURLWithPath: "/tmp/1.emby.bif"),
             jellyfinTrickPlayPlaylistURL: URL(fileURLWithPath: "/tmp/1.jf-trickplay.m3u8"),
             chapterImageURLs: [0: URL(fileURLWithPath: "/tmp/1.chapter-0.jpg")],
             sideAssetBytes: 42)

@@ -425,6 +425,9 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// Locally-cached Plex BIF index path, relative to the Downloads base directory.
     /// Populated only for Plex items/parts that advertise a standard-definition BIF.
     public var plexBIFRelativePath: String?
+    /// Locally-cached Emby BIF for the exact selected/negotiated `mediaSourceID`.
+    /// Optional and absent on legacy records; cached chapter images remain the fallback.
+    public var embyBIFRelativePath: String?
     /// Locally-cached Jellyfin trickplay playlist path, relative to the Downloads base directory.
     /// The cached playlist is sanitized: tile lines are rewritten to local filenames and never
     /// contain token-bearing server URLs.
@@ -604,6 +607,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 plexOptimizeStartedAtEpochSeconds: Double? = nil,
                 posterRelativePath: String? = nil,
                 plexBIFRelativePath: String? = nil,
+                embyBIFRelativePath: String? = nil,
                 jellyfinTrickPlayPlaylistRelativePath: String? = nil,
                 jellyfinTrickPlayTileRelativePaths: [String]? = nil,
                 chapterImageRelativePaths: [Int: String]? = nil,
@@ -670,6 +674,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.plexOptimizeStartedAtEpochSeconds = plexOptimizeStartedAtEpochSeconds
         self.posterRelativePath = posterRelativePath
         self.plexBIFRelativePath = plexBIFRelativePath
+        self.embyBIFRelativePath = embyBIFRelativePath
         self.jellyfinTrickPlayPlaylistRelativePath = jellyfinTrickPlayPlaylistRelativePath
         self.jellyfinTrickPlayTileRelativePaths = jellyfinTrickPlayTileRelativePaths
         self.chapterImageRelativePaths = chapterImageRelativePaths
@@ -741,6 +746,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
             Double.self, forKey: .plexOptimizeStartedAtEpochSeconds)
         posterRelativePath = try c.decodeIfPresent(String.self, forKey: .posterRelativePath)
         plexBIFRelativePath = try c.decodeIfPresent(String.self, forKey: .plexBIFRelativePath)
+        embyBIFRelativePath = try c.decodeIfPresent(String.self, forKey: .embyBIFRelativePath)
         jellyfinTrickPlayPlaylistRelativePath = try c.decodeIfPresent(String.self, forKey: .jellyfinTrickPlayPlaylistRelativePath)
         jellyfinTrickPlayTileRelativePaths = try c.decodeIfPresent([String].self, forKey: .jellyfinTrickPlayTileRelativePaths)
         chapterImageRelativePaths = try c.decodeIfPresent([Int: String].self, forKey: .chapterImageRelativePaths)
@@ -784,6 +790,11 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         }
         if plexBIFRelativePath == nil {
             plexBIFRelativePath = previous.plexBIFRelativePath
+        }
+        if embyBIFRelativePath == nil,
+           let mediaSourceID, !mediaSourceID.isEmpty,
+           mediaSourceID == previous.mediaSourceID {
+            embyBIFRelativePath = previous.embyBIFRelativePath
         }
         if jellyfinTrickPlayPlaylistRelativePath == nil {
             jellyfinTrickPlayPlaylistRelativePath = previous.jellyfinTrickPlayPlaylistRelativePath
@@ -922,6 +933,7 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
     public var metadata: OfflineMetadata?
     public var posterURL: URL?
     public var plexBIFURL: URL?
+    public var embyBIFURL: URL?
     public var jellyfinTrickPlayPlaylistURL: URL?
     /// Re-resolved absolute cached per-chapter image URLs (chapter index → file), filled by the app
     /// store when records are hydrated (#88/#89). Feeds the offline Chapters rail and the Emby
@@ -951,6 +963,7 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
                 metadata: OfflineMetadata? = nil,
                 posterURL: URL? = nil,
                 plexBIFURL: URL? = nil,
+                embyBIFURL: URL? = nil,
                 jellyfinTrickPlayPlaylistURL: URL? = nil,
                 chapterImageURLs: [Int: URL] = [:],
                 sideAssetBytes: Int = 0) {
@@ -964,13 +977,14 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
         self.metadata = metadata
         self.posterURL = posterURL
         self.plexBIFURL = plexBIFURL
+        self.embyBIFURL = embyBIFURL
         self.jellyfinTrickPlayPlaylistURL = jellyfinTrickPlayPlaylistURL
         self.chapterImageURLs = chapterImageURLs
         self.sideAssetBytes = sideAssetBytes
     }
 
     enum CodingKeys: String, CodingKey {
-        case ratingKey, attemptID, title, localURL, bytes, progress, status, metadata, posterURL, plexBIFURL
+        case ratingKey, attemptID, title, localURL, bytes, progress, status, metadata, posterURL, plexBIFURL, embyBIFURL
         case jellyfinTrickPlayPlaylistURL, chapterImageURLs, sideAssetBytes
     }
 
@@ -987,6 +1001,7 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
         metadata = try c.decodeIfPresent(OfflineMetadata.self, forKey: .metadata)
         posterURL = try c.decodeIfPresent(URL.self, forKey: .posterURL)
         plexBIFURL = try c.decodeIfPresent(URL.self, forKey: .plexBIFURL)
+        embyBIFURL = try c.decodeIfPresent(URL.self, forKey: .embyBIFURL)
         jellyfinTrickPlayPlaylistURL = try c.decodeIfPresent(URL.self, forKey: .jellyfinTrickPlayPlaylistURL)
         chapterImageURLs = try c.decodeIfPresent([Int: URL].self, forKey: .chapterImageURLs) ?? [:]
         sideAssetBytes = try c.decodeIfPresent(Int.self, forKey: .sideAssetBytes) ?? 0
@@ -1004,6 +1019,7 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
         try c.encodeIfPresent(metadata, forKey: .metadata)
         try c.encodeIfPresent(posterURL, forKey: .posterURL)
         try c.encodeIfPresent(plexBIFURL, forKey: .plexBIFURL)
+        try c.encodeIfPresent(embyBIFURL, forKey: .embyBIFURL)
         try c.encodeIfPresent(jellyfinTrickPlayPlaylistURL, forKey: .jellyfinTrickPlayPlaylistURL)
         if !chapterImageURLs.isEmpty { try c.encode(chapterImageURLs, forKey: .chapterImageURLs) }
         try c.encode(sideAssetBytes, forKey: .sideAssetBytes)

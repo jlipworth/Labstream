@@ -349,12 +349,14 @@ public struct OfflineLibraryView: View {
     }
 
     private func localTrickPlayProvider(for record: DownloadRecord) -> (any TrickPlayThumbnailProviding)? {
-        // Emby has no scrub-preview tile cache; its offline scrubber is fed by the per-chapter image
-        // cache (#89), so prefer the Emby chapter provider when this is an Emby download with images.
-        if backendKind(for: record) == .emby,
-           let provider = LocalEmbyChapterTrickPlayThumbnailProvider(chapters: record.metadata?.chapters ?? [],
-                                                                     imageURLsByChapterIndex: record.chapterImageURLs) {
-            return provider
+        if backendKind(for: record) == .emby {
+            let providers = ([
+                LocalBIFTrickPlayThumbnailProvider(bifURL: record.embyBIFURL),
+                LocalEmbyChapterTrickPlayThumbnailProvider(
+                    chapters: record.metadata?.chapters ?? [],
+                    imageURLsByChapterIndex: record.chapterImageURLs),
+            ] as [(any TrickPlayThumbnailProviding)?]).compactMap { $0 }
+            return providers.isEmpty ? nil : HierarchicalTrickPlayThumbnailProvider(providers)
         }
         if let playlist = record.jellyfinTrickPlayPlaylistURL {
             return LocalJellyfinTrickPlayThumbnailProvider(playlistURL: playlist)

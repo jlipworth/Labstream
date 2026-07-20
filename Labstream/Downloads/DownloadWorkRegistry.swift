@@ -16,6 +16,7 @@ final class DownloadWorkRegistry {
         case poster
         case textSubtitles
         case plexBIF
+        case embyBIF
         case sourceMetadataRefresh
         case jellyfinTrickPlay
         case chapterImages

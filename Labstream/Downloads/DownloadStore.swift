@@ -652,6 +652,7 @@ final class DownloadStore: @unchecked Sendable {
     private struct HydratedSideAssets {
         var posterURL: URL?
         var plexBIFURL: URL?
+        var embyBIFURL: URL?
         var jellyfinTrickPlayPlaylistURL: URL?
         var chapterImageURLs: [Int: URL]
         var sideAssetBytes: Int
@@ -1471,6 +1472,12 @@ final class DownloadStore: @unchecked Sendable {
     /// Build the on-disk destination for a ratingKey's cached Plex BIF trick-play index (#78).
     func plexBIFDestinationURL(ratingKey: String) -> URL {
         baseDirectory.appendingPathComponent("\(Self.safeFilenameComponent(ratingKey)).plex-sd.bif")
+    }
+
+    /// Selected-source Emby BIF cache. Auth and source identity stay in the request/metadata; the
+    /// filename is stable, token-free, and owned by the same attempt lifecycle as other side assets.
+    func embyBIFDestinationURL(ratingKey: String) -> URL {
+        baseDirectory.appendingPathComponent("\(Self.safeFilenameComponent(ratingKey)).emby.bif")
     }
 
     func jellyfinTrickPlayPlaylistDestinationURL(ratingKey: String) -> URL {
@@ -2341,6 +2348,7 @@ final class DownloadStore: @unchecked Sendable {
                               metadata: row.metadata,
                               posterURL: sideAssets.posterURL,
                               plexBIFURL: sideAssets.plexBIFURL,
+                              embyBIFURL: sideAssets.embyBIFURL,
                               jellyfinTrickPlayPlaylistURL: sideAssets.jellyfinTrickPlayPlaylistURL,
                               chapterImageURLs: sideAssets.chapterImageURLs,
                               sideAssetBytes: sideAssets.sideAssetBytes)
@@ -2384,6 +2392,13 @@ final class DownloadStore: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard let row = rows[ratingKey], row.status == .complete || row.status == .unverified else { return nil }
         return resolvedDownloadAssetURL(row.metadata?.plexBIFRelativePath)
+    }
+
+    /// Absolute local Emby BIF cache URL for a completed download, if present on disk.
+    func embyBIFURL(for ratingKey: String) -> URL? {
+        lock.lock(); defer { lock.unlock() }
+        guard let row = rows[ratingKey], row.status == .complete || row.status == .unverified else { return nil }
+        return resolvedDownloadAssetURL(row.metadata?.embyBIFRelativePath)
     }
 
     /// Absolute local Jellyfin trickplay playlist URL for a completed download, if present on disk.
@@ -2439,6 +2454,7 @@ final class DownloadStore: @unchecked Sendable {
         relatives.append(contentsOf: [
             metadata.posterRelativePath,
             metadata.plexBIFRelativePath,
+            metadata.embyBIFRelativePath,
             metadata.jellyfinTrickPlayPlaylistRelativePath,
         ].compactMap { $0 })
         relatives.append(contentsOf: metadata.jellyfinTrickPlayTileRelativePaths ?? [])
@@ -2464,6 +2480,7 @@ final class DownloadStore: @unchecked Sendable {
         let hydrated = HydratedSideAssets(
             posterURL: fastResolvedDownloadAssetURL(metadata?.posterRelativePath),
             plexBIFURL: fastResolvedDownloadAssetURL(metadata?.plexBIFRelativePath),
+            embyBIFURL: fastResolvedDownloadAssetURL(metadata?.embyBIFRelativePath),
             jellyfinTrickPlayPlaylistURL: fastResolvedDownloadAssetURL(metadata?.jellyfinTrickPlayPlaylistRelativePath),
             chapterImageURLs: Self.fastResolvedChapterImageURLs(metadata?.chapterImageRelativePaths,
                                                                baseDirectory: baseDirectory),
@@ -2862,6 +2879,10 @@ final class DownloadStore: @unchecked Sendable {
     /// metadata snapshot (#78). No-op if the row or metadata is gone.
     func setPlexBIFRelativePath(ratingKey: String, _ relativePath: String) {
         updateMetadata(ratingKey: ratingKey) { $0.plexBIFRelativePath = relativePath }
+    }
+
+    func setEmbyBIFRelativePath(ratingKey: String, _ relativePath: String) {
+        updateMetadata(ratingKey: ratingKey) { $0.embyBIFRelativePath = relativePath }
     }
 
     /// Record locally-cached Jellyfin trickplay assets (#79). Relative paths only; the playlist
