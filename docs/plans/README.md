@@ -24,5 +24,4 @@ When a plan is complete or superseded:
 ## Active plans
 
 - [`2026-07-10-codebase-remediation.md`](2026-07-10-codebase-remediation.md) — whole-repository correctness, concurrency, performance, backend/platform sharing, and build-cost remediation journal.
-- [`2026-07-20-macos-shell-redesign.md`](2026-07-20-macos-shell-redesign.md) — approved Mac source-list, toolbar Search, adaptive-window, and acceptance plan for #232.
 - [`2026-07-20-tvos-implementation.md`](2026-07-20-tvos-implementation.md) — first-class tvOS implementation and acceptance plan.

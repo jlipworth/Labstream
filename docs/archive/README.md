@@ -36,5 +36,6 @@ Historical prose and path literals may remain as written when they are part of t
 ## Archived plans
 
 - [`2026-07-20-main-documentation-alignment.md`](plans/2026-07-20-main-documentation-alignment.md) — completed factual alignment, documentation taxonomy, Mermaid, and durable-governance work.
+- [`2026-07-20-macos-shell-redesign.md`](plans/2026-07-20-macos-shell-redesign.md) — completed native Mac source-list, toolbar Search, adaptive-window, and acceptance work for #232; follow-up presentation polish is tracked in #251.
 
 Archived files may mention retired decisions such as the `Safari` Plex client profile, old proxy-owned seek designs, or pre-Jellyfin assumptions. Do not copy those details back into code or active docs without re-verifying them against current source.
