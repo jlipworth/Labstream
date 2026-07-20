@@ -5,6 +5,41 @@ import Testing
 @Suite("Library paging model")
 @MainActor
 struct LibraryPagingModelTests {
+    @Test func initialPageDoesNotWaitForAlphabetRail() async {
+        let gate = AlphabetGate()
+        let source = LibraryPagingSource(
+            title: "Movies",
+            identity: "plex:test:nonblocking-alphabet",
+            backendLabel: "Plex",
+            pageSize: 2,
+            cacheEmptyFirstPage: true,
+            awaitAlphabetBeforeInitialLoad: false,
+            fetchPage: { _, _ in
+                LibraryPagingPage(items: [Self.item("a"), Self.item("b")], reportedTotal: 4)
+            },
+            fetchAlphabetCounts: {
+                await gate.wait()
+                return [("A", 2), ("C", 2)]
+            }
+        )
+        let model = LibraryPagingModel()
+
+        let loadTask = Task {
+            await model.load(source: source) { true }
+        }
+        for _ in 0..<20 {
+            if case .loaded = model.loadState { break }
+            await Task.yield()
+        }
+
+        #expect(model.slots.compactMap { $0 }.count == 2)
+        #expect(model.alphabetBuckets.isEmpty)
+
+        gate.release()
+        await loadTask.value
+        #expect(model.alphabetBuckets.map(\.display) == ["A", "C"])
+    }
+
     @Test func loadedAlphabetTargetDoesNotRefetchItsPage() async {
         var starts: [Int] = []
         let source = LibraryPagingSource(
@@ -42,5 +77,22 @@ struct LibraryPagingModelTests {
 
     private static func item(_ id: String) -> MediaItem {
         MediaItem(ratingKey: id, title: id.uppercased(), type: "movie")
+    }
+
+    @MainActor
+    private final class AlphabetGate {
+        private var continuation: CheckedContinuation<Void, Never>?
+        private var released = false
+
+        func wait() async {
+            guard !released else { return }
+            await withCheckedContinuation { continuation = $0 }
+        }
+
+        func release() {
+            released = true
+            continuation?.resume()
+            continuation = nil
+        }
     }
 }

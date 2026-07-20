@@ -28,7 +28,10 @@ extension LibraryPagingSource {
                                             query: query),
             backendLabel: "Plex",
             cacheEmptyFirstPage: true,
-            awaitAlphabetBeforeInitialLoad: query.supportsAlphabetRail,
+            // Plex's first-character endpoint can be noticeably slower than page 0 on a
+            // physical device. Publish the grid as soon as page 0 arrives, then attach the
+            // rail when the independent alphabet request completes.
+            awaitAlphabetBeforeInitialLoad: false,
             supportsAlphabetRail: query.supportsAlphabetRail,
             fetchPage: { start, limit in
                 guard let service = try? PlexBrowseService(appModel: appModel) else {
