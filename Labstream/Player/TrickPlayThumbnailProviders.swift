@@ -15,6 +15,7 @@ actor BIFBackedTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     private let dataLoader: DataLoader
     private var loadedIndex: BIFIndex?
     private var resolved = false
+    private var loadTask: Task<BIFIndex?, Never>?
 
     init(dataLoader: @escaping DataLoader) {
         self.dataLoader = dataLoader
@@ -29,18 +30,32 @@ actor BIFBackedTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
 
     private func index() async -> BIFIndex? {
         if resolved { return loadedIndex }
-        do {
-            let parsed = try BIFParser.parse(try await dataLoader())
-            guard !Task.isCancelled else { return nil }
-            loadedIndex = parsed
-            resolved = true
-            return parsed
-        } catch is CancellationError {
-            return nil
-        } catch {
-            resolved = true
-            return nil
+        // Single-flight: the scrubber cancels and re-fires a `thumbnail(nearMs:)` per drag target,
+        // and the actor is reentrant at the `await` below, so without one shared load each concurrent
+        // caller would fire its own full (~6 MB) BIF fetch. The load runs in an unstructured `Task` so
+        // that one caller's cancellation cannot cancel the fetch every other in-flight caller awaits.
+        let task: Task<BIFIndex?, Never>
+        if let loadTask {
+            task = loadTask
+        } else {
+            let dataLoader = dataLoader
+            task = Task {
+                do {
+                    return try BIFParser.parse(try await dataLoader())
+                } catch {
+                    // Unavailable/malformed BIFs are expected for some items/servers; cache the miss
+                    // silently and never log the URL (the request carries an auth token in its query).
+                    return nil
+                }
+            }
+            loadTask = task
         }
+        // The shared load always runs to completion (it is not tied to any caller's cancellation), so a
+        // genuine parse/load failure caches nil here — a resolved miss, not a retry.
+        let parsed = await task.value
+        loadedIndex = parsed
+        resolved = true
+        return parsed
     }
 }
 
