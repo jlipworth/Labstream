@@ -1,17 +1,16 @@
 # macOS shell and sidebar redesign
 
-**Status:** Approved and active; implementation is owned by the #232 worktree.
+**Status:** Completed and archived after user visual/interaction acceptance on 2026-07-21.
 **Issue:** [#232 — Mac shell/sidebar redesign pass](https://github.com/jlipworth/Labstream/issues/232)
 **Approved decision record:** [post-audit Mac shell plan](https://github.com/jlipworth/Labstream/issues/232#issuecomment-5023765952)
-**Acceptance boundary:** Keep #232 open until the user approves the redesigned shell visually and interactively.
+**Acceptance boundary:** Satisfied on 2026-07-21; remaining mini-player and Offline presentation polish moved to [#251](https://github.com/jlipworth/Labstream/issues/251).
 
-**Current checkpoint:** Implementation and local verification are complete in commit `69465a4c8990`
-on `codex/issue-232-mac-sidebar`, created from detached commit `7fc0cc63`. Native normal- and
-narrow-width evidence has been captured and the
-[#232 progress handoff](https://github.com/jlipworth/Labstream/issues/232#issuecomment-5024304901)
-is posted. The remaining boundary is user visual/interaction acceptance. The checklist and dated
-journal below are the current status source; older journal entries are historical evidence, not
-newer instructions.
+**Current checkpoint:** Implementation, post-rebase automated verification, signed native Mac
+launch, and user visual/interaction acceptance are complete. The implementation was rebased onto
+the integrated local main line through #224 as `d293365a`; its handoff checkpoint is `43f3bfbb`.
+The user accepted the navigation shell after reviewing the remaining interactions. Mini-player
+design and clearer multi-download Offline status/action presentation are deliberately tracked in
+[#251](https://github.com/jlipworth/Labstream/issues/251) rather than keeping this plan active.
 
 ## Objective
 
@@ -121,8 +120,7 @@ Replace the sparse first-pass Mac sidebar with a deliberate, native macOS source
 - [x] Commit the coherent completed implementation, tests, plan, and evidence references.
 - [x] Post a concise #232 progress comment with commit, builds/tests, UI evidence, delegated
   decisions, and remaining user acceptance. Do not close #232.
-- [ ] Record user visual/interaction acceptance. Until then this plan remains active and #232 stays
-  open.
+- [x] Record user visual/interaction acceptance and move separately approved polish to #251.
 
 ## Delegated implementation questions
 
@@ -225,8 +223,26 @@ hostnames, library paths, and private media titles.
 - The implementation is committed as `69465a4c8990`. The concise
   [#232 progress comment](https://github.com/jlipworth/Labstream/issues/232#issuecomment-5024304901)
   records the build/test evidence and delegated decisions. User visual/interaction acceptance
-  remains; #232 stays open and this plan remains active.
+  remained at that checkpoint; it was subsequently satisfied on 2026-07-21.
+
+### 2026-07-21 — Rebase verification and user acceptance complete
+
+- Rebasing onto the integrated #203, #205, and #224 local-main sequence completed without
+  conflicts. The complete PMSKit suite passed 1,630 tests in 210 suites, the complete
+  macOS-hosted app suite passed 325 tests in 36 suites with test parallelization disabled, and
+  repository hygiene passed all 48 tooling tests plus strict documentation and Mermaid checks.
+- A freshly signed production-identity Mac build launched against the user's existing account
+  state, remained alive, and produced no fatal launch-log signal.
+- The user reviewed the remaining source-list, library, music, Offline, Search, adaptive-window,
+  shortcut, and account-confirmation behavior and accepted #232 as done.
+- The review identified non-blocking presentation work for the bottom music mini-player,
+  multi-download Offline status clarity, and a distinct Pause All / Resume All action. That work
+  is explicitly owned by [#251](https://github.com/jlipworth/Labstream/issues/251); it does not
+  reopen or expand the accepted navigation-shell boundary.
+- Durable current behavior was already promoted to `docs/MACOS.md`. This journal is now archived
+  without rewriting its historical checkpoints.
 
 ## Lifecycle
 
-When accepted, promote durable Mac behavior into the relevant current architecture/development documentation, move this file to `docs/archive/plans/` without rewriting its journal, and repair live links.
+Completed: durable Mac behavior is published in `docs/MACOS.md`, follow-up work is linked above,
+and this historical journal is retained under `docs/archive/plans/`.
