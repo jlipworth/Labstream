@@ -4148,6 +4148,7 @@ public final class DownloadManager {
         // Drop estimators/derived values for rows no longer downloading (complete / failed / removed).
         rateEstimators = rateEstimators.filter { activeKeys.contains($0.key) }
         rateEstimatorForegroundGraceUntil = rateEstimatorForegroundGraceUntil.filter { activeKeys.contains($0.key) }
+        rateEstimatorForegroundProgressPending = rateEstimatorForegroundProgressPending.filter { activeKeys.contains($0.key) }
         rateEstimatorForegroundSettledPending.formIntersection(activeKeys)
         downloadSpeed = downloadSpeed.filter { activeKeys.contains($0.key) }
         downloadETA = downloadETA.filter { activeKeys.contains($0.key) }
