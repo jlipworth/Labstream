@@ -51,12 +51,12 @@ final class PlaybackDiagnostics {
 
     /// Whether this session came from a Jellyfin/Emby PlaybackInfo lane, where a
     /// "Transcoding" verdict may still VIDEO-COPY (remux) — the server decides per-stream
-    /// at ffmpeg spawn time, so only the runtime codec can tell (GH #196 panel rework).
+    /// at ffmpeg spawn time, so the runtime codec can provide an additional signal (#196).
     private var isMediaBrowserLane = false
 
-    /// True once the runtime probe proves the "transcode" session actually copies the
-    /// video stream (runtime codec family == source codec family).
-    private var runtimeShowsVideoCopy: Bool {
+    /// Codec-family agreement is a useful copy signal, but not encoder proof: a server can
+    /// re-encode to the same codec. The explanation keeps this refinement explicitly inferred.
+    private var runtimeSuggestsVideoCopy: Bool {
         guard let fourCC = runtimeVideoCodecFourCC else { return false }
         let source = videoCodec.lowercased()
         switch fourCC.lowercased() {
@@ -123,6 +123,11 @@ final class PlaybackDiagnostics {
     var modeText: String = "Direct"
     /// Human-readable PMS decision text, when provided.
     var decisionText: String = "—"
+    /// Compact, normalized reason model used by the player and privacy-safe diagnostics.
+    var playbackExplanation = PlaybackExplanation.plex(decision: nil,
+                                                        maxVideoBitrateKbps: 0,
+                                                        subtitleBurnRequested: false,
+                                                        dolbyVisionGuardActive: false)
     /// GH #196: non-nil when the DV P5 guard forced this session onto a tone-map transcode
     /// (e.g. "DV P5 guard (no fallback layer)"). Suffixes the Stats Decision row.
     var dvGuardReason: String?
@@ -234,7 +239,10 @@ final class PlaybackDiagnostics {
                      mediaIndex: Int = 0,
                      decision: DecisionResponse?,
                      server: URL?,
-                     targetBitrateKbps: Int) {
+                     targetBitrateKbps: Int,
+                     subtitleBurnRequested: Bool = false,
+                     dolbyVisionGuardActive: Bool = false,
+                     decisionUnavailableMeansTranscode: Bool = false) {
         resetDynamicAccessLogFacts()
         isMediaBrowserLane = false
         applySourceSummary(PlaybackSourceSummary.plex(item: item, mediaIndex: mediaIndex))
@@ -268,12 +276,19 @@ final class PlaybackDiagnostics {
         }
         usesLocalMediaProxy = false
         self.targetBitrateKbps = targetBitrateKbps
+        playbackExplanation = .plex(decision: decision,
+                                    maxVideoBitrateKbps: targetBitrateKbps,
+                                    subtitleBurnRequested: subtitleBurnRequested,
+                                    dolbyVisionGuardActive: dolbyVisionGuardActive,
+                                    decisionUnavailableMeansTranscode: decisionUnavailableMeansTranscode)
     }
 
     /// Overlay backend-resolved source facts, used by MediaBrowser PlaybackInfo results when
     /// the browse/detail item did not carry enough `MediaSources` data for `applyStatic`.
     func applyMediaBrowserSource(_ source: MediaBrowserPlaybackSourceMetadata,
-                                 playMethod: MediaBrowserPlayMethod) {
+                                 playMethod: MediaBrowserPlayMethod,
+                                 transcodeReasons: [String] = [],
+                                 dolbyVisionGuardActive: Bool = false) {
         if let summary = PlaybackSourceSummary.mediaBrowser(source) {
             applySourceSummary(summary, overwriteOnlyKnownValues: true)
         }
@@ -292,6 +307,10 @@ final class PlaybackDiagnostics {
             modeText = "Transcoding"
             decisionText = "transcode"
         }
+        playbackExplanation = .mediaBrowser(playMethod: playMethod,
+                                            transcodeReasons: transcodeReasons,
+                                            maxVideoBitrateKbps: targetBitrateKbps,
+                                            dolbyVisionGuardActive: dolbyVisionGuardActive)
     }
 
     /// Publish the runtime HDR/codec probe (#195, reworked #196). Eligibility is always
@@ -304,9 +323,15 @@ final class PlaybackDiagnostics {
         runtimeContainsHDR = result.containsHDRVideo
         runtimeTransferFunction = result.transferFunction
         runtimeVideoCodecFourCC = result.videoCodecFourCC
-        if isMediaBrowserLane, isTranscoding, runtimeShowsVideoCopy {
-            modeText = "Remuxing"
-            decisionText = "video copy · audio transcode"
+        if isMediaBrowserLane, isTranscoding, runtimeSuggestsVideoCopy {
+            playbackExplanation = playbackExplanation.refinedWithRuntimeVideoCopy()
+            if playbackExplanation.lane == .audioOnlyTranscode {
+                modeText = "Direct Stream"
+                decisionText = "video copy · audio transcode"
+            } else {
+                modeText = "Likely Direct Stream"
+                decisionText = "rendered video codec matches source"
+            }
         }
     }
 
@@ -362,8 +387,8 @@ final class PlaybackDiagnostics {
     /// restates the Mode row and reads as two jammed-together clauses — confusing, and
     /// long enough to get middle-truncated. The genuinely useful detail is what PMS does
     /// to each stream — copy (remux) vs transcode (re-encode) — which the decision
-    /// response carries per stream. Prefer that; fall back to the part decision, then the
-    /// raw English text, then "—".
+    /// response carries per stream. Prefer that; fall back to the part decision, then "—".
+    /// Raw server prose is intentionally excluded from the normal player surface.
     private static func composeDecisionText(_ decision: DecisionResponse) -> String {
         func friendly(_ s: String?) -> String? {
             guard let s = s?.lowercased(), !s.isEmpty else { return nil }
@@ -383,7 +408,7 @@ final class PlaybackDiagnostics {
         if let part = friendly(decision.partDecision) {
             return part
         }
-        return decision.generalDecisionText ?? "—"
+        return "—"
     }
 
     private var lastAccessLogProgress: AccessLogProgressSignature?

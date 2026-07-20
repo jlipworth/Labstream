@@ -17,19 +17,22 @@ public struct JellyfinPlaybackOpenResult: Sendable, Equatable {
     public let playMethod: JellyfinPlayMethod
     public let requiredHTTPHeaders: [String: String]
     public let sourceMetadata: JellyfinPlaybackSourceMetadata
+    public let transcodeReasons: [String]
 
     public init(url: URL,
                 playSessionId: String,
                 mediaSourceId: String,
                 playMethod: JellyfinPlayMethod,
                 requiredHTTPHeaders: [String: String] = [:],
-                sourceMetadata: JellyfinPlaybackSourceMetadata = .empty) {
+                sourceMetadata: JellyfinPlaybackSourceMetadata = .empty,
+                transcodeReasons: [String] = []) {
         self.url = url
         self.playSessionId = playSessionId
         self.mediaSourceId = mediaSourceId
         self.playMethod = playMethod
         self.requiredHTTPHeaders = requiredHTTPHeaders
         self.sourceMetadata = sourceMetadata
+        self.transcodeReasons = transcodeReasons
     }
 
     init(_ result: MediaBrowserPlaybackOpenResult) {
@@ -38,7 +41,8 @@ public struct JellyfinPlaybackOpenResult: Sendable, Equatable {
                   mediaSourceId: result.mediaSourceId,
                   playMethod: result.playMethod,
                   requiredHTTPHeaders: result.requiredHTTPHeaders,
-                  sourceMetadata: result.sourceMetadata)
+                  sourceMetadata: result.sourceMetadata,
+                  transcodeReasons: result.transcodeReasons)
     }
 }
 
@@ -346,7 +350,8 @@ public enum JellyfinPlayback {
                 playMethod: .transcode,
                 requiredHTTPHeaders: streamHeaders(for: source, token: token, identity: identity),
                 sourceMetadata: source.playbackSourceMetadata(audioStreamIndex: resolvedAudioStreamIndex),
-                usesServerEncoding: true)
+                usesServerEncoding: true,
+                transcodeReasons: source.transcodeReasons)
         }
 
         guard source.supportsDirectPlay || source.supportsDirectStream else {
@@ -373,7 +378,8 @@ public enum JellyfinPlayback {
             playMethod: source.supportsDirectPlay ? .directPlay : .directStream,
             requiredHTTPHeaders: streamHeaders(for: source, token: token, identity: identity),
             sourceMetadata: source.playbackSourceMetadata(audioStreamIndex: audioStreamIndex),
-            usesServerEncoding: false)
+            usesServerEncoding: false,
+            transcodeReasons: source.transcodeReasons)
     }
 
     /// Source-compatible wrapper. New app-facing code should consume the neutral resolver above.

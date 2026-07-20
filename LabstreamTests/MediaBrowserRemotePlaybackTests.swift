@@ -19,7 +19,8 @@ struct MediaBrowserRemotePlaybackTests {
                                                     playMethod: .transcode,
                                                     requiredHTTPHeaders: ["X-Required": "yes"],
                                                     sourceMetadata: source,
-                                                    usesServerEncoding: true)
+                                                    usesServerEncoding: true,
+                                                    transcodeReasons: ["AudioCodecNotSupported"])
         let context = try playbackContext(backend: .emby)
         let remote = MediaBrowserRemotePlayback(context: context, result: result, mediaIndex: 2)
 
@@ -33,6 +34,7 @@ struct MediaBrowserRemotePlaybackTests {
         #expect(remote.playMethod == .transcode)
         #expect(remote.sourceMetadata == source)
         #expect(remote.usesServerEncoding)
+        #expect(remote.transcodeReasons == ["AudioCodecNotSupported"])
     }
 
     @Test func cleanupPolicyPreservesBackendSpecificBehavior() throws {

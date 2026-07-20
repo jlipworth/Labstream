@@ -19,8 +19,8 @@ struct PlaybackHDRProbeResult: Equatable {
     /// retried rather than displayed as "SDR".
     var sawVideoFormatDescriptions: Bool
     /// FourCC of the first video format description (e.g. "hvc1", "avc1"), when segments
-    /// have loaded. Lets Stats detect a server VIDEO COPY on Jellyfin/Emby "transcode"
-    /// sessions: a remux delivers the source codec, a re-encode delivers h264 (GH #196).
+    /// have loaded. Codec-family agreement with the source supports a copy/remux inference on
+    /// Jellyfin/Emby "transcode" sessions, but is not encoder proof (#196/#203).
     var videoCodecFourCC: String?
 }
 

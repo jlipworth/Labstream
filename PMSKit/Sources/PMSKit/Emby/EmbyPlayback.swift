@@ -18,6 +18,7 @@ public struct EmbyPlaybackOpenResult: Sendable, Equatable {
     public let requiredHTTPHeaders: [String: String]
     public let sourceMetadata: EmbyPlaybackSourceMetadata
     public let usesServerEncoding: Bool
+    public let transcodeReasons: [String]
 
     public init(url: URL,
                 playSessionId: String,
@@ -25,7 +26,8 @@ public struct EmbyPlaybackOpenResult: Sendable, Equatable {
                 playMethod: EmbyPlayMethod,
                 requiredHTTPHeaders: [String: String] = [:],
                 sourceMetadata: EmbyPlaybackSourceMetadata = .empty,
-                usesServerEncoding: Bool = false) {
+                usesServerEncoding: Bool = false,
+                transcodeReasons: [String] = []) {
         self.url = url
         self.playSessionId = playSessionId
         self.mediaSourceId = mediaSourceId
@@ -33,6 +35,7 @@ public struct EmbyPlaybackOpenResult: Sendable, Equatable {
         self.requiredHTTPHeaders = requiredHTTPHeaders
         self.sourceMetadata = sourceMetadata
         self.usesServerEncoding = usesServerEncoding
+        self.transcodeReasons = transcodeReasons
     }
 
     init(_ result: MediaBrowserPlaybackOpenResult) {
@@ -42,7 +45,8 @@ public struct EmbyPlaybackOpenResult: Sendable, Equatable {
                   playMethod: result.playMethod,
                   requiredHTTPHeaders: result.requiredHTTPHeaders,
                   sourceMetadata: result.sourceMetadata,
-                  usesServerEncoding: result.usesServerEncoding)
+                  usesServerEncoding: result.usesServerEncoding,
+                  transcodeReasons: result.transcodeReasons)
     }
 }
 
@@ -518,7 +522,8 @@ public enum EmbyPlayback {
                 // HLS children inherit api_key from the query — do NOT inject Authorization.
                 requiredHTTPHeaders: source.requiredHTTPHeaders ?? [:],
                 sourceMetadata: source.playbackSourceMetadata(audioStreamIndex: resolvedAudioStreamIndex),
-                usesServerEncoding: true)
+                usesServerEncoding: true,
+                transcodeReasons: source.transcodeReasons)
         }
 
         // Next prefer the server-generated direct-stream URL.
@@ -543,7 +548,8 @@ public enum EmbyPlayback {
                 playMethod: .directStream,
                 requiredHTTPHeaders: headers,
                 sourceMetadata: source.playbackSourceMetadata(audioStreamIndex: audioStreamIndex),
-                usesServerEncoding: false)
+                usesServerEncoding: false,
+                transcodeReasons: source.transcodeReasons)
         }
 
         // Last resort: synthesize a direct-play stream URL.
@@ -574,7 +580,8 @@ public enum EmbyPlayback {
             playMethod: source.supportsDirectPlay ? .directPlay : .directStream,
             requiredHTTPHeaders: source.requiredHTTPHeaders ?? [:],
             sourceMetadata: source.playbackSourceMetadata(audioStreamIndex: audioStreamIndex),
-            usesServerEncoding: false)
+            usesServerEncoding: false,
+            transcodeReasons: source.transcodeReasons)
     }
 
     /// Source-compatible wrapper. New app-facing code should consume the neutral resolver above.

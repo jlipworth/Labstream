@@ -65,6 +65,9 @@ public struct MediaBrowserPlaybackOpenResult: Sendable, Equatable {
     public let requiredHTTPHeaders: [String: String]
     public let sourceMetadata: MediaBrowserPlaybackSourceMetadata
     public let usesServerEncoding: Bool
+    /// Backend reason enum names from PlaybackInfo. These remain internal carrier facts; player
+    /// UI and exported diagnostics consume only `PlaybackExplanation`'s normalized buckets.
+    public let transcodeReasons: [String]
 
     public init(url: URL,
                 playSessionId: String,
@@ -72,7 +75,8 @@ public struct MediaBrowserPlaybackOpenResult: Sendable, Equatable {
                 playMethod: MediaBrowserPlayMethod,
                 requiredHTTPHeaders: [String: String] = [:],
                 sourceMetadata: MediaBrowserPlaybackSourceMetadata = .empty,
-                usesServerEncoding: Bool = false) {
+                usesServerEncoding: Bool = false,
+                transcodeReasons: [String] = []) {
         self.url = url
         self.playSessionId = playSessionId
         self.mediaSourceId = mediaSourceId
@@ -80,6 +84,7 @@ public struct MediaBrowserPlaybackOpenResult: Sendable, Equatable {
         self.requiredHTTPHeaders = requiredHTTPHeaders
         self.sourceMetadata = sourceMetadata
         self.usesServerEncoding = usesServerEncoding
+        self.transcodeReasons = transcodeReasons
     }
 
     /// Source-compatible copy initializer retained for the former backend-to-neutral bridge.
@@ -94,7 +99,8 @@ public struct MediaBrowserPlaybackOpenResult: Sendable, Equatable {
                   playMethod: result.playMethod,
                   requiredHTTPHeaders: result.requiredHTTPHeaders,
                   sourceMetadata: result.sourceMetadata,
-                  usesServerEncoding: result.playMethod == .transcode)
+                  usesServerEncoding: result.playMethod == .transcode,
+                  transcodeReasons: result.transcodeReasons)
     }
 
     public init(_ result: EmbyPlaybackOpenResult) {
@@ -104,6 +110,7 @@ public struct MediaBrowserPlaybackOpenResult: Sendable, Equatable {
                   playMethod: result.playMethod,
                   requiredHTTPHeaders: result.requiredHTTPHeaders,
                   sourceMetadata: result.sourceMetadata,
-                  usesServerEncoding: result.usesServerEncoding)
+                  usesServerEncoding: result.usesServerEncoding,
+                  transcodeReasons: result.transcodeReasons)
     }
 }
