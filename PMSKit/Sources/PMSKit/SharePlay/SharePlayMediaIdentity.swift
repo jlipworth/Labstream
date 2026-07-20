@@ -426,26 +426,60 @@ public struct SharePlayReadinessSummary: Sendable, Equatable {
 }
 
 /// Decision for a player dismissal that reports it was showing the session's resolved item.
-/// A dismissal only ends the session when it is a genuine user-driven close. When the coordinator
-/// itself supersedes a pre-session player by launching its own player for the same item, the old
-/// player's teardown fires a matching dismissal that must be swallowed once — otherwise the freshly
-/// joined session is destroyed. The pending flag is cleared by the swallow OR once the replacement
-/// player attaches, so it is robust to which of those happens first.
+/// A dismissal only ends the session when it comes from the player minted by the coordinator's
+/// CURRENT launch. When the coordinator supersedes a pre-launch player by launching its own player
+/// for the same item, the old player was created under an earlier launch epoch, so its teardown
+/// dismissal is suppressed instead of destroying the freshly joined session. Comparing epochs
+/// (rather than consuming a one-shot pending flag) is order-independent: it never swallows a
+/// genuine close of the replacement player when no superseded player existed (the flag did, leaving
+/// a ghost participant while the first item was still minting), and it keeps suppressing the
+/// superseded dismissal regardless of whether the replacement has attached yet.
 public enum SharePlayLeaveDecision {
     public enum Outcome: Equatable, Sendable {
         /// The dismissed item is not the resolved item; ignore it entirely.
         case ignore
-        /// The dismissal is the coordinator's own superseded player tearing down; suppress the leave
-        /// and consume the pending flag.
+        /// The dismissal is a superseded player from an earlier launch epoch tearing down;
+        /// suppress the leave.
         case suppressSupersededDismissal
         /// A genuine end of participation; leave the session.
         case leave
     }
 
-    public static func evaluate(resolvedMatchesItem: Bool, supersededDismissalPending: Bool) -> Outcome {
+    /// `dismissingPlayerLaunchEpoch` is the coordinator launch epoch the dismissing player surface
+    /// captured when its controller was created (`nil` when it never captured one, which only a
+    /// current-launch surface that failed to start playback can produce — treated as genuine).
+    public static func evaluate(resolvedMatchesItem: Bool,
+                                dismissingPlayerLaunchEpoch: UInt64?,
+                                currentLaunchEpoch: UInt64) -> Outcome {
         guard resolvedMatchesItem else { return .ignore }
-        if supersededDismissalPending { return .suppressSupersededDismissal }
+        if let epoch = dismissingPlayerLaunchEpoch, epoch != currentLaunchEpoch {
+            return .suppressSupersededDismissal
+        }
         return .leave
+    }
+}
+
+/// Gate for binding a local AVPlayer to the group session: only a player created under the
+/// coordinator's CURRENT launch epoch may attach. The superseded pre-launch player runs the same
+/// attachment-maintenance poll over the same resolved item, so item identity alone cannot tell it
+/// apart from the replacement — the instant launch consent flips it could attach first, get its
+/// coordination torn down by its own imminent dismissal, and starve the real replacement.
+public enum SharePlayAttachmentPolicy {
+    public static func mayAttach(playerLaunchEpoch: UInt64?, currentLaunchEpoch: UInt64) -> Bool {
+        playerLaunchEpoch == currentLaunchEpoch
+    }
+}
+
+/// Whether a failed/cancelled activation may restore its `.unavailable` failure state. A
+/// GroupSession installed WHILE the activation was suspended (a remote activity arrived, or our
+/// own activity resolved) advances the session generation and owns `state`; replaying the failure
+/// over it would hide the joined session and let a second tap replace the live activity. A session
+/// that merely PREDATES the activation attempt must not block restoration — otherwise cancelling
+/// the FaceTime sheet leaves the coordinator in `.resolving` forever with no affordance.
+public enum SharePlayActivationFailurePolicy {
+    public static func shouldRestoreFailureState(sessionGenerationAtRequest: UInt64,
+                                                 currentSessionGeneration: UInt64) -> Bool {
+        sessionGenerationAtRequest == currentSessionGeneration
     }
 }
 

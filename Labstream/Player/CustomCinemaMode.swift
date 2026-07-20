@@ -193,6 +193,11 @@ final class CustomCinemaSessionStore {
     /// `item` — survives `stopAndClearForImmersiveExit`, dropped only in `clear()`.
     var origin: CinemaOrigin = .systemEntry
     var controller: PlaybackController?
+    /// The Watch Together `playerLaunchEpoch` the windowed player captured when `controller` was
+    /// minted, carried across the Cinema handoff so the immersive scaffold presents the same epoch
+    /// on attach/leave. Preserved like `item` across `stopAndClearForImmersiveExit` (the exit's
+    /// `leaveIfPlaying` runs before `clear()`), dropped only in `clear()`.
+    var watchTogetherLaunchEpoch: UInt64?
     private var baseGeometry: CustomCinemaGeometry = .default
     var geometry: CustomCinemaGeometry = .default
     var screenAdjustment: CustomCinemaScreenAdjustment = .load()
@@ -212,11 +217,13 @@ final class CustomCinemaSessionStore {
                   origin: CinemaOrigin = .systemEntry,
                   controller: PlaybackController,
                   geometry: CustomCinemaGeometry = .default,
-                  trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil) {
+                  trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
+                  watchTogetherLaunchEpoch: UInt64? = nil) {
         self.title = title
         self.item = item
         self.origin = origin
         self.controller = controller
+        self.watchTogetherLaunchEpoch = watchTogetherLaunchEpoch
         baseGeometry = geometry
         screenAdjustment = CustomCinemaScreenAdjustment.load()
         self.geometry = geometry.applying(screenAdjustment)
@@ -282,6 +289,7 @@ final class CustomCinemaSessionStore {
         item = nil
         origin = .systemEntry
         controller = nil
+        watchTogetherLaunchEpoch = nil
         baseGeometry = .default
         geometry = .default.applying(screenAdjustment)
         trickPlayProvider = nil
@@ -373,10 +381,12 @@ struct CustomCinemaScaffoldView: View {
     private func startWatchTogetherAttachMaintenance() {
         guard let controller = session.controller, let item = session.item else { return }
         watchTogetherAttachTask?.cancel()
+        let launchEpoch = session.watchTogetherLaunchEpoch
         watchTogetherAttachTask = Task { @MainActor in
             await maintainWatchTogetherAttachment(coordinator: watchTogetherCoordinator,
                                                   controller: controller,
-                                                  item: item) {
+                                                  item: item,
+                                                  launchEpoch: launchEpoch) {
                 session.controller === controller && session.presentationState != .closed
             }
         }
@@ -411,7 +421,8 @@ struct CustomCinemaScaffoldView: View {
         if let sharedItem = session.item {
             // Leaving the immersive player ends this single-item Watch Together participation.
             // This runs only on Cinema exit, never during the window-to-Cinema handoff.
-            watchTogetherCoordinator.leaveIfPlaying(sharedItem)
+            watchTogetherCoordinator.leaveIfPlaying(sharedItem,
+                                                    playerLaunchEpoch: session.watchTogetherLaunchEpoch)
         }
         let destination = CinemaExitRouting.resolve(origin: session.origin,
                                                     hasReturnItem: returnItem != nil,

@@ -97,12 +97,14 @@ final class WatchTogetherCoordinator {
     /// participant received `.started` while resolved). Serves as the launch idempotency guard AND
     /// the consent boundary for coordinating a local player with the group session.
     @ObservationIgnored private var didLaunchResolvedItem = false
-    /// Set when `launchResolvedItem` opens a player for a resolved item the user may already have been
-    /// watching privately: `SystemEntryRouter.open` resets the tab path and tears down that old player,
-    /// whose dismissal would otherwise call `leaveIfPlaying` and destroy the session we just joined.
-    /// The flag suppresses exactly that superseded dismissal and is cleared once the replacement player
-    /// attaches (see `attachPlaybackCoordinatorIfReady`), so a later genuine close still leaves.
-    @ObservationIgnored private var supersededPlayerPendingDismissal = false
+    /// Monotonic count of `launchResolvedItem` player mints. Each launch routes through
+    /// `SystemEntryRouter.open`, which resets the tab path and tears down any player the user
+    /// already had open for the same item; player surfaces capture this value when their
+    /// controller is created and present it back, so attach and leave decisions can tell the
+    /// CURRENT launch's replacement player from a superseded pre-launch player showing the same
+    /// item (see `SharePlayAttachmentPolicy` / `SharePlayLeaveDecision`). Never reset — stale
+    /// surfaces from any earlier epoch must keep comparing unequal.
+    @ObservationIgnored private(set) var playerLaunchEpoch: UInt64 = 0
     @ObservationIgnored private var playbackCoordinatorDelegate: WatchTogetherPlaybackCoordinatorDelegate?
     @ObservationIgnored private var candidateLookup: (@MainActor (String) async -> [MediaItem])?
 
@@ -127,29 +129,48 @@ final class WatchTogetherCoordinator {
         }
         let context = context(for: payload)
         state = .resolving(context)
+        // Snapshot the session generation before suspending: only a session installed DURING this
+        // activation may veto failure-state restoration. Comparing `activeSession == nil` instead
+        // let a live session that PREDATED the attempt (reachable from `.unavailable`, which keeps
+        // its session) swallow the restoration and strand the user in `.resolving`.
+        let sessionGenerationAtRequest = playbackSessionGeneration
         let activity = WatchTogetherActivity(payload: payload)
         do {
             switch await activity.prepareForActivation() {
             case .activationPreferred:
                 pendingLocalShare = PendingLocalShare(activityID: payload.activityID, item: item)
                 if try await activity.activate() == false {
-                    failActivation(context, reason: .activationCancelled)
+                    failActivation(context, reason: .activationCancelled,
+                                   sessionGenerationAtRequest: sessionGenerationAtRequest)
                 }
-            case .activationDisabled: failActivation(context, reason: .activationDisabled)
-            case .cancelled: failActivation(context, reason: .activationCancelled)
-            @unknown default: failActivation(context, reason: .activationFailed)
+            case .activationDisabled:
+                failActivation(context, reason: .activationDisabled,
+                               sessionGenerationAtRequest: sessionGenerationAtRequest)
+            case .cancelled:
+                failActivation(context, reason: .activationCancelled,
+                               sessionGenerationAtRequest: sessionGenerationAtRequest)
+            @unknown default:
+                failActivation(context, reason: .activationFailed,
+                               sessionGenerationAtRequest: sessionGenerationAtRequest)
             }
-        } catch { failActivation(context, reason: .activationFailed) }
+        } catch {
+            failActivation(context, reason: .activationFailed,
+                           sessionGenerationAtRequest: sessionGenerationAtRequest)
+        }
     }
 
-    private func failActivation(_ context: PresentationContext, reason: UnavailableReason) {
+    private func failActivation(_ context: PresentationContext, reason: UnavailableReason,
+                                sessionGenerationAtRequest: UInt64) {
         pendingLocalShare = nil
         // A GroupSession may have been installed while activation was suspended — a remote activity
         // arrived, or our own activity resolved — in which case `handle` already set `state` from that
         // live session. A failed/cancelled activation must not stamp anything over it: replaying a
         // pre-suspension snapshot here would hide the joined session and re-enable
         // `canRequestWatchTogether`, letting a second tap replace the live activity for everyone.
-        guard activeSession == nil else { return }
+        // A session that predates this attempt does NOT block restoration (see the snapshot above).
+        guard SharePlayActivationFailurePolicy.shouldRestoreFailureState(
+            sessionGenerationAtRequest: sessionGenerationAtRequest,
+            currentSessionGeneration: playbackSessionGeneration) else { return }
         state = .unavailable(context, reason: reason)
     }
 
@@ -255,9 +276,11 @@ final class WatchTogetherCoordinator {
         // agree on the started set and can pick a single re-announcer for newcomers (see
         // handleActiveParticipants). Receivers are idempotent, so the extra sends never re-trigger a launch.
         sendStatus(.started)
-        // `open` supersedes any player the user was privately watching for this same item; suppress the
-        // resulting dismissal so it can't tear down the freshly joined session (see the flag's definition).
-        supersededPlayerPendingDismissal = true
+        // `open` supersedes any player the user was privately watching for this same item. Advancing
+        // the epoch BEFORE opening puts that old player in a stale epoch — its dismissal is suppressed
+        // and it can no longer attach — while the replacement minted by this open captures the new
+        // epoch (see `playerLaunchEpoch`).
+        playerLaunchEpoch &+= 1
         SystemEntryRouter.shared.open(item: item, autoPlay: true)
     }
 
@@ -267,15 +290,20 @@ final class WatchTogetherCoordinator {
     }
 
     @discardableResult
-    func attachPlaybackCoordinatorIfReady(player: AVPlayer, item: MediaItem) -> Bool {
+    func attachPlaybackCoordinatorIfReady(player: AVPlayer, item: MediaItem,
+                                          launchEpoch: UInt64?) -> Bool {
         // Consent boundary. `session.join()` runs early (in `handle`) so we can receive messages and
         // present the join prompt, but binding a local AVPlayer to the group session is the real
         // opt-in and must not happen until THIS coordinator has launched the resolved item (initiator
         // started, or a participant received .started). Gating on `selectableCandidates` — kind plus
         // 5s-bucketed duration — would group-coordinate a user's private, unrelated playback that
         // merely shares a duration bucket, so we require the player to be showing the exact resolved
-        // item instead of the coarse pool.
-        guard didLaunchResolvedItem,
+        // item instead of the coarse pool. The epoch gate additionally rejects the superseded
+        // pre-launch player for the SAME item, whose maintenance poll would otherwise satisfy this
+        // attach the instant `didLaunchResolvedItem` flips and race the replacement.
+        guard SharePlayAttachmentPolicy.mayAttach(playerLaunchEpoch: launchEpoch,
+                                                  currentLaunchEpoch: playerLaunchEpoch),
+              didLaunchResolvedItem,
               let session = activeSession, let payload = activePayload,
               let resolved = resolvedItem, resolved.ratingKey == item.ratingKey,
               let identifier = payload.identity.coordinatorIdentifier,
@@ -284,10 +312,6 @@ final class WatchTogetherCoordinator {
         playbackCoordinatorDelegate = delegate
         player.playbackCoordinator.delegate = delegate
         player.playbackCoordinator.coordinateWithSession(session)
-        // The replacement player is now live on the session, so any later dismissal of the resolved
-        // item is a genuine close: stop suppressing it (also covers the case where the superseded
-        // player's dismissal never arrived, e.g. there was no prior private playback).
-        supersededPlayerPendingDismissal = false
         return true
     }
 
@@ -320,14 +344,16 @@ final class WatchTogetherCoordinator {
     /// End coordination when the exact locally resolved item leaves the player. This is kept
     /// separate from generic view dismissal because the window disappears during the Cinema
     /// handoff while the same controller and SharePlay session intentionally continue there.
-    func leaveIfPlaying(_ item: MediaItem) {
+    /// `playerLaunchEpoch` is the epoch the dismissing surface captured at controller creation;
+    /// a stale epoch marks the coordinator's own superseded player tearing down, which must not
+    /// destroy the freshly joined session.
+    func leaveIfPlaying(_ item: MediaItem, playerLaunchEpoch: UInt64?) {
         switch SharePlayLeaveDecision.evaluate(
             resolvedMatchesItem: resolvedItem?.ratingKey == item.ratingKey,
-            supersededDismissalPending: supersededPlayerPendingDismissal) {
-        case .ignore:
+            dismissingPlayerLaunchEpoch: playerLaunchEpoch,
+            currentLaunchEpoch: self.playerLaunchEpoch) {
+        case .ignore, .suppressSupersededDismissal:
             return
-        case .suppressSupersededDismissal:
-            supersededPlayerPendingDismissal = false
         case .leave:
             leave()
         }
@@ -344,13 +370,19 @@ final class WatchTogetherCoordinator {
         activeSessionStateTask = Task { [weak self, weak session] in
             guard let session else { return }
             for await value in session.$state.values {
-                if case .invalidated = value { self?.clearActiveSession(leaving: false); return }
+                // A replaced session's task can already be resumed with a buffered value when it is
+                // cancelled; acting on a stale `.invalidated` here would wipe the NEW session's state.
+                guard let self, !Task.isCancelled, self.activeSession === session else { return }
+                if case .invalidated = value { self.clearActiveSession(leaving: false); return }
             }
         }
         participantTask = Task { [weak self, weak session] in
             guard let session else { return }
             for await participants in session.$activeParticipants.values {
-                self?.handleActiveParticipants(participants.map(\.id), localID: session.localParticipant.id)
+                // Same stale-resumption fence as the state task: a cancelled task's in-flight roster
+                // update must not prune/re-announce against the replacement session's state.
+                guard let self, !Task.isCancelled, self.activeSession === session else { return }
+                self.handleActiveParticipants(participants.map(\.id), localID: session.localParticipant.id)
             }
         }
         if let messenger {
@@ -444,7 +476,7 @@ final class WatchTogetherCoordinator {
         activeSession = nil; messenger = nil; activePayload = nil; resolvedItem = nil; joinPrompt = nil
         participantStatuses = [:]; knownParticipantIDs = []; readyParticipantCount = 0; resolvingParticipantCount = 0
         sessionStarted = false; isLocalInitiator = false; didLaunchResolvedItem = false
-        supersededPlayerPendingDismissal = false
+        // `playerLaunchEpoch` deliberately survives: it is a monotonic epoch, not per-session state.
         playbackCoordinatorDelegate = nil
         state = .inactive
     }
