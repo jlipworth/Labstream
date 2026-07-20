@@ -115,6 +115,40 @@ final class EmbyTrickPlayThumbnailProviderTests: XCTestCase {
         XCTAssertEqual(result?.imageData, onePixelPNG)
     }
 
+    func testConcurrentThumbnailRequestsShareASingleBIFLoad() async throws {
+        // Hits BIFBackedTrickPlayThumbnailProvider directly: the Emby tests above route through the
+        // SideAssetFetchCoordinator, which coalesces on its own and so masks a provider-level
+        // single-flight regression. This gates the loader so all callers are in-flight at once.
+        let bif = makeBIF(payload: Data("bif-frame".utf8))
+        let loadCount = LoaderInvocationCounter()
+        let gate = LoaderGate()
+        let provider = BIFBackedTrickPlayThumbnailProvider {
+            await loadCount.increment()
+            await gate.wait()
+            return bif
+        }
+
+        let callerCount = 8
+        let callers = (0..<callerCount).map { _ in
+            Task { await provider.thumbnail(nearMs: 0) }
+        }
+
+        // Wait until the shared load has actually begun, then let the remaining callers reach the
+        // shared task before releasing the gate.
+        while await loadCount.value == 0 { await Task.yield() }
+        for _ in 0..<50 { await Task.yield() }
+        await gate.open()
+
+        var frames: [TrickPlayThumbnail?] = []
+        for caller in callers { frames.append(await caller.value) }
+
+        XCTAssertEqual(await loadCount.value, 1, "concurrent scrub targets must share one BIF fetch")
+        XCTAssertEqual(frames.compactMap { $0 }.count, callerCount, "every caller must get a frame")
+        for frame in frames.compactMap({ $0 }) {
+            XCTAssertEqual(frame.imageData, Data("bif-frame".utf8))
+        }
+    }
+
     private func makeProvider(item: MediaItem) throws -> EmbyTrickPlayThumbnailProvider {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [TrickPlayURLProtocol.self]
@@ -159,6 +193,40 @@ private final class TrickPlayURLProtocol: URLProtocol, @unchecked Sendable {
         client?.urlProtocolDidFinishLoading(self)
     }
     override func stopLoading() {}
+}
+
+private actor LoaderInvocationCounter {
+    private(set) var value = 0
+    func increment() { value += 1 }
+}
+
+/// One-shot async gate: callers awaiting `wait()` before `open()` suspend until it is opened.
+private final class LoaderGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var opened = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if opened {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                waiters.append(continuation)
+                lock.unlock()
+            }
+        }
+    }
+
+    func open() {
+        lock.lock()
+        opened = true
+        let pending = waiters
+        waiters = []
+        lock.unlock()
+        pending.forEach { $0.resume() }
+    }
 }
 
 private func makeBIF(payload: Data) -> Data {
