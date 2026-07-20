@@ -158,6 +158,24 @@ class ToolingHardeningTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("unexpected project.pbxproj file-reference/build-file churn", result.stderr)
 
+    def test_worktree_sim_help_is_read_only(self):
+        with self.make_repo() as root:
+            self.copy_script(root, "worktree-sim.sh")
+
+            result = subprocess.run(
+                ["scripts/worktree-sim.sh", "--help"],
+                cwd=root,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("usage: worktree-sim.sh", result.stdout)
+            self.assertIn("closeout [PATH]", result.stdout)
+            self.assertIn("-h|--help", result.stdout)
+            self.assertEqual(result.stderr, "")
+
     def test_worktree_sim_id_replaces_stale_simid_with_hashed_clone(self):
         with self.make_repo() as root:
             self.copy_script(root, "worktree-sim.sh")

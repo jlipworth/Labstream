@@ -49,100 +49,35 @@ adaptive mobile shell. The public mobile support floor is iOS/iPadOS 26.1+.
 - The Plex client identity reports `X-Plex-Platform=iOS` and `X-Plex-Device` as `iPad` or
   `iPhone`; visionOS continues to report `visionOS` / `Apple Vision Pro`.
 
-## Build and smoke on an iPhone simulator
+## Build and smoke on an iPhone or iPad simulator
 
-Use a platform-specific worktree simulator so the mobile build does not clone or mutate the
-visionOS golden simulator:
+Use the canonical [iPhone/iPad simulator build](DEVELOPMENT.md#build-for-an-iphone-or-ipad-simulator)
+and [observable smoke](DEVELOPMENT.md#install-and-observe-a-simulator-smoke) procedures. Select
+`PLATFORM=iphone` for the compact-width path or `PLATFORM=ipad` for the regular-width path. The
+simulator helper creates independent mobile simulators, so neither path clones or mutates the
+visionOS golden simulator.
 
-```sh
-# One-time per linked worktree, or pass LABSTREAM_SIM_PLATFORM=iphone for one command.
-printf 'iphone\n' > .simplatform
-scripts/worktree-sim.sh setup
-SIMID=$(scripts/worktree-sim.sh id)   # resolves to .simid-iphone in this worktree
-xcrun simctl boot "$SIMID" 2>/dev/null || true
-DD="$PWD/build/DerivedData-ios"
-rm -rf "$DD/Build/Products/Debug-iphonesimulator/Labstream.app"
-
-scripts/xcodebuild-versioned.sh \
-  -project Labstream.xcodeproj \
-  -scheme LabstreamMobile \
-  -destination "platform=iOS Simulator,id=$SIMID" \
-  -configuration Debug \
-  -derivedDataPath "$DD" \
-  build CODE_SIGNING_ALLOWED=NO
-
-APP="$DD/Build/Products/Debug-iphonesimulator/Labstream.app"
-xcrun simctl install "$SIMID" "$APP"
-xcrun simctl terminate "$SIMID" com.jlipworth.Labstream 2>/dev/null || true
-xcrun simctl launch "$SIMID" com.jlipworth.Labstream
-```
-
-## Build and smoke on an iPad simulator
-
-```sh
-# One-time per linked worktree, or pass LABSTREAM_SIM_PLATFORM=ipad for one command.
-printf 'ipad\n' > .simplatform
-scripts/worktree-sim.sh setup
-SIMID=$(scripts/worktree-sim.sh id)   # resolves to .simid-ipad in this worktree
-xcrun simctl boot "$SIMID" 2>/dev/null || true
-DD="$PWD/build/DerivedData-ios"
-rm -rf "$DD/Build/Products/Debug-iphonesimulator/Labstream.app"
-
-scripts/xcodebuild-versioned.sh \
-  -project Labstream.xcodeproj \
-  -scheme LabstreamMobile \
-  -destination "platform=iOS Simulator,id=$SIMID" \
-  -configuration Debug \
-  -derivedDataPath "$DD" \
-  build CODE_SIGNING_ALLOWED=NO
-
-APP="$DD/Build/Products/Debug-iphonesimulator/Labstream.app"
-xcrun simctl install "$SIMID" "$APP"
-xcrun simctl terminate "$SIMID" com.jlipworth.Labstream 2>/dev/null || true
-xcrun simctl launch "$SIMID" com.jlipworth.Labstream
-```
-
-A compatible installed iOS Simulator runtime is required. The mobile target is iOS/iPadOS
-26.1+, so older local Xcode/SDK installations may report deployment-target warnings or fail
-before app code compiles; install the matching platform/runtime in Xcode Settings before
-treating the mobile target as broken.
+A compatible installed iOS Simulator runtime is required. The mobile target is iOS/iPadOS 26.1+,
+so older local Xcode/SDK installations may report deployment-target warnings or fail before app
+code compiles; install the matching platform/runtime in Xcode Settings before treating the mobile
+target as broken. Shut the selected simulator down when the smoke finishes, as described in the
+canonical procedure.
 
 ## App-hosted unit tests
 
 `LabstreamMobile` owns the `LabstreamTests` test target through `LabstreamTests.xctestplan`.
 The test sources live in `LabstreamTests/` and cover app-owned deterministic behavior rather than
-UI automation or live-server acceptance. With the chosen worktree simulator booted:
-
-```sh
-scripts/worktree-sim.sh --platform iphone setup
-SIMID=$(scripts/worktree-sim.sh --platform iphone id)
-xcrun simctl boot "$SIMID" 2>/dev/null || true
-scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
-  -scheme LabstreamMobile -testPlan LabstreamTests \
-  -destination "platform=iOS Simulator,id=$SIMID" test CODE_SIGNING_ALLOWED=NO
-```
-
-Use the iPad worktree simulator instead for platform-specific regular-width cases. Shared app
-infrastructure should also run the macOS-hosted counterpart described in
-[Testing strategy](TESTING-STRATEGY.md).
+UI automation or live-server acceptance. Use the exact test command and simulator shutdown in
+[Core validation commands](DEVELOPMENT.md#core-validation-commands). Select an iPad worktree
+simulator instead for platform-specific regular-width cases. Shared app infrastructure should also
+run the macOS-hosted counterpart described in [Testing strategy](TESTING-STRATEGY.md).
 
 ## Install on a physical iPhone or iPad
 
-Simulator builds use `CODE_SIGNING_ALLOWED=NO` and cannot install on hardware. For a real iPhone or iPad, use the mobile device wrapper; it builds the `LabstreamMobile` scheme for `iphoneos`, applies normal Apple Development signing/provisioning, installs with `devicectl`, and optionally launches the app:
-
-```sh
-scripts/deploy-mobile-to-device.sh            # build + install to the single paired iPhone/iPad
-scripts/deploy-mobile-to-device.sh --launch   # also launch after install
-scripts/deploy-mobile-to-device.sh --no-build # reinstall the last Debug-iphoneos build
-```
-
-If more than one iPhone/iPad is paired, pass the destination explicitly:
-
-```sh
-IOS_DEVICE_ID=<device-uuid> scripts/deploy-mobile-to-device.sh --launch
-```
-
-First-time hardware deploy still requires the one-time Apple steps outside the script: connect/pair the device, trust this Mac, enable Developer Mode on the device if prompted, and make sure the matching Apple ID is signed into Xcode Settings so command-line automatic provisioning can create or refresh the development profile.
+Simulator builds use `CODE_SIGNING_ALLOWED=NO` and cannot install on hardware. Follow the canonical
+[Physical iPhone or iPad install](DEVELOPMENT.md#physical-iphone-or-ipad-install) procedure for the
+signed `LabstreamMobile` `iphoneos` build, pairing/trust, Developer Mode, Xcode account setup,
+multiple-device selection, install, and launch.
 
 ## Remaining validation gaps
 

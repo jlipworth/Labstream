@@ -159,4 +159,4 @@ run_logged macos-smoke \
 
 log_step "summary"
 printf 'Validation logs: %s\n' "$LOG_DIR"
-printf 'macOS #228 deterministic validation passed. Manual real-server/UI checks remain in docs/MACOS-228-VALIDATION.md.\n'
+printf 'macOS #228 deterministic validation passed. Current manual real-server/UI targets are in docs/MACOS.md and TESTING-CHECKLIST.md.\n'

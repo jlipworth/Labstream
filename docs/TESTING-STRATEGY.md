@@ -20,34 +20,17 @@ flowchart TD
 
 ## Required local checks
 
-Run these before publishing code changes:
-
-```sh
-cd PMSKit && swift test
-cd ..
-scripts/ci-hygiene.sh
-uv run --with-requirements requirements.txt mkdocs build --strict
-```
+Run the canonical [core validation commands](DEVELOPMENT.md#core-validation-commands) before
+publishing code changes.
 
 Production changes should also run focused tests from the owning layer. Pure request/model/policy
 coverage belongs in `PMSKit/Tests/PMSKitTests`. App-owned deterministic coverage lives in
 `LabstreamTests/`; the same sources are hosted by `LabstreamTests` on an iOS simulator and
-`LabstreamMacTests` on macOS. Run the affected host, or both hosts for shared app infrastructure:
+`LabstreamMacTests` on macOS. Run the affected host, or both hosts for shared app infrastructure,
+using the exact test-plan commands in Development setup.
 
-```sh
-scripts/worktree-sim.sh --platform iphone setup
-SIMID=$(scripts/worktree-sim.sh --platform iphone id)
-xcrun simctl boot "$SIMID" 2>/dev/null || true
-scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
-  -scheme LabstreamMobile -testPlan LabstreamTests \
-  -destination "platform=iOS Simulator,id=$SIMID" test CODE_SIGNING_ALLOWED=NO
-
-scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
-  -scheme LabstreamMac -testPlan LabstreamMacTests \
-  -destination 'platform=macOS,arch=arm64' test CODE_SIGNING_ALLOWED=NO
-```
-
-The app suites are host-app unit tests. They do not replace install/launch/screenshot smoke,
+The app suites are host-app unit tests. They do not replace the canonical
+[install/launch/log/screenshot smoke](DEVELOPMENT.md#install-and-observe-a-simulator-smoke),
 interactive UI checks, live-server probes, or physical-device acceptance.
 
 ## CI checks
@@ -71,26 +54,16 @@ boundary.
 
 ## Simulator checks
 
-Use platform-specific worktree simulators for app build and launch smoke. VisionOS remains the default/golden-clone path:
+Use platform-specific worktree simulators and the exact-product procedures in Development setup:
 
-```sh
-SIMID=$(scripts/worktree-sim.sh --platform visionos id)
-scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme Labstream \
-  -destination "platform=visionOS Simulator,id=$SIMID" \
-  -configuration Debug build CODE_SIGNING_ALLOWED=NO
-```
+- Before the first visionOS build or linked visionOS worktree, [bootstrap the first visionOS simulator](DEVELOPMENT.md#bootstrap-the-first-visionos-simulator), then [build the `Labstream` scheme](DEVELOPMENT.md#build-for-the-visionos-simulator).
+- iPhone/iPad-only work needs no visionOS bootstrap: [build the universal `LabstreamMobile` scheme](DEVELOPMENT.md#build-for-an-iphone-or-ipad-simulator) with `PLATFORM=iphone` or `PLATFORM=ipad`.
+- Both paths: complete the [observable smoke and shutdown](DEVELOPMENT.md#install-and-observe-a-simulator-smoke). Linked-worktree simulators must also follow the [closeout cleanup](DEVELOPMENT.md#linked-worktree-simulator-cleanup) when the worktree is removed.
 
-For the native iPhone/iPad target, opt into an iPhone simulator by default and build the `LabstreamMobile` scheme. Use `ipad` instead of `iphone` for the iPad pass:
-
-```sh
-printf 'iphone\n' > .simplatform
-SIMID=$(scripts/worktree-sim.sh id)
-scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamMobile \
-  -destination "platform=iOS Simulator,id=$SIMID" \
-  -configuration Debug build CODE_SIGNING_ALLOWED=NO
-```
-
-Simulator builds are useful for compile coverage, sign-in UI, settings, browse flows, compact/regular mobile shell regressions, and many download/playback routing checks. They are not a full substitute for headset playback or physical iPhone/iPad media-background behavior, cellular-transfer policy, PiP/AirPlay handoff, or system search/Shortcuts invocation.
+Simulator builds are useful for compile coverage, sign-in UI, settings, browse flows, compact/regular
+mobile shell regressions, and many download/playback routing checks. They are not a full substitute
+for headset playback or physical iPhone/iPad media-background behavior, cellular-transfer policy,
+PiP/AirPlay handoff, or system search/Shortcuts invocation.
 
 ## macOS development-preview checks
 
@@ -114,11 +87,12 @@ Live probes are opt-in and must stay secret-gated. They validate real Plex/Jelly
 
 ## Physical-device checks
 
-Use real hardware for behavior the simulator cannot prove reliably. Use Apple
-Vision Pro for visionOS media-plane and immersive/Cinema checks; use physical
-iPhone/iPad hardware for mobile background playback, PiP/AirPlay,
-cellular-transfer policy, Control Center/lock-screen behavior, and App
-Intents/Spotlight invocation.
+Use real hardware for behavior the simulator cannot prove reliably. Follow the canonical
+[Apple Vision Pro install](DEVELOPMENT.md#physical-apple-vision-pro-install) or
+[iPhone/iPad install](DEVELOPMENT.md#physical-iphone-or-ipad-install) procedure first. Use Apple
+Vision Pro for visionOS media-plane and immersive/Cinema checks; use physical iPhone/iPad hardware
+for mobile background playback, PiP/AirPlay, cellular-transfer policy, Control Center/lock-screen
+behavior, and App Intents/Spotlight invocation.
 
 - AVPlayer media-plane rendering, especially on Apple Vision Pro;
 - immersive/Cinema presentation on visionOS;
@@ -130,4 +104,10 @@ For the Mac development preview, use a real signed-in host session for keyboard/
 behavior, menu commands, system media keys, live playback, and download reconciliation. Keep that
 evidence labeled as preview validation rather than released-platform support.
 
-When a headset-only bug is reproduced, collect evidence with `scripts/headset-evidence.sh` before trying ad hoc log collection.
+When a headset-only bug is reproduced, collect a bounded bundle with
+`scripts/headset-evidence.sh` before trying ad hoc log collection, then triage it first with
+`scripts/diagnostics-summarize.py <bundle> --auto-baseline`. Read `analysis/triage.md` and
+`analysis/summary.json` before raw artifacts; open only a named, bounded source window when those
+summaries leave a specific causal question. For later pulls, review the baseline delta reported in
+those summaries and `analysis/novel-events.jsonl` instead of re-reading whole diagnostic directories
+or broad unified logs.

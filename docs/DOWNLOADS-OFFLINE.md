@@ -112,25 +112,20 @@ Apple-standard architecture we can make stable:
   offset-aligned — the same non-negotiable append-alignment invariant as the pre-segment
   design). Appending a run advances the durable checkpoint and refills the train back up
   to the queue depth.
-- **URLSession resume data is still first-class, but deliberately row-scoped.** The store
-  has one resume-blob slot per download row. When pausing a segment train, Labstream captures
-  the row-level display watermark once as durable bytes plus the sum of all live segment
-  bodies, asks only the **head segment** (the segment whose base offset equals the durable
-  checkpoint) for resume data, and plain-cancels the off-head siblings. Those sibling blobs
-  would be guaranteed stale against the durable checkpoint and would only race for the one
-  slot. The head blob is registered back into the static range lane, not the opaque
-  whole-file lane.
-- **Adopting a closed head blob restores a real segment.** Its original closed `Range`
-  recovers the segment length, the store's exact static source size restores the total when
-  the caller cannot derive it from progress, and the planner refills the train behind the
-  resumed head. A stale/malformed blob is discarded together with its display watermark.
-- **A failed live segment can retry in place from its own blob.** That in-process path
-  validates the blob against the failed segment's base offset, replaces only that offset,
-  and leaves sibling segments running. It is distinct from manual/relaunch head adoption,
-  which rebuilds the train from the durable checkpoint.
-- **The durable partial is the fallback.** If resume data is missing, invalid, stale, or refers to a
-  temp file the system has deleted, Labstream clears/discards the blob and re-plans the train
-  from the durable partial's current file size.
+- **URLSession resume data remains first-class only for the single open-ended fallback.**
+  The store has one resume-blob slot per download row. When an unknown-size static source uses
+  `Range: bytes=<durableOffset>-`, pausing can preserve that task's OS temp progress and display
+  watermark in a blob. Adoption requires the blob's original open-ended Range offset to equal the
+  current durable partial.
+- **Closed train segments never persist or adopt URLSession resume data, including the head.**
+  CFNetwork can replay a resumed closed request past its original end, so pausing a segment train
+  clears any old blob/watermark and plain-cancels unfinished segments. The app-owned durable partial
+  remains authoritative, completed held bodies remain reusable during that process lifetime, and
+  unfinished ranges are planned again on Resume.
+- **The durable partial is the fallback.** A legacy closed-range blob, or an open-ended blob that is
+  missing, malformed, stale, exhausted, or backed by a deleted temp file, is rejected and cleared
+  together with its display watermark. Recovery then re-plans from the durable partial's current
+  file size rather than appending unvalidated bytes.
 - **HTTP safety checks still guard the append.** Completed bodies are validated for
   `Content-Range` start alignment, pinned validator mismatches, HTTP `200` full-body
   replacement/restart behavior, `416` total validation, temp disappearance fallback, and safe
@@ -212,4 +207,13 @@ artifact reservations, and durable cleanup intents. Current reconciliation:
 - resumes/retries recoverable transfers and surfaces terminal failures in the row;
 - replays required server cleanup from the independent journal when the matching backend
   session is available;
+- repairs missing poster and chapter-image files for completed rows when a matching backend
+  session is available and the row/kind still has retry budget, without re-downloading the playable
+  file or side assets already on disk. Across completed-row scans, a missing `(row, asset kind)` can
+  be offered for rehydrate at most five times during the current process lifetime. A scan consumes
+  an offer before backend-session resolution, so repeated scans while the matching backend is
+  unavailable can exhaust that process's budget without issuing a request. Poster and
+  chapter-image-kind budgets are independent, as are different rows; all chapter images for one row
+  share the chapter-image-kind budget. The in-memory counts reset on the next launch so transient
+  misses receive another chance while permanently unavailable kinds eventually stop re-arming;
 - keeps completed media available without requiring the source server to be reachable.
