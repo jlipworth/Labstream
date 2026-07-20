@@ -6,6 +6,12 @@ Research baseline: 2026-07-20 against repository commit `44839793`, with parity 
 
 This document is the durable repository plan. Keep its phase status synchronized with issue #246 during implementation, then promote proven behavior into the current architecture, development, testing, and platform documentation. Archive this note only after every required acceptance gate is complete or explicitly moved to a linked follow-up.
 
+Implementation checkpoint: commits `53ec96eb` and `5ef5bb6d` establish the tvOS compile,
+test-host, and simulator-tooling foundation. Generic tvOS app and test builds pass, as do the
+existing visionOS, mobile, Mac, PMSKit, tooling-hygiene, and strict-documentation checks. A live
+tvOS launch remains blocked until a tvOS simulator runtime is installed; physical-device validation
+also remains pending. This checkpoint is not a parity implementation or Phase 0 exit.
+
 ## Goal
 
 Create a first-class native tvOS version of Labstream for Apple TV with functional parity to the shared iPad/Mac product surface across Plex, Jellyfin, and Emby. The implementation may advance through internal checkpoints, but no reduced video-only or single-backend edition is a release target. tvOS gets its own 10-foot UI, focus model, Siri Remote behavior, system integration, testing lane, and release train while retaining the complete shared product behavior that applies to a television.
@@ -65,18 +71,20 @@ Every row is required across Plex, Jellyfin, and Emby wherever that row is imple
 ### Phase 0 — target and compile foundation
 
 - [x] Add `.tvOS(...)` to `PMSKit/Package.swift` and run PMSKit tests for the declared platform.
-- [ ] Add `LabstreamTV`, `LabstreamTVTests`, and `LabstreamTVUITests` targets/products/shared schemes with tvOS deployment settings, signing, generated plist, package linkage, test plans, and layered TV app icon assets.
+- [x] Add `LabstreamTV`, `LabstreamTVTests`, and `LabstreamTVUITests` targets/products/shared schemes with tvOS deployment settings, generated plist, package linkage, and test plans.
+- [ ] Add layered TV app icon assets and validate real signing/provisioning when an Apple TV or TestFlight lane is available.
 - [x] Add a tvOS-only `LabstreamTV.swift` entry point and explicit Apple TV/tvOS values in `PlatformClientIdentity`.
 - [x] Add an explicit `tvRootContent` path instead of allowing `RootView` to fall through to visionOS-only content.
 - [x] Audit the shared source root for `canImport(UIKit)` and availability fallthroughs; gate or adapt MetricKit, Spotlight, pasteboard/share/export, embedded web auth, iOS orientation/PiP, and visionOS scenes.
 - [x] Introduce a central platform feature policy so tvOS can omit the approved downloads/offline exception and adapt unavailable system APIs without forking backend or product policy.
-- [ ] Update project-hygiene allowlists, `scripts/worktree-sim.sh`, compile audit, Apple-platform CI, and developer docs with a concrete tvOS simulator identity and never target a generic `booted` simulator.
+- [x] Update project-hygiene allowlists, `scripts/worktree-sim.sh`, compile audit, and developer docs with a worktree-owned concrete tvOS simulator identity; never target a generic `booted` simulator.
+- [ ] Add the tvOS build/test lane to the eventual Apple-platform CI work and prove the launch/UI-test lane on an installed tvOS simulator runtime.
 
 **Exit:** a clean tvOS simulator build launches deterministically into fixture login/browse state; existing visionOS, mobile, Mac, and PMSKit lanes still build/test.
 
 ### Phase 1 — TV shell, authentication, and focus
 
-- [ ] Build a dedicated tvOS sidebar/tab shell for Home, Libraries, Search, Music, and Settings; do not show an empty Offline destination.
+- [ ] Complete the initial dedicated tvOS tab shell for Home, Libraries, Search, Music, and Settings as a ten-foot, focus-safe surface; do not show an empty Offline destination.
 - [ ] Add TV poster/card sizing, safe-area spacing, readable metadata, system focus effects, default focus, focus sections, and focus restoration across navigation, sheets, reloads, pagination, errors, and playback return.
 - [ ] Make Plex link code, Jellyfin Quick Connect, and Emby Connect PIN primary; keep remote-friendly manual URL/credential entry as fallback where needed.
 - [ ] Validate local-network permission/ATS behavior, LAN and remote servers, Keychain restore, backend switching, signed-out/error states, dictation/iPhone Remote keyboard, and physical keyboard fallback.
@@ -141,7 +149,7 @@ Every row is required across Plex, Jellyfin, and Emby wherever that row is imple
 - [ ] Physical Apple TV evidence covers playback, codecs/HDR/audio, Siri Remote, lifecycle, accessibility, and long-play behavior.
 - [ ] Codec/server advertisements match tested runtime/device truth, including conservative transcode fallback.
 - [ ] TestFlight/App Review assets, demo access, privacy metadata, signing, and release documentation are complete.
-- [ ] Downloads, offline playback, storage controls, and the Offline destination remain absent as the approved tvOS storage exception.
+- [x] Downloads, offline playback, storage controls, and the Offline destination remain absent as the approved tvOS storage exception.
 - [ ] No unfinished enhancement from an open issue is made a hidden dependency of tvOS parity; the release baseline is implemented behavior on `main`.
 - [ ] The issue remains open until physical Apple TV and TestFlight acceptance are complete; simulator success alone is not sufficient.
 
