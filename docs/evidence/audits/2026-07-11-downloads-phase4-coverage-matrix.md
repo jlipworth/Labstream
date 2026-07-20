@@ -2,8 +2,8 @@
 
 > **Status:** completed Phase-4 coverage snapshot at `23b0bac`. The G/A/D6/DEV labels below
 > describe that baseline, not current aggregate coverage. Use
-> [`docs/TESTING-STRATEGY.md`](../TESTING-STRATEGY.md) for current test lanes and
-> [`docs/DOWNLOADS-OFFLINE.md`](../DOWNLOADS-OFFLINE.md) for current download invariants.
+> [`docs/TESTING-STRATEGY.md`](../../TESTING-STRATEGY.md) for current test lanes and
+> [`docs/DOWNLOADS-OFFLINE.md`](../../DOWNLOADS-OFFLINE.md) for current download invariants.
 
 Baseline: `23b0bac` (`main` after the Phase 5 remediation and audit-document commit).
 The baseline PMSKit run passed **1360 Swift Testing tests plus 89 XCTest tests**.

@@ -7,6 +7,9 @@
 > nonterminal reset policy. One conformance statement below was already stale when revalidated:
 > exact-attempt finalizer registry integration landed in `813254f`. Physical-device force-quit /
 > background-redelivery gates remain open and are not claimed complete by this update.
+>
+> This file is archived review evidence, not a current work list. Current remediation status and
+> acceptance gates live in the [`codebase remediation` plan](../../plans/2026-07-10-codebase-remediation.md).
 
 ## Resume checkpoint after remediation
 
@@ -52,8 +55,8 @@ The worktree was clean after that commit and all worktree simulators were shut d
 declare Phase 1 complete until the physical background-session gates pass.
 
 **Scope:** committed diff `main...HEAD` (40 commits, 104 files, +14,330/−2,172) in
-`/Users/jlipworth/labstream-worktrees/remediation-nondownloads`. Uncommitted working-tree
-edits excluded per instruction.
+`/path/to/labstream-worktrees/remediation-nondownloads`. Uncommitted working-tree edits
+excluded per instruction.
 
 **Method:** 50-agent workflow — 9 subsystem reviewers + 2 plan-conformance auditors
 (Phases 1 and 2 verified against code, not journal claims), every finding independently

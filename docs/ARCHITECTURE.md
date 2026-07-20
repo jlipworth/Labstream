@@ -7,7 +7,9 @@ and can be tested without an app process, simulator, Keychain, filesystem, or me
 server; a small set of reusable infrastructure is intentionally effectful.
 
 ```mermaid
-flowchart LR
+flowchart TD
+  accTitle: App and package composition
+  accDescr: Platform entry points create long-lived app services used by SwiftUI. App-owned playback, downloads, music, and SharePlay use PMSKit policies and requests while retaining their own framework and persistence effects.
   Entry[Platform App entry point] --> Services[AppServices]
   Services --> Model[AppModel]
   Services --> Auth[AuthManager]
@@ -223,6 +225,7 @@ signposts compile to no-op implementations in Release.
 
 ## Documentation rule
 
-Published docs describe current behavior. Investigation notes, migration plans,
-historical issue details, and one-off validation logs belong in `docs/research/` or
-`docs/archive/`, not the public navigation.
+Published docs describe current behavior. Active implementation plans and acceptance journals live
+in `docs/plans/`; unresolved investigations in `docs/research/`; immutable audit and profiling
+observations in `docs/evidence/`; and completed or superseded context in `docs/archive/`. None of
+those internal lanes belongs in the public navigation.

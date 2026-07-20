@@ -4,6 +4,8 @@ Labstream diagnostics are for user-initiated debugging, not analytics.
 
 ```mermaid
 flowchart TD
+  accTitle: Diagnostic redaction and export
+  accDescr: Typed runtime events are redacted before reaching the in-memory ring or rotating local files. MetricKit summaries are separately redacted, and only a user action assembles local material into a report for explicit sharing.
   Toggle[User enables logging] --> Ring[300-event in-memory ring]
   Runtime[Runtime events] --> Fields[Typed diagnostic fields]
   Fields --> Redactor[Redaction]

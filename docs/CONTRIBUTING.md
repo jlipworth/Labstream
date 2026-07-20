@@ -41,6 +41,34 @@ through the `LabstreamMobile` scheme on an iOS simulator and/or `LabstreamMacTes
 tests supplement rather than replace the affected app build and
 [observable simulator smoke](DEVELOPMENT.md#install-and-observe-a-simulator-smoke).
 
+## Documentation information architecture
+
+Classify a document before creating it:
+
+- current user, contributor, and architecture guidance is a stable published topic page directly
+  under `docs/`;
+- approved work with open implementation or acceptance gates belongs in `docs/plans/`;
+- an investigation with unresolved questions belongs in `docs/research/`;
+- immutable, point-in-time audit or profiling observations belong in `docs/evidence/`;
+- completed plans, resolved reviews, and superseded context belong in `docs/archive/`.
+
+The README in each internal lane defines what belongs there, what does not, its filename
+convention, and its lifecycle. New internal documents use `YYYY-MM-DD-<topic>.md`; prefer a
+durable topic name over a redundant `-plan` suffix. Keep published URLs stable unless a rename
+fixes a concrete semantic defect. When work becomes proven, promote the durable behavior or
+procedure into the canonical published topic page; then archive completed plans and resolved
+reviews without rewriting their historical journal. During a move, preserve historical prose but
+repair live Markdown navigation, MkDocs entries, script references, and contributor instructions.
+
+Mermaid source lives beside the canonical prose it illustrates and changes with the behavior or
+ownership it depicts. Every diagram needs `accTitle` and `accDescr`, complete adjacent prose, and
+conservative flowchart, sequence, or state syntax that works in both GitHub and MkDocs Material.
+Avoid HTML labels, click directives, custom colors, and meaning conveyed only by color or line
+style. Keep diagrams readable at mobile widths and do not add a separate Mermaid dependency,
+external script, or generated image copy. After content or path changes, run the strict MkDocs
+build, repository-wide link validation, Mermaid structural check, and `scripts/ci-hygiene.sh` as
+described in [Testing strategy](TESTING-STRATEGY.md).
+
 ## Privacy and secrets
 
 Never commit or paste:
@@ -63,4 +91,5 @@ Use placeholders such as `plex.example.internal`, `192.0.2.10`, `<server-url>`, 
 - Keep SwiftUI, `AVPlayer` ownership, target lifecycle, background-session delegation, app
   persistence/filesystem orchestration, and Keychain access in the app target.
 - Use typed diagnostic fields and redaction helpers for anything that can reach a report.
-- Archive research, implementation plans, and historical validation notes instead of publishing them as current docs.
+- Use the current/plans/research/evidence/archive lanes above instead of publishing internal or
+  historical material as current guidance.

@@ -7,6 +7,8 @@ end-to-end validation remains platform-specific.
 
 ```mermaid
 flowchart TD
+  accTitle: System entry routing
+  accDescr: App Intents, Spotlight, user activities, and participant-locally resolved SharePlay items enter one router, which waits for app restore when necessary and then opens the normal browse, detail, or player route.
   Intent[App Intent] --> Router[SystemEntryRouter]
   Spotlight[Spotlight result] --> Router
   Activity[User activity] --> Router
@@ -69,6 +71,29 @@ launched the exact local item. The launch goes through `SystemEntryRouter.open`,
 normal authenticated navigation/player route rather than a parallel playback stack. The
 coordinator is app-lifetime on visionOS; player attachment and Cinema continuity are described in
 [Playback architecture](PLAYBACK-ARCHITECTURE.md#shareplay-on-visionos).
+
+```mermaid
+sequenceDiagram
+  accTitle: SharePlay privacy and participant-local resolution
+  accDescr: The initiator sends only an allowlisted public-catalog identity. Each participant searches the currently authenticated local backend with local credentials, resolves or explicitly selects a matching local item, reports readiness without identifiers, and opens that item through the normal router before attaching AVPlayer to the group session.
+  participant I as Initiator
+  participant G as GroupSession
+  participant P as Participant coordinator
+  participant B as Participant local backend
+  participant R as SystemEntryRouter
+  participant V as Local AVPlayer
+
+  I->>G: sanitized public-catalog payload
+  G-->>P: activity and readiness messages
+  P->>B: authenticated local candidate lookup
+  B-->>P: local MediaItem candidates
+  P->>P: resolve exact timeline match or ask for local selection
+  P->>G: ready, unable, or started status only
+  G-->>P: start with ready participants
+  P->>R: open exact locally resolved item
+  R->>V: normal authenticated playback route
+  P->>V: coordinate only after local launch consent
+```
 
 ## Mac development preview
 

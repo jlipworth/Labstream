@@ -4,18 +4,21 @@ Labstream uses layered validation. Fast, hermetic tests protect the codebase by 
 
 ```mermaid
 flowchart TD
-  Change[Code or docs change] --> Unit[PMSKit package tests]
-  Change --> AppUnit[App-hosted unit tests]
-  Change --> Hygiene[ci-hygiene]
-  Change --> Docs[mkdocs build --strict]
-  Unit --> VisionSim[visionOS simulator build/smoke]
-  Unit --> MobileSim[iPhone/iPad simulator build/smoke]
-  Unit --> MacHost[Mac preview host build/smoke]
-  VisionSim --> Device[Physical-device checks]
-  Unit --> Live[Optional live-server probes]
-  AppUnit --> VisionSim
-  AppUnit --> MobileSim
-  AppUnit --> MacHost
+  accTitle: Validation lanes by change type
+  accDescr: Every change runs repository hygiene. Documentation changes also run strict site, link, and Mermaid checks; pure package changes run PMSKit tests; app-owned deterministic changes run hosted tests; runtime changes add the affected platform build and smoke. Private-server and hardware-only behavior use separate opt-in gates.
+  Change[Proposed change] --> Hygiene[Repository hygiene]
+  Change --> Kind{What owns the behavior?}
+  Kind --> Docs[Documentation or path]
+  Kind --> Pure[Pure PMSKit request, model, or policy]
+  Kind --> App[App-owned deterministic logic]
+  Kind --> Runtime[Platform runtime or UI]
+  Docs --> DocGate[Strict MkDocs, repository links, and Mermaid structure]
+  Pure --> Package[PMSKit package tests]
+  App --> Hosted[App-hosted tests on affected hosts]
+  Runtime --> Smoke[Affected platform build, install or host launch, logs, and smoke]
+  Change --> Private{Needs private server or physical behavior?}
+  Private --> Live[Opt-in live-server probe]
+  Private --> Device[Physical-device acceptance]
 ```
 
 ## Required local checks
@@ -39,6 +42,8 @@ Woodpecker provides the repository's default public, portable CI surface:
 
 - `.woodpecker/docs.yml` builds MkDocs strictly and deploys the static site on relevant pushes to
   `main` (or a manual run).
+- `.woodpecker/docs-pr.yml` performs the same strict build and Mermaid structural check for pull
+  requests without receiving a deployment key or running a deploy command.
 - `.woodpecker/hygiene.yml` runs `scripts/ci-hygiene.sh`, including its Python tooling tests, on
   pushes, pull requests, and manual runs.
 - `.woodpecker/pmskit.yml` runs PMSKit's hermetic Linux suite without credentials. XCTest and

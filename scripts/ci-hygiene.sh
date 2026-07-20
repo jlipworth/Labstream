@@ -104,8 +104,8 @@ done < <(git ls-files -z)
 stale_paths=()
 while IFS= read -r -d '' path; do
   case "$path" in
-    # Historical/planning docs may intentionally reference the old bundle ID.
-    docs/superpowers/*|docs/archive/*)
+    # Historical docs may intentionally reference the old bundle ID.
+    docs/archive/*)
       ;;
     *)
       stale_paths+=("$path")
@@ -122,7 +122,7 @@ scan_paths=()
 while IFS= read -r -d '' path; do
   case "$path" in
     # Intentional guardrail/historical mentions are allowed in these files.
-    .gitignore|scripts/ci-hygiene.sh|docs/superpowers/*|docs/archive/*)
+    .gitignore|scripts/ci-hygiene.sh|docs/archive/*)
       ;;
     *)
       scan_paths+=("$path")
@@ -275,5 +275,9 @@ if [[ -f pyproject.toml ]]; then
   printf '== Python tooling tests ==\n'
   uv run python -m unittest discover -s scripts/tests -v
 fi
+
+printf '== Published documentation ==\n'
+uv run --with-requirements requirements.txt mkdocs build --strict
+uv run python scripts/check-docs-mermaid.py
 
 echo "ci-hygiene: ok"

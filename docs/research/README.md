@@ -1,36 +1,24 @@
-# Current research notes
+# Active research
 
-This directory is for active research that may shape upcoming implementation, but is not yet part of the shipped architecture.
+This lane is only for unresolved investigations that may shape future implementation. A research note should make the open questions, competing interpretations, source evidence, and validation needed for a decision explicit.
 
-Use this lane when a topic is still being evaluated, has not been implemented, or needs live validation before it can become a current invariant in the top-level docs. Once implementation lands and behavior is proven, promote the durable parts into the focused current docs such as `BACKENDS.md`, `PLAYBACK-ARCHITECTURE.md`, `PERSISTENCE.md`, or `TESTING-STRATEGY.md`.
+## What belongs here
 
-Historical or superseded research belongs in `docs/archive/research/`. Do not put new planning work directly in the archive unless it is already obsolete at the time it is written.
+- investigations whose answer or implementation direction is still unknown;
+- source/API comparisons that need live or device validation before becoming an accepted invariant;
+- bounded spikes with an explicit decision or validation exit.
 
-## Promotion rule
+Do not put approved implementation plans here (`docs/plans/`), immutable audit or profiling evidence here (`docs/evidence/`), resolved reviews or closed investigations here (`docs/archive/`), or current product guidance here (the published top level of `docs/`).
 
-- **Research docs:** cite source APIs, list uncertainties, and define validation tasks.
-- **Current docs:** describe only implemented or deliberately accepted project behavior.
-- **Archive docs:** retain historical context that should not be treated as current guidance.
+## Naming and lifecycle
 
-## Active notes
+Name new notes `YYYY-MM-DD-<topic>.md`. State the unresolved questions and exit criteria near the top, cite primary sources, and avoid presenting hypotheses as shipped behavior.
 
-- [`2026-07-20-tvos-implementation-plan.md`](2026-07-20-tvos-implementation-plan.md) —
-  staged plan for a first-class tvOS target, ten-foot focus and Siri Remote UX,
-  capability-driven playback negotiation, physical Apple TV validation, and
-  TestFlight/App Store acceptance tracked by
-  [issue #246](https://github.com/jlipworth/Labstream/issues/246).
-- [`2026-07-10-codebase-remediation-plan.md`](2026-07-10-codebase-remediation-plan.md) —
-  staged implementation plan for the whole-repository correctness, concurrency,
-  performance, backend/platform sharing, and build-cost audit. It remains active until
-  every audit ID is closed or explicitly superseded.
-## Closed review snapshots
+When the investigation resolves:
 
-- [`2026-07-12-remediation-branch-review.md`](2026-07-12-remediation-branch-review.md) and
-  [`2026-07-12-remediation-delta-review.md`](2026-07-12-remediation-delta-review.md) record
-  point-in-time reviews of the remediation branch. Their confirmed code findings were
-  subsequently fixed; consult their resolution banners and the remediation plan's current
-  status table rather than treating their finding sections as open instructions.
-- [`offline-playback-compatibility.md`](offline-playback-compatibility.md) records the
-  implementation research for closed issue #167. Its codec/container rationale remains
-  useful history, while current routing, finalization, and revalidation behavior is
-  canonical in [`DOWNLOADS-OFFLINE.md`](../DOWNLOADS-OFFLINE.md).
+- move approved implementation work to `docs/plans/`;
+- move durable observations to `docs/evidence/` when they remain useful as comparison data;
+- promote proven behavior into the relevant current published pages; and
+- move a closed investigation to `docs/archive/research/` when its historical reasoning is still worth retaining.
+
+There are currently no active research notes in this lane.

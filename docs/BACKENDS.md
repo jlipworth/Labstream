@@ -6,17 +6,20 @@ small policy seams where behavior is genuinely identical, while keeping wire beh
 
 ```mermaid
 flowchart TD
-  Choice[User chooses backend] --> Plex[Plex]
-  Choice --> Jellyfin[Jellyfin]
-  Choice --> Emby[Emby]
-  Plex --> PlexAuth[Plex PIN sign-in and server discovery]
-  Jellyfin --> JFAuth[Server URL and user auth]
-  Emby --> EmbyAuth[Emby Connect PIN or manual server login]
-  PlexAuth --> Browse[Shared browse/detail UI]
-  JFAuth --> Browse
-  EmbyAuth --> Browse
-  Browse --> Playback[Backend-specific playback resolution]
-  Browse --> Downloads[Backend-specific download routing]
+  accTitle: Plex and MediaBrowser backend boundaries
+  accDescr: Shared app screens select either the separate Plex request family or thin Jellyfin and Emby facades. Jellyfin and Emby reuse a bounded MediaBrowser model and browse core, but retain separate authentication, playback, cleanup, and download wire behavior.
+  UI[Shared browse, detail, search, and music UI] --> Select{Active backend session}
+  Select --> Plex[Plex services and request family]
+  Select --> JF[Jellyfin facade]
+  Select --> Emby[Emby facade]
+  JF --> Shared[MediaBrowser DTOs, browse core, and shared policies]
+  Emby --> Shared
+  Shared --> JFWire[Jellyfin-specific auth, playback, and downloads]
+  Shared --> EmbyWire[Emby-specific auth, playback, and downloads]
+  Plex --> Canonical[Canonical presentation models]
+  JFWire --> Canonical
+  EmbyWire --> Canonical
+  Canonical --> UI
 ```
 
 ## Backend comparison

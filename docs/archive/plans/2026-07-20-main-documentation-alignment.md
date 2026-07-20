@@ -1,7 +1,7 @@
 # Main Documentation Alignment and Information Architecture Plan
 
 **Date:** 2026-07-20  
-**Status:** Active. The factual-alignment phase landed in `0cd588c2`; the information-architecture, Mermaid, and durable-governance phase is approved but not yet implemented.
+**Status:** Complete and archived. The factual-alignment phase landed in `0cd588c2`; the remaining information-architecture, Mermaid, durable-governance, integration-review, and verification work completed on 2026-07-20.
 
 ## Goal
 
@@ -50,7 +50,7 @@ Implemented in `0cd588c2`:
 - Added triage-first evidence guidance and corrected the Mac validator's documentation references.
 - Added a read-only `worktree-sim.sh --help` contract and regression coverage.
 
-## Phase 4: Documentation information architecture
+## Phase 4: Documentation information architecture — complete
 
 ### Target taxonomy
 
@@ -109,7 +109,7 @@ Use `git mv` and update live links together:
 - `docs/BUILD-PERFORMANCE-AUDIT.md`
   → `docs/COMPILE-PERFORMANCE.md`
 
-The alignment plan is active at `docs/plans/2026-07-20-main-documentation-alignment.md`. Archive it under `docs/archive/plans/` only after every phase and verification gate in this file is complete.
+During execution, this plan remains active at `docs/plans/2026-07-20-main-documentation-alignment.md`; it moves under `docs/archive/plans/` only after every phase and verification gate in this file is complete.
 
 ### Migration rules
 
@@ -120,7 +120,7 @@ The alignment plan is active at `docs/plans/2026-07-20-main-documentation-alignm
 - Update `README.md` and `docs/DEVELOPMENT.md` to explain all internal lanes, not only research and archive.
 - Keep root legal/support files and the include adapters under `docs/` unchanged.
 
-## Phase 5: Mermaid rendering and diagram ownership
+## Phase 5: Mermaid rendering and diagram ownership — complete
 
 ### Rendering setup
 
@@ -176,7 +176,7 @@ Add only these high-value diagrams:
 
 Do not add diagrams to command procedures, comparison tables, the manual checklist, legal/support pages, CI trust prohibitions, or complete per-file dependency maps.
 
-## Phase 6: Durable contributor and agent idioms
+## Phase 6: Durable contributor and agent idioms — complete
 
 ### Contributor-facing guidance
 
@@ -286,6 +286,32 @@ The final reviewer must confirm:
 - no second alignment plan was introduced;
 - no deployment secret is exposed to pull-request documentation builds;
 - no excluded housekeeping leaked into the diff.
+
+## 2026-07-20 resume audit and completion record
+
+The resumed worktree boundary was audited before further edits. Phase 4's required `git mv`
+operations were already staged, with their link repairs, lane contracts, index/navigation changes,
+and taxonomy text still unstaged or untracked. Those moves were preserved rather than replayed.
+No published diagram content had been edited. Phase 5 had only a partial untracked test draft: the
+MkDocs custom fence, checker implementation, pull-request documentation pipeline, and hygiene
+integration were absent, and the draft referenced those missing files. The rendering/checking
+infrastructure and its tests were completed and passing before any diagram source changed.
+
+The diagram pass then accessibilized every retained diagram, removed the volatile code-map
+mindmap, corrected backend/download/testing/music views, and added only the approved static
+segment-train, SharePlay local-resolution, and replacement-cleanup diagrams. Contributor and agent
+idioms were promoted into `docs/CONTRIBUTING.md` and project `CLAUDE.md`.
+
+Integration review found only documentation, documentation CI/tooling/tests, and the approved
+path moves in the aggregate diff; no app/package behavior changed. Final validation included both
+staged and unstaged whitespace checks, the full repository hygiene/tooling suite, strict MkDocs,
+matching 14 published Mermaid sources and generated containers, repository-wide relative-link and
+heading-anchor checks, and taxonomy/path searches. Representative flowchart, state, and sequence
+diagrams rendered without console errors in the served site in dark and light themes, at 360 px,
+and under a temporary 200% zoom check without diagram overflow. GitHub's GFM renderer recognized
+all three representative diagram types as native Mermaid enrichment blocks with raw-code
+fallbacks. The trusted main deployment remained secret-gated, while the new pull-request build
+received no deploy secret and contained no deploy command.
 
 ## Completion boundary
 

@@ -3,13 +3,23 @@
 Labstream includes a music surface for browsing and playing tracks from the active backend.
 
 ```mermaid
-flowchart LR
-  UI[Music UI] --> Provider[Music provider]
-  Provider --> Plex[Plex music APIs]
-  Provider --> Jellyfin[Jellyfin music APIs]
-  Provider --> Emby[Emby music APIs]
-  UI --> Queue[Music queue]
-  Queue --> Player[MusicPlayerController]
+flowchart TD
+  accTitle: Music browse, playback, and system-media boundaries
+  accDescr: The music UI selects a provider for the current browse session. Plex has its own provider, while Jellyfin and Emby share a bounded MediaBrowser provider. The selected tracks enter an app-lifetime queue and player, which resolves backend-authenticated streams and temporarily owns system Now Playing through a revocable lease.
+  UI[Music UI for current browse session] --> Provider{MusicProvider selection}
+  Provider --> Plex[PlexMusicProvider]
+  Provider --> MediaBrowser[MediaBrowserMusicProvider]
+  MediaBrowser --> Jellyfin[Jellyfin browse facade]
+  MediaBrowser --> Emby[Emby browse facade]
+  Plex --> Items[Canonical music MediaItems]
+  Jellyfin --> Items
+  Emby --> Items
+  Items --> Queue[Browse-session-bound queue]
+  Queue --> Player[App-lifetime MusicPlayerController]
+  Player --> Resolver[MusicStreamResolver]
+  Resolver --> AV[Authenticated AVPlayer item]
+  Player --> Lease[SystemMediaSessionCoordinator music lease]
+  Lease --> System[Now Playing and remote commands]
 ```
 
 ## Surface

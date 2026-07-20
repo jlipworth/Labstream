@@ -28,17 +28,19 @@ markdown_extensions:
   - tables
   - toc: { permalink: true }
   - pymdownx.highlight: { anchor_linenums: true }
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.inlinehilite
   - pymdownx.tabbed: { alternate_style: true }
 
 exclude_docs: |
+  plans/
   research/
-  audits/
-  proposals/
+  evidence/
   archive/
-  superpowers/
-  profiling/baselines/
 
 nav:
   - Home: index.md
@@ -51,7 +53,7 @@ nav:
       - Contributing: CONTRIBUTING.md
       - Development setup: DEVELOPMENT.md
       - Testing strategy: TESTING-STRATEGY.md
-      - Compile performance audit: BUILD-PERFORMANCE-AUDIT.md
+      - Compile performance: COMPILE-PERFORMANCE.md
       - iOS and iPadOS target: MOBILE-IOS.md
       - macOS development preview: MACOS.md
       - Native macOS CI: MACOS-CI.md

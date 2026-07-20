@@ -4,7 +4,7 @@
 > only; this is not a current performance claim or current profiling procedure.
 
 - Branch: `issue/42-performance-profiling`
-- Commit: containing #42 profiling commit on `issue/42-performance-profiling` (read with `git log -- docs/profiling/baselines/2026-06-19-simulator-plex-home-artwork-launch.md`)
+- Commit: `73d9629` (`Add repeatable performance profiling spans`); use `git log --follow -- docs/evidence/profiling/2026-06-19-simulator-plex-home-artwork-launch.md` for later history
 - Date/time: 2026-06-19 11:33-11:34
 - Device: Apple Vision Pro simulator, visionOS 26.5 runtime
 - Backend: Plex
