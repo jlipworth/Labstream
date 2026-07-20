@@ -4,15 +4,16 @@ Labstream downloads are designed to end in a local file the current device can p
 
 ```mermaid
 flowchart TD
+  accTitle: Static and live-forward download routes
+  accDescr: Backend inspection selects either a durable static source or a live-forward server stream. Static files use byte-range checkpoints; live-forward streams can require a restart from the beginning after interruption. Both routes keep a file only after completion validation.
   Request[User taps download] --> Inspect[Inspect backend media options]
-  Inspect --> Route{Best route?}
-  Route --> Original[Direct original file]
-  Route --> Existing[Existing server version]
-  Route --> Rendered[Server-rendered compatible copy]
-  Original --> Transfer[Transfer and verify]
-  Existing --> Transfer
-  Rendered --> Transfer
-  Transfer --> Store[Offline index + side assets]
+  Inspect --> Static[Static original, existing, or prepared file]
+  Inspect --> Live[Live-forward remux or transcode]
+  Static --> Train[Closed-range segment train and durable partial]
+  Live --> Forward[One forward-only transfer]
+  Train --> Validate[Completion and local playback validation]
+  Forward --> Validate
+  Validate --> Store[Offline index, local file, and side assets]
   Store --> Offline[Offline library]
   Offline --> Player[Local playback]
 ```
@@ -43,18 +44,35 @@ flowchart TD
 
 ```mermaid
 stateDiagram-v2
+  accTitle: Persisted download row states
+  accDescr: A persisted row begins queued, may prepare a server-side file, and downloads bytes. Interruption can pause it, errors can fail it, and validation ends as complete or unverified when the file is retained but the local playback probe is inconclusive.
+  state "queued" as Queued
+  state "preparing" as Preparing
+  state "downloading" as Downloading
+  state "paused" as Paused
+  state "failed" as Failed
+  state "complete" as Complete
+  state "unverified" as Unverified
   [*] --> Queued
   Queued --> Preparing: server prep needed
-  Queued --> Transferring: static route
-  Preparing --> Transferring: prepared source ready
-  Transferring --> Paused
-  Paused --> Transferring
-  Transferring --> Verifying
-  Verifying --> Complete
-  Verifying --> Failed
+  Queued --> Downloading: transfer starts
+  Preparing --> Downloading: prepared source ready
+  Preparing --> Paused: recoverable interruption
+  Preparing --> Failed: preparation fails
+  Downloading --> Paused: recoverable interruption
+  Downloading --> Failed: transfer or validation fails
+  Downloading --> Complete: file validated and playable
+  Downloading --> Unverified: file retained; playback probe inconclusive
+  Paused --> Queued: resume or retry
   Failed --> Queued: retry
   Complete --> [*]
+  Unverified --> [*]
 ```
+
+These labels are the serialized `DownloadStatus` values, not UI-only phases. In particular,
+there is no persisted `verifying` state: finalization transitions the active `downloading` row
+to `complete`, `unverified`, or `failed`. Both terminal success states retain the local file;
+`unverified` records that the startup probe could not prove playability.
 
 ## Background downloads and sleeping devices
 
@@ -76,6 +94,28 @@ fundamentally constrained by the platform, not by the server or the app:
 
 Labstream's static byte-range lane is shaped around these limits and follows the simplest
 Apple-standard architecture we can make stable:
+
+```mermaid
+sequenceDiagram
+  accTitle: Static segment-train data flow
+  accDescr: The background transfer owner reads one exact-attempt durable checkpoint, asks a pure policy for up to two closed ranges, and enqueues marked URLSession tasks. Completed bodies are stashed by offset, the maximal contiguous run is appended, the checkpoint is persisted, and the queue is refilled.
+  participant BGS as BackgroundDownloadSession
+  participant Store as DownloadStore
+  participant Policy as Segment policies
+  participant URL as URLSession
+
+  BGS->>Store: read exact attempt, durable offset, and total size
+  BGS->>Policy: plan missing closed ranges
+  Policy-->>BGS: at most two marked segment plans
+  BGS->>URL: enqueue background download tasks
+  loop each delivered completion
+    URL-->>BGS: completed body and segment offset
+    BGS->>Policy: classify stashed bodies at durable offset
+    Policy-->>BGS: append run, hold later bodies, discard invalid bodies
+    BGS->>Store: append contiguous run and persist checkpoint
+    BGS->>Policy: refill from new durable offset
+  end
+```
 
 - **A pre-queued train of closed-range segment tasks for known-size static files.** The
   current compile-time regime is `.segmentTrain` on visionOS, iOS/iPadOS, and macOS.

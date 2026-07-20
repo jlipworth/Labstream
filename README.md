@@ -154,7 +154,7 @@ Labstream/
 │   ├── Theater/           # immersive playback surface support
 │   └── UI/                # login, home, libraries, search, detail, settings
 ├── PMSKit/                # reusable requests, models, policies, infrastructure, and tests
-├── docs/                  # published docs plus archived research outside the nav
+├── docs/                  # published docs plus plans, research, evidence, and archive lanes
 ├── scripts/               # local validation, simulator, deploy, and probe helpers
 └── .woodpecker/           # portable CI definitions
 ```
@@ -170,9 +170,10 @@ Labstream/
 - Playback: [`docs/PLAYBACK-ARCHITECTURE.md`](docs/PLAYBACK-ARCHITECTURE.md)
 - Downloads/offline: [`docs/DOWNLOADS-OFFLINE.md`](docs/DOWNLOADS-OFFLINE.md)
 - Diagnostics/privacy: [`docs/DIAGNOSTICS-PRIVACY.md`](docs/DIAGNOSTICS-PRIVACY.md)
-- Compile performance audit: [`docs/BUILD-PERFORMANCE-AUDIT.md`](docs/BUILD-PERFORMANCE-AUDIT.md)
+- Compile performance: [`docs/COMPILE-PERFORMANCE.md`](docs/COMPILE-PERFORMANCE.md)
+- Manual validation checklist: [`TESTING-CHECKLIST.md`](TESTING-CHECKLIST.md)
 
-Public docs describe the current app. Internal research notes, old implementation plans, and superseded validation notes are kept under `docs/research/` or `docs/archive/` and are not part of the published navigation.
+Public pages at the top of `docs/` describe the current app. Internal documents use explicit unpublished lanes: active implementation plans and acceptance journals in `docs/plans/`, unresolved investigations in `docs/research/`, immutable audit/profiling observations in `docs/evidence/`, and completed or superseded context in `docs/archive/`. The repository-root `TESTING-CHECKLIST.md` is the deliberate operational exception and remains the current manual validation matrix.
 
 ## Contributing
 

@@ -3,7 +3,7 @@
 > **Status:** dated audit and execution record. The automatable audit scope is closed as
 > described in section J and the downstream remediation checkpoint in section K; earlier
 > handoff/open-work sections are superseded by those later updates. Current subsystem
-> behavior belongs in [`docs/DOWNLOADS-OFFLINE.md`](../DOWNLOADS-OFFLINE.md). Remaining
+> behavior belongs in [`docs/DOWNLOADS-OFFLINE.md`](../../DOWNLOADS-OFFLINE.md). Remaining
 > physical-device evidence is an acceptance gate, not unfinished audit implementation.
 
 Systematic audit plan for the entire downloads subsystem, produced after a full read of
@@ -904,7 +904,7 @@ its own offset history, while durable appends retain the existing row-wide forwa
 ## K. DOWNSTREAM REMEDIATION CHECKPOINT (2026-07-12, through `f05944c`)
 
 This audit remains the characterization/evidence record. The companion
-`docs/research/2026-07-10-codebase-remediation-plan.md` owns the corrective Phase 1 queue and its
+`docs/plans/2026-07-10-codebase-remediation.md` owns the corrective Phase 1 queue and its
 commit-by-commit journal.
 
 The schema-v3 train now carries exact attempt ownership through background-session entries and

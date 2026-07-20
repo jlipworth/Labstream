@@ -1,8 +1,8 @@
-# Archived docs
+# Archived documentation
 
-This directory contains historical research, implementation plans, design specs, and review snapshots that are no longer the current source of truth.
+This lane contains completed, superseded, or closed context that is retained for history and is never canonical guidance or an active work queue.
 
-Use these files only for context. Current architecture and operating guidance lives in the active docs at the top of `docs/`:
+Current architecture and operating guidance lives in the published pages at the top of `docs/`:
 
 - [`ARCHITECTURE.md`](../ARCHITECTURE.md)
 - [`PLAYBACK-ARCHITECTURE.md`](../PLAYBACK-ARCHITECTURE.md)
@@ -12,17 +12,29 @@ Use these files only for context. Current architecture and operating guidance li
 - [`SYSTEM-INTEGRATION.md`](../SYSTEM-INTEGRATION.md)
 - [`TESTING-STRATEGY.md`](../TESTING-STRATEGY.md)
 
+Active implementation plans live in [`docs/plans/`](../plans/), unresolved investigations in [`docs/research/`](../research/), and immutable audit/profiling observations in [`docs/evidence/`](../evidence/).
+
+## What belongs here
+
+- `plans/` — completed or superseded implementation plans after durable guidance has been promoted;
+- `reviews/` — resolved point-in-time branch and change reviews;
+- `research/` — closed investigations and historical research;
+- `downloads/` — superseded downloads designs and completed downloads-specific notes;
+- `macos/` — issue-specific notes from the first native Mac implementation;
+- `testing/` — superseded checklists and test snapshots;
+- `proposals/` — closed or superseded proposals that are not queued work;
+- `first-public-cleanup/` — the preserved first-public-documentation cleanup snapshot.
+
+Do not archive unresolved work merely to hide it, and do not cite an archive document as the current operating contract when a published page exists.
+
+## Naming and lifecycle
+
+Preserve established filenames when moving historical material. New archived material should normally keep or gain a `YYYY-MM-DD-<topic>.md` name when the date is known. Before archiving a plan, review, or investigation, promote durable facts and procedures into current documentation and link any deliberately open successor.
+
+Historical prose and path literals may remain as written when they are part of the snapshot. Repair live Markdown navigation after moves, add a status banner when necessary to prevent stale instructions from being followed, and scrub private identifiers before anything enters this public lane.
+
+## Archived plans
+
+- [`2026-07-20-main-documentation-alignment.md`](plans/2026-07-20-main-documentation-alignment.md) — completed factual alignment, documentation taxonomy, Mermaid, and durable-governance work.
+
 Archived files may mention retired decisions such as the `Safari` Plex client profile, old proxy-owned seek designs, or pre-Jellyfin assumptions. Do not copy those details back into code or active docs without re-verifying them against current source.
-
-Completed or superseded generated plans belong in a focused archive after their durable
-findings are promoted into current architecture docs; they must not remain active task
-transcripts or current sources of truth.
-
-Archived future-refactor/proposal notes live under `docs/archive/proposals/`. They are preserved only as historical context from earlier app versions; do not treat them as queued work or current guidance.
-
-Historical downloads refactor/audit notes and the completed static-range segment-checkpointing
-plan live under `docs/archive/downloads/`. The current downloads source of truth is
-[`DOWNLOADS-OFFLINE.md`](../DOWNLOADS-OFFLINE.md).
-
-Issue-specific notes from the first native Mac implementation live under `docs/archive/macos/`.
-The current local-build and release status is documented in [`MACOS.md`](../MACOS.md).

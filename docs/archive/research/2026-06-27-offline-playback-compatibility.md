@@ -5,7 +5,7 @@ Status: **closed implementation-research snapshot** for
 Last source review: 2026-06-27. The routing summary below explains the original policy
 decision but is not an exhaustive description of the subsequently expanded finalization,
 attempt-ownership, or revalidation machinery. Current behavior and invariants live in
-[`docs/DOWNLOADS-OFFLINE.md`](../DOWNLOADS-OFFLINE.md) and the current source.
+[`docs/DOWNLOADS-OFFLINE.md`](../../DOWNLOADS-OFFLINE.md) and the current source.
 
 This note documents the compatibility checks Labstream applies before, during, and after an offline download. The important distinction is:
 

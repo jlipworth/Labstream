@@ -1,4 +1,4 @@
-# Compile performance audit
+# Compile performance
 
 The Phase 0 compile baseline is intentionally opt-in: it performs many clean and incremental
 builds and is not a CI gate. Run it on an otherwise idle Mac with the same Xcode version for every

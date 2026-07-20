@@ -6,7 +6,7 @@
 > gates. The findings and line references below are retained as review evidence, not as an
 > open work list.
 
-**Scope:** `codex/remediation-nondownloads`, committed range `72c4b83..1e58a47d` (188 commits, 144 files, +19,264/−3,215). Working tree clean. This is a follow-up to `docs/research/2026-07-12-remediation-branch-review.md`, which covered `main..72c4b83`.
+**Scope:** `codex/remediation-nondownloads`, committed range `72c4b83..1e58a47d` (188 commits, 144 files, +19,264/−3,215). Working tree clean. This is a follow-up to the [first remediation branch review](2026-07-12-remediation-branch-review.md), which covered `main..72c4b83`.
 
 **Method:** 17-agent verified review — 3 deep reviewers on the downloads artifact-lifecycle rewrites, 5 reviewers on browse refactor / playback revalidation / tests-probes / fix verification, each resulting finding adversarially verified by an independent agent instructed to refute it. 8 findings confirmed, 1 refuted.
 

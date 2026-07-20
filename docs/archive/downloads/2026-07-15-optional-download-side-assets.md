@@ -1,5 +1,9 @@
 # Optional download side-asset request policy
 
+> **Archived:** completed implementation note for `e952019f`. It is retained as a
+> point-in-time request-family audit, not current operating guidance. Current download behavior
+> and invariants live in [`docs/DOWNLOADS-OFFLINE.md`](../../DOWNLOADS-OFFLINE.md) and the current source.
+
 This note records the request-family audit behind the process-wide side-asset coordinator. It intentionally contains no server URLs, media identifiers, filenames, credentials, or infrastructure details.
 
 ## Before and after

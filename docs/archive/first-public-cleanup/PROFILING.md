@@ -187,7 +187,7 @@ and re-measure rather than adding broad speculative caching.
 Raw `.trace` bundles, simulator logs, screenshots, and media-specific notes stay outside git. For quick
 one-off checks, paste the reviewed `perf-log-summary.py` table into the relevant GitHub issue. When a
 result is useful as a long-term comparison point, commit a small privacy-reviewed Markdown summary under
-[`docs/profiling/baselines/`](https://github.com/jlipworth/Labstream/tree/main/docs/profiling/baselines/) and keep the raw artifact only in local scratch storage.
+[`docs/evidence/profiling/`](https://github.com/jlipworth/Labstream/tree/main/docs/evidence/profiling/) and keep the raw artifact only in local scratch storage.
 
 This gives us three tiers:
 

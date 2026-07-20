@@ -11,7 +11,7 @@ baseline `5d369c2`; implementation journal reconciled through review-remediation
 Scope: correctness, concurrency, reliability, performance, Swift idioms, testability,
 backend sharing, platform sharing, conditional compilation, and build cost.
 
-Companion document: `docs/audits/2026-07-10-downloads-engine-audit-plan.md` is the detailed
+Companion document: `docs/evidence/audits/2026-07-10-downloads-engine-audit-plan.md` is the detailed
 downloads-engine audit that feeds `COR-01`/`COR-02`/`COR-03`/`COR-07`; this plan owns the
 remediation queue for those findings — do not treat the two documents as independent work
 lists. Line references in both documents are as of the audit baseline and may drift a few
@@ -699,7 +699,7 @@ their relationship during the schema-v3 migration.
 #### 2026-07-12 — adversarial review remediation checkpoint
 
 - **Commit:** `f165daf` (`Resolve remediation branch review findings`).
-- **Review source:** `docs/research/2026-07-12-remediation-branch-review.md`; every C1/C2,
+- **Review source:** `docs/archive/reviews/2026-07-12-remediation-branch-review.md`; every C1/C2,
   M1–M12, and minor finding was revalidated against `2aa19e9` before remediation. The review's
   claim that finalizer-registry integration remained open was stale because `813254f` had already
   landed it.

@@ -15,6 +15,8 @@ already queued for the old item was cancelled.
 
 ```mermaid
 sequenceDiagram
+  accTitle: Backend playback startup
+  accDescr: Jellyfin and Emby negotiate a stream before constructing the playback controller, while Plex lets the controller perform its universal-transcode decision and start requests. Both lanes then load one app-owned AVPlayer and retain lane-specific progress and cleanup.
   participant UI
   participant Backend
   participant PC as PlaybackController
@@ -219,6 +221,32 @@ through `CinemaExitRouting` to the originating tab/item or the resolved next ite
 restore a hidden second player or reintroduce an AVKit-only control surface.
 
 ## Restart and cleanup principles
+
+```mermaid
+sequenceDiagram
+  accTitle: Backend replacement and cleanup ordering
+  accDescr: A Plex in-place restart first bounds and awaits the superseded transcode stop, detaches its now-dead item, starts the replacement session, and attaches the new item. Jellyfin and Emby first detach the old item, negotiate and attach the replacement, then defer the prior session and active-encoding cleanup so old resource loads cannot race the new playlist.
+  participant PC as PlaybackController
+  participant AV as AVPlayer
+  participant Backend
+  participant Server
+
+  alt Plex in-place restart
+    PC->>Server: stop superseded transcode, bounded and awaited
+    PC->>AV: detach old item
+    PC->>Backend: decide and start replacement stream
+    Backend->>Server: universal-transcode requests
+    PC->>AV: attach replacement item
+  else Jellyfin or Emby reopen
+    PC->>AV: pause and detach old item
+    PC->>Backend: request replacement at target
+    Backend->>Server: authenticated PlaybackInfo request
+    Backend-->>PC: replacement stream and cleanup callback
+    PC->>AV: attach replacement item
+    PC->>Backend: schedule deferred prior-session cleanup
+    Backend->>Server: progress stop and active-encoding cleanup as applicable
+  end
+```
 
 - Restart player items rather than mutating a stale AVPlayer item in place when the server route changes.
 - Preserve each backend lane's replacement order: Plex stops the superseded in-place transcode

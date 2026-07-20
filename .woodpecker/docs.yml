@@ -5,7 +5,7 @@ when:
   - event: push
     branch: main
     path:
-      include: [docs/**, mkdocs.yml, requirements.txt, .woodpecker/docs.yml]
+      include: [docs/**, scripts/check-docs-mermaid.py, mkdocs.yml, requirements.txt, .woodpecker/docs.yml]
   # Allow an on-demand rebuild from the Woodpecker UI (no path filter on manual runs).
   - event: manual
     branch: main
@@ -20,6 +20,7 @@ steps:
       - rm -rf /var/lib/apt/lists/*
       - pip install --no-cache-dir -r requirements.txt
       - mkdocs build --strict
+      - python scripts/check-docs-mermaid.py
       - mkdir -p ~/.ssh && chmod 700 ~/.ssh
       - printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_ed25519
       - chmod 600 ~/.ssh/id_ed25519

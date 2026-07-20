@@ -10,6 +10,8 @@ media details out of commits and public issues.
 - `xcodebuild-versioned.sh` — wraps `xcodebuild` and stamps a source-derived internal Build ID.
 - `build-version-args.sh` — prints the version/build arguments used by the wrapper and deploy scripts.
 - `ci-hygiene.sh` — repository privacy, signing, placeholder, and tooling guardrails.
+- `check-docs-mermaid.py` — verifies that published Mermaid source fences become
+  generated Mermaid containers without external script dependencies.
 - `ci-macos-apple-platforms.sh` — native-runner preflight, isolated unsigned
   visionOS/iOS/iPadOS builds, PMSKit tests, evidence, and cleanup. See
   [`docs/MACOS-CI.md`](../docs/MACOS-CI.md).
@@ -18,9 +20,10 @@ media details out of commits and public issues.
 - `loc.sh` — informational per-module source line counts.
 - `perf-log-summary.py` — converts privacy-safe performance signposts into summaries/Markdown.
 - `compile-audit.py` — opt-in, isolated arm64 compile-cost baseline for PMSKit and all app schemes;
-  see [`docs/BUILD-PERFORMANCE-AUDIT.md`](../docs/BUILD-PERFORMANCE-AUDIT.md).
-- `tests/test_compile_audit.py`, `tests/test_perf_log_summary.py`, and
-  `tests/test_tooling_hardening.py` — script/tooling tests. They run as part of
+  see [`docs/COMPILE-PERFORMANCE.md`](../docs/COMPILE-PERFORMANCE.md).
+- `tests/test_compile_audit.py`, `tests/test_docs_mermaid.py`,
+  `tests/test_perf_log_summary.py`, and `tests/test_tooling_hardening.py` —
+  script/tooling tests. They run as part of
   `scripts/ci-hygiene.sh` when `pyproject.toml` is present.
 
 ## Simulator and worktree helpers

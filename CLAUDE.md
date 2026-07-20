@@ -354,6 +354,23 @@ project — `xcodebuild` is the only truth.
 
 Manual test plan: `TESTING-CHECKLIST.md` (keep it updated as fixes ship).
 
+## Documentation information architecture
+
+Evaluate factual accuracy and document placement together. Classify before creating: current
+published guidance stays directly under `docs/`; active implementation/acceptance work uses
+`docs/plans/`; unresolved investigation uses `docs/research/`; immutable point-in-time audits and
+profiles use `docs/evidence/`; completed or superseded context uses `docs/archive/`. Never create a
+tool-branded hierarchy such as `docs/superpowers/`, and do not split one coherent program into
+separate design and implementation plans when one durable plan is sufficient.
+
+Keep published URLs stable unless a move has concrete semantic benefit. Promote proven behavior
+into canonical current docs, then archive completed plans and resolved reviews. During moves,
+preserve historical prose while repairing live links, nav, scripts, and current instructions.
+Co-locate Mermaid source with the canonical prose; include accessible title/description and
+complete adjacent prose, and update the diagram whenever depicted behavior or ownership changes.
+After any documentation content or path change, run strict MkDocs, repository-wide link and anchor
+validation, Mermaid structural validation, and `scripts/ci-hygiene.sh`.
+
 ## Hard constraints (do not regress)
 
 - `X-Plex-Client-Profile-Name=Generic` in TranscodeRequest is the proven-correct

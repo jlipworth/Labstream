@@ -5,49 +5,9 @@ orchestration live in `Labstream/`; reusable requests, models, and policies live
 `PMSKit/`. PMSKit is mostly pure, with narrow effectful infrastructure such as its
 loopback media-session proxy and protected credential-artifact writer.
 
-```mermaid
-mindmap
-  root((Labstream))
-    App
-      three native entry points
-      AppServices
-      restore gate
-    Auth
-      Plex
-      Jellyfin
-      Emby
-      Keychain
-    Backend
-      browse services
-      paging
-      search
-    Player
-      AVPlayer
-      custom chrome
-      progress
-      platform adapters
-    Downloads
-      backend preparation
-      queue
-      transfer
-      store
-    Music
-      providers
-      queue
-      audio player
-    SystemIntegration
-      App Intents
-      Spotlight
-      routing
-    SharePlay
-      GroupActivity
-      local resolution
-      playback coordination
-    PMSKit
-      requests and DTOs
-      pure policies
-      tests
-```
+The directory names below are the stable first stop. Use symbol search and the ownership
+tables in the subsystem pages for current file-level detail; a duplicated per-file diagram
+would become stale as implementations move.
 
 ## App shell and lifecycle
 

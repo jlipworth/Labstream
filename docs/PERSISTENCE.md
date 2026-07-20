@@ -3,7 +3,9 @@
 Labstream uses separate storage layers for secrets, preferences, and offline media.
 
 ```mermaid
-flowchart LR
+flowchart TD
+  accTitle: Persistence boundaries
+  accDescr: Credentials and client identity live in Keychain, preferences in UserDefaults, and offline media plus bounded diagnostic artifacts in Application Support.
   Keychain[Keychain] --> Sessions[Credentials, client identity, backend session selection]
   Defaults[UserDefaults] --> Prefs[Settings and lightweight state]
   Support[Application Support] --> Downloads[Offline files, index, resume blobs, side assets]

@@ -423,6 +423,16 @@ uv run --with-requirements requirements.txt mkdocs serve
 ```
 
 Use the strict documentation build in [Core validation commands](#core-validation-commands) before
-publishing changes. Keep public docs focused on the current release. Put research notes,
-implementation plans, old issue investigations, and one-off validation logs under `docs/archive/`
-or `docs/research/` instead of publishing them in the MkDocs navigation.
+publishing changes. Keep current product, architecture, and contributor guidance in the published
+Markdown files at the top of `docs/`. Classify repository-internal documents into these unpublished
+lanes:
+
+- `docs/plans/` for active implementation plans and acceptance journals;
+- `docs/research/` for unresolved investigations;
+- `docs/evidence/` for immutable audit and profiling observations; and
+- `docs/archive/` for completed, superseded, or closed context that is never canonical.
+
+The current manual validation matrix deliberately remains at the repository root in
+[`TESTING-CHECKLIST.md`](https://github.com/jlipworth/Labstream/blob/main/TESTING-CHECKLIST.md).
+Each lane README defines its naming and promotion/archive rules. Preserve historical prose when
+moving snapshots, but repair live links, navigation, includes, and script references.

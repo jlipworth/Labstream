@@ -1,0 +1,14 @@
+# .woodpecker/docs-pr.yml
+# Build public documentation for pull requests without deployment credentials.
+when:
+  - event: pull_request
+    path:
+      include: [docs/**, scripts/check-docs-mermaid.py, mkdocs.yml, requirements.txt, .woodpecker/docs-pr.yml]
+
+steps:
+  - name: build-docs
+    image: python:3.12-slim
+    commands:
+      - pip install --no-cache-dir -r requirements.txt
+      - mkdocs build --strict
+      - python scripts/check-docs-mermaid.py
