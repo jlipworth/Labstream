@@ -15,11 +15,12 @@ struct SearchView: View {
     /// Shell hook for leaving the dedicated Search tab/surface after the user clears
     /// the query. In the iOS search-role tab this restores the normal browse tab chrome.
     let onClearSearch: (() -> Void)?
+    private let externalQuery: Binding<String>?
 
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismissSearch) private var dismissSearch
 
-    @State private var query = ""
+    @State private var internalQuery = ""
     @State private var results: SearchResults = .empty
     @State private var loadState: BrowseLoadState = .idle
     /// The query the current results were fetched for (pop-back no-op guard).
@@ -27,12 +28,63 @@ struct SearchView: View {
     /// Drives programmatic focus of the `.searchable` field for ⌘F (RootView).
     @FocusState private var searchFieldFocused: Bool
 
-    init(focusRequest: Int = 0, onClearSearch: (() -> Void)? = nil) {
+    init(query: Binding<String>? = nil,
+         focusRequest: Int = 0,
+         onClearSearch: (() -> Void)? = nil) {
+        self.externalQuery = query
         self.focusRequest = focusRequest
         self.onClearSearch = onClearSearch
     }
 
     var body: some View {
+        Group {
+            if externalQuery == nil {
+                resultsBody
+                    .searchable(text: queryBinding, prompt: "Movies, shows, music…")
+                    .searchFocused($searchFieldFocused)
+            } else {
+                resultsBody
+            }
+        }
+        .navigationTitle("Search")
+        .navigationDestination(for: MediaItem.self) { item in
+            // Capture the active backend as the item's origin (#100) so actions resolve
+            // against the source backend even after a backend switch.
+            DetailView(item: item, originBackend: appModel.activeBackend)
+        }
+        .navigationDestination(for: SearchMusicDestination.self) { destination in
+            musicDestination(for: destination.item, sectionKey: destination.libraryID)
+        }
+        .navigationDestination(for: RailViewAllDestination.self) { destination in
+            RailViewAllView(destination: destination)
+        }
+        .toolbar {
+            if externalQuery == nil, showsClearSearchButton {
+                #if os(macOS)
+                ToolbarItem {
+                    clearSearchToolbarButton
+                }
+                #else
+                ToolbarItem(placement: .topBarTrailing) {
+                    clearSearchToolbarButton
+                }
+                #endif
+            }
+        }
+        .task(id: searchTaskID) {
+            await runSearch()
+        }
+        // ⌘F focus: runs on mount (arriving from a tab switch) and on every re-press.
+        .task(id: focusRequest) {
+            guard externalQuery == nil, focusRequest > 0 else { return }
+            // Let the search bar install before requesting focus, especially right after
+            // a tab switch mounts this view.
+            try? await Task.sleep(for: .milliseconds(50))
+            searchFieldFocused = true
+        }
+    }
+
+    private var resultsBody: some View {
         ScrollView {
             switch loadState {
             case .idle:
@@ -51,13 +103,13 @@ struct SearchView: View {
                 .frame(maxWidth: .infinity, minHeight: 300)
             case .loaded:
                 if results.presentationGroups.isEmpty {
-                    ContentUnavailableView.search(text: query)
+                    ContentUnavailableView.search(text: queryText)
                         .frame(maxWidth: .infinity, minHeight: 300)
                 } else {
                     LazyVStack(alignment: .leading, spacing: DS.Space.xxxl) {
                         ForEach(results.presentationGroups) { group in
                             SearchLibrarySection(group: group,
-                                                 query: query,
+                                                 query: queryText,
                                                  backend: appModel.activeBackend,
                                                  sessionIdentity: appModel.activeBrowseSessionKey)
                         }
@@ -66,52 +118,17 @@ struct SearchView: View {
                 }
             }
         }
-        .navigationTitle("Search")
-        .navigationDestination(for: MediaItem.self) { item in
-            // Capture the active backend as the item's origin (#100) so actions resolve
-            // against the source backend even after a backend switch.
-            DetailView(item: item, originBackend: appModel.activeBackend)
-        }
-        .navigationDestination(for: SearchMusicDestination.self) { destination in
-            musicDestination(for: destination.item, sectionKey: destination.libraryID)
-        }
-        .navigationDestination(for: RailViewAllDestination.self) { destination in
-            RailViewAllView(destination: destination)
-        }
-        .searchable(text: $query, prompt: "Movies, shows, music…")
-        .searchFocused($searchFieldFocused)
-        .toolbar {
-            if showsClearSearchButton {
-                #if os(macOS)
-                ToolbarItem {
-                    clearSearchToolbarButton
-                }
-                #else
-                ToolbarItem(placement: .topBarTrailing) {
-                    clearSearchToolbarButton
-                }
-                #endif
-            }
-        }
-        .task(id: searchTaskID) {
-            await runSearch()
-        }
-        // ⌘F focus: runs on mount (arriving from a tab switch) and on every re-press.
-        .task(id: focusRequest) {
-            guard focusRequest > 0 else { return }
-            // Let the search bar install before requesting focus, especially right after
-            // a tab switch mounts this view.
-            try? await Task.sleep(for: .milliseconds(50))
-            searchFieldFocused = true
-        }
     }
 
+    private var queryBinding: Binding<String> { externalQuery ?? $internalQuery }
+    private var queryText: String { queryBinding.wrappedValue }
+
     private var searchTaskID: String {
-        "\(appModel.activeBrowseSessionKey):\(query)"
+        "\(appModel.activeBrowseSessionKey):\(queryText)"
     }
 
     private var showsClearSearchButton: Bool {
-        !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || loadState != .idle
+        !queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || loadState != .idle
     }
 
     private var clearSearchToolbarButton: some View {
@@ -120,7 +137,7 @@ struct SearchView: View {
     }
 
     private func clearSearch() {
-        query = ""
+        queryBinding.wrappedValue = ""
         results = .empty
         loadedQuery = nil
         loadState = .idle
@@ -130,12 +147,12 @@ struct SearchView: View {
     }
 
     private var currentSearchAuthorityKey: String {
-        let currentQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let currentQuery = queryText.trimmingCharacters(in: .whitespacesAndNewlines)
         return "\(appModel.activeBrowseSessionKey):\(currentQuery)"
     }
 
     private func runSearch() async {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = queryText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             results = .empty
             loadState = .idle

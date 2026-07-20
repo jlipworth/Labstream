@@ -41,6 +41,14 @@ struct RootView: View {
     @State private var searchFocusRequest = 0
     #if os(macOS)
     @State private var macPlayerPresenter = MacPlayerPresentationStore()
+    @State private var macSidebarModel = MacSidebarModel()
+    @State private var macSelection: MacSidebarDestination = .home
+    @State private var macLoadedServerIdentity: String?
+    @State private var macSelectedMusicLibraryID: String?
+    @State private var macSearchText = ""
+    @State private var macSearchPresented = false
+    @State private var macConfirmingSignOut = false
+    @State private var macWasCompactWidth = false
     @State private var macColumnVisibility: NavigationSplitViewVisibility = .all
     @State private var macColumnVisibilityBeforePlayer: NavigationSplitViewVisibility = .all
     #endif
@@ -141,15 +149,7 @@ struct RootView: View {
                 .accessibilityHidden(true)
 
             #if os(macOS)
-            // Mac convention: Escape backs out of a pushed content/detail submenu when
-            // there is no higher-priority surface active. Player chrome owns Escape while
-            // playback is presented, and sheets/dialogs keep their own cancel handling.
-            Button("Back", action: macNavigateBack)
-                .keyboardShortcut(.escape, modifiers: [])
-                .disabled(!canMacNavigateBack)
-                .opacity(0)
-                .frame(width: 0, height: 0)
-                .accessibilityHidden(true)
+            EmptyView()
             #endif
         }
         // Browse-session switch (#136): clear every lifted browse path so the rebuilt,
@@ -180,6 +180,21 @@ struct RootView: View {
             // insertion point in SearchView's searchable field.
             if newSelection == .search {
                 searchFocusRequest += 1
+            }
+            #elseif os(macOS)
+            switch newSelection {
+            case .home:
+                macSelection = .home
+            case .libraries:
+                if case .library = macSelection {} else { macSelection = .home }
+            case .search:
+                macSearchPresented = true
+            case .music:
+                if case .music = macSelection {} else { macSelection = .music(.home) }
+            case .offline:
+                macSelection = .offline
+            case .settings:
+                break
             }
             #endif
         }
@@ -248,31 +263,7 @@ struct RootView: View {
     #if os(macOS)
     private var macRootContent: some View {
         ZStack {
-            NavigationSplitView(columnVisibility: $macColumnVisibility) {
-                List(selection: $selection) {
-                    Section("Browse") {
-                        macSidebarRow(.home)
-                        macSidebarRow(.libraries)
-                        macSidebarRow(.search)
-                    }
-                    Section("Media") {
-                        macSidebarRow(.music)
-                        macSidebarRow(.offline)
-                    }
-                    Section("Status") {
-                        macSidebarStatusRow(macBackendStatusTitle,
-                                            systemImage: appModel.isBrowseReady ? "checkmark.circle" : "exclamationmark.circle")
-                        macSidebarStatusRow(macDownloadStatusTitle,
-                                            systemImage: "arrow.down.circle")
-                    }
-                }
-                .navigationTitle("Labstream")
-                .frame(minWidth: 220)
-            } detail: {
-                macTabContent(for: selection)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            .navigationSplitViewStyle(.balanced)
+            macNavigationSplitView
             .safeAreaInset(edge: .bottom) {
                 if musicPlayer.current != nil, !macPlayerPresenter.isPresented {
                     MiniPlayerBar(presentation: $nowPlayingPresentation)
@@ -281,25 +272,10 @@ struct RootView: View {
                         .background(.regularMaterial)
                 }
             }
-            .toolbar {
-                if !macPlayerPresenter.isPresented {
-                    ToolbarItemGroup(placement: .primaryAction) {
-                        Button(action: focusSearch) {
-                            Label("Search", systemImage: "magnifyingglass")
-                        }
-                        .labelStyle(.iconOnly)
-                        .controlSize(.regular)
-                        .help("Search")
-
-                        Button { selection = .offline } label: {
-                            Label("Offline", systemImage: "arrow.down.circle")
-                        }
-                        .labelStyle(.iconOnly)
-                        .controlSize(.regular)
-                        .help("Offline")
-                    }
-                }
-            }
+            .searchable(text: $macSearchText,
+                        isPresented: $macSearchPresented,
+                        placement: .toolbar,
+                        prompt: "Movies, shows, music…")
 
             if let presentation = macPlayerPresenter.presentation {
                 presentation.content
@@ -312,13 +288,50 @@ struct RootView: View {
             }
         }
         .background {
-            MacWindowToolbarVisibilityController(hidesToolbar: macPlayerPresenter.isPresented)
-                .frame(width: 0, height: 0)
+            GeometryReader { geometry in
+                MacWindowToolbarVisibilityController(hidesToolbar: macPlayerPresenter.isPresented)
+                    .frame(width: 0, height: 0)
+                    .onAppear { updateMacWindowWidth(geometry.size.width) }
+                    .onChange(of: geometry.size.width) { _, width in
+                        updateMacWindowWidth(width)
+                    }
+            }
         }
         .environment(\.macPlayerPresentationStore, macPlayerPresenter)
         .animation(.easeInOut(duration: 0.16), value: macPlayerPresenter.isPresented)
+        .onExitCommand {
+            if macSearchPresented {
+                dismissMacSearch()
+            } else {
+                macNavigateBack()
+            }
+        }
+        .onChange(of: macSearchText) { oldValue, newValue in
+            if !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                macSearchPresented = true
+            } else if !oldValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                dismissMacSearch()
+            }
+        }
+        .onChange(of: macSearchPresented) { _, isPresented in
+            if !isPresented {
+                macSearchText = ""
+                searchPath = NavigationPath()
+            }
+        }
+        .onChange(of: macSelection) { oldSelection, newSelection in
+            macSidebarSelectionChanged(from: oldSelection, to: newSelection)
+        }
         .onChange(of: macPlayerPresenter.isPresented) { _, isPresented in
             updateMacNavigationChrome(forPlayerPresentation: isPresented)
+        }
+        .task(id: appModel.activeBrowseSessionKey) {
+            await reloadMacSidebar()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: LibraryVisibilityStore.didChangeNotification)) { notification in
+            guard let backendKey = notification.userInfo?[LibraryVisibilityStore.didChangeBackendKeyUserInfoKey] as? String,
+                  backendKey == appModel.libraryVisibilityBackendKey else { return }
+            Task { await reloadMacSidebar() }
         }
         .task {
             for await _ in NotificationCenter.default.notifications(named: .labstreamMacNavigateBack) {
@@ -333,8 +346,87 @@ struct RootView: View {
         .task {
             for await _ in NotificationCenter.default.notifications(named: .labstreamMacSelectOffline) {
                 guard !macPlayerPresenter.isPresented else { continue }
-                selection = .offline
+                macSelection = .offline
             }
+        }
+        .task {
+            for await _ in NotificationCenter.default.notifications(named: .labstreamMacRequestSignOut) {
+                guard appModel.isAuthenticated else { continue }
+                macConfirmingSignOut = true
+            }
+        }
+        .confirmationDialog(
+            "Sign out of \(appModel.activeBackend.displayName)?",
+            isPresented: $macConfirmingSignOut,
+            titleVisibility: .visible
+        ) {
+            Button("Sign Out", role: .destructive) { authManager.signOut() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(macSignOutConfirmationMessage)
+        }
+        .sheet(item: Binding(
+            get: { macSidebarModel.visibilityPrompt },
+            set: { _ in }
+        )) { prompt in
+            LibraryVisibilityPickerSheet(prompt: prompt) { hiddenIDs in
+                macSidebarModel.applyVisibility(hiddenIDs, backendKey: prompt.backendKey)
+                Task { await reloadMacSidebar() }
+            } onCancel: {
+                macSidebarModel.dismissVisibilityPrompt(backendKey: prompt.backendKey)
+            }
+        }
+    }
+
+    private var macNavigationSplitView: some View {
+        NavigationSplitView(columnVisibility: $macColumnVisibility) {
+            macSidebar
+        } detail: {
+            macDetail
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .navigationSplitViewStyle(.balanced)
+    }
+
+    private var macSidebar: some View {
+        List(selection: $macSelection) {
+            macSidebarRow(.home, title: "Home", systemImage: "house")
+
+            if !macSidebarModel.catalog.libraries.isEmpty {
+                Section("Libraries") {
+                    ForEach(macSidebarModel.catalog.libraries) { library in
+                        macLibrarySidebarRow(library)
+                    }
+                }
+            }
+
+            if !macSidebarModel.catalog.musicDestinations.isEmpty {
+                Section("Music") {
+                    ForEach(macSidebarModel.catalog.musicDestinations) { pivot in
+                        macMusicSidebarRow(pivot)
+                    }
+                }
+            }
+
+            Section { macOfflineSidebarRow }
+        }
+        .navigationTitle("Labstream")
+        .frame(minWidth: 220)
+        .navigationSplitViewColumnWidth(min: 200, ideal: 230, max: 280)
+    }
+
+    @ViewBuilder
+    private var macDetail: some View {
+        if macSearchPresented {
+            NavigationStack(path: $searchPath) {
+                SearchView(query: $macSearchText, onClearSearch: dismissMacSearch)
+                    .navigationTitle("Search")
+            }
+            .environment(\.cinemaOriginTab, .search)
+            .environment(\.pushMediaItem, { (item: MediaItem) in searchPath.append(item) })
+            .id(appModel.activeBrowseSessionKey)
+        } else {
+            macTabContent(for: macSelection)
         }
     }
 
@@ -349,80 +441,156 @@ struct RootView: View {
         }
     }
 
+    private func updateMacWindowWidth(_ width: CGFloat) {
+        // A 230-point source list plus a roughly 670-point useful browse/detail surface is the
+        // smallest combination that remained legible in the #232 native pass. Below that, let the
+        // detail own the available width while preserving NavigationSplitView's native toggle.
+        let isCompact = width < 900
+        guard isCompact != macWasCompactWidth else { return }
+        macWasCompactWidth = isCompact
+        guard !macPlayerPresenter.isPresented else { return }
+        macColumnVisibility = isCompact ? .detailOnly : .all
+    }
+
+    private func reloadMacSidebar() async {
+        let previousIdentity = macLoadedServerIdentity
+        await macSidebarModel.load(appModel: appModel)
+        guard !Task.isCancelled else { return }
+
+        let catalog = macSidebarModel.catalog
+        let currentRoute = macSelection.routeID(serverIdentity: previousIdentity)
+        let candidate: MacSidebarRouteID?
+        if previousIdentity != catalog.serverIdentity {
+            candidate = MacSidebarSelectionStore().route(for: catalog.serverIdentity)
+        } else {
+            candidate = currentRoute
+        }
+        let restored = MacSidebarDestinationPolicy.restoredRoute(candidate, in: catalog)
+        macLoadedServerIdentity = catalog.serverIdentity
+        macSelection = MacSidebarDestination.make(route: restored)
+
+        let visibleMusicIDs = Set(catalog.musicLibraries.map(\.id))
+        if let selected = macSelectedMusicLibraryID, visibleMusicIDs.contains(selected) {
+            // Preserve Music Home's explicit context for child destinations.
+        } else {
+            macSelectedMusicLibraryID = catalog.musicLibraries.first?.id
+        }
+        MacSidebarSelectionStore().save(restored, for: catalog.serverIdentity)
+    }
+
+    private func macSidebarSelectionChanged(from oldSelection: MacSidebarDestination,
+                                            to newSelection: MacSidebarDestination) {
+        dismissMacSearch()
+        if case .library(let oldID) = oldSelection,
+           case .library(let newID) = newSelection,
+           oldID != newID {
+            librariesPath = NavigationPath()
+        } else if case .library = newSelection, oldSelection != newSelection {
+            librariesPath = NavigationPath()
+        }
+
+        switch newSelection {
+        case .home: selection = .home
+        case .library: selection = .libraries
+        case .music: selection = .music
+        case .offline: selection = .offline
+        }
+
+        let route = newSelection.routeID(serverIdentity: macSidebarModel.catalog.serverIdentity)
+        guard macSidebarModel.catalog.validRouteIDs.contains(route) else { return }
+        MacSidebarSelectionStore().save(route, for: macSidebarModel.catalog.serverIdentity)
+    }
+
+    private func dismissMacSearch() {
+        macSearchPresented = false
+        macSearchText = ""
+        searchPath = NavigationPath()
+    }
+
     private var canMacNavigateBack: Bool {
         guard !macPlayerPresenter.isPresented else { return false }
-        switch selection {
+        guard !macSearchPresented else { return true }
+        switch macSelection {
         case .home:
             return !homePath.isEmpty
-        case .libraries:
+        case .library:
             return !librariesPath.isEmpty
-        case .search:
-            return !searchPath.isEmpty
         case .music:
             return !musicPath.isEmpty
-        case .offline, .settings:
+        case .offline:
             return false
         }
     }
 
     private func macNavigateBack() {
+        if macSearchPresented {
+            dismissMacSearch()
+            return
+        }
         guard canMacNavigateBack else { return }
-        switch selection {
+        switch macSelection {
         case .home:
             homePath.removeLast()
-        case .libraries:
+        case .library:
             librariesPath.removeLast()
-        case .search:
-            searchPath.removeLast()
         case .music:
             musicPath.removeLast()
-        case .offline, .settings:
+        case .offline:
             break
         }
     }
 
-    private func macSidebarRow(_ tab: AppTab) -> some View {
-        Label(tab.title, systemImage: tab.systemImage)
-            .tag(tab)
-    }
-
-    private func macSidebarStatusRow(_ title: String, systemImage: String) -> some View {
+    private func macSidebarRow(_ destination: MacSidebarDestination,
+                               title: String,
+                               systemImage: String) -> some View {
         Label(title, systemImage: systemImage)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-            .help(title)
+            .tag(destination)
     }
 
-    private var macBackendStatusTitle: String {
-        if appModel.isBrowseReady {
-            "\(appModel.activeBackend.displayName) connected"
-        } else {
-            "\(appModel.activeBackend.displayName) sign-in needed"
+    private func macLibrarySidebarRow(_ library: MacSidebarLibraryDescriptor) -> some View {
+        macSidebarRow(.library(library.id), title: library.title, systemImage: library.kind.systemImage)
+            .accessibilityLabel(library.accessibilityTitle)
+    }
+
+    private func macMusicSidebarRow(_ pivot: MusicPivot) -> some View {
+        let symbol = switch pivot {
+        case .home: "music.note.house"
+        case .artists: "music.microphone"
+        case .albums: "square.stack"
+        case .playlists: "music.note.list"
         }
+        return macSidebarRow(.music(pivot), title: pivot == .home ? "Music Home" : pivot.rawValue,
+                             systemImage: symbol)
     }
 
-    private var macDownloadStatusTitle: String {
-        let records = downloadManager.records
-        guard !records.isEmpty else { return "No offline downloads" }
+    private var macOfflineSidebarRow: some View {
+        HStack {
+            Label("Offline", systemImage: "arrow.down.circle")
+            Spacer()
+            if let percent = downloadManager.offlineLibrarySnapshot.activeTransferPercentage {
+                Text("\(percent)%")
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                    .accessibilityLabel("\(percent) percent downloaded")
+            }
+        }
+        .tag(MacSidebarDestination.offline)
+    }
 
-        let activeCount = records.filter { $0.status.isActiveWork }.count
-        let savedCount = records.filter(\.isComplete).count
-
-        if activeCount > 0, savedCount > 0 {
-            return "\(activeCount) active, \(savedCount) saved"
-        } else if activeCount > 0 {
-            return "\(activeCount) active download\(activeCount == 1 ? "" : "s")"
-        } else if savedCount > 0 {
-            return "\(savedCount) saved offline"
-        } else {
-            return "\(records.count) download\(records.count == 1 ? "" : "s")"
+    private var macSignOutConfirmationMessage: String {
+        switch appModel.activeBackend {
+        case .plex:
+            "Signing back in requires authorizing this device with plex.tv again."
+        case .jellyfin:
+            "Signing back in requires connecting to your Jellyfin server again."
+        case .emby:
+            "Signing back in requires connecting to your Emby server again."
         }
     }
 
     @ViewBuilder
-    private func macTabContent(for tab: AppTab) -> some View {
-        switch tab {
+    private func macTabContent(for destination: MacSidebarDestination) -> some View {
+        switch destination {
         case .home:
             NavigationStack(path: $homePath) {
                 HomeView()
@@ -431,26 +599,30 @@ struct RootView: View {
             .environment(\.cinemaOriginTab, .home)
             .environment(\.pushMediaItem, { (item: MediaItem) in homePath.append(item) })
             .id(appModel.activeBrowseSessionKey)
-        case .libraries:
-            NavigationStack(path: $librariesPath) {
-                LibrariesView()
-                    .navigationTitle("Libraries")
+        case .library(let id):
+            if let source = macSidebarModel.librarySources[id] {
+                NavigationStack(path: $librariesPath) {
+                    LibraryGridView(source: source)
+                        .navigationTitle(source.title)
+                        .navigationDestination(for: MediaItem.self) { item in
+                            DetailView(item: item, originBackend: appModel.activeBackend)
+                        }
+                        .navigationDestination(for: LibraryGridSource.self) { pushedSource in
+                            LibraryGridView(source: pushedSource)
+                        }
+                }
+                .environment(\.cinemaOriginTab, .libraries)
+                .environment(\.pushMediaItem, { (item: MediaItem) in librariesPath.append(item) })
+                .id(appModel.activeBrowseSessionKey)
+            } else {
+                HomeView()
             }
-            .environment(\.cinemaOriginTab, .libraries)
-            .environment(\.pushMediaItem, { (item: MediaItem) in librariesPath.append(item) })
-            .id(appModel.activeBrowseSessionKey)
-        case .search:
-            NavigationStack(path: $searchPath) {
-                SearchView(focusRequest: searchFocusRequest, onClearSearch: exitSearch)
-                    .navigationTitle("Search")
-            }
-            .environment(\.cinemaOriginTab, .search)
-            .environment(\.pushMediaItem, { (item: MediaItem) in searchPath.append(item) })
-            .id(appModel.activeBrowseSessionKey)
-        case .music:
+        case .music(let pivot):
             NavigationStack(path: $musicPath) {
-                MusicLibraryView()
-                    .navigationTitle("Music")
+                MusicLibraryView(macPivot: pivot,
+                                 selectedLibraryID: $macSelectedMusicLibraryID,
+                                 allowedLibraryIDs: Set(macSidebarModel.catalog.musicLibraries.map(\.id)))
+                    .navigationTitle(pivot == .home ? "Music" : pivot.rawValue)
             }
             .id(appModel.activeBrowseSessionKey)
         case .offline:
@@ -459,10 +631,6 @@ struct RootView: View {
                                    focusedRatingKey: $offlineReturnRatingKey)
                     .navigationTitle("Offline")
             }
-        case .settings:
-            ContentUnavailableView("Settings live in the app menu",
-                                   systemImage: "gearshape",
-                                   description: Text("Choose Labstream > Settings to manage accounts and preferences."))
         }
     }
     #endif
@@ -792,17 +960,24 @@ struct RootView: View {
     private func focusSearch() {
         #if os(macOS)
         guard !macPlayerPresenter.isPresented else { return }
-        #endif
+        macSearchPresented = true
+        searchFocusRequest += 1
+        #else
         selection = .search
         searchFocusRequest += 1
+        #endif
     }
 
     /// Search's Clear button should close the dedicated search role/surface as well
     /// as emptying the query. On iOS that restores the normal top/floating tab chrome
     /// for Home/Libraries/Music/Offline; on visionOS it returns to the previous tab.
     private func exitSearch() {
+        #if os(macOS)
+        dismissMacSearch()
+        #else
         searchPath = NavigationPath()
         selection = lastNonSearchSelection == .search ? .home : lastNonSearchSelection
+        #endif
     }
 
     /// Pop the lifted path for a browse tab to root (Home / Libraries / Search). Other tabs have
@@ -836,5 +1011,8 @@ struct RootView: View {
         SystemEntryRouter.shared.offlinePending = nil
         offlineReturnRatingKey = route.ratingKey
         selection = .offline
+        #if os(macOS)
+        macSelection = .offline
+        #endif
     }
 }

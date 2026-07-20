@@ -44,7 +44,10 @@ struct LabstreamMac: App {
                             bootstrap: bootstrap)
                     .environment(customCinemaSession)
                     .environment(realityTheaterSession)
-                    .frame(minWidth: 980, minHeight: 680)
+                    // The source list can collapse natively at compact widths; 760 keeps the
+                    // detail-only browse/player surfaces usable without enforcing the old
+                    // touch-sized 980-point floor. Final acceptance is evidence-gated in #232.
+                    .frame(minWidth: 760, minHeight: 640)
                     .task { recordScenePhase(scenePhase) }
                     .onChange(of: scenePhase) { _, newPhase in
                         recordScenePhase(newPhase)
@@ -55,7 +58,7 @@ struct LabstreamMac: App {
         }
         .defaultSize(width: 1180, height: 760)
         .commands {
-            if let authManager {
+            if appModel != nil {
                 CommandMenu("Navigate") {
                     Button("Back") {
                         NotificationCenter.default.post(name: .labstreamMacNavigateBack, object: nil)
@@ -74,7 +77,9 @@ struct LabstreamMac: App {
                 }
 
                 CommandMenu("Account") {
-                    Button("Sign Out") { authManager.signOut() }
+                    Button("Sign Out") {
+                        NotificationCenter.default.post(name: .labstreamMacRequestSignOut, object: nil)
+                    }
                         .disabled(!(appModel?.isAuthenticated ?? false))
                 }
             }
@@ -106,5 +111,6 @@ extension Notification.Name {
     static let labstreamMacNavigateBack = Notification.Name("LabstreamMacNavigateBack")
     static let labstreamMacFocusSearch = Notification.Name("LabstreamMacFocusSearch")
     static let labstreamMacSelectOffline = Notification.Name("LabstreamMacSelectOffline")
+    static let labstreamMacRequestSignOut = Notification.Name("LabstreamMacRequestSignOut")
 }
 #endif

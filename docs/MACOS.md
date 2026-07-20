@@ -17,6 +17,17 @@ playback, music, downloads/offline, settings, diagnostics, and backend flows for
 Mac-specific code supplies window commands, keyboard navigation, fullscreen/player presentation,
 and system media integration while backend wire behavior and pure policies remain shared.
 
+The Mac root uses a native source-list split view. Home is followed by the active server's visible
+non-music libraries, an optional Music section whose child routes share an explicit selected-library
+context, and a standalone Offline destination. Search lives in the native toolbar: Command-F
+focuses it, Escape or a source-list selection dismisses it, and the prior detail route is restored.
+The source list collapses to detail-only below 900 points while retaining the native toggle; the
+window minimum is 760 by 640 points. Account-menu sign-out always requires confirmation.
+
+Offline may show a progress percentage only for active byte transfers when every active transfer
+has an exact expected byte total. The value is byte-weighted; estimated or partially known totals
+intentionally suppress it.
+
 Treat this as source-build coverage rather than a compatibility promise. Real Plex, Jellyfin,
 and Emby authentication, media-key behavior, playback, and background-download recovery still
 need platform-specific validation.
