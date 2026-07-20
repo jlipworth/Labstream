@@ -24,4 +24,5 @@ When a plan is complete or superseded:
 ## Active plans
 
 - [`2026-07-10-codebase-remediation.md`](2026-07-10-codebase-remediation.md) — whole-repository correctness, concurrency, performance, backend/platform sharing, and build-cost remediation journal.
+- [`2026-07-20-emby-bif-trickplay.md`](2026-07-20-emby-bif-trickplay.md) — Emby ThumbnailSet/BIF online and offline trick-play implementation and real-server acceptance journal.
 - [`2026-07-20-tvos-implementation.md`](2026-07-20-tvos-implementation.md) — first-class tvOS implementation and acceptance plan.
