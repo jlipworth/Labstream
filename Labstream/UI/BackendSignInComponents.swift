@@ -6,7 +6,12 @@ import SwiftUI
 /// cancellation, and credential storage semantics.
 
 private enum BackendAuthMetrics {
-    #if os(macOS)
+    #if os(tvOS)
+    static let pickerWidth: CGFloat = 620
+    static let buttonWidth: CGFloat = 560
+    static let fieldWidth: CGFloat = 680
+    static let helperWidth: CGFloat = 600
+    #elseif os(macOS)
     static let pickerWidth: CGFloat = 300
     static let buttonWidth: CGFloat = 300
     static let fieldWidth: CGFloat = 340
@@ -39,7 +44,11 @@ private struct BackendPrimaryCTALabel: ViewModifier {
     }
 
     func body(content: Content) -> some View {
-        #if os(macOS)
+        #if os(tvOS)
+        content
+            .font(.title2.weight(.semibold))
+            .frame(maxWidth: .infinity, minHeight: 72)
+        #elseif os(macOS)
         content
             .font(.callout.weight(.medium))
             .frame(maxWidth: .infinity, minHeight: 28)
@@ -133,6 +142,7 @@ struct BackendSelectionPicker: View {
                 }
             }
             .pickerStyle(.segmented)
+            .accessibilityIdentifier("tv.login.backendPicker")
             #if os(macOS)
             .controlSize(.regular)
             #endif
@@ -227,6 +237,7 @@ struct PlexSignInStartView: View {
             #endif
             .disabled(isWorking)
             .backendAuthControlWidth(BackendAuthMetrics.buttonWidth)
+            .accessibilityIdentifier("tv.login.plex.start")
 
             Text("Uses a code at plex.tv/link.")
                 .font(.callout)

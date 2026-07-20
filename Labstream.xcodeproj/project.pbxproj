@@ -56,6 +56,33 @@
 		AA0000000000000000000051 /* LabstreamMacTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LabstreamMacTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		AA0000000000000000000060 /* tvOS excludes download-only app tests */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				BackgroundCompletionPersistenceBarrierTests.swift,
+				BackgroundDownloadStartupAdmissionTests.swift,
+				DownloadArtifactLifecycleTests.swift,
+				DownloadCleanupIntentJournalTests.swift,
+				DownloadCleanupOrderingTests.swift,
+				DownloadFileStatTests.swift,
+				DownloadIndexFileCommitterTests.swift,
+				DownloadSignOutPauseTests.swift,
+				DownloadStoreAttemptOwnedCheckpointTests.swift,
+				DownloadStoreAttemptStagingTests.swift,
+				DownloadStoreFaultInjectionTests.swift,
+				DownloadStoreLookupTests.swift,
+				DownloadStorePersistenceTests.swift,
+				DownloadWorkRegistryTests.swift,
+				EmbyCleanupTombstonePersistenceTests.swift,
+				HeldRangeBodyOwnershipPolicyTests.swift,
+				RevisionedPersistenceWriterTests.swift,
+				SideAssetFetchCoordinatorTests.swift,
+			);
+			target = 1C671135434BAB92288B1C40 /* LabstreamTVTests */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		9740A1E22E5FACDBEAB15AEC /* LabstreamTVUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
@@ -65,7 +92,16 @@
 			sourceTree = "<group>";
 		};
 		AA0000000000000000000006 /* Labstream */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Labstream; sourceTree = "<group>"; };
-		AA0000000000000000000042 /* LabstreamTests */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = LabstreamTests; sourceTree = "<group>"; };
+		AA0000000000000000000042 /* LabstreamTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				AA0000000000000000000060 /* tvOS excludes download-only app tests */,
+			);
+			explicitFileTypes = {};
+			explicitFolders = ();
+			path = LabstreamTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */

@@ -41,6 +41,9 @@ struct LoginView: View {
     @State private var embySignInMethod: EmbySignInMethod?
     @State private var selectingEmbyConnectServerID: String?
     @State private var authTasks = LoginAuthTaskCoordinator()
+    #if os(tvOS)
+    @Namespace private var tvLoginFocusScope
+    #endif
 
     /// Compact width (iPhone, narrow iPad split view) drops the floating glass card:
     /// phone sign-in should read as one full-screen surface, not a window-in-a-window.
@@ -107,6 +110,8 @@ struct LoginView: View {
     var body: some View {
         #if os(macOS)
         macLoginLayout
+        #elseif os(tvOS)
+        tvLoginLayout
         #else
         Group {
             if isCompactWidth {
@@ -174,6 +179,66 @@ struct LoginView: View {
         #endif
     }
 
+    #if os(tvOS)
+    /// Apple TV sign-in is a ten-foot setup flow, not the iPad card centered in a large
+    /// television canvas. Keep the brand stable on the left and dedicate the right column
+    /// to one focusable authentication decision at a time. The content scrolls only when a
+    /// credential keyboard or a long server chooser needs the extra room.
+    private var tvLoginLayout: some View {
+        GeometryReader { proxy in
+            HStack(spacing: 100) {
+                VStack(spacing: DS.Space.xl) {
+                    LoginBrandHeader()
+
+                    Text("Your media. Your screen.")
+                        .font(.title2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: 560)
+                .accessibilityElement(children: .contain)
+
+                ScrollView {
+                    formControlsStack
+                        .padding(.horizontal, 64)
+                        .padding(.vertical, 56)
+                        .frame(maxWidth: 820, minHeight: proxy.size.height - 160)
+                        .background(LoginPanelBackground())
+                        .frame(maxWidth: .infinity)
+                }
+                .scrollIndicators(.hidden)
+                .scrollBounceBehavior(.basedOnSize)
+            }
+            .padding(.horizontal, 120)
+            .padding(.vertical, 80)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(LoginBrandBackdrop())
+        .focusScope(tvLoginFocusScope)
+        .onChange(of: authManager.state) { _, newValue in
+            switch newValue {
+            case .failed(let message):
+                errorMessage = message
+                working = false
+                selectingEmbyConnectServerID = nil
+                webAuth.cancel()
+            case .authenticated:
+                working = false
+                selectingEmbyConnectServerID = nil
+                webAuth.cancel()
+            case .awaitingJellyfinQuickConnect, .awaitingEmbyConnectPin, .awaitingEmbyServerSelection:
+                working = false
+            default:
+                break
+            }
+        }
+        .onDisappear {
+            authTasks.cancel()
+            webAuth.cancel()
+            authManager.cancelPendingLogin()
+        }
+    }
+    #endif
+
     #if os(macOS)
     /// Native Mac sign-in shell: a compact setup-style panel integrated with the
     /// window surface. Keep the mobile/vision glass login untouched, but avoid the
@@ -229,6 +294,9 @@ struct LoginView: View {
     private var backendPicker: some View {
         BackendSelectionPicker(selection: appModel.activeBackend,
                                onSelect: selectBackend)
+        #if os(tvOS)
+        .prefersDefaultFocus(true, in: tvLoginFocusScope)
+        #endif
     }
 
     // MARK: - Flow states

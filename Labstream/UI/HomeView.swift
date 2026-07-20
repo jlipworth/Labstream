@@ -56,11 +56,19 @@ struct HomeView: View {
             }
         }
         .navigationTitle("Home")
-        .navigationDestination(for: JellyfinLibraryLink.self) { view in
-            LibraryGridView(jellyfin: view)
-        }
-        .navigationDestination(for: EmbyLibraryLink.self) { view in
-            LibraryGridView(emby: view)
+        // JellyfinLibraryLink and EmbyLibraryLink are compatibility aliases for the SAME
+        // MediaBrowserLibraryLink type. Registering both independently makes SwiftUI report an
+        // invalid duplicate destination and pick one by stack position. Route the one canonical
+        // type through the active backend instead.
+        .navigationDestination(for: MediaBrowserLibraryLink.self) { view in
+            switch appModel.activeBackend {
+            case .jellyfin:
+                LibraryGridView(jellyfin: view)
+            case .emby:
+                LibraryGridView(emby: view)
+            case .plex:
+                EmptyView()
+            }
         }
         .navigationDestination(for: MediaItem.self) { item in
             // Music items route into the music module, never the video detail/player
@@ -128,6 +136,17 @@ struct HomeView: View {
         if !force, loadedIdentity == activeIdentity, case .loaded = loadState { return }
         loadGeneration += 1
         let generation = loadGeneration
+
+        #if os(tvOS) && DEBUG
+        if let fixture = TVUIFixtureCatalog.homeContent(for: appModel.activeBackend) {
+            hubs = fixture.hubs
+            mediaBrowserLibraries = fixture.mediaBrowserLibraries
+            mediaBrowserRails = fixture.mediaBrowserRails
+            loadedIdentity = activeIdentity
+            loadState = .loaded
+            return
+        }
+        #endif
 
         let span = PerformanceInstrumentation.begin(.homeLoad,
                                                      backend: appModel.activeBackend.performanceLabel,
@@ -231,6 +250,9 @@ private struct HubRail: View {
                         NavigationLink(value: item) {
                             RailMediaCell(item: item, context: .home)
                         }
+                        #if os(tvOS)
+                        .accessibilityIdentifier("tv.home.\(hub.id).\(item.ratingKey)")
+                        #endif
                         .cardLink()
                         .videoCardContextMenu(for: item)
                     }
