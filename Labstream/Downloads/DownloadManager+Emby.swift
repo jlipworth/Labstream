@@ -371,6 +371,9 @@ extension DownloadManager {
         // endpoint needs the authenticated request (token + userId in the header), unlike Plex.
         cacheEmbyPoster(for: attemptKey, item: item, server: server,
                         token: token, identity: identity, userId: userId)
+        cacheEmbyBIF(for: attemptKey, itemId: itemId,
+                     mediaSourceId: decision.mediaSourceId,
+                     server: server, token: token, identity: identity, userId: userId)
         // #88/#89: cache per-chapter images for the offline Chapters rail AND the Emby offline
         // scrubber. This is a static `/Items/{id}/Images/Chapter/{index}` GET — no PlaySessionId /
         // encoder negotiation — so it is safe to fire here independent of the media transfer.

@@ -12,6 +12,7 @@ struct OfflineDownloadFileInventoryTests {
             type: "episode",
             posterRelativePath: "plex_1.poster.jpg",
             plexBIFRelativePath: "plex_1.plex-sd.bif",
+            embyBIFRelativePath: "plex_1.emby.bif",
             jellyfinTrickPlayPlaylistRelativePath: "plex_1.jf-trickplay.m3u8",
             jellyfinTrickPlayTileRelativePaths: ["plex_1.jf-trickplay-0.jpg"],
             chapterImageRelativePaths: [0: "plex_1.chapter-0.jpg"],
@@ -35,6 +36,7 @@ struct OfflineDownloadFileInventoryTests {
             "plex_1.mp4",
             "plex_1.poster.jpg",
             "plex_1.plex-sd.bif",
+            "plex_1.emby.bif",
             "plex_1.jf-trickplay.m3u8",
             "plex_1.jf-trickplay-0.jpg",
             "plex_1.chapter-0.jpg",
@@ -82,6 +84,7 @@ struct OfflineDownloadFileInventoryTests {
 
         #expect(audit.orphanCandidates.isEmpty)
         #expect(OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename("plex_1.resume"))
+        #expect(OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename("emby_1.emby.bif"))
         #expect(OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename("plex_1.sub-2.srt"))
         #expect(OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename("plex_1.range-held-1024-abc"))
         #expect(!OfflineDownloadFileInventory.isLabstreamOwnedDownloadFilename("index.json"))

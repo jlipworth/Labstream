@@ -28,6 +28,24 @@ public struct UnavailableTrickPlayThumbnailProvider: TrickPlayThumbnailProviding
     public func thumbnail(nearMs targetMs: Int) async -> TrickPlayThumbnail? { nil }
 }
 
+/// Ordered, non-fatal provider fallback used by shared online/offline player entry points.
+/// A missing or malformed higher-quality asset never prevents a lower-quality preview source.
+public struct HierarchicalTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
+    private let providers: [any TrickPlayThumbnailProviding]
+
+    public init(_ providers: [any TrickPlayThumbnailProviding]) {
+        self.providers = providers
+    }
+
+    public func thumbnail(nearMs targetMs: Int) async -> TrickPlayThumbnail? {
+        for provider in providers {
+            guard !Task.isCancelled else { return nil }
+            if let thumbnail = await provider.thumbnail(nearMs: targetMs) { return thumbnail }
+        }
+        return nil
+    }
+}
+
 /// Chooses the sparse preview frame whose capture begins at or before the scrub target.
 /// `sortedFrameTimesMs` must be ascending. Targets before the first frame use the first available
 /// image, matching the graceful fallback used by chapter-image preview providers.

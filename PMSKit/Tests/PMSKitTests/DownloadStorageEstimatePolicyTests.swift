@@ -18,7 +18,7 @@ struct DownloadStorageEstimatePolicyTests {
             == TranscodeSizeEstimator.bytes(durationMs: 10_000, videoBitrateBps: 8_000_000))
     }
 
-    @Test("Side asset estimates include chapter images for all backends and trickplay for Plex/Jellyfin")
+    @Test("Side asset estimates include chapter images and duration-based trickplay for all backends")
     func sideAssetEstimates() {
         let chapterOnly = 2 * 30_000
         #expect(DownloadStorageEstimatePolicy.estimatedSideAssetBytes(durationMs: nil,
@@ -32,6 +32,9 @@ struct DownloadStorageEstimatePolicyTests {
                                                                      chapterImageCount: 2) == chapterOnly)
         #expect(DownloadStorageEstimatePolicy.estimatedSideAssetBytes(durationMs: 60_000,
                                                                      backend: .plex,
+                                                                     chapterImageCount: 0) > 0)
+        #expect(DownloadStorageEstimatePolicy.estimatedSideAssetBytes(durationMs: 60_000,
+                                                                     backend: .emby,
                                                                      chapterImageCount: 0) > 0)
     }
 
@@ -63,19 +66,19 @@ struct DownloadStorageEstimatePolicyTests {
             for: item,
             choice: .original,
             backend: .emby))
-        #expect(embyOriginal == 1_060_000)
+        #expect(embyOriginal == 1_360_000)
 
         let plexOriginal = try #require(DownloadStorageEstimatePolicy.estimatedTotalBytes(
             for: item,
             choice: .original,
             backend: .plex))
-        #expect(plexOriginal > embyOriginal)
+        #expect(plexOriginal == embyOriginal)
 
         let transcode = try #require(DownloadStorageEstimatePolicy.estimatedTotalBytes(
             for: item,
             choice: .optimize(targetName: "720p 4 Mbps"),
             backend: .emby))
         #expect(transcode == TranscodeSizeEstimator.bytes(durationMs: 60_000,
-                                                         videoBitrateBps: 4_000_000)! + 60_000)
+                                                         videoBitrateBps: 4_000_000)! + 360_000)
     }
 }
