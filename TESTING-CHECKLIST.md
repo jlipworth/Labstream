@@ -129,6 +129,25 @@ Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The 
       of a black surface with no explanation. Recovery never revives a superseded player.
 - [ ] Stats for Nerds reports source, decision/play method, rendered stream, bitrate, audio,
       and HDR facts without private server or media identifiers.
+- [ ] **visionOS playback explanation (#203):** open Stats for Nerds during each representative
+      lane below. Confirm the compact **Why** headline and at most two useful reasons agree with
+      the active result. The normal player must not show raw reason arrays, backend prose, URLs,
+      tokens, host/server names, titles, paths, item/media-source/play-session IDs, or client IDs.
+
+| Active lane (manual live-server validation) | Plex | Jellyfin | Emby |
+| --- | :---: | :---: | :---: |
+| Original-file Direct Play says no server transcode is active | [ ] | [ ] | [ ] |
+| Direct Stream/remux says video is copied/repackaged without claiming a video re-encode | [ ] | [ ] | [ ] |
+| Audio-only transcode says video is copied and identifies audio conversion when supported by backend evidence | [ ] | [ ] | [ ] |
+| Video transcode identifies a normalized codec/profile/resolution/range cause when the server reports one | [ ] | [ ] | [ ] |
+| A numeric quality choice reports a **Labstream-requested** quality cap without claiming unrelated runtime proof | [ ] | [ ] | [ ] |
+| Selected subtitle burn/compatibility explains the active result after selection; it does not duplicate #248's pre-selection warning | [ ] | [ ] | [ ] |
+| No-fallback Dolby Vision guard reports the **Labstream-requested** server tone-map; visual correctness remains a physical Vision Pro gate | [ ] | [ ] | [ ] |
+| Missing/unknown backend reasons degrade to a short unknown explanation without crashing | [ ] | [ ] | [ ] |
+
+- [ ] Export privacy-safe diagnostics for at least one lane per backend. Confirm only the
+      normalized lane, reason buckets, provenance, codec/container/HDR classes, and app-requested
+      policy facts appear; raw `TranscodeReasons` and session/backend payload values do not.
 - [ ] Validate SDR, HDR10/HLG, supported Dolby Vision with fallback, and no-fallback Dolby
       Vision policy using appropriate samples. Treat visual HDR/DV correctness as a physical
       display gate, especially on Apple Vision Pro.

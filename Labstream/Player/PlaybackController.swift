@@ -11,6 +11,7 @@ struct RemoteStreamOpenResult {
     let mediaSourceId: String?
     let sourceMetadata: MediaBrowserPlaybackSourceMetadata?
     let playMethod: MediaBrowserPlayMethod?
+    let transcodeReasons: [String]?
     let onStop: (() -> Void)?
 
     init(url: URL,
@@ -19,6 +20,7 @@ struct RemoteStreamOpenResult {
          mediaSourceId: String? = nil,
          sourceMetadata: MediaBrowserPlaybackSourceMetadata? = nil,
          playMethod: MediaBrowserPlayMethod? = nil,
+         transcodeReasons: [String]? = nil,
          onStop: (() -> Void)? = nil) {
         self.url = url
         self.headers = headers
@@ -26,6 +28,7 @@ struct RemoteStreamOpenResult {
         self.mediaSourceId = mediaSourceId
         self.sourceMetadata = sourceMetadata
         self.playMethod = playMethod
+        self.transcodeReasons = transcodeReasons
         self.onStop = onStop
     }
 }
@@ -154,6 +157,7 @@ final class PlaybackController {
     private var remoteHTTPHeaders: [String: String]
     private var remoteSourceMetadata: MediaBrowserPlaybackSourceMetadata?
     private var remotePlayMethod: MediaBrowserPlayMethod?
+    private var remoteTranscodeReasons: [String]
     private var remotePlaySessionId: String?
     private var mediaBrowserProgressSession: MediaBrowserPlaybackProgressSession?
     private var onStopRemoteSession: (() -> Void)?
@@ -1029,6 +1033,7 @@ final class PlaybackController {
         self.remoteHTTPHeaders = [:]
         self.remoteSourceMetadata = nil
         self.remotePlayMethod = nil
+        self.remoteTranscodeReasons = []
         self.remotePlaySessionId = nil
         self.mediaBrowserProgressSession = nil
         self.onStopRemoteSession = nil
@@ -1070,6 +1075,7 @@ final class PlaybackController {
         self.remoteHTTPHeaders = [:]
         self.remoteSourceMetadata = nil
         self.remotePlayMethod = nil
+        self.remoteTranscodeReasons = []
         self.remotePlaySessionId = nil
         self.mediaBrowserProgressSession = nil
         self.onStopRemoteSession = nil
@@ -1099,6 +1105,7 @@ final class PlaybackController {
          remotePlaySessionId: String? = nil,
          sourceMetadata: MediaBrowserPlaybackSourceMetadata? = nil,
          playMethod: MediaBrowserPlayMethod? = nil,
+         transcodeReasons: [String] = [],
          mediaBrowserProgressSession: MediaBrowserPlaybackProgressSession? = nil,
          onStopRemoteSession: (() -> Void)? = nil,
          remoteStreamReopener: RemoteStreamReopener? = nil,
@@ -1120,6 +1127,7 @@ final class PlaybackController {
         self.remotePlaySessionId = remotePlaySessionId
         self.remoteSourceMetadata = sourceMetadata
         self.remotePlayMethod = playMethod
+        self.remoteTranscodeReasons = transcodeReasons
         self.mediaBrowserProgressSession = mediaBrowserProgressSession
         self.onStopRemoteSession = onStopRemoteSession
         self.remoteStreamReopener = remoteStreamReopener
@@ -2773,7 +2781,10 @@ final class PlaybackController {
                                 mediaIndex: mediaIndex,
                                 decision: decision,
                                 server: server,
-                                targetBitrateKbps: maxVideoBitrateKbps)
+                                targetBitrateKbps: maxVideoBitrateKbps,
+                                subtitleBurnRequested: burnSubtitleStreamID != nil,
+                                dolbyVisionGuardActive: dvGuardReason != nil,
+                                decisionUnavailableMeansTranscode: true)
         var selectedFields: [String: DiagnosticFieldValue] = [
             "stream_url_shape": .urlShape(streamURL),
             "direct_play_fallback_armed": .bool(directPlayFallbackArmed),
@@ -2782,6 +2793,7 @@ final class PlaybackController {
         if let decision {
             selectedFields.merge(decisionDiagnosticFields(decision)) { _, new in new }
         }
+        selectedFields.merge(playbackExplanationDiagnosticFields()) { _, new in new }
         recordPlaybackDiagnostic("playback.stream_selected", fields: selectedFields)
 
         // GH #196 copy-lane startup hardening: on Direct Play / Maximum the PMS session emits
@@ -2925,7 +2937,9 @@ final class PlaybackController {
                                 targetBitrateKbps: maxVideoBitrateKbps)
         if let remoteSourceMetadata, let remotePlayMethod {
             diagnostics.applyMediaBrowserSource(remoteSourceMetadata,
-                                            playMethod: remotePlayMethod)
+                                                playMethod: remotePlayMethod,
+                                                transcodeReasons: remoteTranscodeReasons,
+                                                dolbyVisionGuardActive: dvGuardReason != nil)
         }
         diagnostics.usesLocalMediaProxy = Self.isLoopback(url)
         if diagnostics.usesLocalMediaProxy,
@@ -2944,6 +2958,7 @@ final class PlaybackController {
         ]
         fields.merge(sourceDiagnosticFields()) { _, new in new }
         fields.merge(mediaBrowserSourceDiagnosticFields(remoteSourceMetadata)) { _, new in new }
+        fields.merge(playbackExplanationDiagnosticFields()) { _, new in new }
         recordPlaybackDiagnostic("playback.start_path", fields: fields)
 
         let options: [String: Any]? = headers.isEmpty ? nil : ["AVURLAssetHTTPHeaderFieldsKey": headers]
@@ -5225,6 +5240,9 @@ final class PlaybackController {
                 }
                 if let playMethod = reopened.playMethod {
                     self.remotePlayMethod = playMethod
+                }
+                if let transcodeReasons = reopened.transcodeReasons {
+                    self.remoteTranscodeReasons = transcodeReasons
                 }
                 self.onStopRemoteSession = reopened.onStop
                 self.didStopRemoteSession = false

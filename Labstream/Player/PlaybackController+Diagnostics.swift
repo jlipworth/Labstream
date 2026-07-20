@@ -24,6 +24,15 @@ extension PlaybackController {
         PlaybackSourceSummary.mediaBrowser(source)?.diagnosticFields ?? [:]
     }
 
+    /// Closed-enum playback explanations only. Never export raw backend reason arrays or prose.
+    func playbackExplanationDiagnosticFields() -> [String: DiagnosticFieldValue] {
+        [
+            "playback_explanation_lane": .label(diagnostics.playbackExplanation.lane.rawValue),
+            "playback_explanation_reasons": .label(
+                diagnostics.playbackExplanation.diagnosticTokens.joined(separator: ",")),
+        ]
+    }
+
     func decisionDiagnosticFields(_ decision: DecisionResponse) -> [String: DiagnosticFieldValue] {
         var fields: [String: DiagnosticFieldValue] = [
             "pms_decision_mode": .label(Self.decisionModeLabel(decision)),
@@ -39,12 +48,8 @@ extension PlaybackController {
         if let code = decision.mdeDecisionCode {
             fields["mde_decision_code"] = .int(code)
         }
-        if let text = decision.generalDecisionText {
-            fields["general_decision_text"] = .text(text)
-        }
-        if let text = decision.mdeDecisionText {
-            fields["mde_decision_text"] = .text(text)
-        }
+        // Do not export Plex's open-ended prose. Structured decisions and the closed-enum
+        // normalized explanation carry the useful facts without a backend-controlled leak path.
         return fields
     }
 
@@ -60,7 +65,7 @@ extension PlaybackController {
     }
 
     func runtimeSnapshotFields() -> [String: DiagnosticFieldValue] {
-        [
+        var fields: [String: DiagnosticFieldValue] = [
             "target_bitrate_kbps": .int(diagnostics.targetBitrateKbps),
             "target_bitrate_label": .label(diagnostics.targetBitrateLabel),
             "source_bitrate_kbps": .int(diagnostics.sourceBitrateKbps),
@@ -76,7 +81,10 @@ extension PlaybackController {
             "dropped_frames": .int(diagnostics.droppedFrames),
             "is_transcoding": .bool(diagnostics.isTranscoding),
             "decision_summary": .text(diagnostics.decisionText),
-        ].merging(hdrSnapshotFields()) { current, _ in current }
+        ]
+        fields.merge(hdrSnapshotFields()) { current, _ in current }
+        fields.merge(playbackExplanationDiagnosticFields()) { current, _ in current }
+        return fields
     }
 
     /// HDR facts for exported snapshots (#195): source classification, runtime probe

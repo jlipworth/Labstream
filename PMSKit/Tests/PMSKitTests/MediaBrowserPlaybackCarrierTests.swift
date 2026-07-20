@@ -32,13 +32,15 @@ struct MediaBrowserPlaybackCarrierTests {
             playSessionId: "play-1",
             mediaSourceId: "source-1",
             playMethod: method,
-            sourceMetadata: source
+            sourceMetadata: source,
+            transcodeReasons: ["AudioCodecNotSupported"]
         )
         let neutral = MediaBrowserPlaybackOpenResult(legacyResult)
 
         #expect(method == .transcode)
         #expect(source.audioCodec == "truehd")
         #expect(neutral.usesServerEncoding)
+        #expect(neutral.transcodeReasons == ["AudioCodecNotSupported"])
     }
 
     @Test func jellyfinResolverReturnsAuthoritativeNeutralResultWithEncodingCleanupFact() throws {
@@ -55,6 +57,7 @@ struct MediaBrowserPlaybackCarrierTests {
             "AudioCodec": "truehd",
             "SupportsTranscoding": true,
             "TranscodingUrl": "/Videos/item/master.m3u8?api_key=server-token",
+            "TranscodeReasons": ["VideoCodecNotSupported"],
             "RequiredHttpHeaders": { "X-Playback-Header": "required" }
           }]
         }
@@ -73,6 +76,7 @@ struct MediaBrowserPlaybackCarrierTests {
 
         #expect(result.playMethod == .transcode)
         #expect(result.usesServerEncoding)
+        #expect(result.transcodeReasons == ["VideoCodecNotSupported"])
         #expect(result.requiredHTTPHeaders["X-Playback-Header"] == "required")
         #expect(result.sourceMetadata == MediaBrowserPlaybackSourceMetadata(
             container: "mkv",
@@ -98,6 +102,7 @@ struct MediaBrowserPlaybackCarrierTests {
             "AudioCodec": "aac",
             "SupportsDirectStream": true,
             "DirectStreamUrl": "/videos/item/stream.mp4?MediaSourceId=source-9",
+            "TranscodeReasons": ["ContainerNotSupported"],
             "AddApiKeyToDirectStreamUrl": false,
             "RequiredHttpHeaders": { "X-Playback-Header": "required" }
           }]
@@ -118,6 +123,7 @@ struct MediaBrowserPlaybackCarrierTests {
 
         #expect(result.playMethod == .directStream)
         #expect(!result.usesServerEncoding)
+        #expect(result.transcodeReasons == ["ContainerNotSupported"])
         #expect(result.requiredHTTPHeaders["X-Playback-Header"] == "required")
         #expect(result.requiredHTTPHeaders["X-Emby-Token"] == "token-9")
         #expect(result.sourceMetadata == MediaBrowserPlaybackSourceMetadata(
@@ -143,7 +149,8 @@ struct MediaBrowserPlaybackCarrierTests {
                                                            height: 2160,
                                                            bitrate: 40_000,
                                                            videoCodec: "hevc",
-                                                           audioCodec: "dts"))
+                                                           audioCodec: "dts"),
+            transcodeReasons: ["AudioCodecNotSupported"])
 
         let neutral = MediaBrowserPlaybackOpenResult(native)
 
@@ -159,6 +166,7 @@ struct MediaBrowserPlaybackCarrierTests {
                                                                             videoCodec: "hevc",
                                                                             audioCodec: "dts"))
         #expect(neutral.usesServerEncoding)
+        #expect(neutral.transcodeReasons == ["AudioCodecNotSupported"])
     }
 
     @Test func embyOpenResultConvertsToNeutralCarrierWithoutJellyfinTypes() throws {
@@ -175,7 +183,8 @@ struct MediaBrowserPlaybackCarrierTests {
                                                        bitrate: 9_000,
                                                        videoCodec: "h264",
                                                        audioCodec: "aac"),
-            usesServerEncoding: false)
+            usesServerEncoding: false,
+            transcodeReasons: ["ContainerNotSupported"])
 
         let neutral = MediaBrowserPlaybackOpenResult(native)
 
@@ -191,5 +200,6 @@ struct MediaBrowserPlaybackCarrierTests {
                                                                             videoCodec: "h264",
                                                                             audioCodec: "aac"))
         #expect(!neutral.usesServerEncoding)
+        #expect(neutral.transcodeReasons == ["ContainerNotSupported"])
     }
 }

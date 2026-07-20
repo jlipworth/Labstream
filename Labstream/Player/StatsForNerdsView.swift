@@ -48,6 +48,12 @@ struct StatsForNerdsView: View {
                 if diagnostics.decisionText != "—" || diagnostics.dvGuardReason != nil {
                     row("Decision", diagnostics.decisionDisplayText, wraps: true)
                 }
+                #if os(visionOS)
+                row("Why", diagnostics.playbackExplanation.headline, wraps: true)
+                ForEach(Array(diagnostics.playbackExplanation.conciseReasons.enumerated()), id: \.offset) { _, fact in
+                    row("", fact.conciseText, wraps: true)
+                }
+                #endif
                 row("Source", "\(diagnostics.sourceResolution) · \(diagnostics.container)")
                 row("Video", diagnostics.videoFormatText)
                 if let hdrLabel = diagnostics.sourceHDRLabel {

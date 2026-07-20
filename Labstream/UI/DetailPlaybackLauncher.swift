@@ -122,6 +122,7 @@ enum DetailPlaybackLauncher {
             remotePlaySessionId: remote.playSessionId,
             sourceMetadata: remote.sourceMetadata,
             playMethod: remote.playMethod,
+            transcodeReasons: remote.transcodeReasons,
             mediaBrowserProgressSession: mediaBrowserProgressSession(
                 backend: progressBackend,
                 item: item,
@@ -219,6 +220,7 @@ enum DetailPlaybackLauncher {
             mediaSourceId: reopened.mediaSourceId,
             sourceMetadata: reopened.sourceMetadata,
             playMethod: reopened.playMethod,
+            transcodeReasons: reopened.transcodeReasons,
             onStop: {
                 stopActiveEncoding(remote: reopened, appModel: appModel)
             })
@@ -338,6 +340,7 @@ struct MediaBrowserRemotePlayback: Identifiable, Equatable {
     var sourceMetadata: MediaBrowserPlaybackSourceMetadata { result.sourceMetadata }
     var playMethod: MediaBrowserPlayMethod { result.playMethod }
     var usesServerEncoding: Bool { result.usesServerEncoding }
+    var transcodeReasons: [String] { result.transcodeReasons }
 
     /// Jellyfin historically sends the idempotent active-encoding stop for every remote session;
     /// Emby must send it only for server-encoded streams. Preserve that backend contract exactly.
