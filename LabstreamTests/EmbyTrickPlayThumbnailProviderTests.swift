@@ -142,7 +142,8 @@ final class EmbyTrickPlayThumbnailProviderTests: XCTestCase {
         var frames: [TrickPlayThumbnail?] = []
         for caller in callers { frames.append(await caller.value) }
 
-        XCTAssertEqual(await loadCount.value, 1, "concurrent scrub targets must share one BIF fetch")
+        let finalLoadCount = await loadCount.value
+        XCTAssertEqual(finalLoadCount, 1, "concurrent scrub targets must share one BIF fetch")
         XCTAssertEqual(frames.compactMap { $0 }.count, callerCount, "every caller must get a frame")
         for frame in frames.compactMap({ $0 }) {
             XCTAssertEqual(frame.imageData, Data("bif-frame".utf8))
