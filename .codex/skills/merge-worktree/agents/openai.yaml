@@ -1,0 +1,4 @@
+interface:
+  display_name: "Merge Worktree"
+  short_description: "Merge and close out a Labstream worktree"
+  default_prompt: "Use $merge-worktree to merge and fully close out this Labstream worktree."
