@@ -8,9 +8,14 @@ This document is the durable repository plan. Keep its phase status synchronized
 
 Implementation checkpoint: commits `53ec96eb` and `5ef5bb6d` establish the tvOS compile,
 test-host, and simulator-tooling foundation. Generic tvOS app and test builds pass, as do the
-existing visionOS, mobile, Mac, PMSKit, tooling-hygiene, and strict-documentation checks. A live
-tvOS launch remains blocked until a tvOS simulator runtime is installed; physical-device validation
-also remains pending. This checkpoint is not a parity implementation or Phase 0 exit.
+existing visionOS, mobile, Mac, PMSKit, tooling-hygiene, and strict-documentation checks. On an
+installed tvOS 27 runtime, the worktree-owned Apple TV 4K (third generation) simulator build was
+installed with a matching binary UUID and launched to the signed-out three-backend login surface
+without a crash/fault; the initial UI launch test also passed. The shared unit suite exposed one
+intermittent persistence-barrier failure that passed on a focused rerun, while this Xcode beta hung
+finalizing both test invocations and had to be terminated. That runner problem remains open, as do
+fixture browse state and physical-device validation. This checkpoint is not a parity implementation
+or Phase 0 exit.
 
 ## Goal
 
@@ -78,7 +83,8 @@ Every row is required across Plex, Jellyfin, and Emby wherever that row is imple
 - [x] Audit the shared source root for `canImport(UIKit)` and availability fallthroughs; gate or adapt MetricKit, Spotlight, pasteboard/share/export, embedded web auth, iOS orientation/PiP, and visionOS scenes.
 - [x] Introduce a central platform feature policy so tvOS can omit the approved downloads/offline exception and adapt unavailable system APIs without forking backend or product policy.
 - [x] Update project-hygiene allowlists, `scripts/worktree-sim.sh`, compile audit, and developer docs with a worktree-owned concrete tvOS simulator identity; never target a generic `booted` simulator.
-- [ ] Add the tvOS build/test lane to the eventual Apple-platform CI work and prove the launch/UI-test lane on an installed tvOS simulator runtime.
+- [x] Prove a concrete worktree-owned simulator build, install/binary-identity guard, launch, bounded fault scan, screenshot, and initial UI launch test on an installed tvOS runtime.
+- [ ] Stabilize/fix tvOS test-run finalization and add the tvOS build/test lane to the eventual Apple-platform CI work.
 
 **Exit:** a clean tvOS simulator build launches deterministically into fixture login/browse state; existing visionOS, mobile, Mac, and PMSKit lanes still build/test.
 
