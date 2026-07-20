@@ -8,6 +8,9 @@ import PMSKit
 /// `musicDestination(for:sectionKey:)` the Plex stack uses, so the detail screens and
 /// playback are shared.
 struct MediaBrowserMusicView: View {
+    let macPivot: MusicPivot?
+    let allowedLibraryIDs: Set<String>?
+    private let externalSelectedLibraryID: Binding<String?>?
     @Environment(AppModel.self) private var appModel
 
     @State private var libraries: [MusicLibrary] = []
@@ -19,8 +22,20 @@ struct MediaBrowserMusicView: View {
     /// the previous backend's libraries.
     @State private var loadedIdentity: String?
 
+    init(macPivot: MusicPivot? = nil,
+         selectedLibraryID: Binding<String?>? = nil,
+         allowedLibraryIDs: Set<String>? = nil) {
+        self.macPivot = macPivot
+        self.externalSelectedLibraryID = selectedLibraryID
+        self.allowedLibraryIDs = allowedLibraryIDs
+    }
+
     private var selectedLibrary: MusicLibrary? {
-        libraries.first { $0.id == selectedLibraryID } ?? libraries.first
+        libraries.first { $0.id == selectedLibraryBinding.wrappedValue } ?? libraries.first
+    }
+
+    private var selectedLibraryBinding: Binding<String?> {
+        externalSelectedLibraryID ?? $selectedLibraryID
     }
 
     /// Reload when the backend or its server changes (switching Jellyfin ⇄ Emby).
@@ -45,12 +60,12 @@ struct MediaBrowserMusicView: View {
                                            systemImage: "music.note",
                                            description: Text("This server has no music libraries."))
                 } else if let library = selectedLibrary {
-                    MediaBrowserMusicLibraryView(library: library)
-                        .id(library.id) // reset pivot/scroll when switching libraries
+                    MediaBrowserMusicLibraryView(library: library, requestedPivot: macPivot)
+                        .id("\(library.id):\(macPivot?.rawValue ?? "adaptive")")
                 }
             }
         }
-        .navigationTitle("Music")
+        .navigationTitle(macPivot == nil || macPivot == .home ? "Music" : macPivot?.rawValue ?? "Music")
         .toolbar {
             if libraries.count > 1 {
                 #if os(macOS)
@@ -75,7 +90,7 @@ struct MediaBrowserMusicView: View {
     }
 
     private var musicLibraryPicker: some View {
-        Picker("Library", selection: $selectedLibraryID) {
+        Picker("Library", selection: selectedLibraryBinding) {
             ForEach(libraries) { library in
                 Text(library.title).tag(Optional(library.id))
             }
@@ -90,14 +105,18 @@ struct MediaBrowserMusicView: View {
         if identityChanged { loadState = .loading }
         else if case .loaded = loadState {} else { loadState = .loading }
         do {
-            let libs = try await appModel.musicProvider.musicLibraries()
+            let fetched = try await appModel.musicProvider.musicLibraries()
+            let libs = fetched.filter { allowedLibraryIDs?.contains($0.id) ?? true }
             // A newer backend switch may have superseded this fetch while it was in flight; its own
             // `.task(id:)` reload will deliver the correct libraries, so drop this stale result.
             guard backendIdentity == activeIdentity else { return }
             libraries = libs
             // Reset the selection when the backend changed — the previous backend's library id is
             // meaningless for the new server.
-            if selectedLibraryID == nil || identityChanged { selectedLibraryID = libs.first?.id }
+            let currentSelection = selectedLibraryBinding.wrappedValue
+            if currentSelection == nil || identityChanged || !libs.contains(where: { $0.id == currentSelection }) {
+                selectedLibraryBinding.wrappedValue = libs.first?.id
+            }
             loadedIdentity = activeIdentity
             loadState = .loaded
         } catch {
@@ -112,23 +131,35 @@ struct MediaBrowserMusicView: View {
 /// its own load state and scroll position.
 private struct MediaBrowserMusicLibraryView: View {
     let library: MusicLibrary
+    let requestedPivot: MusicPivot?
 
     @State private var pivot: MusicPivot = .home
 
     var body: some View {
-        MusicPivotShell(pivot: $pivot) { pivot in
-            switch pivot {
-            case .home:
-                MediaBrowserMusicHome(library: library).id("home")
-            case .artists:
-                MusicPagedGrid(libraryID: library.id, libraryTitle: library.title, kind: .artists)
-                    .id("artists")
-            case .albums:
-                MusicPagedGrid(libraryID: library.id, libraryTitle: library.title, kind: .albums)
-                    .id("albums")
-            case .playlists:
-                MusicPlaylistsPivot().id("playlists")
+        Group {
+            if let requestedPivot {
+                pivotContent(requestedPivot)
+            } else {
+                MusicPivotShell(pivot: $pivot) { pivot in
+                    pivotContent(pivot)
+                }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func pivotContent(_ pivot: MusicPivot) -> some View {
+        switch pivot {
+        case .home:
+            MediaBrowserMusicHome(library: library).id("home")
+        case .artists:
+            MusicPagedGrid(libraryID: library.id, libraryTitle: library.title, kind: .artists)
+                .id("artists")
+        case .albums:
+            MusicPagedGrid(libraryID: library.id, libraryTitle: library.title, kind: .albums)
+                .id("albums")
+        case .playlists:
+            MusicPlaylistsPivot().id("playlists")
         }
     }
 }

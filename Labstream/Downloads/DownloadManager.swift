@@ -4861,6 +4861,10 @@ public final class DownloadManager {
             isQueuePaused: isQueuePaused,
             downloadSpeed: downloadSpeed,
             displayBytes: { record in displayBytes(for: record) },
+            trustworthyExpectedBytes: { record in
+                liveRangeProgress[record.ratingKey]?.expectedBytes
+                    ?? staticRangeExpectedBytes(for: record)
+            },
             errorMessage: { record in
                 guard record.status == .failed || record.status == .paused,
                       let error = lastError[record.ratingKey] else { return nil }

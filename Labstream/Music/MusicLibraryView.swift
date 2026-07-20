@@ -8,6 +8,9 @@ import PMSKit
 /// This view also owns the music navigation routing: artist and album items pushed
 /// from anywhere in this stack resolve through the shared `musicDestination(for:)`.
 struct MusicLibraryView: View {
+    let macPivot: MusicPivot?
+    let allowedLibraryIDs: Set<String>?
+    private let externalSelectedLibraryID: Binding<String?>?
     @Environment(AppModel.self) private var appModel
 
     @State private var sections: [PlexSection] = []
@@ -19,13 +22,23 @@ struct MusicLibraryView: View {
     @State private var loadedIdentity: String?
     @State private var loadGeneration = 0
 
+    init(macPivot: MusicPivot? = nil,
+         selectedLibraryID: Binding<String?>? = nil,
+         allowedLibraryIDs: Set<String>? = nil) {
+        self.macPivot = macPivot
+        self.externalSelectedLibraryID = selectedLibraryID
+        self.allowedLibraryIDs = allowedLibraryIDs
+    }
+
     var body: some View {
         switch appModel.activeBackend {
         case .plex:
             plexBody
         case .jellyfin, .emby:
             // Jellyfin/Emby music browses through the shared MusicProvider (#111).
-            MediaBrowserMusicView()
+            MediaBrowserMusicView(macPivot: macPivot,
+                                  selectedLibraryID: externalSelectedLibraryID,
+                                  allowedLibraryIDs: allowedLibraryIDs)
         }
     }
 
@@ -47,12 +60,12 @@ struct MusicLibraryView: View {
                                            systemImage: "music.note",
                                            description: Text("This server has no music libraries."))
                 } else if let section = selectedSection {
-                    MusicHomeView(section: section)
-                        .id(section.key) // reset pivot/scroll/load when switching libraries
+                    MusicHomeView(section: section, requestedPivot: macPivot)
+                        .id("\(section.key):\(macPivot?.rawValue ?? "adaptive")")
                 }
             }
         }
-        .navigationTitle("Music")
+        .navigationTitle(macPivot == nil || macPivot == .home ? "Music" : macPivot?.rawValue ?? "Music")
         .toolbar {
             // Library switcher only when the server has more than one music section.
             if sections.count > 1 {
@@ -78,7 +91,7 @@ struct MusicLibraryView: View {
     }
 
     private var musicSectionPicker: some View {
-        Picker("Library", selection: $selectedSectionKey) {
+        Picker("Library", selection: selectedSectionBinding) {
             ForEach(sections) { section in
                 Text(section.title).tag(Optional(section.key))
             }
@@ -92,7 +105,11 @@ struct MusicLibraryView: View {
 
     /// The section to browse: the explicit selection, else the first music section.
     private var selectedSection: PlexSection? {
-        sections.first { $0.key == selectedSectionKey } ?? sections.first
+        sections.first { $0.key == selectedSectionBinding.wrappedValue } ?? sections.first
+    }
+
+    private var selectedSectionBinding: Binding<String?> {
+        externalSelectedLibraryID ?? $selectedSectionKey
     }
 
     private func load(force: Bool = false) async {
@@ -112,8 +129,13 @@ struct MusicLibraryView: View {
         do {
             let libraries = try await service.libraries()
             guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
-            sections = libraries.filter(\.isMusic)
-            if selectedSectionKey == nil { selectedSectionKey = sections.first?.key }
+            sections = libraries.filter { section in
+                section.isMusic && (allowedLibraryIDs?.contains(section.key) ?? true)
+            }
+            let currentSelection = selectedSectionBinding.wrappedValue
+            if currentSelection == nil || !sections.contains(where: { $0.key == currentSelection }) {
+                selectedSectionBinding.wrappedValue = sections.first?.key
+            }
             loadedIdentity = activeIdentity
             loadState = .loaded
         } catch {
@@ -148,22 +170,39 @@ func musicDestination(for item: MediaItem, sectionKey: String?) -> some View {
 /// old single-scroll MusicSectionBrowseView (rail + full artist dump).
 private struct MusicHomeView: View {
     let section: PlexSection
+    let requestedPivot: MusicPivot?
 
     @State private var pivot: MusicPivot = .home
 
+    init(section: PlexSection, requestedPivot: MusicPivot? = nil) {
+        self.section = section
+        self.requestedPivot = requestedPivot
+        _pivot = State(initialValue: requestedPivot ?? .home)
+    }
+
     var body: some View {
-        MusicPivotShell(pivot: $pivot) { pivot in
-            // Each pivot owns its load state and scroll position; `id` keeps them
-            // alive across switches only within one section (parent resets by key).
-            switch pivot {
-            case .home: MusicHomePivot(section: section)
-            case .artists:
-                // Shared paged grid (#111): A–Z rail + random-access paging + sort menu.
-                MusicPagedGrid(libraryID: section.key, libraryTitle: section.title, kind: .artists)
-            case .albums:
-                MusicPagedGrid(libraryID: section.key, libraryTitle: section.title, kind: .albums)
-            case .playlists: MusicPlaylistsPivot()
+        Group {
+            if let requestedPivot {
+                pivotContent(requestedPivot)
+            } else {
+                MusicPivotShell(pivot: $pivot) { pivot in
+                    pivotContent(pivot)
+                }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func pivotContent(_ pivot: MusicPivot) -> some View {
+        // Each pivot owns its load state and scroll position; the parent identity resets when the
+        // explicit Mac source-list destination or selected library changes.
+        switch pivot {
+        case .home: MusicHomePivot(section: section)
+        case .artists:
+            MusicPagedGrid(libraryID: section.key, libraryTitle: section.title, kind: .artists)
+        case .albums:
+            MusicPagedGrid(libraryID: section.key, libraryTitle: section.title, kind: .albums)
+        case .playlists: MusicPlaylistsPivot()
         }
     }
 }

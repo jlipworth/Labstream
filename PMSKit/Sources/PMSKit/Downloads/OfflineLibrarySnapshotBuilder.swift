@@ -11,6 +11,7 @@ public enum OfflineLibrarySnapshotBuilder {
                             isQueuePaused: Bool,
                             downloadSpeed: [String: Double],
                             displayBytes: (DownloadRecord) -> Int? = { _ in nil },
+                            trustworthyExpectedBytes: (DownloadRecord) -> Int? = { _ in nil },
                             errorMessage: (DownloadRecord) -> String?,
                             displayProgress: (DownloadRecord) -> Double?,
                             statusCaption: (DownloadRecord, DownloadBackendKind) -> String,
@@ -37,6 +38,14 @@ public enum OfflineLibrarySnapshotBuilder {
             displayBytes(record).map { (record.ratingKey, $0) }
         })
 
+        let activeTransferPercentage = OfflineActiveTransferPercentage.integerPercent(records.map { record in
+            OfflineActiveTransferPercentage.Sample(
+                status: record.status,
+                transferredBytes: max(record.bytes, displayBytesByRatingKey[record.ratingKey] ?? 0),
+                trustworthyExpectedBytes: trustworthyExpectedBytes(record)
+            )
+        })
+
         return OfflineLibrarySnapshot(
             rows: rows,
             queueToolbarAction: DownloadQueueToolbarPolicy.action(
@@ -46,7 +55,8 @@ public enum OfflineLibrarySnapshotBuilder {
             isQueuePaused: isQueuePaused,
             aggregateStats: OfflineDownloadAggregateStats.make(records: records,
                                                                speedsByRatingKey: downloadSpeed,
-                                                               displayBytesByRatingKey: displayBytesByRatingKey)
+                                                               displayBytesByRatingKey: displayBytesByRatingKey),
+            activeTransferPercentage: activeTransferPercentage
         )
     }
 }

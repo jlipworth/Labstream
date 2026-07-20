@@ -8,21 +8,25 @@ import Foundation
 /// observation work and row rendering stays value-driven.
 public struct OfflineLibrarySnapshot: Sendable, Equatable {
     public static let empty = OfflineLibrarySnapshot(rows: [], queueToolbarAction: nil, isQueuePaused: false,
-                                                     aggregateStats: .empty)
+                                                     aggregateStats: .empty,
+                                                     activeTransferPercentage: nil)
 
     public let rows: [OfflineDownloadRowSnapshot]
     public let queueToolbarAction: DownloadQueueToolbarPolicy.Action?
     public let isQueuePaused: Bool
     public let aggregateStats: OfflineDownloadAggregateStats
+    public let activeTransferPercentage: Int?
 
     public init(rows: [OfflineDownloadRowSnapshot],
                 queueToolbarAction: DownloadQueueToolbarPolicy.Action?,
                 isQueuePaused: Bool,
-                aggregateStats: OfflineDownloadAggregateStats) {
+                aggregateStats: OfflineDownloadAggregateStats,
+                activeTransferPercentage: Int? = nil) {
         self.rows = rows
         self.queueToolbarAction = queueToolbarAction
         self.isQueuePaused = isQueuePaused
         self.aggregateStats = aggregateStats
+        self.activeTransferPercentage = activeTransferPercentage
     }
 
     public var footerText: String {
