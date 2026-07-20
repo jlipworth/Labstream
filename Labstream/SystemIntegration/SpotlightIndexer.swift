@@ -1,6 +1,26 @@
-import CoreSpotlight
 import Foundation
 import PMSKit
+
+#if os(tvOS)
+/// Core Spotlight is unavailable on tvOS. Keep identifier parsing shared for deep-link
+/// compatibility while indexing becomes a no-op; Top Shelf owns TV discovery later.
+enum SpotlightIndexer {
+    static let domainIdentifier = "com.jlipworth.Labstream.media"
+
+    static func index(_ items: [MediaItem], server: URL) {}
+    static func index(_ items: [MediaItem], backend: MediaBackendKind, server: URL) {}
+    static func deleteAll(completion: (@Sendable (Bool) -> Void)? = nil) { completion?(true) }
+
+    static func routeKey(from searchableIdentifier: String) -> BackendScopedMediaID {
+        MediaSearchIdentifier.routeKey(from: searchableIdentifier)
+    }
+
+    static func ratingKey(from searchableIdentifier: String) -> String {
+        routeKey(from: searchableIdentifier).ratingKey
+    }
+}
+#else
+import CoreSpotlight
 import UniformTypeIdentifiers
 
 /// Best-effort CoreSpotlight indexing of library items as they're browsed
@@ -118,3 +138,4 @@ enum SpotlightIndexer {
         return "\(lead) · Labstream library"
     }
 }
+#endif

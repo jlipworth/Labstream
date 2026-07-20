@@ -506,11 +506,13 @@ struct DetailView: View {
         .fullScreenCover(isPresented: $presentingPlayer) {
             playerCover
         }
+        #if !os(tvOS)
         .sheet(isPresented: $showDownloadOptions) {
             DownloadOptionsSheet(item: detailed,
                                  mediaIndex: selectedMediaIndex,
                                  backend: actionBackend.downloadBackendKind)
         }
+        #endif
         #endif
     }
 
@@ -763,7 +765,9 @@ struct DetailView: View {
             // each button's label so the glass pill itself spans the column.
             VStack(spacing: DS.Space.md) {
                 playButton
-                downloadButton
+                if PlatformFeaturePolicy.supportsDownloads {
+                    downloadButton
+                }
                 #if os(visionOS)
                 watchTogetherButton
                 #endif
@@ -775,7 +779,9 @@ struct DetailView: View {
         } else {
             HStack(spacing: DS.Space.lg) {
                 playButton
-                downloadButton
+                if PlatformFeaturePolicy.supportsDownloads {
+                    downloadButton
+                }
                 #if os(visionOS)
                 watchTogetherButton
                 #endif

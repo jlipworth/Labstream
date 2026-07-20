@@ -35,8 +35,10 @@ struct SettingsView: View {
     @State private var resetPlaybackPrefs = false
     @State private var copiedDiagnostics = false
     @State private var copiedDiagnosticsResetID: UUID?
+    #if !os(tvOS)
     @State private var exportingDiagnostics = false
     @State private var diagnosticExportDocument = DiagnosticReportArtifact.Document()
+    #endif
     @State private var presentingFeedback = false
     @State private var switchingBackend: MediaBackendKind?
 
@@ -69,7 +71,9 @@ struct SettingsView: View {
             serverSection
             librariesSection
             playbackSection
-            storageSection
+            if PlatformFeaturePolicy.supportsDownloads {
+                storageSection
+            }
             maintenanceSection
             diagnosticsSection
             aboutSection
@@ -81,6 +85,7 @@ struct SettingsView: View {
             homeMaxVideoBitrateKbps = PlaybackPreferences.qualityKbps(forDefaultsKey: PlaybackPreferences.Keys.homeQualityKbps)
             remoteMaxVideoBitrateKbps = PlaybackPreferences.qualityKbps(forDefaultsKey: PlaybackPreferences.Keys.remoteQualityKbps)
         }
+        #if !os(tvOS)
         .fileExporter(isPresented: $exportingDiagnostics,
                       document: diagnosticExportDocument,
                       contentType: .plainText,
@@ -99,6 +104,7 @@ struct SettingsView: View {
                 ])
             }
         }
+        #endif
         .sheet(isPresented: $presentingFeedback) {
             FeedbackSheet(reportText: diagnosticReportText,
                           githubIssuesURL: Self.feedbackIssuesURL,
@@ -667,6 +673,7 @@ struct SettingsView: View {
             }
             .disabled(clearedImageCache)
 
+            #if !os(tvOS)
             Button {
                 SpotlightIndexer.deleteAll { ok in
                     Task { @MainActor in
@@ -685,10 +692,15 @@ struct SettingsView: View {
                 }
             }
             .disabled(clearedSpotlightIndex)
+            #endif
         } header: {
             Text("Maintenance")
         } footer: {
+            #if os(tvOS)
+            Text("Artwork re-downloads the next time it appears.")
+            #else
             Text("Artwork re-downloads on next view. Clearing Spotlight removes Labstream media from system search; browsing Home or library pages again repopulates results.")
+            #endif
         }
     }
 
@@ -730,6 +742,7 @@ struct SettingsView: View {
                     Label("Enable diagnostic logging", systemImage: "ladybug")
                 }
 
+            #if !os(tvOS)
             Button {
                 AppDiagnostics.record(.settingsUI, "diagnostics.report_copied", fields: [
                     "events_in_buffer": .int(AppDiagnostics.events().count),
@@ -745,7 +758,9 @@ struct SettingsView: View {
                     Label("Copy diagnostic report", systemImage: "doc.on.doc")
                 }
             }
+            #endif
 
+            #if !os(tvOS)
             Button {
                 AppDiagnostics.record(.settingsUI, "diagnostics.report_export_requested", fields: [
                     "events_in_buffer": .int(AppDiagnostics.events().count),
@@ -756,6 +771,7 @@ struct SettingsView: View {
             } label: {
                 Label("Export diagnostic report file", systemImage: "square.and.arrow.up")
             }
+            #endif
 
             Button {
                 AppDiagnostics.record(.settingsUI, "diagnostics.feedback_opened", fields: [
@@ -769,7 +785,11 @@ struct SettingsView: View {
         } header: {
             Text("Diagnostics")
         } footer: {
+            #if os(tvOS)
+            Text("Logging is off by default. When enabled, Labstream keeps a bounded, redacted local ring buffer. Send feedback opens the TV support handoff without copying unavailable pasteboard data.")
+            #else
             Text("Logging is off by default. When enabled, Labstream keeps a bounded local ring buffer for bug reports. Reports are copied or exported only when you tap a button, and sensitive values are omitted. Send feedback to developer opens a redacted report you can preview, share, or attach to a GitHub bug form.")
+            #endif
         }
     }
 
@@ -779,7 +799,9 @@ struct SettingsView: View {
             LabeledContent("Build", value: Self.appBuild)
             if let slug = Self.buildSlug {
                 LabeledContent("Build ID", value: slug)
+                    #if !os(tvOS)
                     .textSelection(.enabled)
+                    #endif
             }
             if let builtAt = Self.buildDateUTC {
                 LabeledContent("Built", value: builtAt)

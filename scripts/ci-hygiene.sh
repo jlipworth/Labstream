@@ -66,7 +66,7 @@ check_pbxproj_churn() {
   local pbx_churn
   pbx_churn=$(printf '%s\n' "$diff_output" \
     | grep -E '^[+-].*(isa = PBX(BuildFile|FileReference)|/\* (Begin|End) PBX(BuildFile|FileReference) section \*/|/\* .* in (Sources|Resources) \*/)' \
-    | grep -Ev 'LabstreamMobile\.app|Labstream(Mac)?Tests\.xctest|PMSKit in Frameworks' || true)
+    | grep -Ev 'Labstream(Mobile|TV)?\.app|Labstream(Mac|TV)?Tests\.xctest|PMSKit in Frameworks' || true)
   if [[ -n "$pbx_churn" ]]; then
     printf '%s\n' "$pbx_churn" >&2
     fail "unexpected project.pbxproj file-reference/build-file churn in $label; synchronized groups should pick up new Swift/resource files without pbxproj edits"

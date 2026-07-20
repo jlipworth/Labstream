@@ -64,12 +64,12 @@ Every row is required across Plex, Jellyfin, and Emby wherever that row is imple
 
 ### Phase 0 — target and compile foundation
 
-- [ ] Add `.tvOS(...)` to `PMSKit/Package.swift` and run PMSKit tests for the declared platform.
+- [x] Add `.tvOS(...)` to `PMSKit/Package.swift` and run PMSKit tests for the declared platform.
 - [ ] Add `LabstreamTV`, `LabstreamTVTests`, and `LabstreamTVUITests` targets/products/shared schemes with tvOS deployment settings, signing, generated plist, package linkage, test plans, and layered TV app icon assets.
-- [ ] Add a tvOS-only `LabstreamTV.swift` entry point and explicit Apple TV/tvOS values in `PlatformClientIdentity`.
-- [ ] Add an explicit `tvRootContent` path instead of allowing `RootView` to fall through to visionOS-only content.
-- [ ] Audit the shared source root for `canImport(UIKit)` and availability fallthroughs; gate or adapt MetricKit, Spotlight, pasteboard/share/export, embedded web auth, iOS orientation/PiP, and visionOS scenes.
-- [ ] Introduce a central platform feature policy so tvOS can omit the approved downloads/offline exception and adapt unavailable system APIs without forking backend or product policy.
+- [x] Add a tvOS-only `LabstreamTV.swift` entry point and explicit Apple TV/tvOS values in `PlatformClientIdentity`.
+- [x] Add an explicit `tvRootContent` path instead of allowing `RootView` to fall through to visionOS-only content.
+- [x] Audit the shared source root for `canImport(UIKit)` and availability fallthroughs; gate or adapt MetricKit, Spotlight, pasteboard/share/export, embedded web auth, iOS orientation/PiP, and visionOS scenes.
+- [x] Introduce a central platform feature policy so tvOS can omit the approved downloads/offline exception and adapt unavailable system APIs without forking backend or product policy.
 - [ ] Update project-hygiene allowlists, `scripts/worktree-sim.sh`, compile audit, Apple-platform CI, and developer docs with a concrete tvOS simulator identity and never target a generic `booted` simulator.
 
 **Exit:** a clean tvOS simulator build launches deterministically into fixture login/browse state; existing visionOS, mobile, Mac, and PMSKit lanes still build/test.
