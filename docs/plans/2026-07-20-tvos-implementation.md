@@ -18,6 +18,10 @@ the compile-foundation checkpoint; this slice reran the tvOS app/unit/UI lanes, 
 strict documentation. Artwork fixtures, the remaining browse/search/settings surfaces, complete
 focus semantics, player/music adaptation, physical-device validation, and release work remain open.
 This checkpoint is an initial parity implementation slice, not a parity-complete app or Phase 1 exit.
+The subsequent TV visual audit removes invented marketing copy, gives authentication controls and
+panels ten-foot sizing without oversized empty containers, introduces tvOS-specific poster, grid,
+library-card, music-art, type, and spacing metrics, and suppresses redundant Home/Libraries/Search/
+Music/Settings navigation titles because the persistent tab bar already carries that information.
 
 ## Goal
 
@@ -93,8 +97,8 @@ Every row is required across Plex, Jellyfin, and Emby wherever that row is imple
 
 ### Phase 1 — TV shell, authentication, and focus
 
-- [ ] Complete the initial dedicated tvOS tab shell for Home, Libraries, Search, Music, and Settings as a ten-foot, focus-safe surface; do not show an empty Offline destination.
-- [ ] Add TV poster/card sizing, safe-area spacing, readable metadata, system focus effects, default focus, focus sections, and focus restoration across navigation, sheets, reloads, pagination, errors, and playback return.
+- [ ] Complete the initial dedicated tvOS tab shell for Home, Libraries, Search, Music, and Settings as a ten-foot, focus-safe surface; do not show an empty Offline destination. The persistent tab shell is implemented and no longer repeats its labels as top-level page titles; per-surface completion remains open.
+- [ ] Add TV poster/card sizing, safe-area spacing, readable metadata, system focus effects, default focus, focus sections, and focus restoration across navigation, sheets, reloads, pagination, errors, and playback return. The first sizing/spacing/type pass covers authentication, shared video posters/grids, library cards, and music art; exhaustive focus-state and live-data review remains.
 - [ ] Make Plex link code, Jellyfin Quick Connect, and Emby Connect PIN primary; keep remote-friendly manual URL/credential entry as fallback where needed. The initial three-backend TV layout and remote backend-selection fixture are implemented; live authentication, restore, error, and fallback flows remain.
 - [ ] Validate local-network permission/ATS behavior, LAN and remote servers, Keychain restore, backend switching, signed-out/error states, dictation/iPhone Remote keyboard, and physical keyboard fallback.
 - [ ] Make Settings TV-specific and focus-safe. Exclude download/storage/cellular controls, and replace unavailable diagnostics, feedback, discovery, or export surfaces with TV-native equivalents rather than silently dropping their user capability.

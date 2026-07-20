@@ -55,7 +55,7 @@ struct HomeView: View {
                 }
             }
         }
-        .navigationTitle("Home")
+        .labstreamTopLevelNavigationTitle("Home")
         // JellyfinLibraryLink and EmbyLibraryLink are compatibility aliases for the SAME
         // MediaBrowserLibraryLink type. Registering both independently makes SwiftUI report an
         // invalid duplicate destination and pick one by stack position. Route the one canonical
@@ -245,7 +245,7 @@ private struct HubRail: View {
             RailSectionHeader(title: hub.title, destination: destination)
 
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: compactWidth ? DS.Space.md : DS.Space.xl) {
+                LazyHStack(spacing: HomeLayoutMetrics.itemSpacing(compact: compactWidth)) {
                     ForEach(hub.metadata) { item in
                         NavigationLink(value: item) {
                             RailMediaCell(item: item, context: .home)
@@ -269,6 +269,14 @@ private struct HubRail: View {
 }
 
 private enum HomeLayoutMetrics {
+    static func itemSpacing(compact: Bool) -> CGFloat {
+        #if os(tvOS)
+        32
+        #else
+        compact ? DS.Space.md : DS.Space.xl
+        #endif
+    }
+
     static func sectionSpacing(compact: Bool, denseSections: Bool) -> CGFloat {
         if compact { return DS.Space.xl }
         return denseSections ? DS.Space.xxl : DS.Space.xxxl
@@ -284,7 +292,11 @@ private enum HomeLayoutMetrics {
     }
 
     static func pageVerticalPadding(compact: Bool) -> CGFloat {
+        #if os(tvOS)
+        32
+        #else
         compact ? DS.Space.lg : DS.Space.xl
+        #endif
     }
 
     static func reservePosterHeightForEpisodeRails(denseSections: Bool) -> Bool {
@@ -357,11 +369,21 @@ struct RailMediaCell: View {
 /// stable rail rhythm, but regular iPad/macOS Home lets episode rails use their natural
 /// height so 16:9 "On Deck" shelves do not leave a poster-sized blank tail (#234).
 private enum HomeRailCellMetrics {
-    static func episodeWidth(compact: Bool) -> CGFloat { compact ? 196 : 252 }
+    static func episodeWidth(compact: Bool) -> CGFloat {
+        #if os(tvOS)
+        360
+        #else
+        compact ? 196 : 252
+        #endif
+    }
     static func episodeImageHeight(compact: Bool) -> CGFloat {
         episodeWidth(compact: compact) * 9.0 / 16.0
     }
+    #if os(tvOS)
+    static let titleBlockHeight: CGFloat = 78
+    #else
     static let titleBlockHeight: CGFloat = 46
+    #endif
     static func canonicalCellHeight(compact: Bool) -> CGFloat {
         DS.Poster.height(for: DS.Poster.railWidth(compact: compact)) + DS.Space.sm + titleBlockHeight
     }
@@ -478,19 +500,19 @@ struct PosterCell: View {
                 // title + year treatment.
                 if item.kind == .episode {
                     Text(item.grandparentTitle ?? item.title)
-                        .font(labelStyle == .denseLibrary ? .subheadline.weight(.semibold) : .headline)
-                        .lineLimit(1)
+                        .font(primaryLabelFont)
+                        .lineLimit(primaryLabelLineLimit)
                     Text(episodeSubtitle)
-                        .font(labelStyle == .denseLibrary ? .caption : .subheadline)
+                        .font(secondaryLabelFont)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 } else {
                     Text(item.title)
-                        .font(labelStyle == .denseLibrary ? .subheadline.weight(.semibold) : .headline)
-                        .lineLimit(1)
+                        .font(primaryLabelFont)
+                        .lineLimit(primaryLabelLineLimit)
                     if let year = item.year {
                         Text(String(year))
-                            .font(labelStyle == .denseLibrary ? .caption : .subheadline)
+                            .font(secondaryLabelFont)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -500,6 +522,30 @@ struct PosterCell: View {
         // NOTE: no hover effect here — the wrapping link uses `.cardLink()`, whose
         // built-in `.plain` style draws (and correctly registers) the gaze highlight.
         // A custom ButtonStyle here misroutes pinches to neighboring cards (DEVELOPMENT.md).
+    }
+
+    private var primaryLabelFont: Font {
+        #if os(tvOS)
+        .headline
+        #else
+        labelStyle == .denseLibrary ? .subheadline.weight(.semibold) : .headline
+        #endif
+    }
+
+    private var secondaryLabelFont: Font {
+        #if os(tvOS)
+        .body
+        #else
+        labelStyle == .denseLibrary ? .caption : .subheadline
+        #endif
+    }
+
+    private var primaryLabelLineLimit: Int {
+        #if os(tvOS)
+        2
+        #else
+        1
+        #endif
     }
 
     /// "S{x}E{y} · {title}" for an episode poster's second line, gracefully dropping the

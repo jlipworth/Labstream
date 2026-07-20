@@ -79,7 +79,7 @@ struct SettingsView: View {
             aboutSection
             accountSection
         }
-        .navigationTitle("Settings")
+        .labstreamTopLevelNavigationTitle("Settings")
         .onAppear {
             PlaybackPreferences.migrateLegacyQualityIfNeeded()
             homeMaxVideoBitrateKbps = PlaybackPreferences.qualityKbps(forDefaultsKey: PlaybackPreferences.Keys.homeQualityKbps)

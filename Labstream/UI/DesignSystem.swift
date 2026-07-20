@@ -78,10 +78,34 @@ enum DS {
             static let detailWidth: CGFloat = 220
         }
 
-        static func railWidth(compact: Bool) -> CGFloat { compact ? Compact.railWidth : railWidth }
-        static func gridMin(compact: Bool) -> CGFloat { compact ? Compact.gridMin : gridMin }
-        static func gridMax(compact: Bool) -> CGFloat { compact ? Compact.gridMax : gridMax }
-        static func detailWidth(compact: Bool) -> CGFloat { compact ? Compact.detailWidth : detailWidth }
+        static func railWidth(compact: Bool) -> CGFloat {
+            #if os(tvOS)
+            236
+            #else
+            compact ? Compact.railWidth : railWidth
+            #endif
+        }
+        static func gridMin(compact: Bool) -> CGFloat {
+            #if os(tvOS)
+            220
+            #else
+            compact ? Compact.gridMin : gridMin
+            #endif
+        }
+        static func gridMax(compact: Bool) -> CGFloat {
+            #if os(tvOS)
+            260
+            #else
+            compact ? Compact.gridMax : gridMax
+            #endif
+        }
+        static func detailWidth(compact: Bool) -> CGFloat {
+            #if os(tvOS)
+            360
+            #else
+            compact ? Compact.detailWidth : detailWidth
+            #endif
+        }
 
         /// Height for a given poster width at the canonical 2:3 ratio.
         static func height(for width: CGFloat) -> CGFloat { width / aspect }
@@ -91,7 +115,11 @@ enum DS {
     /// unless a screen documents a deliberate exception; the initializer owns that policy while
     /// this modifier centralizes the shared margins and hover breathing room.
     enum Scroll {
+        #if os(tvOS)
+        static let railHorizontalMargin: CGFloat = 80
+        #else
         static let railHorizontalMargin = Space.xxl
+        #endif
         static let compactRailHorizontalMargin = Space.md
 
         static func railHorizontalMargin(compact: Bool) -> CGFloat {
@@ -101,9 +129,21 @@ enum DS {
 
     /// Grid gutters: the 24-pt visionOS/iPad gutter would push a compact grid down to
     /// two columns, so compact width tightens to the 12-pt phone gutter.
-    static func gridGutter(compact: Bool) -> CGFloat { compact ? Space.md : Space.xl }
+    static func gridGutter(compact: Bool) -> CGFloat {
+        #if os(tvOS)
+        36
+        #else
+        compact ? Space.md : Space.xl
+        #endif
+    }
     /// Screen-edge padding around grids/pages: 24-pt regular, 16-pt compact.
-    static func pagePadding(compact: Bool) -> CGFloat { compact ? Space.lg : Space.xl }
+    static func pagePadding(compact: Bool) -> CGFloat {
+        #if os(tvOS)
+        80
+        #else
+        compact ? Space.lg : Space.xl
+        #endif
+    }
 
     /// Soft, layered shadow used under posters and cards to lift them off the glass
     /// without looking heavy. visionOS already has real depth; this is a gentle hint.
@@ -185,6 +225,17 @@ extension View {
         #else
         self.buttonStyle(.plain)
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        #endif
+    }
+
+    /// A persistent labelled tab bar already names top-level tvOS destinations. Repeating that
+    /// label as a large navigation title burns vertical space without adding information.
+    @ViewBuilder
+    func labstreamTopLevelNavigationTitle(_ title: String) -> some View {
+        #if os(tvOS)
+        self
+        #else
+        self.navigationTitle(title)
         #endif
     }
 

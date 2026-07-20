@@ -46,7 +46,7 @@ struct SearchView: View {
                 resultsBody
             }
         }
-        .navigationTitle("Search")
+        .labstreamTopLevelNavigationTitle("Search")
         .navigationDestination(for: MediaItem.self) { item in
             // Capture the active backend as the item's origin (#100) so actions resolve
             // against the source backend even after a backend switch.
