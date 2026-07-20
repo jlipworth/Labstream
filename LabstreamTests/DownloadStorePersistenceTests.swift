@@ -5,6 +5,43 @@ import Testing
 @testable import Labstream
 
 struct DownloadStorePersistenceTests {
+    @Test func seasonPlanRowsCommitInOneDurableSnapshot() throws {
+        try withTemporaryDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let records = ["episode-1", "episode-2"].map { key in
+                DownloadRecord(
+                    ratingKey: key, attemptID: .generated(), title: key,
+                    localURL: directory.appendingPathComponent("\(key).mp4"),
+                    status: .queued,
+                    metadata: OfflineMetadata(
+                        ratingKey: key, title: key, type: "episode",
+                        seasonPlannerPendingAdmission: true))
+            }
+            #expect(store.createSeasonPlannedRecordsAtomically(records))
+            let restored = DownloadStore(baseDirectory: directory)
+            #expect(Set(restored.records.map(\.ratingKey)) == ["episode-1", "episode-2"])
+            #expect(restored.records.allSatisfy {
+                $0.metadata?.seasonPlannerPendingAdmission == true && $0.status == .queued
+            })
+        }
+    }
+
+    @Test func seasonPlanPersistenceFailureStartsWithNoPartialRows() throws {
+        try withTemporaryDirectory { directory in
+            let store = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
+            let record = DownloadRecord(
+                ratingKey: "episode-fail", attemptID: .generated(), title: "Episode",
+                localURL: directory.appendingPathComponent("episode-fail.mp4"),
+                status: .queued,
+                metadata: OfflineMetadata(ratingKey: "episode-fail", title: "Episode",
+                                          type: "episode", seasonPlannerPendingAdmission: true))
+            #expect(!store.createSeasonPlannedRecordsAtomically([record]))
+            #expect(store.records.isEmpty)
+        }
+    }
+
     @Test func mutationDoesNotReturnBeforeAtomicWriteAttemptFinishes() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("download-store-persistence-\(UUID().uuidString)", isDirectory: true)

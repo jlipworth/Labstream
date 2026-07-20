@@ -309,7 +309,9 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
             type: mappedType,
             duration: runTimeTicks.map { $0 / 10_000 },
             viewOffset: userData?.playbackPositionTicks.map { $0 / 10_000 },
-            viewCount: userData?.played == true ? 1 : 0,
+            // Preserve the server's three states. A missing UserData/Played value is unknown,
+            // not unwatched; the season download planner must never silently include it.
+            viewCount: userData?.played.map { $0 ? 1 : 0 },
             year: productionYear,
             summary: overview,
             thumb: resolvedThumb,

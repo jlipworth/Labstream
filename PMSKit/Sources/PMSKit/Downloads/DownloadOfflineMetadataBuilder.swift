@@ -18,7 +18,8 @@ public enum DownloadOfflineMetadataBuilder {
                                 mediaSourceID: String? = nil,
                                 audioStreamIndex: Int? = nil,
                                 downloadLane: DownloadLane? = nil,
-                                serverPreparedVersion: Bool = false) -> OfflineMetadata {
+                                serverPreparedVersion: Bool = false,
+                                seasonPlannerPendingAdmission: Bool = false) -> OfflineMetadata {
         let media = item.media
         let sourceMedia = media?.indices.contains(mediaIndex) == true ? media?[mediaIndex] : nil
         let sourcePart = sourceMedia?.part.indices.contains(partIndex) == true ? sourceMedia?.part[partIndex] : nil
@@ -74,7 +75,8 @@ public enum DownloadOfflineMetadataBuilder {
                                playSessionID: nil,
                                downloadLane: downloadLane,
                                resumeMode: resumeMode,
-                               serverPreparedVersion: serverPreparedVersion ? true : nil)
+                               serverPreparedVersion: serverPreparedVersion ? true : nil,
+                               seasonPlannerPendingAdmission: seasonPlannerPendingAdmission ? true : nil)
     }
 
     private static func downloadBitrateKbps(sourceMedia: Media?,

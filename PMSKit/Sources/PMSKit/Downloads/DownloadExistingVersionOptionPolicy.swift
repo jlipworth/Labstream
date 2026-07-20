@@ -14,6 +14,10 @@ public struct DownloadExistingVersionOption: Sendable, Equatable, Identifiable {
     public let label: String
     public let detail: String?
     public let sizeBytes: Int?
+    public let width: Int?
+    public let height: Int?
+    /// Normalized to kbps across Plex (already kbps) and Emby (reported in bits/sec).
+    public let bitrateKbps: Int?
     /// True only when this server-rendered alternate is safe to download byte-for-byte and play as a
     /// local offline file on this device. Incompatible versions stay visible but disabled in the UI.
     public let playableOffline: Bool
@@ -23,12 +27,18 @@ public struct DownloadExistingVersionOption: Sendable, Equatable, Identifiable {
                 label: String,
                 detail: String?,
                 sizeBytes: Int?,
+                width: Int? = nil,
+                height: Int? = nil,
+                bitrateKbps: Int? = nil,
                 playableOffline: Bool,
                 target: Target) {
         self.id = id
         self.label = label
         self.detail = detail
         self.sizeBytes = sizeBytes
+        self.width = width
+        self.height = height
+        self.bitrateKbps = bitrateKbps
         self.playableOffline = playableOffline
         self.target = target
     }
@@ -51,6 +61,9 @@ public enum DownloadExistingVersionOptionPolicy {
                 label: mediaVersionLabel(m),
                 detail: mediaVersionDetail(media: m, part: part),
                 sizeBytes: part.size,
+                width: m.width,
+                height: m.height,
+                bitrateKbps: m.bitrate,
                 playableOffline: playableOffline,
                 target: .plexMediaIndex(index))
         }
@@ -76,6 +89,9 @@ public enum DownloadExistingVersionOptionPolicy {
                 label: embyVersionLabel(version),
                 detail: embyVersionDetail(version),
                 sizeBytes: version.size,
+                width: version.width,
+                height: version.height,
+                bitrateKbps: version.bitrate.map { $0 / 1_000 },
                 playableOffline: playableOffline,
                 target: .embyMediaSource(id: version.mediaSourceId, sizeBytes: version.size))
         }

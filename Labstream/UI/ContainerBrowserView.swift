@@ -24,6 +24,7 @@ struct ContainerBrowserView: View {
     @State private var children: [MediaItem] = []
     @State private var loadState: BrowseLoadState = .idle
     @State private var collectionPaging = LibraryPagingModel()
+    @State private var showingSeasonDownloadPlanner = false
 
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: DS.Poster.gridMin(compact: compactWidth),
@@ -69,6 +70,18 @@ struct ContainerBrowserView: View {
             }
         }
         .navigationTitle(navigationTitle)
+        .toolbar {
+            if childrenAreEpisodes, loadState == .loaded, !children.isEmpty {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("Download Season", systemImage: "arrow.down.circle") {
+                        showingSeasonDownloadPlanner = true
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showingSeasonDownloadPlanner) {
+            SeasonDownloadPlannerSheet(season: container)
+        }
         .id(container.ratingKey)
         .task(id: container.ratingKey) { await load() }
     }
@@ -303,7 +316,7 @@ struct ContainerBrowserView: View {
     }
 }
 
-private extension MediaItem {
+extension MediaItem {
     /// Stable per-row identity for season/episode container browsers. Keep backend id in the
     /// SwiftUI identity so taps still route to the exact item when rows are legitimately distinct.
     var containerRowIdentity: String {
@@ -322,7 +335,7 @@ private extension MediaItem {
     }
 }
 
-private extension Array where Element == MediaItem {
+extension Array where Element == MediaItem {
     /// Normalize a show/season child payload at the UI boundary: sort episode lists by numeric
     /// S/E order and collapse visible duplicate episode rows. Use display identity for episodes
     /// (S/E/title) rather than backend id, because duplicate files can arrive as separate Jellyfin

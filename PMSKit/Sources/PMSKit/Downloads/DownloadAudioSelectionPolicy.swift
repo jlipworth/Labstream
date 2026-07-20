@@ -20,12 +20,15 @@ public struct DownloadAudioTrackSelection: Sendable, Equatable {
 /// container default, then first audio stream.
 public enum DownloadAudioSelectionPolicy {
     public static func selectedAudioStreamIndex(part: Part?,
-                                                overrideStreamIndex: Int? = nil) -> Int? {
-        selectedAudioTrack(part: part, overrideStreamIndex: overrideStreamIndex)?.streamIndex
+                                                overrideStreamIndex: Int? = nil,
+                                                preferredLanguage: String? = nil) -> Int? {
+        selectedAudioTrack(part: part, overrideStreamIndex: overrideStreamIndex,
+                           preferredLanguage: preferredLanguage)?.streamIndex
     }
 
     public static func selectedAudioTrack(part: Part?,
-                                          overrideStreamIndex: Int? = nil) -> DownloadAudioTrackSelection? {
+                                          overrideStreamIndex: Int? = nil,
+                                          preferredLanguage: String? = nil) -> DownloadAudioTrackSelection? {
         let streams = part?.audioStreams ?? []
         if let overrideStreamIndex, overrideStreamIndex >= 0 {
             let match = streams.first { stream in
@@ -34,13 +37,43 @@ public enum DownloadAudioSelectionPolicy {
             return makeSelection(streamIndex: overrideStreamIndex, stream: match, position: nil)
         }
 
-        guard let selected = streams.first(where: { $0.selected == true })
+        let preferred = preferredLanguage.flatMap { language in
+            streams.first { languageMatches($0, preferredLanguage: language) }
+        }
+        guard let selected = preferred
+            ?? streams.first(where: { $0.selected == true })
             ?? streams.first(where: { $0.isDefault == true })
             ?? streams.first else {
             return nil
         }
         let position = streams.firstIndex(where: { $0.id == selected.id }).map { $0 + 1 }
         return makeSelection(streamIndex: selected.id, stream: selected, position: position)
+    }
+
+    private static func languageMatches(_ stream: Stream, preferredLanguage: String) -> Bool {
+        let wanted = normalizedLanguageCodes(preferredLanguage)
+        guard !wanted.isEmpty else { return false }
+        let candidates = [stream.languageTag, stream.languageCode, stream.language]
+            .compactMap { $0 }
+            .flatMap(normalizedLanguageCodes)
+        return candidates.contains { wanted.contains($0) }
+    }
+
+    private static func normalizedLanguageCodes(_ raw: String) -> Set<String> {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !value.isEmpty else { return [] }
+        let base = value.split(separator: "-").first.map(String.init) ?? value
+        var result: Set<String> = [value, base]
+        let threeToTwo = [
+            "eng": "en", "spa": "es", "fre": "fr", "fra": "fr", "ger": "de", "deu": "de",
+            "ita": "it", "por": "pt", "jpn": "ja", "kor": "ko", "chi": "zh", "zho": "zh",
+            "dut": "nl", "nld": "nl", "swe": "sv", "nor": "no", "dan": "da", "fin": "fi",
+        ]
+        if let two = threeToTwo[base] { result.insert(two) }
+        if let localized = Locale.current.localizedString(forLanguageCode: base)?.lowercased() {
+            result.insert(localized)
+        }
+        return result
     }
 
     private static func makeSelection(streamIndex: Int,
