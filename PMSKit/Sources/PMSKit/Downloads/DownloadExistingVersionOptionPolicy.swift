@@ -16,7 +16,8 @@ public struct DownloadExistingVersionOption: Sendable, Equatable, Identifiable {
     public let sizeBytes: Int?
     public let width: Int?
     public let height: Int?
-    /// Normalized to kbps across Plex (already kbps) and Emby (reported in bits/sec).
+    /// Whole-file average in kbps. Plex supplies this directly; Emby values are derived from the
+    /// converted file's byte size and the item's duration rather than trusting MediaSource.Bitrate.
     public let bitrateKbps: Int?
     /// True only when this server-rendered alternate is safe to download byte-for-byte and play as a
     /// local offline file on this device. Incompatible versions stay visible but disabled in the UI.
@@ -72,29 +73,48 @@ public enum DownloadExistingVersionOptionPolicy {
     /// Emby Convert-Media copies exposed by an unfiltered PlaybackInfo response. These are addressed
     /// by MediaSource id rather than `Media` index, but use the same disabled-not-hidden offline gate.
     public static func embyOptions(response: EmbyPlaybackInfoResponse,
-                                   primaryMediaSourceId: String?) -> [DownloadExistingVersionOption] {
+                                   primaryMediaSourceId: String?,
+                                   durationMilliseconds: Int? = nil) -> [DownloadExistingVersionOption] {
         embyOptions(versions: EmbyPlayback.existingDownloadableVersions(
             response: response,
-            primaryMediaSourceId: primaryMediaSourceId))
+            primaryMediaSourceId: primaryMediaSourceId),
+            durationMilliseconds: durationMilliseconds)
     }
 
-    public static func embyOptions(versions: [EmbyPlayback.EmbyExistingVersion]) -> [DownloadExistingVersionOption] {
+    public static func embyOptions(versions: [EmbyPlayback.EmbyExistingVersion],
+                                   durationMilliseconds: Int? = nil)
+        -> [DownloadExistingVersionOption] {
         versions.enumerated().map { index, version in
             let playableOffline = version.supportsDirectPlay
                 && OfflineDownloadDecision.existingVersionPlayableOffline(
                     container: version.container,
                     videoCodec: version.videoCodec)
+            let averageBitrateKbps = averageWholeFileBitrateKbps(
+                sizeBytes: version.size, durationMilliseconds: durationMilliseconds)
             return DownloadExistingVersionOption(
                 id: "emby:\(index):\(version.mediaSourceId)",
-                label: embyVersionLabel(version),
+                label: embyVersionLabel(version, averageBitrateKbps: averageBitrateKbps),
                 detail: embyVersionDetail(version),
                 sizeBytes: version.size,
                 width: version.width,
                 height: version.height,
-                bitrateKbps: version.bitrate.map { $0 / 1_000 },
+                bitrateKbps: averageBitrateKbps,
                 playableOffline: playableOffline,
                 target: .embyMediaSource(id: version.mediaSourceId, sizeBytes: version.size))
         }
+    }
+
+    /// Approximate average whole-file bitrate. `MediaItem.duration` is milliseconds, so
+    /// bytes * 8 / milliseconds is numerically kbps. Double arithmetic avoids integer overflow for
+    /// large media files. Missing/invalid facts deliberately produce nil instead of falling back to
+    /// Emby's often stale or source-profile-oriented MediaSource.Bitrate.
+    public static func averageWholeFileBitrateKbps(sizeBytes: Int?,
+                                                   durationMilliseconds: Int?) -> Int? {
+        guard let sizeBytes, sizeBytes > 0,
+              let durationMilliseconds, durationMilliseconds > 0 else { return nil }
+        let result = Double(sizeBytes) * 8 / Double(durationMilliseconds)
+        guard result.isFinite, result > 0, result <= Double(Int.max) else { return nil }
+        return Int(result.rounded())
     }
 
     /// Extract a MediaBrowser MediaSource id from a selected `Media`/`Part` pair. The app sheet and
@@ -126,16 +146,17 @@ public enum DownloadExistingVersionOptionPolicy {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    /// Primary label for an Emby existing-version row: resolution · codec · bitrate (Emby bitrate is
-    /// bits/sec). Falls back to the source name, then a generic label.
-    public static func embyVersionLabel(_ version: EmbyPlayback.EmbyExistingVersion) -> String {
+    /// Primary label for an Emby existing-version row. Any bitrate shown is an explicitly labelled
+    /// whole-file average derived from size and duration; raw MediaSource.Bitrate is never rendered.
+    public static func embyVersionLabel(_ version: EmbyPlayback.EmbyExistingVersion,
+                                        averageBitrateKbps: Int? = nil) -> String {
         var parts: [String] = []
         if let resolution = DownloadResolutionLabel.label(width: version.width, height: version.height) {
             parts.append(resolution)
         }
         if let codec = version.videoCodec?.uppercased(), !codec.isEmpty { parts.append(codec) }
-        if let bitrate = version.bitrate, bitrate > 0 {
-            parts.append(String(format: "%.1f Mbps", Double(bitrate) / 1_000_000))
+        if let averageBitrateKbps, averageBitrateKbps > 0 {
+            parts.append(String(format: "%.1f Mbps avg", Double(averageBitrateKbps) / 1_000))
         }
         if parts.isEmpty, let name = version.name, !name.isEmpty { return name }
         return parts.isEmpty ? "Server version" : parts.joined(separator: " · ")
