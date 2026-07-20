@@ -70,6 +70,7 @@ site/
 .simid
 .simid-ipad
 .simid-iphone
+.simid-tvos
 .simplatform
 
 # Local agent simulator run artifacts

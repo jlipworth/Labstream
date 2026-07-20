@@ -39,6 +39,7 @@ class Lane:
 LANES = (
     Lane("visionos", "Labstream", "generic/platform=visionOS Simulator"),
     Lane("mobile", "LabstreamMobile", "generic/platform=iOS Simulator"),
+    Lane("tvos", "LabstreamTV", "generic/platform=tvOS Simulator"),
     Lane("mac", "LabstreamMac", "generic/platform=macOS"),
 )
 
@@ -82,7 +83,7 @@ def command_for_pms(source: pathlib.Path, scratch: pathlib.Path, scenario: str) 
 
 
 def product_sizes(dd: pathlib.Path, lane: str) -> tuple[int, int]:
-    # All three targets currently emit Labstream.app. ``Debug*`` covers macOS's
+    # All app targets currently emit Labstream.app. ``Debug*`` covers macOS's
     # unqualified Debug directory and the simulator SDK-qualified directories.
     candidates = list((dd / "Build/Products").glob("Debug*/Labstream.app"))
     if not candidates:
