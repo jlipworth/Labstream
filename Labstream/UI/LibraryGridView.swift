@@ -384,6 +384,7 @@ struct LibraryGridView: View {
     @State private var capabilityState: LibraryBrowseCapabilityLoadState = .loading
     @State private var loadedCapabilityIdentity: String?
     @State private var loadedPreferenceIdentity: String?
+    @State private var jumpTask: Task<Void, Never>?
 
     private var regularColumns: [GridItem] {
         [GridItem(.adaptive(minimum: DS.Poster.gridMin(compact: compactWidth),
@@ -542,6 +543,10 @@ struct LibraryGridView: View {
         .task(id: capabilityIdentity) { await loadBrowseCapabilities() }
         .task(id: loadIdentity) { await load() }
         .onChange(of: browseQuery) { _, query in savePreferences(query) }
+        .onDisappear {
+            jumpTask?.cancel()
+            jumpTask = nil
+        }
         .refreshable {
             // Capability discovery can fail independently of the library request. Retry it
             // on an explicit refresh instead of leaving a transient outage sticky for the
@@ -840,18 +845,26 @@ struct LibraryGridView: View {
     }
 
     private func jump(to entry: AlphabetBucket, proxy: ScrollViewProxy) {
+        jumpTask?.cancel()
         let source = pagingSource
+        let needsPageLoad = !paging.isLoaded(at: entry.offset)
         withAnimation(.snappy(duration: 0.16)) {
             proxy.scrollTo(entry.offset, anchor: .top)
         }
-        Task {
+
+        // Loaded targets are a local scroll only. For a sparse target, keep the immediate
+        // placeholder jump, but allow only the latest selection to re-anchor after its page
+        // arrives; older A-Z tasks must never pull the user back to a superseded letter.
+        guard needsPageLoad else { return }
+        jumpTask = Task {
             await paging.loadPage(containing: entry.offset, source: source) {
                 pagingIdentity == source.identity
             }
-            await MainActor.run {
-                withAnimation(.snappy(duration: 0.16)) {
-                    proxy.scrollTo(entry.offset, anchor: .top)
-                }
+            guard !Task.isCancelled,
+                  pagingIdentity == source.identity,
+                  paging.isLoaded(at: entry.offset) else { return }
+            withAnimation(.snappy(duration: 0.16)) {
+                proxy.scrollTo(entry.offset, anchor: .top)
             }
         }
     }

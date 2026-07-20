@@ -204,6 +204,12 @@ final class LibraryPagingModel {
         await loadPage(containing: index, source: source, isCurrent: isCurrent)
     }
 
+    /// Whether the displayed slot already has its item. Alphabet jumps use this to stay
+    /// purely local for loaded pages instead of re-fetching up to `pageSize` unchanged items.
+    func isLoaded(at index: Int) -> Bool {
+        slots.indices.contains(index) && slots[index] != nil
+    }
+
     func loadPage(containing index: Int,
                   source: LibraryPagingSource,
                   isCurrent: @MainActor () -> Bool) async {
@@ -213,9 +219,14 @@ final class LibraryPagingModel {
         // the serverOffset translation path entirely (and with it the F2 hole bug).
         guard collapser == nil else { return }
 
-        guard isCurrent(), activeIdentity == source.identity else { return }
+        guard !Task.isCancelled, isCurrent(), activeIdentity == source.identity else { return }
         let generation = activeLoadGeneration
         guard slots.indices.contains(index) else { return }
+
+        // The first page and previously visited pages are already authoritative. In particular,
+        // most A-Z taps land inside page 0; fetching that whole page again made a local jump wait
+        // on the network and republished every slot, restarting visible artwork work.
+        guard slots[index] == nil else { return }
 
         let window = PagingPageWindow(pageSize: source.pageSize)
         guard let page = window.page(containing: index),
@@ -231,9 +242,16 @@ final class LibraryPagingModel {
                   isCurrent(),
                   activeIdentity == source.identity,
                   activeLoadGeneration == generation {
-                try? await Task.sleep(for: .milliseconds(50))
+                do {
+                    try await Task.sleep(for: .milliseconds(50))
+                } catch {
+                    return
+                }
             }
-            guard isCurrent(), activeIdentity == source.identity, activeLoadGeneration == generation else { return }
+            guard !Task.isCancelled,
+                  isCurrent(),
+                  activeIdentity == source.identity,
+                  activeLoadGeneration == generation else { return }
             if slots.indices.contains(index), slots[index] != nil { return }
         }
 
@@ -246,13 +264,20 @@ final class LibraryPagingModel {
                                                      fields: ["page": page, "page_size": source.pageSize])
         do {
             let pageResult = try await source.fetchPage(start, source.pageSize)
-            guard isCurrent(), activeIdentity == source.identity, activeLoadGeneration == generation else {
-                span.end(result: "stale")
+            guard !Task.isCancelled,
+                  isCurrent(),
+                  activeIdentity == source.identity,
+                  activeLoadGeneration == generation else {
+                span.end(result: Task.isCancelled ? "cancelled" : "stale")
                 return
             }
             PagingPageWindow.insert(pageResult.items, into: &slots, at: start)
             span.end(fields: ["item_count": pageResult.items.count])
         } catch {
+            if Task.isCancelled {
+                span.end(result: "cancelled")
+                return
+            }
             guard isCurrent(), activeIdentity == source.identity, activeLoadGeneration == generation else {
                 span.end(result: "stale")
                 return
