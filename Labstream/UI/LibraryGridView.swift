@@ -33,7 +33,7 @@ struct LibrariesView: View {
                 librariesList
             }
         }
-        .navigationTitle("Libraries")
+        .labstreamTopLevelNavigationTitle("Libraries")
         .navigationDestination(for: LibraryRootItem.Destination.self) { destination in
             switch destination {
             case .plex(let section):
@@ -88,7 +88,7 @@ struct LibrariesView: View {
             librariesEmptyState
         } else {
             ScrollView {
-                LazyVGrid(columns: librarySectionColumns, spacing: DS.Space.xl) {
+                LazyVGrid(columns: librarySectionColumns, spacing: DS.gridGutter(compact: compactWidth)) {
                     ForEach(rootItems) { item in
                         NavigationLink(value: item.destination) {
                             LibrarySectionCard(title: item.title, kind: item.kind)
@@ -102,6 +102,9 @@ struct LibrariesView: View {
     }
 
     private var librarySectionColumns: [GridItem] {
+        #if os(tvOS)
+        return [GridItem(.adaptive(minimum: 440, maximum: 520), spacing: DS.gridGutter(compact: false))]
+        #else
         if compactWidth {
             // Compact phones: one full-width flexible column — the card stretches to
             // the screen (`LibrarySectionCard` drops its rigid width on compact), so
@@ -116,6 +119,7 @@ struct LibrariesView: View {
         // gapped column instead of bunched cards. The spacing-collapse invariant this preserves
         // is asserted by `LibraryGridLayout` / `LibraryGridLayoutTests` in PMSKit.
         return [GridItem(.adaptive(minimum: 300, maximum: 340), spacing: DS.Space.xl)]
+        #endif
     }
 
     private var librariesEmptyState: some View {

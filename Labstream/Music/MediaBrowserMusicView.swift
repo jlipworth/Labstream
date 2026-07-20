@@ -65,7 +65,9 @@ struct MediaBrowserMusicView: View {
                 }
             }
         }
-        .navigationTitle(macPivot == nil || macPivot == .home ? "Music" : macPivot?.rawValue ?? "Music")
+        // tvOS suppresses the top-level title (helper is a no-op there); other platforms
+        // keep main's pivot-aware dynamic title.
+        .labstreamTopLevelNavigationTitle(macPivot == nil || macPivot == .home ? "Music" : macPivot?.rawValue ?? "Music")
         .toolbar {
             if libraries.count > 1 {
                 #if os(macOS)

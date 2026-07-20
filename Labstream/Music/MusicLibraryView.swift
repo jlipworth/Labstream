@@ -65,7 +65,9 @@ struct MusicLibraryView: View {
                 }
             }
         }
-        .navigationTitle(macPivot == nil || macPivot == .home ? "Music" : macPivot?.rawValue ?? "Music")
+        // tvOS suppresses the top-level title (helper is a no-op there); other platforms
+        // keep main's pivot-aware dynamic title.
+        .labstreamTopLevelNavigationTitle(macPivot == nil || macPivot == .home ? "Music" : macPivot?.rawValue ?? "Music")
         .toolbar {
             // Library switcher only when the server has more than one music section.
             if sections.count > 1 {
@@ -709,10 +711,18 @@ enum MusicArt {
     }
     #endif
 
-    static func railSize(compact: Bool) -> CGFloat { compact ? Compact.railSize : railSize }
+    static func railSize(compact: Bool) -> CGFloat {
+        #if os(tvOS)
+        236
+        #else
+        compact ? Compact.railSize : railSize
+        #endif
+    }
     static func gridMin(compact: Bool) -> CGFloat {
         #if os(macOS)
         MacGrid.gridMin
+        #elseif os(tvOS)
+        220
         #else
         compact ? Compact.gridMin : gridMin
         #endif
@@ -720,6 +730,8 @@ enum MusicArt {
     static func gridMax(compact: Bool) -> CGFloat {
         #if os(macOS)
         MacGrid.gridMax
+        #elseif os(tvOS)
+        260
         #else
         compact ? Compact.gridMax : gridMax
         #endif
@@ -734,6 +746,8 @@ enum MusicArt {
     static func gridRowSpacing(compact: Bool) -> CGFloat {
         #if os(macOS)
         MacGrid.rowSpacing
+        #elseif os(tvOS)
+        36
         #else
         compact ? DS.Space.lg : DS.Space.xxl
         #endif
@@ -742,6 +756,8 @@ enum MusicArt {
     static var gridVerticalPadding: CGFloat {
         #if os(macOS)
         MacGrid.verticalPadding
+        #elseif os(tvOS)
+        32
         #else
         DS.Space.xl
         #endif

@@ -187,28 +187,27 @@ struct LoginView: View {
     private var tvLoginLayout: some View {
         GeometryReader { proxy in
             HStack(spacing: 100) {
-                VStack(spacing: DS.Space.xl) {
-                    LoginBrandHeader()
-
-                    Text("Your media. Your screen.")
-                        .font(.title2.weight(.medium))
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: 560)
+                LoginBrandHeader()
+                .frame(maxWidth: 520)
                 .accessibilityElement(children: .contain)
 
                 ScrollView {
-                    formControlsStack
-                        .padding(.horizontal, 64)
-                        .padding(.vertical, 56)
-                        .frame(maxWidth: 820, minHeight: proxy.size.height - 160)
-                        .background(LoginPanelBackground())
-                        .frame(maxWidth: .infinity)
+                    VStack {
+                        formControlsStack
+                            .padding(.horizontal, 52)
+                            .padding(.vertical, 44)
+                            .frame(maxWidth: 700)
+                            .background(LoginPanelBackground())
+                    }
+                    .frame(maxWidth: .infinity,
+                           minHeight: proxy.size.height - 160,
+                           alignment: .center)
                 }
                 .scrollIndicators(.hidden)
                 .scrollBounceBehavior(.basedOnSize)
+                .frame(maxWidth: 760, maxHeight: proxy.size.height - 160)
             }
-            .padding(.horizontal, 120)
+            .padding(.horizontal, 104)
             .padding(.vertical, 80)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }

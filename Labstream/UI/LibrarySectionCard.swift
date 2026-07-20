@@ -17,43 +17,97 @@ struct LibrarySectionCard: View {
 
     /// Icon tile side: the 76-pt visionOS/iPad tile makes a phone list row look like a
     /// kiosk button, so compact width uses a standard-list-scale 56-pt tile.
-    private var tileSide: CGFloat { compactWidth ? 56 : 76 }
+    private var tileSide: CGFloat {
+        #if os(tvOS)
+        96
+        #else
+        compactWidth ? 56 : 76
+        #endif
+    }
 
     var body: some View {
-        HStack(spacing: DS.Space.lg) {
+        HStack(spacing: cardSpacing) {
             ZStack {
                 RoundedRectangle(cornerRadius: compactWidth ? DS.Radius.chip + 4 : DS.Radius.card,
                                  style: .continuous)
                     .fill(.tint.opacity(0.18))
                 Image(systemName: kind.systemImage)
-                    .font(.system(size: compactWidth ? 25 : 34, weight: .semibold))
+                    .font(.system(size: iconSize, weight: .semibold))
                     .foregroundStyle(.tint)
             }
             .frame(width: tileSide, height: tileSide)
 
             VStack(alignment: .leading, spacing: DS.Space.xs) {
                 Text(title)
-                    .font(.title3.weight(.semibold))
+                    .font(titleFont)
                     .lineLimit(1)
                 Text(kind.subtitle)
-                    .font(.callout)
+                    .font(subtitleFont)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
 
             Spacer(minLength: 0)
         }
-        .padding(compactWidth ? DS.Space.md : DS.Space.lg)
+        .padding(cardPadding)
         // Rigid 300pt on regular width (see the #124 note at the grid); compact width
         // stretches the card to the single full-width column instead.
         .frame(maxWidth: compactWidth ? .infinity : nil, alignment: .leading)
-        .frame(width: compactWidth ? nil : 300, alignment: .leading)
+        .frame(width: cardWidth, alignment: .leading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
                 .strokeBorder(.primary.opacity(0.08), lineWidth: 0.5)
         )
         .posterHover()
+    }
+
+    private var cardSpacing: CGFloat {
+        #if os(tvOS)
+        24
+        #else
+        DS.Space.lg
+        #endif
+    }
+
+    private var iconSize: CGFloat {
+        #if os(tvOS)
+        42
+        #else
+        compactWidth ? 25 : 34
+        #endif
+    }
+
+    private var titleFont: Font {
+        #if os(tvOS)
+        .title2.weight(.semibold)
+        #else
+        .title3.weight(.semibold)
+        #endif
+    }
+
+    private var subtitleFont: Font {
+        #if os(tvOS)
+        .body
+        #else
+        .callout
+        #endif
+    }
+
+    private var cardPadding: CGFloat {
+        #if os(tvOS)
+        24
+        #else
+        compactWidth ? DS.Space.md : DS.Space.lg
+        #endif
+    }
+
+    private var cardWidth: CGFloat? {
+        #if os(tvOS)
+        440
+        #else
+        compactWidth ? nil : 300
+        #endif
     }
 }
 

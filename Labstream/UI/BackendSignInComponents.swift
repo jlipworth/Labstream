@@ -7,10 +7,10 @@ import SwiftUI
 
 private enum BackendAuthMetrics {
     #if os(tvOS)
-    static let pickerWidth: CGFloat = 620
-    static let buttonWidth: CGFloat = 560
-    static let fieldWidth: CGFloat = 680
-    static let helperWidth: CGFloat = 600
+    static let pickerWidth: CGFloat = 600
+    static let buttonWidth: CGFloat = 520
+    static let fieldWidth: CGFloat = 620
+    static let helperWidth: CGFloat = 560
     #elseif os(macOS)
     static let pickerWidth: CGFloat = 300
     static let buttonWidth: CGFloat = 300
@@ -46,8 +46,8 @@ private struct BackendPrimaryCTALabel: ViewModifier {
     func body(content: Content) -> some View {
         #if os(tvOS)
         content
-            .font(.title2.weight(.semibold))
-            .frame(maxWidth: .infinity, minHeight: 72)
+            .font(.title3.weight(.semibold))
+            .frame(maxWidth: .infinity, minHeight: 64)
         #elseif os(macOS)
         content
             .font(.callout.weight(.medium))

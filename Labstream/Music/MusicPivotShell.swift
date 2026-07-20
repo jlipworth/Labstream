@@ -30,7 +30,7 @@ struct MusicPivotShell<Content: View>: View {
                 }
             }
             .pickerStyle(.segmented)
-            .frame(maxWidth: 460)
+            .frame(maxWidth: pickerWidth)
             // Breathing room on compact, where the bar would otherwise run
             // edge-to-edge; regular width is already capped at 460 and centered.
             .padding(.horizontal, DS.Space.lg)
@@ -39,5 +39,13 @@ struct MusicPivotShell<Content: View>: View {
 
             content(pivot)
         }
+    }
+
+    private var pickerWidth: CGFloat {
+        #if os(tvOS)
+        760
+        #else
+        460
+        #endif
     }
 }
