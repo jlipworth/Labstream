@@ -216,6 +216,16 @@ Continue with [Install and observe a simulator smoke](#install-and-observe-a-sim
 when a concrete tvOS simulator runtime and `$SIMID` are available. The tvOS product deliberately has
 no downloads, Offline destination, or download-storage settings.
 
+Debug builds also expose production-isolated launch arguments for deterministic tvOS UI work. They
+never read or persist production credentials: `--ui-testing` starts signed out,
+`--ui-testing-backend plex|jellyfin|emby` selects the authentication surface, and
+`--ui-testing-fixture browse` supplies synthetic data to the real Home/Libraries/Detail views:
+
+```sh
+xcrun simctl launch "$SIMID" com.jlipworth.Labstream --args \
+  --ui-testing --ui-testing-backend plex --ui-testing-fixture browse
+```
+
 ## Install and observe a simulator smoke
 
 After either simulator build above, `$SIMID` and `$APP` identify the exact simulator and product.
@@ -307,8 +317,10 @@ uv run --with-requirements requirements.txt mkdocs build --strict
 - `LabstreamMacTests`, selected by the `LabstreamMac` scheme and
   `LabstreamMacTests.xctestplan`, runs on the macOS host;
 - `LabstreamTVTests`, selected together with `LabstreamTVUITests` by the `LabstreamTV` scheme and
-  `LabstreamTVTests.xctestplan`, compiles the shared app tests for tvOS. The initial UI target is a
-  launch harness; focus/remote fixtures remain part of the active tvOS implementation plan.
+  `LabstreamTVTests.xctestplan`, runs the applicable shared app tests for tvOS while excluding the
+  approved download-only exception. The UI target exercises deterministic authentication and the
+  initial remote-only Home-to-detail browse journey; broader focus/remote coverage remains part of
+  the active tvOS implementation plan.
 
 Run the app suite for the platform affected by a change (both for shared app infrastructure):
 
@@ -331,6 +343,14 @@ scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
 scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
   -scheme LabstreamTV -testPlan LabstreamTVTests \
   -destination 'generic/platform=tvOS Simulator' build-for-testing CODE_SIGNING_ALLOWED=NO
+
+# tvOS unit and UI suites (requires the worktree's concrete tvOS simulator).
+scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
+  -scheme LabstreamTV -destination "platform=tvOS Simulator,id=$SIMID" \
+  -only-testing:LabstreamTVTests test CODE_SIGNING_ALLOWED=NO -enableCodeCoverage NO
+scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
+  -scheme LabstreamTV -destination "platform=tvOS Simulator,id=$SIMID" \
+  -only-testing:LabstreamTVUITests test CODE_SIGNING_ALLOWED=NO -enableCodeCoverage NO
 ```
 
 The shared app suites are host-app unit tests, not live-server acceptance tests. Keep policy and

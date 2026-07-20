@@ -7,15 +7,17 @@ Research baseline: 2026-07-20 against repository commit `44839793`, with parity 
 This document is the durable repository plan. Keep its phase status synchronized with issue #246 during implementation, then promote proven behavior into the current architecture, development, testing, and platform documentation. Archive this note only after every required acceptance gate is complete or explicitly moved to a linked follow-up.
 
 Implementation checkpoint: commits `53ec96eb` and `5ef5bb6d` establish the tvOS compile,
-test-host, and simulator-tooling foundation. Generic tvOS app and test builds pass, as do the
-existing visionOS, mobile, Mac, PMSKit, tooling-hygiene, and strict-documentation checks. On an
-installed tvOS 27 runtime, the worktree-owned Apple TV 4K (third generation) simulator build was
-installed with a matching binary UUID and launched to the signed-out three-backend login surface
-without a crash/fault; the initial UI launch test also passed. The shared unit suite exposed one
-intermittent persistence-barrier failure that passed on a focused rerun, while this Xcode beta hung
-finalizing both test invocations and had to be terminated. That runner problem remains open, as do
-fixture browse state and physical-device validation. This checkpoint is not a parity implementation
-or Phase 0 exit.
+test-host, and simulator-tooling foundation. The current Phase 1 slice adds a dedicated
+ten-foot sign-in layout, deterministic signed-out fixtures for all three backends, synthetic browse
+fixtures consumed by the real Home/Libraries/Detail views, and a remote-only Home -> detail -> Back
+journey. On tvOS 27, the worktree-owned Apple TV 4K (third generation) simulator build installs with
+a matching binary UUID and launches without an app fault. The applicable tvOS unit suite now omits
+the approved download-only exception and completes with 82 passing tests; the separated tvOS UI
+suite completes with four passing tests. Existing visionOS, mobile, Mac, and PMSKit checks passed at
+the compile-foundation checkpoint; this slice reran the tvOS app/unit/UI lanes, tooling hygiene, and
+strict documentation. Artwork fixtures, the remaining browse/search/settings surfaces, complete
+focus semantics, player/music adaptation, physical-device validation, and release work remain open.
+This checkpoint is an initial parity implementation slice, not a parity-complete app or Phase 1 exit.
 
 ## Goal
 
@@ -84,7 +86,8 @@ Every row is required across Plex, Jellyfin, and Emby wherever that row is imple
 - [x] Introduce a central platform feature policy so tvOS can omit the approved downloads/offline exception and adapt unavailable system APIs without forking backend or product policy.
 - [x] Update project-hygiene allowlists, `scripts/worktree-sim.sh`, compile audit, and developer docs with a worktree-owned concrete tvOS simulator identity; never target a generic `booted` simulator.
 - [x] Prove a concrete worktree-owned simulator build, install/binary-identity guard, launch, bounded fault scan, screenshot, and initial UI launch test on an installed tvOS runtime.
-- [ ] Stabilize/fix tvOS test-run finalization and add the tvOS build/test lane to the eventual Apple-platform CI work.
+- [x] Separate the applicable tvOS unit and UI suites so both finalize reliably on the installed runtime; omit download-only app tests from the tvOS target while retaining shared product-policy coverage.
+- [ ] Add the tvOS build/test lane to the eventual Apple-platform CI work.
 
 **Exit:** a clean tvOS simulator build launches deterministically into fixture login/browse state; existing visionOS, mobile, Mac, and PMSKit lanes still build/test.
 
@@ -92,7 +95,7 @@ Every row is required across Plex, Jellyfin, and Emby wherever that row is imple
 
 - [ ] Complete the initial dedicated tvOS tab shell for Home, Libraries, Search, Music, and Settings as a ten-foot, focus-safe surface; do not show an empty Offline destination.
 - [ ] Add TV poster/card sizing, safe-area spacing, readable metadata, system focus effects, default focus, focus sections, and focus restoration across navigation, sheets, reloads, pagination, errors, and playback return.
-- [ ] Make Plex link code, Jellyfin Quick Connect, and Emby Connect PIN primary; keep remote-friendly manual URL/credential entry as fallback where needed.
+- [ ] Make Plex link code, Jellyfin Quick Connect, and Emby Connect PIN primary; keep remote-friendly manual URL/credential entry as fallback where needed. The initial three-backend TV layout and remote backend-selection fixture are implemented; live authentication, restore, error, and fallback flows remain.
 - [ ] Validate local-network permission/ATS behavior, LAN and remote servers, Keychain restore, backend switching, signed-out/error states, dictation/iPhone Remote keyboard, and physical keyboard fallback.
 - [ ] Make Settings TV-specific and focus-safe. Exclude download/storage/cellular controls, and replace unavailable diagnostics, feedback, discovery, or export surfaces with TV-native equivalents rather than silently dropping their user capability.
 
@@ -130,7 +133,7 @@ Every row is required across Plex, Jellyfin, and Emby wherever that row is imple
 
 ### Phase 5 — automation, accessibility, and physical hardware
 
-- [ ] Add deterministic tvOS UI fixtures and `XCUIRemote` tests for directional focus, Select, Menu, Play/Pause, tab/rail boundaries, search, details, modals, player enter/exit, errors, backend switching, and destructive confirmations.
+- [ ] Add deterministic tvOS UI fixtures and `XCUIRemote` tests for directional focus, Select, Menu, Play/Pause, tab/rail boundaries, search, details, modals, player enter/exit, errors, backend switching, and destructive confirmations. Initial fixtures cover all three signed-out backend surfaces and Plex Home -> detail -> Menu/Back through the real app views.
 - [ ] Assert the focused element after transitions; attach screenshots and accessibility hierarchies on failure.
 - [ ] Complete VoiceOver/Switch Control tasks for sign-in, browse, search, playback, audio/subtitles, and sign-out; verify Increase Contrast, Reduce Motion, Bold Text, captions, and audio descriptions.
 - [ ] Validate on Apple TV 4K (third generation), the sole initial hardware target, plus its successor only after that model ships and becomes available; do not claim older-generation support.

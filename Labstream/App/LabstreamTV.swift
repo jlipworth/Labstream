@@ -8,15 +8,21 @@ struct LabstreamTV: App {
     @State private var downloadManager: DownloadManager?
     @State private var musicPlayer: MusicPlayerController?
     @State private var watchTogetherCoordinator = WatchTogetherCoordinator()
-    @State private var bootstrap = SessionBootstrap()
+    @State private var bootstrap: SessionBootstrap
     @State private var customCinemaSession = CustomCinemaSessionStore()
     @State private var realityTheaterSession = RealityTheaterSessionStore()
 
     init() {
+        let launchBootstrap = SessionBootstrap()
+        _bootstrap = State(initialValue: launchBootstrap)
         guard !AppLaunchMode.isUnitTestHost else { return }
         AppStartup.prepareForLaunch()
 
         guard let services = AppServices.make() else { return }
+        #if DEBUG
+        TVUITestLaunchConfiguration.configure(appModel: services.appModel,
+                                              bootstrap: launchBootstrap)
+        #endif
         _appModel = State(initialValue: services.appModel)
         _authManager = State(initialValue: services.authManager)
         _downloadManager = State(initialValue: services.downloadManager)

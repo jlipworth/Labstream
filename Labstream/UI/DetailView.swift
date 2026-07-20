@@ -455,6 +455,9 @@ struct DetailView: View {
         // exactly once as before. The autoplay token is one-shot, so a later version switch
         // can't re-trigger it.
         .task(id: activeVersionRatingKey) {
+            #if os(tvOS) && DEBUG
+            if TVUIFixtureCatalog.isBrowseEnabled { return }
+            #endif
             await refreshMetadata()
             // System-entry autoplay (#24): a "Play …" intent armed the router right
             // before pushing this view; consume it once metadata is in and present
@@ -472,6 +475,9 @@ struct DetailView: View {
         // detail), so it runs once and never blocks the rest of the screen. No-op for items
         // with a single version.
         .task(id: item.ratingKey) {
+            #if os(tvOS) && DEBUG
+            if TVUIFixtureCatalog.isBrowseEnabled { return }
+            #endif
             await resolveMovieVersionLabels()
         }
         #if os(macOS)

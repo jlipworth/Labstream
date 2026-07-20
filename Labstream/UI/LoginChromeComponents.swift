@@ -13,7 +13,9 @@ struct LoginBrandHeader: View {
     /// Slightly smaller lockup on compact phones so the sign-in form keeps room
     /// above the keyboard; regular width keeps the authored visionOS/iPad size.
     private var markSide: CGFloat {
-        #if os(iOS)
+        #if os(tvOS)
+        148
+        #elseif os(iOS)
         horizontalSizeClass == .compact ? 84 : 112
         #else
         112
@@ -29,7 +31,11 @@ struct LoginBrandHeader: View {
                 Text("stream")
                     .foregroundStyle(DS.Brand.amber)
             }
+            #if os(tvOS)
+            .font(.system(size: 58, weight: .bold, design: .rounded))
+            #else
             .font(.largeTitle.bold())
+            #endif
             .lineLimit(1)
             .minimumScaleFactor(0.6)
             .accessibilityElement(children: .ignore)

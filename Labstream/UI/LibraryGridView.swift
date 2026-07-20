@@ -132,6 +132,16 @@ struct LibrariesView: View {
         loadGeneration += 1
         let generation = loadGeneration
         loadState = .loading
+
+        #if os(tvOS) && DEBUG
+        if let fixtureItems = TVUIFixtureCatalog.libraryRootItems(for: appModel.activeBackend) {
+            rootItems = fixtureItems
+            loadedIdentity = activeIdentity
+            loadState = .loaded
+            return
+        }
+        #endif
+
         let span = PerformanceInstrumentation.begin(.librariesLoad,
                                                      backend: appModel.activeBackend.performanceLabel,
                                                      fields: ["force": force ? 1 : 0])
