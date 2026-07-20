@@ -52,6 +52,10 @@ struct CustomPlayerView: View {
     #endif
     #if os(visionOS)
     @State private var watchTogetherAttachTask: Task<Void, Never>?
+    /// The coordinator's `playerLaunchEpoch` captured when this view's controller was created.
+    /// Presented back on attach and dismissal so the coordinator can tell whether this player
+    /// belongs to the current SharePlay launch or is a superseded pre-launch player.
+    @State private var watchTogetherLaunchEpoch: UInt64?
     #endif
 
     init(item: MediaItem,
@@ -196,7 +200,7 @@ struct CustomPlayerView: View {
                 // leaves SharePlay so peers never retain a ghost participant. The Cinema handoff
                 // sets a non-closed presentation state before this view disappears, so it keeps
                 // the session and live PlaybackController coordinated in the immersive scaffold.
-                watchTogetherCoordinator.leaveIfPlaying(item)
+                watchTogetherCoordinator.leaveIfPlaying(item, playerLaunchEpoch: watchTogetherLaunchEpoch)
                 #endif
                 controller?.stop()
                 cinemaSession.clear()
@@ -252,20 +256,26 @@ struct CustomPlayerView: View {
                                          artworkRequest: artworkRequest)
             #endif
             #if os(visionOS)
+            // Capture the launch epoch in the same synchronous block that mints the controller: a
+            // SharePlay launch that lands after this point supersedes THIS player, and the stale
+            // epoch is what lets the coordinator recognize that on attach and dismissal.
+            let launchEpoch = watchTogetherCoordinator.playerLaunchEpoch
+            watchTogetherLaunchEpoch = launchEpoch
             cinemaSession.activate(title: item.title,
                                    item: item,
                                    origin: cinemaOrigin,
                                    controller: playback,
                                    geometry: CustomCinemaGeometry(item: item,
                                                                   mediaIndex: playback.mediaIndex),
-                                   trickPlayProvider: trickPlayProvider)
+                                   trickPlayProvider: trickPlayProvider,
+                                   watchTogetherLaunchEpoch: launchEpoch)
             #endif
             refreshScrubberClock(from: playback)
             playback.start()
             #if os(visionOS)
             watchTogetherAttachTask?.cancel()
             watchTogetherAttachTask = Task { @MainActor in
-                await attachWatchTogetherCoordinatorWhenReady(for: playback)
+                await attachWatchTogetherCoordinatorWhenReady(for: playback, launchEpoch: launchEpoch)
             }
             #endif
             Task { @MainActor in
@@ -308,10 +318,12 @@ struct CustomPlayerView: View {
 
     #if os(visionOS)
     @MainActor
-    private func attachWatchTogetherCoordinatorWhenReady(for playback: PlaybackController) async {
+    private func attachWatchTogetherCoordinatorWhenReady(for playback: PlaybackController,
+                                                         launchEpoch: UInt64) async {
         await maintainWatchTogetherAttachment(coordinator: watchTogetherCoordinator,
                                               controller: playback,
-                                              item: item) { controller === playback }
+                                              item: item,
+                                              launchEpoch: launchEpoch) { controller === playback }
     }
     #endif
 }
@@ -327,11 +339,14 @@ struct CustomPlayerView: View {
 /// so a not-yet-consented player retries once participation is granted; losing the session resets so
 /// a later session attaches fresh. The `isOwner` predicate lets both the windowed player and the
 /// Cinema scaffold run this against the same live controller across a window→immersive handoff
-/// without the loop outliving the surface that started it.
+/// without the loop outliving the surface that started it. `launchEpoch` is the coordinator epoch
+/// this controller was minted under; a player from a stale epoch (superseded by a SharePlay
+/// launch) is refused attachment so it can never race the launch's replacement player.
 @MainActor
 func maintainWatchTogetherAttachment(coordinator: WatchTogetherCoordinator,
                                      controller: PlaybackController,
                                      item: MediaItem,
+                                     launchEpoch: UInt64?,
                                      isOwner: @escaping @MainActor () -> Bool) async {
     var attachedRevision: SharePlayPlaybackAttachmentRevision<ObjectIdentifier>?
     while !Task.isCancelled {
@@ -343,7 +358,8 @@ func maintainWatchTogetherAttachment(coordinator: WatchTogetherCoordinator,
                 sessionGeneration: coordinator.playbackSessionGeneration,
                 itemID: ObjectIdentifier(currentItem))
             if revision != attachedRevision,
-               coordinator.attachPlaybackCoordinatorIfReady(player: controller.player, item: item) {
+               coordinator.attachPlaybackCoordinatorIfReady(player: controller.player, item: item,
+                                                            launchEpoch: launchEpoch) {
                 attachedRevision = revision
             }
         }
