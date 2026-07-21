@@ -21,11 +21,23 @@ enum TVUIFixtureCatalog {
         guard isBrowseEnabled else { return nil }
         let rows = fixtureItems(backend: backend)
         if backend == .plex {
+            var hubs = [
+                Hub(title: "Continue Watching", hubIdentifier: "fixture-resume", metadata: Array(rows.prefix(4))),
+                // A recently-added key makes this rail View All–eligible, so fixture
+                // tests exercise the tvOS trailing View All card in the lazy rail.
+                Hub(key: "/library/sections/1/recentlyAdded", title: "Recently Added",
+                    hubIdentifier: "fixture-latest", metadata: rows),
+            ]
+            // Enough additional shelves that Home's LazyVStack must realize and
+            // derealize rows during vertical traversal — the regime where SwiftUI's
+            // DynamicContainer item removal runs (2026-07-21 manual-session crash).
+            for shelf in 1...6 {
+                hubs.append(Hub(title: "Fixture Shelf \(shelf)",
+                                hubIdentifier: "fixture-shelf-\(shelf)",
+                                metadata: shelfItems(backend: backend, shelf: shelf)))
+            }
             return HomeContent(
-                hubs: [
-                    Hub(title: "Continue Watching", hubIdentifier: "fixture-resume", metadata: Array(rows.prefix(4))),
-                    Hub(title: "Recently Added", hubIdentifier: "fixture-latest", metadata: rows),
-                ],
+                hubs: hubs,
                 mediaBrowserLibraries: [],
                 mediaBrowserRails: [])
         }
@@ -69,6 +81,15 @@ enum TVUIFixtureCatalog {
         MediaBrowserHomeLibraryLink(id: "movies", title: "Movies", collectionType: "movies"),
         MediaBrowserHomeLibraryLink(id: "shows", title: "TV Shows", collectionType: "tvshows"),
     ]
+
+    private static func shelfItems(backend: MediaBackendKind, shelf: Int) -> [MediaItem] {
+        let prefix = backend.rawValue
+        return (0..<12).map { index in
+            MediaItem(ratingKey: "\(prefix)-shelf\(shelf)-\(index)",
+                      title: "Shelf \(shelf) Item \(index + 1)", type: "movie",
+                      duration: 5_400_000, year: 2020 + (index % 6))
+        }
+    }
 
     private static func fixtureItems(backend: MediaBackendKind) -> [MediaItem] {
         let prefix = backend.rawValue
