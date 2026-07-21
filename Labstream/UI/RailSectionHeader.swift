@@ -65,8 +65,9 @@ struct RailViewAllCard: View {
                     }
                     .foregroundStyle(.secondary)
                 }
+                .tvFocusHighlight()
         }
-        .buttonStyle(.card)
+        .cardLink()
         .accessibilityLabel("View all \(title)")
     }
 }

@@ -176,6 +176,7 @@ struct ChapterCard: View {
                         RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous)
                             .strokeBorder(Color.accentColor, lineWidth: isCurrent ? 3 : 0)
                     )
+                    .tvFocusHighlight()
 
                 Text(chapter.tag ?? "Chapter \(index + 1)")
                     .font(.subheadline)

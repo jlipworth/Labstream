@@ -56,11 +56,47 @@ final class LabstreamTVLaunchTests: XCTestCase {
         XCUIRemote.shared.press(.left)
         XCUIRemote.shared.press(.left)
         XCTAssertTrue(app.buttons["tv.home.fixture-resume.plex-orbit"].hasFocus)
+        attachScreen(named: "focused home card", app: app)
         XCUIRemote.shared.press(.select)
         XCTAssertTrue(app.staticTexts["Some signals should stay distant."].waitForExistence(timeout: 3))
         attachScreen(named: "TV leaf detail", app: app)
 
         XCUIRemote.shared.press(.menu)
+        XCTAssertTrue(app.staticTexts["Continue Watching"].waitForExistence(timeout: 3))
+    }
+
+    /// Regression for the 2026-07-21 manual-session crash: SwiftUI DynamicContainer fatal
+    /// error (lazy-container item removal) fired on a Down row change while browsing Home.
+    /// Replays that session's shape — sweep right along a rail, back left, then repeated
+    /// row changes — and requires the process to survive with both rails intact.
+    func testRemoteRowAndRailTraversalSurvivesLazyContainerUpdates() throws {
+        let app = makeApp(backend: "plex", fixture: "browse")
+        app.launch()
+        XCTAssertTrue(app.staticTexts["The Long Orbit"].waitForExistence(timeout: 5))
+
+        XCUIRemote.shared.press(.down)
+        for _ in 0..<6 { XCUIRemote.shared.press(.right) }
+        for _ in 0..<3 { XCUIRemote.shared.press(.left) }
+        XCUIRemote.shared.press(.down)
+        for _ in 0..<8 { XCUIRemote.shared.press(.right) }
+        XCTAssertTrue(app.buttons["View all Recently Added"].waitForExistence(timeout: 3),
+                      "the trailing View All card should terminate the Recently Added rail")
+        for _ in 0..<8 { XCUIRemote.shared.press(.left) }
+
+        // Deep vertical sweep through the fixture shelves and back: forces the Home
+        // LazyVStack to derealize scrolled-away rows (where the crash's item removal
+        // runs), with horizontal movement in between so rail focus state is live too.
+        for _ in 0..<7 {
+            XCUIRemote.shared.press(.down)
+            XCUIRemote.shared.press(.right)
+            XCUIRemote.shared.press(.left)
+        }
+        for _ in 0..<8 { XCUIRemote.shared.press(.up) }
+        XCUIRemote.shared.press(.down)
+        XCUIRemote.shared.press(.up)
+
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 2),
+                      "row/rail traversal must not crash the app")
         XCTAssertTrue(app.staticTexts["Continue Watching"].waitForExistence(timeout: 3))
     }
 

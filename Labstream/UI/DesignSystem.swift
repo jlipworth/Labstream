@@ -191,7 +191,50 @@ private struct PosterHoverEffect: ViewModifier {
 }
 #endif
 
+#if os(tvOS)
+/// Bare tvOS button chrome for poster/card lockups: renders the label with no system
+/// focus platter or lift. A custom ButtonStyle on tvOS still participates in the focus
+/// engine and receives Select (proven by the player's hidden-surface owner); the visible
+/// focus treatment is drawn by `tvFocusHighlight` on the artwork inside the label.
+private struct TVPosterCardButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+    }
+}
+
+/// Explicit tvOS focus treatment for card artwork: a white ring, a gentle lift, and a
+/// drop shadow whenever the enclosing focusable (the card's button) holds focus. Owned
+/// by us — unlike `.borderless`'s image lift — so the highlight is unmistakable from
+/// couch distance and identical across poster, still, and chapter cards.
+private struct TVFocusHighlight: ViewModifier {
+    @Environment(\.isFocused) private var isFocused
+    var cornerRadius: CGFloat
+
+    func body(content: Content) -> some View {
+        content
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(.white, lineWidth: isFocused ? 4 : 0)
+            }
+            .scaleEffect(isFocused ? 1.07 : 1.0)
+            .shadow(color: .black.opacity(isFocused ? 0.45 : 0), radius: 16, y: 10)
+            .animation(.spring(response: 0.3, dampingFraction: 0.8), value: isFocused)
+    }
+}
+#endif
+
 extension View {
+    /// tvOS: draw the standard focus ring + lift on this artwork view when the nearest
+    /// focusable ancestor (its card's button) is focused. No-op on other platforms.
+    @ViewBuilder
+    func tvFocusHighlight(cornerRadius: CGFloat = DS.Radius.poster) -> some View {
+        #if os(tvOS)
+        modifier(TVFocusHighlight(cornerRadius: cornerRadius))
+        #else
+        self
+        #endif
+    }
+
     /// Apply the standard poster hover lift. Purely visual; does not affect hit-testing.
     @ViewBuilder
     func posterHover() -> some View {
@@ -224,15 +267,17 @@ extension View {
             .hoverEffect(.lift)
         #elseif os(tvOS)
         // The plain style's default tvOS focus treatment is a white platter sized to the
-        // whole label — oversized and washed-out behind image cards. `.card` draws its own
-        // platter around the full label too (visible as a border above/behind poster text),
-        // so image lockups use `.borderless`: tvOS lifts the image itself on focus and
-        // leaves the caption text platter-free. Chip-radius rows (song results) keep `.card`
-        // because their labels are mostly text and borderless would leave focus invisible.
+        // whole label — oversized and washed-out behind image cards — and `.card` draws its
+        // own platter around the full label too (a visible border above/behind poster
+        // captions). `.borderless` lifts only the image, which proved too subtle to track
+        // from across a room. Poster lockups therefore use a bare custom style and draw
+        // their own focus ring + lift at the artwork level via `tvFocusHighlight`.
+        // Chip-radius rows (song results) keep `.card` because their labels are mostly
+        // text and have no artwork to carry a highlight.
         if cornerRadius == DS.Radius.chip {
             self.buttonStyle(.card)
         } else {
-            self.buttonStyle(.borderless)
+            self.buttonStyle(TVPosterCardButtonStyle())
         }
         #else
         self.buttonStyle(.plain)

@@ -434,6 +434,7 @@ private struct EpisodeRailCell: View {
                         cornerRadius: DS.Radius.poster)
                 .overlay(alignment: .bottom) { progressSliver }
                 .posterHover()
+                .tvFocusHighlight()
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.grandparentTitle ?? item.title)
@@ -533,6 +534,7 @@ struct PosterCell: View {
             PosterImage(path: artworkPath ?? item.thumb, width: resolvedWidth, height: height)
                 .overlay(alignment: .bottom) { progressSliver }
                 .posterHover()
+                .tvFocusHighlight()
 
             VStack(alignment: .leading, spacing: 2) {
                 // Episodes read like Plex/Emby: show name on top, then
