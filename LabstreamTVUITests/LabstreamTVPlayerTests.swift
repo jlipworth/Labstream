@@ -183,6 +183,61 @@ final class LabstreamTVPlayerTests: XCTestCase {
                                         prefix: "shell:")
     }
 
+    /// TVUI-004 live repro: drives the REAL Search tab (browse fixture hosts the production
+    /// RootView/SearchView) with the same remote presses as the failing manual session —
+    /// focus the field, Select to open the keyboard, Select on a letter. The shell replica
+    /// passes, so this is the test that should reproduce the live teardown-on-letter defect;
+    /// once it fails here, the live-only layers can be bisected in place.
+    func testLiveSearchTabSystemKeyboardInsertsLetter() throws {
+        let app = makeBrowseApp()
+        app.launch()
+        XCTAssertTrue(app.staticTexts["The Long Orbit"].waitForExistence(timeout: 5))
+
+        // Launch focus starts in the tab bar; walking Right moves Home → Libraries → Search
+        // (tvOS tab bars switch selection on focus).
+        XCUIRemote.shared.press(.right)
+        XCUIRemote.shared.press(.right)
+        let field = app.textFields["tv.search.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5),
+                      "focusing the Search tab should mount SearchView's field")
+        // SearchView auto-focuses the field on appearance; fall back to a Down press.
+        if !waitForFocus(field, timeout: 4) {
+            XCUIRemote.shared.press(.down)
+            XCTAssertTrue(waitForFocus(field, timeout: 3), "field should take focus")
+        }
+
+        XCUIRemote.shared.press(.select)
+        let focusedKey = app.keys.matching(NSPredicate(format: "hasFocus == true")).firstMatch
+        if !focusedKey.waitForExistence(timeout: 4),
+           !app.keys.firstMatch.waitForExistence(timeout: 2) {
+            XCTAssertTrue(waitForFocus(field, timeout: 4),
+                          "after Select the keyboard should be up")
+        }
+        attachScreen(named: "live search keyboard", app: app)
+
+        XCUIRemote.shared.press(.select)
+        let inserted = expectation(for: NSPredicate(format: "value.length > 0 AND value != %@",
+                                                    "Movies, shows, music…"),
+                                   evaluatedWith: field)
+        if XCTWaiter().wait(for: [inserted], timeout: 4) != .completed {
+            let dump = XCTAttachment(string: app.debugDescription)
+            dump.name = "live search hierarchy at failure"
+            dump.lifetime = .keepAlways
+            add(dump)
+            attachScreen(named: "live search after letter select", app: app)
+            XCTFail("keyboard Select should insert a letter into the live search field; "
+                    + "value is '\(String(describing: field.value))'")
+        }
+    }
+
+    private func makeBrowseApp() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-testing-backend", "plex",
+                               "--ui-testing-fixture", "browse"]
+        app.launchEnvironment["LABSTREAM_UNIT_TEST_HOST"] = "0"
+        return app
+    }
+
     private func launchKeyboardFixture() -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--ui-testing-fixture", "keyboard"]
