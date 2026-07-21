@@ -211,19 +211,32 @@ struct PlexLinkCodeView: View {
                     .backendAuthSupportingTextStyle()
             }
 
+            // tvOS has no in-app browser (WebAuthSession cancels immediately), so the
+            // on-device fallback would be a focusable no-op — pairing is the only path.
+            #if !os(tvOS)
             Button("Open Plex sign-in on this device instead", action: onOpenOnDevice)
                 .labstreamGlassButtonStyle()
                 #if os(macOS)
                 .controlSize(.regular)
                 #endif
+            #endif
         }
     }
 
+    @ViewBuilder
     private var plexLink: some View {
+        // tvOS cannot open URLs — the address is instructional text there, not a dead
+        // focusable Link.
+        #if os(tvOS)
+        Text("plex.tv/link")
+            .fontWeight(.semibold)
+            .foregroundStyle(DS.Brand.amber)
+        #else
         Link("plex.tv/link", destination: URL(string: "https://plex.tv/link")!)
             .fontWeight(.semibold)
             .foregroundStyle(DS.Brand.amber)
             .accessibilityHint("Opens Plex sign-in in your default browser")
+        #endif
     }
 }
 
@@ -348,11 +361,19 @@ struct EmbyConnectPinCodeView: View {
             }
     }
 
+    @ViewBuilder
     private var embyLink: some View {
+        // Same as plexLink: tvOS cannot open URLs, so render instructional text.
+        #if os(tvOS)
+        Text("emby.media/pin.html")
+            .fontWeight(.semibold)
+            .foregroundStyle(DS.Brand.amber)
+        #else
         Link("emby.media/pin.html", destination: URL(string: "https://emby.media/pin.html")!)
             .fontWeight(.semibold)
             .foregroundStyle(DS.Brand.amber)
             .accessibilityHint("Opens Emby Connect sign-in in your default browser")
+        #endif
     }
 }
 

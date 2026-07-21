@@ -285,7 +285,9 @@ struct RootView: View {
             }
             Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
                 NavigationStack(path: $searchPath) {
-                    SearchView(focusRequest: searchFocusRequest, onClearSearch: exitSearch)
+                    // No onClearSearch: Search is a persistent tab in this shell, so Clear
+                    // resets the query in place instead of bouncing to the prior tab.
+                    SearchView(focusRequest: searchFocusRequest)
                 }
                 .environment(\.cinemaOriginTab, .search)
                 .environment(\.pushMediaItem, { (item: MediaItem) in searchPath.append(item) })
@@ -306,8 +308,21 @@ struct RootView: View {
         }
         // The persistent tab bar can own focus even while a nested destination is visible,
         // so destination-local exit handlers never receive the Siri Remote Back command.
-        // Handle it at the tvOS shell and pop exactly one element from the active stack.
-        .onExitCommand { tvNavigateBack() }
+        // Handle it at the tvOS shell and pop exactly one element from the active stack —
+        // but ONLY while a lifted path has something to pop. A nil handler otherwise keeps
+        // the system behavior: Settings' internal NavigationStack pops itself, and Back at
+        // a tab root reaches the tab bar / home screen instead of dying in a no-op.
+        .onExitCommand(perform: tvCanNavigateBack ? { tvNavigateBack() } : nil)
+    }
+
+    private var tvCanNavigateBack: Bool {
+        switch selection {
+        case .home: !homePath.isEmpty
+        case .libraries: !librariesPath.isEmpty
+        case .search: !searchPath.isEmpty
+        case .music: !musicPath.isEmpty
+        default: false
+        }
     }
 
     private var tvLibrariesContent: some View {
