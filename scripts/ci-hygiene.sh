@@ -281,8 +281,13 @@ if [[ -f pyproject.toml ]]; then
   uv run python -m unittest discover -s scripts/tests -v
 fi
 
-printf '== Published documentation ==\n'
-uv run --with-requirements requirements.txt mkdocs build --strict
-uv run python scripts/check-docs-mermaid.py
+# Gated on mkdocs.yml so the tooling tests' minimal sandbox repos (which exercise the
+# earlier guards' success paths) don't fail here; the real repo always has it.
+if [[ -f mkdocs.yml ]]; then
+  printf '== Published documentation ==\n'
+  [[ -f requirements.txt ]] || fail "mkdocs.yml present but requirements.txt missing; docs build cannot run"
+  uv run --with-requirements requirements.txt mkdocs build --strict
+  uv run python scripts/check-docs-mermaid.py
+fi
 
 echo "ci-hygiene: ok"
