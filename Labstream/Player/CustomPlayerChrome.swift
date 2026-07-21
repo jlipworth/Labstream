@@ -874,7 +874,7 @@ struct CustomPlayerChrome: View {
         tvControls
             .padding(.horizontal, 20)
             .padding(.vertical, 16)
-            .frame(maxWidth: 1_680)
+            .frame(maxWidth: 1_760)
             .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 22, style: .continuous))
             .foregroundStyle(.white)
             .colorScheme(.dark)
@@ -920,11 +920,13 @@ struct CustomPlayerChrome: View {
     private var tvControls: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .center, spacing: 22) {
+                // body (29pt) over headline (38pt) plus the tighter menu strip below buys
+                // the title roughly twice the characters before truncating.
                 Text(title)
-                    .font(.headline.weight(.semibold))
+                    .font(.body.weight(.semibold))
                     .lineLimit(1)
                     .truncationMode(.tail)
-                    .frame(minWidth: 220, idealWidth: 360, maxWidth: 520, alignment: .leading)
+                    .frame(minWidth: 220, idealWidth: 520, maxWidth: 760, alignment: .leading)
                     .layoutPriority(1)
 
                 Spacer(minLength: 18)
@@ -973,10 +975,10 @@ struct CustomPlayerChrome: View {
                     openMenu(menu)
                 } label: {
                     Label(menu.shortTitle, systemImage: menu.systemImage)
-                        .font(.callout.weight(.semibold))
+                        .font(.caption.weight(.semibold))
                         .lineLimit(1)
-                        .frame(minWidth: menu.minChromeWidth, minHeight: 42)
-                        .padding(.horizontal, 5)
+                        .frame(minWidth: menu.minChromeWidth, minHeight: 34)
+                        .padding(.horizontal, 4)
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
