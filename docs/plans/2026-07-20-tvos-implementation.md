@@ -68,6 +68,20 @@ status. This Xcode beta has no Simulator.app (DeviceHub.app is the sim GUI); a f
 temporarily detaches DeviceHub's key input and self-recovers — do not mistake that for an app
 regression.
 
+Merge checkpoint (2026-07-21): the implemented tvOS foundation and simulator-verified interaction
+slice is ready to join `main`, but this plan remains active because physical Apple TV, complete
+backend/parity, accessibility, system-integration, and release gates are still open. The branch was
+rebased onto local `main` without changing its final tree. Post-rebase validation passed 1,638
+PMSKit tests, 85 applicable tvOS unit tests, a clean tvOS simulator build, and all 16 tvOS UI tests.
+The UI suite itself completed with zero failures, but Xcode 27 beta again hung after XCTest reported
+the final passing summary; the stuck `xcodebuild` was terminated after 30 seconds of no further
+output rather than being allowed to hang indefinitely. Repository hygiene passed 50 tooling tests,
+the strict documentation build, and Mermaid validation. The exact clean product was installed with
+a matching binary UUID, launched successfully on the worktree-owned Apple TV 4K (third generation)
+simulator, and produced a healthy signed-out ten-foot UI screenshot. Expected simulator keyboard
+analytics and an unreachable stale server-restoration attempt were present in unified logging; no
+crash or app fatal signal was observed.
+
 ## Goal
 
 Create a first-class native tvOS version of Labstream for Apple TV with functional parity to the shared iPad/Mac product surface across Plex, Jellyfin, and Emby. The implementation may advance through internal checkpoints, but no reduced video-only or single-backend edition is a release target. tvOS gets its own 10-foot UI, focus model, Siri Remote behavior, system integration, testing lane, and release train while retaining the complete shared product behavior that applies to a television.
@@ -204,11 +218,11 @@ Every row is required across Plex, Jellyfin, and Emby wherever that row is imple
 
 ## Resume order and remaining validation
 
-The next session should work from commit `ced35a36` in the linked worktree
-`/path/to/user/Projects/labstream-worktrees/issue-246-tvos` on branch
-`codex/issue-246-tvos`. Use the worktree-owned tvOS simulator ID returned by the repository tooling;
-never target a generic `booted` simulator. Before editing, confirm the worktree and installed-runtime
-truth because Xcode beta and simulator behavior may have changed.
+After this checkpoint merges, continue from current `main` in a fresh issue-specific worktree rather
+than recreating or depending on the closed `issue-246-tvos` lane. Provision that worktree's own tvOS
+simulator with the repository tooling and never target a generic `booted` simulator. Before editing,
+confirm the worktree and installed-runtime truth because Xcode beta and simulator behavior may have
+changed.
 
 1. **Player input/focus root cause — resolved, needs live/regression proof recorded:** the hidden-chrome
    focus owner, submenu modal treatment, menu-strip-to-skip-cluster vertical reach, and the guarded
