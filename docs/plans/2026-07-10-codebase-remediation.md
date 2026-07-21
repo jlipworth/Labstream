@@ -17,6 +17,11 @@ remediation queue for those findings — do not treat the two documents as indep
 lists. Line references in both documents are as of the audit baseline and may drift a few
 lines past it.
 
+Successor scope note: [`2026-07-21-simplification-performance.md`](2026-07-21-simplification-performance.md)
+owns the post-July-21 platform simplification and measured whole-app performance program. This
+file remains authoritative for its completed remediation history and still-open physical
+acceptance gates; the successor must not silently reopen or weaken them.
+
 ## Implementation checkpoint — 2026-07-11 after the downloads audit
 
 ### 2026-07-12 rebase onto the continued download-state-machine work
