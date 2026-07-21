@@ -1,0 +1,549 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://labstream.invalid/schemas/performance-audit-manifest-v1.schema.json",
+  "title": "Labstream local performance evidence manifest",
+  "description": "Closed metadata contract for a local PerformanceAudit evidence run. Known identifier fields and artifact pointer names are opaque or enumerated; raw artifact contents remain sensitive and require review.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "tool",
+    "run",
+    "product",
+    "device",
+    "state",
+    "scenario",
+    "launch_contract",
+    "evidence"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "tool": {
+      "$ref": "#/$defs/tool"
+    },
+    "run": {
+      "$ref": "#/$defs/run"
+    },
+    "product": {
+      "$ref": "#/$defs/product"
+    },
+    "device": {
+      "$ref": "#/$defs/device"
+    },
+    "state": {
+      "$ref": "#/$defs/state"
+    },
+    "scenario": {
+      "$ref": "#/$defs/scenario"
+    },
+    "launch_contract": {
+      "$ref": "#/$defs/launchContract"
+    },
+    "evidence": {
+      "$ref": "#/$defs/evidence"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version"
+      ],
+      "properties": {
+        "name": {
+          "const": "labstream-performance-audit"
+        },
+        "version": {
+          "const": "1"
+        }
+      }
+    },
+    "product": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commit",
+        "sha256",
+        "configuration",
+        "target",
+        "platform",
+        "os_build",
+        "xcode_build"
+      ],
+      "properties": {
+        "commit": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "configuration": {
+          "const": "PerformanceAudit"
+        },
+        "target": {
+          "enum": [
+            "Labstream",
+            "LabstreamMobile",
+            "LabstreamMac",
+            "LabstreamTV"
+          ]
+        },
+        "platform": {
+          "enum": [
+            "visionos",
+            "ios",
+            "ipados",
+            "macos",
+            "tvos"
+          ]
+        },
+        "os_build": {
+          "type": "string",
+          "pattern": "^[0-9]{1,3}[A-Z][A-Za-z0-9]{1,16}$"
+        },
+        "xcode_build": {
+          "type": "string",
+          "pattern": "^[0-9]{1,3}[A-Z][A-Za-z0-9]{1,16}$"
+        }
+      }
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "power_source",
+        "battery_state",
+        "thermal_state",
+        "free_storage_bytes",
+        "display_mode"
+      ],
+      "properties": {
+        "label": {
+          "type": "string",
+          "pattern": "^local-device-[0-9]{2,3}$"
+        },
+        "power_source": {
+          "enum": [
+            "battery",
+            "external",
+            "unknown"
+          ]
+        },
+        "battery_state": {
+          "enum": [
+            "charging",
+            "discharging",
+            "full",
+            "not_applicable",
+            "unknown"
+          ]
+        },
+        "thermal_state": {
+          "enum": [
+            "nominal",
+            "fair",
+            "serious",
+            "critical",
+            "unknown"
+          ]
+        },
+        "free_storage_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "display_mode": {
+          "enum": [
+            "windowed",
+            "fullscreen",
+            "cinema",
+            "immersive",
+            "not_applicable",
+            "unknown"
+          ]
+        }
+      }
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "install_state",
+        "container_state",
+        "cache_reset"
+      ],
+      "properties": {
+        "install_state": {
+          "enum": [
+            "fresh_install",
+            "upgrade",
+            "reinstall_same_artifact"
+          ]
+        },
+        "container_state": {
+          "enum": [
+            "fresh",
+            "preserved",
+            "restored_fixture"
+          ]
+        },
+        "cache_reset": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "command_id",
+            "result"
+          ],
+          "properties": {
+            "command_id": {
+              "enum": [
+                "none",
+                "app-cache-reset-v1",
+                "app-container-reset-v1",
+                "fixture-cache-seed-v1"
+              ]
+            },
+            "result": {
+              "enum": [
+                "success",
+                "failure",
+                "not_requested"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "category",
+        "run_kind",
+        "fixture_id",
+        "fixture_sha256",
+        "backend_kind",
+        "server_version",
+        "cache_state"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^scenario-[a-f0-9]{12}$"
+        },
+        "run_kind": {
+          "enum": [
+            "deterministic_fixture",
+            "live_server"
+          ]
+        },
+        "fixture_id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^fixture-[a-f0-9]{12}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "backend_kind": {
+          "enum": [
+            "plex",
+            "jellyfin",
+            "emby",
+            "none"
+          ]
+        },
+        "server_version": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[0-9]+(?:\\.[0-9]+){1,3}(?:-[a-f0-9]{7,16})?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cache_state": {
+          "enum": [
+            "cold",
+            "warm",
+            "declared_seed"
+          ]
+        },
+        "category": {
+          "enum": [
+            "launch",
+            "home",
+            "catalog",
+            "search",
+            "detail",
+            "artwork",
+            "music",
+            "playback",
+            "seek",
+            "cinema",
+            "shareplay",
+            "download",
+            "diagnostics",
+            "background_recovery",
+            "compile",
+            "test",
+            "other"
+          ]
+        },
+        "fixture_sha256": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "run_kind": {
+                "const": "deterministic_fixture"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "fixture_id": {
+                "type": "string",
+                "pattern": "^fixture-[a-f0-9]{12}$"
+              },
+              "fixture_sha256": {
+                "$ref": "#/$defs/sha256"
+              },
+              "server_version": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "run_kind": {
+                "const": "live_server"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "fixture_id": {
+                "type": "null"
+              },
+              "fixture_sha256": {
+                "type": "null"
+              },
+              "server_version": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[0-9]+(?:\\.[0-9]+){1,3}(?:-[a-f0-9]{7,16})?$"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "launchContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "arguments",
+        "environment_keys",
+        "ui_test_fixture",
+        "live_probe",
+        "tv_event_swizzle",
+        "verbose_debug_evidence"
+      ],
+      "properties": {
+        "arguments": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "environment_keys": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "ui_test_fixture": {
+          "const": false
+        },
+        "live_probe": {
+          "const": false
+        },
+        "tv_event_swizzle": {
+          "const": false
+        },
+        "verbose_debug_evidence": {
+          "const": false
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifacts",
+        "redacted_summary",
+        "privacy_review",
+        "retention_deadline",
+        "publishable"
+      ],
+      "properties": {
+        "artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/rawArtifactPointer"
+          }
+        },
+        "redacted_summary": {
+          "$ref": "#/$defs/summaryPointer"
+        },
+        "privacy_review": {
+          "enum": [
+            "pending",
+            "reviewed",
+            "rejected"
+          ]
+        },
+        "retention_deadline": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "publishable": {
+          "type": "boolean"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "publishable": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "privacy_review": {
+                "const": "reviewed"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "recorded_at",
+        "comparison_id",
+        "artifact_role",
+        "sample_kind",
+        "sample_index",
+        "order_seed"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^run-[a-f0-9]{12}$"
+        },
+        "recorded_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "comparison_id": {
+          "type": "string",
+          "pattern": "^comparison-[a-f0-9]{12}$"
+        },
+        "artifact_role": {
+          "enum": [
+            "control",
+            "candidate",
+            "standalone"
+          ]
+        },
+        "sample_kind": {
+          "enum": [
+            "warmup",
+            "measured"
+          ]
+        },
+        "sample_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "order_seed": {
+          "type": "string",
+          "pattern": "^seed-[a-f0-9]{16}$"
+        }
+      }
+    },
+    "rawArtifactPath": {
+      "type": "string",
+      "pattern": "^raw/artifact-[0-9]{4}\\.(trace|json|jsonl|csv|log|txt|plist|spindump|ips)$"
+    },
+    "summaryPath": {
+      "const": "summary/redacted.json"
+    },
+    "rawArtifactPointer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/rawArtifactPath"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "summaryPointer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/summaryPath"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  }
+}

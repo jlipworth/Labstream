@@ -6,19 +6,17 @@ import Foundation
 enum BackgroundCompletionPersistenceBarrier {
     typealias Flush = @Sendable () async -> DownloadStore.PersistenceFlushResult
     typealias Observe = @Sendable (DownloadStore.PersistenceFlushResult) -> Void
-    typealias Release = @MainActor @Sendable (String) -> Void
-
     @discardableResult
-    static func flushThenRelease(
-        identifiers: [String],
+    static func flushThenRelease<ReleaseUnit: Sendable>(
+        releases: [ReleaseUnit],
         flush: Flush,
         observe: Observe = { _ in },
-        release: Release
+        release: @MainActor @Sendable (ReleaseUnit) -> Void
     ) async -> DownloadStore.PersistenceFlushResult {
         let result = await flush()
         observe(result)
         await MainActor.run {
-            for identifier in identifiers { release(identifier) }
+            for unit in releases { release(unit) }
         }
         return result
     }

@@ -310,7 +310,10 @@ final class LabstreamTVPlayerTests: XCTestCase {
 
     private func launchPlayerFixture() -> XCUIApplication {
         let app = XCUIApplication()
-        app.launchArguments = ["--ui-testing", "--ui-testing-fixture", "player"]
+        // The exhaustive player suite is an evidence lane. Ordinary Debug and the small PR
+        // smoke plan intentionally do not install the UIWindow event-method swizzle.
+        app.launchArguments = ["--ui-testing", "--ui-testing-fixture", "player",
+                               "--tv-input-evidence"]
         app.launchEnvironment["LABSTREAM_UNIT_TEST_HOST"] = "0"
         app.launch()
         return app

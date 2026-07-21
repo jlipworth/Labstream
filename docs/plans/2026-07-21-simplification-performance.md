@@ -1,6 +1,6 @@
 # Cross-platform simplification and performance program
 
-Status: **audit complete; implementation not started**
+Status: **Wave 0 deterministic implementation complete — uncommitted; Wave 1 not started**
 
 Audit baseline: `b3045bc0` (`Record tvOS merge checkpoint`) on
 `codex/audit-simplification-performance`
@@ -162,11 +162,12 @@ Theater, and SharePlay state.
 | Download recovery | Keep app-owned deterministic checkpoint/recovery; native resume-data-only path rejected | Download decomposition |
 | Client ABR | May be removed if paired measurements show little benefit | Playback typed restart work |
 | Mac browse windows | **Open.** Default recommendation: enforce the documented single-window model; multiwindow requires focused-scene routing | Mac shell extraction |
-| Reality Theater prototype | **Open, inputs settled.** Issue #12 and follow-up #51 are both closed (#12 “Closed by 1224cdb”), so there is no live issue to consult; decide from current product intent whether `Labstream/Theater/RealityTheaterPrototypeView.swift` and its cross-target references stay as future product work, move to a lab-only target, or are archived | visionOS source split |
+| visionOS Cinema | **Keep.** The shipping app-owned `CustomCinemaMode` remains a first-class visionOS capability; its ownership and implementation may be simplified, but the product surface and handoff invariants must remain | Every visionOS/player slice |
+| Reality Theater prototype | **Remove.** Issue #12/#51 history and current scene/chrome routing confirm that the hidden `RealityTheater*` lab is independent from shipping `CustomCinemaMode`; delete the prototype and its cross-target production plumbing in Wave 1 while retaining useful historical context in Git/archive docs | visionOS source split |
 | Offline Detail action | **Open.** Keep explicit “Play Offline” unless product direction says primary Play should prefer local media | Offline launch consolidation |
 | Storage cap semantics | Recommendation: enforce durable bytes + known reservations; present side assets, held/resume data, and OS temp separately | Storage snapshot work |
-| Legacy download schemas/tasks | **Open.** Choose a supported release horizon before deleting migration code | Migration sunset |
-| Physical matrix | Confirm available iPhone, iPad, Apple TV, Mac, one AVP, and whether two AVPs are available | Final acceptance |
+| Legacy download schemas/tasks | **Remove fully.** Delete compatibility for legacy schemas and abandoned OS tasks; keep only the current schema and the app-owned checkpoint/recovery authority required by current downloads | Migration sunset |
+| Physical matrix | Local discovery records this Apple-silicon Mac plus one paired iPhone, one paired iPad, and one paired AVP (the mobile devices/headset were unavailable during discovery). Physical Apple TV availability and any second AVP remain unconfirmed; unavailable cells must be labeled hardware-blocked rather than inferred from simulators | Final acceptance |
 
 ## Safety findings to resolve before broad refactoring
 
@@ -181,12 +182,13 @@ mechanism for `SAFE-01`, `SAFE-03` through `SAFE-08`, and `SAFE-10` at the
 listed locations. `SAFE-09` was confirmed as a real cancellation/completion
 ordering race, with the caveat that actor serialization already prevents a
 double resume — the required fix is ordering determinism, not crash prevention.
-`SAFE-02` remains verify-first: the session sets 5s/20s
+At audit time `SAFE-02` remained verify-first: the session sets 5s/20s
 `timeoutIntervalForRequest`, the built `URLRequest` never sets
 `timeoutInterval` (so the 60s request default is in play), and observed
 behavior with a hanging transport must decide whether any change is needed.
-Focused reproductions/tests are still required before each fix lands; the
-re-review retires none of that.
+Focused reproductions/tests were therefore required before each fix; the Wave 0
+journal below records the current disposition rather than treating the static
+re-review as runtime proof.
 
 | ID | Priority | Finding | Evidence | Required stroke |
 | --- | --- | --- | --- | --- |
@@ -200,6 +202,37 @@ re-review retires none of that.
 | `SAFE-08` | P0 | Non-vision remote seek/skip conversion lacks the validation already present on visionOS | `Labstream/Player/VideoNowPlayingCore.swift:95-112`; `Labstream/Player/VideoNowPlayingCoordinator.swift:185-194` | One pure validated remote-command policy feeding canonical controller intents |
 | `SAFE-09` | P1 | Side-asset waiter cancellation can race successful completion | `Labstream/Downloads/SideAssetFetchCoordinator.swift:116-145,353-399` | Post-resume cancellation check and deterministic waiter/job index |
 | `SAFE-10` | P1 | Background completion registry silently replaces a same-identifier handler | `Labstream/Downloads/BackgroundDownloadCompletionRegistry.swift:17-64` | Encode exact cardinality and prove every supplied handler fires exactly once |
+
+### Wave 0 implementation journal
+
+The following work is present but uncommitted in the audit worktree. Wave 0's
+deterministic package, hosted-test, all-target build, tooling, and serialized
+simulator-smoke gates now pass. Physical-device acceptance remains a later explicit
+gate and is not inferred from these results. A dev-identity macOS host launch remains
+blocked by entitlement signing; the already-running production-identity app was not
+disturbed.
+
+| Item | Current result |
+| --- | --- |
+| Original package control | `b3045bc0`: 1,638 PMSKit tests / 212 suites passed |
+| Original Mac-hosted control | Five retry-disabled full-plan runs all exposed scheduler-bound tests: search fan-out 4/5, persistence timeout 3/5, dirty retry 1/5, and malformed-startup release 1/5. Deterministic gates replaced the sleep/semaphore assumptions; no production browse or persistence defect was found |
+| `SAFE-01` | Confirmed and fixed. The final scheduler-independent contract handshakes the first real sleep, cancels, awaits false, and proves exactly one sleep call; it passed 10 repetitions and under the full hosted plan. Readiness single-flight remains a later simplification |
+| `SAFE-02` | Retired without a source change; a silent loopback proved the session's configured request timeout overrides the request object's 60-second default |
+| `SAFE-03` | Confirmed and fixed with generation-tagged compare-and-swap rotation and draining old sessions |
+| `SAFE-04` / `SAFE-05` | Canonical terminal-position and accepted-Playing authorities are integrated with focused deterministic contracts |
+| `SAFE-06` | Exact attempt-plus-source ownership covers every optional side asset. Promotion and metadata admission reject delayed old-source callbacks, deterministic subtitle adoption is gone, ownerless bundles fail closed, and retirement protects the complete cross-row artifact union |
+| `SAFE-07` | Replacement-session receive/send fencing, ordered outbound delivery, per-participant revisions, roster buffering, and a bounded terminal-leave fallback are integrated; two-participant behavior remains a physical gate |
+| `SAFE-08` | One validated absolute/relative remote-command policy now feeds the app-owned controller while platform publishers remain separate |
+| `SAFE-09` | Deterministic waiter indexing and cancellation-wins behavior passed a 500-iteration standalone race harness |
+| `SAFE-10` | Finish-events atomically claims an exact ordered token batch before persistence awaits. Delayed old-cycle releases cannot sweep newer same-identifier handlers; duplicate releases remain idempotent and reentrant handlers wait for the next cycle |
+| Adversarial review | Independent review found one completion-cycle P1, three side-asset provenance/retirement P1s, and three tooling P1s. All seven were fixed with focused regressions; no remaining reviewed P0/P1 was reported in the Wave 0 diff |
+| Integrated package gate | 1,668 PMSKit tests / 219 suites passed in one non-parallel run |
+| Integrated hosted gate | Five full `LabstreamMacTests` runs passed, each with 343 tests / 40 suites. The original scheduler-bound tests and the SAFE-01 cancellation test are now load-independent |
+| Integrated build gate | Debug build lanes passed for visionOS, iOS/iPadOS, tvOS test-build, and macOS. Fresh isolated simulator builds also passed before the visionOS, iPhone, and tvOS install/launch checks |
+| Serialized simulator smoke | Exact worktree simulators were used one at a time and shut down. Built/installed Mach-O UUIDs matched for visionOS, iPhone, and tvOS; launches and logs were crash-free. iPhone and tvOS produced visible login screenshots; visionOS produced an active process/network log and a shell screenshot, but the spatial app window was not visible in the captured forward display |
+| macOS host smoke | The non-simulator test/build gates pass. Per-worktree dev-identity launch was attempted and failed at the expected entitlement-signing gate; an already-running production-identity Labstream process was left untouched and staged dev apps were cleaned up |
+| Performance control | `PerformanceAudit` is Release-parity for all four app targets, defines only `PERFORMANCE_AUDIT`, enables the existing nine privacy-safe spans, and has a closed local manifest/binary contract. The guard now rejects Debug/unoptimized/sanitized compiler drift and constrains manifest metadata to opaque identifiers/enums while explicitly not claiming raw-payload sanitization |
+| Native test control | A checked smoke/affected/full matrix driver now separates hermetic tests, builds, simulator-hosted lanes, UI evidence, planned visionOS hosting, live probes, and benchmarks. Simulator lanes require the exact current-worktree UDID to be the sole booted simulator |
 
 ## Simplification workstreams
 
@@ -393,12 +426,16 @@ app-owned recovery.
 
 1. Fix source ownership for all side assets before deleting or moving engine
    code.
-2. Establish a measured schema/task compatibility horizon before claiming old
-   durable state is unreachable.
-3. Within that approved horizon, delete closed-range resume-data adoption/
-   reconstruction branches and impossible watermark branches only after fixtures
-   prove no supported installed state reads them. Retain the explicit range/
-   checkpoint authority that protects against native resume fragility.
+2. Make schema 4 and the current typed task markers the only supported durable
+   formats. Unsupported schemas trigger a fail-closed destructive reset: keep the
+   background session dormant, cancel and drain every old task, then quarantine or
+   delete the old download root before writing an empty current envelope.
+3. Delete old row migrations, ownerless adoption, v1/v2 task-marker parsing,
+   URL-derived task identity, and closed-range legacy resume branches after tests
+   prove the reset/sanitizer ordering. Retain current exact-attempt checkpoint,
+   artifact-intent replay, held-body recovery, and current task reattachment; those
+   are the app-owned recovery authority that protects against native resume
+   fragility, not compatibility code.
 4. Decompose by ownership, not arbitrary file length:
    - task/session delegate and reattachment;
    - checkpoint/range transfer;
@@ -744,7 +781,9 @@ flowchart LR
 - Create platform source roots and move whole-platform files.
 - Introduce `AppRuntime` and capability composition.
 - Remove TV download construction and inert non-vision spatial/SharePlay objects.
-- Decide Mac window model and Reality Theater fate.
+- Decide the Mac window model and remove the already-retired Reality Theater
+  prototype plus its cross-target plumbing while retaining shipping
+  `CustomCinemaMode`.
 
 ### Wave 2 — Shared data plane
 

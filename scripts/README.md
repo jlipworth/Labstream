@@ -15,10 +15,41 @@ media details out of commits and public issues.
 - `ci-macos-apple-platforms.sh` — native-runner preflight, isolated unsigned
   visionOS/iOS/iPadOS builds, PMSKit tests, evidence, and cleanup. See
   [`docs/MACOS-CI.md`](../docs/MACOS-CI.md).
+- `native-test-matrix.py` + `native-test-matrix.json` — side-effect-free smoke,
+  affected-platform, and full native validation planning, with explicitly gated
+  lane-at-a-time execution. Simulator lanes require the exact ID owned by the current
+  worktree, sole-booted state, and an explicit lease assertion; see
+  [Testing strategy](../docs/TESTING-STRATEGY.md#native-apple-matrix-driver).
 - `publication-audit.py` — audits tracked text, Git history, and optionally GitHub issue text for
   sensitive publication regressions without echoing matched secrets.
 - `loc.sh` — informational per-module source line counts.
 - `perf-log-summary.py` — converts privacy-safe performance signposts into summaries/Markdown.
+- `performance-audit-contract.py` — validates Release-parity `PerformanceAudit` build
+  settings, scans a built app for Debug-only fixture/probe/evidence contracts, and validates
+  version-1 local evidence manifests plus their checksums. The closed JSON schema lives at
+  `schemas/performance-audit-manifest-v1.schema.json`. Profile actions for all four app schemes use
+  `PerformanceAudit` and intentionally do not inherit Debug launch arguments or environment. Run:
+
+  ```sh
+  scripts/performance-audit-contract.py configuration
+  scripts/performance-audit-contract.py binary /path/to/PerformanceAudit/Labstream.app
+  scripts/performance-audit-contract.py manifest artifacts/performance-audit/<run>/manifest.json
+  ```
+
+  Raw runs belong under the gitignored `artifacts/performance-audit/` directory. Each manifest records
+  comparison role, warmup/measured status, sample index, and seeded-order identity in addition to the
+  product, device, state, scenario, and retention metadata required by the comparison protocol.
+  Manifest identity fields use generated opaque shapes (`run-<hex>`, `scenario-<hex>`,
+  `fixture-<hex>`) and semantic fields use bounded enums; raw pointers use only
+  `raw/artifact-NNNN.<type>`, with a fixed `summary/redacted.json` summary path. The validator also
+  rejects URLs, IP addresses, and absolute user paths in manifest strings.
+
+  This is a metadata contract, not a content scrubber. It does not inspect raw trace/log payloads,
+  prove that a human marked the correct privacy status, or make raw evidence publication-safe. Keep
+  raw artifacts local and review the redacted summary before setting `publishable` with a `reviewed`
+  status. The configuration check compares effective Swift/C/C++ flags, definitions, optimization,
+  coverage, sanitizers, signing, and other Release-parity settings; the profiling compilation
+  condition is the sole permitted condition difference.
 - `compile-audit.py` — opt-in, isolated arm64 compile-cost baseline for PMSKit and all app schemes;
   see [`docs/COMPILE-PERFORMANCE.md`](../docs/COMPILE-PERFORMANCE.md).
 - `tests/test_compile_audit.py`, `tests/test_docs_mermaid.py`,

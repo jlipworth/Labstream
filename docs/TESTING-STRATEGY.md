@@ -36,6 +36,86 @@ The app suites are host-app unit tests. They do not replace the canonical
 [install/launch/log/screenshot smoke](DEVELOPMENT.md#install-and-observe-a-simulator-smoke),
 interactive UI checks, live-server probes, or physical-device acceptance.
 
+## Native Apple matrix driver
+
+`scripts/native-test-matrix.py` is the checked source of truth for native smoke,
+affected-platform, and full planning. Planning is side-effect free and is always the default:
+
+```sh
+# Compile/package smoke plan for all four app schemes plus hermetic PMSKit tests.
+scripts/native-test-matrix.py smoke
+
+# Plan from committed changes relative to main, or include local changes as well.
+scripts/native-test-matrix.py affected --base main
+scripts/native-test-matrix.py affected --base main --include-working-tree
+
+# Plan one known path without consulting Git (useful in tooling and review automation).
+scripts/native-test-matrix.py affected \
+  --changed-file Labstream/Platforms/tvOS/Player/TVChrome.swift
+
+# Full correctness, hosted, and exhaustive-TV plan. Missing simulator IDs and the current
+# visionOS-hosted gap are reported as BLOCKED/PLANNED rather than silently omitted.
+scripts/native-test-matrix.py full
+```
+
+The driver reads `scripts/native-test-matrix.json`. Until the platform source split lands, a
+change under the synchronized `Labstream/` source root selects all four app builds and every
+available hosted suite. The manifest already defines exclusive `Labstream/Platforms/<platform>/`
+roots for the post-split topology; shared-root edits continue to select all targets. Update the
+manifest in the same change whenever target membership or a platform root changes.
+
+Execution is deliberately lane-at-a-time. The driver never provisions or boots a simulator, and
+`--run` requires an exact `--lane`. A simulator-hosted lane additionally requires the ID recorded
+for this worktree by `worktree-sim.sh` (`.simid-iphone` or `.simid-tvos`) and
+`--allow-simulator`, which is an assertion that the caller has acquired the repository's
+one-simulator lease. The driver rejects an arbitrary simulator ID even when that simulator is
+Booted. It also fails unless the owned simulator is already Booted **and every other simulator is
+Shutdown**, so `xcodebuild` cannot silently boot an unleased device or run alongside another lane:
+
+```sh
+SIMID=$(scripts/worktree-sim.sh --platform tvos id)
+xcrun simctl boot "$SIMID"
+scripts/native-test-matrix.py affected \
+  --changed-file Labstream/Platforms/tvOS/Player/TVChrome.swift \
+  --tvos-sim-id "$SIMID" --run --lane tvos-hosted --allow-simulator
+xcrun simctl shutdown "$SIMID"
+```
+
+`pmskit-correctness` explicitly skips `Live*ProbeTests`; app-hosted lanes skip the Debug Plex
+browse probe. Credentialless probe returns are readiness signals, not hermetic correctness
+passes. Live probes remain separate opt-in commands. Timing benchmarks must likewise use a future
+optimized benchmark target/lane and must not be added to smoke, affected, or ordinary hosted
+correctness suites.
+
+### visionOS hosted-test migration
+
+There is no visionOS-hosted test target at this checkpoint. The matrix therefore includes a
+non-executable `visionos-hosted` lane with a visible `PLANNED` result instead of implying coverage.
+Use this migration sequence:
+
+1. Move request/model/wire-format and platform-independent playback decisions into PMSKit with
+   hermetic package tests. Keep app-owned lifecycle, presentation ownership, and Cinema handoff
+   policy in the app layer.
+2. Complete the platform source split so a vision test target can host only shared app-core plus
+   narrow vision integration seams, without compiling mobile, TV, or Mac shell code by accident.
+3. Add `LabstreamVisionTests`, a checked `.xctestplan`, and a concrete visionOS-simulator command
+   to the existing `visionos-hosted` manifest lane. Start with window/Cinema handoff, scoped Now
+   Playing, SharePlay attachment, and vision-only capability composition.
+4. Keep physical Apple Vision Pro acceptance for media-plane rendering, spatial placement, and
+   long Cinema transitions. Hosted tests and the simulator cannot promote those gates.
+
+Do not create duplicate platform copies of pure policy merely to populate a hosted target. The
+strategy is a small vision integration suite over shared tested policy, not a second PMSKit suite.
+
+## Shared app-test support
+
+`LabstreamTests/TestSupport.swift` owns the common temporary directory, locked box, continuation
+gate, manual clock, and `TestURLProtocolStub`. The stub gives every session a uniquely routed
+handler rather than replacing process-global state, so parallel tests remain isolated. New
+deterministic app tests should use these helpers instead of adding file-local copies. Existing
+local helpers can migrate when their own test files are touched; avoid a broad mechanical rewrite
+that obscures safety-test changes.
+
 ## CI checks
 
 Woodpecker provides the repository's default public, portable CI surface:
@@ -69,6 +149,17 @@ Simulator builds are useful for compile coverage, sign-in UI, settings, browse f
 mobile shell regressions, and many download/playback routing checks. They are not a full substitute
 for headset playback or physical iPhone/iPad media-background behavior, cellular-transfer policy,
 PiP/AirPlay handoff, or system search/Shortcuts invocation.
+
+### tvOS UI and evidence tiers
+
+The affected-platform tier selects only the small deterministic TV UI smoke plan: launch plus the
+fixture-backed Home-to-detail remote journey. Exhaustive focus, keyboard, remote-scrub, auto-hide,
+and player-menu sweeps belong to the full/manual TV lane.
+
+The DEBUG-only `UIWindow.sendEvent` evidence swizzle is never installed by default. Only launches
+with `--tv-input-evidence` enable it; the exhaustive player UI fixture opts in explicitly. Ordinary
+Debug launches, unit tests, and the small UI smoke plan therefore exercise the unswizzled event
+path. Release builds still compile the recorder out entirely.
 
 ## macOS development-preview checks
 

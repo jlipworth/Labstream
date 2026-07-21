@@ -1,0 +1,191 @@
+{
+  "version": 1,
+  "tiers": {
+    "smoke": [
+      "pmskit-correctness",
+      "visionos-build",
+      "mobile-build",
+      "tvos-build",
+      "macos-build"
+    ],
+    "full": [
+      "pmskit-correctness",
+      "visionos-build",
+      "visionos-hosted",
+      "mobile-build",
+      "mobile-hosted",
+      "tvos-build",
+      "tvos-hosted",
+      "tvos-ui-full",
+      "macos-build",
+      "macos-hosted"
+    ]
+  },
+  "lanes": {
+    "pmskit-correctness": {
+      "kind": "correctness",
+      "command": [
+        "swift", "test", "--package-path", "PMSKit", "--no-parallel",
+        "--skip", "Live.*ProbeTests"
+      ]
+    },
+    "visionos-build": {
+      "kind": "build",
+      "command": [
+        "scripts/xcodebuild-versioned.sh", "-project", "Labstream.xcodeproj",
+        "-scheme", "Labstream", "-configuration", "Debug",
+        "-destination", "generic/platform=visionOS Simulator",
+        "-derivedDataPath", "{output_dir}/visionos-build",
+        "build", "CODE_SIGNING_ALLOWED=NO"
+      ]
+    },
+    "visionos-hosted": {
+      "kind": "hosted",
+      "status": "planned",
+      "reason": "No visionOS-hosted target exists yet. Keep pure policy in PMSKit and add only narrow visionOS integration tests after the platform source split."
+    },
+    "mobile-build": {
+      "kind": "build",
+      "command": [
+        "scripts/xcodebuild-versioned.sh", "-project", "Labstream.xcodeproj",
+        "-scheme", "LabstreamMobile", "-configuration", "Debug",
+        "-destination", "generic/platform=iOS Simulator",
+        "-derivedDataPath", "{output_dir}/mobile-build",
+        "build", "CODE_SIGNING_ALLOWED=NO"
+      ]
+    },
+    "mobile-hosted": {
+      "kind": "hosted",
+      "simulator": "iphone",
+      "command": [
+        "scripts/xcodebuild-versioned.sh", "-project", "Labstream.xcodeproj",
+        "-scheme", "LabstreamMobile", "-testPlan", "LabstreamTests",
+        "-destination", "platform=iOS Simulator,id={iphone_sim_id}",
+        "-derivedDataPath", "{output_dir}/mobile-hosted",
+        "-skip-testing:LabstreamTests/DebugPlexBrowseProbeTests",
+        "test", "CODE_SIGNING_ALLOWED=NO", "-enableCodeCoverage", "NO"
+      ]
+    },
+    "tvos-build": {
+      "kind": "build",
+      "command": [
+        "scripts/xcodebuild-versioned.sh", "-project", "Labstream.xcodeproj",
+        "-scheme", "LabstreamTV", "-configuration", "Debug",
+        "-destination", "generic/platform=tvOS Simulator",
+        "-derivedDataPath", "{output_dir}/tvos-build",
+        "build-for-testing", "CODE_SIGNING_ALLOWED=NO"
+      ]
+    },
+    "tvos-hosted": {
+      "kind": "hosted",
+      "simulator": "tvos",
+      "command": [
+        "scripts/xcodebuild-versioned.sh", "-project", "Labstream.xcodeproj",
+        "-scheme", "LabstreamTV", "-testPlan", "LabstreamTVTests",
+        "-destination", "platform=tvOS Simulator,id={tvos_sim_id}",
+        "-derivedDataPath", "{output_dir}/tvos-hosted",
+        "-only-testing:LabstreamTVTests",
+        "-skip-testing:LabstreamTVTests/DebugPlexBrowseProbeTests",
+        "test", "CODE_SIGNING_ALLOWED=NO", "-enableCodeCoverage", "NO"
+      ]
+    },
+    "tvos-ui-smoke": {
+      "kind": "ui-smoke",
+      "simulator": "tvos",
+      "command": [
+        "scripts/xcodebuild-versioned.sh", "-project", "Labstream.xcodeproj",
+        "-scheme", "LabstreamTV",
+        "-destination", "platform=tvOS Simulator,id={tvos_sim_id}",
+        "-derivedDataPath", "{output_dir}/tvos-ui-smoke",
+        "-only-testing:LabstreamTVUITests/LabstreamTVLaunchTests/testAppLaunches",
+        "-only-testing:LabstreamTVUITests/LabstreamTVLaunchTests/testRemoteBrowsesFromFixtureHomeIntoDetailAndBack",
+        "test", "CODE_SIGNING_ALLOWED=NO", "-enableCodeCoverage", "NO"
+      ]
+    },
+    "tvos-ui-full": {
+      "kind": "ui-full-manual",
+      "simulator": "tvos",
+      "command": [
+        "scripts/xcodebuild-versioned.sh", "-project", "Labstream.xcodeproj",
+        "-scheme", "LabstreamTV",
+        "-destination", "platform=tvOS Simulator,id={tvos_sim_id}",
+        "-derivedDataPath", "{output_dir}/tvos-ui-full",
+        "-only-testing:LabstreamTVUITests",
+        "test", "CODE_SIGNING_ALLOWED=NO", "-enableCodeCoverage", "NO"
+      ]
+    },
+    "macos-build": {
+      "kind": "build",
+      "command": [
+        "scripts/xcodebuild-versioned.sh", "-project", "Labstream.xcodeproj",
+        "-scheme", "LabstreamMac", "-configuration", "Debug",
+        "-destination", "platform=macOS,arch=arm64",
+        "-derivedDataPath", "{output_dir}/macos-build",
+        "build", "CODE_SIGNING_ALLOWED=NO"
+      ]
+    },
+    "macos-hosted": {
+      "kind": "hosted",
+      "command": [
+        "scripts/xcodebuild-versioned.sh", "-project", "Labstream.xcodeproj",
+        "-scheme", "LabstreamMac", "-testPlan", "LabstreamMacTests",
+        "-destination", "platform=macOS,arch=arm64",
+        "-derivedDataPath", "{output_dir}/macos-hosted",
+        "-skip-testing:LabstreamMacTests/DebugPlexBrowseProbeTests",
+        "test", "CODE_SIGNING_ALLOWED=NO", "-enableCodeCoverage", "NO"
+      ]
+    }
+  },
+  "affected_rules": [
+    {
+      "patterns": ["PMSKit/**"],
+      "lanes": [
+        "pmskit-correctness", "visionos-build", "visionos-hosted",
+        "mobile-build", "mobile-hosted", "tvos-build", "tvos-hosted",
+        "tvos-ui-smoke", "macos-build", "macos-hosted"
+      ]
+    },
+    {
+      "patterns": ["LabstreamTests/**"],
+      "lanes": ["visionos-hosted", "mobile-hosted", "tvos-hosted", "macos-hosted"]
+    },
+    {
+      "patterns": ["LabstreamTVUITests/**"],
+      "lanes": ["tvos-build", "tvos-ui-smoke"]
+    },
+    {
+      "patterns": ["Labstream/Platforms/visionOS/**"],
+      "lanes": ["visionos-build", "visionos-hosted"],
+      "exclusive": true
+    },
+    {
+      "patterns": ["Labstream/Platforms/iOS/**", "Labstream/Platforms/iPadOS/**", "Labstream/Platforms/Mobile/**"],
+      "lanes": ["mobile-build", "mobile-hosted"],
+      "exclusive": true
+    },
+    {
+      "patterns": ["Labstream/Platforms/tvOS/**"],
+      "lanes": ["tvos-build", "tvos-hosted", "tvos-ui-smoke"],
+      "exclusive": true
+    },
+    {
+      "patterns": ["Labstream/Platforms/macOS/**"],
+      "lanes": ["macos-build", "macos-hosted"],
+      "exclusive": true
+    },
+    {
+      "patterns": ["Labstream/**"],
+      "lanes": [
+        "visionos-build", "visionos-hosted", "mobile-build", "mobile-hosted",
+        "tvos-build", "tvos-hosted", "tvos-ui-smoke", "macos-build", "macos-hosted"
+      ]
+    },
+    {
+      "patterns": ["Labstream.xcodeproj/**", "*.xctestplan", "Config/**"],
+      "lanes": [
+        "visionos-build", "visionos-hosted", "mobile-build", "mobile-hosted",
+        "tvos-build", "tvos-hosted", "tvos-ui-smoke", "macos-build", "macos-hosted"
+      ]
+    }
+  ]
+}

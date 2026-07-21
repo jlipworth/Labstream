@@ -93,23 +93,27 @@ final class VideoNowPlayingCore {
                 return .success
             },
             .changePlaybackPosition: { [weak self] event in
-                guard let self, let controller = self.controller,
-                      let position = event.positionTime else { return .noActionableItem }
-                controller.performUserSeek(toMs: Int((position * 1000).rounded()))
-                self.updateNowPlayingInfo()
-                return .success
+                guard let self else { return .noActionableItem }
+                return self.performRemoteCommand(
+                    VideoNowPlayingCommandPolicy.seekIntent(
+                        positionTime: event.positionTime,
+                        durationMilliseconds: self.controller?.videoNowPlayingDurationMilliseconds))
             },
             .skipForward: { [weak self, defaultSkipIntervalSeconds] event in
                 guard let self else { return .noActionableItem }
-                self.performRemoteSkip(seconds: event.skipInterval ?? defaultSkipIntervalSeconds,
-                                       direction: 1)
-                return .success
+                return self.performRemoteCommand(
+                    VideoNowPlayingCommandPolicy.skipIntent(
+                        interval: event.skipInterval,
+                        fallbackSeconds: defaultSkipIntervalSeconds,
+                        direction: .forward))
             },
             .skipBackward: { [weak self, defaultSkipIntervalSeconds] event in
                 guard let self else { return .noActionableItem }
-                self.performRemoteSkip(seconds: event.skipInterval ?? defaultSkipIntervalSeconds,
-                                       direction: -1)
-                return .success
+                return self.performRemoteCommand(
+                    VideoNowPlayingCommandPolicy.skipIntent(
+                        interval: event.skipInterval,
+                        fallbackSeconds: defaultSkipIntervalSeconds,
+                        direction: .backward))
             },
         ], skipForwardIntervals: skipIntervals, skipBackwardIntervals: skipIntervals,
            didBecomeCurrent: { [weak self] _ in
@@ -161,11 +165,13 @@ final class VideoNowPlayingCore {
         return item.year.map(String.init)
     }
 
-    private func performRemoteSkip(seconds: Double, direction: Int) {
-        guard let controller else { return }
-        let targetMs = max(0, controller.currentResumeMs + Int((seconds * 1000).rounded()) * direction)
-        controller.performUserSeek(toMs: targetMs)
+    private func performRemoteCommand(_ intent: VideoNowPlayingCommandPolicy.Intent?)
+        -> SystemMediaSessionCoordinator.CommandStatus {
+        guard let controller else { return .noActionableItem }
+        guard let intent else { return .failed }
+        controller.performVideoNowPlayingCommand(intent)
         updateNowPlayingInfo()
+        return .success
     }
 }
 #endif

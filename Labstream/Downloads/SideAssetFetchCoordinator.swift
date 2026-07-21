@@ -95,6 +95,9 @@ actor SideAssetFetchCoordinator {
     private let policy: SideAssetRequestPolicy
     private let clock: SideAssetCoordinatorClock
     private var jobs: [JobKey: Job] = [:]
+    /// Exact reverse ownership for waiter cancellation. Cancellation handlers may run on any
+    /// executor, but all index mutation is serialized by this actor.
+    private var waiterJobs: [UUID: JobKey] = [:]
     private var origins: [SideAssetOrigin: OriginState] = [:]
     private var parkedOwners: Set<SideAssetOwner> = []
 #if DEBUG
@@ -124,23 +127,40 @@ actor SideAssetFetchCoordinator {
         if let existingFile,
            let data = try? Data(contentsOf: existingFile),
            !data.isEmpty {
+            try Task.checkCancellation()
             return data
         }
 
         let waiterID = UUID()
-        return try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
-                enqueue(
-                    waiterID: waiterID,
-                    origin: origin,
-                    owner: owner,
-                    requestKey: requestKey,
-                    operation: operation,
-                    continuation: continuation
-                )
-            }
-        } onCancel: {
-            Task { await self.cancelWaiter(waiterID) }
+        let result: Result<Data, any Error>
+        do {
+            result = .success(try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    enqueue(
+                        waiterID: waiterID,
+                        origin: origin,
+                        owner: owner,
+                        requestKey: requestKey,
+                        operation: operation,
+                        isCancelled: Task.isCancelled,
+                        continuation: continuation
+                    )
+                }
+            } onCancel: {
+                Task { await self.cancelWaiter(waiterID) }
+            })
+        } catch {
+            result = .failure(error)
+        }
+        // Completion and the cancellation-handler hop to this actor can arrive in either order.
+        // Check after either continuation outcome so cancellation remains externally deterministic
+        // without attempting to resume a continuation for a second time.
+        try Task.checkCancellation()
+        switch result {
+        case .success(let data):
+            return data
+        case .failure(let error):
+            throw error
         }
     }
 
@@ -212,6 +232,7 @@ actor SideAssetFetchCoordinator {
             let cancelled = job.waiters.values.filter { $0.owner == owner }
             for waiter in cancelled {
                 job.waiters.removeValue(forKey: waiter.id)
+                waiterJobs.removeValue(forKey: waiter.id)
                 waiter.continuation.resume(throwing: CancellationError())
             }
             if job.waiters.isEmpty {
@@ -236,6 +257,10 @@ actor SideAssetFetchCoordinator {
         jobs[JobKey(origin: origin, request: requestKey)]?.waiters.count ?? 0
     }
 
+    func waiterJobIndexCountForTesting() -> Int {
+        waiterJobs.count
+    }
+
     func recordedAdmissionsForTesting() -> [AdmissionForTesting] {
         admissionsForTesting
     }
@@ -247,10 +272,20 @@ actor SideAssetFetchCoordinator {
         owner: SideAssetOwner,
         requestKey: SideAssetRequestKey,
         operation: @escaping FetchOperation,
+        isCancelled: Bool,
         continuation: CheckedContinuation<Data, any Error>
     ) {
+        // The cancellation handler is installed before this closure executes. Its actor hop can
+        // legitimately arrive before enqueue; checking the originating task here closes that
+        // registration gap without retaining cancellation tombstones or risking a second resume.
+        guard !isCancelled else {
+            continuation.resume(throwing: CancellationError())
+            return
+        }
+
         let key = JobKey(origin: origin, request: requestKey)
         let waiter = Waiter(id: waiterID, owner: owner, continuation: continuation)
+        waiterJobs[waiterID] = key
         if var job = jobs[key] {
             job.waiters[waiterID] = waiter
             reassignQueueOwnerIfNeeded(&job)
@@ -368,6 +403,7 @@ actor SideAssetFetchCoordinator {
         } else {
             jobs.removeValue(forKey: key)
             for waiter in job.waiters.values {
+                waiterJobs.removeValue(forKey: waiter.id)
                 switch completion {
                 case .success(let data): waiter.continuation.resume(returning: data)
                 case .failure(let error): waiter.continuation.resume(throwing: error)
@@ -379,24 +415,24 @@ actor SideAssetFetchCoordinator {
     }
 
     private func cancelWaiter(_ waiterID: UUID) {
-        for key in Array(jobs.keys) {
-            guard var job = jobs[key], let waiter = job.waiters.removeValue(forKey: waiterID) else { continue }
-            waiter.continuation.resume(throwing: CancellationError())
-            if job.waiters.isEmpty {
-                if job.status == .running {
-                    job.task?.cancel()
-                    jobs[key] = job
-                } else {
-                    jobs.removeValue(forKey: key)
-                }
-            } else {
-                reassignQueueOwnerIfNeeded(&job)
+        guard let key = waiterJobs.removeValue(forKey: waiterID),
+              var job = jobs[key],
+              let waiter = job.waiters.removeValue(forKey: waiterID) else { return }
+
+        waiter.continuation.resume(throwing: CancellationError())
+        if job.waiters.isEmpty {
+            if job.status == .running {
+                job.task?.cancel()
                 jobs[key] = job
+            } else {
+                jobs.removeValue(forKey: key)
             }
-            compact(key.origin)
-            schedule(key.origin)
-            return
+        } else {
+            reassignQueueOwnerIfNeeded(&job)
+            jobs[key] = job
         }
+        compact(key.origin)
+        schedule(key.origin)
     }
 
     private func allWaitersParked(_ job: Job) -> Bool {

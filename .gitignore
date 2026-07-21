@@ -75,3 +75,6 @@ site/
 
 # Local agent simulator run artifacts
 artifacts/agent-sim-runs/
+
+# Local performance-audit evidence (raw traces and manifests may be sensitive)
+artifacts/performance-audit/

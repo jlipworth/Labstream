@@ -1,19 +1,54 @@
 import Foundation
 
-/// Pure helpers for the video Now Playing remote-command path.
+/// Pure validation and intent construction for video Now Playing remote commands.
 public enum VideoNowPlayingCommandPolicy {
-    /// Convert an MPChangePlaybackPositionCommandEvent position to milliseconds,
-    /// clamping invalid, negative, and over-duration values before the app's canonical
-    /// user-seek path receives them.
-    public static func clampedPositionMilliseconds(positionTime: Double,
-                                                   durationMilliseconds: Int?) -> Int {
-        guard positionTime.isFinite, positionTime > 0 else { return 0 }
-        // Bound the Double BEFORE the Int conversion: Int(_:) traps on finite values
-        // beyond Int.max, and the event position is system-supplied, not app-validated.
+    public enum Intent: Equatable, Sendable {
+        case seek(toMilliseconds: Int)
+        case skip(bySeconds: Int)
+    }
+
+    public enum SkipDirection: Sendable {
+        case forward
+        case backward
+    }
+
+    /// Validate a system-supplied absolute position and turn it into the canonical seek intent.
+    /// Malformed values fail closed. Valid positions beyond a known duration (or `Int`'s range)
+    /// clamp to the corresponding upper bound before any potentially trapping conversion.
+    public static func seekIntent(positionTime: Double?,
+                                  durationMilliseconds: Int?) -> Intent? {
+        guard let positionTime, positionTime.isFinite, positionTime >= 0 else { return nil }
+
+        let upperBound = durationMilliseconds.flatMap { $0 > 0 ? $0 : nil } ?? Int.max
         let requestedMilliseconds = (positionTime * 1000).rounded()
-        guard let durationMilliseconds, durationMilliseconds > 0 else {
-            return requestedMilliseconds >= Double(Int.max) ? Int.max : Int(requestedMilliseconds)
+        guard requestedMilliseconds.isFinite,
+              requestedMilliseconds < Double(upperBound),
+              requestedMilliseconds < Double(Int.max) else {
+            return .seek(toMilliseconds: upperBound)
         }
-        return Int(min(requestedMilliseconds, Double(durationMilliseconds)))
+        return .seek(toMilliseconds: Int(requestedMilliseconds))
+    }
+
+    /// Validate a system-supplied skip interval and turn it into a signed relative-seek intent.
+    /// A missing interval uses the platform's configured fallback. A present but malformed value
+    /// is rejected rather than silently converted into the fallback.
+    public static func skipIntent(interval: Double?,
+                                  fallbackSeconds: Double,
+                                  direction: SkipDirection) -> Intent? {
+        let candidate = interval ?? fallbackSeconds
+        guard candidate.isFinite,
+              candidate > 0,
+              candidate <= Double(Int.max / 1000) else { return nil }
+
+        let magnitude = max(1, Int(candidate.rounded()))
+        // `Double(Int.max / 1000)` can round upward by one at this scale. Re-check the
+        // converted integer so `PlaybackController` can multiply it by 1000 safely.
+        guard magnitude <= Int.max / 1000 else { return nil }
+        switch direction {
+        case .forward:
+            return .skip(bySeconds: magnitude)
+        case .backward:
+            return .skip(bySeconds: -magnitude)
+        }
     }
 }

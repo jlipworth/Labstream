@@ -9,8 +9,8 @@ import Foundation
 /// by `PlaybackController`, not this proxy; keep this type stream-only.
 public actor MediaSessionProxy {
     private let origin = LoopbackOrigin()
-    private let upstreamFetch: @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
-    private let rebuildUpstream: @Sendable () -> Void
+    private let makeUpstreamAttempt: @Sendable () -> UpstreamFetchAttempt
+    private let rotateUpstream: @Sendable (_ expectedGeneration: Int) -> Bool
     private let now: @Sendable () -> TimeInterval
     private let strippedPlaylistQueryItemNames: Set<String>
     private let injectedPlaylistStartTimeOffsetSeconds: Double?
@@ -41,8 +41,8 @@ public actor MediaSessionProxy {
         // AVFoundation's own media-plane pool won't do — guarantee a fresh socket).
         let box = SessionBox(config: PlexSessionConfiguration.mediaUpstream(timeout: timeout),
                              delegate: trustDelegate)
-        self.upstreamFetch = { req in try await box.fetch(req) }
-        self.rebuildUpstream = { box.rebuild() }
+        self.makeUpstreamAttempt = { box.makeAttempt() }
+        self.rotateUpstream = { box.rotate(ifCurrent: $0) }
         self.now = now
         self.strippedPlaylistQueryItemNames = strippedPlaylistQueryItemNames.map { $0.lowercased() }.reduce(into: Set<String>()) { $0.insert($1) }
         self.injectedPlaylistStartTimeOffsetSeconds = injectedPlaylistStartTimeOffsetSeconds
@@ -58,8 +58,9 @@ public actor MediaSessionProxy {
          dolbyVisionInjection: MediaSessionDolbyVisionInjection? = nil,
          extraUpstreamHeaders: [String: String] = [:],
          now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
-        self.upstreamFetch = upstreamFetch
-        self.rebuildUpstream = {}
+        let box = ClosureUpstreamTransport(rebuild: {}, fetch: upstreamFetch)
+        self.makeUpstreamAttempt = { box.makeAttempt() }
+        self.rotateUpstream = { box.rotate(ifCurrent: $0) }
         self.now = now
         self.strippedPlaylistQueryItemNames = strippedPlaylistQueryItemNames.map { $0.lowercased() }.reduce(into: Set<String>()) { $0.insert($1) }
         self.injectedPlaylistStartTimeOffsetSeconds = injectedPlaylistStartTimeOffsetSeconds
@@ -90,8 +91,8 @@ public actor MediaSessionProxy {
         let conn = UpstreamConnection(
             budget: SeekRestartBudget(cooldownSeconds: 5, burstLimit: 3, burstWindowSeconds: 60),
             now: now,
-            rebuild: rebuildUpstream,
-            fetch: upstreamFetch)
+            makeAttempt: makeUpstreamAttempt,
+            rotate: rotateUpstream)
         self.connection = conn
 
         let rewriterBox = RewriterBox()
@@ -209,11 +210,12 @@ public actor MediaSessionProxy {
 }
 
 /// Holds the live upstream `URLSession` so a rotate can swap it without disturbing callers.
-private final class SessionBox: @unchecked Sendable {
+final class SessionBox: @unchecked Sendable {
     private let config: URLSessionConfiguration
     private let delegate: URLSessionDelegate?
     private let lock = NSLock()
     private var session: URLSession
+    private var generation = 0
 
     init(config: URLSessionConfiguration, delegate: URLSessionDelegate?) {
         self.config = config
@@ -221,24 +223,34 @@ private final class SessionBox: @unchecked Sendable {
         self.session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
     }
 
-    func fetch(_ req: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        // Read the session under the lock in a *synchronous* scope (NSLock is unavailable
-        // across an await), then perform the request without holding it.
-        let (data, resp) = try await currentSession().data(for: req)
-        guard let http = resp as? HTTPURLResponse else { throw URLError(.badServerResponse) }
-        return (data, http)
-    }
-
-    private func currentSession() -> URLSession {
-        lock.lock(); defer { lock.unlock() }
-        return session
-    }
-
-    func rebuild() {
+    func makeAttempt() -> UpstreamFetchAttempt {
         lock.lock()
-        session.invalidateAndCancel()
+        let session = session
+        let generation = generation
+        lock.unlock()
+        return UpstreamFetchAttempt(generation: generation) { req in
+            let (data, resp) = try await session.data(for: req)
+            guard let http = resp as? HTTPURLResponse else { throw URLError(.badServerResponse) }
+            return (data, http)
+        }
+    }
+
+    /// Compare-and-swap the current generation. New requests immediately use the replacement;
+    /// existing tasks keep the old session alive until they finish or hit their own deadline.
+    @discardableResult
+    func rotate(ifCurrent expectedGeneration: Int) -> Bool {
+        lock.lock()
+        guard generation == expectedGeneration else {
+            lock.unlock()
+            return false
+        }
+        let drainingSession = session
+        generation += 1
         session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
         lock.unlock()
+
+        drainingSession.finishTasksAndInvalidate()
+        return true
     }
 }
 

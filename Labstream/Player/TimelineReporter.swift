@@ -24,7 +24,7 @@ final class TimelineReporter {
     private var client: PlexClient
     private let player: AVPlayer
     private let mediaBrowserProgressSession: (@MainActor () -> MediaBrowserPlaybackProgressSession?)?
-    private let mediaBrowserProgressExecutor = MediaBrowserRequestExecutor(session: .shared)
+    private let mediaBrowserProgressExecutor: MediaBrowserRequestExecutor
 
     /// True once the current item has reached `.readyToPlay` with a real duration.
     /// Set by the controller's status observer; reset on each item (re)load. Gates
@@ -37,13 +37,15 @@ final class TimelineReporter {
     private var didScrobble = false
     private var isSendInFlight = false
     private var sendCoalescer = TimelineSendCoalescer<PendingSend>()
-    private var mediaBrowserDidStartSession = false
-    private var mediaBrowserSessionKey: String?
+    private var mediaBrowserStartAuthority = MediaBrowserPlaybackStartAuthority()
 
     private struct PendingSend: Sendable {
         enum Destination: Sendable {
             case plex(PlexRequest, PlexClient)
-            case mediaBrowser(URLRequest, MediaBrowserRequestExecutor)
+            case mediaBrowser(URLRequest,
+                              MediaBrowserRequestExecutor,
+                              sessionKey: String,
+                              event: MediaBrowserPlaybackProgressEvent)
         }
 
         enum Kind: Sendable {
@@ -68,7 +70,8 @@ final class TimelineReporter {
          identity: ClientIdentity,
          client: PlexClient,
          player: AVPlayer,
-         mediaBrowserProgressSession: (@MainActor () -> MediaBrowserPlaybackProgressSession?)? = nil) {
+         mediaBrowserProgressSession: (@MainActor () -> MediaBrowserPlaybackProgressSession?)? = nil,
+         mediaBrowserProgressExecutor: MediaBrowserRequestExecutor = MediaBrowserRequestExecutor(session: .shared)) {
         self.item = item
         self.server = server
         self.token = token
@@ -76,6 +79,7 @@ final class TimelineReporter {
         self.client = client
         self.player = player
         self.mediaBrowserProgressSession = mediaBrowserProgressSession
+        self.mediaBrowserProgressExecutor = mediaBrowserProgressExecutor
     }
 
     /// Swap future timeline/scrobble sends to a fresh control-plane client after player
@@ -87,7 +91,9 @@ final class TimelineReporter {
 
     /// Send a timeline heartbeat. Skips when nothing meaningful changed (same state
     /// within the same second bucket) unless `force` is set.
-    func report(state: TimelineRequest.State, force: Bool) {
+    func report(state: TimelineRequest.State,
+                force: Bool,
+                positionMs positionOverrideMs: Int? = nil) {
         let remoteProgressSession = mediaBrowserProgressSession?()
         // Local-file playback has no server session to report to.
         guard server != nil && token != nil || remoteProgressSession != nil else { return }
@@ -103,10 +109,12 @@ final class TimelineReporter {
         // the gate opened with no known item duration).
         guard durationMs > 0 || state == .stopped else { return }
 
-        let currentMs = Int(player.currentTime().seconds.isFinite ? player.currentTime().seconds * 1000 : 0)
+        let currentMs = max(0, positionOverrideMs
+            ?? Int(player.currentTime().seconds.isFinite ? player.currentTime().seconds * 1000 : 0))
         let currentSecond = currentMs / 1000
-        let mediaBrowserSessionChanged = remoteProgressSession?.sessionKey != nil
-            && remoteProgressSession?.sessionKey != mediaBrowserSessionKey
+        let mediaBrowserSessionChanged = remoteProgressSession.map {
+            !mediaBrowserStartAuthority.isCurrentSession($0.sessionKey)
+        } ?? false
 
         if !force,
            !mediaBrowserSessionChanged,
@@ -135,10 +143,13 @@ final class TimelineReporter {
         }
 
         if let remoteProgressSession,
-           let req = mediaBrowserProgressRequest(session: remoteProgressSession,
-                                                 state: state,
-                                                 positionMs: currentMs) {
-            enqueue(PendingSend(destination: .mediaBrowser(req, mediaBrowserProgressExecutor),
+           let pending = mediaBrowserProgressRequest(session: remoteProgressSession,
+                                                     state: state,
+                                                     positionMs: currentMs) {
+            enqueue(PendingSend(destination: .mediaBrowser(pending.request,
+                                                           mediaBrowserProgressExecutor,
+                                                           sessionKey: remoteProgressSession.sessionKey,
+                                                           event: pending.event),
                                 kind: .timeline(state: state,
                                                 positionMs: currentMs,
                                                 durationMs: durationMs)))
@@ -187,12 +198,14 @@ final class TimelineReporter {
         isSendInFlight = true
         let send = next.event
         Task {
+            var acceptedMediaBrowserStart: (sessionKey: String, event: MediaBrowserPlaybackProgressEvent)?
             do {
                 switch send.destination {
                 case .plex(let request, let client):
                     try await client.send(request)
-                case .mediaBrowser(let request, let executor):
+                case .mediaBrowser(let request, let executor, let sessionKey, let event):
                     try await executor.send(request)
+                    acceptedMediaBrowserStart = (sessionKey, event)
                 }
             } catch {
                 await MainActor.run {
@@ -200,6 +213,11 @@ final class TimelineReporter {
                 }
             }
             await MainActor.run {
+                if let acceptedMediaBrowserStart {
+                    self.mediaBrowserStartAuthority.recordAccepted(
+                        event: acceptedMediaBrowserStart.event,
+                        sessionKey: acceptedMediaBrowserStart.sessionKey)
+                }
                 self.sendNext()
             }
         }
@@ -207,23 +225,15 @@ final class TimelineReporter {
 
     private func mediaBrowserProgressRequest(session: MediaBrowserPlaybackProgressSession,
                                              state: TimelineRequest.State,
-                                             positionMs: Int) -> URLRequest? {
+                                             positionMs: Int) -> (request: URLRequest,
+                                                                  event: MediaBrowserPlaybackProgressEvent)? {
         let sessionKey = session.sessionKey
-        if mediaBrowserSessionKey != sessionKey {
-            mediaBrowserSessionKey = sessionKey
-            mediaBrowserDidStartSession = false
-        }
-
-        let event = MediaBrowserPlaybackProgressPolicy.event(for: state,
-                                                             hasStartedSession: mediaBrowserDidStartSession)
+        let event = mediaBrowserStartAuthority.event(for: state, sessionKey: sessionKey)
         do {
             let request = try session.request(for: event,
                                               positionMs: positionMs,
                                               isPaused: state == .paused)
-            if event == .playing {
-                mediaBrowserDidStartSession = true
-            }
-            return request
+            return (request, event)
         } catch {
             AppDiagnostics.record(.timeline, "mediabrowser_progress.build_failed", fields: [
                 "backend": .label(session.backend.rawValue),

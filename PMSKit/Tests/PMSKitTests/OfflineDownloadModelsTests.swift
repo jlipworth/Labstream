@@ -233,9 +233,9 @@ struct OfflineDownloadModelsTests {
     }
 
 
-    @Test("preserveCachedSideAssets keeps asynchronously cached subtitle metadata")
-    func preserveCachedSideAssetsKeepsSubtitles() {
-        let previous = OfflineMetadata(
+    @Test("preserveCachedSideAssets rejects the complete predecessor bundle on source change")
+    func preserveCachedSideAssetsRejectsReplacementSourceBundle() {
+        var previous = OfflineMetadata(
             ratingKey: "emby:63117",
             title: "Persona Non Grata",
             type: "episode",
@@ -253,28 +253,31 @@ struct OfflineDownloadModelsTests {
             mediaSourceID: "mediasource_63117",
             resumeDataRelativePath: "emby_63117.resume",
             rangeValidator: "\"old-etag\"",
+            downloadAttemptID: "attempt-old",
             heldRangeSegments: [
                 OfflineHeldRangeSegment(offset: 1_024, length: 512,
                                         relativePath: "emby_63117.range-held-1024-ABC",
                                         attemptID: "attempt-old")
             ])
+        previous.claimCachedSideAssets(attemptID: "attempt-old")
         var incoming = OfflineMetadata(
             ratingKey: "emby:63117",
             title: "Persona Non Grata",
             type: "episode",
             mediaSourceID: "mediasource_89488",
             downloadLane: .original,
-            serverPreparedVersion: true)
+            serverPreparedVersion: true,
+            downloadAttemptID: "attempt-old")
 
         incoming.preserveCachedSideAssets(from: previous)
 
         #expect(incoming.mediaSourceID == "mediasource_89488")
         #expect(incoming.serverPreparedVersion == true)
-        #expect(incoming.posterRelativePath == "emby_63117.poster.jpg")
-        // Source-scoped previews must not cross a replacement/renegotiated media source.
+        #expect(incoming.posterRelativePath == nil)
         #expect(incoming.embyBIFRelativePath == nil)
-        #expect(incoming.chapterImageRelativePaths == [0: "emby_63117.chapter-0.jpg"])
-        #expect(incoming.offlineTextSubtitles == previous.offlineTextSubtitles)
+        #expect(incoming.chapterImageRelativePaths == nil)
+        #expect(incoming.offlineTextSubtitles == nil)
+        #expect(incoming.sideAssetBundleOwner == nil)
         #expect(incoming.sourcePartSize == 9_876_543_210)
         #expect(incoming.resumeDataRelativePath == "emby_63117.resume")
         #expect(incoming.rangeValidator == "\"old-etag\"")
@@ -283,14 +286,17 @@ struct OfflineDownloadModelsTests {
 
     @Test("preserveCachedSideAssets unions partial chapter and trick-play successes")
     func preserveCachedSideAssetsMergesPartialCollections() {
-        let previous = OfflineMetadata(
+        var previous = OfflineMetadata(
             ratingKey: "jellyfin:item", title: "Title", type: "movie",
             jellyfinTrickPlayTileRelativePaths: ["tile-0.jpg", "tile-1.jpg"],
-            chapterImageRelativePaths: [0: "chapter-0.jpg", 1: "chapter-old-1.jpg"])
+            chapterImageRelativePaths: [0: "chapter-0.jpg", 1: "chapter-old-1.jpg"],
+            downloadAttemptID: "attempt-a")
+        previous.claimCachedSideAssets(attemptID: "attempt-a")
         var incoming = OfflineMetadata(
             ratingKey: "jellyfin:item", title: "Title", type: "movie",
             jellyfinTrickPlayTileRelativePaths: ["tile-1.jpg", "tile-2.jpg"],
-            chapterImageRelativePaths: [1: "chapter-new-1.jpg", 2: "chapter-2.jpg"])
+            chapterImageRelativePaths: [1: "chapter-new-1.jpg", 2: "chapter-2.jpg"],
+            downloadAttemptID: "attempt-a")
 
         incoming.preserveCachedSideAssets(from: previous)
 
@@ -300,23 +306,85 @@ struct OfflineDownloadModelsTests {
         #expect(incoming.chapterImageRelativePaths == [
             0: "chapter-0.jpg", 1: "chapter-new-1.jpg", 2: "chapter-2.jpg",
         ])
+        #expect(incoming.sideAssetBundleOwner?.attemptID == "attempt-a")
     }
 
     @Test("Emby BIF preservation is selected-media-source scoped")
     func embyBIFPreservationRequiresSameMediaSource() {
-        let previous = OfflineMetadata(
+        var previous = OfflineMetadata(
             ratingKey: "item", title: "Title", type: "movie",
-            embyBIFRelativePath: "item.emby.bif", mediaSourceID: "source-a")
+            embyBIFRelativePath: "item.emby.bif", mediaSourceID: "source-a",
+            downloadAttemptID: "attempt-a")
+        previous.claimCachedSideAssets(attemptID: "attempt-a")
         var sameSource = OfflineMetadata(
-            ratingKey: "item", title: "Title", type: "movie", mediaSourceID: "source-a")
+            ratingKey: "item", title: "Title", type: "movie", mediaSourceID: "source-a",
+            downloadAttemptID: "attempt-a")
         var replacementSource = OfflineMetadata(
-            ratingKey: "item", title: "Title", type: "movie", mediaSourceID: "source-b")
+            ratingKey: "item", title: "Title", type: "movie", mediaSourceID: "source-b",
+            downloadAttemptID: "attempt-a")
 
         sameSource.preserveCachedSideAssets(from: previous)
         replacementSource.preserveCachedSideAssets(from: previous)
 
         #expect(sameSource.embyBIFRelativePath == "item.emby.bif")
         #expect(replacementSource.embyBIFRelativePath == nil)
+    }
+
+    @Test("side assets never cross an attempt replacement even when source is identical")
+    func sideAssetsRequireExactAttemptOwner() {
+        var previous = OfflineMetadata(
+            ratingKey: "plex:item", title: "Title", type: "movie",
+            sourcePartID: 42,
+            posterRelativePath: "poster.jpg", plexBIFRelativePath: "preview.bif",
+            chapterImageRelativePaths: [0: "chapter.jpg"],
+            offlineTextSubtitles: [
+                OfflineTextSubtitleTrack(id: 1, displayName: "English", codec: "srt",
+                                         relativePath: "subtitle.srt")
+            ],
+            backendKind: .plex, downloadAttemptID: "attempt-a")
+        previous.claimCachedSideAssets(attemptID: "attempt-a")
+        var replacement = OfflineMetadata(
+            ratingKey: "plex:item", title: "Title", type: "movie",
+            sourcePartID: 42, backendKind: .plex, downloadAttemptID: "attempt-b")
+
+        replacement.preserveCachedSideAssets(from: previous, attemptID: "attempt-b")
+
+        #expect(!replacement.hasCachedSideAssets)
+        #expect(replacement.sideAssetBundleOwner == nil)
+    }
+
+    @Test("ownerless side assets fail closed even when the nested attempt shadow matches")
+    func ownerlessSideAssetsAreNotAdopted() {
+        let previous = OfflineMetadata(
+            ratingKey: "plex:item", title: "Title", type: "movie",
+            posterRelativePath: "legacy-poster.jpg", backendKind: .plex,
+            downloadAttemptID: "attempt-a")
+        var incoming = OfflineMetadata(
+            ratingKey: "plex:item", title: "Title", type: "movie", backendKind: .plex,
+            downloadAttemptID: "attempt-a")
+
+        incoming.preserveCachedSideAssets(from: previous, attemptID: "attempt-a")
+
+        #expect(!incoming.hasCachedSideAssets)
+        #expect(incoming.sideAssetBundleOwner == nil)
+    }
+
+    @Test("side-asset bundle ownership round-trips with its exact source and attempt")
+    func sideAssetBundleOwnerRoundTrips() throws {
+        var metadata = OfflineMetadata(
+            ratingKey: "jellyfin:item", title: "Title", type: "movie",
+            posterRelativePath: "poster.jpg", backendKind: .jellyfin,
+            backendBaseURLString: "https://media.example.test",
+            backendServerID: "server", mediaSourceID: "source-a",
+            downloadLane: .original, downloadAttemptID: "attempt-a")
+        metadata.claimCachedSideAssets(attemptID: "attempt-a")
+
+        let decoded = try JSONDecoder().decode(
+            OfflineMetadata.self, from: JSONEncoder().encode(metadata))
+
+        #expect(decoded.sideAssetBundleOwner == metadata.sideAssetBundleOwner)
+        #expect(decoded.sideAssetBundleOwner?.source.mediaSourceID == "source-a")
+        #expect(decoded.sideAssetBundleOwner?.attemptID == "attempt-a")
     }
 
     @Test("chapterImageRelativePaths (index-keyed dict) round-trips through encode/decode")

@@ -11,15 +11,12 @@ import UIKit
 ///
 /// Combined with the SwiftUI-side `TVPlayerEvidence:` logs in `CustomPlayerChrome`, this
 /// separates "event never reached the process", "event reached UIKit but not SwiftUI", and
-/// "event reached SwiftUI". Installed by default in every DEBUG launch (opt out with
-/// `--no-tv-input-evidence`); never in release builds.
+/// "event reached SwiftUI". This method swizzle is installed only when an evidence run opts in
+/// with `--tv-input-evidence`; never in ordinary Debug launches or Release builds.
 @MainActor
 enum TVInputEvidence {
     nonisolated static var isRequested: Bool {
-        // Default-on for tvOS DEBUG builds (this whole file is `#if os(tvOS) && DEBUG`):
-        // manual remote-testing sessions need press/focus evidence on every screen, not
-        // just under the XCUI harness. `--no-tv-input-evidence` opts a launch out.
-        !ProcessInfo.processInfo.arguments.contains("--no-tv-input-evidence")
+        ProcessInfo.processInfo.arguments.contains("--tv-input-evidence")
     }
 
     private static var installed = false

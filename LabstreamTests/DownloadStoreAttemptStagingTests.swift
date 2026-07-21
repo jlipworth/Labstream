@@ -526,11 +526,13 @@ struct DownloadStoreAttemptStagingTests {
             let stable = store.posterDestinationURL(ratingKey: a.ratingKey)
             try Data("owner-b".utf8).write(to: stable)
             #expect(created(store, key: a, stable: stable))
+            let sourceA = try #require(store.sideAssetSourceIdentity(for: a))
             let staging = try #require(store.attemptStagingURL(for: a, stableURL: stable))
             try Data("stale-a".utf8).write(to: staging)
             #expect(created(store, key: b, stable: stable, replacing: a.attemptID))
 
             #expect(!DownloadManager.promoteSideAsset(store: store, key: a,
+                                                      expectedSource: sourceA,
                                                       stagingURL: staging, stableURL: stable))
             #expect(!FileManager.default.fileExists(atPath: staging.path))
             #expect(String(decoding: try Data(contentsOf: stable), as: UTF8.self) == "owner-b")
@@ -547,11 +549,13 @@ struct DownloadStoreAttemptStagingTests {
             let stable = store.embyBIFDestinationURL(ratingKey: a.ratingKey)
             try Data("owner-b".utf8).write(to: stable)
             #expect(created(store, key: a, stable: stable))
+            let sourceA = try #require(store.sideAssetSourceIdentity(for: a))
             let staging = try #require(store.attemptStagingURL(for: a, stableURL: stable))
             try Data("stale-a".utf8).write(to: staging)
             #expect(created(store, key: b, stable: stable, replacing: a.attemptID))
 
             #expect(!DownloadManager.promoteSideAsset(store: store, key: a,
+                                                      expectedSource: sourceA,
                                                       stagingURL: staging, stableURL: stable))
             #expect(!FileManager.default.fileExists(atPath: staging.path))
             #expect(String(decoding: try Data(contentsOf: stable), as: UTF8.self) == "owner-b")

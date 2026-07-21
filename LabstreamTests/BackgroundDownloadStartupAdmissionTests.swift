@@ -541,7 +541,7 @@ struct BackgroundDownloadStartupAdmissionTests {
     }
 
     @Test @MainActor
-    func malformedStartupReleasesStoredBackgroundHandler() async throws {
+    func malformedStartupReleasesHeldBackgroundCompletion() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("background-startup-malformed-\(UUID().uuidString)",
                                   isDirectory: true)
@@ -568,24 +568,29 @@ struct BackgroundDownloadStartupAdmissionTests {
             try JSONSerialization.data(withJSONObject: envelope).write(to: indexURL, options: .atomic)
 
             let store = DownloadStore(baseDirectory: directory)
-            let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+            let releases = AsyncStream.makeStream(of: String.self)
+            let session = BackgroundDownloadSession(
+                store: store,
+                protocolClasses: [],
+                releaseBackgroundCompletion: { batch in
+                    releases.continuation.yield(batch.identifier)
+                }
+            )
             defer { session.invalidateInjectedSessionForTesting() }
-            let released = DispatchSemaphore(value: 0)
-            BackgroundDownloadCompletionRegistry.shared.store(
-                identifier: BackgroundDownloadSession.identifier,
-                completion: { released.signal() })
+            session.noteBackgroundCompletionHandlerStored(
+                identifier: BackgroundDownloadSession.identifier)
             let manager = DownloadManager(
                 appModel: AppModel(identity: PlatformClientIdentity.make(
                     clientIdentifier: "malformed-startup")),
-                store: store, session: session, registerForBackgroundEvents: true)
+                store: store, session: session, registerForBackgroundEvents: false)
 
-            #expect(await waitForSignal(released, timeout: 1))
+            var releaseIterator = releases.stream.makeAsyncIterator()
+            #expect(await releaseIterator.next() == BackgroundDownloadSession.identifier)
             guard case .blocked = manager.startupRecoveryState else {
                 Issue.record("Malformed ownership must block startup")
                 return
             }
-            #expect(!BackgroundDownloadCompletionRegistry.shared.hasPendingHandler(
-                identifier: BackgroundDownloadSession.identifier))
+            #expect(session.diagnosticSnapshot().pendingBackgroundCompletionOperationCount == 0)
     }
 
     private func withTemporaryDirectory(
@@ -1274,10 +1279,18 @@ struct HeldRangeBodyCompletionGateTests {
         // what keeps it — and the app — alive until the next task/hold exists.
         let identifier = "held-gate-\(UUID().uuidString)"
         let fired = DispatchSemaphore(value: 0)
-        BackgroundDownloadCompletionRegistry.shared.store(
+        let completionToken = BackgroundDownloadCompletionRegistry.shared.store(
             identifier: identifier, completion: { fired.signal() })
-        defer { BackgroundDownloadCompletionRegistry.shared.fireCompletion(for: identifier) }
-        session.noteBackgroundCompletionHandlerStored(identifier: identifier)
+        defer {
+            BackgroundDownloadCompletionRegistry.shared.fireCompletions(in: .init(
+                identifier: identifier,
+                tokens: [completionToken]
+            ))
+        }
+        session.noteBackgroundCompletionHandlerStored(
+            identifier: identifier,
+            token: completionToken
+        )
 
         // Off-head segment: durable working file (8 bytes) is behind this closed segment's
         // baseOffset (30), so the body takes the durable-hold branch.

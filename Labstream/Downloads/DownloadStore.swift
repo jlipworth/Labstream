@@ -1326,6 +1326,31 @@ final class DownloadStore: @unchecked Sendable {
     func promoteAttemptStagingFile(for key: DownloadAttemptKey,
                                    stagingURL: URL,
                                    to stableURL: URL) -> AttemptStagingPromotionResult {
+        promoteAttemptStagingFile(
+            for: key, expectedSideAssetSource: nil, stagingURL: stagingURL, to: stableURL)
+    }
+
+    /// Side-asset publication requires both the exact attempt and the source identity captured
+    /// before the fetch began. This closes same-attempt renegotiation races (notably Plex optimize
+    /// and Jellyfin/Emby source replacement) where an old response arrives after metadata moved on.
+    @discardableResult
+    func promoteSideAssetStagingFile(
+        for key: DownloadAttemptKey,
+        expectedSource: OfflineSideAssetSourceIdentity,
+        stagingURL: URL,
+        to stableURL: URL
+    ) -> AttemptStagingPromotionResult {
+        promoteAttemptStagingFile(
+            for: key, expectedSideAssetSource: expectedSource,
+            stagingURL: stagingURL, to: stableURL)
+    }
+
+    private func promoteAttemptStagingFile(
+        for key: DownloadAttemptKey,
+        expectedSideAssetSource: OfflineSideAssetSourceIdentity?,
+        stagingURL: URL,
+        to stableURL: URL
+    ) -> AttemptStagingPromotionResult {
         guard stableRelativePath(for: stableURL) != nil,
               let expectedStaging = attemptStagingURL(for: key, stableURL: stableURL),
               stagingURL.standardizedFileURL == expectedStaging.standardizedFileURL else {
@@ -1335,7 +1360,14 @@ final class DownloadStore: @unchecked Sendable {
         guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else {
             return .staleOrMissingOwner
         }
+        if let expectedSideAssetSource,
+           row.metadata?.sideAssetSourceIdentity != expectedSideAssetSource {
+            return .staleOrMissingOwner
+        }
         guard !Self.hasPendingRowDeletion(row) else { return .staleOrMissingOwner }
+        guard reservedArtifactDeletionPaths[stableURL.lastPathComponent] == nil else {
+            return .staleOrMissingOwner
+        }
         guard fileManager.fileExists(atPath: stagingURL.path) else { return .sourceMissing }
         let result = stagingURL.withUnsafeFileSystemRepresentation { source in
             stableURL.withUnsafeFileSystemRepresentation { destination in
@@ -2291,11 +2323,15 @@ final class DownloadStore: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
               !row.legacyResetPending, !row.deletionPending else { return nil }
+        guard let metadata = row.metadata,
+              metadata.sideAssetBundleOwner == OfflineSideAssetBundleOwner(
+                attemptID: key.attemptID.rawValue,
+                source: metadata.sideAssetSourceIdentity) else { return nil }
         let relative = destination.lastPathComponent
         guard Self.isSafeOneLevelRelativePath(relative),
               destination.deletingLastPathComponent().standardizedFileURL
                 == baseDirectory.standardizedFileURL,
-              sideAssetRelativePaths(for: row.metadata).contains(relative),
+              sideAssetRelativePaths(for: metadata).contains(relative),
               let attributes = try? fileManager.attributesOfItem(atPath: destination.path),
               attributes[.type] as? FileAttributeType == .typeRegular,
               ((attributes[.size] as? NSNumber)?.uint64Value ?? 0) > 0 else { return nil }
@@ -2306,6 +2342,15 @@ final class DownloadStore: @unchecked Sendable {
     func metadata(for ratingKey: String) -> OfflineMetadata? {
         lock.lock(); defer { lock.unlock() }
         return rows[ratingKey]?.metadata
+    }
+
+    func sideAssetSourceIdentity(
+        for key: DownloadAttemptKey
+    ) -> OfflineSideAssetSourceIdentity? {
+        lock.lock(); defer { lock.unlock() }
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
+              !row.legacyResetPending, !Self.hasPendingRowDeletion(row) else { return nil }
+        return row.metadata?.sideAssetSourceIdentity
     }
 
     /// Persisted media duration in milliseconds, without hydrating the row.
@@ -2463,6 +2508,39 @@ final class DownloadStore: @unchecked Sendable {
         return relatives.filter(Self.isSafeOneLevelRelativePath)
     }
 
+    /// Best-effort physical retirement after the replacement metadata snapshot is durable. The
+    /// exact current attempt is revalidated under the same lock used by promotion, and paths are
+    /// reserved while deleting so no later row mutation can republish a predecessor bundle. A
+    /// crash or filesystem error may leave an unreferenced orphan, but can never make it playable;
+    /// the ordinary storage inventory remains the conservative orphan cleanup authority.
+    private func retireUnreferencedSideAssets(
+        _ relativePaths: Set<String>,
+        confirmingCurrentOwner key: DownloadAttemptKey
+    ) {
+        let requested = relativePaths.filter(Self.isSafeOneLevelRelativePath)
+        guard !requested.isEmpty else { return }
+        let retirementID = UUID()
+        let candidates: [String]? = lock.withLock { () -> [String]? in
+            guard rows[key.ratingKey]?.attemptID == key.attemptID else { return nil }
+            var referenced: Set<String> = []
+            for row in rows.values { referenced.formUnion(artifactPathsReferenced(by: row)) }
+            let selected = requested.filter {
+                !referenced.contains($0) && reservedArtifactDeletionPaths[$0] == nil
+            }
+            for path in selected { reservedArtifactDeletionPaths[path] = retirementID }
+            return Array(selected)
+        }
+        guard let candidates else { return }
+        for path in candidates {
+            try? fileManager.removeItem(at: baseDirectory.appendingPathComponent(path))
+        }
+        lock.withLock {
+            for path in candidates where reservedArtifactDeletionPaths[path] == retirementID {
+                reservedArtifactDeletionPaths.removeValue(forKey: path)
+            }
+        }
+    }
+
     private func hydratedSideAssets(ratingKey: String, metadata: OfflineMetadata?) -> HydratedSideAssets {
         lock.lock()
         if let cached = sideAssetHydrationCache[ratingKey] {
@@ -2618,11 +2696,24 @@ final class DownloadStore: @unchecked Sendable {
         }
         let attemptID = record.attemptID ?? existing?.attemptID
         var metadata = record.metadata ?? existing?.metadata
+        let previousSideAssetPaths = Set(sideAssetRelativePaths(for: existing?.metadata))
         if var incoming = record.metadata, let previous = existing?.metadata {
-            incoming.preserveCachedSideAssets(from: previous)
+            incoming.preserveCachedSideAssets(
+                from: previous, attemptID: attemptID?.rawValue)
             metadata = incoming
         }
-        if let attemptID { metadata?.downloadAttemptID = attemptID.rawValue }
+        if let attemptID {
+            if existing == nil {
+                metadata?.claimCachedSideAssets(attemptID: attemptID.rawValue)
+            } else {
+                metadata?.fenceCachedSideAssets(to: attemptID.rawValue)
+            }
+            metadata?.downloadAttemptID = attemptID.rawValue
+        } else {
+            metadata?.clearCachedSideAssets()
+        }
+        let retiredSideAssetPaths = previousSideAssetPaths
+            .subtracting(sideAssetRelativePaths(for: metadata))
         rows[record.ratingKey] = Row(ratingKey: record.ratingKey,
                                      attemptID: attemptID,
                                      title: record.title,
@@ -2642,7 +2733,13 @@ final class DownloadStore: @unchecked Sendable {
                                      heldRangeBodyDeletionIntents: existing?.heldRangeBodyDeletionIntents ?? [])
         sideAssetHydrationCache.removeValue(forKey: record.ratingKey)
         lock.unlock()
-        persist()
+        let persistence = persist()
+        if persistence.result.committed(through: persistence.ticket), let attemptID {
+            retireUnreferencedSideAssets(
+                retiredSideAssetPaths,
+                confirmingCurrentOwner: DownloadAttemptKey(
+                    ratingKey: record.ratingKey, attemptID: attemptID))
+        }
     }
 
     /// Atomically publish a set of brand-new, ordinary queued rows for one season-plan action.
@@ -2793,11 +2890,20 @@ final class DownloadStore: @unchecked Sendable {
         let rel = record.localURL.lastPathComponent
         let previous = existing
         var metadata = record.metadata ?? previous?.metadata
+        let previousSideAssetPaths = Set(sideAssetRelativePaths(for: previous?.metadata))
         if var incoming = record.metadata, let oldMetadata = previous?.metadata {
-            incoming.preserveCachedSideAssets(from: oldMetadata)
+            incoming.preserveCachedSideAssets(
+                from: oldMetadata, attemptID: attemptID.rawValue)
             metadata = incoming
         }
+        if previous == nil {
+            metadata?.claimCachedSideAssets(attemptID: attemptID.rawValue)
+        } else {
+            metadata?.fenceCachedSideAssets(to: attemptID.rawValue)
+        }
         metadata?.downloadAttemptID = attemptID.rawValue
+        let retiredSideAssetPaths = previousSideAssetPaths
+            .subtracting(sideAssetRelativePaths(for: metadata))
         let newWorkingRelative = Self.attemptStagingRelativePath(
             for: key, stableRelativePath: rel)
         var oldWorkingURLToRemove: URL?
@@ -2865,6 +2971,7 @@ final class DownloadStore: @unchecked Sendable {
         if let oldWorkingURLToRemove {
             try? fileManager.removeItem(at: oldWorkingURLToRemove)
         }
+        retireUnreferencedSideAssets(retiredSideAssetPaths, confirmingCurrentOwner: key)
         return .committed(key)
     }
 
@@ -4746,7 +4853,21 @@ final class DownloadStore: @unchecked Sendable {
         guard var row = rows[ratingKey], !Self.hasPendingRowDeletion(row),
               var meta = row.metadata else { lock.unlock(); return }
         let oldMeta = meta
+        let previousSideAssetPaths = Set(sideAssetRelativePaths(for: oldMeta))
         mutate(&meta)
+        let mutatedSideAssetPaths = Set(sideAssetRelativePaths(for: meta))
+        if meta.sideAssetSourceIdentity != oldMeta.sideAssetSourceIdentity,
+           !previousSideAssetPaths.isEmpty {
+            meta.clearCachedSideAssets()
+        } else if let attemptID = row.attemptID {
+            if mutatedSideAssetPaths != previousSideAssetPaths {
+                meta.claimCachedSideAssets(attemptID: attemptID.rawValue)
+            } else {
+                meta.fenceCachedSideAssets(to: attemptID.rawValue)
+            }
+        } else if !mutatedSideAssetPaths.isEmpty {
+            meta.clearCachedSideAssets()
+        }
         guard meta != oldMeta else { lock.unlock(); return }
         var proposed = row
         proposed.metadata = meta
@@ -4759,7 +4880,16 @@ final class DownloadStore: @unchecked Sendable {
         rows[ratingKey] = row
         sideAssetHydrationCache.removeValue(forKey: ratingKey)
         lock.unlock()
-        persist()
+        let persistence = persist()
+        if persistence.result.committed(through: persistence.ticket),
+           let attemptID = row.attemptID {
+            let retired = previousSideAssetPaths
+                .subtracting(sideAssetRelativePaths(for: meta))
+            retireUnreferencedSideAssets(
+                retired,
+                confirmingCurrentOwner: DownloadAttemptKey(
+                    ratingKey: ratingKey, attemptID: attemptID))
+        }
     }
 
     /// Attempt-conditional metadata mutation. The top-level attempt ID remains authoritative and
@@ -4767,9 +4897,21 @@ final class DownloadStore: @unchecked Sendable {
     @discardableResult
     func updateMetadata(
         for key: DownloadAttemptKey,
+        expectedSideAssetSource: OfflineSideAssetSourceIdentity? = nil,
         mutate: (inout OfflineMetadata) -> Void
     ) -> AttemptMutationResult {
-        awaitAttemptMutationSubmission(submitMetadata(for: key, mutate: mutate))
+        let previousPaths = record(for: key).map {
+            Set(sideAssetRelativePaths(for: $0.metadata))
+        } ?? []
+        let result = awaitAttemptMutationSubmission(submitMetadata(
+            for: key, expectedSideAssetSource: expectedSideAssetSource, mutate: mutate))
+        if result == .applied || result == .noChange,
+           let current = record(for: key) {
+            let retired = previousPaths
+                .subtracting(sideAssetRelativePaths(for: current.metadata))
+            retireUnreferencedSideAssets(retired, confirmingCurrentOwner: key)
+        }
+        return result
     }
 
     /// Nonblocking exact-attempt metadata admission used by background delegate and teardown
@@ -4777,6 +4919,7 @@ final class DownloadStore: @unchecked Sendable {
     @discardableResult
     func submitMetadata(
         for key: DownloadAttemptKey,
+        expectedSideAssetSource: OfflineSideAssetSourceIdentity? = nil,
         mutate: (inout OfflineMetadata) -> Void
     ) -> AttemptMutationSubmission {
         lock.lock()
@@ -4786,8 +4929,25 @@ final class DownloadStore: @unchecked Sendable {
             lock.unlock()
             return .staleOrMissing
         }
+        if let expectedSideAssetSource,
+           metadata.sideAssetSourceIdentity != expectedSideAssetSource {
+            lock.unlock()
+            return .staleOrMissing
+        }
         let previous = metadata
+        let previousSideAssetPaths = Set(sideAssetRelativePaths(for: previous))
         mutate(&metadata)
+        let mutatedSideAssetPaths = Set(sideAssetRelativePaths(for: metadata))
+        if metadata.sideAssetSourceIdentity != previous.sideAssetSourceIdentity,
+           !previousSideAssetPaths.isEmpty {
+            metadata.clearCachedSideAssets()
+        } else {
+            if mutatedSideAssetPaths != previousSideAssetPaths {
+                metadata.claimCachedSideAssets(attemptID: key.attemptID.rawValue)
+            } else {
+                metadata.fenceCachedSideAssets(to: key.attemptID.rawValue)
+            }
+        }
         metadata.downloadAttemptID = key.attemptID.rawValue
         guard metadata != previous else {
             let ticket = enqueueAttemptPersistenceLocked()
@@ -5499,8 +5659,9 @@ final class DownloadStore: @unchecked Sendable {
             NSLog("DownloadStore: skipped %d corrupt offline-index row(s) on load (schemaVersion %d); %d row(s) preserved",
                   result.skippedRowCount, result.schemaVersion, result.rows.count)
         }
-        var repairedSubtitleRows = 0
         var normalizedPreparedStaticRows = 0
+        var fencedSideAssetRows = 0
+        var retiredSideAssetPaths: Set<String> = []
         rows = Dictionary(uniqueKeysWithValues: result.rows.map { row in
             var repaired = row
             if PreparedStaticLaneNormalizationPolicy.normalize(
@@ -5509,20 +5670,38 @@ final class DownloadStore: @unchecked Sendable {
                 NSLog("DownloadStore: normalized legacy Plex prepared-static lane for %@",
                       row.ratingKey)
             }
-            if repaired.metadata?.offlineTextSubtitles?.isEmpty ?? true,
-               let tracks = cachedSubtitleTracksFromDisk(ratingKey: row.ratingKey),
-               !tracks.isEmpty {
-                repaired.metadata?.offlineTextSubtitles = tracks
-                repairedSubtitleRows += 1
-                NSLog("DownloadStore: repaired %d cached offline subtitle track(s) for %@",
-                      tracks.count, row.ratingKey)
+            if var metadata = repaired.metadata {
+                let expectedOwner = repaired.attemptID.map {
+                    OfflineSideAssetBundleOwner(
+                        attemptID: $0.rawValue, source: metadata.sideAssetSourceIdentity)
+                }
+                if metadata.hasCachedSideAssets,
+                   expectedOwner == nil || metadata.sideAssetBundleOwner != expectedOwner {
+                    retiredSideAssetPaths.formUnion(sideAssetRelativePaths(for: metadata))
+                    metadata.clearCachedSideAssets()
+                    fencedSideAssetRows += 1
+                } else if !metadata.hasCachedSideAssets,
+                          metadata.sideAssetBundleOwner != nil {
+                    metadata.sideAssetBundleOwner = nil
+                    fencedSideAssetRows += 1
+                }
+                repaired.metadata = metadata
             }
             return (repaired.ratingKey, repaired)
         })
+        if !retiredSideAssetPaths.isEmpty {
+            var stillReferenced: Set<String> = []
+            for row in rows.values {
+                stillReferenced.formUnion(artifactPathsReferenced(by: row))
+            }
+            for path in retiredSideAssetPaths.subtracting(stillReferenced) {
+                try? fileManager.removeItem(at: baseDirectory.appendingPathComponent(path))
+            }
+        }
         // Never let a best-effort cache repair stamp a pre-v4 snapshot as v4 before the startup
         // migration has durably closed admission and marked every nonterminal partial for reset.
         // The repaired values are already in memory and ride along with the migration snapshot.
-        if repairedSubtitleRows > 0 || normalizedPreparedStaticRows > 0,
+        if normalizedPreparedStaticRows > 0 || fencedSideAssetRows > 0,
            loadedSchemaVersion >= DownloadIndexCoding.currentSchemaVersion {
             lock.unlock()
             persist()
@@ -5575,32 +5754,6 @@ final class DownloadStore: @unchecked Sendable {
     private func heldRangeManifestRelativePathsLocked() -> Set<String> {
         Set(rows.values.flatMap { $0.metadata?.heldRangeSegments?.map(\.relativePath) ?? [] }
             .filter(Self.isSafeOneLevelRelativePath))
-    }
-
-    private func cachedSubtitleTracksFromDisk(ratingKey: String) -> [OfflineTextSubtitleTrack]? {
-        let safePrefix = "\(Self.safeFilenameComponent(ratingKey)).sub-"
-        guard let urls = try? fileManager.contentsOfDirectory(
-            at: baseDirectory,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else { return nil }
-        let tracks: [OfflineTextSubtitleTrack] = urls.compactMap { url in
-            let name = url.lastPathComponent
-            guard name.hasPrefix(safePrefix),
-                  let ext = name.split(separator: ".").last.map(String.init)?.lowercased(),
-                  ["srt", "vtt"].contains(ext),
-                  (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
-            else { return nil }
-            let idStart = name.index(name.startIndex, offsetBy: safePrefix.count)
-            let idEnd = name.index(name.endIndex, offsetBy: -(".\(ext)".count))
-            guard idStart < idEnd,
-                  let streamID = Int(name[idStart..<idEnd]) else { return nil }
-            return OfflineTextSubtitleTrack(id: streamID,
-                                            displayName: "Subtitle \(streamID)",
-                                            codec: ext,
-                                            relativePath: name)
-        }.sorted { $0.id < $1.id }
-        return tracks.isEmpty ? nil : tracks
     }
 
     @discardableResult

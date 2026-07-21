@@ -104,25 +104,30 @@ final class VideoNowPlayingCoordinator {
             } ?? .commandFailed
         }
         store(center.skipBackwardCommand) { [weak self] event in
-            let seconds = -Self.safeSkipInterval(event, fallback: 10)
+            guard let event = event as? MPSkipIntervalCommandEvent,
+                  let intent = VideoNowPlayingCommandPolicy.skipIntent(
+                    interval: event.interval,
+                    fallbackSeconds: 10,
+                    direction: .backward) else { return .commandFailed }
             return self?.dispatchMainCommand { controller in
-                controller.performRelativeUserSeek(bySeconds: seconds)
+                controller.performVideoNowPlayingCommand(intent)
             } ?? .commandFailed
         }
         store(center.skipForwardCommand) { [weak self] event in
-            let seconds = Self.safeSkipInterval(event, fallback: 30)
+            guard let event = event as? MPSkipIntervalCommandEvent,
+                  let intent = VideoNowPlayingCommandPolicy.skipIntent(
+                    interval: event.interval,
+                    fallbackSeconds: 30,
+                    direction: .forward) else { return .commandFailed }
             return self?.dispatchMainCommand { controller in
-                controller.performRelativeUserSeek(bySeconds: seconds)
+                controller.performVideoNowPlayingCommand(intent)
             } ?? .commandFailed
         }
         store(center.changePlaybackPositionCommand) { [weak self] event in
             guard let event = event as? MPChangePlaybackPositionCommandEvent else {
                 return .commandFailed
             }
-            let positionTime = event.positionTime
-            return self?.dispatchMainCommand { controller in
-                controller.performRemotePlaybackPositionChange(toSeconds: positionTime)
-            } ?? .commandFailed
+            return self?.dispatchPlaybackPositionCommand(event.positionTime) ?? .commandFailed
         }
     }
 
@@ -150,6 +155,24 @@ final class VideoNowPlayingCoordinator {
             action(controller)
         }
         return .success
+    }
+
+    private func dispatchPlaybackPositionCommand(_ positionTime: Double)
+        -> MPRemoteCommandHandlerStatus {
+        // Validate before returning a synchronous status, without reading MainActor controller
+        // state from a MediaPlayer callback that may arrive off-main.
+        guard VideoNowPlayingCommandPolicy.seekIntent(positionTime: positionTime,
+                                                      durationMilliseconds: nil) != nil else {
+            return .commandFailed
+        }
+        return dispatchMainCommand { controller in
+            // The first validation guarantees an intent; resolve the final duration clamp only
+            // after dispatch has safely reached the controller's actor.
+            guard let intent = VideoNowPlayingCommandPolicy.seekIntent(
+                positionTime: positionTime,
+                durationMilliseconds: controller.videoNowPlayingDurationMilliseconds) else { return }
+            controller.performVideoNowPlayingCommand(intent)
+        }
     }
 
     private func removeCommandTargets() {
@@ -180,17 +203,6 @@ final class VideoNowPlayingCoordinator {
         center.bookmarkCommand.isEnabled = false
         center.changeShuffleModeCommand.isEnabled = false
         center.changeRepeatModeCommand.isEnabled = false
-    }
-
-    /// Remote-command event values are system-supplied. Keep the result within the range
-    /// that `PlaybackController.performRelativeUserSeek` can safely convert to milliseconds.
-    private nonisolated static func safeSkipInterval(_ event: MPRemoteCommandEvent,
-                                                     fallback: Int) -> Int {
-        guard let interval = (event as? MPSkipIntervalCommandEvent)?.interval,
-              interval.isFinite,
-              interval > 0,
-              interval <= Double(Int.max / 1000) else { return fallback }
-        return max(1, Int(interval.rounded()))
     }
 
     private static func nowPlayingInfo(mediaItem item: MediaItem,

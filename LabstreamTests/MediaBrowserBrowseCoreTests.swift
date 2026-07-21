@@ -123,29 +123,36 @@ struct MediaBrowserBrowseCoreTests {
             MediaBrowserLibraryLink(id: "last", title: "Last", collectionType: "homevideos"),
         ]
 
-        let results = try await MediaBrowserSearchFanout.search(
-            views: views, query: "needle", limitPerLibrary: 9, backendID: .emby
-        ) { view, query, limit, itemTypes in
-            #expect(query == "needle")
-            #expect(limit == 9)
-            await completion.recordStarted(view.id)
-            switch view.id {
-            case "first":
-                try await Task.sleep(for: .milliseconds(300))
+        let search = Task { @MainActor in
+            try await MediaBrowserSearchFanout.search(
+                views: views, query: "needle", limitPerLibrary: 9, backendID: .emby
+            ) { view, query, limit, itemTypes in
+                #expect(query == "needle")
+                #expect(limit == 9)
+                await completion.recordStarted(view.id)
+                await completion.waitForRelease(view.id)
                 await completion.recordCompleted(view.id)
-                return [Self.mediaItem(id: "one", type: "movie")]
-            case "empty":
-                try await Task.sleep(for: .milliseconds(100))
-                #expect(itemTypes == "Series,Season,Episode")
-                await completion.recordCompleted(view.id)
-                return []
-            default:
-                #expect(itemTypes == "Video")
-                await completion.recordCompleted(view.id)
-                return [Self.mediaItem(id: "three", type: "video")]
+
+                switch view.id {
+                case "first":
+                    return [Self.mediaItem(id: "one", type: "movie")]
+                case "empty":
+                    #expect(itemTypes == "Series,Season,Episode")
+                    return []
+                default:
+                    #expect(itemTypes == "Video")
+                    return [Self.mediaItem(id: "three", type: "video")]
+                }
             }
         }
 
+        await completion.waitUntilStarted(count: views.count)
+        for id in ["last", "empty", "first"] {
+            await completion.release(id)
+            await completion.waitUntilCompleted(id)
+        }
+
+        let results = try await search.value
         #expect(await completion.completed == ["last", "empty", "first"])
         #expect(results.groups.map(\.title) == ["First", "Last"])
         #expect(results.groups.map(\.id) == ["emby-library-first", "emby-library-last"])
@@ -237,8 +244,51 @@ private actor SearchFanoutProbe {
     private(set) var started: [String] = []
     private(set) var completed: [String] = []
     private(set) var cancelled: [String] = []
+    private var startedWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+    private var completionWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
+    private var releaseWaiters: [String: CheckedContinuation<Void, Never>] = [:]
+    private var released: Set<String> = []
 
-    func recordStarted(_ id: String) { started.append(id) }
-    func recordCompleted(_ id: String) { completed.append(id) }
+    func recordStarted(_ id: String) {
+        started.append(id)
+        let ready = startedWaiters.filter { started.count >= $0.count }
+        startedWaiters.removeAll { started.count >= $0.count }
+        ready.forEach { $0.continuation.resume() }
+    }
+
+    func waitUntilStarted(count: Int) async {
+        guard started.count < count else { return }
+        await withCheckedContinuation { continuation in
+            startedWaiters.append((count, continuation))
+        }
+    }
+
+    func waitForRelease(_ id: String) async {
+        if released.remove(id) != nil { return }
+        await withCheckedContinuation { continuation in
+            releaseWaiters[id] = continuation
+        }
+    }
+
+    func release(_ id: String) {
+        if let continuation = releaseWaiters.removeValue(forKey: id) {
+            continuation.resume()
+        } else {
+            released.insert(id)
+        }
+    }
+
+    func recordCompleted(_ id: String) {
+        completed.append(id)
+        completionWaiters.removeValue(forKey: id)?.forEach { $0.resume() }
+    }
+
+    func waitUntilCompleted(_ id: String) async {
+        guard !completed.contains(id) else { return }
+        await withCheckedContinuation { continuation in
+            completionWaiters[id, default: []].append(continuation)
+        }
+    }
+
     func recordCancelled(_ id: String) { cancelled.append(id) }
 }

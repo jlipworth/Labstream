@@ -233,6 +233,7 @@ struct DownloadWorkRegistryTests {
         let old = key("plex:side-tail", "attempt-A")
         let replacement = key("plex:side-tail", "attempt-B")
         #expect(createRecord(store: store, key: old))
+        let oldSource = try #require(store.sideAssetSourceIdentity(for: old))
         let stable = asset.destination(store: store, ratingKey: old.ratingKey)
         let staging = try #require(store.attemptStagingURL(for: old, stableURL: stable))
         try Data("old-attempt-body".utf8).write(to: staging)
@@ -241,9 +242,10 @@ struct DownloadWorkRegistryTests {
         let oldTail = Task { () -> Bool in
             await gate.wait()
             guard DownloadManager.promoteSideAsset(
-                store: store, key: old, stagingURL: staging, stableURL: stable
+                store: store, key: old, expectedSource: oldSource,
+                stagingURL: staging, stableURL: stable
             ) else { return false }
-            return store.updateMetadata(for: old) {
+            return store.updateMetadata(for: old, expectedSideAssetSource: oldSource) {
                 asset.publish(into: &$0, relative: stable.lastPathComponent)
             } == .applied
         }

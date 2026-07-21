@@ -494,6 +494,66 @@ public enum SharePlayStartedBroadcast {
     }
 }
 
+/// Fences asynchronous SharePlay message work to the exact locally installed group session.
+/// A cancelled receive/send task can resume after a replacement session has already taken over;
+/// comparing its captured generation prevents that stale work from mutating or publishing state.
+public enum SharePlayMessageSessionPolicy {
+    public static func accepts(capturedSessionGeneration: UInt64,
+                               currentSessionGeneration: UInt64) -> Bool {
+        capturedSessionGeneration == currentSessionGeneration
+    }
+}
+
+/// Issues monotonically increasing readiness-message revisions within one group session.
+/// Revisions restart when the coordinator installs a replacement session; session identity and
+/// `SharePlayMessageSessionPolicy` remain the authority across that boundary.
+public struct SharePlayOutboundMessageRevisions: Sendable, Equatable {
+    private var lastIssuedRevision: UInt64 = 0
+
+    public init() {}
+
+    public mutating func issue() -> UInt64 {
+        lastIssuedRevision &+= 1
+        return lastIssuedRevision
+    }
+}
+
+/// Rejects a duplicate or stale readiness update from one participant. A missing revision is
+/// accepted for compatibility with an older participant, but only revisioned messages advance the
+/// fence; current participants therefore cannot regress when asynchronous delivery completes late.
+public enum SharePlayInboundMessageRevisionPolicy {
+    public static func accepts(incomingRevision: UInt64?, lastAcceptedRevision: UInt64?) -> Bool {
+        guard let incomingRevision else { return lastAcceptedRevision == nil }
+        guard let lastAcceptedRevision else { return true }
+        return incomingRevision > lastAcceptedRevision
+    }
+}
+
+/// Participant and messenger streams are independently scheduled. Unknown-source messages wait
+/// for the next authoritative roster instead of being applied as ghosts or dropped as newcomers.
+public enum SharePlayParticipantMessagePolicy {
+    public enum Disposition: Equatable, Sendable {
+        case accept
+        case bufferUntilRosterUpdate
+    }
+
+    public static func disposition(sourceParticipantID: UUID,
+                                   hasObservedRoster: Bool,
+                                   activeParticipantIDs: Set<UUID>) -> Disposition {
+        if hasObservedRoster && activeParticipantIDs.contains(sourceParticipantID) {
+            return .accept
+        }
+        return .bufferUntilRosterUpdate
+    }
+}
+
+public enum SharePlayBufferedParticipantMessages {
+    public static func readySourceIDs(bufferedSourceIDs: Set<UUID>,
+                                      activeParticipantIDs: Set<UUID>) -> Set<UUID> {
+        bufferedSourceIDs.intersection(activeParticipantIDs)
+    }
+}
+
 private enum SharePlayPrivacyGuard {
     static func shareableComparableText(_ raw: String?) -> String? {
         guard let raw, !containsProhibitedContent(raw) else { return nil }
