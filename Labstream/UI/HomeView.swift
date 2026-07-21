@@ -20,6 +20,14 @@ struct HomeView: View {
 
     /// tvOS: scope for the content's default-focus card (see `HubRail.tvDefaultFocusNamespace`).
     @Namespace private var homeFocusNamespace
+    /// tvOS: which grid card holds focus. `prefersDefaultFocus` only governs
+    /// initial/programmatic focus — a Down press from the tab bar is resolved
+    /// geometrically and lands mid-rail — so entry is corrected by hand: when focus
+    /// arrives from OUTSIDE the grid (old value nil) onto the first rail, redirect to
+    /// the remembered card (or card 1). Inert off tvOS.
+    @FocusState private var tvRailFocus: TVHomeFocusTarget?
+    /// Last focused first-rail card — the preferred re-entry target from the tab bar.
+    @State private var tvRememberedEntry: TVHomeFocusTarget?
 
     var body: some View {
         ScrollView {
@@ -54,7 +62,8 @@ struct HomeView: View {
                                         hub: hub, sessionIdentity: appModel.activeBrowseSessionKey),
                                     tvDefaultFocusNamespace:
                                         hub.id == hubs.hidingMusicTracks.first?.id
-                                            ? homeFocusNamespace : nil)
+                                            ? homeFocusNamespace : nil,
+                                    tvFocusBinding: $tvRailFocus)
                         }
                     }
                     .padding(.vertical, HomeLayoutMetrics.pageVerticalPadding(compact: compactWidth))
@@ -65,6 +74,26 @@ struct HomeView: View {
         // Entering Home's content from the tab bar should land on the FIRST card of the
         // first rail, not whichever card sits geometrically beneath the focused tab button.
         .focusScope(homeFocusNamespace)
+        .onChange(of: tvRailFocus) { oldValue, newValue in
+            guard let newValue else { return }
+            if oldValue == nil, let firstRail = tvFirstRailID, newValue.rail == firstRail {
+                // Entry from outside the grid (tab bar / initial / pop-back). In-grid
+                // moves arrive with a non-nil old value and pass through; a pop-back
+                // restore lands on the remembered card, so redirect is a no-op there.
+                let itemIDs = tvFirstRailItemIDs
+                let remembered = tvRememberedEntry.flatMap { target in
+                    target.rail == firstRail && itemIDs.contains(target.item) ? target : nil
+                }
+                let intended = remembered ?? itemIDs.first.map { TVHomeFocusTarget(rail: firstRail, item: $0) }
+                if let intended, newValue != intended {
+                    tvRailFocus = intended
+                    return
+                }
+            }
+            if newValue.rail == tvFirstRailID {
+                tvRememberedEntry = newValue
+            }
+        }
         #endif
         .labstreamTopLevelNavigationTitle("Home")
         // JellyfinLibraryLink and EmbyLibraryLink are compatibility aliases for the SAME
@@ -110,6 +139,22 @@ struct HomeView: View {
         appModel.activeBrowseSessionKey
     }
 
+    /// First rail's id as the `HubRail` sees it (mediaBrowser rails wrap into a
+    /// synthesized `Hub` whose identifier is prefixed with the backend).
+    private var tvFirstRailID: String? {
+        if appModel.activeBackend.isMediaBrowser {
+            return mediaBrowserRails.first.map { "\(appModel.activeBackend.rawValue)-\($0.id)" }
+        }
+        return hubs.hidingMusicTracks.first?.id
+    }
+
+    private var tvFirstRailItemIDs: [String] {
+        if appModel.activeBackend.isMediaBrowser {
+            return mediaBrowserRails.first?.items.map(\.id) ?? []
+        }
+        return hubs.hidingMusicTracks.first?.metadata.map(\.id) ?? []
+    }
+
     @ViewBuilder
     private var mediaBrowserHome: some View {
         if mediaBrowserLibraries.isEmpty {
@@ -134,7 +179,8 @@ struct HomeView: View {
                                 destination: rail.destination,
                                 tvDefaultFocusNamespace:
                                     rail.id == mediaBrowserRails.first?.id
-                                        ? homeFocusNamespace : nil)
+                                        ? homeFocusNamespace : nil,
+                                tvFocusBinding: $tvRailFocus)
                     }
                 }
             }
@@ -244,6 +290,12 @@ struct HomeView: View {
     }
 }
 
+/// (rail, card) coordinate of a focused Home cell — tvOS entry-redirect bookkeeping.
+struct TVHomeFocusTarget: Hashable {
+    let rail: String
+    let item: String
+}
+
 /// One horizontal rail of posters for a hub.
 private struct HubRail: View {
     let hub: Hub
@@ -252,6 +304,9 @@ private struct HubRail: View {
     /// default focus, so entering the content from the tab bar lands on card 1 instead of
     /// whichever card happens to sit geometrically beneath the focused tab button.
     var tvDefaultFocusNamespace: Namespace.ID? = nil
+    /// Shared per-card focus tracker for the WHOLE grid (tvOS): every rail reports, so
+    /// a nil→card transition provably means focus entered from outside the grid.
+    var tvFocusBinding: FocusState<TVHomeFocusTarget?>.Binding? = nil
 
     @Environment(\.labstreamCompactWidth) private var compactWidth
     @Environment(\.labstreamHomeUsesDenseSectionSpacing) private var denseSectionSpacing
@@ -272,6 +327,8 @@ private struct HubRail: View {
                         .accessibilityIdentifier("tv.home.\(hub.id).\(item.ratingKey)")
                         .tvPrefersDefaultFocus(item.id == hub.metadata.first?.id,
                                                in: tvDefaultFocusNamespace)
+                        .tvFocusTracked(tvFocusBinding,
+                                        equals: TVHomeFocusTarget(rail: hub.id, item: item.id))
                         #endif
                         .cardLink()
                         .videoCardContextMenu(for: item)

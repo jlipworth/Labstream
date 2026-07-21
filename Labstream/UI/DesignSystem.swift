@@ -203,6 +203,19 @@ extension View {
             self
         }
     }
+
+    /// `focused(_:equals:)` behind an optional binding — grids that redirect directional
+    /// entry (`prefersDefaultFocus` only governs initial/programmatic focus, not dpad
+    /// entry) track per-card focus this way, while other hosts of the same cell pass nil.
+    @ViewBuilder
+    func tvFocusTracked<Value: Hashable>(_ binding: FocusState<Value?>.Binding?,
+                                         equals value: Value) -> some View {
+        if let binding {
+            focused(binding, equals: value)
+        } else {
+            self
+        }
+    }
 }
 
 /// Bare tvOS button chrome for poster/card lockups: renders the label with no system

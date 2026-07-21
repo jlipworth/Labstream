@@ -21,6 +21,11 @@ struct LibrariesView: View {
     /// tvOS: entering the grid from the tab bar should land on the FIRST card, not
     /// whichever card is geometrically nearest the focused tab button (same fix as Home).
     @Namespace private var librariesFocusNamespace
+    /// tvOS entry redirect (see HomeView.tvRailFocus): `prefersDefaultFocus` doesn't
+    /// govern directional entry, so nil→card focus transitions from the tab bar are
+    /// corrected by hand to the remembered card (or card 1). Inert off tvOS.
+    @FocusState private var tvCardFocus: String?
+    @State private var tvRememberedCard: String?
 
     var body: some View {
         Group {
@@ -111,6 +116,7 @@ struct LibrariesView: View {
                         #if os(tvOS)
                         .tvPrefersDefaultFocus(item.id == rootItems.first?.id,
                                                in: librariesFocusNamespace)
+                        .tvFocusTracked($tvCardFocus, equals: item.id)
                         #endif
                     }
                 }
@@ -118,6 +124,20 @@ struct LibrariesView: View {
             }
             #if os(tvOS)
             .focusScope(librariesFocusNamespace)
+            .onChange(of: tvCardFocus) { oldValue, newValue in
+                guard let newValue else { return }
+                if oldValue == nil {
+                    // Entry from outside the grid (tab bar / initial / pop-back);
+                    // a pop-back restore lands on the remembered card (no-op redirect).
+                    let remembered = rootItems.first { $0.id == tvRememberedCard }?.id
+                    let intended = remembered ?? rootItems.first?.id
+                    if let intended, newValue != intended {
+                        tvCardFocus = intended
+                        return
+                    }
+                }
+                tvRememberedCard = newValue
+            }
             #endif
         }
     }
