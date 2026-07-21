@@ -222,6 +222,11 @@ extension View {
             .contentShape(.hoverEffect,
                           RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .hoverEffect(.lift)
+        #elseif os(tvOS)
+        // The plain style's default tvOS focus treatment is a white platter sized to the
+        // whole label — oversized and washed-out behind image cards. `.card` is the native
+        // lockup treatment: lift + shadow fitted to the card content itself.
+        self.buttonStyle(.card)
         #else
         self.buttonStyle(.plain)
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))

@@ -943,11 +943,15 @@ struct CustomPlayerChrome: View {
                 tvSkipButton(seconds: 10)
                 tvSkipButton(seconds: 30)
 
+                // Never truncate the clocks: size to content (h:mm:ss needs more than the
+                // old fixed 100pt at tvOS type sizes) with a floor so the slider doesn't
+                // jiggle at ordinary digit changes.
                 Text(format(ms: scrubState.displayedPositionMs))
                     .font(.callout.monospacedDigit())
                     .foregroundStyle(.white.opacity(0.76))
-                    .frame(width: 100, alignment: .trailing)
                     .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .frame(minWidth: 100, alignment: .trailing)
 
                 timelineSlider
                     .tint(.white)
@@ -955,8 +959,9 @@ struct CustomPlayerChrome: View {
                 Text(format(ms: scrubState.durationMs))
                     .font(.callout.monospacedDigit())
                     .foregroundStyle(.white.opacity(0.76))
-                    .frame(width: 100, alignment: .leading)
                     .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .frame(minWidth: 100, alignment: .leading)
             }
         }
     }
@@ -991,8 +996,8 @@ struct CustomPlayerChrome: View {
             Label(isForward ? "Forward \(amount) seconds" : "Back \(amount) seconds",
                   systemImage: isForward ? "goforward.\(amount)" : "gobackward.\(amount)")
                 .labelStyle(.iconOnly)
-                .font(.body.weight(.semibold))
-                .frame(width: 46, height: 46)
+                .font(.callout.weight(.semibold))
+                .frame(width: 40, height: 40)
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
@@ -1436,6 +1441,11 @@ struct CustomPlayerChrome: View {
         }
         .frame(width: playPauseButtonSide, height: playPauseButtonSide)
         .contentShape(Circle())
+        #elseif os(tvOS)
+        Image(systemName: controller.transport.showsPausedControl ? "play.fill" : "pause.fill")
+            .font(.title3.weight(.semibold))
+            .frame(width: 40, height: 40)
+            .contentShape(Circle())
         #else
         Image(systemName: controller.transport.showsPausedControl ? "play.fill" : "pause.fill")
             .font(.title2.weight(.semibold))
@@ -2243,7 +2253,11 @@ struct CustomPlayerChrome: View {
         } label: {
             Color.clear
         }
-        .buttonStyle(.plain)
+        // Even `.plain` (and `.focusEffectDisabled()`) still paints tvOS's focused-button
+        // platter — a full-screen white wash over the video the moment the chrome hides.
+        // A custom style renders only the (clear) label, with no focused appearance at all.
+        .buttonStyle(TVHiddenSurfaceButtonStyle())
+        .focusEffectDisabled()
         .contentShape(Rectangle())
         .focused($tvPlayerFocus, equals: .hiddenSurface)
         .accessibilityLabel("Show playback controls")
@@ -2482,6 +2496,17 @@ private final class MacPlayerWindowReaderView: NSView {
 }
 #endif
 
+#if os(tvOS)
+/// Renders nothing but the label, focused or not. The hidden-chrome input owner must be
+/// invisible: every built-in tvOS button style paints a focused platter over its label,
+/// which on a full-screen clear button becomes an opaque wash over the video.
+private struct TVHiddenSurfaceButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+    }
+}
+#endif
+
 private enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
     case screen
     case quality
@@ -2548,13 +2573,17 @@ private enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
         case .stats: CGSize(width: 420, height: 285)
         }
         #elseif os(tvOS)
+        // Heights sized for bordered 58-pt rows plus inter-row spacing; the short
+        // touch-era heights showed barely five rows and clipped the ladder mid-row.
         switch self {
         case .screen: CGSize(width: 560, height: 420)
-        case .quality: CGSize(width: 520, height: 420)
-        case .speed: CGSize(width: 440, height: 350)
-        case .subtitles, .audio: CGSize(width: 620, height: 430)
+        case .quality: CGSize(width: 520, height: 560)
+        case .speed: CGSize(width: 440, height: 460)
+        case .subtitles, .audio: CGSize(width: 620, height: 560)
         case .chapters: CGSize(width: 1_460, height: 300)
-        case .stats: CGSize(width: 760, height: 520)
+        // Stats is a fixed, unfocusable readout (no rows to scroll to on tvOS): it must be
+        // tall enough for its full ~16-row worst case.
+        case .stats: CGSize(width: 820, height: 700)
         }
         #else
         switch self {
@@ -2619,6 +2648,12 @@ private struct CustomPlayerMenuPopover: View {
                 #endif
             }
             .frame(width: size.width, height: headerHeight, alignment: .center)
+            #if os(tvOS)
+            // Route Up presses from anywhere in the menu content into the header: without a
+            // section spanning the full row, the Close button is only reachable from content
+            // whose vertical projection overlaps it (e.g. the rightmost chapter card).
+            .focusSection()
+            #endif
 
             Divider()
                 .opacity(0.35)
@@ -2626,6 +2661,11 @@ private struct CustomPlayerMenuPopover: View {
 
             menuContent
                 .frame(width: size.width, height: size.height, alignment: .topLeading)
+                #if os(tvOS)
+                // The row lists are ScrollViews of bordered buttons; without a clip the
+                // focus-scaled rows draw past the platter's bottom edge.
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                #endif
         }
         .padding(popoverPadding)
         .frame(width: size.width + popoverPadding * 2, alignment: .leading)
@@ -3021,7 +3061,9 @@ struct CustomTransportStatusOverlay: View {
 
     private var statusWidth: CGFloat {
         #if os(tvOS)
-        540
+        // Wide enough that the buffering guidance runs one to two lines instead of
+        // stacking into a tall narrow card at TV viewing distance.
+        760
         #else
         340
         #endif
