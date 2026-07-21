@@ -46,8 +46,9 @@ final class LabstreamTVPlayerTests: XCTestCase {
     }
 
     /// Revealed chrome must give deterministic initial focus to the Play/Pause control and
-    /// allow remote traversal into every player menu; closing a menu restores focus to its
-    /// originating button.
+    /// allow remote traversal into EVERY player menu the fixture offers; closing each menu
+    /// must restore focus to its originating button. The local fixture has no Quality menu
+    /// (no server reload available); Quality is covered by live-Plex validation.
     func testRevealedChromeReachesMenusAndRestoresFocus() throws {
         let app = launchPlayerFixture()
         try awaitAutoHide(app)
@@ -57,21 +58,33 @@ final class LabstreamTVPlayerTests: XCTestCase {
         XCTAssertTrue(pause.waitForExistence(timeout: 4))
         XCTAssertTrue(waitForFocus(pause), "revealed chrome should focus Play/Pause")
 
-        // Local fixture has no Quality menu (no server reload); Subtitles is the first
-        // menu-strip entry. Up moves from the transport row into the menu strip.
+        // Up moves from the transport row into the menu strip; Subtitles is its first entry.
         XCUIRemote.shared.press(.up)
-        let subtitles = app.buttons["Subtitles"]
-        XCTAssertTrue(subtitles.waitForExistence(timeout: 2))
-        XCTAssertTrue(waitForFocus(subtitles), "menu strip should be reachable by one Up press")
 
-        XCUIRemote.shared.press(.select)
-        XCTAssertTrue(app.staticTexts["Subtitles"].waitForExistence(timeout: 3),
-                      "Subtitles menu should open")
-        attachScreen(named: "subtitles menu", app: app)
+        // Strip order in the fixture (Quality absent): open and close every menu, moving
+        // right one button at a time. Auto-hide never fires while a menu is open, and the
+        // strip stays visible between menus because closing restores focus into the strip.
+        let menus = ["Subtitles", "Audio", "Chapters", "Speed", "Stats"]
+        for (index, title) in menus.enumerated() {
+            let button = app.buttons[title]
+            XCTAssertTrue(button.waitForExistence(timeout: 3), "\(title) button should exist")
+            XCTAssertTrue(waitForFocus(button), "menu strip focus should reach \(title)")
 
-        XCUIRemote.shared.press(.menu)
-        XCTAssertTrue(subtitles.waitForExistence(timeout: 3))
-        XCTAssertTrue(waitForFocus(subtitles), "closing a menu should restore focus to its button")
+            XCUIRemote.shared.press(.select)
+            XCTAssertTrue(app.buttons["Close menu"].waitForExistence(timeout: 3),
+                          "\(title) menu should open")
+            attachScreen(named: "\(title) menu", app: app)
+
+            XCUIRemote.shared.press(.menu)
+            XCTAssertTrue(button.waitForExistence(timeout: 3),
+                          "closing \(title) should return to the chrome, not exit playback")
+            XCTAssertTrue(waitForFocus(button),
+                          "closing \(title) should restore focus to its button")
+
+            if index < menus.count - 1 {
+                XCUIRemote.shared.press(.right)
+            }
+        }
     }
 
     /// Menu/Back on hidden chrome must exit playback (fixture shows its closed marker).
@@ -84,17 +97,27 @@ final class LabstreamTVPlayerTests: XCTestCase {
                       "Menu/Back should exit playback")
     }
 
-    /// Evidence sweep for log analysis: press every relevant button while chrome is hidden,
-    /// with no reveal assertions. The app-side TVEvidence log records deliveries.
+    /// Every remote command must reveal the chrome FROM THE HIDDEN STATE — each press gets a
+    /// confirmed fresh auto-hide first, so no press is tested against already-visible chrome.
+    /// Play/Pause runs last: it pauses playback, and paused chrome pins itself visible.
     func testHiddenChromeEvidenceSweep() throws {
         let app = launchPlayerFixture()
         try awaitAutoHide(app)
         attachScreen(named: "chrome hidden", app: app)
 
-        for press in [XCUIRemote.Button.right, .left, .up, .down, .select, .playPause] {
+        let pause = app.buttons["Pause"]
+        for press in [XCUIRemote.Button.right, .left, .up, .down, .select] {
             XCUIRemote.shared.press(press)
-            Thread.sleep(forTimeInterval: 0.8)
+            XCTAssertTrue(pause.waitForExistence(timeout: 4),
+                          "\(press) on hidden chrome should reveal it")
+            let hidden = expectation(for: NSPredicate(format: "exists == false"),
+                                     evaluatedWith: pause)
+            wait(for: [hidden], timeout: 12)
         }
+
+        XCUIRemote.shared.press(.playPause)
+        XCTAssertTrue(app.buttons["Play"].waitForExistence(timeout: 4),
+                      "Play/Pause on hidden chrome should pause and reveal")
         attachScreen(named: "after hidden-chrome press sweep", app: app)
     }
 
@@ -110,18 +133,20 @@ final class LabstreamTVPlayerTests: XCTestCase {
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         XCUIRemote.shared.press(.select)
 
-        // The system keyboard starts focused on "A" on the grid layout; press Select and
-        // check whether any character lands in the query.
-        sleep(2)
+        // Don't press blind: wait until the system keyboard is up AND one of its keys
+        // actually holds focus, so the next Select provably lands on a letter.
+        let focusedKey = app.keys.matching(NSPredicate(format: "hasFocus == true")).firstMatch
+        XCTAssertTrue(focusedKey.waitForExistence(timeout: 6),
+                      "a system keyboard key should take focus after Select on the field")
         attachScreen(named: "keyboard entry surface", app: app)
-        XCUIRemote.shared.press(.select)
-        sleep(1)
-        attachScreen(named: "after select on letter", app: app)
 
+        XCUIRemote.shared.press(.select)
         let echo = app.staticTexts["tv.fixture.keyboard.echo"]
-        let value = echo.label
-        XCTAssertTrue(value.count > "typed:".count,
-                      "system keyboard Select should insert a letter; echo shows '\(value)'")
+        let grew = expectation(for: NSPredicate(format: "label.length > %d", "typed:".count),
+                               evaluatedWith: echo)
+        XCTAssertEqual(XCTWaiter().wait(for: [grew], timeout: 4), .completed,
+                       "system keyboard Select should insert a letter; echo shows '\(echo.label)'")
+        attachScreen(named: "after select on letter", app: app)
     }
 
     private func launchPlayerFixture() -> XCUIApplication {

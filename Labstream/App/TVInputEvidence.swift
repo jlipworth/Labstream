@@ -52,10 +52,29 @@ enum TVInputEvidence {
 
     static func describe(_ item: UIFocusItem) -> String {
         let type = String(describing: Swift.type(of: item))
-        if let view = item as? UIView, let identifier = view.accessibilityIdentifier {
-            return "\(type)(\(identifier))"
+        if let view = item as? UIView {
+            if let identifier = view.accessibilityIdentifier {
+                return "\(type)(\(identifier))"
+            }
+            return "\(type)(label=\(view.accessibilityLabel ?? "nil"))"
         }
-        return type
+        // SwiftUI wraps focusables in non-UIView responder items; walk to the hosting view
+        // so the log can say WHICH SwiftUI element holds focus, not just the wrapper type.
+        if let responder = item as? UIResponder {
+            var next = responder.next
+            var hops = 0
+            while let candidate = next, hops < 6 {
+                if let view = candidate as? UIView {
+                    let id = view.accessibilityIdentifier ?? view.accessibilityLabel
+                        ?? String(describing: Swift.type(of: view))
+                    return "\(type)→\(id)"
+                }
+                next = candidate.next
+                hops += 1
+            }
+        }
+        let raw = String(describing: item)
+        return "\(type)[\(raw.prefix(120))]"
     }
 
     static func label(for pressType: UIPress.PressType) -> String {
