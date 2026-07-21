@@ -1,6 +1,6 @@
 ---
 name: merge-worktree
-description: Merge, document, publish-status, and clean up a completed Labstream linked worktree. Use when the user asks to merge, land, integrate, or close out a Labstream issue branch/worktree. Covers rebasing onto local main, validation, documentation and plan lifecycle alignment, GitHub issue comments and conditional closure, simulator teardown, worktree removal, and branch deletion.
+description: Merge, document, publish-status, and clean up a completed Labstream linked worktree. Use when the user asks to merge, land, integrate, or close out a Labstream issue branch/worktree. Covers rebasing onto local main, validation, documentation and plan lifecycle alignment, GitHub issue comments and conditional closure, simulator teardown, worktree-specific macOS host-app removal, worktree removal, and branch deletion.
 ---
 
 # Merge and close out a Labstream worktree
@@ -118,6 +118,11 @@ Only after the merge is verified and the GitHub comment succeeds:
 
 ```sh
 cd /Users/jlipworth/Projects/labstream
+
+# Remove every native Mac app implementation staged from the closing worktree.
+"$WORKTREE/scripts/deploy-macos-to-host.sh" --delete-all-staged
+
+# Remove its simulator implementations.
 scripts/worktree-sim.sh closeout "$WORKTREE"
 git worktree remove "$WORKTREE"
 git branch -d "$SOURCE_BRANCH"
@@ -125,9 +130,13 @@ scripts/worktree-sim.sh prune
 xcrun simctl list devices | rg 'vpwt|iphonewt|ipadwt|<branch-fragment>' || true
 ```
 
-Before removal, recheck the lane is clean. `closeout` must remove all of that linked worktree's visionOS/iPhone/iPad simulators and `.simid*` ownership files without deleting main's golden visionOS simulator. Prefer `git branch -d`; use `-D` only after proving the exact source tip is an ancestor of main and only when Git's worktree/rebase bookkeeping makes `-d` reject an already-integrated branch.
+Before removal, recheck the lane is clean. The Mac cleanup command is mandatory even when the lane was not primarily a macOS lane: app-code validation may have staged one or more `Labstream Dev — <identity>` builds under that worktree's `build/macos-host/`. It terminates and deletes every Mac app staged by the closing worktree, including any worktree-local production-identity staging, plus its worktree-local Mac build product. Verify that no `Labstream.app` remains below `$WORKTREE/build/macos-host/` and no process is executing from that path.
 
-If the worktree was already removed, run `scripts/worktree-sim.sh prune` and verify no owned simulator remains. macOS lanes have no simulator; follow the host-app cleanup in `CLAUDE.md` instead.
+This cleanup must not delete the canonical `/Applications/Labstream.app`, a Mac app staged from another active worktree, sandbox containers, or Keychain credentials. If `~/Library/Containers/com.jlipworth.Labstream.dev.*` contains an identity associated with the closing lane, classify it against all active worktrees before removal; delete only a confirmed stale development container, and never reset the production container during ordinary closeout.
+
+`closeout` must remove all of that linked worktree's visionOS/iPhone/iPad simulators and `.simid*` ownership files without deleting main's golden visionOS simulator. Prefer `git branch -d`; use `-D` only after proving the exact source tip is an ancestor of main and only when Git's worktree/rebase bookkeeping makes `-d` reject an already-integrated branch.
+
+If the worktree was already removed, run `scripts/worktree-sim.sh prune` and verify no owned simulator remains. Also inspect the removed path's former `build/macos-host` identities and the live process list; if the path is gone, its staged apps are gone, but any matching stale development container still needs the active-worktree classification above.
 
 ## 6. Final report
 
@@ -137,7 +146,7 @@ Report each closeout dimension separately:
 - **Validated:** exact automated, simulator, physical-device, and live-backend gates; never blur them together.
 - **Docs:** canonical docs updated and plans/research archived or deliberately retained active.
 - **GitHub:** issue comment URL/status, closed or left open with the remaining gate.
-- **Cleanup:** simulator UDIDs/names removed, worktree removed, branch deleted, and golden simulator preserved.
+- **Cleanup:** worktree-specific Mac apps/processes removed, simulator UDIDs/names removed, worktree removed, branch deleted, and the canonical Mac app plus golden simulator preserved.
 - **Publication:** whether main was pushed; if not, say `local main only`.
 
 If any dimension is incomplete, call the closeout partial and give the exact next action.
