@@ -267,6 +267,10 @@ private struct MediaBrowserMusicTrackRail: View {
             // contentMargins, not .padding on the lazy content — see the hit-region
             // gotcha in docs/DEVELOPMENT.md (padding shifts gaze/hit shapes left).
             .mediaRailScrollStyle(horizontalMargin: DS.Scroll.railHorizontalMargin(compact: compactWidth))
+            #if os(tvOS)
+            // Declared focus row (see HubRail): whole-rail target for vertical moves.
+            .focusSection()
+            #endif
         }
     }
 }
