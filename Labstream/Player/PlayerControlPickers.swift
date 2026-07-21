@@ -19,10 +19,16 @@ private enum PlayerPickerMetrics {
     static let rowHeight: CGFloat = 58
     static let rowVerticalPadding: CGFloat = 4
     static let contentPadding: CGFloat = 10
+    /// tvOS rows are bordered buttons with their own platter; without spacing the
+    /// platters butt against each other and read as one merged slab.
+    static let rowSpacing: CGFloat = 12
     #else
     static let rowHeight: CGFloat = 44
     static let rowVerticalPadding: CGFloat = DS.Space.sm
     static let contentPadding: CGFloat = DS.Space.md
+    #endif
+    #if !os(tvOS)
+    static let rowSpacing: CGFloat = 0
     #endif
 }
 
@@ -53,7 +59,7 @@ struct QualityTabView: View {
         ScrollView {
             // No in-view header: the info panel's chrome already titles the tab,
             // so one here read as a duplicate (same for every tab below).
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: PlayerPickerMetrics.rowSpacing) {
                 ForEach(options) { option in
                     Button {
                         onPick(option.kbps)
@@ -97,7 +103,7 @@ struct SpeedTabView: View {
     var body: some View {
         // ScrollView + VStack, NOT List — see QualityTabView for why.
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: PlayerPickerMetrics.rowSpacing) {
                 ForEach(options, id: \.self) { rate in
                     Button {
                         onPick(rate)
@@ -394,7 +400,7 @@ struct SubtitlesTabView: View {
         // subtitle languages must keep the bottom rows reachable (and the "Off" row stays first).
         // Matches the Quality/Speed/Audio menus.
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: PlayerPickerMetrics.rowSpacing) {
                 if !didLoad {
                     HStack {
                         ProgressView()
@@ -516,7 +522,7 @@ struct AudioTabView: View {
         // languages (8+ audible renditions) must keep the bottom rows reachable. Matches the
         // Quality/Speed menus.
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: PlayerPickerMetrics.rowSpacing) {
                 if !didLoad {
                     HStack {
                         ProgressView()
@@ -601,7 +607,7 @@ struct AudioStreamsTabView: View {
         // ScrollView + VStack, NOT List — see QualityTabView for why: a release with many dub
         // languages must keep the bottom rows reachable. Matches the Quality/Speed menus.
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: PlayerPickerMetrics.rowSpacing) {
                 if didLoad && choices.isEmpty {
                     Text("No audio track metadata")
                         .foregroundStyle(.secondary)

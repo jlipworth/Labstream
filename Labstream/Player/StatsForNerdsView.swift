@@ -19,9 +19,15 @@ struct StatsForNerdsView: View {
     @Environment(\.labstreamCompactWidth) private var compactWidth
 
     /// The authored widths (430 headerless) overflow a 390-pt phone; compact width
-    /// lets the panel size to its content under a screen-safe cap instead.
+    /// lets the panel size to its content under a screen-safe cap instead. tvOS gets no
+    /// fixed width either: the Stats popover is far wider than 430pt and pinning the panel
+    /// narrow forced middle-truncated values at TV type sizes.
     private var fixedPanelWidth: CGFloat? {
+        #if os(tvOS)
+        nil
+        #else
         compactWidth ? nil : (showsHeader ? 340 : 430)
+        #endif
     }
 
     var body: some View {
