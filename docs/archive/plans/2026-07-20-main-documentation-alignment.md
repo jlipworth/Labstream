@@ -1,6 +1,6 @@
 # Main Documentation Alignment and Information Architecture Plan
 
-**Date:** 2026-07-20  
+**Date:** 2026-07-20\
 **Status:** Complete and archived. The factual-alignment phase landed in `0cd588c2`; the remaining information-architecture, Mermaid, durable-governance, integration-review, and verification work completed on 2026-07-20.
 
 ## Goal
