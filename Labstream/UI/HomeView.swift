@@ -18,6 +18,9 @@ struct HomeView: View {
     @State private var loadGeneration = 0
 
 
+    /// tvOS: scope for the content's default-focus card (see `HubRail.tvDefaultFocusNamespace`).
+    @Namespace private var homeFocusNamespace
+
     var body: some View {
         ScrollView {
             switch loadState {
@@ -48,13 +51,21 @@ struct HomeView: View {
                         ForEach(hubs.hidingMusicTracks) { hub in
                             HubRail(hub: hub,
                                     destination: RailViewAllEligibility.plexRecentlyAdded(
-                                        hub: hub, sessionIdentity: appModel.activeBrowseSessionKey))
+                                        hub: hub, sessionIdentity: appModel.activeBrowseSessionKey),
+                                    tvDefaultFocusNamespace:
+                                        hub.id == hubs.hidingMusicTracks.first?.id
+                                            ? homeFocusNamespace : nil)
                         }
                     }
                     .padding(.vertical, HomeLayoutMetrics.pageVerticalPadding(compact: compactWidth))
                 }
             }
         }
+        #if os(tvOS)
+        // Entering Home's content from the tab bar should land on the FIRST card of the
+        // first rail, not whichever card sits geometrically beneath the focused tab button.
+        .focusScope(homeFocusNamespace)
+        #endif
         .labstreamTopLevelNavigationTitle("Home")
         // JellyfinLibraryLink and EmbyLibraryLink are compatibility aliases for the SAME
         // MediaBrowserLibraryLink type. Registering both independently makes SwiftUI report an
@@ -120,7 +131,10 @@ struct HomeView: View {
                         HubRail(hub: Hub(title: rail.title,
                                          hubIdentifier: "\(appModel.activeBackend.rawValue)-\(rail.id)",
                                          metadata: rail.items),
-                                destination: rail.destination)
+                                destination: rail.destination,
+                                tvDefaultFocusNamespace:
+                                    rail.id == mediaBrowserRails.first?.id
+                                        ? homeFocusNamespace : nil)
                     }
                 }
             }
@@ -234,6 +248,10 @@ struct HomeView: View {
 private struct HubRail: View {
     let hub: Hub
     let destination: RailViewAllDestination?
+    /// Non-nil on the screen's FIRST rail (tvOS): its leading card becomes the scope's
+    /// default focus, so entering the content from the tab bar lands on card 1 instead of
+    /// whichever card happens to sit geometrically beneath the focused tab button.
+    var tvDefaultFocusNamespace: Namespace.ID? = nil
 
     @Environment(\.labstreamCompactWidth) private var compactWidth
     @Environment(\.labstreamHomeUsesDenseSectionSpacing) private var denseSectionSpacing
@@ -252,6 +270,8 @@ private struct HubRail: View {
                         }
                         #if os(tvOS)
                         .accessibilityIdentifier("tv.home.\(hub.id).\(item.ratingKey)")
+                        .tvPrefersDefaultFocus(item.id == hub.metadata.first?.id,
+                                               in: tvDefaultFocusNamespace)
                         #endif
                         .cardLink()
                         .videoCardContextMenu(for: item)
