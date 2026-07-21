@@ -60,6 +60,7 @@ struct LibrarySectionCard: View {
                 .strokeBorder(.primary.opacity(0.08), lineWidth: 0.5)
         )
         .posterHover()
+        .tvFocusHighlight(cornerRadius: DS.Radius.card)
     }
 
     private var cardSpacing: CGFloat {

@@ -810,6 +810,7 @@ struct SquareArtCell: View {
                         cornerRadius: artRadius,
                         placeholderSymbol: item.kind == .artist ? "music.microphone" : "music.note")
                 .posterHover()
+                .tvFocusHighlight(cornerRadius: artRadius)
 
             VStack(alignment: textAlignment, spacing: 2) {
                 Text(item.title)
