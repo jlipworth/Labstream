@@ -313,6 +313,14 @@ struct ChaptersTabView: View {
     var thumbnailRequest: (_ index: Int, _ thumb: String?) -> URLRequest?
     var onJump: (Int) -> Void
 
+    /// tvOS focus lifts the focused card and rings the current one; 16pt lets neighbors
+    /// intrude into both, so television gets double the gap.
+    #if os(tvOS)
+    private static let cardSpacing: CGFloat = 32
+    #else
+    private static let cardSpacing = DS.Space.md
+    #endif
+
     @State private var currentIndex: Int?
 
     var body: some View {
@@ -326,7 +334,7 @@ struct ChaptersTabView: View {
                     // Realize thumbnails on demand. Even though the request broker below also
                     // paces starts process-wide, eagerly constructing a long Emby chapter list
                     // needlessly queues every remote image when the panel first opens.
-                    LazyHStack(alignment: .top, spacing: DS.Space.md) {
+                    LazyHStack(alignment: .top, spacing: Self.cardSpacing) {
                         ForEach(Array(chapters.enumerated()), id: \.element.id) { index, chapter in
                             ChapterCard(chapter: chapter,
                                         index: index,

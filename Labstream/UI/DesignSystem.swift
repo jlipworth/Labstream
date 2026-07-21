@@ -224,9 +224,16 @@ extension View {
             .hoverEffect(.lift)
         #elseif os(tvOS)
         // The plain style's default tvOS focus treatment is a white platter sized to the
-        // whole label — oversized and washed-out behind image cards. `.card` is the native
-        // lockup treatment: lift + shadow fitted to the card content itself.
-        self.buttonStyle(.card)
+        // whole label — oversized and washed-out behind image cards. `.card` draws its own
+        // platter around the full label too (visible as a border above/behind poster text),
+        // so image lockups use `.borderless`: tvOS lifts the image itself on focus and
+        // leaves the caption text platter-free. Chip-radius rows (song results) keep `.card`
+        // because their labels are mostly text and borderless would leave focus invisible.
+        if cornerRadius == DS.Radius.chip {
+            self.buttonStyle(.card)
+        } else {
+            self.buttonStyle(.borderless)
+        }
         #else
         self.buttonStyle(.plain)
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))

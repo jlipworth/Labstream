@@ -121,16 +121,74 @@ final class LabstreamTVPlayerTests: XCTestCase {
         attachScreen(named: "after hidden-chrome press sweep", app: app)
     }
 
-    /// TVUI-004 classification: the minimal native TextField fixture. Types one letter
-    /// through the system keyboard with remote Select and checks insertion.
+    /// TVUI-004 baseline: the bare default `TextField`. Types one letter through the
+    /// system keyboard with remote Select and checks insertion.
     func testSystemKeyboardInsertsLetterIntoMinimalTextField() throws {
+        let app = launchKeyboardFixture()
+        let field = app.textFields["tv.fixture.keyboard.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        XCTAssertTrue(focusField(field, byPressing: .up),
+                      "bare field (topmost) should be reachable with Up presses")
+        try assertKeyboardInsertsLetter(app: app, field: field,
+                                        echoID: "tv.fixture.keyboard.echo", prefix: "typed:")
+    }
+
+    /// TVUI-004 bisection step 1: SearchView's visual modifiers (`.plain` style, font,
+    /// capsule frame) WITHOUT a focus binding.
+    func testSystemKeyboardInsertsLetterIntoStyledTextField() throws {
+        let app = launchKeyboardFixture()
+        let bare = app.textFields["tv.fixture.keyboard.field"]
+        XCTAssertTrue(bare.waitForExistence(timeout: 5))
+        _ = focusField(bare, byPressing: .up)
+        let styled = app.textFields["tv.fixture.keyboard.styled.field"]
+        XCTAssertTrue(focusField(styled, byPressing: .down, times: 2),
+                      "styled field should be one focus step below the bare field")
+        try assertKeyboardInsertsLetter(app: app, field: styled,
+                                        echoID: "tv.fixture.keyboard.styled.echo",
+                                        prefix: "styled:")
+    }
+
+    /// TVUI-004 bisection step 2: the full SearchView replica — visual modifiers PLUS
+    /// `.focused($…)` and the on-appear programmatic focus write. If this fails while
+    /// the styled field passes, the focus binding is what breaks keyboard insertion.
+    func testSystemKeyboardInsertsLetterIntoSearchReplicaTextField() throws {
+        let app = launchKeyboardFixture()
+        let replica = app.textFields["tv.fixture.keyboard.replica.field"]
+        XCTAssertTrue(replica.waitForExistence(timeout: 5))
+        XCTAssertTrue(focusField(replica, byPressing: .down),
+                      "replica field (bottom) should be reachable with Down presses")
+        try assertKeyboardInsertsLetter(app: app, field: replica,
+                                        echoID: "tv.fixture.keyboard.replica.echo",
+                                        prefix: "replica:")
+    }
+
+    private func launchKeyboardFixture() -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--ui-testing-fixture", "keyboard"]
         app.launchEnvironment["LABSTREAM_UNIT_TEST_HOST"] = "0"
         app.launch()
+        return app
+    }
 
-        let field = app.textFields["tv.fixture.keyboard.field"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
+    /// Walks remote focus to `field` one press at a time (the fixture stacks its fields
+    /// vertically with non-focusable labels between them).
+    private func focusField(_ field: XCUIElement,
+                            byPressing direction: XCUIRemote.Button,
+                            times: Int = 6) -> Bool {
+        for _ in 0..<times {
+            if field.hasFocus { return true }
+            XCUIRemote.shared.press(direction)
+            if waitForFocus(field, timeout: 1) { return true }
+        }
+        return field.hasFocus
+    }
+
+    /// Shared TVUI-004 assertion: Select opens the keyboard, Select on a letter must grow
+    /// the field's echo label past its static prefix.
+    private func assertKeyboardInsertsLetter(app: XCUIApplication,
+                                             field: XCUIElement,
+                                             echoID: String,
+                                             prefix: String) throws {
         XCUIRemote.shared.press(.select)
 
         // Don't press blind: wait for the system keyboard surface to be up before the next
@@ -144,20 +202,20 @@ final class LabstreamTVPlayerTests: XCTestCase {
                           "after Select the keyboard should be up (no key elements exposed; "
                           + "field should at least report focus)")
         }
-        attachScreen(named: "keyboard entry surface", app: app)
+        attachScreen(named: "keyboard entry surface (\(echoID))", app: app)
 
         XCUIRemote.shared.press(.select)
-        let echo = app.staticTexts["tv.fixture.keyboard.echo"]
-        let grew = expectation(for: NSPredicate(format: "label.length > %d", "typed:".count),
+        let echo = app.staticTexts[echoID]
+        let grew = expectation(for: NSPredicate(format: "label.length > %d", prefix.count),
                                evaluatedWith: echo)
         if XCTWaiter().wait(for: [grew], timeout: 4) != .completed {
             let dump = XCTAttachment(string: app.debugDescription)
-            dump.name = "keyboard hierarchy at failure"
+            dump.name = "keyboard hierarchy at failure (\(echoID))"
             dump.lifetime = .keepAlways
             add(dump)
-            XCTFail("system keyboard Select should insert a letter; echo shows '\(echo.label)'")
+            XCTFail("system keyboard Select should insert a letter; \(echoID) shows '\(echo.label)'")
         }
-        attachScreen(named: "after select on letter", app: app)
+        attachScreen(named: "after select on letter (\(echoID))", app: app)
     }
 
     private func launchPlayerFixture() -> XCUIApplication {

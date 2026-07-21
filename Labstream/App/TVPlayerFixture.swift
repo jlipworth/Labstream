@@ -104,22 +104,74 @@ struct TVPlayerFixtureView: View {
     }
 }
 
-/// Minimal native text-entry fixture for TVUI-004: one plain SwiftUI `TextField` plus a mirror
-/// label. If the tvOS system keyboard cannot insert letters here, the defect is below Labstream.
+/// Native text-entry fixture for TVUI-004. Three fields bisect the live Search defect:
+///
+/// 1. `bare` — a plain default `TextField` (known-good baseline: letters insert here);
+/// 2. `styled` — adds SearchView's visual modifiers (`.plain` style, font, capsule frame)
+///    but NO focus binding;
+/// 3. `replica` — the full SearchView treatment including `.focused($…)`, the leading
+///    icon row, and the on-appear programmatic focus write.
+///
+/// If `bare` passes and `replica` fails, the styled field tells us whether the visual
+/// modifiers or the focus binding is what breaks system-keyboard insertion.
 struct TVKeyboardFixtureView: View {
-    @State private var query = ""
+    @State private var bareQuery = ""
+    @State private var styledQuery = ""
+    @State private var replicaQuery = ""
+    @FocusState private var replicaFocused: Bool
 
     var body: some View {
         VStack(spacing: 40) {
-            TextField("Fixture query", text: $query)
+            TextField("Fixture query", text: $bareQuery)
                 .frame(maxWidth: 900)
                 .accessibilityIdentifier("tv.fixture.keyboard.field")
-            Text("typed:\(query)")
+            Text("typed:\(bareQuery)")
                 .font(.title3.monospaced())
                 .accessibilityIdentifier("tv.fixture.keyboard.echo")
+
+            TextField("Styled query", text: $styledQuery)
+                .textFieldStyle(.plain)
+                .font(.title3)
+                .padding(.horizontal, 28)
+                .frame(width: 920, height: 70)
+                .background(.thinMaterial, in: Capsule())
+                .accessibilityIdentifier("tv.fixture.keyboard.styled.field")
+            Text("styled:\(styledQuery)")
+                .font(.title3.monospaced())
+                .accessibilityIdentifier("tv.fixture.keyboard.styled.echo")
+
+            HStack(spacing: 18) {
+                Image(systemName: "magnifyingglass")
+                    .font(.title2.weight(.medium))
+                    .foregroundStyle(.secondary)
+                TextField("Replica query", text: $replicaQuery)
+                    .focused($replicaFocused)
+                    .textFieldStyle(.plain)
+                    .font(.title3)
+                    .accessibilityIdentifier("tv.fixture.keyboard.replica.field")
+            }
+            .padding(.horizontal, 28)
+            .frame(width: 920, height: 70)
+            .background(.thinMaterial, in: Capsule())
+            Text("replica:\(replicaQuery)")
+                .font(.title3.monospaced())
+                .accessibilityIdentifier("tv.fixture.keyboard.replica.echo")
         }
-        .onChange(of: query) { _, value in
-            NSLog("%@", "TVKeyboardFixture: query changed to '\(value)'")
+        .task {
+            await Task.yield()
+            replicaFocused = true
+        }
+        .onChange(of: bareQuery) { _, value in
+            NSLog("%@", "TVKeyboardFixture: bare query changed to '\(value)'")
+        }
+        .onChange(of: styledQuery) { _, value in
+            NSLog("%@", "TVKeyboardFixture: styled query changed to '\(value)'")
+        }
+        .onChange(of: replicaQuery) { _, value in
+            NSLog("%@", "TVKeyboardFixture: replica query changed to '\(value)'")
+        }
+        .onChange(of: replicaFocused) { _, focused in
+            NSLog("%@", "TVKeyboardFixture: replica focused -> \(focused)")
         }
     }
 }
