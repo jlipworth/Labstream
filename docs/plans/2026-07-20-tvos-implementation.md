@@ -38,6 +38,36 @@ These are unresolved defects, not permission to replace the system keyboard or t
 player. `CustomPlayerView`, `CustomPlayerChrome`, the AVPlayerLayer presentation, and custom
 scrubbing remain canonical across platforms; no `AVPlayerViewController` replacement is approved.
 
+Implementation checkpoint (2026-07-21 session, commit `eb12403c` and prior): the hidden-chrome
+remote-input blocker above is now resolved. Root cause was proven via window/focus instrumentation
+(once chrome auto-hides the player subtree has no focusable item and every remote press bypasses
+SwiftUI entirely); the fix is a nonvisual full-screen hidden-chrome focus owner plus a bounded retry
+that verifies a racy `@FocusState` write actually stuck. Up from the transport cluster now reaches
+the menu strip, open submenus are treated as modal so Menu can't fall through and exit playback, and
+fixture `XCUIRemote` tests traverse and open/close every submenu (Subtitles/Audio/Chapters/Speed/
+Stats) from a confirmed hidden state. A live-only follow-on gap then surfaced after that fixture work
+passed — Down from the menu strip still couldn't reach the skip cluster because the timeline is a
+non-interactive `ProgressView` with no focusable — fixed with a `.focusSection()` on the transport
+row. Diagonal moves route through a guarded `onMoveCommand` fallback; live-captured evidence found
+`onMoveCommand` fires on every dpad press (not only unresolved ones) with inconsistent ordering
+against the focus engine's update (leading it by ~80-105ms on some presses, trailing it by ~5ms on
+others), so the guard checks both an edge-item focus position and a 0.15s recent-focus-change
+timestamp to avoid double-moving on a single press. Separately, a card-focus-indicator regression
+(bare custom `ButtonStyle` cards drawing no focus platter, found live on the Libraries root) was
+fixed with an owned focus ring across library, music, and episode cards, and a tab-bar directional-
+entry bug (Down from the tab bar geometrically landing on card 2 regardless of intent — confirmed
+live that `focusScope` + `prefersDefaultFocus` does not govern directional entry, only initial/
+programmatic focus) was fixed with a `@FocusState`-tracked entry redirect on Home and the Libraries
+root grid. The search-keyboard defect (TVUI-004) is not fixed: fixture testing now exonerates a bare
+`TextField`, a styled field, a focus-binding replica, and a full generic TabView/NavigationStack
+shell, narrowing the suspect surface to live-only layers (session-keyed `NavigationStack.id`,
+environment injections, TabView-level `.onExitCommand`, `.task(id:)`, `MiniPlayerBar` safeAreaInset);
+a decisive live repro test exists but has not been run to completion. See
+`2026-07-20-tvos-screen-audit.md` (TVUI-004, TVUI-024 through TVUI-027) for full detail and evidence
+status. This Xcode beta has no Simulator.app (DeviceHub.app is the sim GUI); a full simulator reboot
+temporarily detaches DeviceHub's key input and self-recovers — do not mistake that for an app
+regression.
+
 ## Goal
 
 Create a first-class native tvOS version of Labstream for Apple TV with functional parity to the shared iPad/Mac product surface across Plex, Jellyfin, and Emby. The implementation may advance through internal checkpoints, but no reduced video-only or single-backend edition is a release target. tvOS gets its own 10-foot UI, focus model, Siri Remote behavior, system integration, testing lane, and release train while retaining the complete shared product behavior that applies to a television.
@@ -113,10 +143,10 @@ Every row is required across Plex, Jellyfin, and Emby wherever that row is imple
 ### Phase 1 — TV shell, authentication, and focus
 
 - [ ] Complete the initial dedicated tvOS tab shell for Home, Libraries, Search, Music, and Settings as a ten-foot, focus-safe surface; do not show an empty Offline destination. The persistent tab shell is implemented and no longer repeats its labels as top-level page titles; per-surface completion remains open.
-- [ ] Add TV poster/card sizing, safe-area spacing, readable metadata, system focus effects, default focus, focus sections, and focus restoration across navigation, sheets, reloads, pagination, errors, and playback return. The first sizing/spacing/type pass covers authentication, shared video posters/grids, library cards, and music art; exhaustive focus-state and live-data review remains.
+- [ ] Add TV poster/card sizing, safe-area spacing, readable metadata, system focus effects, default focus, focus sections, and focus restoration across navigation, sheets, reloads, pagination, errors, and playback return. The first sizing/spacing/type pass covers authentication, shared video posters/grids, library cards, and music art. This session added owned focus rings to bare-`ButtonStyle` cards (poster/still/chapter/View All rows, then library/music/episode rows) after a live regression showed them focus-invisible, fixed a tab-bar directional-entry bug where Down always landed on card 2 regardless of intent (`focusScope`/`prefersDefaultFocus` does not govern directional entry — only a `@FocusState` entry redirect does), and made every horizontal media rail a `.focusSection()`. Exhaustive focus-state and live-data review still remains.
 - [ ] Make Plex link code, Jellyfin Quick Connect, and Emby Connect PIN primary; keep remote-friendly manual URL/credential entry as fallback where needed. The initial three-backend TV layout and remote backend-selection fixture are implemented; live authentication, restore, error, and fallback flows remain.
 - [ ] Validate local-network permission/ATS behavior, LAN and remote servers, Keychain restore, backend switching, signed-out/error states, dictation/iPhone Remote keyboard, and physical keyboard fallback.
-- [ ] Resolve or conclusively classify native tvOS search-keyboard Select behavior. It reproduces with both the original `.searchable` field and an explicit native SwiftUI `TextField` on the current beta simulator: the field becomes first responder, then Select clears first responder without inserting a letter. Compare a minimal native fixture and another system/native text-entry surface on the same runtime, add `XCUIRemote` coverage, and keep the system keyboard rather than inventing an app keyboard. Simulator Capture Keyboard/direct typing is diagnostic only, not acceptance proof.
+- [ ] Resolve or conclusively classify native tvOS search-keyboard Select behavior. It reproduces with both the original `.searchable` field and an explicit native SwiftUI `TextField` on the current beta simulator: the field becomes first responder, then Select clears first responder without inserting a letter (UIKit reloads input views with `responder:(nil)` and tears down the SwiftUI text-field delegate; no character reaches the binding). Fixture testing has since exonerated a bare `TextField`, a styled field, a focus-binding replica, and a full generic TabView/NavigationStack/results-scroll shell — all insert letters correctly — narrowing the suspect surface to live-only layers (session-keyed `NavigationStack.id`, environment injections, TabView `.onExitCommand`, `.task(id:)`, `MiniPlayerBar` safeAreaInset). A decisive `XCUIRemote` test against the live Search tab exists (`testLiveSearchTabSystemKeyboardInsertsLetter`) but has not been run to completion. `.searchable` showed the identical defect earlier, which is evidence (not proof) the root cause may be Apple's beta runtime. Keep the system keyboard rather than inventing an app keyboard; simulator Capture Keyboard/direct typing remains diagnostic only, not acceptance proof.
 - [ ] Make Settings TV-specific and focus-safe. Exclude download/storage/cellular controls, and replace unavailable diagnostics, feedback, discovery, or export surfaces with TV-native equivalents rather than silently dropping their user capability.
 
 **Exit:** using only a Siri Remote, a user can sign in to each backend, browse/search, open details, recover from errors, return with focus restored, and sign out.
@@ -124,7 +154,7 @@ Every row is required across Plex, Jellyfin, and Emby wherever that row is imple
 ### Phase 2 — custom-player TV adaptation
 
 - [ ] Keep the shared app-owned `CustomPlayerView`/`PlaybackController` as the only video player; do not restore the retired `AVPlayerViewController` path. The tvOS target now links AVKit explicitly so the shared player's `AVPlayerItem.externalMetadata` category call does not crash at launch, and live Plex playback has been proven in the simulator; the complete player-state audit remains open.
-- [ ] Add tvOS focus ownership, chrome reveal/auto-hide, remote-command routing, focus restoration, and a remote-native scrubber interaction without duplicating canonical playback intent methods. The current blocker is specific: after chrome auto-hide, no proven focus/input owner receives directional, Select, or Play/Pause input. First add a deterministic hidden-chrome fixture plus event/focus/chrome-state instrumentation and `XCUIRemote` tests; then implement the smallest tvOS-only bridge into the existing chrome instead of redesigning the surface.
+- [ ] Add tvOS focus ownership, chrome reveal/auto-hide, remote-command routing, focus restoration, and a remote-native scrubber interaction without duplicating canonical playback intent methods. The prior blocker — after chrome auto-hide, no proven focus/input owner received directional, Select, or Play/Pause input — is resolved: a nonvisual full-screen hidden-chrome focus owner reveals chrome on Select and hands focus to Play/Pause, with a bounded retry guarding a racy `@FocusState` write. Up from the transport cluster reaches the menu strip, submenus are treated as modal (Menu can't fall through and exit playback), and fixture `XCUIRemote` tests traverse/open/close every submenu from a confirmed hidden state. A live-only follow-on gap (Down from the menu strip couldn't reach the skip cluster; the timeline had no focusable) was fixed with `.focusSection()` on the transport row, and diagonal moves route through a guarded `onMoveCommand` fallback (guarded on edge-item focus position plus a 0.15s recent-focus-change timestamp, because `onMoveCommand` fires on every dpad press with inconsistent ordering against the focus engine). Auto-hide now restarts its 5s countdown on every dpad press while visible. Remaining work is the exhaustive live/physical-device visual and traversal sweep, not the input-ownership defect itself.
 - [ ] Support exactly-once Play/Pause, Select, Menu/Back, clickpad/directional scrub and seek, Siri/system commands, buffering/retry, end-of-item, autoplay, and return-focus behavior.
 - [ ] Expose quality, audio, subtitles, chapters, speed, skip intro/credits, and bounded diagnostics through TV-native player menus/actions. Prove every submenu is reachable, selectable, dismissible, and restores focus to its originating button; current live testing could not reach these menus after chrome auto-hide.
 - [ ] Complete the player visual pass at 1920×1080: buffering overlay, revealed chrome, timeline, elapsed/remaining labels, transport controls, menu buttons, focus geometry, internal/exterior spacing, truncation, safe areas, and every submenu/list state. The buffering-layout adjustment and compact TV composition are provisional until deterministic reveal and traversal are available.
@@ -180,17 +210,21 @@ The next session should work from commit `ced35a36` in the linked worktree
 never target a generic `booted` simulator. Before editing, confirm the worktree and installed-runtime
 truth because Xcode beta and simulator behavior may have changed.
 
-1. **Player input/focus root cause:** instrument the existing custom player and create visible/hidden
-   chrome fixtures. Prove where directional, Select, Play/Pause, and Back events are delivered before
-   changing production focus behavior. Preserve the shared player architecture and scrubbing.
-2. **Smallest player correction:** make one input reveal hidden chrome without an accidental transport
-   action; make Play/Pause toggle exactly once; establish deterministic initial focus; traverse every
-   player submenu; restore focus on dismissal; retain auto-hide, Back, scrubbing, progress reporting,
-   transcode teardown, and non-tvOS behavior.
-3. **Search input classification:** reproduce native letter selection through `XCUIRemote` in both
-   Labstream and a minimal native field on the same runtime. Fix an app-owned focus/responder defect if
-   proven; otherwise record an Apple beta/runtime blocker with reproducible evidence. Do not accept
-   direct Mac typing as the remote-input gate.
+1. **Player input/focus root cause — resolved, needs live/regression proof recorded:** the hidden-chrome
+   focus owner, submenu modal treatment, menu-strip-to-skip-cluster vertical reach, and the guarded
+   diagonal `onMoveCommand` fallback are implemented and fixture/live-verified this session (see
+   TVUI-024 in the screen audit). Remaining work is recording formal screenshot/log evidence and
+   sweeping the full submenu/state matrix, not further root-causing.
+2. **Directional-entry and focus-indicator regressions — resolved, needs live/regression proof
+   recorded:** the tab-bar Down-lands-on-card-2 bug (TVUI-027) and the bare-`ButtonStyle` missing-
+   focus-ring regression (TVUI-026) are fixed; record simulator evidence for both.
+3. **Search input classification — still open, narrowed:** fixture testing has exonerated a bare
+   `TextField`, styled field, focus-binding replica, and a full generic TabView/NavigationStack shell,
+   pointing at live-only layers (session-keyed `NavigationStack.id`, environment injections, TabView
+   `.onExitCommand`, `.task(id:)`, `MiniPlayerBar` safeAreaInset). Run the existing
+   `testLiveSearchTabSystemKeyboardInsertsLetter` test to completion against the real Search tab; fix
+   an app-owned focus/responder defect if proven, otherwise record an Apple beta/runtime blocker with
+   reproducible evidence. Do not accept direct Mac typing as the remote-input gate.
 4. **Exhaustive surface audit:** continue the four explicit passes—size, spacing, control orientation/
    focus order, and redundant information—across authentication, session restore/errors, Home,
    Libraries and every library state/backend, Search/results, all detail/container variants, Settings,
