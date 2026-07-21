@@ -256,6 +256,15 @@ private struct HubRail: View {
                         .cardLink()
                         .videoCardContextMenu(for: item)
                     }
+
+                    #if os(tvOS)
+                    if let destination {
+                        RailViewAllCard(title: hub.title,
+                                        destination: destination,
+                                        width: viewAllCardSize.width,
+                                        height: viewAllCardSize.height)
+                    }
+                    #endif
                 }
                 .padding(.vertical,
                          HomeLayoutMetrics.railVerticalPadding(denseSections: denseSectionSpacing))
@@ -266,6 +275,19 @@ private struct HubRail: View {
             .mediaRailScrollStyle(horizontalMargin: DS.Scroll.railHorizontalMargin(compact: compactWidth))
         }
     }
+
+    #if os(tvOS)
+    /// Match the trailing View All card to the rail's artwork frame: 16:9 for episode
+    /// shelves, the canonical 2:3 poster otherwise.
+    private var viewAllCardSize: CGSize {
+        if hub.metadata.first?.kind == .episode {
+            return CGSize(width: HomeRailCellMetrics.episodeWidth(compact: compactWidth),
+                          height: HomeRailCellMetrics.episodeImageHeight(compact: compactWidth))
+        }
+        let width = DS.Poster.railWidth(compact: compactWidth)
+        return CGSize(width: width, height: DS.Poster.height(for: width))
+    }
+    #endif
 }
 
 private enum HomeLayoutMetrics {
@@ -380,7 +402,7 @@ private enum HomeRailCellMetrics {
         episodeWidth(compact: compact) * 9.0 / 16.0
     }
     #if os(tvOS)
-    static let titleBlockHeight: CGFloat = 78
+    static let titleBlockHeight: CGFloat = 60
     #else
     static let titleBlockHeight: CGFloat = 46
     #endif
@@ -415,10 +437,10 @@ private struct EpisodeRailCell: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.grandparentTitle ?? item.title)
-                    .font(.headline)
+                    .font(episodeTitleFont)
                     .lineLimit(1)
                 Text(episodeSubtitle)
-                    .font(.subheadline)
+                    .font(episodeSubtitleFont)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -434,6 +456,24 @@ private struct EpisodeRailCell: View {
             return "\(code) · \(item.title)"
         }
         return item.title
+    }
+
+    /// tvOS text styles run big (headline is 38pt); captions under a 360-pt still read
+    /// oversized at TV sizes, so the TV pass drops one weight class.
+    private var episodeTitleFont: Font {
+        #if os(tvOS)
+        .body.weight(.medium)
+        #else
+        .headline
+        #endif
+    }
+
+    private var episodeSubtitleFont: Font {
+        #if os(tvOS)
+        .caption
+        #else
+        .subheadline
+        #endif
     }
 
     private var progressSliver: some View {
@@ -526,7 +566,9 @@ struct PosterCell: View {
 
     private var primaryLabelFont: Font {
         #if os(tvOS)
-        labelStyle == .denseLibrary ? .body.weight(.semibold) : .headline
+        // headline (38pt) overwhelms a 236-pt poster at TV sizes; body-medium (29pt)
+        // matches the caption weight of Apple's own TV shelves.
+        .body.weight(.medium)
         #else
         labelStyle == .denseLibrary ? .subheadline.weight(.semibold) : .headline
         #endif
@@ -534,7 +576,7 @@ struct PosterCell: View {
 
     private var secondaryLabelFont: Font {
         #if os(tvOS)
-        labelStyle == .denseLibrary ? .callout : .body
+        .caption
         #else
         labelStyle == .denseLibrary ? .caption : .subheadline
         #endif

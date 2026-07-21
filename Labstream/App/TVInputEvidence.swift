@@ -11,14 +11,15 @@ import UIKit
 ///
 /// Combined with the SwiftUI-side `TVPlayerEvidence:` logs in `CustomPlayerChrome`, this
 /// separates "event never reached the process", "event reached UIKit but not SwiftUI", and
-/// "event reached SwiftUI". Installed only when UI testing is enabled or the
-/// `--tv-input-evidence` launch argument is present; never in release builds.
+/// "event reached SwiftUI". Installed by default in every DEBUG launch (opt out with
+/// `--no-tv-input-evidence`); never in release builds.
 @MainActor
 enum TVInputEvidence {
     nonisolated static var isRequested: Bool {
-        let arguments = ProcessInfo.processInfo.arguments
-        return arguments.contains(TVUITestLaunchConfiguration.enabledFlag)
-            || arguments.contains("--tv-input-evidence")
+        // Default-on for tvOS DEBUG builds (this whole file is `#if os(tvOS) && DEBUG`):
+        // manual remote-testing sessions need press/focus evidence on every screen, not
+        // just under the XCUI harness. `--no-tv-input-evidence` opts a launch out.
+        !ProcessInfo.processInfo.arguments.contains("--no-tv-input-evidence")
     }
 
     private static var installed = false
