@@ -281,10 +281,7 @@ struct RootView: View {
                     .id(appModel.activeBrowseSessionKey)
             }
             Tab("Libraries", systemImage: "rectangle.stack", value: AppTab.libraries) {
-                NavigationStack(path: $librariesPath) { LibrariesView() }
-                    .environment(\.cinemaOriginTab, .libraries)
-                    .environment(\.pushMediaItem, { (item: MediaItem) in librariesPath.append(item) })
-                    .id(appModel.activeBrowseSessionKey)
+                tvLibrariesContent
             }
             Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
                 NavigationStack(path: $searchPath) {
@@ -306,6 +303,32 @@ struct RootView: View {
             if musicPlayer.current != nil {
                 MiniPlayerBar(presentation: $nowPlayingPresentation)
             }
+        }
+        // The persistent tab bar can own focus even while a nested destination is visible,
+        // so destination-local exit handlers never receive the Siri Remote Back command.
+        // Handle it at the tvOS shell and pop exactly one element from the active stack.
+        .onExitCommand { tvNavigateBack() }
+    }
+
+    private var tvLibrariesContent: some View {
+        NavigationStack(path: $librariesPath) { LibrariesView() }
+            .environment(\.cinemaOriginTab, .libraries)
+            .environment(\.pushMediaItem, { (item: MediaItem) in librariesPath.append(item) })
+            .id(appModel.activeBrowseSessionKey)
+    }
+
+    private func tvNavigateBack() {
+        switch selection {
+        case .home where !homePath.isEmpty:
+            homePath.removeLast()
+        case .libraries where !librariesPath.isEmpty:
+            librariesPath.removeLast()
+        case .search where !searchPath.isEmpty:
+            searchPath.removeLast()
+        case .music where !musicPath.isEmpty:
+            musicPath.removeLast()
+        default:
+            break
         }
     }
     #endif

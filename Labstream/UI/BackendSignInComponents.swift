@@ -7,10 +7,10 @@ import SwiftUI
 
 private enum BackendAuthMetrics {
     #if os(tvOS)
-    static let pickerWidth: CGFloat = 600
-    static let buttonWidth: CGFloat = 520
-    static let fieldWidth: CGFloat = 620
-    static let helperWidth: CGFloat = 560
+    static let pickerWidth: CGFloat = 540
+    static let buttonWidth: CGFloat = 460
+    static let fieldWidth: CGFloat = 540
+    static let helperWidth: CGFloat = 500
     #elseif os(macOS)
     static let pickerWidth: CGFloat = 300
     static let buttonWidth: CGFloat = 300
@@ -46,8 +46,9 @@ private struct BackendPrimaryCTALabel: ViewModifier {
     func body(content: Content) -> some View {
         #if os(tvOS)
         content
-            .font(.title3.weight(.semibold))
-            .frame(maxWidth: .infinity, minHeight: 64)
+            .font(.body.weight(.semibold))
+            .lineLimit(1)
+            .minimumScaleFactor(0.85)
         #elseif os(macOS)
         content
             .font(.callout.weight(.medium))
@@ -71,6 +72,9 @@ private extension View {
     func backendAuthControlWidth(_ regularWidth: CGFloat) -> some View {
         #if os(iOS)
         modifier(BackendAuthControlWidth(regularWidth: regularWidth))
+        #elseif os(tvOS)
+        frame(maxWidth: regularWidth)
+            .controlSize(.regular)
         #else
         frame(maxWidth: regularWidth)
         #endif
@@ -142,7 +146,9 @@ struct BackendSelectionPicker: View {
                 }
             }
             .pickerStyle(.segmented)
+            #if os(tvOS)
             .accessibilityIdentifier("tv.login.backendPicker")
+            #endif
             #if os(macOS)
             .controlSize(.regular)
             #endif
@@ -237,7 +243,9 @@ struct PlexSignInStartView: View {
             #endif
             .disabled(isWorking)
             .backendAuthControlWidth(BackendAuthMetrics.buttonWidth)
+            #if os(tvOS)
             .accessibilityIdentifier("tv.login.plex.start")
+            #endif
 
             Text("Uses a code at plex.tv/link.")
                 .font(.callout)

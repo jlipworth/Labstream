@@ -45,14 +45,22 @@ struct DetailTitleHeader: View {
                     }
                 }
                 Text(item.title)
-                    .font(.largeTitle.bold())
+                    .font(detailTitleFont)
                     .fixedSize(horizontal: false, vertical: true)
             }
         } else {
             Text(item.title)
-                .font(.largeTitle.bold())
+                .font(detailTitleFont)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    private var detailTitleFont: Font {
+        #if os(tvOS)
+        .title2.bold()
+        #else
+        .largeTitle.bold()
+        #endif
     }
 }
 
@@ -90,8 +98,16 @@ struct DetailMetadataRow: View {
                 }
             }
         }
-        .font(compactWidth ? .subheadline : .title3)
+        .font(metadataFont)
         .foregroundStyle(.secondary)
+    }
+
+    private var metadataFont: Font {
+        #if os(tvOS)
+        .body
+        #else
+        compactWidth ? .subheadline : .title3
+        #endif
     }
 
     @ViewBuilder
@@ -137,12 +153,39 @@ struct DetailCreditsSection: View {
     let studios: [Tag]?
 
     var body: some View {
+        #if os(tvOS)
+        Grid(alignment: .leading, horizontalSpacing: DS.Space.lg, verticalSpacing: DS.Space.sm) {
+            tvCreditRow(label: "Cast", tags: roles, limit: 6)
+            tvCreditRow(label: "Director", tags: directors, limit: 3)
+            tvCreditRow(label: "Studio", tags: studios, limit: 3)
+        }
+        #else
         VStack(alignment: .leading, spacing: DS.Space.xs) {
             creditLine(label: "Cast", tags: roles, limit: 6)
             creditLine(label: "Director", tags: directors, limit: 3)
             creditLine(label: "Studio", tags: studios, limit: 3)
         }
+        #endif
     }
+
+    #if os(tvOS)
+    @ViewBuilder
+    private func tvCreditRow(label: String, tags: [Tag]?, limit: Int) -> some View {
+        if let tags, !tags.isEmpty {
+            let names = tags.prefix(limit).map(\.tag).joined(separator: ", ")
+            GridRow(alignment: .firstTextBaseline) {
+                Text(label)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 140, alignment: .leading)
+                Text(names)
+                    .foregroundStyle(.primary.opacity(0.85))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .font(.callout)
+        }
+    }
+    #endif
 
     @ViewBuilder
     private func creditLine(label: String, tags: [Tag]?, limit: Int) -> some View {
@@ -166,6 +209,12 @@ struct DetailMediaInfoSummary: View {
 
     var body: some View {
         Group {
+            #if os(tvOS)
+            ScrollView(.horizontal, showsIndicators: false) {
+                chips
+            }
+            .mediaRailScrollStyle(horizontalMargin: 0, clipDisabled: false)
+            #else
             if compactWidth {
                 // A full spec set (4K · DOLBY VISION · HEVC · TRUEHD 7.1 · 24 MBPS · chapters)
                 // overflows a 390-pt phone, so let the chip row scroll horizontally.
@@ -176,6 +225,7 @@ struct DetailMediaInfoSummary: View {
             } else {
                 chips
             }
+            #endif
         }
         .padding(.top, DS.Space.xs)
     }
@@ -186,10 +236,18 @@ struct DetailMediaInfoSummary: View {
                 SpecChip(text: spec, monospaced: true)
             }
             if let chapterCount, chapterCount > 0 {
-                Label("\(chapterCount) chapters", systemImage: "list.bullet")
-                    .font(.caption)
+                Text("\(chapterCount) chapters")
+                    .font(chapterFont)
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private var chapterFont: Font {
+        #if os(tvOS)
+        .callout
+        #else
+        .caption
+        #endif
     }
 }

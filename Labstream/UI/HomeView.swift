@@ -526,7 +526,7 @@ struct PosterCell: View {
 
     private var primaryLabelFont: Font {
         #if os(tvOS)
-        .headline
+        labelStyle == .denseLibrary ? .body.weight(.semibold) : .headline
         #else
         labelStyle == .denseLibrary ? .subheadline.weight(.semibold) : .headline
         #endif
@@ -534,7 +534,7 @@ struct PosterCell: View {
 
     private var secondaryLabelFont: Font {
         #if os(tvOS)
-        .body
+        labelStyle == .denseLibrary ? .callout : .body
         #else
         labelStyle == .denseLibrary ? .caption : .subheadline
         #endif

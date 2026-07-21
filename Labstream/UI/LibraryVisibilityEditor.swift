@@ -35,7 +35,9 @@ struct LibraryVisibilityPickerSheet: View {
     }
 
     var body: some View {
-        #if os(macOS)
+        #if os(tvOS)
+        tvDialog
+        #elseif os(macOS)
         macDialog
         #else
         NavigationStack {
@@ -85,6 +87,79 @@ struct LibraryVisibilityPickerSheet: View {
             }
         )
     }
+
+    #if os(tvOS)
+    private var tvDialog: some View {
+        VStack(alignment: .leading, spacing: 28) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Choose Libraries")
+                    .font(.title2.weight(.semibold))
+                Text("Select the libraries that should appear in Labstream. You can change this later in Settings.")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+            }
+
+            ScrollView {
+                LazyVStack(spacing: 12) {
+                    ForEach(prompt.candidates, id: \.id) { candidate in
+                        Button {
+                            let visible = !hidden.contains(candidate.id)
+                            if visible {
+                                hidden.insert(candidate.id)
+                            } else {
+                                hidden.remove(candidate.id)
+                            }
+                        } label: {
+                            HStack(spacing: 20) {
+                                Image(systemName: hidden.contains(candidate.id) ? "circle" : "checkmark.circle.fill")
+                                    .font(.title3)
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(candidate.title)
+                                        .font(.headline)
+                                        .lineLimit(1)
+                                    Text(LibrarySectionKind(visibilityKindToken: candidate.kind).subtitle)
+                                        .font(.callout)
+                                        .foregroundStyle(.secondary)
+                                }
+
+                                Spacer()
+                                Text(hidden.contains(candidate.id) ? "Hidden" : "Shown")
+                                    .font(.callout)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 4)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.regular)
+                    }
+                }
+                .padding(.vertical, 8)
+            }
+            .frame(maxHeight: 540)
+
+            HStack(spacing: 20) {
+                Button("Cancel", role: .cancel) { onCancel() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.regular)
+
+                Spacer()
+
+                Button("Save Selection") { onConfirm(hidden) }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+            }
+        }
+        .padding(64)
+        .frame(maxWidth: 1120, maxHeight: 860)
+        .background(.regularMaterial,
+                    in: RoundedRectangle(cornerRadius: 32, style: .continuous))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.black.opacity(0.35).ignoresSafeArea())
+    }
+    #endif
 
     #if os(macOS)
     private var macDialog: some View {

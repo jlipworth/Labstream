@@ -58,6 +58,16 @@ func tickCustomScrubberClock(_ scrubState: inout PlaybackScrubState,
     }
 }
 
+#if os(tvOS)
+/// Explicit focus ownership keeps a hidden player surface in the remote responder chain, then
+/// restores focus to real chrome controls when any directional command reveals them.
+private enum TVPlayerFocus: Hashable {
+    case playPause
+    case skip(Int)
+    case menu(CustomPlayerMenuKind)
+}
+#endif
+
 /// App-owned full-screen chrome for the custom player.
 ///
 /// This deliberately carries the playback feature set that used to live in system surfaces: the
@@ -105,6 +115,9 @@ struct CustomPlayerChrome: View {
     @State private var hoverPreviewX: CGFloat?
     @State private var mobileDisplayStatus: String?
     @State private var mobileDisplayStatusTask: Task<Void, Never>?
+    #if os(tvOS)
+    @FocusState private var tvPlayerFocus: TVPlayerFocus?
+    #endif
     #if os(iOS)
     @State private var chromeViewportSize: CGSize = .zero
     #endif
@@ -165,7 +178,9 @@ struct CustomPlayerChrome: View {
         ZStack {
             Color.clear
                 .contentShape(Rectangle())
-                #if os(iOS)
+                #if os(tvOS)
+                .onTapGesture { handlePlayerSurfaceTap() }
+                #elseif os(iOS)
                 .gesture(TapGesture(count: 2).exclusively(before: TapGesture(count: 1))
                     .onEnded { gesture in
                         switch gesture {
@@ -290,6 +305,17 @@ struct CustomPlayerChrome: View {
         #if os(macOS)
         .background(MacPlayerWindowReader(bridge: macWindowBridge))
         #endif
+        #if os(tvOS)
+        .onMoveCommand { _ in
+            guard !shouldShowChrome else { return }
+            revealTVChrome()
+        }
+        .onPlayPauseCommand {
+            revealChrome()
+            controller.togglePlayback()
+            scheduleChromeHideIfNeeded()
+        }
+        #endif
         .animation(.easeInOut(duration: 0.18), value: shouldShowChrome)
         .animation(.easeInOut(duration: 0.18), value: selectedMenu)
         .animation(.easeInOut(duration: 0.18), value: controller.skipMarker.active != nil)
@@ -301,6 +327,9 @@ struct CustomPlayerChrome: View {
         #endif
         .onAppear {
             revealChrome()
+            #if os(tvOS)
+            Task { @MainActor in tvPlayerFocus = .playPause }
+            #endif
             #if os(macOS)
             installMacKeyMonitor()
             #endif
@@ -321,6 +350,17 @@ struct CustomPlayerChrome: View {
         .onChange(of: selectedMenu) { _, menu in
             if menu != nil { endHoverPreview() }
         }
+        #if os(tvOS)
+        .onChange(of: shouldShowChrome) { _, visible in
+            if visible {
+                if tvPlayerFocus == nil {
+                    Task { @MainActor in tvPlayerFocus = .playPause }
+                }
+            } else {
+                tvPlayerFocus = nil
+            }
+        }
+        #endif
         #if os(iOS)
         // System-player behavior: the status bar and home indicator ride with the chrome —
         // hidden over clean video, back the moment controls reveal. Without this the clock/
@@ -366,6 +406,8 @@ struct CustomPlayerChrome: View {
     private var bottomChromeHorizontalInset: CGFloat {
         #if os(macOS)
         22
+        #elseif os(tvOS)
+        56
         #else
         if isPhoneLandscapeChrome {
             8
@@ -380,6 +422,8 @@ struct CustomPlayerChrome: View {
     private var bottomChromeBottomInset: CGFloat {
         #if os(macOS)
         18
+        #elseif os(tvOS)
+        44
         #else
         if isPhoneLandscapeChrome {
             8
@@ -793,6 +837,14 @@ struct CustomPlayerChrome: View {
     private var controls: some View {
         #if os(macOS)
         macControls
+        #elseif os(tvOS)
+        tvControls
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
+            .frame(maxWidth: 1_680)
+            .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .foregroundStyle(.white)
+            .colorScheme(.dark)
         #elseif os(iOS)
         if isPhoneLandscapeChrome {
             phoneLandscapeControls
@@ -827,6 +879,91 @@ struct CustomPlayerChrome: View {
         }
         #endif
     }
+
+    #if os(tvOS)
+    /// Television chrome is a remote control surface, not the iPad/visionOS row scaled up by
+    /// tvOS's focus engine. Keep a compact information/actions header and a symmetric transport
+    /// row with time labels that cannot wrap.
+    private var tvControls: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 22) {
+                Text(title)
+                    .font(.headline.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(minWidth: 220, idealWidth: 360, maxWidth: 520, alignment: .leading)
+                    .layoutPriority(1)
+
+                Spacer(minLength: 18)
+
+                tvMenuStrip
+            }
+
+            HStack(spacing: 14) {
+                tvSkipButton(seconds: -30)
+                tvSkipButton(seconds: -10)
+                playPauseButton
+                tvSkipButton(seconds: 10)
+                tvSkipButton(seconds: 30)
+
+                Text(format(ms: scrubState.displayedPositionMs))
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.76))
+                    .frame(width: 100, alignment: .trailing)
+                    .lineLimit(1)
+
+                timelineSlider
+                    .tint(.white)
+
+                Text(format(ms: scrubState.durationMs))
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.76))
+                    .frame(width: 100, alignment: .leading)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private var tvMenuStrip: some View {
+        HStack(spacing: 8) {
+            ForEach(availableMenus) { menu in
+                Button {
+                    openMenu(menu)
+                } label: {
+                    Label(menu.shortTitle, systemImage: menu.systemImage)
+                        .font(.callout.weight(.semibold))
+                        .lineLimit(1)
+                        .frame(minWidth: menu.minChromeWidth, minHeight: 42)
+                        .padding(.horizontal, 5)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .focused($tvPlayerFocus, equals: .menu(menu))
+                .accessibilityLabel(menu.title)
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private func tvSkipButton(seconds: Int) -> some View {
+        let isForward = seconds > 0
+        let amount = abs(seconds)
+        return Button {
+            performRelativeSkip(seconds: seconds)
+        } label: {
+            Label(isForward ? "Forward \(amount) seconds" : "Back \(amount) seconds",
+                  systemImage: isForward ? "goforward.\(amount)" : "gobackward.\(amount)")
+                .labelStyle(.iconOnly)
+                .font(.body.weight(.semibold))
+                .frame(width: 46, height: 46)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .focused($tvPlayerFocus, equals: .skip(seconds))
+        .disabled(scrubState.durationMs <= 0)
+        .accessibilityLabel(isForward ? "Skip forward \(amount) seconds" : "Skip back \(amount) seconds")
+    }
+    #endif
 
     #if os(macOS)
     private var macControls: some View {
@@ -1187,11 +1324,17 @@ struct CustomPlayerChrome: View {
         }
         #if os(visionOS)
         .buttonStyle(.borderedProminent)
+        #elseif os(tvOS)
+        .buttonStyle(.borderedProminent)
+        .controlSize(.small)
         #else
         // Neutral symbol on the glass platter, like the system player's
         // transport controls — the accent stays reserved for real CTAs.
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
+        #endif
+        #if os(tvOS)
+        .focused($tvPlayerFocus, equals: .playPause)
         #endif
         .accessibilityLabel(controller.transport.showsPausedControl ? "Play" : "Pause")
         .accessibilityHint("Toggles playback")
@@ -2002,11 +2145,23 @@ struct CustomPlayerChrome: View {
     private func openMenu(_ menu: CustomPlayerMenuKind) {
         revealChrome(keepVisible: true)
         selectedMenu = menu
+        #if os(tvOS)
+        tvPlayerFocus = nil
+        #endif
     }
 
     private func closeMenu() {
+        let closingMenu = selectedMenu
         selectedMenu = nil
         revealChrome()
+        #if os(tvOS)
+        if let closingMenu {
+            Task { @MainActor in
+                await Task.yield()
+                tvPlayerFocus = .menu(closingMenu)
+            }
+        }
+        #endif
     }
 
     private func handlePlayerSurfaceTap() {
@@ -2037,6 +2192,18 @@ struct CustomPlayerChrome: View {
         }
     }
 
+    #if os(tvOS)
+    private func revealTVChrome() {
+        revealChrome(keepVisible: true)
+        // Focus assignment must follow the render that reintroduces the controls.
+        Task { @MainActor in
+            await Task.yield()
+            tvPlayerFocus = .playPause
+            scheduleChromeHideIfNeeded()
+        }
+    }
+    #endif
+
     private func scheduleChromeHideIfNeeded() {
         hideTask?.cancel()
         guard !controller.transport.showsPausedControl,
@@ -2049,6 +2216,9 @@ struct CustomPlayerChrome: View {
                   !controller.transportStatus.keepsChromeVisible,
                   selectedMenu == nil else { return }
             chromeVisible = false
+            #if os(tvOS)
+            tvPlayerFocus = nil
+            #endif
         }
     }
 
@@ -2063,7 +2233,6 @@ struct CustomPlayerChrome: View {
         return String(format: "%d:%02d", minutes, seconds)
     }
 }
-
 
 #if os(iOS)
 private struct IOSPlayerTopUtilityButtonStyle: ViewModifier {
@@ -2283,6 +2452,15 @@ private enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
         case .chapters: CGSize(width: 920, height: 210)
         case .stats: CGSize(width: 420, height: 285)
         }
+        #elseif os(tvOS)
+        switch self {
+        case .screen: CGSize(width: 560, height: 420)
+        case .quality: CGSize(width: 520, height: 420)
+        case .speed: CGSize(width: 440, height: 350)
+        case .subtitles, .audio: CGSize(width: 620, height: 430)
+        case .chapters: CGSize(width: 1_460, height: 300)
+        case .stats: CGSize(width: 760, height: 520)
+        }
         #else
         switch self {
         case .screen: CGSize(width: 430, height: 390)
@@ -2375,6 +2553,8 @@ private struct CustomPlayerMenuPopover: View {
     private var headerFont: Font {
         #if os(macOS)
         .headline
+        #elseif os(tvOS)
+        .headline.weight(.semibold)
         #else
         .title3.weight(.semibold)
         #endif
@@ -2383,6 +2563,8 @@ private struct CustomPlayerMenuPopover: View {
     private var headerHeight: CGFloat {
         #if os(macOS)
         30
+        #elseif os(tvOS)
+        54
         #else
         44
         #endif
@@ -2391,6 +2573,8 @@ private struct CustomPlayerMenuPopover: View {
     private var closeButtonSide: CGFloat {
         #if os(macOS)
         24
+        #elseif os(tvOS)
+        52
         #else
         44
         #endif
@@ -2399,6 +2583,8 @@ private struct CustomPlayerMenuPopover: View {
     private var popoverPadding: CGFloat {
         #if os(macOS)
         14
+        #elseif os(tvOS)
+        24
         #else
         18
         #endif
@@ -2407,6 +2593,8 @@ private struct CustomPlayerMenuPopover: View {
     private var popoverCornerRadius: CGFloat {
         #if os(macOS)
         15
+        #elseif os(tvOS)
+        28
         #else
         24
         #endif
@@ -2669,31 +2857,36 @@ struct CustomTransportStatusOverlay: View {
     }
 
     var body: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: statusSpacing) {
             switch status {
             case .failed:
                 Label(title, systemImage: "exclamationmark.triangle")
-                    .font(.headline)
+                    .font(titleFont)
             default:
-                ProgressView(title)
+                ProgressView()
                     .controlSize(.large)
+                Text(title)
+                    .font(titleFont)
             }
             if let detail {
                 Text(detail)
-                    .font(.caption)
+                    .font(detailFont)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             switch status {
             case .buffering, .pausedBuffering:
                 Button {
                     onTogglePause()
                 } label: {
-                    Label(isPausedBuffering ? "Play when ready" : "Pause while loading",
+                    Label(isPausedBuffering ? "Resume when ready" : "Pause",
                           systemImage: isPausedBuffering ? "play.fill" : "pause.fill")
+                        .lineLimit(1)
+                        .padding(.horizontal, 8)
                 }
                 .playerTransportProminentButtonStyle()
-                .controlSize(.small)
+                .controlSize(statusControlSize)
             case .reconnecting:
                 if let onClose {
                     Button(role: .cancel, action: onClose) {
@@ -2723,12 +2916,76 @@ struct CustomTransportStatusOverlay: View {
                 EmptyView()
             }
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 22)
-        .frame(maxWidth: isCompact ? 340 : nil)
-        .frame(width: isCompact ? nil : 340)
-        .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .padding(.horizontal, statusHorizontalPadding)
+        .padding(.vertical, statusVerticalPadding)
+        .frame(maxWidth: statusWidth)
+        .frame(width: isCompact ? nil : statusWidth)
+        .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: statusCornerRadius, style: .continuous))
         .shadow(radius: 18)
+    }
+
+    private var statusWidth: CGFloat {
+        #if os(tvOS)
+        540
+        #else
+        340
+        #endif
+    }
+
+    private var statusSpacing: CGFloat {
+        #if os(tvOS)
+        18
+        #else
+        14
+        #endif
+    }
+
+    private var statusHorizontalPadding: CGFloat {
+        #if os(tvOS)
+        38
+        #else
+        24
+        #endif
+    }
+
+    private var statusVerticalPadding: CGFloat {
+        #if os(tvOS)
+        30
+        #else
+        22
+        #endif
+    }
+
+    private var statusCornerRadius: CGFloat {
+        #if os(tvOS)
+        28
+        #else
+        24
+        #endif
+    }
+
+    private var titleFont: Font {
+        #if os(tvOS)
+        .title3.weight(.semibold)
+        #else
+        .headline
+        #endif
+    }
+
+    private var detailFont: Font {
+        #if os(tvOS)
+        .callout
+        #else
+        .caption
+        #endif
+    }
+
+    private var statusControlSize: ControlSize {
+        #if os(tvOS)
+        .regular
+        #else
+        .small
+        #endif
     }
 
     private var isPausedBuffering: Bool {
