@@ -414,6 +414,10 @@ struct CustomPlayerChrome: View {
             if old == .timeline, new != .timeline, scrubState.isDragging {
                 scrubState.cancel()
                 clearTrickPlayPreview()
+                // The drag cancelled the hide timer (revealChrome(keepVisible:)) and any
+                // reschedule attempt that raced this change hit the isDragging guard, so
+                // restart the countdown here or the chrome stays pinned forever.
+                scheduleChromeHideIfNeeded()
                 tvEvidenceLog("timeline scrub abandoned on focus exit")
             }
             tvEvidenceLog("tvPlayerFocus \(String(describing: old)) -> \(String(describing: new))")
@@ -1069,7 +1073,10 @@ struct CustomPlayerChrome: View {
         case .left, .right:
             guard scrubState.durationMs > 0 else { return }
             if !scrubState.isDragging {
-                scrubState.beginDrag(livePositionMs: controller.currentResumeMs)
+                // Seed from the displayed position, not the raw player clock: while a prior
+                // committed seek is still rebuilding the stream, currentResumeMs can report
+                // the pre-seek offset and a rapid second scrub would restart from there.
+                scrubState.beginDrag(livePositionMs: scrubState.displayedPositionMs)
             }
             // Press-streak acceleration: holding (or hammering) the direction escalates the
             // stride, so long titles are traversable without giving up fine-grained steps.
@@ -1088,7 +1095,11 @@ struct CustomPlayerChrome: View {
             revealChrome(keepVisible: true)
             tvEvidenceLog("timeline scrub \(direction) -> \(target)ms stride=\(strideMs)")
         default:
-            break
+            // Up/Down are engine-resolved focus moves (into the menu strip), but this
+            // handler still consumes the command chain, so the chrome-root onMoveCommand
+            // never sees the press and cannot restart the auto-hide countdown — captured
+            // evidence showed the chrome hiding mid-strip-traversal 5s after the reveal.
+            scheduleChromeHideIfNeeded()
         }
     }
 
@@ -2327,11 +2338,10 @@ struct CustomPlayerChrome: View {
         selectedMenu = nil
         revealChrome()
         #if os(tvOS)
+        // Verified write: the raw post-yield assignment can still race the strip's
+        // re-insertion and drop (same failure class as the appear-time write, TVUI-024).
         if let closingMenu {
-            Task { @MainActor in
-                await Task.yield()
-                tvPlayerFocus = .menu(closingMenu)
-            }
+            tvEnsureFocus(.menu(closingMenu))
         }
         #endif
     }
