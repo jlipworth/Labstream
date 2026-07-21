@@ -38,6 +38,8 @@ struct ContentView: View {
                 .environment(appModel)
         case .keyboard:
             TVKeyboardFixtureView()
+        case .keyboardShell:
+            TVKeyboardShellFixtureView()
         case .browse, nil:
             mainBody
         }
