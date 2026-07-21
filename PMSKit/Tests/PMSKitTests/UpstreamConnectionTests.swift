@@ -59,6 +59,45 @@ final class UpstreamConnectionTests: XCTestCase {
         }
     }
 
+    func testStaleSiblingFailureRetriesCurrentGenerationWithoutRotatingIt() async throws {
+        let gate = StaleFailureGate()
+        let rebuilds = Counter()
+        let conn = UpstreamConnection(
+            budget: SeekRestartBudget(cooldownSeconds: 0, burstLimit: 3, burstWindowSeconds: 60),
+            now: { 0 },
+            rebuild: { rebuilds.increment() },
+            fetch: { request in
+                let id = request.url!.lastPathComponent
+                let attempt = gate.beginAttempt(for: id)
+                if attempt == 1 {
+                    await gate.waitForRelease(of: id)
+                    throw URLError(id == "sibling" ? .cancelled : .timedOut)
+                }
+                return (Data(id.utf8), Self.http(200))
+            })
+
+        let first = Task {
+            try await conn.send(URLRequest(url: URL(string: "https://x/first")!))
+        }
+        let sibling = Task {
+            try await conn.send(URLRequest(url: URL(string: "https://x/sibling")!))
+        }
+        await gate.waitUntilInitialAttemptsStarted(2)
+
+        gate.release("first")
+        let firstResult = try await first.value
+        XCTAssertEqual(firstResult.0, Data("first".utf8))
+
+        // This cancellation belongs to the now-draining generation. It gets one retry on the session
+        // created above, but cannot spend restart budget or rotate that healthy new generation.
+        gate.release("sibling")
+        let siblingResult = try await sibling.value
+        XCTAssertEqual(siblingResult.0, Data("sibling".utf8))
+        XCTAssertEqual(rebuilds.value, 1)
+        let count = await conn.rotateCount
+        XCTAssertEqual(count, 1)
+    }
+
     private static func http(_ status: Int) -> HTTPURLResponse {
         HTTPURLResponse(url: URL(string: "https://x/")!, statusCode: status,
                         httpVersion: "HTTP/1.1", headerFields: nil)!
@@ -71,4 +110,59 @@ private final class Counter: @unchecked Sendable {
     private var count = 0
     @discardableResult func increment() -> Int { lock.lock(); count += 1; let n = count; lock.unlock(); return n }
     var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+}
+
+private final class StaleFailureGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var attempts: [String: Int] = [:]
+    private var released: Set<String> = []
+    private var releaseWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
+    private var startedWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    func beginAttempt(for id: String) -> Int {
+        lock.lock()
+        attempts[id, default: 0] += 1
+        let attempt = attempts[id]!
+        let initialCount = attempts.values.filter { $0 >= 1 }.count
+        let ready = startedWaiters.filter { initialCount >= $0.count }
+        startedWaiters.removeAll { initialCount >= $0.count }
+        lock.unlock()
+        for waiter in ready { waiter.continuation.resume() }
+        return attempt
+    }
+
+    func waitUntilInitialAttemptsStarted(_ count: Int) async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            let initialCount = attempts.values.filter { $0 >= 1 }.count
+            if initialCount >= count {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                startedWaiters.append((count, continuation))
+                lock.unlock()
+            }
+        }
+    }
+
+    func waitForRelease(of id: String) async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if released.contains(id) {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                releaseWaiters[id, default: []].append(continuation)
+                lock.unlock()
+            }
+        }
+    }
+
+    func release(_ id: String) {
+        lock.lock()
+        released.insert(id)
+        let waiters = releaseWaiters.removeValue(forKey: id) ?? []
+        lock.unlock()
+        for waiter in waiters { waiter.resume() }
+    }
 }

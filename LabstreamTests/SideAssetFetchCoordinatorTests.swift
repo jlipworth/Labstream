@@ -145,6 +145,91 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
         XCTAssertEqual(callCount, 1)
     }
 
+    func testTaskCancellationWinsWhenSuccessfulCompletionRacesCancellation() async {
+        // The operation deliberately ignores cooperative cancellation and returns success at the
+        // same boundary where the caller is cancelled. Actor serialization prevents a double
+        // resume, while fetch's post-resume check makes the externally observed result stable
+        // regardless of whether completion or cancelWaiter reaches the coordinator first.
+        for iteration in 0..<100 {
+            let clock = AdvancingSideAssetClock()
+            let gate = SideAssetGate()
+            let calls = SideAssetCounter()
+            let coordinator = SideAssetFetchCoordinator(clock: clock.dependency)
+            let task = Task {
+                try await coordinator.fetch(
+                    origin: .init(rawValue: "origin"),
+                    owner: .init(rawValue: "owner"),
+                    requestKey: .init(rawValue: "race-\(iteration)")
+                ) {
+                    await calls.increment()
+                    await gate.wait()
+                    return Data([7])
+                }
+            }
+
+            await waitUntil { await calls.value == 1 }
+            task.cancel()
+            await gate.releaseAll()
+
+            do {
+                _ = try await task.value
+                XCTFail("cancelled waiter must not observe a successful completion")
+            } catch is CancellationError {
+                // Expected.
+            } catch {
+                XCTFail("expected CancellationError, got \(error)")
+            }
+            let indexedWaiters = await coordinator.waiterJobIndexCountForTesting()
+            XCTAssertEqual(indexedWaiters, 0)
+        }
+    }
+
+    func testWaiterJobIndexTracksCoalescedCancellationAndCompletion() async throws {
+        let clock = AdvancingSideAssetClock()
+        let gate = SideAssetGate()
+        let calls = SideAssetCounter()
+        let coordinator = SideAssetFetchCoordinator(clock: clock.dependency)
+        let origin = SideAssetOrigin(rawValue: "origin")
+        let request = SideAssetRequestKey(rawValue: "shared-index")
+
+        let cancelled = Task {
+            try await coordinator.fetch(
+                origin: origin, owner: .init(rawValue: "cancelled"), requestKey: request
+            ) {
+                await calls.increment()
+                await gate.wait()
+                return Data([3])
+            }
+        }
+        await waitUntil { await calls.value == 1 }
+        let survivor = Task {
+            try await coordinator.fetch(
+                origin: origin, owner: .init(rawValue: "survivor"), requestKey: request
+            ) {
+                XCTFail("coalesced operation must not run")
+                return Data()
+            }
+        }
+        await waitUntil {
+            await coordinator.waiterJobIndexCountForTesting() == 2
+        }
+
+        cancelled.cancel()
+        await waitUntil {
+            await coordinator.waiterJobIndexCountForTesting() == 1
+        }
+        do {
+            _ = try await cancelled.value
+            XCTFail("expected cancellation")
+        } catch is CancellationError {}
+
+        await gate.releaseAll()
+        let survivorData = try await survivor.value
+        XCTAssertEqual(survivorData, Data([3]))
+        let finalIndexCount = await coordinator.waiterJobIndexCountForTesting()
+        XCTAssertEqual(finalIndexCount, 0)
+    }
+
     func testExistingNonemptyFileBypassesNetwork() async throws {
         let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try Data([4, 2]).write(to: file)

@@ -229,6 +229,7 @@ extension DownloadManager {
     /// with a primary→backdrop ref fallback), so that is all they do before delegating here.
     private func cachePoster(for attemptKey: DownloadAttemptKey, request: URLRequest?) {
         guard let request else { return }
+        guard let sourceIdentity = store.sideAssetSourceIdentity(for: attemptKey) else { return }
         let posterURL = store.posterDestinationURL(ratingKey: attemptKey.ratingKey)
         if store.reusableSideAssetRelativePath(for: attemptKey, destination: posterURL) != nil { return }
         guard let stagingURL = store.attemptStagingURL(for: attemptKey, stableURL: posterURL) else { return }
@@ -240,9 +241,11 @@ extension DownloadManager {
                   (try? data.write(to: stagingURL, options: .atomic)) != nil,
                   !Task.isCancelled,
                   Self.promoteSideAsset(store: store, key: attemptKey,
+                                        expectedSource: sourceIdentity,
                                         stagingURL: stagingURL, stableURL: posterURL) else { return }
             await MainActor.run {
-                let result = store.updateMetadata(for: attemptKey) {
+                let result = store.updateMetadata(
+                    for: attemptKey, expectedSideAssetSource: sourceIdentity) {
                     $0.posterRelativePath = posterURL.lastPathComponent
                 }
                 if result == .applied || result == .noChange { self.refreshRecords() }
@@ -386,6 +389,7 @@ extension DownloadManager {
     /// authenticated request by stream index), so that is all they resolve before delegating.
     private func cacheTextSubtitles(for attemptKey: DownloadAttemptKey, pending: [PendingSubtitle]) {
         guard !pending.isEmpty else { return }
+        guard let sourceIdentity = store.sideAssetSourceIdentity(for: attemptKey) else { return }
         let store = self.store
         downloadWorkRegistry.startIfAbsent(for: attemptKey, kind: .sideCache(.textSubtitles)) { [weak self] in
             guard let self else { return }
@@ -403,11 +407,13 @@ extension DownloadManager {
                       (try? data.write(to: item.staging, options: .atomic)) != nil,
                       !Task.isCancelled,
                       Self.promoteSideAsset(store: store, key: attemptKey,
+                                            expectedSource: sourceIdentity,
                                             stagingURL: item.staging, stableURL: item.destination)
                 else { continue }
                 if let track = item.track {
                     tracks.append(track)
-                    _ = store.updateMetadata(for: attemptKey) {
+                    _ = store.updateMetadata(
+                        for: attemptKey, expectedSideAssetSource: sourceIdentity) {
                         var merged = $0.offlineTextSubtitles ?? []
                         if !merged.contains(where: { $0.relativePath == track.relativePath }) {
                             merged.append(track)
@@ -418,7 +424,8 @@ extension DownloadManager {
             }
             guard !tracks.isEmpty else { return }
             await MainActor.run {
-                let result = store.updateMetadata(for: attemptKey) {
+                let result = store.updateMetadata(
+                    for: attemptKey, expectedSideAssetSource: sourceIdentity) {
                     var merged = $0.offlineTextSubtitles ?? []
                     for track in tracks where !merged.contains(where: { $0.relativePath == track.relativePath }) {
                         merged.append(track)
@@ -455,6 +462,7 @@ extension DownloadManager {
     func cachePlexBIF(for attemptKey: DownloadAttemptKey, item: MediaItem, mediaIndex: Int,
                               server: URL, token: String) {
         guard let part = DownloadSideAssetPolicy.selectedPlexBIFPart(from: item, mediaIndex: mediaIndex) else { return }
+        guard let sourceIdentity = store.sideAssetSourceIdentity(for: attemptKey) else { return }
         let destination = store.plexBIFDestinationURL(ratingKey: attemptKey.ratingKey)
         if store.reusableSideAssetRelativePath(for: attemptKey, destination: destination) != nil { return }
         guard let staging = store.attemptStagingURL(for: attemptKey, stableURL: destination) else { return }
@@ -476,9 +484,11 @@ extension DownloadManager {
                 try data.write(to: staging, options: .atomic)
                 guard !Task.isCancelled,
                       Self.promoteSideAsset(store: store, key: attemptKey,
+                                            expectedSource: sourceIdentity,
                                             stagingURL: staging, stableURL: destination) else { return }
                 await MainActor.run {
-                    let result = store.updateMetadata(for: attemptKey) {
+                    let result = store.updateMetadata(
+                        for: attemptKey, expectedSideAssetSource: sourceIdentity) {
                         $0.plexBIFRelativePath = destination.lastPathComponent
                     }
                     if result == .applied || result == .noChange { self.refreshRecords() }
@@ -503,6 +513,7 @@ extension DownloadManager {
                       userId: String,
                       width: Int = EmbyTrickPlayRequest.canonicalWidth) {
         guard let mediaSourceId, !mediaSourceId.isEmpty else { return }
+        guard let sourceIdentity = store.sideAssetSourceIdentity(for: attemptKey) else { return }
         let destination = store.embyBIFDestinationURL(ratingKey: attemptKey.ratingKey)
         if store.reusableSideAssetRelativePath(for: attemptKey, destination: destination) != nil { return }
         guard let staging = store.attemptStagingURL(for: attemptKey, stableURL: destination),
@@ -525,9 +536,11 @@ extension DownloadManager {
                 guard !Task.isCancelled,
                       store.record(for: attemptKey)?.metadata?.mediaSourceID == mediaSourceId,
                       Self.promoteSideAsset(store: store, key: attemptKey,
+                                            expectedSource: sourceIdentity,
                                             stagingURL: staging, stableURL: destination) else { return }
                 await MainActor.run {
-                    let result = store.updateMetadata(for: attemptKey) {
+                    let result = store.updateMetadata(
+                        for: attemptKey, expectedSideAssetSource: sourceIdentity) {
                         $0.embyBIFRelativePath = destination.lastPathComponent
                     }
                     if result == .applied || result == .noChange { self.refreshRecords() }
@@ -551,6 +564,7 @@ extension DownloadManager {
                                     server: URL, token: String, userID: String? = nil) {
         let chapters = item.chapters ?? []
         guard !chapters.isEmpty else { return }
+        guard let sourceIdentity = store.sideAssetSourceIdentity(for: attemptKey) else { return }
         // Build (chapter index, request) for every chapter that carries an image key. The index is
         // the chapter's position in `chapters` — the same enumeration the Chapters rail and the
         // offline scrub provider use, so it is the stable join key offline.
@@ -642,6 +656,7 @@ extension DownloadManager {
                     defer { try? FileManager.default.removeItem(at: staging) }
                     guard (try? data.write(to: staging, options: .atomic)) != nil,
                           Self.promoteSideAsset(store: store, key: attemptKey,
+                                                expectedSource: sourceIdentity,
                                                 stagingURL: staging, stableURL: destination) else {
                         failedCount += 1
                         continue
@@ -649,7 +664,8 @@ extension DownloadManager {
                     let relative = destination.lastPathComponent
                     downloadedCount += 1
                     relativesByIndex[index] = relative
-                    _ = store.updateMetadata(for: attemptKey) {
+                    _ = store.updateMetadata(
+                        for: attemptKey, expectedSideAssetSource: sourceIdentity) {
                         var merged = $0.chapterImageRelativePaths ?? [:]
                         merged[index] = relative
                         $0.chapterImageRelativePaths = merged
@@ -668,7 +684,8 @@ extension DownloadManager {
             }
             guard !relativesByIndex.isEmpty else { return }
             await MainActor.run {
-                let result = store.updateMetadata(for: attemptKey) {
+                let result = store.updateMetadata(
+                    for: attemptKey, expectedSideAssetSource: sourceIdentity) {
                     var merged = $0.chapterImageRelativePaths ?? [:]
                     merged.merge(relativesByIndex) { _, current in current }
                     $0.chapterImageRelativePaths = merged
@@ -680,11 +697,16 @@ extension DownloadManager {
 
     /// Shared stale-tail boundary. Always removes only this attempt's derived staging file; a
     /// rejected stale promotion never touches the stable destination owned by a newer attempt.
-    nonisolated static func promoteSideAsset(store: DownloadStore, key: DownloadAttemptKey,
+    nonisolated static func promoteSideAsset(
+                                             store: DownloadStore,
+                                             key: DownloadAttemptKey,
+                                             expectedSource: OfflineSideAssetSourceIdentity,
                                              stagingURL: URL, stableURL: URL) -> Bool {
         defer { try? FileManager.default.removeItem(at: stagingURL) }
         guard !Task.isCancelled else { return false }
-        return store.promoteAttemptStagingFile(for: key, stagingURL: stagingURL, to: stableURL)
+        return store.promoteSideAssetStagingFile(
+            for: key, expectedSource: expectedSource,
+            stagingURL: stagingURL, to: stableURL)
             == .promoted
     }
 }

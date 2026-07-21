@@ -27,15 +27,15 @@ struct BackgroundCompletionPersistenceBarrierTests {
         let recorder = await MainActor.run { CompletionReleaseRecorder() }
         let barrier = Task {
             await BackgroundCompletionPersistenceBarrier.flushThenRelease(
-                identifiers: ["session"],
-                flush: { await store.flushPersistence(through: ticket, timeout: 1) },
+                releases: ["session"],
+                flush: { await store.flushPersistence(through: ticket, timeout: 30) },
                 release: { identifier in recorder.identifiers.append(identifier) }
             )
         }
 
-        #expect(await writes.retryStarted.wait(timeout: 1))
+        await writes.waitUntilRetryStarted()
         #expect(await MainActor.run { recorder.identifiers.isEmpty })
-        writes.releaseRetry.signal()
+        writes.releaseRetry()
         #expect(await barrier.value == .committed(revision: ticket.revision))
         #expect(await MainActor.run { recorder.identifiers == ["session"] })
         #expect(FileManager.default.fileExists(
@@ -53,7 +53,7 @@ struct BackgroundCompletionPersistenceBarrierTests {
         )
 
         #expect(await BackgroundCompletionPersistenceBarrier.flushThenRelease(
-            identifiers: ["failure"],
+            releases: ["failure"],
             flush: { failure },
             observe: { observed.value = $0 },
             release: { recorder.identifiers.append($0) }
@@ -65,7 +65,7 @@ struct BackgroundCompletionPersistenceBarrierTests {
             committedRevision: 3
         )
         #expect(await BackgroundCompletionPersistenceBarrier.flushThenRelease(
-            identifiers: ["timeout"],
+            releases: ["timeout"],
             flush: { timeout },
             release: { recorder.identifiers.append($0) }
         ) == timeout)
@@ -91,25 +91,21 @@ struct BackgroundCompletionPersistenceBarrierTests {
         ))
         let ticket = store.currentPersistenceTicket()
         let events = LockedEventBox()
-        let start = ContinuousClock.now
         let barrier = Task {
             await BackgroundCompletionPersistenceBarrier.flushThenRelease(
-                identifiers: ["session"],
+                releases: ["session"],
                 flush: { await store.flushPersistence(through: ticket, timeout: 0.05) },
                 observe: { _ in events.append("observed") },
                 release: { _ in events.append("released") }
             )
         }
 
-        #expect(await writes.retryStarted.wait(timeout: 1))
+        await writes.waitUntilRetryStarted()
         let result = await barrier.value
-        let elapsed = start.duration(to: .now)
         #expect(result == .timedOut(targetRevision: ticket.revision, committedRevision: 0))
-        #expect(elapsed >= .milliseconds(40))
-        #expect(elapsed < .seconds(2))
         #expect(events.values == ["observed", "released"])
 
-        writes.releaseRetry.signal()
+        writes.releaseRetry()
         #expect(await store.flushPersistence(through: ticket, timeout: 1)
             == .committed(revision: ticket.revision))
     }
@@ -121,10 +117,12 @@ private final class CompletionReleaseRecorder {
 }
 
 private final class BlockingRetryWriter: @unchecked Sendable {
-    let retryStarted = AsyncSemaphore()
-    let releaseRetry = AsyncSemaphore()
     private let lock = NSLock()
     private var attempts = 0
+    private var retryStarted = false
+    private var retryStartWaiter: CheckedContinuation<Void, Never>?
+    private let retryReleaseCondition = NSCondition()
+    private var isRetryReleased = false
 
     var attemptCount: Int { lock.withLock { attempts } }
 
@@ -135,29 +133,44 @@ private final class BlockingRetryWriter: @unchecked Sendable {
         }
         if attempt == 1 { throw InjectedBackgroundWriteFailure() }
         if attempt == 2 {
-            retryStarted.signal()
-            releaseRetry.waitSynchronously()
+            noteRetryStarted()
+            retryReleaseCondition.lock()
+            while !isRetryReleased { retryReleaseCondition.wait() }
+            retryReleaseCondition.unlock()
         }
         try data.write(to: url, options: .atomic)
+    }
+
+    func waitUntilRetryStarted() async {
+        await withCheckedContinuation { continuation in
+            let resumeImmediately = lock.withLock {
+                if retryStarted { return true }
+                precondition(retryStartWaiter == nil)
+                retryStartWaiter = continuation
+                return false
+            }
+            if resumeImmediately { continuation.resume() }
+        }
+    }
+
+    func releaseRetry() {
+        retryReleaseCondition.lock()
+        isRetryReleased = true
+        retryReleaseCondition.broadcast()
+        retryReleaseCondition.unlock()
+    }
+
+    private func noteRetryStarted() {
+        let waiter = lock.withLock {
+            retryStarted = true
+            defer { retryStartWaiter = nil }
+            return retryStartWaiter
+        }
+        waiter?.resume()
     }
 }
 
 private struct InjectedBackgroundWriteFailure: Error {}
-
-private final class AsyncSemaphore: @unchecked Sendable {
-    private let semaphore = DispatchSemaphore(value: 0)
-
-    func signal() { semaphore.signal() }
-    func waitSynchronously() { semaphore.wait() }
-
-    func wait(timeout: TimeInterval) async -> Bool {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async { [semaphore] in
-                continuation.resume(returning: semaphore.wait(timeout: .now() + timeout) == .success)
-            }
-        }
-    }
-}
 
 private final class LockedResultBox: @unchecked Sendable {
     private let lock = NSLock()

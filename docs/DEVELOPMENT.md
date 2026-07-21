@@ -324,6 +324,10 @@ uv run --with-requirements requirements.txt mkdocs build --strict
 
 Run the app suite for the platform affected by a change (both for shared app infrastructure):
 
+For a deterministic smoke, affected-platform, or full plan, use the checked
+[`native-test-matrix.py`](TESTING-STRATEGY.md#native-apple-matrix-driver) driver. The commands below
+remain the direct forms for an individually leased platform lane.
+
 ```sh
 # Mobile-hosted app tests.
 scripts/worktree-sim.sh --platform iphone setup

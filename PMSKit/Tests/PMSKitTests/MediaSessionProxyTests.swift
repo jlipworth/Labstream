@@ -60,6 +60,37 @@ final class MediaSessionProxyTests: XCTestCase {
         await proxy.stop(generation: handle.generation)
     }
 
+    func testSessionRotationLetsHealthySiblingDrain() async throws {
+        let gate = RequestDrainGate()
+        let origin = LoopbackOrigin()
+        let port = try await origin.start { _ in
+            gate.markStarted()
+            await gate.waitForRelease()
+            return HTTPResponse(status: 200, reason: "OK", headers: [], body: Data("ok".utf8))
+        }
+        defer {
+            gate.release()
+            origin.stop()
+        }
+
+        let config = PlexSessionConfiguration.mediaUpstream(timeout: 2, resourceTimeout: 5)
+        let box = SessionBox(config: config, delegate: nil)
+        let request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/sibling")!)
+        let attempt = box.makeAttempt()
+        let sibling = Task { try await attempt.fetch(request) }
+        await gate.waitUntilStarted()
+
+        // Rotating because a different request wedged must not cancel this healthy in-flight
+        // request. The old session should drain while new work moves to a fresh generation.
+        XCTAssertTrue(box.rotate(ifCurrent: attempt.generation))
+        try await Task.sleep(for: .milliseconds(50))
+        gate.release()
+
+        let (data, response) = try await sibling.value
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(data, Data("ok".utf8))
+    }
+
     func testInjectedClockControlsUpstreamRestartCooldown() async throws {
         let clock = TestClock(now: 100)
         let attempts = URLAttemptCounter()
@@ -224,6 +255,58 @@ private final class TestClock: @unchecked Sendable {
         lock.lock()
         now += interval
         lock.unlock()
+    }
+}
+
+private final class RequestDrainGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var started = false
+    private var released = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func markStarted() {
+        condition.lock()
+        started = true
+        let waiters = startWaiters
+        startWaiters.removeAll()
+        condition.unlock()
+        for waiter in waiters { waiter.resume() }
+    }
+
+    func waitUntilStarted() async {
+        await withCheckedContinuation { continuation in
+            condition.lock()
+            if started {
+                condition.unlock()
+                continuation.resume()
+            } else {
+                startWaiters.append(continuation)
+                condition.unlock()
+            }
+        }
+    }
+
+    func waitForRelease() async {
+        await withCheckedContinuation { continuation in
+            condition.lock()
+            if released {
+                condition.unlock()
+                continuation.resume()
+            } else {
+                releaseWaiters.append(continuation)
+                condition.unlock()
+            }
+        }
+    }
+
+    func release() {
+        condition.lock()
+        released = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        condition.unlock()
+        for waiter in waiters { waiter.resume() }
     }
 }
 #endif

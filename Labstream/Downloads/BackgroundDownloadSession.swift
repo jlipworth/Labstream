@@ -143,6 +143,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     #endif
 
     private let store: DownloadStore
+    /// Production releases through the process-wide app-delegate registry. Keeping this edge
+    /// injectable lets tests exercise one session's completion gate without sharing global
+    /// handler state with every concurrently constructed DownloadManager.
+    private let releaseBackgroundCompletion:
+        @MainActor @Sendable (BackgroundDownloadCompletionReleaseBatch) -> Void
     /// Non-nil only in deterministic transport tests. Custom URL protocols are supported by an
     /// in-process foreground session, not by the device background-transfer daemon, so supplying
     /// this seam deliberately selects the same foreground path used by simulator downloads.
@@ -508,7 +513,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let haltedRangeKeyCount = rangeHaltKinds.count
         let pendingBackgroundCompletionOperationCount = backgroundCompletionGate.pendingOperationCount
         let deferredBackgroundCompletionIdentifierCount = backgroundCompletionGate.deferredIdentifierCount
-        let backgroundCompletionHandlerCount = backgroundCompletionGate.awaitingFinishIdentifierCount
+        let backgroundCompletionHandlerCount = backgroundCompletionGate.pendingHandlerCount
         lock.unlock()
         let finalizingRatingKeyCount = finalizationStateQueue.sync {
             finalizerRequestIDsByAttempt.count
@@ -641,11 +646,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     init(
         store: DownloadStore,
         protocolClasses: [AnyClass]? = nil,
-        playbackValidator: (@Sendable (URL, Double?) async -> PlaybackValidation)? = nil
+        playbackValidator: (@Sendable (URL, Double?) async -> PlaybackValidation)? = nil,
+        releaseBackgroundCompletion: @escaping @MainActor @Sendable (
+            BackgroundDownloadCompletionReleaseBatch
+        ) -> Void = {
+            BackgroundDownloadCompletionRegistry.shared.fireCompletions(in: $0)
+        }
     ) {
         self.store = store
         self.injectedProtocolClasses = protocolClasses
         self.injectedPlaybackValidator = playbackValidator
+        self.releaseBackgroundCompletion = releaseBackgroundCompletion
         super.init()
     }
 
@@ -1103,18 +1114,21 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private func endPendingBackgroundCompletionOperation() {
         lock.lock()
         let wasPending = backgroundCompletionGate.hasPendingHandler
-        let identifiers = backgroundCompletionGate.endOperation()
+        let batches = backgroundCompletionGate.endOperation()
         let didDrain = wasPending && !backgroundCompletionGate.hasPendingHandler
         let deferredKeys = didDrain ? backgroundDeferredRevalidationKeys : []
         if didDrain { backgroundDeferredRevalidationKeys.removeAll() }
         lock.unlock()
         if !deferredKeys.isEmpty { onBackgroundCompletionGateDrained?(deferredKeys) }
-        flushPersistenceThenFireBackgroundCompletions(identifiers)
+        flushPersistenceThenFireBackgroundCompletions(batches)
     }
 
-    func noteBackgroundCompletionHandlerStored(identifier: String) {
+    func noteBackgroundCompletionHandlerStored(
+        identifier: String,
+        token: BackgroundDownloadCompletionHandlerToken = .init()
+    ) {
         lock.lock()
-        backgroundCompletionGate.storeHandler(identifier: identifier)
+        backgroundCompletionGate.storeHandler(identifier: identifier, token: token)
         lock.unlock()
     }
 
@@ -1124,16 +1138,17 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     func releaseBackgroundCompletionAfterStartupFailure() {
         lock.lock()
         let wasPending = backgroundCompletionGate.hasPendingHandler
-        let identifiers = backgroundCompletionGate.abortAwaitingHandlers()
+        let batches = backgroundCompletionGate.abortAwaitingHandlers()
         let didDrain = wasPending && !backgroundCompletionGate.hasPendingHandler
         let deferredKeys = didDrain ? backgroundDeferredRevalidationKeys : []
         if didDrain { backgroundDeferredRevalidationKeys.removeAll() }
         lock.unlock()
         if !deferredKeys.isEmpty { onBackgroundCompletionGateDrained?(deferredKeys) }
-        guard !identifiers.isEmpty else { return }
+        guard !batches.isEmpty else { return }
+        let releaseBackgroundCompletion = self.releaseBackgroundCompletion
         Task { @MainActor in
-            for identifier in identifiers {
-                BackgroundDownloadCompletionRegistry.shared.fireCompletion(for: identifier)
+            for batch in batches {
+                releaseBackgroundCompletion(batch)
             }
         }
     }
@@ -1141,23 +1156,26 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private func fireBackgroundCompletionWhenFinalizationIsSafe(identifier: String) {
         lock.lock()
         let wasPending = backgroundCompletionGate.hasPendingHandler
-        let identifiers = backgroundCompletionGate.finishEvents(identifier: identifier)
+        let batches = backgroundCompletionGate.finishEvents(identifier: identifier)
         let didDrain = wasPending && !backgroundCompletionGate.hasPendingHandler
         let deferredKeys = didDrain ? backgroundDeferredRevalidationKeys : []
         if didDrain { backgroundDeferredRevalidationKeys.removeAll() }
         lock.unlock()
         if !deferredKeys.isEmpty { onBackgroundCompletionGateDrained?(deferredKeys) }
-        flushPersistenceThenFireBackgroundCompletions(identifiers)
+        flushPersistenceThenFireBackgroundCompletions(batches)
     }
 
-    private func flushPersistenceThenFireBackgroundCompletions(_ identifiers: [String]) {
-        guard !identifiers.isEmpty else { return }
+    private func flushPersistenceThenFireBackgroundCompletions(
+        _ batches: [BackgroundDownloadCompletionReleaseBatch]
+    ) {
+        guard !batches.isEmpty else { return }
         let ticket = store.currentPersistenceTicket()
         let artifactWatermark = store.currentArtifactLifecycleWatermark()
         let store = self.store
+        let releaseBackgroundCompletion = self.releaseBackgroundCompletion
         Task {
             await BackgroundCompletionPersistenceBarrier.flushThenRelease(
-                identifiers: identifiers,
+                releases: batches,
                 flush: {
                     await store.flushLifecycleAndPersistence(
                         through: ticket,
@@ -1182,11 +1200,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     AppDiagnostics.record(.downloads, "downloads.background_completion_persistence", fields: [
                         "outcome": .label(outcome),
                         "revision": .int(Int(clamping: revision)),
-                        "handler_count": .int(identifiers.count),
+                        "handler_count": .int(batches.reduce(into: 0) {
+                            $0 += $1.tokens.count
+                        }),
                     ])
                 },
-                release: { identifier in
-                    BackgroundDownloadCompletionRegistry.shared.fireCompletion(for: identifier)
+                release: { batch in
+                    releaseBackgroundCompletion(batch)
                 }
             )
         }

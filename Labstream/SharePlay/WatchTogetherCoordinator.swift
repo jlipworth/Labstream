@@ -51,9 +51,12 @@ final class WatchTogetherCoordinator {
         let item: MediaItem
     }
 
+    /// Keep this original nested concrete message type stable: GroupSessionMessenger may use type
+    /// identity for routing. The optional field is Codable-compatible with older two-field payloads.
     private struct ReadinessMessage: Codable {
         let activityID: UUID
         let status: SharePlayParticipantReadiness
+        let revision: UInt64?
     }
 
     private(set) var state: State = .inactive
@@ -85,6 +88,8 @@ final class WatchTogetherCoordinator {
     @ObservationIgnored private var activeSessionStateTask: Task<Void, Never>?
     @ObservationIgnored private var participantTask: Task<Void, Never>?
     @ObservationIgnored private var messageTask: Task<Void, Never>?
+    @ObservationIgnored private var outboundStatusTail = SharePlayOrderedDeliveryTail()
+    @ObservationIgnored private var terminalLeaveFallback = SharePlayBoundedFallback()
     @ObservationIgnored private var lookupTask: Task<Void, Never>?
     @ObservationIgnored private var activeSession: GroupSession<WatchTogetherActivity>?
     @ObservationIgnored private var messenger: GroupSessionMessenger?
@@ -92,7 +97,11 @@ final class WatchTogetherCoordinator {
     @ObservationIgnored private var resolvedItem: MediaItem?
     @ObservationIgnored private var pendingLocalShare: PendingLocalShare?
     @ObservationIgnored private var participantStatuses: [UUID: SharePlayParticipantReadiness] = [:]
+    @ObservationIgnored private var participantStatusRevisions: [UUID: UInt64] = [:]
+    @ObservationIgnored private var bufferedParticipantMessages: [UUID: ReadinessMessage] = [:]
+    @ObservationIgnored private var outboundStatusRevisions = SharePlayOutboundMessageRevisions()
     @ObservationIgnored private var knownParticipantIDs: Set<UUID> = []
+    @ObservationIgnored private var hasObservedParticipantRoster = false
     /// True once this participant has actually launched the resolved item (initiator started, or a
     /// participant received `.started` while resolved). Serves as the launch idempotency guard AND
     /// the consent boundary for coordinating a local player with the group session.
@@ -285,8 +294,30 @@ final class WatchTogetherCoordinator {
     }
 
     func declineIncoming() {
-        sendStatus(.unable)
-        clearActiveSession(leaving: true)
+        // Leave only after the terminal status reaches the ordered tail. Clearing synchronously
+        // would cancel the newly enqueued task before it could advertise `.unable` to peers.
+        activeSessionStateTask?.cancel(); participantTask?.cancel(); messageTask?.cancel(); lookupTask?.cancel()
+        activeSessionStateTask = nil; participantTask = nil; messageTask = nil; lookupTask = nil
+        joinPrompt = nil
+        guard let decliningSession = activeSession else {
+            clearActiveSession(leaving: true)
+            return
+        }
+        let decliningGeneration = playbackSessionGeneration
+        guard sendStatus(.unable, leavingAfterDelivery: true) else {
+            clearActiveSession(leaving: true)
+            return
+        }
+        // Messenger delivery is best effort. Even if transport never resumes, hiding the join
+        // prompt must not strand an unobserved joined session or keep Watch Together disabled.
+        terminalLeaveFallback.schedule(after: .seconds(1)) { [weak self, weak decliningSession] in
+            guard let self, let decliningSession,
+                  self.activeSession === decliningSession,
+                  SharePlayMessageSessionPolicy.accepts(
+                    capturedSessionGeneration: decliningGeneration,
+                    currentSessionGeneration: self.playbackSessionGeneration) else { return }
+            self.clearActiveSession(leaving: true)
+        }
     }
 
     @discardableResult
@@ -386,9 +417,18 @@ final class WatchTogetherCoordinator {
             }
         }
         if let messenger {
-            messageTask = Task { [weak self] in
+            let sessionGeneration = playbackSessionGeneration
+            messageTask = Task { [weak self, weak session] in
+                guard let session else { return }
                 for await (message, context) in messenger.messages(of: ReadinessMessage.self) {
-                    self?.receive(message, from: context.source.id)
+                    // Cancellation alone is insufficient: an old messenger can already have resumed
+                    // this task when its GroupSession is replaced. Fence both the exact session object
+                    // and the local install generation before accepting any buffered message.
+                    guard let self, !Task.isCancelled, self.activeSession === session,
+                          SharePlayMessageSessionPolicy.accepts(
+                            capturedSessionGeneration: sessionGeneration,
+                            currentSessionGeneration: self.playbackSessionGeneration) else { return }
+                    self.receive(message, from: context.source.id)
                 }
             }
         }
@@ -396,6 +436,27 @@ final class WatchTogetherCoordinator {
 
     private func receive(_ message: ReadinessMessage, from participantID: UUID) {
         guard message.activityID == activePayload?.activityID else { return }
+        switch SharePlayParticipantMessagePolicy.disposition(
+            sourceParticipantID: participantID,
+            hasObservedRoster: hasObservedParticipantRoster,
+            activeParticipantIDs: knownParticipantIDs) {
+        case .accept:
+            applyReceivedMessage(message, from: participantID)
+        case .bufferUntilRosterUpdate:
+            guard SharePlayInboundMessageRevisionPolicy.accepts(
+                incomingRevision: message.revision,
+                lastAcceptedRevision: bufferedParticipantMessages[participantID]?.revision) else { return }
+            bufferedParticipantMessages[participantID] = message
+        }
+    }
+
+    private func applyReceivedMessage(_ message: ReadinessMessage, from participantID: UUID) {
+        guard SharePlayInboundMessageRevisionPolicy.accepts(
+            incomingRevision: message.revision,
+            lastAcceptedRevision: participantStatusRevisions[participantID]) else { return }
+        if let revision = message.revision {
+            participantStatusRevisions[participantID] = revision
+        }
         participantStatuses[participantID] = message.status
         if message.status == .started {
             sessionStarted = true
@@ -433,7 +494,15 @@ final class WatchTogetherCoordinator {
     private func handleActiveParticipants(_ activeIDs: [UUID], localID: UUID) {
         let newcomers = Set(activeIDs).subtracting(knownParticipantIDs).subtracting([localID])
         knownParticipantIDs = Set(activeIDs)
+        hasObservedParticipantRoster = true
         pruneStatuses(to: activeIDs, localID: localID)
+        let readyBufferedIDs = SharePlayBufferedParticipantMessages.readySourceIDs(
+            bufferedSourceIDs: Set(bufferedParticipantMessages.keys),
+            activeParticipantIDs: knownParticipantIDs)
+        for participantID in readyBufferedIDs {
+            guard let message = bufferedParticipantMessages.removeValue(forKey: participantID) else { continue }
+            applyReceivedMessage(message, from: participantID)
+        }
         guard sessionStarted, didLaunchResolvedItem, !newcomers.isEmpty else { return }
         var startedIDs = Set(participantStatuses.filter { $0.value == .started }.map(\.key))
         startedIDs.insert(localID)
@@ -442,11 +511,37 @@ final class WatchTogetherCoordinator {
         }
     }
 
-    private func sendStatus(_ status: SharePlayParticipantReadiness) {
-        guard let payload = activePayload, let messenger else { return }
+    @discardableResult
+    private func sendStatus(_ status: SharePlayParticipantReadiness,
+                            leavingAfterDelivery: Bool = false) -> Bool {
+        guard let payload = activePayload, let messenger, let session = activeSession else { return false }
         setLocalStatus(status)
-        let message = ReadinessMessage(activityID: payload.activityID, status: status)
-        Task { try? await messenger.send(message) }
+        let revision = outboundStatusRevisions.issue()
+        let message = ReadinessMessage(
+            activityID: payload.activityID,
+            status: status,
+            revision: revision)
+        let sessionGeneration = playbackSessionGeneration
+        // Serializing each invocation and completion makes resolving -> ready -> started
+        // deterministic while the generation/session fences prevent a queued status from leaking
+        // into a replacement session.
+        outboundStatusTail.enqueue { [weak self, weak session] in
+            guard let self, let session, !Task.isCancelled,
+                  self.activeSession === session,
+                  SharePlayMessageSessionPolicy.accepts(
+                    capturedSessionGeneration: sessionGeneration,
+                    currentSessionGeneration: self.playbackSessionGeneration) else { return }
+            try? await messenger.send(message)
+            // The send suspension may itself overlap replacement. Never let an old decline tear down
+            // the newly installed session after its terminal status finishes (or fails) delivery.
+            guard leavingAfterDelivery, !Task.isCancelled,
+                  self.activeSession === session,
+                  SharePlayMessageSessionPolicy.accepts(
+                    capturedSessionGeneration: sessionGeneration,
+                    currentSessionGeneration: self.playbackSessionGeneration) else { return }
+            self.clearActiveSession(leaving: true)
+        }
+        return true
     }
 
     private func setLocalStatus(_ status: SharePlayParticipantReadiness) {
@@ -456,10 +551,14 @@ final class WatchTogetherCoordinator {
     }
 
     private func pruneStatuses(to activeIDs: [UUID], localID: UUID) {
+        let retainedParticipantIDs = Set(activeIDs).union([localID])
         participantStatuses = SharePlayReadinessRoster.reconcile(
             statuses: participantStatuses,
             activeParticipantIDs: Set(activeIDs),
             localParticipantID: localID)
+        participantStatusRevisions = participantStatusRevisions.filter {
+            retainedParticipantIDs.contains($0.key)
+        }
         refreshCounts()
     }
 
@@ -474,7 +573,12 @@ final class WatchTogetherCoordinator {
         activeSessionStateTask?.cancel(); participantTask?.cancel(); messageTask?.cancel(); lookupTask?.cancel()
         activeSessionStateTask = nil; participantTask = nil; messageTask = nil; lookupTask = nil
         activeSession = nil; messenger = nil; activePayload = nil; resolvedItem = nil; joinPrompt = nil
-        participantStatuses = [:]; knownParticipantIDs = []; readyParticipantCount = 0; resolvingParticipantCount = 0
+        outboundStatusTail.cancelAll()
+        terminalLeaveFallback.cancel()
+        participantStatuses = [:]; participantStatusRevisions = [:]; bufferedParticipantMessages = [:]
+        outboundStatusRevisions = .init()
+        knownParticipantIDs = []; hasObservedParticipantRoster = false
+        readyParticipantCount = 0; resolvingParticipantCount = 0
         sessionStarted = false; isLocalInitiator = false; didLaunchResolvedItem = false
         // `playerLaunchEpoch` deliberately survives: it is a monotonic epoch, not per-session state.
         playbackCoordinatorDelegate = nil

@@ -343,6 +343,49 @@ public struct OfflineHeldRangeSegment: Codable, Sendable, Equatable {
     }
 }
 
+/// Stable identity of the selected media source that produced an offline side-asset bundle.
+/// Deliberately excludes facts learned during transfer (for example byte size and validators),
+/// because learning those facts must not invalidate already-cached optional assets.
+public struct OfflineSideAssetSourceIdentity: Codable, Sendable, Equatable {
+    public var backendKind: DownloadBackendKind?
+    public var backendBaseURLString: String?
+    public var backendServerID: String?
+    public var mediaSourceID: String?
+    public var mediaIndex: Int?
+    public var partIndex: Int?
+    public var sourcePartID: Int?
+    public var downloadLane: DownloadLane?
+    public var serverPreparedVersion: Bool
+
+    public init(backendKind: DownloadBackendKind?, backendBaseURLString: String?,
+                backendServerID: String?, mediaSourceID: String?, mediaIndex: Int?,
+                partIndex: Int?, sourcePartID: Int?, downloadLane: DownloadLane?,
+                serverPreparedVersion: Bool) {
+        self.backendKind = backendKind
+        self.backendBaseURLString = backendBaseURLString
+        self.backendServerID = backendServerID
+        self.mediaSourceID = mediaSourceID
+        self.mediaIndex = mediaIndex
+        self.partIndex = partIndex
+        self.sourcePartID = sourcePartID
+        self.downloadLane = downloadLane
+        self.serverPreparedVersion = serverPreparedVersion
+    }
+}
+
+/// Exact owner of every optional path in an `OfflineMetadata` side-asset bundle. All paths move
+/// together across metadata snapshots: a different source or attempt must re-fetch rather than
+/// silently adopting files that were produced for a predecessor.
+public struct OfflineSideAssetBundleOwner: Codable, Sendable, Equatable {
+    public var attemptID: String
+    public var source: OfflineSideAssetSourceIdentity
+
+    public init(attemptID: String, source: OfflineSideAssetSourceIdentity) {
+        self.attemptID = attemptID
+        self.source = source
+    }
+}
+
 public struct OfflineMetadata: Codable, Sendable, Equatable {
     public var ratingKey: String
     public var key: String?
@@ -445,6 +488,9 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// discoverable through AVFoundation; image/burned-in/unavailable tracks are intentionally
     /// not represented here.
     public var offlineTextSubtitles: [OfflineTextSubtitleTrack]?
+    /// Exact attempt + selected-source ownership for poster, previews, chapters, and subtitles.
+    /// Rows that decode nil fail closed and re-fetch; a replacement attempt never inherits them.
+    public var sideAssetBundleOwner: OfflineSideAssetBundleOwner?
     /// Backend that created this download. nil for rows persisted before #84 — see
     /// `resolvedBackendKind(ratingKey:)` for the migration fallback (ratingKey-prefix
     /// inference) that keeps already-downloaded libraries fully usable.
@@ -612,6 +658,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 jellyfinTrickPlayTileRelativePaths: [String]? = nil,
                 chapterImageRelativePaths: [Int: String]? = nil,
                 offlineTextSubtitles: [OfflineTextSubtitleTrack]? = nil,
+                sideAssetBundleOwner: OfflineSideAssetBundleOwner? = nil,
                 backendKind: DownloadBackendKind? = nil,
                 backendBaseURLString: String? = nil,
                 backendServerID: String? = nil,
@@ -679,6 +726,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.jellyfinTrickPlayTileRelativePaths = jellyfinTrickPlayTileRelativePaths
         self.chapterImageRelativePaths = chapterImageRelativePaths
         self.offlineTextSubtitles = offlineTextSubtitles
+        self.sideAssetBundleOwner = sideAssetBundleOwner
         self.backendKind = backendKind
         self.backendBaseURLString = backendBaseURLString
         self.backendServerID = backendServerID
@@ -751,6 +799,8 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         jellyfinTrickPlayTileRelativePaths = try c.decodeIfPresent([String].self, forKey: .jellyfinTrickPlayTileRelativePaths)
         chapterImageRelativePaths = try c.decodeIfPresent([Int: String].self, forKey: .chapterImageRelativePaths)
         offlineTextSubtitles = try c.decodeIfPresent([OfflineTextSubtitleTrack].self, forKey: .offlineTextSubtitles)
+        sideAssetBundleOwner = try c.decodeIfPresent(
+            OfflineSideAssetBundleOwner.self, forKey: .sideAssetBundleOwner)
         backendKind = try c.decodeIfPresent(DownloadBackendKind.self, forKey: .backendKind)
         backendBaseURLString = try c.decodeIfPresent(String.self, forKey: .backendBaseURLString)
         backendServerID = try c.decodeIfPresent(String.self, forKey: .backendServerID)
@@ -784,35 +834,50 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     /// times during handoff/retry/final transfer; without this merge, a later upsert carrying a
     /// stale-but-non-nil metadata value can erase poster/trickplay/chapter/subtitle paths or
     /// resumability/checkpoint facts that another task just persisted.
-    public mutating func preserveCachedSideAssets(from previous: OfflineMetadata) {
-        if posterRelativePath == nil {
-            posterRelativePath = previous.posterRelativePath
+    public mutating func preserveCachedSideAssets(
+        from previous: OfflineMetadata,
+        attemptID explicitAttemptID: String? = nil
+    ) {
+        let attemptID = explicitAttemptID ?? downloadAttemptID
+        let expectedOwner = attemptID.map {
+            OfflineSideAssetBundleOwner(attemptID: $0, source: sideAssetSourceIdentity)
         }
-        if plexBIFRelativePath == nil {
-            plexBIFRelativePath = previous.plexBIFRelativePath
-        }
-        if embyBIFRelativePath == nil,
-           let mediaSourceID, !mediaSourceID.isEmpty,
-           mediaSourceID == previous.mediaSourceID {
-            embyBIFRelativePath = previous.embyBIFRelativePath
-        }
-        if jellyfinTrickPlayPlaylistRelativePath == nil {
-            jellyfinTrickPlayPlaylistRelativePath = previous.jellyfinTrickPlayPlaylistRelativePath
-        }
-        if let previousTiles = previous.jellyfinTrickPlayTileRelativePaths, !previousTiles.isEmpty {
-            var merged = previousTiles
-            for relative in jellyfinTrickPlayTileRelativePaths ?? [] where !merged.contains(relative) {
-                merged.append(relative)
+        let canPreserveBundle = expectedOwner != nil
+            && expectedOwner == previous.sideAssetBundleOwner
+        if canPreserveBundle {
+            if posterRelativePath == nil {
+                posterRelativePath = previous.posterRelativePath
             }
-            jellyfinTrickPlayTileRelativePaths = merged
-        }
-        if let previousChapters = previous.chapterImageRelativePaths, !previousChapters.isEmpty {
-            var merged = previousChapters
-            merged.merge(chapterImageRelativePaths ?? [:]) { _, current in current }
-            chapterImageRelativePaths = merged
-        }
-        if (offlineTextSubtitles?.isEmpty ?? true) {
-            offlineTextSubtitles = previous.offlineTextSubtitles
+            if plexBIFRelativePath == nil {
+                plexBIFRelativePath = previous.plexBIFRelativePath
+            }
+            if embyBIFRelativePath == nil {
+                embyBIFRelativePath = previous.embyBIFRelativePath
+            }
+            if jellyfinTrickPlayPlaylistRelativePath == nil {
+                jellyfinTrickPlayPlaylistRelativePath = previous.jellyfinTrickPlayPlaylistRelativePath
+            }
+            if let previousTiles = previous.jellyfinTrickPlayTileRelativePaths,
+               !previousTiles.isEmpty {
+                var merged = previousTiles
+                for relative in jellyfinTrickPlayTileRelativePaths ?? []
+                    where !merged.contains(relative) {
+                    merged.append(relative)
+                }
+                jellyfinTrickPlayTileRelativePaths = merged
+            }
+            if let previousChapters = previous.chapterImageRelativePaths,
+               !previousChapters.isEmpty {
+                var merged = previousChapters
+                merged.merge(chapterImageRelativePaths ?? [:]) { _, current in current }
+                chapterImageRelativePaths = merged
+            }
+            if (offlineTextSubtitles?.isEmpty ?? true) {
+                offlineTextSubtitles = previous.offlineTextSubtitles
+            }
+            if hasCachedSideAssets, let expectedOwner {
+                sideAssetBundleOwner = expectedOwner
+            }
         }
         if resumeDataRelativePath == nil {
             resumeDataRelativePath = previous.resumeDataRelativePath
@@ -842,6 +907,64 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         if downloadBitrateKbps == nil {
             downloadBitrateKbps = previous.downloadBitrateKbps
         }
+    }
+
+    public var sideAssetSourceIdentity: OfflineSideAssetSourceIdentity {
+        OfflineSideAssetSourceIdentity(
+            backendKind: backendKind,
+            backendBaseURLString: backendBaseURLString,
+            backendServerID: backendServerID,
+            mediaSourceID: mediaSourceID,
+            mediaIndex: mediaIndex,
+            partIndex: partIndex,
+            sourcePartID: sourcePartID,
+            downloadLane: downloadLane,
+            serverPreparedVersion: serverPreparedVersion == true)
+    }
+
+    public var hasCachedSideAssets: Bool {
+        posterRelativePath != nil
+            || plexBIFRelativePath != nil
+            || embyBIFRelativePath != nil
+            || jellyfinTrickPlayPlaylistRelativePath != nil
+            || !(jellyfinTrickPlayTileRelativePaths?.isEmpty ?? true)
+            || !(chapterImageRelativePaths?.isEmpty ?? true)
+            || !(offlineTextSubtitles?.isEmpty ?? true)
+    }
+
+    public mutating func claimCachedSideAssets(attemptID: String) {
+        guard hasCachedSideAssets else {
+            sideAssetBundleOwner = nil
+            return
+        }
+        sideAssetBundleOwner = OfflineSideAssetBundleOwner(
+            attemptID: attemptID, source: sideAssetSourceIdentity)
+    }
+
+    /// Fence an already-populated bundle to one exact owner. Ownerless paths fail closed and are
+    /// re-fetched; caller-supplied predecessor paths cannot cross into a replacement attempt merely
+    /// because filenames are deterministic.
+    public mutating func fenceCachedSideAssets(to attemptID: String) {
+        guard hasCachedSideAssets else {
+            sideAssetBundleOwner = nil
+            return
+        }
+        let expected = OfflineSideAssetBundleOwner(
+            attemptID: attemptID, source: sideAssetSourceIdentity)
+        if sideAssetBundleOwner != expected {
+            clearCachedSideAssets()
+        }
+    }
+
+    public mutating func clearCachedSideAssets() {
+        posterRelativePath = nil
+        plexBIFRelativePath = nil
+        embyBIFRelativePath = nil
+        jellyfinTrickPlayPlaylistRelativePath = nil
+        jellyfinTrickPlayTileRelativePaths = nil
+        chapterImageRelativePaths = nil
+        offlineTextSubtitles = nil
+        sideAssetBundleOwner = nil
     }
 
     /// True when this row downloads a server-prepared version rather than the genuine source — see

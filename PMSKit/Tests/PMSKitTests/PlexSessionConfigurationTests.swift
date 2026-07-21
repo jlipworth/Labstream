@@ -53,3 +53,99 @@ import Foundation
     #expect(custom.timeoutIntervalForRequest == 10)
     #expect(custom.timeoutIntervalForResource == 120)
 }
+
+#if canImport(Network)
+/// Behavioral guard for the deadline authority used by both recovery control-plane calls and
+/// media-proxy upstream calls. `URLRequest(url:)` carries Foundation's 60-second default, so the
+/// important fact is that the shorter session configuration still wins on a real silent socket.
+@Test func configuredRequestDeadlinesWinOverURLRequestDefaultOnSilentTransport() async throws {
+    let release = HangingTransportRelease()
+    let origin = LoopbackOrigin()
+    let port = try await origin.start { _ in
+        await release.wait()
+        return HTTPResponse(status: 200, reason: "OK", headers: [], body: Data())
+    }
+    defer {
+        release.resume()
+        origin.stop()
+    }
+
+    let url = URL(string: "http://127.0.0.1:\(port)/hang")!
+    let request = URLRequest(url: url)
+    #expect(request.timeoutInterval == 60)
+
+    let configurations = [
+        PlexSessionConfiguration.recoveryControlPlane(timeout: 0.2),
+        PlexSessionConfiguration.mediaUpstream(timeout: 0.2, resourceTimeout: 5),
+    ]
+    for configuration in configurations {
+        let result = await requestOutcome(
+            request,
+            using: URLSession(configuration: configuration),
+            watchdogNanoseconds: 2_000_000_000)
+        #expect(result == .timedOut)
+    }
+}
+
+private enum RequestOutcome: Equatable, Sendable {
+    case timedOut
+    case watchdog
+    case otherURLError(URLError.Code)
+    case unexpectedSuccess
+}
+
+private func requestOutcome(_ request: URLRequest,
+                            using session: URLSession,
+                            watchdogNanoseconds: UInt64) async -> RequestOutcome {
+    defer { session.invalidateAndCancel() }
+    return await withTaskGroup(of: RequestOutcome.self) { group in
+        group.addTask {
+            do {
+                _ = try await session.data(for: request)
+                return .unexpectedSuccess
+            } catch let error as URLError {
+                return error.code == .timedOut ? .timedOut : .otherURLError(error.code)
+            } catch {
+                return .otherURLError(.unknown)
+            }
+        }
+        group.addTask {
+            try? await Task.sleep(nanoseconds: watchdogNanoseconds)
+            return Task.isCancelled ? .otherURLError(.cancelled) : .watchdog
+        }
+        let first = await group.next() ?? .watchdog
+        group.cancelAll()
+        return first
+    }
+}
+
+private final class HangingTransportRelease: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuations: [CheckedContinuation<Void, Never>] = []
+    private var isReleased = false
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if isReleased {
+                lock.unlock()
+                continuation.resume()
+            } else {
+                continuations.append(continuation)
+                lock.unlock()
+            }
+        }
+    }
+
+    func resume() {
+        lock.lock()
+        isReleased = true
+        let pending = continuations
+        continuations.removeAll()
+        lock.unlock()
+        for continuation in pending {
+            continuation.resume()
+        }
+    }
+}
+#endif

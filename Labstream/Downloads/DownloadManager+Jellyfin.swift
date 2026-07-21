@@ -440,6 +440,7 @@ extension DownloadManager {
                                         width: Int = 320) {
         guard let mediaSourceId, !mediaSourceId.isEmpty else { return }
         let store = self.store
+        guard let sourceIdentity = store.sideAssetSourceIdentity(for: attemptKey) else { return }
         downloadWorkRegistry.startIfAbsent(for: attemptKey, kind: .sideCache(.jellyfinTrickPlay)) { [weak self] in
             guard !Task.isCancelled else { return }
             do {
@@ -489,11 +490,13 @@ extension DownloadManager {
                         defer { try? FileManager.default.removeItem(at: staging) }
                         guard (try? data.write(to: staging, options: .atomic)) != nil,
                               Self.promoteSideAsset(store: store, key: attemptKey,
+                                                    expectedSource: sourceIdentity,
                                                     stagingURL: staging, stableURL: destination) else { continue }
                         let relative = destination.lastPathComponent
                         tileRelativeByIndex[index] = relative
                         tileFilenamesByURI[uri] = relative
-                        _ = store.updateMetadata(for: attemptKey) {
+                        _ = store.updateMetadata(
+                            for: attemptKey, expectedSideAssetSource: sourceIdentity) {
                             var merged = $0.jellyfinTrickPlayTileRelativePaths ?? []
                             if !merged.contains(relative) { merged.append(relative) }
                             $0.jellyfinTrickPlayTileRelativePaths = merged
@@ -511,10 +514,12 @@ extension DownloadManager {
                 defer { try? FileManager.default.removeItem(at: playlistStaging) }
                 try sanitized.data(using: .utf8)?.write(to: playlistStaging, options: .atomic)
                 guard Self.promoteSideAsset(store: store, key: attemptKey,
+                                            expectedSource: sourceIdentity,
                                             stagingURL: playlistStaging,
                                             stableURL: playlistURL) else { return }
                 await MainActor.run {
-                    let result = store.updateMetadata(for: attemptKey) {
+                    let result = store.updateMetadata(
+                        for: attemptKey, expectedSideAssetSource: sourceIdentity) {
                         $0.jellyfinTrickPlayPlaylistRelativePath = playlistURL.lastPathComponent
                         var merged = $0.jellyfinTrickPlayTileRelativePaths ?? []
                         for relative in tileRelatives where !merged.contains(relative) {

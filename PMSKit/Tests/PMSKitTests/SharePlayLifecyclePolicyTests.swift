@@ -2,6 +2,29 @@ import Foundation
 import Testing
 @testable import PMSKit
 
+private actor SharePlayMessageTestRecorder {
+    private var values: [Int] = []
+    func append(_ value: Int) { values.append(value) }
+    func snapshot() -> [Int] { values }
+}
+
+private actor SharePlayMessageTestGate {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func open() {
+        isOpen = true
+        let pending = waiters
+        waiters = []
+        pending.forEach { $0.resume() }
+    }
+}
+
 @Suite("SharePlay leave decision")
 struct SharePlayLeaveDecisionTests {
     @Test("A dismissal for a different item is ignored")
@@ -119,5 +142,193 @@ struct SharePlayStartedBroadcastTests {
     @Test("A lone started participant re-broadcasts (the initiator may have left)")
     func loneStartedParticipantRebroadcasts() {
         #expect(SharePlayStartedBroadcast.shouldRebroadcast(localID: high, startedParticipantIDs: [high]))
+    }
+}
+
+@Suite("SharePlay message session fencing")
+struct SharePlayMessageSessionPolicyTests {
+    @Test("Buffered receive work from a replacement session is rejected")
+    func replacementSessionRejectsBufferedReceive() {
+        #expect(!SharePlayMessageSessionPolicy.accepts(
+            capturedSessionGeneration: 4,
+            currentSessionGeneration: 5))
+    }
+
+    @Test("Queued send work may publish only while its exact session generation is current")
+    func queuedSendRequiresCurrentSession() {
+        #expect(SharePlayMessageSessionPolicy.accepts(
+            capturedSessionGeneration: 9,
+            currentSessionGeneration: 9))
+        #expect(!SharePlayMessageSessionPolicy.accepts(
+            capturedSessionGeneration: 9,
+            currentSessionGeneration: 10))
+    }
+}
+
+@Suite("SharePlay message revisions")
+struct SharePlayMessageRevisionTests {
+    @Test("Outbound revisions preserve enqueue order")
+    func outboundRevisionsAreOrdered() {
+        var revisions = SharePlayOutboundMessageRevisions()
+
+        #expect(revisions.issue() == 1)
+        #expect(revisions.issue() == 2)
+        #expect(revisions.issue() == 3)
+    }
+
+    @Test("A replacement session starts an independent revision sequence")
+    func replacementSessionResetsRevisions() {
+        var replacedSession = SharePlayOutboundMessageRevisions()
+        _ = replacedSession.issue()
+        _ = replacedSession.issue()
+
+        var replacementSession = SharePlayOutboundMessageRevisions()
+        #expect(replacementSession.issue() == 1)
+    }
+
+    @Test("Duplicate and stale inbound revisions are rejected")
+    func staleInboundRevisionIsRejected() {
+        #expect(SharePlayInboundMessageRevisionPolicy.accepts(
+            incomingRevision: 8,
+            lastAcceptedRevision: 7))
+        #expect(!SharePlayInboundMessageRevisionPolicy.accepts(
+            incomingRevision: 7,
+            lastAcceptedRevision: 7))
+        #expect(!SharePlayInboundMessageRevisionPolicy.accepts(
+            incomingRevision: 6,
+            lastAcceptedRevision: 7))
+    }
+
+    @Test("An older participant remains compatible until revisioned delivery establishes a fence")
+    func legacyMessageDoesNotAdvanceFence() {
+        #expect(SharePlayInboundMessageRevisionPolicy.accepts(
+            incomingRevision: nil,
+            lastAcceptedRevision: nil))
+        #expect(!SharePlayInboundMessageRevisionPolicy.accepts(
+            incomingRevision: nil,
+            lastAcceptedRevision: 7))
+        #expect(SharePlayInboundMessageRevisionPolicy.accepts(
+            incomingRevision: 8,
+            lastAcceptedRevision: 7))
+    }
+}
+
+@Suite("SharePlay ordered delivery tail")
+struct SharePlayOrderedDeliveryTailTests {
+    @Test("A suspended send prevents its queued successor from overtaking it")
+    @MainActor
+    func sendOrderIsSerialized() async {
+        let tail = SharePlayOrderedDeliveryTail()
+        let recorder = SharePlayMessageTestRecorder()
+        let gate = SharePlayMessageTestGate()
+
+        tail.enqueue {
+            await recorder.append(1)
+            await gate.wait()
+            await recorder.append(2)
+        }
+        tail.enqueue { await recorder.append(3) }
+
+        var started = false
+        for _ in 0..<100 where !started {
+            started = await recorder.snapshot() == [1]
+            if !started { await Task.yield() }
+        }
+        #expect(started)
+        let whileSuspended = await recorder.snapshot()
+        #expect(whileSuspended == [1])
+
+        await gate.open()
+        await tail.drain()
+        let delivered = await recorder.snapshot()
+        #expect(delivered == [1, 2, 3])
+    }
+
+    @Test("Cancellation reaches an in-flight predecessor and every queued successor")
+    @MainActor
+    func cancellationCoversWholeChain() async {
+        let tail = SharePlayOrderedDeliveryTail()
+        let recorder = SharePlayMessageTestRecorder()
+        let gate = SharePlayMessageTestGate()
+
+        tail.enqueue {
+            await recorder.append(1)
+            await gate.wait()
+            guard !Task.isCancelled else { return }
+            await recorder.append(2)
+        }
+        tail.enqueue { await recorder.append(3) }
+
+        var started = false
+        for _ in 0..<100 where !started {
+            started = await recorder.snapshot() == [1]
+            if !started { await Task.yield() }
+        }
+        #expect(started)
+
+        let cancellation = Task { @MainActor in await tail.cancelAllAndDrain() }
+        await Task.yield()
+        await gate.open()
+        await cancellation.value
+
+        let delivered = await recorder.snapshot()
+        #expect(delivered == [1])
+    }
+}
+
+@Suite("SharePlay participant message fencing")
+struct SharePlayParticipantMessagePolicyTests {
+    private let participantID = UUID(uuidString: "00000000-0000-0000-0000-000000000004")!
+
+    @Test("A legitimate initial status waits for the first authoritative roster")
+    func preRosterMessageIsBuffered() {
+        #expect(SharePlayParticipantMessagePolicy.disposition(
+            sourceParticipantID: participantID,
+            hasObservedRoster: false,
+            activeParticipantIDs: []) == .bufferUntilRosterUpdate)
+    }
+
+    @Test("Unknown sources wait for the next roster while known sources apply immediately")
+    func unknownSourceIsBuffered() {
+        #expect(SharePlayParticipantMessagePolicy.disposition(
+            sourceParticipantID: participantID,
+            hasObservedRoster: true,
+            activeParticipantIDs: []) == .bufferUntilRosterUpdate)
+        #expect(SharePlayParticipantMessagePolicy.disposition(
+            sourceParticipantID: participantID,
+            hasObservedRoster: true,
+            activeParticipantIDs: [participantID]) == .accept)
+    }
+
+    @Test("An absent roster does not discard a message before the source-present roster arrives")
+    func bufferedMessageSurvivesInterveningRoster() {
+        let buffered: Set<UUID> = [participantID]
+        #expect(SharePlayBufferedParticipantMessages.readySourceIDs(
+            bufferedSourceIDs: buffered,
+            activeParticipantIDs: []).isEmpty)
+        #expect(SharePlayBufferedParticipantMessages.readySourceIDs(
+            bufferedSourceIDs: buffered,
+            activeParticipantIDs: [participantID]) == [participantID])
+    }
+}
+
+@Suite("SharePlay bounded terminal fallback")
+struct SharePlayBoundedFallbackTests {
+    @Test("A never-resuming delivery cannot prevent the independent leave fallback")
+    @MainActor
+    func fallbackDoesNotWaitForDeliveryTail() async {
+        let tail = SharePlayOrderedDeliveryTail()
+        let gate = SharePlayMessageTestGate()
+        let recorder = SharePlayMessageTestRecorder()
+        let fallback = SharePlayBoundedFallback()
+
+        tail.enqueue { await gate.wait() }
+        fallback.schedule(after: .zero) { await recorder.append(1) }
+        await fallback.drain()
+        let values = await recorder.snapshot()
+        #expect(values == [1])
+
+        tail.cancelAll()
+        await gate.open()
     }
 }

@@ -1,8 +1,8 @@
-#if DEBUG
+#if DEBUG || PERFORMANCE_AUDIT
 import Foundation
 import os
 
-/// Lightweight, privacy-preserving performance instrumentation for issue #42.
+/// Lightweight, privacy-preserving performance instrumentation for Debug and PerformanceAudit.
 ///
 /// The signpost names are intentionally generic and stable so Instruments' Points of
 /// Interest can compare Plex vs. Jellyfin runs without exposing library titles, server
@@ -149,7 +149,7 @@ extension MediaBackendKind {
 
 import Foundation
 
-/// No-op performance instrumentation outside Debug builds so release/user apps do not
+/// No-op performance instrumentation outside Debug and PerformanceAudit builds so release/user apps do not
 /// emit profiling logs or pay signpost/logging overhead.
 enum PerformanceInstrumentation {
     enum Phase: String {

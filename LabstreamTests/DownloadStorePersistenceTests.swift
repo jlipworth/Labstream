@@ -1098,6 +1098,177 @@ struct DownloadStorePersistenceTests {
         }
     }
 
+    @Test func replacementAttemptRetiresEveryPredecessorSideAsset() throws {
+        try withTemporaryDirectory { directory in
+            let ratingKey = "plex:side-source-replacement"
+            let attemptA = DownloadAttemptID(rawValue: "attempt-A")!
+            let attemptB = DownloadAttemptID(rawValue: "attempt-B")!
+            let paths = [
+                "poster.jpg", "plex.bif", "emby.bif", "trickplay.m3u8", "tile.jpg",
+                "chapter.jpg", "subtitle.srt",
+            ]
+            for path in paths {
+                try Data([0x1]).write(to: directory.appendingPathComponent(path))
+            }
+            let subtitles = [OfflineTextSubtitleTrack(
+                id: 1, displayName: "English", codec: "srt", relativePath: "subtitle.srt")]
+            let metadataA = OfflineMetadata(
+                ratingKey: ratingKey, title: "Source A", type: "movie", sourcePartID: 10,
+                posterRelativePath: "poster.jpg", plexBIFRelativePath: "plex.bif",
+                embyBIFRelativePath: "emby.bif",
+                jellyfinTrickPlayPlaylistRelativePath: "trickplay.m3u8",
+                jellyfinTrickPlayTileRelativePaths: ["tile.jpg"],
+                chapterImageRelativePaths: [0: "chapter.jpg"],
+                offlineTextSubtitles: subtitles, backendKind: .plex)
+            let destination = directory.appendingPathComponent("movie.mp4")
+            let store = DownloadStore(baseDirectory: directory)
+            #expect(store.createAttemptOwnedRecord(
+                DownloadRecord(ratingKey: ratingKey, attemptID: attemptA, title: "Source A",
+                               localURL: destination, status: .queued, metadata: metadataA),
+                attemptID: attemptA) == .committed(
+                    DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptA)))
+            #expect(store.metadata(for: ratingKey)?.sideAssetBundleOwner?.attemptID
+                == attemptA.rawValue)
+
+            let metadataB = OfflineMetadata(
+                ratingKey: ratingKey, title: "Source B", type: "movie", sourcePartID: 20,
+                backendKind: .plex)
+            #expect(store.createAttemptOwnedRecord(
+                DownloadRecord(ratingKey: ratingKey, attemptID: attemptB, title: "Source B",
+                               localURL: destination, status: .queued, metadata: metadataB),
+                attemptID: attemptB, replacing: attemptA) == .committed(
+                    DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptB)))
+
+            let replacement = try #require(store.metadata(for: ratingKey))
+            #expect(!replacement.hasCachedSideAssets)
+            #expect(replacement.sideAssetBundleOwner == nil)
+            #expect(paths.allSatisfy {
+                !FileManager.default.fileExists(
+                    atPath: directory.appendingPathComponent($0).path)
+            })
+        }
+    }
+
+    @Test func selectedSourceChangeWithinAttemptClearsAndRetiresBundle() throws {
+        try withTemporaryDirectory { directory in
+            let ratingKey = "jellyfin:source-change"
+            let attempt = DownloadAttemptID(rawValue: "attempt-current")!
+            let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attempt)
+            let poster = directory.appendingPathComponent("source-change.poster.jpg")
+            try Data([0x1]).write(to: poster)
+            let metadata = OfflineMetadata(
+                ratingKey: ratingKey, title: "Source A", type: "movie",
+                posterRelativePath: poster.lastPathComponent, backendKind: .jellyfin,
+                mediaSourceID: "source-a")
+            let store = DownloadStore(baseDirectory: directory)
+            #expect(store.createAttemptOwnedRecord(
+                DownloadRecord(ratingKey: ratingKey, attemptID: attempt, title: "Source A",
+                               localURL: directory.appendingPathComponent("source-change.mp4"),
+                               status: .queued, metadata: metadata),
+                attemptID: attempt) == .committed(key))
+
+            #expect(store.updateMetadata(for: key) { $0.mediaSourceID = "source-b" } == .applied)
+
+            let changed = try #require(store.metadata(for: ratingKey))
+            #expect(changed.mediaSourceID == "source-b")
+            #expect(!changed.hasCachedSideAssets)
+            #expect(changed.sideAssetBundleOwner == nil)
+            #expect(!FileManager.default.fileExists(atPath: poster.path))
+        }
+    }
+
+    @Test func delayedOldSourceSideAssetCannotPublishAfterSameAttemptRenegotiation() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("side-source-race-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let ratingKey = "jellyfin:source-race"
+        let attempt = DownloadAttemptID(rawValue: "attempt-current")!
+        let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attempt)
+        let store = DownloadStore(baseDirectory: directory)
+        let metadata = OfflineMetadata(
+            ratingKey: ratingKey, title: "Source A", type: "movie",
+            backendKind: .jellyfin, mediaSourceID: "source-a")
+        #expect(store.createAttemptOwnedRecord(
+            DownloadRecord(ratingKey: ratingKey, attemptID: attempt, title: "Source A",
+                           localURL: directory.appendingPathComponent("source-race.mp4"),
+                           status: .queued, metadata: metadata),
+            attemptID: attempt) == .committed(key))
+        let capturedSource = try #require(store.sideAssetSourceIdentity(for: key))
+        let destination = store.posterDestinationURL(ratingKey: ratingKey)
+        let staging = try #require(store.attemptStagingURL(for: key, stableURL: destination))
+        let releaseOldFetch = DispatchSemaphore(value: 0)
+        let oldFetchFinished = DispatchSemaphore(value: 0)
+
+        DispatchQueue.global(qos: .utility).async {
+            releaseOldFetch.wait()
+            try? Data([0xA]).write(to: staging)
+            _ = store.promoteSideAssetStagingFile(
+                for: key, expectedSource: capturedSource,
+                stagingURL: staging, to: destination)
+            _ = store.updateMetadata(for: key, expectedSideAssetSource: capturedSource) {
+                $0.posterRelativePath = destination.lastPathComponent
+            }
+            oldFetchFinished.signal()
+        }
+
+        #expect(store.updateMetadata(for: key) { $0.mediaSourceID = "source-b" } == .applied)
+        releaseOldFetch.signal()
+        #expect(await waitForSignal(oldFetchFinished, timeout: 1))
+
+        #expect(store.metadata(for: ratingKey)?.mediaSourceID == "source-b")
+        #expect(store.metadata(for: ratingKey)?.posterRelativePath == nil)
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+    }
+
+    @Test func delayedPlexOptimizeSideAssetCannotPublishAfterPreparedSourceChange() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("side-plex-race-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let ratingKey = "plex:optimize-source-race"
+        let attempt = DownloadAttemptID(rawValue: "attempt-current")!
+        let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attempt)
+        let store = DownloadStore(baseDirectory: directory)
+        let metadata = OfflineMetadata(
+            ratingKey: ratingKey, title: "Original", type: "movie", sourcePartID: 10,
+            backendKind: .plex, downloadLane: .optimize)
+        #expect(store.createAttemptOwnedRecord(
+            DownloadRecord(ratingKey: ratingKey, attemptID: attempt, title: "Original",
+                           localURL: directory.appendingPathComponent("optimize-race.mp4"),
+                           status: .queued, metadata: metadata),
+            attemptID: attempt) == .committed(key))
+        let capturedSource = try #require(store.sideAssetSourceIdentity(for: key))
+        let destination = store.plexBIFDestinationURL(ratingKey: ratingKey)
+        let staging = try #require(store.attemptStagingURL(for: key, stableURL: destination))
+        let releaseOldFetch = DispatchSemaphore(value: 0)
+        let oldFetchFinished = DispatchSemaphore(value: 0)
+
+        DispatchQueue.global(qos: .utility).async {
+            releaseOldFetch.wait()
+            try? Data([0xB]).write(to: staging)
+            _ = store.promoteSideAssetStagingFile(
+                for: key, expectedSource: capturedSource,
+                stagingURL: staging, to: destination)
+            _ = store.updateMetadata(for: key, expectedSideAssetSource: capturedSource) {
+                $0.plexBIFRelativePath = destination.lastPathComponent
+            }
+            oldFetchFinished.signal()
+        }
+
+        #expect(store.updateMetadata(for: key) {
+            $0.sourcePartID = 20
+            $0.serverPreparedVersion = true
+        } == .applied)
+        releaseOldFetch.signal()
+        #expect(await waitForSignal(oldFetchFinished, timeout: 1))
+
+        #expect(store.metadata(for: ratingKey)?.sourcePartID == 20)
+        #expect(store.metadata(for: ratingKey)?.serverPreparedVersion == true)
+        #expect(store.metadata(for: ratingKey)?.plexBIFRelativePath == nil)
+        #expect(!FileManager.default.fileExists(atPath: destination.path))
+    }
+
     @Test func attemptOwnedRecordRejectsMissingExpectedAndUnownedExistingRows() throws {
         try withTemporaryDirectory { directory in
             let expected = DownloadAttemptID(rawValue: "attempt-expected")!
@@ -1566,7 +1737,7 @@ struct DownloadStorePersistenceTests {
         }
     }
 
-    @Test func subtitleRepairPersistsThroughInjectedWriter() throws {
+    @Test func ownerlessSubtitleFileIsNotAdoptedOnLoad() throws {
         try withTemporaryDirectory { directory in
             let ratingKey = "plex:item-1"
             let initial = DownloadStore(baseDirectory: directory)
@@ -1597,16 +1768,47 @@ struct DownloadStorePersistenceTests {
                 }
             )
 
-            #expect(writes.attemptCount == 1)
-            let repairedTrack = try #require(
-                repaired.records.first?.metadata?.offlineTextSubtitles?.first
-            )
-            #expect(repairedTrack.id == 7)
-            #expect(repairedTrack.codec == "srt")
-            #expect(repairedTrack.relativePath == subtitleURL.lastPathComponent)
+            #expect(writes.attemptCount == 0)
+            #expect(repaired.records.first?.metadata?.offlineTextSubtitles == nil)
 
             let restored = DownloadStore(baseDirectory: directory)
-            #expect(restored.records.first?.metadata?.offlineTextSubtitles == [repairedTrack])
+            #expect(restored.records.first?.metadata?.offlineTextSubtitles == nil)
+        }
+    }
+
+    @Test func ownerlessPersistedSideAssetBundleFailsClosedOnLoad() throws {
+        try withTemporaryDirectory { directory in
+            let ratingKey = "plex:ownerless-assets"
+            let attempt = DownloadAttemptID(rawValue: "attempt-current")!
+            let poster = directory.appendingPathComponent("ownerless.poster.jpg")
+            try Data([0x1]).write(to: poster)
+            let seed = DownloadStore(baseDirectory: directory)
+            #expect(seed.createAttemptOwnedRecord(DownloadRecord(
+                ratingKey: ratingKey, attemptID: attempt, title: "Ownerless",
+                localURL: directory.appendingPathComponent("ownerless.mp4"), status: .complete,
+                metadata: OfflineMetadata(
+                    ratingKey: ratingKey, title: "Ownerless", type: "movie",
+                    posterRelativePath: poster.lastPathComponent, backendKind: .plex)),
+                attemptID: attempt) == .committed(
+                    DownloadAttemptKey(ratingKey: ratingKey, attemptID: attempt)))
+            let indexURL = directory.appendingPathComponent("index.json")
+            let data = try Data(contentsOf: indexURL)
+            var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            var rows = try #require(object["rows"] as? [[String: Any]])
+            var persistedMetadata = try #require(rows[0]["metadata"] as? [String: Any])
+            persistedMetadata.removeValue(forKey: "sideAssetBundleOwner")
+            rows[0]["metadata"] = persistedMetadata
+            object["rows"] = rows
+            try JSONSerialization.data(withJSONObject: object).write(to: indexURL, options: .atomic)
+
+            let restored = DownloadStore(baseDirectory: directory)
+
+            let metadata = try #require(restored.metadata(for: ratingKey))
+            #expect(!metadata.hasCachedSideAssets)
+            #expect(metadata.sideAssetBundleOwner == nil)
+            #expect(!FileManager.default.fileExists(atPath: poster.path))
+            let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(relaunched.metadata(for: ratingKey)?.posterRelativePath == nil)
         }
     }
 

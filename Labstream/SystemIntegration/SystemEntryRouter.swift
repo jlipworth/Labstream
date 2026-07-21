@@ -13,7 +13,20 @@ import PMSKit
 @MainActor
 @Observable
 final class SystemEntryRouter {
+    typealias ReadinessSleep = @Sendable (Duration) async throws -> Void
+
     static let shared = SystemEntryRouter()
+
+    /// Injectable only so cancellation can be synchronized in a scheduler-independent test.
+    /// The shipping path remains the standard cancellable clock sleep.
+    @ObservationIgnored
+    private let readinessSleep: ReadinessSleep
+
+    init(readinessSleep: @escaping ReadinessSleep = { duration in
+        try await Task.sleep(for: duration)
+    }) {
+        self.readinessSleep = readinessSleep
+    }
 
     /// One navigation request from an intent or a Spotlight result.
     ///
@@ -162,7 +175,14 @@ final class SystemEntryRouter {
                     didKickRestore = true
                 }
             }
-            try? await Task.sleep(for: .milliseconds(250))
+            do {
+                try await readinessSleep(.milliseconds(250))
+            } catch {
+                // Cancellation means the intent/entity query no longer needs readiness.
+                // Return through this non-throwing API instead of suppressing the error and
+                // spinning on MainActor until the wall-clock deadline.
+                return false
+            }
         }
         return appModel?.isBrowseReady ?? false
     }

@@ -1200,9 +1200,16 @@ final class PlaybackController {
         // Invalidate callbacks before doing any final reporting. Observer removal cannot retract
         // a KVO/notification/time callback that has already queued its MainActor continuation.
         playbackGeneration += 1
+        let terminalLiveClockMs = rawPlayerClockMs
+        let terminalProgressMs = PlaybackTerminalPositionPolicy.position(
+            liveClockMs: terminalLiveClockMs,
+            liveClockIsTrustworthy: terminalLiveClockMs.map(shouldUseLivePlayheadForRestart) ?? false,
+            heldTargetMs: isSeeking ? seekHoldTargetMs : nil,
+            lastTrustworthyMs: lastTrustworthyPlaybackMs,
+            savedOffsetMs: item.viewOffset)
         maybeRecordDiagnosticSnapshot(force: true)
         recordPlaybackDiagnostic("playback.session_stop", fields: [
-            "resume": .millisecondsBucket(currentResumeMs),
+            "resume": .millisecondsBucket(terminalProgressMs),
             "sent_transcode_stop": .bool(sentTranscodeStop),
         ])
         playbackItemLoadSpan?.end(result: "cancelled", fields: ["path_mode": performancePathMode])
@@ -1221,8 +1228,8 @@ final class PlaybackController {
             remoteHLSProxy = nil
             remoteHLSProxyGeneration = nil
         }
-        timeline.report(state: .stopped, force: true)
-        recordLocalPlaybackPosition()
+        timeline.report(state: .stopped, force: true, positionMs: terminalProgressMs)
+        recordLocalPlaybackPosition(terminalProgressMs)
         sendTranscodeStop()
         stopRemoteSessionIfNeeded()
         cancelPendingFinalTargetRebuild()
@@ -1241,9 +1248,9 @@ final class PlaybackController {
         audioSession.deactivate()
     }
 
-    private func recordLocalPlaybackPosition() {
+    private func recordLocalPlaybackPosition(_ positionMs: Int? = nil) {
         guard let localPlaybackProgress else { return }
-        localPlaybackProgress(currentResumeMs, item.duration)
+        localPlaybackProgress(positionMs ?? currentResumeMs, item.duration)
     }
 
     private func stopRemoteSessionIfNeeded() {
@@ -2365,9 +2372,15 @@ final class PlaybackController {
             noteResumeClockDesyncIfNeeded(liveMs: live)
         }
         let base = live ?? baseMs ?? playheadSnapshotForRestart(reason: "relative_seek").positionMs
-        let deltaMs = deltaSeconds * 1000
+        let (deltaMs, deltaOverflow) = deltaSeconds.multipliedReportingOverflow(by: 1000)
         let upperBound = durationMs.flatMap { $0 > 0 ? $0 : nil } ?? knownDurationMs
-        let unclamped = base + deltaMs
+        let (sum, sumOverflow) = base.addingReportingOverflow(deltaMs)
+        let unclamped: Int
+        if deltaOverflow || sumOverflow {
+            unclamped = deltaSeconds < 0 ? Int.min : Int.max
+        } else {
+            unclamped = sum
+        }
         let target = if let upperBound {
             min(max(unclamped, 0), upperBound)
         } else {
@@ -3100,13 +3113,17 @@ final class PlaybackController {
         #endif
     }
 
-    func performRemotePlaybackPositionChange(toSeconds seconds: Double) {
-        let target = VideoNowPlayingCommandPolicy.clampedPositionMilliseconds(
-            positionTime: seconds,
-            durationMilliseconds: knownDurationMs)
-        // `performUserSeek` applies all buffer/rebuild policy and refreshes Now Playing
-        // metadata with the clamped target.
-        performUserSeek(toMs: target)
+    var videoNowPlayingDurationMilliseconds: Int? { knownDurationMs }
+
+    /// Apply a validated system-transport intent through the same app-owned user-seek paths as
+    /// the custom chrome. Platform coordinators own publishing, not seek behavior.
+    func performVideoNowPlayingCommand(_ intent: VideoNowPlayingCommandPolicy.Intent) {
+        switch intent {
+        case .seek(let targetMilliseconds):
+            performUserSeek(toMs: targetMilliseconds)
+        case .skip(let deltaSeconds):
+            performRelativeUserSeek(bySeconds: deltaSeconds)
+        }
     }
 
     #if os(visionOS)
