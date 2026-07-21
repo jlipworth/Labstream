@@ -18,6 +18,10 @@ struct LibrariesView: View {
 
     private let visibilityStore = LibraryVisibilityStore()
 
+    /// tvOS: entering the grid from the tab bar should land on the FIRST card, not
+    /// whichever card is geometrically nearest the focused tab button (same fix as Home).
+    @Namespace private var librariesFocusNamespace
+
     var body: some View {
         Group {
             switch loadState {
@@ -104,10 +108,17 @@ struct LibrariesView: View {
                             LibrarySectionCard(title: item.title, kind: item.kind)
                         }
                         .cardLink(cornerRadius: DS.Radius.card)
+                        #if os(tvOS)
+                        .tvPrefersDefaultFocus(item.id == rootItems.first?.id,
+                                               in: librariesFocusNamespace)
+                        #endif
                     }
                 }
                 .padding(DS.pagePadding(compact: compactWidth))
             }
+            #if os(tvOS)
+            .focusScope(librariesFocusNamespace)
+            #endif
         }
     }
 

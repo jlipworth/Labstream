@@ -293,6 +293,11 @@ private struct HubRail: View {
             // keeps the inset out of the cards' own geometry (see the gaze-routing
             // gotcha in docs/DEVELOPMENT.md).
             .mediaRailScrollStyle(horizontalMargin: DS.Scroll.railHorizontalMargin(compact: compactWidth))
+            #if os(tvOS)
+            // Declared focus row: vertical moves treat the whole rail as a target, so a
+            // card whose column doesn't overlap the row above/below still routes into it.
+            .focusSection()
+            #endif
         }
     }
 
