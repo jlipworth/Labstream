@@ -192,6 +192,19 @@ private struct PosterHoverEffect: ViewModifier {
 #endif
 
 #if os(tvOS)
+extension View {
+    /// `prefersDefaultFocus` behind an optional namespace, so rails shared across hosts
+    /// can mark a default-focus card only when their screen provides a focus scope.
+    @ViewBuilder
+    func tvPrefersDefaultFocus(_ prefers: Bool, in namespace: Namespace.ID?) -> some View {
+        if let namespace {
+            prefersDefaultFocus(prefers, in: namespace)
+        } else {
+            self
+        }
+    }
+}
+
 /// Bare tvOS button chrome for poster/card lockups: renders the label with no system
 /// focus platter or lift. A custom ButtonStyle on tvOS still participates in the focus
 /// engine and receives Select (proven by the player's hidden-surface owner); the visible
