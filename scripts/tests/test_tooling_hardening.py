@@ -169,6 +169,18 @@ class ToolingHardeningTests(unittest.TestCase):
             framework_allowed = subprocess.run(["scripts/ci-hygiene.sh"], cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             self.assertEqual(framework_allowed.returncode, 0, framework_allowed.stderr)
 
+            # The framework exemption is an explicit list, not *.framework: an
+            # unexpected framework must still trip the guard.
+            pbx.write_text(pbx.read_text().replace(
+                "\t/* End PBXFileReference section */",
+                "\t\tEE0000000000000000000010 /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EE0000000000000000000011 /* WebKit.framework */; };\n"
+                "\t/* End PBXFileReference section */",
+            ))
+            framework_blocked = subprocess.run(["scripts/ci-hygiene.sh"], cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertNotEqual(framework_blocked.returncode, 0)
+            self.assertIn("unexpected project.pbxproj file-reference/build-file churn", framework_blocked.stderr)
+            self.commit_all(root)
+
             pbx.write_text(pbx.read_text().replace(
                 "\t/* End PBXFileReference section */",
                 "\t\tBB0000000000000000000001 /* NewView.swift */ = {isa = PBXFileReference; path = NewView.swift; };\n\t/* End PBXFileReference section */",
