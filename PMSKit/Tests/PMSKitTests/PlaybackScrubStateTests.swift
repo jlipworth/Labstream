@@ -116,4 +116,27 @@ struct PlaybackScrubStateTests {
         state.updateLivePosition(67_200, holdCommittedTarget: false)
         #expect(state.displayedPositionMs == 67_200)
     }
+
+    @Test("a rapid second scrub seeded from displayedPositionMs resumes at the held target, not the stale clock")
+    func rapidSecondScrubStartsFromHeldTarget() {
+        var state = PlaybackScrubState(durationMs: 120_000, livePositionMs: 10_000)
+
+        state.beginDrag(livePositionMs: 10_000)
+        state.updateDrag(fraction: 60_000.0 / 120_000.0)
+        #expect(state.commit() == 60_000)
+
+        // The seek is still rebuilding: the live clock keeps reporting the pre-seek offset,
+        // held off by the lifecycle guard so the display stays pinned to the target.
+        state.updateLivePosition(10_400, holdCommittedTarget: true)
+        #expect(state.displayedPositionMs == 60_000)
+
+        // A presenter that seeds the next drag from the raw player clock would restart the
+        // scrub at 10s; seeding from displayedPositionMs (the tvOS call-site contract)
+        // resumes exactly at the committed target.
+        state.beginDrag(livePositionMs: state.displayedPositionMs)
+        #expect(state.displayedPositionMs == 60_000)
+        state.updateDrag(fraction: 70_000.0 / 120_000.0)
+        #expect(state.commit() == 70_000)
+        #expect(state.displayedPositionMs == 70_000)
+    }
 }
