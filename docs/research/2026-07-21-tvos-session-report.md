@@ -130,11 +130,15 @@ Pressing Select on a highlighted system-keyboard letter inserts nothing into the
 - **Remaining suspects are live-only layers** not present in the passing replica: the
   `NavigationStack` `.id(session key)`, environment injections, `.onExitCommand` at the `TabView`
   level, `.task(id:)`, and the `MiniPlayerBar` `safeAreaInset`.
-- **Decisive test committed but not yet executed:** `testLiveSearchTabSystemKeyboardInsertsLetter`
-  (`b515e616`) drives the **real** Search tab (production `RootView`/`SearchView` under the Plex
-  browse fixture, `The Long Orbit` fixture asserted present) with the exact failing remote sequence —
-  focus field, Select to raise the keyboard, Select on a letter — and fails with an attached hierarchy
-  dump if no character is inserted. Once it fails there, the live-only layers can be bisected in place.
+- **Decisive test ran — and PASSED:** `testLiveSearchTabSystemKeyboardInsertsLetter` (`b515e616`)
+  drives the **real** Search tab (production `RootView`/`SearchView` under the Plex browse fixture,
+  `The Long Orbit` fixture asserted present) with the exact failing remote sequence — focus field,
+  Select to raise the keyboard, Select on a letter. It was part of the full 16-test suite run at
+  `eb12403c` (correcting an earlier draft of this report that claimed it postdated that run) and
+  **passed in 13.97 s**: synthetic `XCUIRemote` input inserts the letter into the live search field.
+  The user-visible failure therefore does not reproduce under harness-driven remote input — the
+  remaining suspect surface shifts to the physical input path (DeviceHub key routing on this
+  simulator setup, or real-remote-specific keyboard behavior), not the app's view composition.
 - `.searchable` exhibited the **identical** defect when tried earlier, which is consistent with a
   possible Apple framework bug rather than an app-owned responder defect. The system keyboard is being
   kept; no app-owned custom keyboard is being introduced.
@@ -175,19 +179,35 @@ move handler is the sole actor on them. Left/Right open or extend a scrub draft 
 acceleration (10 s / 30 s / 60 s strides); Select commits the draft through the shared
 `PlaybackScrubState.commit()` → `performUserSeek` path; moving focus away abandons the draft; a
 trick-play preview floats above the thumb while scrubbing; and chrome auto-hide is suppressed while a
-draft is open. This is **implemented but not yet manually verified on the simulator**.
+draft is open. **Manually verified live and approved.**
+
+With the scrubber proven, the on-screen transport buttons became redundant and were removed
+(`e02a4d07`, user-approved): the remote is the transport. Chrome reduces to title/menu strip over the
+full-width timeline; a side press while chrome is hidden performs an instant ±10 s skip plus a brief
+reveal (the tvOS platform standard — the skip amount is the single `tvRemoteSkipSeconds` constant);
+hardware Play/Pause (or Select on the timeline) toggles playback; and the timeline is the chrome's
+default focus through the verified-write path (`tvEnsureFocus` — the raw appear-time write was racing
+view insertion and dropping, re-confirming the TVUI-024 evidence). Player UI tests were retargeted
+from the removed Play/Pause label to `tv.player.timeline`, proving pause via the paused-chrome
+pin-visible behavior instead.
+
+Separately, the tvOS target previously shipped **no app icon** — the app appeared on the tvOS home
+screen as a blank white tile, indistinguishable from the UI-test runner (the catalog had visionOS/
+macOS/mobile icons only, and the target had no `ASSETCATALOG_COMPILER_APPICON_NAME`). Fixed with a
+generated `TVAppIcon.brandassets` (two-layer parallax home-screen and App Store image stacks plus Top
+Shelf images, composed from the existing Labstream glyph over a brand-teal gradient).
 
 ## Open items
 
-- **Search (TVUI-004):** parked. Next step is to execute the committed live-repro test
-  `testLiveSearchTabSystemKeyboardInsertsLetter` (`b515e616`), then bisect the remaining live-only
-  layers, and either fix an app-owned responder defect or file a reproducible Apple beta blocker. Do
-  not accept hardware-keyboard typing as the acceptance gate.
-- **Timeline scrubber live verification:** `12d0613e` is implemented but not yet manually exercised on
-  the simulator — Left/Right draft/acceleration, Select commit, focus-away abandon, trick-play
-  preview, and auto-hide suppression all still need a live pass.
-- **`testLiveSearchTabSystemKeyboardInsertsLetter` live repro:** committed (`b515e616`) but not yet
-  run; it postdates the passing suite below.
+- **Search (TVUI-004):** parked. The committed live-repro test
+  `testLiveSearchTabSystemKeyboardInsertsLetter` (`b515e616`) ran in the full suite below and
+  **passed** — synthetic remote input inserts letters into the real Search field — so the app's view
+  composition is exonerated end-to-end and the remaining suspects are the physical input path
+  (DeviceHub key routing to this simulator, or real-remote keyboard behavior). Next step is live
+  characterization on that input path, not further app-side bisection. Do not accept
+  hardware-keyboard typing as the acceptance gate.
+- The timeline scrubber (`12d0613e`) was verified live and approved; the transport-button removal
+  (`e02a4d07`) re-ran the five player-chrome UI tests (see suite note below).
 
 ## Full UI-test-suite results
 
@@ -202,7 +222,47 @@ Notable results:
 - `testBackendLaunchFixturesAreDeterministic` — which had **flaked earlier** on this branch — **passed
   cleanly** this run, resolving the flake flagged in the open items.
 
-Two things this run does **not** cover: it predates the timeline-scrubber commit `12d0613e`, so the
-scrubber is unverified by it, and it does **not** include
-`testLiveSearchTabSystemKeyboardInsertsLetter` (`b515e616`), the decisive live search repro, which
-remains committed-but-unrun.
+The 16 tests **include** `testLiveSearchTabSystemKeyboardInsertsLetter` (`b515e616`), which passed
+(13.97 s) — see the TVUI-004 analysis above; an earlier draft of this report wrongly stated it was
+excluded and unrun. What this run does **not** cover: it predates the timeline-scrubber commit
+`12d0613e` and the transport-row removal `e02a4d07`, whose five rewritten player-chrome tests were
+re-run separately afterwards.
+
+## Post-review fixes (2026-07-21, later session)
+
+A three-lane external review (player/focus, application UI, target/tooling/docs) of the committed
+branch produced the following confirmed-and-fixed findings:
+
+- **Menu-strip traversal auto-hide (found by the rewritten player tests):** the timeline's own
+  `onMoveCommand` consumes Up/Down, so the chrome-root handler never saw those presses and could not
+  restart the 5 s auto-hide countdown — the chrome hid mid-traversal ~3 s after focus reached the
+  strip. The timeline handler now restarts the countdown for the presses it consumes;
+  `testRevealedChromeReachesMenusAndRestoresFocus` passes.
+- **Music A–Z rail on tvOS:** `MusicPagedGrid` still rendered the persistent edge index on tvOS
+  (video grids had already switched to the Jump button there). tvOS now matches the video grid: no
+  rail, `LibraryAlphabetJumpButton` in the browse controls.
+- **Root Back handling:** the tvOS shell's unconditional `.onExitCommand` swallowed Back inside
+  Settings (whose internal `NavigationStack` it cannot pop) and at tab roots. The handler is now
+  attached only while a lifted navigation path is non-empty.
+- **Rapid second scrub:** a new drag seeded from `controller.currentResumeMs`, which can still be the
+  pre-seek clock during a stream rebuild; it now seeds from `scrubState.displayedPositionMs` (held
+  committed target), with a PMSKit regression test.
+- **Chrome pinned after scrub abandon:** abandoning a drag by moving focus off the timeline cancelled
+  the scrub but could leave no hide timer scheduled; the abandon path now restarts the countdown.
+- **Submenu close focus race:** `closeMenu` restored strip focus with a raw `tvPlayerFocus` write —
+  the same droppable-write class `tvEnsureFocus` exists for; it now uses `tvEnsureFocus`.
+- **Search Clear:** the persistent tvOS Search tab no longer exits to the prior tab on Clear.
+- **Dead tvOS sign-in controls:** the "Open Plex sign-in on this device" button (a no-op on tvOS —
+  `WebAuthSession` cancels immediately) is hidden, and the Plex/Emby pairing URLs render as
+  instructional text instead of dead focusable `Link`s.
+- **CI framework allowlist:** `ci-hygiene.sh` exempted any `*.framework` churn; it now allowlists
+  only AVKit, with a negative test in `test_tooling_hardening.py` (15/15 pass).
+- **Report provenance:** corrected the live-search-test claims in this report (it ran and passed in
+  the 16-test suite; see above).
+
+Known remaining test gaps (accepted, not blocking this branch): exact-once Play/Pause dispatch is
+not proven by an end-state assertion; no automated coverage for rapid consecutive scrubs at the UI
+layer, scrub acceleration tiers, or the hidden ±10 s side skips; submenu tests prove shell
+open/close rather than row selection and omit Quality (absent from the fixture); search keyboard
+insertion under physical input remains the TVUI-004 acceptance gap; physical Apple TV validation
+remains open.
