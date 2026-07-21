@@ -122,6 +122,9 @@ struct CustomPlayerChrome: View {
     @State private var mobileDisplayStatusTask: Task<Void, Never>?
     #if os(tvOS)
     @FocusState private var tvPlayerFocus: TVPlayerFocus?
+    /// When `tvPlayerFocus` last changed — the "engine already resolved this press" guard in
+    /// `tvHandleUnresolvedMove` (see ordering evidence there).
+    @State private var tvPlayerFocusChangedAt: Date = .distantPast
     #endif
     #if os(iOS)
     @State private var chromeViewportSize: CGSize = .zero
@@ -383,6 +386,7 @@ struct CustomPlayerChrome: View {
             }
         }
         .onChange(of: tvPlayerFocus) { old, new in
+            tvPlayerFocusChangedAt = Date()
             tvEvidenceLog("tvPlayerFocus \(String(describing: old)) -> \(String(describing: new))")
         }
         #endif
@@ -2311,17 +2315,29 @@ struct CustomPlayerChrome: View {
         }
     }
 
-    /// Moves the focus engine could not resolve bubble to the chrome's `onMoveCommand`; while
-    /// the chrome is visible, honor the layout's diagonal: the menu strip sits top-right and
+    /// Diagonal focus fallback while the chrome is visible: the menu strip sits top-right and
     /// the transport cluster bottom-left, so Left off the strip's leading edge drops into the
     /// transport row, and Right off the transport's trailing edge climbs back into the strip.
-    /// Only unresolved moves reach here, so no leading/trailing-edge bookkeeping is needed.
+    ///
+    /// `onMoveCommand` fires for EVERY dpad press — engine-resolved or not — and its ordering
+    /// against the engine's focus update is inconsistent (captured 2026-07-21: update precedes
+    /// the command by ~80-105ms on some presses, trails it by ~5ms on others). Acting on every
+    /// command therefore hijacked ordinary in-row moves (one Right press hopped playPause →
+    /// skip(10) → Quality). Two guards restrict the fallback to genuinely dead presses: the
+    /// focused item must be the row's edge item in the pressed direction (the engine has no
+    /// in-row target), and focus must not have just changed (a trailing command for a press
+    /// the engine already resolved).
     private func tvHandleUnresolvedMove(_ direction: MoveCommandDirection) {
         guard selectedMenu == nil else { return }
+        guard Date().timeIntervalSince(tvPlayerFocusChangedAt) > 0.15 else { return }
         switch (direction, tvPlayerFocus) {
-        case (.left, .menu):
+        case (.left, .menu(let menu)) where menu == availableMenus.first:
             tvPlayerFocus = scrubState.durationMs > 0 ? .skip(30) : .playPause
-        case (.right, .skip), (.right, .playPause):
+        case (.right, .skip(30)):
+            if let firstMenu = availableMenus.first {
+                tvPlayerFocus = .menu(firstMenu)
+            }
+        case (.right, .playPause) where scrubState.durationMs <= 0:
             if let firstMenu = availableMenus.first {
                 tvPlayerFocus = .menu(firstMenu)
             }
