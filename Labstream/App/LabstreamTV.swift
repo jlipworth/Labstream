@@ -22,6 +22,7 @@ struct LabstreamTV: App {
         #if DEBUG
         TVUITestLaunchConfiguration.configure(appModel: services.appModel,
                                               bootstrap: launchBootstrap)
+        TVInputEvidence.installIfNeeded()
         #endif
         _appModel = State(initialValue: services.appModel)
         _authManager = State(initialValue: services.authManager)

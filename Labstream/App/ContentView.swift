@@ -28,6 +28,25 @@ struct ContentView: View {
     let bootstrap: SessionBootstrap
 
     var body: some View {
+        #if os(tvOS) && DEBUG
+        // Deterministic tvOS UI-test fixtures (player chrome, system keyboard) bypass the
+        // restore/login/browse gate entirely; production launches never set a fixture kind.
+        switch TVUITestLaunchConfiguration.fixtureKind {
+        case .player:
+            TVPlayerFixtureView()
+                .environment(musicPlayer)
+                .environment(appModel)
+        case .keyboard:
+            TVKeyboardFixtureView()
+        case .browse, nil:
+            mainBody
+        }
+        #else
+        mainBody
+        #endif
+    }
+
+    private var mainBody: some View {
         // #90: the gate is centralized in `BrowseUIGate` so the "switch must not bounce the
         // browse UI" invariant holds for ANY backend (not just Plex via the refreshServers
         // field-preservation carve-out). An already-ready browse UI stays mounted through a

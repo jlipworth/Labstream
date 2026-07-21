@@ -6,9 +6,9 @@ import Foundation
 /// bypass asynchronous Keychain restore so focus tests always start from the same surface.
 @MainActor
 enum TVUITestLaunchConfiguration {
-    static let enabledFlag = "--ui-testing"
-    static let backendFlag = "--ui-testing-backend"
-    static let fixtureFlag = "--ui-testing-fixture"
+    nonisolated static let enabledFlag = "--ui-testing"
+    nonisolated static let backendFlag = "--ui-testing-backend"
+    nonisolated static let fixtureFlag = "--ui-testing-fixture"
 
     static var isEnabled: Bool {
         ProcessInfo.processInfo.arguments.contains(enabledFlag)
@@ -22,12 +22,32 @@ enum TVUITestLaunchConfiguration {
         return MediaBackendKind(rawValue: arguments[index + 1]) ?? .plex
     }
 
-    static var usesBrowseFixture: Bool {
+    /// Deterministic launch surfaces for tvOS UI tests. `browse` seeds synthetic credentials and
+    /// catalog data through the real views; `player` presents the shared custom player over a
+    /// generated local file; `keyboard` shows a minimal native `TextField` used to classify the
+    /// system-keyboard insertion defect (TVUI-004) as app versus runtime behavior.
+    enum FixtureKind: String {
+        case browse
+        case player
+        case keyboard
+    }
+
+    static var fixtureKind: FixtureKind? {
         let arguments = ProcessInfo.processInfo.arguments
         guard isEnabled,
               let index = arguments.firstIndex(of: fixtureFlag),
-              arguments.indices.contains(index + 1) else { return false }
-        return arguments[index + 1] == "browse"
+              arguments.indices.contains(index + 1) else { return nil }
+        return FixtureKind(rawValue: arguments[index + 1])
+    }
+
+    static var usesBrowseFixture: Bool {
+        fixtureKind == .browse
+    }
+
+    /// Player-fixture variant: holds the controller's transport status in `.buffering` so the
+    /// buffering overlay can be reviewed deterministically (TVUI-025).
+    static var playerFixtureStartsBuffering: Bool {
+        fixtureKind == .player && ProcessInfo.processInfo.arguments.contains("--ui-testing-player-buffering")
     }
 
     static func configure(appModel: AppModel, bootstrap: SessionBootstrap) {
