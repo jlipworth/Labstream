@@ -133,19 +133,30 @@ final class LabstreamTVPlayerTests: XCTestCase {
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         XCUIRemote.shared.press(.select)
 
-        // Don't press blind: wait until the system keyboard is up AND one of its keys
-        // actually holds focus, so the next Select provably lands on a letter.
+        // Don't press blind: wait for the system keyboard surface to be up before the next
+        // Select. Prefer proof that a key holds focus, but the tvOS grid keyboard does not
+        // reliably expose keys (or their focus) through the app's accessibility tree, so
+        // fall back to any key existing, then to the field reporting keyboard focus.
         let focusedKey = app.keys.matching(NSPredicate(format: "hasFocus == true")).firstMatch
-        XCTAssertTrue(focusedKey.waitForExistence(timeout: 6),
-                      "a system keyboard key should take focus after Select on the field")
+        if !focusedKey.waitForExistence(timeout: 4),
+           !app.keys.firstMatch.waitForExistence(timeout: 2) {
+            XCTAssertTrue(waitForFocus(field, timeout: 4),
+                          "after Select the keyboard should be up (no key elements exposed; "
+                          + "field should at least report focus)")
+        }
         attachScreen(named: "keyboard entry surface", app: app)
 
         XCUIRemote.shared.press(.select)
         let echo = app.staticTexts["tv.fixture.keyboard.echo"]
         let grew = expectation(for: NSPredicate(format: "label.length > %d", "typed:".count),
                                evaluatedWith: echo)
-        XCTAssertEqual(XCTWaiter().wait(for: [grew], timeout: 4), .completed,
-                       "system keyboard Select should insert a letter; echo shows '\(echo.label)'")
+        if XCTWaiter().wait(for: [grew], timeout: 4) != .completed {
+            let dump = XCTAttachment(string: app.debugDescription)
+            dump.name = "keyboard hierarchy at failure"
+            dump.lifetime = .keepAlways
+            add(dump)
+            XCTFail("system keyboard Select should insert a letter; echo shows '\(echo.label)'")
+        }
         attachScreen(named: "after select on letter", app: app)
     }
 

@@ -373,7 +373,7 @@ struct CustomPlayerChrome: View {
             tvEvidenceLog("shouldShowChrome -> \(visible)")
             if visible {
                 if tvPlayerFocus == nil || tvPlayerFocus == .hiddenSurface {
-                    Task { @MainActor in tvPlayerFocus = .playPause }
+                    tvEnsureFocus(.playPause)
                 }
             } else {
                 tvFocusHiddenSurface()
@@ -2252,19 +2252,39 @@ struct CustomPlayerChrome: View {
 
     /// Focus must land on the hidden-surface owner only after the render pass that inserts it.
     private func tvFocusHiddenSurface() {
-        Task { @MainActor in
-            await Task.yield()
-            if !shouldShowChrome { tvPlayerFocus = .hiddenSurface }
-        }
+        tvEnsureFocus(.hiddenSurface)
     }
 
     private func revealTVChrome() {
         revealChrome(keepVisible: true)
         // Focus assignment must follow the render that reintroduces the controls.
+        tvEnsureFocus(.playPause)
         Task { @MainActor in
             await Task.yield()
-            tvPlayerFocus = .playPause
             scheduleChromeHideIfNeeded()
+        }
+    }
+
+    /// Writes `tvPlayerFocus` after the render pass that (re)introduces the target view, then
+    /// VERIFIES the write stuck. A `@FocusState` write that races the view's insertion is
+    /// silently dropped and resets to nil; captured evidence (TVUI-024 flake) shows the focus
+    /// engine then auto-picks an item outside the chrome's command scope and every subsequent
+    /// remote press bypasses SwiftUI. Outside an open submenu, nil focus is never a valid
+    /// resting state for the player, so a nil observed after the write is always a dropped
+    /// write — retry, bounded so a torn-down player can't loop.
+    private func tvEnsureFocus(_ target: TVPlayerFocus, attempt: Int = 0) {
+        Task { @MainActor in
+            await Task.yield()
+            guard selectedMenu == nil else { return }
+            let targetStillValid = target == .hiddenSurface ? !shouldShowChrome : shouldShowChrome
+            guard targetStillValid else { return }
+            tvPlayerFocus = target
+            guard attempt < 4 else { return }
+            try? await Task.sleep(for: .milliseconds(120))
+            if tvPlayerFocus == nil, selectedMenu == nil {
+                tvEvidenceLog("focus write \(String(describing: target)) dropped; retry \(attempt + 1)")
+                tvEnsureFocus(target, attempt: attempt + 1)
+            }
         }
     }
     #endif
