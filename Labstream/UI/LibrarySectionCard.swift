@@ -19,7 +19,7 @@ struct LibrarySectionCard: View {
     /// kiosk button, so compact width uses a standard-list-scale 56-pt tile.
     private var tileSide: CGFloat {
         #if os(tvOS)
-        96
+        64
         #else
         compactWidth ? 56 : 76
         #endif
@@ -64,7 +64,7 @@ struct LibrarySectionCard: View {
 
     private var cardSpacing: CGFloat {
         #if os(tvOS)
-        24
+        16
         #else
         DS.Space.lg
         #endif
@@ -72,7 +72,7 @@ struct LibrarySectionCard: View {
 
     private var iconSize: CGFloat {
         #if os(tvOS)
-        42
+        28
         #else
         compactWidth ? 25 : 34
         #endif
@@ -80,7 +80,7 @@ struct LibrarySectionCard: View {
 
     private var titleFont: Font {
         #if os(tvOS)
-        .title2.weight(.semibold)
+        .headline
         #else
         .title3.weight(.semibold)
         #endif
@@ -96,7 +96,7 @@ struct LibrarySectionCard: View {
 
     private var cardPadding: CGFloat {
         #if os(tvOS)
-        24
+        16
         #else
         compactWidth ? DS.Space.md : DS.Space.lg
         #endif
@@ -104,11 +104,12 @@ struct LibrarySectionCard: View {
 
     private var cardWidth: CGFloat? {
         #if os(tvOS)
-        440
+        400
         #else
         compactWidth ? nil : 300
         #endif
     }
+
 }
 
 /// The backend-agnostic library kind that drives a `LibrarySectionCard`'s icon and

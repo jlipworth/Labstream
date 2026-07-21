@@ -15,6 +15,10 @@ private enum PlayerPickerMetrics {
     static let rowHeight: CGFloat = 30
     static let rowVerticalPadding: CGFloat = 2
     static let contentPadding: CGFloat = 8
+    #elseif os(tvOS)
+    static let rowHeight: CGFloat = 58
+    static let rowVerticalPadding: CGFloat = 4
+    static let contentPadding: CGFloat = 10
     #else
     static let rowHeight: CGFloat = 44
     static let rowVerticalPadding: CGFloat = DS.Space.sm
@@ -67,7 +71,7 @@ struct QualityTabView: View {
                         .frame(minHeight: PlayerPickerMetrics.rowHeight)
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .playerPickerButtonStyle()
                 }
             }
             .padding(PlayerPickerMetrics.contentPadding)
@@ -111,7 +115,7 @@ struct SpeedTabView: View {
                         .frame(minHeight: PlayerPickerMetrics.rowHeight)
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .playerPickerButtonStyle()
                 }
             }
             .padding(PlayerPickerMetrics.contentPadding)
@@ -440,7 +444,7 @@ struct SubtitlesTabView: View {
                             .frame(minHeight: PlayerPickerMetrics.rowHeight)
                             .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+                        .playerPickerButtonStyle()
                     }
                 }
             }
@@ -547,7 +551,7 @@ struct AudioTabView: View {
                             .frame(minHeight: PlayerPickerMetrics.rowHeight)
                             .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+                        .playerPickerButtonStyle()
                     }
                 }
             }
@@ -625,7 +629,7 @@ struct AudioStreamsTabView: View {
                             .frame(minHeight: PlayerPickerMetrics.rowHeight)
                             .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+                        .playerPickerButtonStyle()
                     }
                 }
             }
@@ -652,5 +656,19 @@ struct StatsTabView: View {
                 .padding(DS.Space.md)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+}
+
+private extension View {
+    /// tvOS needs a visible focused row inside player popovers. The shared plain style is suitably
+    /// dense for pointer/touch/gaze platforms but provides almost no focus affordance on a TV.
+    @ViewBuilder
+    func playerPickerButtonStyle() -> some View {
+        #if os(tvOS)
+        self.buttonStyle(.bordered)
+            .controlSize(.small)
+        #else
+        self.buttonStyle(.plain)
+        #endif
     }
 }

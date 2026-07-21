@@ -37,15 +37,7 @@ struct SearchView: View {
     }
 
     var body: some View {
-        Group {
-            if externalQuery == nil {
-                resultsBody
-                    .searchable(text: queryBinding, prompt: "Movies, shows, music…")
-                    .searchFocused($searchFieldFocused)
-            } else {
-                resultsBody
-            }
-        }
+        searchSurface
         .labstreamTopLevelNavigationTitle("Search")
         .navigationDestination(for: MediaItem.self) { item in
             // Capture the active backend as the item's origin (#100) so actions resolve
@@ -58,6 +50,7 @@ struct SearchView: View {
         .navigationDestination(for: RailViewAllDestination.self) { destination in
             RailViewAllView(destination: destination)
         }
+        #if !os(tvOS)
         .toolbar {
             if externalQuery == nil, showsClearSearchButton {
                 #if os(macOS)
@@ -71,6 +64,7 @@ struct SearchView: View {
                 #endif
             }
         }
+        #endif
         .task(id: searchTaskID) {
             await runSearch()
         }
@@ -84,7 +78,75 @@ struct SearchView: View {
         }
     }
 
-    private var resultsBody: some View {
+    /// `.searchable`'s navigation-owned search field can display the tvOS keyboard without
+    /// retaining an editable first responder. The focus engine then moves across letters, but
+    /// Select is discarded and the bound query never changes. A real `TextField` gives tvOS one
+    /// explicit input owner while retaining the system keyboard, dictation, and Remote app input.
+    @ViewBuilder
+    private var searchSurface: some View {
+        #if os(tvOS)
+        VStack(spacing: 0) {
+            HStack(spacing: 18) {
+                Image(systemName: "magnifyingglass")
+                    .font(.title2.weight(.medium))
+                    .foregroundStyle(.secondary)
+
+                TextField("Movies, shows, music…", text: queryBinding)
+                    .focused($searchFieldFocused)
+                    .textFieldStyle(.plain)
+                    .font(.title3)
+                    .accessibilityIdentifier("tv.search.field")
+
+                if showsClearSearchButton {
+                    Button {
+                        clearSearch()
+                        searchFieldFocused = true
+                    } label: {
+                        Label("Clear search", systemImage: "xmark.circle.fill")
+                            .labelStyle(.iconOnly)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Clear search")
+                }
+            }
+            .padding(.horizontal, 28)
+            .frame(width: 920, height: 70)
+            .background(.thinMaterial, in: Capsule())
+            .padding(.top, 28)
+            .padding(.bottom, 12)
+
+            searchResultsContent
+        }
+        .task {
+            // Selecting the Search tab should immediately make the system keyboard usable.
+            // Defer one run-loop turn so the tab transition has installed this field.
+            await Task.yield()
+            searchFieldFocused = true
+        }
+        #if DEBUG
+        // TVUI-004 evidence: log binding-level transitions so a manual session shows
+        // whether keyboard Selects ever reach the binding (query length only, never text).
+        .onChange(of: queryText) { _, value in
+            NSLog("%@", "TVSearchEvidence: query length -> \(value.count)")
+        }
+        .onChange(of: searchFieldFocused) { _, focused in
+            NSLog("%@", "TVSearchEvidence: field focused -> \(focused)")
+        }
+        #endif
+        #else
+        Group {
+            if externalQuery == nil {
+                searchResultsContent
+                    .searchable(text: queryBinding, prompt: "Movies, shows, music…")
+                    .searchFocused($searchFieldFocused)
+            } else {
+                searchResultsContent
+            }
+        }
+        #endif
+    }
+
+    private var searchResultsContent: some View {
         ScrollView {
             switch loadState {
             case .idle:
@@ -311,14 +373,40 @@ private struct SearchHubSection: View {
                         .cardLink()
                         .videoCardContextMenu(for: item)
                     }
+
+                    #if os(tvOS)
+                    if let destination {
+                        RailViewAllCard(title: section.title,
+                                        destination: destination,
+                                        width: viewAllCardSize.width,
+                                        height: viewAllCardSize.height)
+                    }
+                    #endif
                 }
                 .padding(.vertical, DS.Space.sm)
             }
             // contentMargins, not .padding on the lazy content — see the hit-region
             // gotcha in docs/DEVELOPMENT.md (padding shifts gaze/hit shapes left).
             .mediaRailScrollStyle(horizontalMargin: DS.Scroll.railHorizontalMargin(compact: compactWidth))
+            #if os(tvOS)
+            // Declared focus row (see HubRail): whole-rail target for vertical moves.
+            .focusSection()
+            #endif
         }
     }
+
+    #if os(tvOS)
+    /// Match the trailing View All card to this hub's artwork frame: 16:9 for episode
+    /// hubs (the 360-pt tvOS episode still width in `HomeRailCellMetrics`), else the
+    /// canonical 2:3 rail poster.
+    private var viewAllCardSize: CGSize {
+        if section.items.first?.kind == .episode {
+            return CGSize(width: 360, height: (360 * 9.0 / 16.0).rounded())
+        }
+        let width = DS.Poster.railWidth(compact: false)
+        return CGSize(width: width, height: DS.Poster.height(for: width))
+    }
+    #endif
 }
 
 /// Artist/album/playlist rail that carries the source library into the destination.
@@ -347,6 +435,10 @@ private struct SearchMusicRail: View {
                 .padding(.vertical, DS.Space.sm)
             }
             .mediaRailScrollStyle(horizontalMargin: DS.Scroll.railHorizontalMargin(compact: compactWidth))
+            #if os(tvOS)
+            // Declared focus row (see HubRail): whole-rail target for vertical moves.
+            .focusSection()
+            #endif
         }
     }
 }

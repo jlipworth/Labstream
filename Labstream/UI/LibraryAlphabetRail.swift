@@ -1,16 +1,42 @@
 import SwiftUI
 import PMSKit
 
-#if os(visionOS)
-/// Gaze-friendly replacement for the persistent edge index on visionOS. The popover
-/// keeps all available buckets spatially close while the button makes jumping an
+#if os(visionOS) || os(tvOS)
+/// Focus/gaze-friendly replacement for the persistent edge index on spatial and television
+/// platforms. The popover keeps all available buckets close while the button makes jumping an
 /// intentional browse action instead of permanent chrome over the poster grid.
 struct LibraryAlphabetJumpButton: View {
     let entries: [AlphabetBucket]
     let onPick: (AlphabetBucket) -> Void
 
     @State private var isPresented = false
-    private let columns = Array(repeating: GridItem(.fixed(44), spacing: DS.Space.sm), count: 6)
+    private var cellSide: CGFloat {
+        #if os(tvOS)
+        100
+        #else
+        44
+        #endif
+    }
+
+    private var columnCount: Int {
+        #if os(tvOS)
+        6
+        #else
+        6
+        #endif
+    }
+
+    private var columns: [GridItem] {
+        Array(repeating: GridItem(.fixed(cellSide), spacing: gridSpacing), count: columnCount)
+    }
+
+    private var gridSpacing: CGFloat {
+        #if os(tvOS)
+        DS.Space.lg
+        #else
+        DS.Space.sm
+        #endif
+    }
 
     var body: some View {
         Button {
@@ -20,28 +46,95 @@ struct LibraryAlphabetJumpButton: View {
                 .font(.callout)
         }
         .buttonStyle(.bordered)
+        #if os(tvOS)
+        .controlSize(.small)
+        #endif
         .accessibilityLabel("Jump through library")
+        #if os(tvOS)
+        .fullScreenCover(isPresented: $isPresented) {
+            tvJumpPicker
+        }
+        #else
         .popover(isPresented: $isPresented, arrowEdge: .top) {
-            VStack(alignment: .leading, spacing: DS.Space.md) {
-                Text("Jump to")
-                    .font(.headline)
+            jumpPickerContent
+            .padding(popoverPadding)
+            .frame(width: popoverWidth)
+        }
+        #endif
+    }
 
-                LazyVGrid(columns: columns, spacing: DS.Space.sm) {
-                    ForEach(entries, id: \.display) { entry in
-                        Button(entry.display) {
-                            isPresented = false
-                            onPick(entry)
-                        }
-                        .buttonStyle(.bordered)
-                        .font(.callout.weight(.semibold).monospaced())
-                        .frame(width: 44, height: 44)
-                        .accessibilityLabel("Jump to \(entry.display)")
+    private var jumpPickerContent: some View {
+        VStack(alignment: .leading, spacing: DS.Space.md) {
+            Text("Jump to")
+                .font(.headline)
+
+            LazyVGrid(columns: columns, spacing: gridSpacing) {
+                ForEach(entries, id: \.display) { entry in
+                    Button {
+                        isPresented = false
+                        onPick(entry)
+                    } label: {
+                        Text(entry.display)
+                            .font(jumpCellFont)
+                            .frame(width: cellLabelSide, height: cellLabelSide)
                     }
+                    .buttonStyle(.bordered)
+                    #if os(tvOS)
+                    .controlSize(.small)
+                    #endif
+                    .accessibilityLabel("Jump to \(entry.display)")
                 }
             }
-            .padding(DS.Space.lg)
-            .frame(width: 340)
         }
+    }
+
+    #if os(tvOS)
+    private var tvJumpPicker: some View {
+        jumpPickerContent
+            .padding(DS.Space.xxl)
+            .frame(width: popoverWidth)
+            .background(Color.black.opacity(0.88),
+                        in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
+                    .strokeBorder(.white.opacity(0.12), lineWidth: 1)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.black.opacity(0.45).ignoresSafeArea())
+            .onExitCommand { isPresented = false }
+    }
+    #endif
+
+    private var jumpCellFont: Font {
+        #if os(tvOS)
+        .body.weight(.semibold).monospaced()
+        #else
+        .callout.weight(.semibold).monospaced()
+        #endif
+    }
+
+    private var cellLabelSide: CGFloat {
+        #if os(tvOS)
+        36
+        #else
+        28
+        #endif
+    }
+
+    private var popoverPadding: CGFloat {
+        #if os(tvOS)
+        DS.Space.xl
+        #else
+        DS.Space.lg
+        #endif
+    }
+
+    private var popoverWidth: CGFloat {
+        #if os(tvOS)
+        780
+        #else
+        340
+        #endif
     }
 }
 #endif

@@ -220,7 +220,9 @@ struct DetailView: View {
     /// above the metadata in horizontally-compact widths (iPhone, narrow iPad split).
     @ViewBuilder
     private var detailLayout: some View {
-        #if os(iOS)
+        #if os(tvOS)
+        tvDetailLayout
+        #elseif os(iOS)
         if isCompactPhoneLayout {
             compactPhoneDetailLayout
         } else if compactWidth {
@@ -248,6 +250,70 @@ struct DetailView: View {
         }
         #endif
     }
+
+    #if os(tvOS)
+    /// Television detail is deliberately its own composition rather than a magnified iPad
+    /// metadata stack. Keep the poster stable on the leading edge, bound the readable text
+    /// measure, and establish one predictable vertical path through identity, actions,
+    /// playback facts, synopsis, and credits.
+    private var tvDetailLayout: some View {
+        HStack(alignment: .top, spacing: 56) {
+            detailPoster(width: 280)
+
+            tvMetadataColumn
+                .frame(maxWidth: 1_180, alignment: .leading)
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var tvMetadataColumn: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            DetailTitleHeader(item: detailed, showItem: showItem)
+
+            if let tagline = detailed.tagline, !tagline.isEmpty {
+                Text(tagline)
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+                    .italic()
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            DetailMetadataRow(year: detailed.year,
+                              runtimeMinutes: runtimeMinutes,
+                              contentRating: detailed.contentRating,
+                              rating: detailed.rating,
+                              criticRating: detailed.criticRating,
+                              isWatched: isWatched)
+
+            if let genres = detailed.genres, !genres.isEmpty {
+                Text(genres.map(\.tag).joined(separator: " · "))
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+            }
+
+            actionButtons
+
+            if let media = selectedMedia {
+                DetailMediaInfoSummary(specBadges: mediaSpecBadges(media),
+                                       chapterCount: detailed.chapters?.count)
+            }
+
+            if let summary = detailed.summary, !summary.isEmpty {
+                Text(summary)
+                    .font(.body)
+                    .foregroundStyle(.primary.opacity(0.9))
+                    .lineSpacing(5)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            DetailCreditsSection(roles: detailed.roles,
+                                 directors: detailed.directors,
+                                 studios: detailed.studios)
+        }
+    }
+    #endif
 
     /// Phone-only hierarchy optimized for a narrow, vertically-scrolling detail page. iPad and
     /// visionOS continue to use `metadataColumn` unchanged.
@@ -449,7 +515,13 @@ struct DetailView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(artBackdrop)
         .animation(.easeInOut(duration: 0.16), value: isMacPlayerPresentedValue)
+        #if os(tvOS)
+        // The page already owns the title in its hero. A tvOS navigation title places a second,
+        // dimmed title over the content and can collide with the tagline/metadata while focused.
+        .toolbar(.hidden, for: .navigationBar)
+        #else
         .navigationTitle(detailed.title)
+        #endif
         // Re-fetch when the chosen movie version changes (#108) as well as on first appear;
         // `activeVersionRatingKey` defaults to `item.ratingKey`, so single-version items run
         // exactly once as before. The autoplay token is one-shot, so a later version switch
@@ -529,6 +601,10 @@ struct DetailView: View {
                 detailLayout
                     .padding(.horizontal, compactWidth ? DS.pagePadding(compact: true) : DS.Space.xxxl)
                     .padding(.vertical, isCompactPhoneLayout ? DS.Space.xl : DS.Space.xxxl)
+                #elseif os(tvOS)
+                detailLayout
+                    .padding(.horizontal, 96)
+                    .padding(.vertical, 64)
                 #else
                 detailLayout
                     .padding(DS.Space.xxxl)
@@ -764,6 +840,15 @@ struct DetailView: View {
 
     @ViewBuilder
     private var actionButtonStack: some View {
+        #if os(tvOS)
+        HStack(spacing: DS.Space.lg) {
+            playButton
+            if supportsWatchedToggle {
+                markWatchedButton
+            }
+        }
+        .controlSize(.regular)
+        #else
         if compactWidth {
             // Full-width stacked buttons with CENTERED labels — the system idiom for a
             // prominent full-width action (App Store "Get", TV "Play"); a left-aligned
@@ -796,6 +881,7 @@ struct DetailView: View {
                 }
             }
         }
+        #endif
     }
 
     private var playButton: some View {
@@ -806,18 +892,29 @@ struct DetailView: View {
             playbackRequestID = requestID
             Task { await startPlayback(requestID: requestID) }
         } label: {
-            Group {
+            ZStack {
+                // Keep the native button's intrinsic geometry stable while playback resolves.
+                // Replacing the full label with a bare spinner collapsed the focused tvOS
+                // control and made the adjacent watched action jump into its place.
+                Label(resumeLabel, systemImage: "play.fill")
+                    .opacity(isResolvingPlayback ? 0 : 1)
+
                 if isResolvingPlayback {
                     ProgressView()
-                } else {
-                    Label(resumeLabel, systemImage: "play.fill")
                 }
             }
-            .font(.title3.weight(.semibold))
+            .font(detailActionFont.weight(.semibold))
             .frame(maxWidth: compactWidth ? .infinity : nil)
         }
         .labstreamGlassProminentButtonStyle()
+        #if os(tvOS)
+        // Disabling the focused action during resolution forces the focus engine onto the
+        // watched button before the player appears. The action guard above already rejects
+        // repeat presses, so retain focus until presentation completes.
+        .disabled(!metadataReadyForActions)
+        #else
         .disabled(isResolvingPlayback || !metadataReadyForActions)
+        #endif
     }
 
     /// "Play Offline" when a local copy exists, otherwise a button that opens the
@@ -869,7 +966,7 @@ struct DetailView: View {
                 Task { await presentLocalPlayer(request) }
             } label: {
                 Label("Play Offline", systemImage: "arrow.down.circle.fill")
-                    .font(.title3)
+                    .font(detailActionFont)
                     .frame(maxWidth: compactWidth ? .infinity : nil)
             }
             .labstreamGlassButtonStyle()
@@ -878,7 +975,7 @@ struct DetailView: View {
                 showDownloadOptions = true
             } label: {
                 Label(downloadLabel, systemImage: "arrow.down.circle")
-                    .font(.title3)
+                    .font(detailActionFont)
                     .frame(maxWidth: compactWidth ? .infinity : nil)
             }
             .labstreamGlassButtonStyle()
@@ -897,11 +994,19 @@ struct DetailView: View {
         } label: {
             Label(isWatched ? "Mark Unwatched" : "Mark Watched",
                   systemImage: isWatched ? "minus.circle" : "checkmark.circle")
-                .font(.title3)
+                .font(detailActionFont)
                 .frame(maxWidth: compactWidth ? .infinity : nil)
         }
         .labstreamGlassButtonStyle()
         .disabled(isTogglingWatched)
+    }
+
+    private var detailActionFont: Font {
+        #if os(tvOS)
+        .body
+        #else
+        .title3
+        #endif
     }
 
     /// Fetch each collapsed version's brief metadata concurrently to build resolution/codec

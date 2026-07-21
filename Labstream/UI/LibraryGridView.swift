@@ -58,18 +58,28 @@ struct LibrariesView: View {
         .onReceive(NotificationCenter.default.publisher(for: LibraryVisibilityStore.didChangeNotification)) { notification in
             reloadIfVisibilityChanged(notification)
         }
+        #if os(tvOS)
+        .fullScreenCover(item: $firstRunPrompt) { prompt in
+            libraryVisibilityPicker(for: prompt)
+        }
+        #else
         .sheet(item: $firstRunPrompt) { prompt in
-            LibraryVisibilityPickerSheet(prompt: prompt) { hiddenIDs in
-                visibilityStore.setHiddenIDs(hiddenIDs, forBackendKey: prompt.backendKey)
-                visibilityStore.markPromptShown(forBackendKey: prompt.backendKey)
-                firstRunPrompt = nil
-                Task { await load(force: true) }
-            } onCancel: {
-                // "Show all" / dismissal: record the prompt as shown so it never re-appears,
-                // leaving everything visible (empty hidden set).
-                visibilityStore.markPromptShown(forBackendKey: prompt.backendKey)
-                firstRunPrompt = nil
-            }
+            libraryVisibilityPicker(for: prompt)
+        }
+        #endif
+    }
+
+    private func libraryVisibilityPicker(for prompt: LibraryVisibilityPrompt) -> some View {
+        LibraryVisibilityPickerSheet(prompt: prompt) { hiddenIDs in
+            visibilityStore.setHiddenIDs(hiddenIDs, forBackendKey: prompt.backendKey)
+            visibilityStore.markPromptShown(forBackendKey: prompt.backendKey)
+            firstRunPrompt = nil
+            Task { await load(force: true) }
+        } onCancel: {
+            // Cancellation preserves the existing show-all behavior and records the prompt so it
+            // does not interrupt the next launch. Settings remains the persistent editor.
+            visibilityStore.markPromptShown(forBackendKey: prompt.backendKey)
+            firstRunPrompt = nil
         }
     }
 
@@ -103,7 +113,7 @@ struct LibrariesView: View {
 
     private var librarySectionColumns: [GridItem] {
         #if os(tvOS)
-        return [GridItem(.adaptive(minimum: 440, maximum: 520), spacing: DS.gridGutter(compact: false))]
+        return [GridItem(.adaptive(minimum: 400, maximum: 400), spacing: DS.gridGutter(compact: false))]
         #else
         if compactWidth {
             // Compact phones: one full-width flexible column — the card stretches to
@@ -401,10 +411,21 @@ struct LibraryGridView: View {
     @State private var jumpTask: Task<Void, Never>?
 
     private var regularColumns: [GridItem] {
+        #if os(tvOS)
+        [GridItem(.adaptive(minimum: tvPosterWidth, maximum: tvPosterWidth),
+                  spacing: tvGridSpacing)]
+        #else
         [GridItem(.adaptive(minimum: DS.Poster.gridMin(compact: compactWidth),
                             maximum: DS.Poster.gridMax(compact: compactWidth)),
                   spacing: DS.gridGutter(compact: compactWidth))]
+        #endif
     }
+
+    #if os(tvOS)
+    private let tvPosterWidth: CGFloat = 248
+    private let tvGridSpacing: CGFloat = 24
+    private let tvPageInset: CGFloat = 56
+    #endif
 
     private var browseQuery: LibraryBrowseQuery {
         LibraryBrowseQuery(sort: sort, filter: filter)
@@ -478,11 +499,15 @@ struct LibraryGridView: View {
         GeometryReader { geometry in
             ScrollViewReader { proxy in
                 VStack(alignment: .leading, spacing: 0) {
+                    #if os(tvOS)
+                    tvLibraryHeader(proxy: proxy)
+                    #else
                     if showsBrowseControls {
                         browseControls(proxy: proxy)
                             .padding(.horizontal, DS.pagePadding(compact: compactWidth))
                             .padding(.vertical, DS.Space.lg)
                     }
+                    #endif
 
                     ScrollView {
                         VStack(alignment: .leading, spacing: DS.Space.lg) {
@@ -500,12 +525,12 @@ struct LibraryGridView: View {
                                 } else {
                                     let metrics = compactGridMetrics(availableWidth: geometry.size.width)
                                     LazyVGrid(columns: gridColumns(metrics: metrics),
-                                              spacing: metrics?.rowSpacing ?? DS.Space.xxl) {
+                                              spacing: metrics?.rowSpacing ?? regularGridRowSpacing) {
                                         ForEach(Array(paging.slots.enumerated()), id: \.offset) { index, slot in
                                             LibraryGridSlot(index: index,
                                                             item: slot,
-                                                            width: metrics?.posterWidth ?? DS.Poster.gridMin(compact: compactWidth),
-                                                            usesDenseLabels: metrics != nil) {
+                                                            width: metrics?.posterWidth ?? regularPosterWidth,
+                                                            usesDenseLabels: metrics != nil || usesTelevisionGrid) {
                                                 prefetchPage(containing: index)
                                             }
                                             // Keep the stable sparse-grid offset as the scroll target for
@@ -517,8 +542,8 @@ struct LibraryGridView: View {
                                             .id(index)
                                         }
                                     }
-                                    .padding(.horizontal, metrics?.horizontalPadding ?? DS.pagePadding(compact: compactWidth))
-                                    .padding(.vertical, metrics?.horizontalPadding ?? DS.pagePadding(compact: compactWidth))
+                                    .padding(.horizontal, metrics?.horizontalPadding ?? regularGridHorizontalPadding)
+                                    .padding(.vertical, metrics?.horizontalPadding ?? regularGridVerticalPadding)
                                     .padding(.trailing, metrics?.trailingReservation ?? 0)
                                 }
                             }
@@ -526,7 +551,7 @@ struct LibraryGridView: View {
                     }
                 }
                 .overlay(alignment: .trailing) {
-                    #if !os(visionOS)
+                    #if !os(visionOS) && !os(tvOS)
                     if alphabetRailVisible {
                         LibraryAlphabetRail(entries: paging.alphabetBuckets) { entry in
                             jump(to: entry, proxy: proxy)
@@ -537,6 +562,12 @@ struct LibraryGridView: View {
                 }
             }
         }
+        #if os(tvOS)
+        // The selected library is already named by the compact in-content header. Native tvOS
+        // navigation chrome otherwise consumes the first half-screen and detaches Collections
+        // into a separate trailing toolbar rail.
+        .toolbar(.hidden, for: .navigationBar)
+        #else
         .navigationTitle(navigationTitle)
         .toolbar {
             // Plex collections belong to movie/show sections rather than a standalone
@@ -553,6 +584,7 @@ struct LibraryGridView: View {
                 #endif
             }
         }
+        #endif
         .task(id: preferenceIdentity) { loadPreferences() }
         .task(id: capabilityIdentity) { await loadBrowseCapabilities() }
         .task(id: loadIdentity) { await load() }
@@ -583,8 +615,92 @@ struct LibraryGridView: View {
                      count: metrics.columnCount)
     }
 
+    private var regularPosterWidth: CGFloat {
+        #if os(tvOS)
+        tvPosterWidth
+        #else
+        DS.Poster.gridMin(compact: compactWidth)
+        #endif
+    }
+
+    private var regularGridHorizontalPadding: CGFloat {
+        #if os(tvOS)
+        tvPageInset
+        #else
+        DS.pagePadding(compact: compactWidth)
+        #endif
+    }
+
+    private var regularGridVerticalPadding: CGFloat {
+        #if os(tvOS)
+        DS.Space.lg
+        #else
+        DS.pagePadding(compact: compactWidth)
+        #endif
+    }
+
+    private var regularGridRowSpacing: CGFloat {
+        #if os(tvOS)
+        DS.Space.xl
+        #else
+        DS.Space.xxl
+        #endif
+    }
+
+    private var usesTelevisionGrid: Bool {
+        #if os(tvOS)
+        true
+        #else
+        false
+        #endif
+    }
+
+    #if os(tvOS)
+    private func tvLibraryHeader(proxy: ScrollViewProxy) -> some View {
+        VStack(alignment: .leading, spacing: DS.Space.sm) {
+            HStack(spacing: DS.Space.lg) {
+                Text(navigationTitle)
+                    .font(.headline)
+                    .lineLimit(1)
+
+                Spacer(minLength: DS.Space.xl)
+            }
+
+            if showsBrowseControls {
+                HStack(spacing: DS.Space.md) {
+                    browseControlItems(proxy: proxy)
+                    Spacer(minLength: DS.Space.md)
+
+                    if let capabilityNotice {
+                        capabilityNoticeView(capabilityNotice)
+                            .lineLimit(1)
+                    }
+
+                    if case .plex(let section) = source,
+                       section.type == "movie" || section.type == "show" {
+                        collectionsToolbarLink(section)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, tvPageInset)
+        .padding(.top, DS.Space.md)
+        .padding(.bottom, DS.Space.sm)
+    }
+    #endif
+
     private func browseControls(proxy: ScrollViewProxy) -> some View {
         HStack(spacing: DS.Space.md) {
+            browseControlItems(proxy: proxy)
+            if let capabilityNotice {
+                capabilityNoticeView(capabilityNotice)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    @ViewBuilder
+    private func browseControlItems(proxy: ScrollViewProxy) -> some View {
             if availableSorts.count > 1 {
                 sortMenu
             } else if sort != .titleAscending {
@@ -600,18 +716,13 @@ struct LibraryGridView: View {
             if filter != .all {
                 activeFilterChip
             }
-            #if os(visionOS)
+            #if os(visionOS) || os(tvOS)
             if alphabetRailVisible {
                 LibraryAlphabetJumpButton(entries: paging.alphabetBuckets) { entry in
                     jump(to: entry, proxy: proxy)
                 }
             }
             #endif
-            if let capabilityNotice {
-                capabilityNoticeView(capabilityNotice)
-            }
-            Spacer(minLength: 0)
-        }
     }
 
     /// Collection order is backend-curated and Plex does not expose the regular section
@@ -656,6 +767,10 @@ struct LibraryGridView: View {
                 .font(.callout)
         }
         .buttonStyle(.bordered)
+        #if os(tvOS)
+        .controlSize(.small)
+        .fixedSize()
+        #endif
     }
 
     private var filterMenu: some View {
@@ -670,6 +785,10 @@ struct LibraryGridView: View {
                 .font(.callout)
         }
         .buttonStyle(.bordered)
+        #if os(tvOS)
+        .controlSize(.small)
+        .fixedSize()
+        #endif
     }
 
     private var activeSortChip: some View {
@@ -684,6 +803,10 @@ struct LibraryGridView: View {
             .font(.callout)
         }
         .buttonStyle(.bordered)
+        #if os(tvOS)
+        .controlSize(.small)
+        .fixedSize()
+        #endif
         .accessibilityLabel("Clear \(sort.label) sort")
     }
 
@@ -699,6 +822,10 @@ struct LibraryGridView: View {
             .font(.callout)
         }
         .buttonStyle(.bordered)
+        #if os(tvOS)
+        .controlSize(.small)
+        .fixedSize()
+        #endif
         .accessibilityLabel("Clear \(filter.label) filter")
     }
 
@@ -722,7 +849,15 @@ struct LibraryGridView: View {
     private func collectionsToolbarLink(_ section: PlexSection) -> some View {
         NavigationLink(value: LibraryGridSource.plexCollections(section)) {
             Label("Collections", systemImage: "square.stack.3d.up")
+                #if os(tvOS)
+                .font(.callout)
+                #endif
         }
+        #if os(tvOS)
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .fixedSize()
+        #endif
     }
 
     private var navigationTitle: String {
@@ -733,7 +868,7 @@ struct LibraryGridView: View {
     }
 
     private var nonVisionAlphabetRailVisible: Bool {
-        #if os(visionOS)
+        #if os(visionOS) || os(tvOS)
         false
         #else
         alphabetRailVisible
@@ -931,6 +1066,13 @@ private struct SkeletonGrid: View {
     let availableWidth: CGFloat
 
     var body: some View {
+        #if os(tvOS)
+        let columns = [GridItem(.adaptive(minimum: 248, maximum: 248), spacing: 24)]
+        let width: CGFloat = 248
+        let horizontalPadding: CGFloat = 56
+        let verticalPadding: CGFloat = DS.Space.lg
+        let rowSpacing: CGFloat = DS.Space.xl
+        #else
         let metrics = compactWidth
             ? MobileLibraryGridLayout.metrics(availableWidth: Double(availableWidth))
             : nil
@@ -940,12 +1082,16 @@ private struct SkeletonGrid: View {
                                 maximum: DS.Poster.gridMax(compact: false)),
                        spacing: DS.gridGutter(compact: false))]
         let width = metrics?.posterWidth ?? DS.Poster.gridMin(compact: false)
-        LazyVGrid(columns: columns, spacing: metrics?.rowSpacing ?? DS.Space.xxl) {
+        let horizontalPadding = metrics?.horizontalPadding ?? DS.pagePadding(compact: compactWidth)
+        let verticalPadding = horizontalPadding
+        let rowSpacing = metrics?.rowSpacing ?? DS.Space.xxl
+        #endif
+        LazyVGrid(columns: columns, spacing: rowSpacing) {
             ForEach(0..<12, id: \.self) { _ in
                 LibraryPlaceholderPoster(width: width)
             }
         }
-        .padding(.horizontal, metrics?.horizontalPadding ?? DS.pagePadding(compact: compactWidth))
-        .padding(.vertical, metrics?.horizontalPadding ?? DS.pagePadding(compact: compactWidth))
+        .padding(.horizontal, horizontalPadding)
+        .padding(.vertical, verticalPadding)
     }
 }

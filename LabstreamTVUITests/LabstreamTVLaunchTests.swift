@@ -19,14 +19,17 @@ final class LabstreamTVLaunchTests: XCTestCase {
         app.launch()
 
         XCTAssertTrue(app.buttons["Sign in with Plex"].waitForExistence(timeout: 5))
+        attachScreen(named: "Plex sign-in", app: app)
 
         XCUIRemote.shared.press(.right)
         XCUIRemote.shared.press(.select)
         XCTAssertTrue(app.textFields["https://jellyfin.example.com"].waitForExistence(timeout: 3))
+        attachScreen(named: "Jellyfin sign-in methods", app: app)
 
         XCUIRemote.shared.press(.right)
         XCUIRemote.shared.press(.select)
         XCTAssertTrue(app.buttons["Sign in with Emby Connect"].waitForExistence(timeout: 3))
+        attachScreen(named: "Emby sign-in methods", app: app)
     }
 
     func testBackendLaunchFixturesAreDeterministic() throws {
@@ -55,6 +58,7 @@ final class LabstreamTVLaunchTests: XCTestCase {
         XCTAssertTrue(app.buttons["tv.home.fixture-resume.plex-orbit"].hasFocus)
         XCUIRemote.shared.press(.select)
         XCTAssertTrue(app.staticTexts["Some signals should stay distant."].waitForExistence(timeout: 3))
+        attachScreen(named: "TV leaf detail", app: app)
 
         XCUIRemote.shared.press(.menu)
         XCTAssertTrue(app.staticTexts["Continue Watching"].waitForExistence(timeout: 3))
@@ -71,5 +75,12 @@ final class LabstreamTVLaunchTests: XCTestCase {
         }
         app.launchEnvironment["LABSTREAM_UNIT_TEST_HOST"] = "0"
         return app
+    }
+
+    private func attachScreen(named name: String, app: XCUIApplication) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 }

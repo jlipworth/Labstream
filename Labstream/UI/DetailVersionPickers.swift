@@ -24,6 +24,10 @@ struct DetailMovieVersionPicker: View {
                     }
                 }
             } label: {
+                #if os(tvOS)
+                Label("Choose Edition (\(versions.count))", systemImage: "square.stack.3d.up")
+                    .font(.body)
+                #else
                 Label("Version: \(label(for: currentVersion, index: currentVersionIndex))",
                       systemImage: "square.stack.3d.up")
                     .font(.callout)
@@ -31,12 +35,19 @@ struct DetailMovieVersionPicker: View {
                     // one line; the dropdown shows the full text.
                     .lineLimit(1)
                     .truncationMode(.tail)
+                #endif
             }
+            #if os(tvOS)
+            .menuStyle(.button)
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
+            #else
             .menuStyle(.borderlessButton)
             #if os(iOS)
             // Neutral (monochrome) label on iOS — a borderless menu otherwise inherits
             // the amber app accent, which piles onto the "all yellow" detail chrome.
             .tint(.primary)
+            #endif
             #endif
         }
     }
@@ -84,15 +95,26 @@ struct DetailMediaVersionPicker: View {
                     }
                 }
             } label: {
+                #if os(tvOS)
+                Label("Choose File (\(media.count))", systemImage: "rectangle.stack.badge.play")
+                    .font(.body)
+                #else
                 Label("Version: \(MediaVersionLabel.versionLabel(for: media[safe: selectedMediaIndex] ?? media[0]))",
                       systemImage: "rectangle.stack.badge.play")
                     .font(.callout)
                     .lineLimit(1)
                     .truncationMode(.tail)
+                #endif
             }
+            #if os(tvOS)
+            .menuStyle(.button)
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
+            #else
             .menuStyle(.borderlessButton)
             #if os(iOS)
             .tint(.primary)
+            #endif
             #endif
         }
     }

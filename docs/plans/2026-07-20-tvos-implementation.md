@@ -6,6 +6,11 @@ Research baseline: 2026-07-20 against repository commit `44839793`, with parity 
 
 This document is the durable repository plan. Keep its phase status synchronized with issue #246 during implementation, then promote proven behavior into the current architecture, development, testing, and platform documentation. Archive this note only after every required acceptance gate is complete or explicitly moved to a linked follow-up.
 
+The per-screen visual and remote-interaction inventory lives in
+[`2026-07-20-tvos-screen-audit.md`](2026-07-20-tvos-screen-audit.md). A phase item cannot be treated
+as visually checked merely because it inherited shared metrics; the corresponding audit rows need
+actual tvOS evidence.
+
 Implementation checkpoint: commits `53ec96eb` and `5ef5bb6d` establish the tvOS compile,
 test-host, and simulator-tooling foundation. The current Phase 1 slice adds a dedicated
 ten-foot sign-in layout, deterministic signed-out fixtures for all three backends, synthetic browse
@@ -107,7 +112,7 @@ Every row is required across Plex, Jellyfin, and Emby wherever that row is imple
 
 ### Phase 2 — custom-player TV adaptation
 
-- [ ] Keep the shared app-owned `CustomPlayerView`/`PlaybackController` as the only video player; do not restore the retired `AVPlayerViewController` path.
+- [ ] Keep the shared app-owned `CustomPlayerView`/`PlaybackController` as the only video player; do not restore the retired `AVPlayerViewController` path. The tvOS target now links AVKit explicitly so the shared player's `AVPlayerItem.externalMetadata` category call does not crash at launch, and live Plex playback has been proven in the simulator; the complete player-state audit remains open.
 - [ ] Add tvOS focus ownership, chrome reveal/auto-hide, remote-command routing, focus restoration, and a remote-native scrubber interaction without duplicating canonical playback intent methods.
 - [ ] Support exactly-once Play/Pause, Select, Menu/Back, clickpad/directional scrub and seek, Siri/system commands, buffering/retry, end-of-item, autoplay, and return-focus behavior.
 - [ ] Expose quality, audio, subtitles, chapters, speed, skip intro/credits, and bounded diagnostics through TV-native player menus/actions.

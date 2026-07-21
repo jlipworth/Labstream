@@ -157,6 +157,18 @@ class ToolingHardeningTests(unittest.TestCase):
             allowed = subprocess.run(["scripts/ci-hygiene.sh"], cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             self.assertEqual(allowed.returncode, 0, allowed.stderr)
 
+            # SDK framework linkage (e.g. AVKit for the tvOS target) cannot be inferred
+            # from a synchronized group, so both its PBXBuildFile and PBXFileReference
+            # churn must pass the guard the same way the local PMSKit link does.
+            pbx.write_text(pbx.read_text().replace(
+                "\t/* End PBXFileReference section */",
+                "\t\tDD0000000000000000000010 /* AVKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DD0000000000000000000011 /* AVKit.framework */; };\n"
+                "\t\tDD0000000000000000000011 /* AVKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVKit.framework; path = System/Library/Frameworks/AVKit.framework; sourceTree = SDKROOT; };\n"
+                "\t/* End PBXFileReference section */",
+            ))
+            framework_allowed = subprocess.run(["scripts/ci-hygiene.sh"], cwd=root, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertEqual(framework_allowed.returncode, 0, framework_allowed.stderr)
+
             pbx.write_text(pbx.read_text().replace(
                 "\t/* End PBXFileReference section */",
                 "\t\tBB0000000000000000000001 /* NewView.swift */ = {isa = PBXFileReference; path = NewView.swift; };\n\t/* End PBXFileReference section */",

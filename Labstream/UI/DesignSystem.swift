@@ -272,6 +272,8 @@ extension View {
     func labstreamGlassButtonStyle() -> some View {
         #if os(visionOS)
         self.buttonStyle(.bordered)
+        #elseif os(tvOS)
+        self.buttonStyle(.bordered)
         #elseif os(macOS)
         self.buttonStyle(.bordered)
         #else
@@ -286,6 +288,8 @@ extension View {
     @ViewBuilder
     func labstreamGlassProminentButtonStyle() -> some View {
         #if os(visionOS)
+        self.buttonStyle(.borderedProminent)
+        #elseif os(tvOS)
         self.buttonStyle(.borderedProminent)
         #elseif os(macOS)
         self.buttonStyle(.borderedProminent)
@@ -329,10 +333,18 @@ struct SpecChip: View {
 
     var body: some View {
         Text(text)
-            .font(monospaced ? .caption.monospaced() : .caption.weight(.medium))
+            .font(specFont)
             .padding(.horizontal, DS.Space.md)
             .padding(.vertical, DS.Space.xs + 1)
             .background(.thinMaterial, in: Capsule())
             .overlay(Capsule().strokeBorder(.primary.opacity(0.08), lineWidth: 0.5))
+    }
+
+    private var specFont: Font {
+        #if os(tvOS)
+        monospaced ? .callout.monospaced() : .callout.weight(.medium)
+        #else
+        monospaced ? .caption.monospaced() : .caption.weight(.medium)
+        #endif
     }
 }
