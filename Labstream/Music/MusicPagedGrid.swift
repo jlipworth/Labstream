@@ -77,7 +77,9 @@ struct MusicPagedGrid: View {
                 }
             }
             .overlay(alignment: .trailing) {
-                #if !os(visionOS)
+                // tvOS matches the video grid: no persistent edge index (it would sit over the
+                // last poster column and add a focus stop); the Jump button below covers it.
+                #if !os(visionOS) && !os(tvOS)
                 if paging.alphabetBuckets.count > 1, case .loaded = paging.loadState {
                     LibraryAlphabetRail(entries: paging.alphabetBuckets) { entry in
                         jump(to: entry, proxy: proxy)
@@ -119,7 +121,7 @@ struct MusicPagedGrid: View {
     private func musicBrowseControls(proxy: ScrollViewProxy) -> some View {
         HStack {
             sortMenu
-            #if os(visionOS)
+            #if os(visionOS) || os(tvOS)
             if alphabetRailVisible {
                 LibraryAlphabetJumpButton(entries: paging.alphabetBuckets) { entry in
                     jump(to: entry, proxy: proxy)
