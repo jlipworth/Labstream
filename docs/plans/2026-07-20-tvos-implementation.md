@@ -1,6 +1,6 @@
 # tvOS implementation plan
 
-Status: **active research and implementation plan** for [GitHub issue #246](https://github.com/jlipworth/Labstream/issues/246). tvOS is not currently an implemented or supported Labstream platform; the phase checkboxes below are acceptance gates, not claims of shipped behavior.
+Status: **active research and implementation plan** for [GitHub issue #246](https://github.com/jlipworth/Labstream/issues/246). A tvOS target and substantial parity scaffolding now exist, but tvOS is not yet a supported or release-complete Labstream platform; the phase checkboxes below are acceptance gates, not claims of shipped behavior.
 
 Research baseline: 2026-07-20 against repository commit `44839793`, with parity scope reconciled against `main` at `6d5851fb`, current Apple developer documentation, current Apple TV 4K specifications, and a live GitHub duplicate/dependency audit. Recheck SDK requirements, hardware specifications, issue state, and source line locations when implementation begins because these facts may drift.
 
@@ -27,6 +27,16 @@ The subsequent TV visual audit removes invented marketing copy, gives authentica
 panels ten-foot sizing without oversized empty containers, introduces tvOS-specific poster, grid,
 library-card, music-art, type, and spacing metrics, and suppresses redundant Home/Libraries/Search/
 Music/Settings navigation titles because the persistent tab bar already carries that information.
+
+Implementation handoff at commit `ced35a36`: the Plex simulator can traverse the compact Libraries
+section header, Sort/Filter/Jump/Collections rail, six-up poster grid, detail screen, and live video
+launch without the earlier missing-AVKit selector crash. The audit remains intentionally open. In
+particular, native system-keyboard Select does not insert letters in the current Xcode 27 beta 3 /
+tvOS beta simulator, and the shared custom player's hidden chrome has no proven remote-input/focus
+owner, so directional, Select, and Play/Pause input cannot reliably reveal it or reach its submenus.
+These are unresolved defects, not permission to replace the system keyboard or the app-owned custom
+player. `CustomPlayerView`, `CustomPlayerChrome`, the AVPlayerLayer presentation, and custom
+scrubbing remain canonical across platforms; no `AVPlayerViewController` replacement is approved.
 
 ## Goal
 
@@ -106,6 +116,7 @@ Every row is required across Plex, Jellyfin, and Emby wherever that row is imple
 - [ ] Add TV poster/card sizing, safe-area spacing, readable metadata, system focus effects, default focus, focus sections, and focus restoration across navigation, sheets, reloads, pagination, errors, and playback return. The first sizing/spacing/type pass covers authentication, shared video posters/grids, library cards, and music art; exhaustive focus-state and live-data review remains.
 - [ ] Make Plex link code, Jellyfin Quick Connect, and Emby Connect PIN primary; keep remote-friendly manual URL/credential entry as fallback where needed. The initial three-backend TV layout and remote backend-selection fixture are implemented; live authentication, restore, error, and fallback flows remain.
 - [ ] Validate local-network permission/ATS behavior, LAN and remote servers, Keychain restore, backend switching, signed-out/error states, dictation/iPhone Remote keyboard, and physical keyboard fallback.
+- [ ] Resolve or conclusively classify native tvOS search-keyboard Select behavior. It reproduces with both the original `.searchable` field and an explicit native SwiftUI `TextField` on the current beta simulator: the field becomes first responder, then Select clears first responder without inserting a letter. Compare a minimal native fixture and another system/native text-entry surface on the same runtime, add `XCUIRemote` coverage, and keep the system keyboard rather than inventing an app keyboard. Simulator Capture Keyboard/direct typing is diagnostic only, not acceptance proof.
 - [ ] Make Settings TV-specific and focus-safe. Exclude download/storage/cellular controls, and replace unavailable diagnostics, feedback, discovery, or export surfaces with TV-native equivalents rather than silently dropping their user capability.
 
 **Exit:** using only a Siri Remote, a user can sign in to each backend, browse/search, open details, recover from errors, return with focus restored, and sign out.
@@ -113,9 +124,10 @@ Every row is required across Plex, Jellyfin, and Emby wherever that row is imple
 ### Phase 2 — custom-player TV adaptation
 
 - [ ] Keep the shared app-owned `CustomPlayerView`/`PlaybackController` as the only video player; do not restore the retired `AVPlayerViewController` path. The tvOS target now links AVKit explicitly so the shared player's `AVPlayerItem.externalMetadata` category call does not crash at launch, and live Plex playback has been proven in the simulator; the complete player-state audit remains open.
-- [ ] Add tvOS focus ownership, chrome reveal/auto-hide, remote-command routing, focus restoration, and a remote-native scrubber interaction without duplicating canonical playback intent methods.
+- [ ] Add tvOS focus ownership, chrome reveal/auto-hide, remote-command routing, focus restoration, and a remote-native scrubber interaction without duplicating canonical playback intent methods. The current blocker is specific: after chrome auto-hide, no proven focus/input owner receives directional, Select, or Play/Pause input. First add a deterministic hidden-chrome fixture plus event/focus/chrome-state instrumentation and `XCUIRemote` tests; then implement the smallest tvOS-only bridge into the existing chrome instead of redesigning the surface.
 - [ ] Support exactly-once Play/Pause, Select, Menu/Back, clickpad/directional scrub and seek, Siri/system commands, buffering/retry, end-of-item, autoplay, and return-focus behavior.
-- [ ] Expose quality, audio, subtitles, chapters, speed, skip intro/credits, and bounded diagnostics through TV-native player menus/actions.
+- [ ] Expose quality, audio, subtitles, chapters, speed, skip intro/credits, and bounded diagnostics through TV-native player menus/actions. Prove every submenu is reachable, selectable, dismissible, and restores focus to its originating button; current live testing could not reach these menus after chrome auto-hide.
+- [ ] Complete the player visual pass at 1920×1080: buffering overlay, revealed chrome, timeline, elapsed/remaining labels, transport controls, menu buttons, focus geometry, internal/exterior spacing, truncation, safe areas, and every submenu/list state. The buffering-layout adjustment and compact TV composition are provisional until deterministic reveal and traversal are available.
 - [ ] Add/generalize the tvOS media-session coordinator for audio session, interruptions/routes, Now Playing metadata/commands, background behavior, and PiP evaluation.
 - [ ] Preserve load-bearing startup/stall/seek/restart/cleanup invariants and backend progress/transcode teardown from `docs/PLAYBACK-ARCHITECTURE.md`.
 
@@ -142,8 +154,9 @@ Every row is required across Plex, Jellyfin, and Emby wherever that row is imple
 
 ### Phase 5 — automation, accessibility, and physical hardware
 
-- [ ] Add deterministic tvOS UI fixtures and `XCUIRemote` tests for directional focus, Select, Menu, Play/Pause, tab/rail boundaries, search, details, modals, player enter/exit, errors, backend switching, and destructive confirmations. Initial fixtures cover all three signed-out backend surfaces and Plex Home -> detail -> Menu/Back through the real app views.
+- [ ] Add deterministic tvOS UI fixtures and `XCUIRemote` tests for directional focus, Select, Menu, Play/Pause, tab/rail boundaries, search, details, modals, player enter/exit, errors, backend switching, and destructive confirmations. Initial fixtures cover all three signed-out backend surfaces and Plex Home -> detail -> Menu/Back through the real app views. Next fixtures must isolate a minimal native search field plus player chrome visible, hidden, buffering, and each submenu state.
 - [ ] Assert the focused element after transitions; attach screenshots and accessibility hierarchies on failure.
+- [ ] Turn every open row in `2026-07-20-tvos-screen-audit.md` into a literal simulator or physical-device traversal. Record backend/fixture, simulator or hardware identity, build commit, remote path, screenshot/log evidence, loading/empty/error/long-content variants, and focus restoration; a green compile or shared-platform screenshot does not close a row.
 - [ ] Complete VoiceOver/Switch Control tasks for sign-in, browse, search, playback, audio/subtitles, and sign-out; verify Increase Contrast, Reduce Motion, Bold Text, captions, and audio descriptions.
 - [ ] Validate on Apple TV 4K (third generation), the sole initial hardware target, plus its successor only after that model ships and becomes available; do not claim older-generation support.
 - [ ] Cover Ethernet/Wi-Fi, display range/frame-rate matching, HDMI/receiver routes, sleep/wake, background/foreground, PiP, interruptions, network loss/recovery, memory pressure, rapid commands, and multi-hour playback.
@@ -158,6 +171,41 @@ Every row is required across Plex, Jellyfin, and Emby wherever that row is imple
 - [ ] Add the tvOS platform to README status only at its actual validation level; do not advertise support before physical-device/TestFlight proof.
 
 **Exit:** the parity release is distributable through TestFlight/App Store and documented without aspirational platform or codec claims.
+
+## Resume order and remaining validation
+
+The next session should work from commit `ced35a36` in the linked worktree
+`/path/to/user/Projects/labstream-worktrees/issue-246-tvos` on branch
+`codex/issue-246-tvos`. Use the worktree-owned tvOS simulator ID returned by the repository tooling;
+never target a generic `booted` simulator. Before editing, confirm the worktree and installed-runtime
+truth because Xcode beta and simulator behavior may have changed.
+
+1. **Player input/focus root cause:** instrument the existing custom player and create visible/hidden
+   chrome fixtures. Prove where directional, Select, Play/Pause, and Back events are delivered before
+   changing production focus behavior. Preserve the shared player architecture and scrubbing.
+2. **Smallest player correction:** make one input reveal hidden chrome without an accidental transport
+   action; make Play/Pause toggle exactly once; establish deterministic initial focus; traverse every
+   player submenu; restore focus on dismissal; retain auto-hide, Back, scrubbing, progress reporting,
+   transcode teardown, and non-tvOS behavior.
+3. **Search input classification:** reproduce native letter selection through `XCUIRemote` in both
+   Labstream and a minimal native field on the same runtime. Fix an app-owned focus/responder defect if
+   proven; otherwise record an Apple beta/runtime blocker with reproducible evidence. Do not accept
+   direct Mac typing as the remote-input gate.
+4. **Exhaustive surface audit:** continue the four explicit passes—size, spacing, control orientation/
+   focus order, and redundant information—across authentication, session restore/errors, Home,
+   Libraries and every library state/backend, Search/results, all detail/container variants, Settings,
+   Music, player states/submenus, alerts, sheets, and accessibility variants.
+5. **Automated regression:** expand deterministic fixtures and `XCUIRemote` journeys; assert focus after
+   every modal/navigation transition and save screenshots plus accessibility hierarchies on failure.
+   Run the tvOS app/unit/UI lanes, PMSKit tests, tooling hygiene, strict documentation, and unchanged
+   visionOS/mobile/Mac build or test lanes appropriate to the touched shared code.
+6. **Physical-device gate:** when hardware is available, validate real Siri Remote behavior, codec/HDR/
+   audio/HDMI routes, PiP/background/lifecycle, accessibility, performance, and multi-hour playback on
+   the latest supported Apple TV. Simulator evidence cannot close these rows.
+
+Do not interpret the committed simulator fixes as parity completion. Phase 1, the complete custom
+player adaptation, Music, system integration, codec negotiation, accessibility, physical hardware,
+TestFlight, App Review, and productization all remain open until their stated exit gates pass.
 
 ## Definition of done
 
