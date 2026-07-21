@@ -208,7 +208,7 @@ struct CustomPlayerChrome: View {
             }
             #endif
 
-            if shouldShowChrome {
+            if shouldShowChrome, !tvSubmenuHidesTopChrome {
                 topChrome
                     .transition(.opacity)
             }
@@ -297,6 +297,11 @@ struct CustomPlayerChrome: View {
                     }
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
+                #if os(tvOS)
+                // Menu/Back with a submenu open must close the submenu (restoring focus to its
+                // originating button), not fall through to the presentation and exit playback.
+                .onExitCommand { closeMenu() }
+                #endif
             }
 
             #if os(iOS) || os(macOS)
@@ -389,6 +394,17 @@ struct CustomPlayerChrome: View {
 
     private var shouldShowChrome: Bool {
         chromeVisible || controller.transport.showsPausedControl || controller.transportStatus.keepsChromeVisible || selectedMenu != nil
+    }
+
+    /// tvOS treats an open submenu as modal: the top Close button leaves the hierarchy so remote
+    /// focus must live inside the popover, which is what routes Menu/Back to `closeMenu()`
+    /// (via the popover's `onExitCommand`) instead of dismissing the whole player presentation.
+    private var tvSubmenuHidesTopChrome: Bool {
+        #if os(tvOS)
+        selectedMenu != nil
+        #else
+        false
+        #endif
     }
 
     private var isTransportStatusPresented: Bool {
@@ -915,6 +931,10 @@ struct CustomPlayerChrome: View {
 
                 tvMenuStrip
             }
+            // The focus section must span the full row — title and spacer included — so an Up
+            // press from the leading transport cluster (whose vertical projection misses the
+            // trailing menu strip entirely) is routed into the strip's nearest button.
+            .focusSection()
 
             HStack(spacing: 14) {
                 tvSkipButton(seconds: -30)
@@ -2227,6 +2247,7 @@ struct CustomPlayerChrome: View {
         .contentShape(Rectangle())
         .focused($tvPlayerFocus, equals: .hiddenSurface)
         .accessibilityLabel("Show playback controls")
+        .accessibilityIdentifier("tv.player.hiddenSurface")
     }
 
     /// Focus must land on the hidden-surface owner only after the render pass that inserts it.
