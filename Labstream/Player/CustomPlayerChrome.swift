@@ -65,6 +65,11 @@ private enum TVPlayerFocus: Hashable {
     case playPause
     case skip(Int)
     case menu(CustomPlayerMenuKind)
+    /// The nonvisual full-screen input owner shown only while the chrome is hidden. Without a
+    /// focusable item in the player subtree, tvOS delivers presses to the window with
+    /// `focusedItem == nil` and none of SwiftUI's command/gesture handlers ever fire, so hidden
+    /// chrome could never be revealed by the remote (TVUI-024).
+    case hiddenSurface
 }
 #endif
 
@@ -197,6 +202,12 @@ struct CustomPlayerChrome: View {
                 .onTapGesture { handlePlayerSurfaceTap() }
                 #endif
 
+            #if os(tvOS)
+            if !shouldShowChrome {
+                tvHiddenChromeInputOwner
+            }
+            #endif
+
             if shouldShowChrome {
                 topChrome
                     .transition(.opacity)
@@ -306,11 +317,13 @@ struct CustomPlayerChrome: View {
         .background(MacPlayerWindowReader(bridge: macWindowBridge))
         #endif
         #if os(tvOS)
-        .onMoveCommand { _ in
+        .onMoveCommand { direction in
+            tvEvidenceLog("onMoveCommand \(direction) chromeVisible=\(shouldShowChrome)")
             guard !shouldShowChrome else { return }
             revealTVChrome()
         }
         .onPlayPauseCommand {
+            tvEvidenceLog("onPlayPauseCommand chromeVisible=\(shouldShowChrome)")
             revealChrome()
             controller.togglePlayback()
             scheduleChromeHideIfNeeded()
@@ -352,13 +365,17 @@ struct CustomPlayerChrome: View {
         }
         #if os(tvOS)
         .onChange(of: shouldShowChrome) { _, visible in
+            tvEvidenceLog("shouldShowChrome -> \(visible)")
             if visible {
-                if tvPlayerFocus == nil {
+                if tvPlayerFocus == nil || tvPlayerFocus == .hiddenSurface {
                     Task { @MainActor in tvPlayerFocus = .playPause }
                 }
             } else {
-                tvPlayerFocus = nil
+                tvFocusHiddenSurface()
             }
+        }
+        .onChange(of: tvPlayerFocus) { old, new in
+            tvEvidenceLog("tvPlayerFocus \(String(describing: old)) -> \(String(describing: new))")
         }
         #endif
         #if os(iOS)
@@ -2165,6 +2182,7 @@ struct CustomPlayerChrome: View {
     }
 
     private func handlePlayerSurfaceTap() {
+        tvEvidenceLog("playerSurfaceTap chromeVisible=\(shouldShowChrome) menu=\(String(describing: selectedMenu))")
         if selectedMenu != nil {
             closeMenu()
             return
@@ -2193,6 +2211,32 @@ struct CustomPlayerChrome: View {
     }
 
     #if os(tvOS)
+    /// Full-screen, visually empty focus owner rendered only while the chrome is hidden. It keeps
+    /// a focusable item alive in the player subtree so directional/Select/Play-Pause presses keep
+    /// routing into the SwiftUI handlers (see `TVPlayerFocus.hiddenSurface`). A `Button` rather
+    /// than a tap gesture: button activation is not subject to the tvOS 18+ SwiftUI
+    /// first-press-after-focus-change regression.
+    private var tvHiddenChromeInputOwner: some View {
+        Button {
+            tvEvidenceLog("hiddenSurface select")
+            revealTVChrome()
+        } label: {
+            Color.clear
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .focused($tvPlayerFocus, equals: .hiddenSurface)
+        .accessibilityLabel("Show playback controls")
+    }
+
+    /// Focus must land on the hidden-surface owner only after the render pass that inserts it.
+    private func tvFocusHiddenSurface() {
+        Task { @MainActor in
+            await Task.yield()
+            if !shouldShowChrome { tvPlayerFocus = .hiddenSurface }
+        }
+    }
+
     private func revealTVChrome() {
         revealChrome(keepVisible: true)
         // Focus assignment must follow the render that reintroduces the controls.
@@ -2215,11 +2259,21 @@ struct CustomPlayerChrome: View {
                   !controller.transport.showsPausedControl,
                   !controller.transportStatus.keepsChromeVisible,
                   selectedMenu == nil else { return }
+            tvEvidenceLog("autoHide firing")
             chromeVisible = false
             #if os(tvOS)
-            tvPlayerFocus = nil
+            tvFocusHiddenSurface()
             #endif
         }
+    }
+
+    /// TVUI-024 evidence trace (SwiftUI layer). No-op outside DEBUG tvOS.
+    private func tvEvidenceLog(_ message: @autoclosure () -> String) {
+        #if os(tvOS) && DEBUG
+        if TVInputEvidence.isRequested {
+            NSLog("%@", "TVPlayerEvidence: \(message())")
+        }
+        #endif
     }
 
     private func format(ms: Int) -> String {
