@@ -64,13 +64,14 @@ check_pbxproj_churn() {
   # build-setting/version edits, but stop accidental file-reference/build-phase
   # noise before it reaches CI or review.
   #
-  # SDK framework linkage (e.g. AVKit for the tvOS target) is legitimate and cannot
-  # be inferred from a synchronized group, so allow framework references/build files
-  # under System/Library/Frameworks the same way PMSKit's local-package link is allowed.
+  # SDK framework linkage cannot be inferred from a synchronized group, so allow the
+  # specific frameworks the project intentionally links (AVKit for the tvOS target) the
+  # same way PMSKit's local-package link is allowed. Keep this an explicit list — a
+  # blanket *.framework exemption would let unrelated framework churn through the guard.
   local pbx_churn
   pbx_churn=$(printf '%s\n' "$diff_output" \
     | grep -E '^[+-].*(isa = PBX(BuildFile|FileReference)|/\* (Begin|End) PBX(BuildFile|FileReference) section \*/|/\* .* in (Sources|Resources) \*/)' \
-    | grep -Ev 'Labstream(Mobile|TV)?\.app|Labstream(Mac|TV)?(UI)?Tests\.xctest|PMSKit in Frameworks|\.framework in Frameworks|\.framework \*/ = \{isa = PBXFileReference' || true)
+    | grep -Ev 'Labstream(Mobile|TV)?\.app|Labstream(Mac|TV)?(UI)?Tests\.xctest|PMSKit in Frameworks|AVKit\.framework in Frameworks|AVKit\.framework \*/ = \{isa = PBXFileReference' || true)
   if [[ -n "$pbx_churn" ]]; then
     printf '%s\n' "$pbx_churn" >&2
     fail "unexpected project.pbxproj file-reference/build-file churn in $label; synchronized groups should pick up new Swift/resource files without pbxproj edits"
