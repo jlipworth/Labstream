@@ -332,6 +332,9 @@ struct CustomPlayerChrome: View {
                 return
             }
             tvHandleUnresolvedMove(direction)
+            // Navigating IS using the chrome: every dpad press restarts the auto-hide
+            // countdown so the controls never vanish mid-traversal and reset focus.
+            scheduleChromeHideIfNeeded()
         }
         .onPlayPauseCommand {
             tvEvidenceLog("onPlayPauseCommand chromeVisible=\(shouldShowChrome)")
