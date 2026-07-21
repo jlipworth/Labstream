@@ -8,6 +8,21 @@ import AppKit
 import UIKit
 #endif
 
+#if os(macOS)
+enum MacPlayerEscapeAction: Equatable {
+    case closeMenu
+    case closePlayer
+    case passThrough
+}
+
+func macPlayerEscapeAction(isMenuPresented: Bool,
+                           hasCloseAction: Bool) -> MacPlayerEscapeAction {
+    if isMenuPresented { return .closeMenu }
+    if hasCloseAction { return .closePlayer }
+    return .passThrough
+}
+#endif
+
 /// Shared scrubber-clock tick used by both the windowed custom player and the Cinema scene.
 ///
 /// Resolves the live duration from the player item (falling back to the catalog duration) and
@@ -651,7 +666,8 @@ struct CustomPlayerChrome: View {
     #if os(iOS) || os(macOS)
     /// Zero-size buttons whose only job is to register hardware-keyboard shortcuts. Space
     /// toggles play/pause; ←/→ perform the fast 30s jumps; ⇧←/⇧→ perform the finer 10s
-    /// jumps; Esc closes the player. Kept out of the visible layout via `opacity(0)`.
+    /// jumps. On iOS, Esc closes the player. macOS handles physical Escape in its existing
+    /// focus-independent AppKit key monitor. Kept out of the visible layout via `opacity(0)`.
     @ViewBuilder private var keyboardShortcuts: some View {
         Group {
             Button("Play or pause") {
@@ -683,6 +699,7 @@ struct CustomPlayerChrome: View {
             .keyboardShortcut(.rightArrow, modifiers: .shift)
             #endif
 
+            #if os(iOS)
             if let onClose {
                 Button("Close player") {
                     revealChrome()
@@ -690,6 +707,7 @@ struct CustomPlayerChrome: View {
                 }
                 .keyboardShortcut(.escape, modifiers: [])
             }
+            #endif
         }
         .frame(width: 0, height: 0)
         .opacity(0)
@@ -717,6 +735,20 @@ struct CustomPlayerChrome: View {
 
     private func handleMacKeyDown(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection([.shift, .control, .option, .command])
+        if event.keyCode == 53, modifiers.isEmpty { // Escape
+            guard !event.isARepeat else { return true }
+            switch macPlayerEscapeAction(isMenuPresented: selectedMenu != nil,
+                                         hasCloseAction: onClose != nil) {
+            case .closeMenu:
+                closeMenu()
+            case .closePlayer:
+                if let onClose { requestPlayerClose(onClose) }
+            case .passThrough:
+                return false
+            }
+            return true
+        }
+
         let seconds: Int?
         switch event.keyCode {
         case 123: // left arrow
