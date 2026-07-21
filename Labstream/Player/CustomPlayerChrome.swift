@@ -65,6 +65,9 @@ private enum TVPlayerFocus: Hashable {
     case playPause
     case skip(Int)
     case menu(CustomPlayerMenuKind)
+    /// The remote-driven timeline scrubber (its own full-width row, so Left/Right have no
+    /// horizontal focus candidates and the scrub handler is the only actor for those presses).
+    case timeline
     /// The nonvisual full-screen input owner shown only while the chrome is hidden. Without a
     /// focusable item in the player subtree, tvOS delivers presses to the window with
     /// `focusedItem == nil` and none of SwiftUI's command/gesture handlers ever fire, so hidden
@@ -122,6 +125,9 @@ struct CustomPlayerChrome: View {
     @State private var mobileDisplayStatusTask: Task<Void, Never>?
     #if os(tvOS)
     @FocusState private var tvPlayerFocus: TVPlayerFocus?
+    /// Scrub-stride acceleration bookkeeping for the remote timeline (see tvTimelineMove).
+    @State private var tvScrubLastStepAt: Date = .distantPast
+    @State private var tvScrubStreak: Int = 0
     /// When `tvPlayerFocus` last changed — the "engine already resolved this press" guard in
     /// `tvHandleUnresolvedMove` (see ordering evidence there).
     @State private var tvPlayerFocusChangedAt: Date = .distantPast
@@ -390,6 +396,13 @@ struct CustomPlayerChrome: View {
         }
         .onChange(of: tvPlayerFocus) { old, new in
             tvPlayerFocusChangedAt = Date()
+            // Leaving the timeline (Up, or a chrome hide) abandons any open scrub draft:
+            // the draft's only commit path is Select ON the timeline.
+            if old == .timeline, new != .timeline, scrubState.isDragging {
+                scrubState.cancel()
+                clearTrickPlayPreview()
+                tvEvidenceLog("timeline scrub abandoned on focus exit")
+            }
             tvEvidenceLog("tvPlayerFocus \(String(describing: old)) -> \(String(describing: new))")
         }
         #endif
@@ -955,6 +968,18 @@ struct CustomPlayerChrome: View {
                 tvSkipButton(seconds: 10)
                 tvSkipButton(seconds: 30)
 
+                Spacer(minLength: 0)
+            }
+            // Mirror of the header's section: a Down press from the trailing menu strip has no
+            // focusable in its vertical beam, so the full-width section routes it into the
+            // leading skip cluster.
+            .focusSection()
+
+            // TV-native timeline: its own full-width row beneath the transport cluster. The
+            // scrubber must be the ONLY focusable in the row — a Left/Right press then has no
+            // horizontal focus candidate, which is what lets `onMoveCommand` scrub instead of
+            // fighting the engine's geometric resolution (see tvTimelineMove).
+            HStack(spacing: 14) {
                 // Never truncate the clocks: size to content (h:mm:ss needs more than the
                 // old fixed 100pt at tvOS type sizes) with a floor so the slider doesn't
                 // jiggle at ordinary digit changes.
@@ -965,8 +990,7 @@ struct CustomPlayerChrome: View {
                     .fixedSize(horizontal: true, vertical: false)
                     .frame(minWidth: 100, alignment: .trailing)
 
-                timelineSlider
-                    .tint(.white)
+                tvTimelineScrubber
 
                 Text(format(ms: scrubState.durationMs))
                     .font(.callout.monospacedDigit())
@@ -975,10 +999,112 @@ struct CustomPlayerChrome: View {
                     .fixedSize(horizontal: true, vertical: false)
                     .frame(minWidth: 100, alignment: .leading)
             }
-            // Mirror of the header's section: a Down press from the trailing menu strip has no
-            // focusable in its vertical beam (the timeline is a non-interactive ProgressView),
-            // so the full-width section is what routes it into the leading skip cluster.
             .focusSection()
+        }
+    }
+
+    /// Remote-driven scrubber. Focus it (Down from the transport row), then Left/Right steps
+    /// the draft position with press-streak acceleration, Select commits the seek, and moving
+    /// focus away (Up) abandons the draft (cleanup in the tvPlayerFocus onChange). While a
+    /// draft is open the trick-play preview floats above the thumb.
+    private var tvTimelineScrubber: some View {
+        GeometryReader { geometry in
+            let fraction = scrubberBinding.wrappedValue
+            let isFocused = tvPlayerFocus == .timeline
+            Button {
+                tvTimelineSelect()
+            } label: {
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(.white.opacity(isFocused ? 0.34 : 0.22))
+                    Capsule()
+                        .fill(.white.opacity(isFocused ? 1.0 : 0.72))
+                        .frame(width: max(0, geometry.size.width * fraction))
+                }
+                .frame(height: isFocused ? 13 : 7)
+                .frame(maxHeight: .infinity, alignment: .center)
+                .overlay(alignment: .leading) {
+                    if isFocused {
+                        Circle()
+                            .fill(.white)
+                            .frame(width: 22, height: 22)
+                            .shadow(radius: 6)
+                            .offset(x: max(0, geometry.size.width * fraction - 11))
+                    }
+                }
+                .animation(.easeOut(duration: 0.15), value: isFocused)
+            }
+            // Bare label only: the system focused-button platter would white-wash the row.
+            .buttonStyle(TVHiddenSurfaceButtonStyle())
+            .focusEffectDisabled()
+            .focused($tvPlayerFocus, equals: .timeline)
+            .disabled(scrubState.durationMs <= 0)
+            .onMoveCommand { tvTimelineMove($0) }
+            .accessibilityIdentifier("tv.player.timeline")
+            .accessibilityLabel("Timeline")
+            .accessibilityValue(format(ms: scrubState.displayedPositionMs))
+            .overlay(alignment: .topLeading) {
+                if scrubState.isDragging, isFocused {
+                    trickPlayPreview
+                        .fixedSize()
+                        .position(x: CGFloat(TrickPlayPreviewGeometry.cardCenterX(
+                            pointerX: Double(geometry.size.width * fraction),
+                            trackWidth: Double(geometry.size.width),
+                            cardWidth: 210
+                        )), y: trickPlayProvider == nil ? -34 : -112)
+                        .zIndex(20)
+                }
+            }
+        }
+        .frame(minWidth: 40, minHeight: 32, idealHeight: 32, maxHeight: 32)
+    }
+
+    /// Left/Right while the timeline is focused: open/extend a scrub draft. The row has no
+    /// other focusable, so the engine cannot move focus for these presses — this handler is
+    /// the sole actor (unlike the chrome-root onMoveCommand, which observes presses the
+    /// engine ALSO resolves). Up/Down fall through to the engine untouched.
+    private func tvTimelineMove(_ direction: MoveCommandDirection) {
+        switch direction {
+        case .left, .right:
+            guard scrubState.durationMs > 0 else { return }
+            if !scrubState.isDragging {
+                scrubState.beginDrag(livePositionMs: controller.currentResumeMs)
+            }
+            // Press-streak acceleration: holding (or hammering) the direction escalates the
+            // stride, so long titles are traversable without giving up fine-grained steps.
+            let now = Date()
+            if now.timeIntervalSince(tvScrubLastStepAt) < 0.4 {
+                tvScrubStreak += 1
+            } else {
+                tvScrubStreak = 0
+            }
+            tvScrubLastStepAt = now
+            let strideMs = tvScrubStreak >= 12 ? 60_000 : (tvScrubStreak >= 5 ? 30_000 : 10_000)
+            let delta = direction == .right ? strideMs : -strideMs
+            let target = min(max(scrubState.displayedPositionMs + delta, 0), scrubState.durationMs)
+            scrubState.updateDrag(fraction: Double(target) / Double(scrubState.durationMs))
+            updateTrickPlayPreview(for: scrubState.draftPositionMs, debounce: false)
+            revealChrome(keepVisible: true)
+            tvEvidenceLog("timeline scrub \(direction) -> \(target)ms stride=\(strideMs)")
+        default:
+            break
+        }
+    }
+
+    /// Select on the timeline: commit an open scrub draft, else toggle playback (matching the
+    /// system player's click-to-pause on the touch surface).
+    private func tvTimelineSelect() {
+        if scrubState.isDragging {
+            if let target = scrubState.commit() {
+                tvEvidenceLog("timeline commit \(target)ms")
+                controller.performUserSeek(toMs: target)
+            }
+            clearTrickPlayPreview()
+            revealChrome()
+        } else {
+            revealChrome()
+            controller.togglePlayback()
+            scheduleChromeHideIfNeeded()
         }
     }
 
@@ -2354,12 +2480,14 @@ struct CustomPlayerChrome: View {
         hideTask?.cancel()
         guard !controller.transport.showsPausedControl,
               !controller.transportStatus.keepsChromeVisible,
+              !scrubState.isDragging,
               selectedMenu == nil else { return }
         hideTask = Task { @MainActor in
             try? await Task.sleep(for: .seconds(5))
             guard !Task.isCancelled,
                   !controller.transport.showsPausedControl,
                   !controller.transportStatus.keepsChromeVisible,
+                  !scrubState.isDragging,
                   selectedMenu == nil else { return }
             tvEvidenceLog("autoHide firing")
             chromeVisible = false
