@@ -386,6 +386,8 @@ struct EpisodeRow: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
         // NOTE: highlight comes from the wrapping link's `.cardLink(cornerRadius: DS.Radius.card)`
         // — a custom ButtonStyle here misroutes pinches to neighboring rows (DEVELOPMENT.md).
+        // tvOS is the exception: its cardLink style draws nothing, so the owned ring is here.
+        .tvFocusHighlight(cornerRadius: DS.Radius.card)
     }
 
     /// "S{parentIndex}E{index} · {title}", falling back to the bare title.
