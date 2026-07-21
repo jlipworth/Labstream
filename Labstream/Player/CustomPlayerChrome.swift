@@ -324,8 +324,11 @@ struct CustomPlayerChrome: View {
         #if os(tvOS)
         .onMoveCommand { direction in
             tvEvidenceLog("onMoveCommand \(direction) chromeVisible=\(shouldShowChrome)")
-            guard !shouldShowChrome else { return }
-            revealTVChrome()
+            guard shouldShowChrome else {
+                revealTVChrome()
+                return
+            }
+            tvHandleUnresolvedMove(direction)
         }
         .onPlayPauseCommand {
             tvEvidenceLog("onPlayPauseCommand chromeVisible=\(shouldShowChrome)")
@@ -965,6 +968,10 @@ struct CustomPlayerChrome: View {
                     .fixedSize(horizontal: true, vertical: false)
                     .frame(minWidth: 100, alignment: .leading)
             }
+            // Mirror of the header's section: a Down press from the trailing menu strip has no
+            // focusable in its vertical beam (the timeline is a non-interactive ProgressView),
+            // so the full-width section is what routes it into the leading skip cluster.
+            .focusSection()
         }
     }
 
@@ -2301,6 +2308,25 @@ struct CustomPlayerChrome: View {
                 tvEvidenceLog("focus write \(String(describing: target)) dropped; retry \(attempt + 1)")
                 tvEnsureFocus(target, attempt: attempt + 1)
             }
+        }
+    }
+
+    /// Moves the focus engine could not resolve bubble to the chrome's `onMoveCommand`; while
+    /// the chrome is visible, honor the layout's diagonal: the menu strip sits top-right and
+    /// the transport cluster bottom-left, so Left off the strip's leading edge drops into the
+    /// transport row, and Right off the transport's trailing edge climbs back into the strip.
+    /// Only unresolved moves reach here, so no leading/trailing-edge bookkeeping is needed.
+    private func tvHandleUnresolvedMove(_ direction: MoveCommandDirection) {
+        guard selectedMenu == nil else { return }
+        switch (direction, tvPlayerFocus) {
+        case (.left, .menu):
+            tvPlayerFocus = scrubState.durationMs > 0 ? .skip(30) : .playPause
+        case (.right, .skip), (.right, .playPause):
+            if let firstMenu = availableMenus.first {
+                tvPlayerFocus = .menu(firstMenu)
+            }
+        default:
+            break
         }
     }
     #endif
