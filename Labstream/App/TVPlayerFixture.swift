@@ -184,15 +184,20 @@ struct TVKeyboardFixtureView: View {
 /// adds — TabView tab, NavigationStack, results ScrollView below the field, and the
 /// conditional trailing Clear button — so a UI test can tell which one kills insertion.
 struct TVKeyboardShellFixtureView: View {
+    private enum FixtureTab: Hashable { case home, search }
+
     @State private var query = ""
     @FocusState private var fieldFocused: Bool
+    // Launch selected on Search: the state under test is an arrived-at Search tab, and the
+    // UI-test can't assert on a field that doesn't exist until the tab is chosen.
+    @State private var selection: FixtureTab = .search
 
     var body: some View {
-        TabView {
-            Tab("Home", systemImage: "house") {
+        TabView(selection: $selection) {
+            Tab("Home", systemImage: "house", value: FixtureTab.home) {
                 Text("Fixture home stub")
             }
-            Tab("Search", systemImage: "magnifyingglass") {
+            Tab("Search", systemImage: "magnifyingglass", value: FixtureTab.search) {
                 NavigationStack {
                     VStack(spacing: 0) {
                         HStack(spacing: 18) {
