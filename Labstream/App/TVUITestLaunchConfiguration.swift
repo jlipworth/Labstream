@@ -30,6 +30,11 @@ enum TVUITestLaunchConfiguration {
         case browse
         case player
         case keyboard
+        /// TVUI-004 shell bisection: the replica field passes in isolation, so this variant
+        /// rebuilds the Search tab's hosting shell (TabView + NavigationStack + results
+        /// ScrollView + conditional trailing button) around it to find the layer that kills
+        /// system-keyboard insertion.
+        case keyboardShell = "keyboard-shell"
     }
 
     static var fixtureKind: FixtureKind? {

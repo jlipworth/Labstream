@@ -162,6 +162,27 @@ final class LabstreamTVPlayerTests: XCTestCase {
                                         prefix: "replica:")
     }
 
+    /// TVUI-004 bisection step 3: the replica field hosted inside the live Search tab's
+    /// shell layers (TabView + NavigationStack + results ScrollView + conditional Clear
+    /// button). The bare-hosted replica passes, so a failure here pins the defect on the
+    /// shell; a pass moves suspicion to the remaining live-only layers (environment,
+    /// session-key `.id`, safe-area inset).
+    func testSystemKeyboardInsertsLetterInsideTabViewShell() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-testing-fixture", "keyboard-shell"]
+        app.launchEnvironment["LABSTREAM_UNIT_TEST_HOST"] = "0"
+        app.launch()
+
+        let field = app.textFields["tv.fixture.keyboard.shell.field"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        // The fixture auto-focuses the field on tab appearance, same as the live Search tab.
+        XCTAssertTrue(waitForFocus(field, timeout: 4) || focusField(field, byPressing: .down),
+                      "shell fixture should land focus on the search field")
+        try assertKeyboardInsertsLetter(app: app, field: field,
+                                        echoID: "tv.fixture.keyboard.shell.echo",
+                                        prefix: "shell:")
+    }
+
     private func launchKeyboardFixture() -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments = ["--ui-testing", "--ui-testing-fixture", "keyboard"]

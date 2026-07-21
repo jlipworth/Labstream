@@ -176,6 +176,81 @@ struct TVKeyboardFixtureView: View {
     }
 }
 
+/// TVUI-004 shell bisection (`--ui-testing-fixture keyboard-shell`): the replica field
+/// inserts letters when hosted bare (`TVKeyboardFixtureView`), yet the identical field in
+/// the live Search tab loses the input session the moment a keyboard letter is selected
+/// (captured evidence: `_teardownExistingDelegate` fires on the Select's press-end, no
+/// insertion ever reaches the binding). This variant rebuilds the layers the live shell
+/// adds — TabView tab, NavigationStack, results ScrollView below the field, and the
+/// conditional trailing Clear button — so a UI test can tell which one kills insertion.
+struct TVKeyboardShellFixtureView: View {
+    @State private var query = ""
+    @FocusState private var fieldFocused: Bool
+
+    var body: some View {
+        TabView {
+            Tab("Home", systemImage: "house") {
+                Text("Fixture home stub")
+            }
+            Tab("Search", systemImage: "magnifyingglass") {
+                NavigationStack {
+                    VStack(spacing: 0) {
+                        HStack(spacing: 18) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.title2.weight(.medium))
+                                .foregroundStyle(.secondary)
+
+                            TextField("Movies, shows, music…", text: $query)
+                                .focused($fieldFocused)
+                                .textFieldStyle(.plain)
+                                .font(.title3)
+                                .accessibilityIdentifier("tv.fixture.keyboard.shell.field")
+
+                            if !query.isEmpty {
+                                Button {
+                                    query = ""
+                                    fieldFocused = true
+                                } label: {
+                                    Label("Clear search", systemImage: "xmark.circle.fill")
+                                        .labelStyle(.iconOnly)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, 28)
+                        .frame(width: 920, height: 70)
+                        .background(.thinMaterial, in: Capsule())
+                        .padding(.top, 28)
+                        .padding(.bottom, 12)
+
+                        Text("shell:\(query)")
+                            .font(.title3.monospaced())
+                            .accessibilityIdentifier("tv.fixture.keyboard.shell.echo")
+
+                        ScrollView {
+                            ContentUnavailableView("Search your libraries",
+                                                   systemImage: "magnifyingglass",
+                                                   description: Text("Fixture results stub."))
+                            .frame(maxWidth: .infinity, minHeight: 300)
+                        }
+                    }
+                    .navigationTitle("Search")
+                    .task {
+                        await Task.yield()
+                        fieldFocused = true
+                    }
+                    .onChange(of: query) { _, value in
+                        NSLog("%@", "TVKeyboardFixture: shell query changed to '\(value)'")
+                    }
+                    .onChange(of: fieldFocused) { _, focused in
+                        NSLog("%@", "TVKeyboardFixture: shell focused -> \(focused)")
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Generates the fixture's local video: 20 minutes of alternating solid frames, H.264, silent.
 /// Written once into Caches and reused across launches.
 enum TVPlayerFixtureMedia {
