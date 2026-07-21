@@ -10,16 +10,17 @@ final class LabstreamTVPlayerTests: XCTestCase {
         continueAfterFailure = false
     }
 
-    /// A single directional press must reveal auto-hidden chrome without seeking or
-    /// activating another control.
+    /// A single Down press must reveal auto-hidden chrome without seeking or activating
+    /// another control. (Side presses are exercised separately: on hidden chrome they are
+    /// an instant ±10s skip PLUS a reveal by design.)
     func testDirectionalPressRevealsHiddenChrome() throws {
         let app = launchPlayerFixture()
         try awaitAutoHide(app)
 
-        XCUIRemote.shared.press(.right)
-        XCTAssertTrue(app.buttons["Pause"].waitForExistence(timeout: 4),
+        XCUIRemote.shared.press(.down)
+        XCTAssertTrue(app.buttons["tv.player.timeline"].waitForExistence(timeout: 4),
                       "directional press should reveal hidden chrome")
-        attachScreen(named: "chrome revealed by right press", app: app)
+        attachScreen(named: "chrome revealed by down press", app: app)
     }
 
     /// Select on hidden chrome must reveal it (and not activate a control or seek).
@@ -28,38 +29,49 @@ final class LabstreamTVPlayerTests: XCTestCase {
         try awaitAutoHide(app)
 
         XCUIRemote.shared.press(.select)
-        XCTAssertTrue(app.buttons["Pause"].waitForExistence(timeout: 4),
+        XCTAssertTrue(app.buttons["tv.player.timeline"].waitForExistence(timeout: 4),
                       "Select should reveal hidden chrome without activating a control")
-        // Still playing: the transport button must still read Pause, not Play.
-        XCTAssertFalse(app.buttons["Play"].exists,
-                       "Select on hidden chrome must not toggle playback")
     }
 
-    /// Play/Pause on hidden chrome must toggle exactly once and reveal the chrome.
+    /// Play/Pause on hidden chrome must toggle exactly once and reveal the chrome. There is
+    /// no on-screen Play/Pause to read anymore; the paused proof is that paused chrome pins
+    /// itself visible past the 5s auto-hide window.
     func testPlayPausePressPausesAndRevealsHiddenChrome() throws {
         let app = launchPlayerFixture()
         try awaitAutoHide(app)
 
         XCUIRemote.shared.press(.playPause)
-        XCTAssertTrue(app.buttons["Play"].waitForExistence(timeout: 4),
-                      "Play/Pause should pause playback and reveal chrome")
+        let timeline = app.buttons["tv.player.timeline"]
+        XCTAssertTrue(timeline.waitForExistence(timeout: 4),
+                      "Play/Pause should reveal chrome")
+        // Playing chrome hides again within ~5s; paused chrome must not.
+        sleep(7)
+        XCTAssertTrue(timeline.exists,
+                      "paused chrome should pin itself visible (playback did not pause?)")
     }
 
-    /// Revealed chrome must give deterministic initial focus to the Play/Pause control and
-    /// allow remote traversal into EVERY player menu the fixture offers; closing each menu
+    /// Revealed chrome must give deterministic initial focus to the timeline and allow
+    /// remote traversal into EVERY player menu the fixture offers; closing each menu
     /// must restore focus to its originating button. The local fixture has no Quality menu
     /// (no server reload available); Quality is covered by live-Plex validation.
     func testRevealedChromeReachesMenusAndRestoresFocus() throws {
         let app = launchPlayerFixture()
         try awaitAutoHide(app)
 
-        XCUIRemote.shared.press(.right)
-        let pause = app.buttons["Pause"]
-        XCTAssertTrue(pause.waitForExistence(timeout: 4))
-        XCTAssertTrue(waitForFocus(pause), "revealed chrome should focus Play/Pause")
+        XCUIRemote.shared.press(.down)
+        let timeline = app.buttons["tv.player.timeline"]
+        XCTAssertTrue(timeline.waitForExistence(timeout: 4))
+        XCTAssertTrue(waitForFocus(timeline), "revealed chrome should focus the timeline")
 
-        // Up moves from the transport row into the menu strip; Subtitles is its first entry.
+        // Up moves from the timeline into the menu strip. The full-width timeline gives the
+        // engine latitude on WHICH strip button it enters, so walk Left to the strip's start.
         XCUIRemote.shared.press(.up)
+        let firstMenu = app.buttons["Subtitles"]
+        XCTAssertTrue(firstMenu.waitForExistence(timeout: 3))
+        for _ in 0..<5 where !firstMenu.hasFocus {
+            XCUIRemote.shared.press(.left)
+            if waitForFocus(firstMenu, timeout: 1) { break }
+        }
 
         // Strip order in the fixture (Quality absent): open and close every menu, moving
         // right one button at a time. Auto-hide never fires while a menu is open, and the
@@ -105,18 +117,20 @@ final class LabstreamTVPlayerTests: XCTestCase {
         try awaitAutoHide(app)
         attachScreen(named: "chrome hidden", app: app)
 
-        let pause = app.buttons["Pause"]
+        let timeline = app.buttons["tv.player.timeline"]
+        // Side presses additionally perform an instant ±10s skip by design; every press
+        // must still reveal the chrome from a confirmed hidden state.
         for press in [XCUIRemote.Button.right, .left, .up, .down, .select] {
             XCUIRemote.shared.press(press)
-            XCTAssertTrue(pause.waitForExistence(timeout: 4),
+            XCTAssertTrue(timeline.waitForExistence(timeout: 4),
                           "\(press) on hidden chrome should reveal it")
             let hidden = expectation(for: NSPredicate(format: "exists == false"),
-                                     evaluatedWith: pause)
+                                     evaluatedWith: timeline)
             wait(for: [hidden], timeout: 12)
         }
 
         XCUIRemote.shared.press(.playPause)
-        XCTAssertTrue(app.buttons["Play"].waitForExistence(timeout: 4),
+        XCTAssertTrue(timeline.waitForExistence(timeout: 4),
                       "Play/Pause on hidden chrome should pause and reveal")
         attachScreen(named: "after hidden-chrome press sweep", app: app)
     }
@@ -304,11 +318,11 @@ final class LabstreamTVPlayerTests: XCTestCase {
 
     /// Waits for the chrome to be visible (playing state) and then auto-hide.
     private func awaitAutoHide(_ app: XCUIApplication) throws {
-        let pause = app.buttons["Pause"]
-        XCTAssertTrue(pause.waitForExistence(timeout: 25),
+        let timeline = app.buttons["tv.player.timeline"]
+        XCTAssertTrue(timeline.waitForExistence(timeout: 25),
                       "player chrome should appear in playing state")
         let hidden = expectation(for: NSPredicate(format: "exists == false"),
-                                 evaluatedWith: pause)
+                                 evaluatedWith: timeline)
         wait(for: [hidden], timeout: 12)
     }
 

@@ -62,8 +62,9 @@ func tickCustomScrubberClock(_ scrubState: inout PlaybackScrubState,
 /// Explicit focus ownership keeps a hidden player surface in the remote responder chain, then
 /// restores focus to real chrome controls when any directional command reveals them.
 private enum TVPlayerFocus: Hashable {
+    /// Kept for the cross-platform `playPauseButton`'s tvOS `.focused` modifier; the tvOS
+    /// layout itself no longer places that button (the remote is the transport).
     case playPause
-    case skip(Int)
     case menu(CustomPlayerMenuKind)
     /// The remote-driven timeline scrubber (its own full-width row, so Left/Right have no
     /// horizontal focus candidates and the scrub handler is the only actor for those presses).
@@ -334,7 +335,17 @@ struct CustomPlayerChrome: View {
         .onMoveCommand { direction in
             tvEvidenceLog("onMoveCommand \(direction) chromeVisible=\(shouldShowChrome)")
             guard shouldShowChrome else {
-                revealTVChrome()
+                // Apple-native hidden-chrome behavior: a side press is an instant ±10s
+                // skip (with a brief reveal so the landing position is visible), not
+                // just a reveal. Up/Down/Select reveal without seeking.
+                switch direction {
+                case .left, .right:
+                    performRelativeSkip(seconds: direction == .right ? tvRemoteSkipSeconds
+                                                                     : -tvRemoteSkipSeconds)
+                    revealTVChrome()
+                default:
+                    revealTVChrome()
+                }
                 return
             }
             tvHandleUnresolvedMove(direction)
@@ -361,7 +372,9 @@ struct CustomPlayerChrome: View {
         .onAppear {
             revealChrome()
             #if os(tvOS)
-            Task { @MainActor in tvPlayerFocus = .playPause }
+            // Verified write, not a raw assignment: the appear-time write races the
+            // chrome's insertion and is silently dropped otherwise (TVUI-024 evidence).
+            tvEnsureFocus(tvDefaultChromeFocus)
             #endif
             #if os(macOS)
             installMacKeyMonitor()
@@ -388,7 +401,7 @@ struct CustomPlayerChrome: View {
             tvEvidenceLog("shouldShowChrome -> \(visible)")
             if visible {
                 if tvPlayerFocus == nil || tvPlayerFocus == .hiddenSurface {
-                    tvEnsureFocus(.playPause)
+                    tvEnsureFocus(tvDefaultChromeFocus)
                 }
             } else {
                 tvFocusHiddenSurface()
@@ -957,28 +970,16 @@ struct CustomPlayerChrome: View {
                 tvMenuStrip
             }
             // The focus section must span the full row — title and spacer included — so an Up
-            // press from the leading transport cluster (whose vertical projection misses the
-            // trailing menu strip entirely) is routed into the strip's nearest button.
+            // press from the timeline (whose vertical projection may miss the trailing menu
+            // strip) is routed into the strip's nearest button.
             .focusSection()
 
-            HStack(spacing: 14) {
-                tvSkipButton(seconds: -30)
-                tvSkipButton(seconds: -10)
-                playPauseButton
-                tvSkipButton(seconds: 10)
-                tvSkipButton(seconds: 30)
-
-                Spacer(minLength: 0)
-            }
-            // Mirror of the header's section: a Down press from the trailing menu strip has no
-            // focusable in its vertical beam, so the full-width section routes it into the
-            // leading skip cluster.
-            .focusSection()
-
-            // TV-native timeline: its own full-width row beneath the transport cluster. The
-            // scrubber must be the ONLY focusable in the row — a Left/Right press then has no
-            // horizontal focus candidate, which is what lets `onMoveCommand` scrub instead of
-            // fighting the engine's geometric resolution (see tvTimelineMove).
+            // TV-native timeline: no on-screen transport buttons — the remote IS the
+            // transport (hardware play/pause, ±10s side presses while chrome is hidden,
+            // Select-on-timeline). The scrubber must be the ONLY focusable in the row: a
+            // Left/Right press then has no horizontal focus candidate, which is what lets
+            // `onMoveCommand` scrub instead of fighting the engine's geometric resolution
+            // (see tvTimelineMove).
             HStack(spacing: 14) {
                 // Never truncate the clocks: size to content (h:mm:ss needs more than the
                 // old fixed 100pt at tvOS type sizes) with a floor so the slider doesn't
@@ -1003,7 +1004,7 @@ struct CustomPlayerChrome: View {
         }
     }
 
-    /// Remote-driven scrubber. Focus it (Down from the transport row), then Left/Right steps
+    /// Remote-driven scrubber (the chrome's default focus). Left/Right steps
     /// the draft position with press-streak acceleration, Select commits the seek, and moving
     /// focus away (Up) abandons the draft (cleanup in the tvPlayerFocus onChange). While a
     /// draft is open the trick-play preview floats above the thumb.
@@ -1129,24 +1130,6 @@ struct CustomPlayerChrome: View {
         .fixedSize(horizontal: true, vertical: false)
     }
 
-    private func tvSkipButton(seconds: Int) -> some View {
-        let isForward = seconds > 0
-        let amount = abs(seconds)
-        return Button {
-            performRelativeSkip(seconds: seconds)
-        } label: {
-            Label(isForward ? "Forward \(amount) seconds" : "Back \(amount) seconds",
-                  systemImage: isForward ? "goforward.\(amount)" : "gobackward.\(amount)")
-                .labelStyle(.iconOnly)
-                .font(.callout.weight(.semibold))
-                .frame(width: 40, height: 40)
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .focused($tvPlayerFocus, equals: .skip(seconds))
-        .disabled(scrubState.durationMs <= 0)
-        .accessibilityLabel(isForward ? "Skip forward \(amount) seconds" : "Skip back \(amount) seconds")
-    }
     #endif
 
     #if os(macOS)
@@ -2411,10 +2394,22 @@ struct CustomPlayerChrome: View {
         tvEnsureFocus(.hiddenSurface)
     }
 
+    /// Single dpad press while the chrome is hidden = this many seconds of instant skip
+    /// (the tvOS platform standard; larger jumps come from the scrubber's stride
+    /// acceleration, so 10 stays the fine-grained default).
+    private var tvRemoteSkipSeconds: Int { 10 }
+
+    /// Where focus lands when the chrome reveals: the timeline (the only transport
+    /// surface), unless there is no seekable duration, in which case the menu strip.
+    private var tvDefaultChromeFocus: TVPlayerFocus {
+        if scrubState.durationMs > 0 { return .timeline }
+        return availableMenus.first.map { .menu($0) } ?? .timeline
+    }
+
     private func revealTVChrome() {
         revealChrome(keepVisible: true)
         // Focus assignment must follow the render that reintroduces the controls.
-        tvEnsureFocus(.playPause)
+        tvEnsureFocus(tvDefaultChromeFocus)
         Task { @MainActor in
             await Task.yield()
             scheduleChromeHideIfNeeded()
@@ -2445,8 +2440,8 @@ struct CustomPlayerChrome: View {
     }
 
     /// Diagonal focus fallback while the chrome is visible: the menu strip sits top-right and
-    /// the transport cluster bottom-left, so Left off the strip's leading edge drops into the
-    /// transport row, and Right off the transport's trailing edge climbs back into the strip.
+    /// the timeline spans the row below, so Left off the strip's leading edge drops onto the
+    /// timeline (a plain Left has no in-row target there).
     ///
     /// `onMoveCommand` fires for EVERY dpad press — engine-resolved or not — and its ordering
     /// against the engine's focus update is inconsistent (captured 2026-07-21: update precedes
@@ -2461,15 +2456,7 @@ struct CustomPlayerChrome: View {
         guard Date().timeIntervalSince(tvPlayerFocusChangedAt) > 0.15 else { return }
         switch (direction, tvPlayerFocus) {
         case (.left, .menu(let menu)) where menu == availableMenus.first:
-            tvPlayerFocus = scrubState.durationMs > 0 ? .skip(30) : .playPause
-        case (.right, .skip(30)):
-            if let firstMenu = availableMenus.first {
-                tvPlayerFocus = .menu(firstMenu)
-            }
-        case (.right, .playPause) where scrubState.durationMs <= 0:
-            if let firstMenu = availableMenus.first {
-                tvPlayerFocus = .menu(firstMenu)
-            }
+            if scrubState.durationMs > 0 { tvPlayerFocus = .timeline }
         default:
             break
         }
