@@ -1,6 +1,6 @@
 # Cross-platform simplification and performance program
 
-Status: **Waves 0–4 implemented and validated; Wave 5 re-baselining is next**
+Status: **Waves 0–4 implemented and validated; Wave 5 measurement prerequisites are in progress**
 
 Audit baseline: `b3045bc0` (`Record tvOS merge checkpoint`) on
 `codex/audit-simplification-performance`
@@ -1162,6 +1162,34 @@ policy:
 - Attribute structural wins and regressions before additional tuning.
 - Establish budgets from the available-device paired results, then ratchet rather
   than inventing ungrounded absolute thresholds.
+
+#### Wave 5 readiness audit journal
+
+1. The Release-parity `PerformanceAudit` configuration, binary/manifest guard, strict raw-summary
+   binding, frozen-MDE workflow, and seeded paired comparator remain valid foundations. The current
+   nine spans cover only broad browse, artwork, and playback latency; they do not yet make launch,
+   idle energy, Search, transport, downloads, persistence, storage, Cinema placement, SharePlay,
+   wakeups, RSS, or compile/test throughput comparable.
+2. Existing span integrity must be repaired before capture: current Home and Detail success fields
+   exceed the closed schema, begin-only dimensions disappear from comparable records, several stale
+   returns can leave spans open, and a value-type span can be ended more than once. Instrumentation
+   and deterministic workloads must be applied identically to both artifacts before paired evidence.
+3. Runtime comparisons use `40af93f3` as the post-safety benchmark-ready control when a Wave 0 fix
+   was a prerequisite for valid measurement; the simplified candidate begins at `cf2ceeb3`. Compile
+   topology may additionally report the original `b3045bc0` control, but must label the different
+   provenance rather than mixing controls inside one paired result.
+4. Highest-priority hypotheses to measure, not assume, are synchronous launch-time download-store
+   I/O; Plex restore waiting beyond first usable connection; zero-work recovery wakeups; load-all
+   movie grids; whole-snapshot Home/Search publication; shimmer invalidation; store-and-forward media
+   proxy bodies; unowned proxy connection tasks; redundant playback/diagnostics/Cinema clocks; HDR
+   probe overlap; ungated download-health temp scans; main-actor row/task refresh; full-index fsync;
+   and large side-asset/finalizer memory and I/O.
+5. No admissible paired runtime or five-sample compile artifact exists yet. The first implementation
+   slices are measurement-only: exact-once/schema-compatible spans, deterministic fixture/counter
+   contracts, a paired seeded compile runner with five samples and PMSKit incremental coverage, and
+   explicit test-tier timing/failure taxonomy. Expensive captures remain serialized with cooling,
+   stable power/thermal/storage covariates, raw artifacts local, and physical-only cells reported as
+   hardware-blocked rather than inferred from simulators.
 
 ### Wave 6 — Optimize measured bottlenecks
 

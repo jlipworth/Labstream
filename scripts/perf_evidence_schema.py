@@ -22,11 +22,13 @@ KNOWN_RESULTS = {"success", "failure", "cancelled", "stale", "partial", "timeout
 KNOWN_BACKENDS = {"Plex", "Jellyfin", "Emby"}
 BACKEND_LABELS = {"plex": "Plex", "jellyfin": "Jellyfin", "emby": "Emby"}
 PHASE_FIELDS: dict[str, set[str]] = {
-    "home.load": {"view_count", "rail_count", "item_count", "degraded", "hub_count", "error"},
+    "home.load": {
+        "view_count", "rail_count", "pending_rail_count", "item_count", "degraded", "hub_count", "error",
+    },
     "libraries.load": {"library_count", "error"},
     "library_grid.initial_page": {"item_count", "total_count", "alphabet_count", "page_count", "error"},
     "library_grid.page": {"item_count", "error"},
-    "detail.metadata": {"media_count", "error"},
+    "detail.metadata": {"media_count", "swr_refresh", "error"},
     "playback.resolve": {"path_mode", "play_method", "reason", "error"},
     "playback.startup": {"path_mode"},
     "playback.item_load": {"path_mode", "duration_seconds"},
@@ -66,11 +68,11 @@ ERROR_CATEGORIES = {
     "error_timeout", "error_transport", "error_unavailable",
 }
 INTEGER_FIELDS = {
-    "view_count", "rail_count", "item_count", "hub_count", "library_count", "total_count",
+    "view_count", "rail_count", "pending_rail_count", "item_count", "hub_count", "library_count", "total_count",
     "alphabet_count", "page_count", "media_count", "duration_seconds", "attempts", "bytes",
     "status", "width", "height", "pixel_width", "pixel_height",
 }
-BOOLEAN_FIELDS = {"degraded"}
+BOOLEAN_FIELDS = {"degraded", "swr_refresh"}
 ENUM_FIELDS = {
     "path_mode": {"local_file", "remote_stream", "plex_stream"},
     "play_method": {"directPlay", "directStream", "transcode"},

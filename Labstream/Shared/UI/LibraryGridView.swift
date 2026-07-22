@@ -199,7 +199,10 @@ struct LibrariesView: View {
             guard snapshot.isCurrent(in: appModel),
                   generation == loadGeneration,
                   loadIdentity == activeIdentity,
-                  !Task.isCancelled else { return }
+                  !Task.isCancelled else {
+                span.end(result: Task.isCancelled ? "cancelled" : "superseded")
+                return
+            }
             // Music sections deliberately stay out of this tab even after the #17
             // un-hide: the Music tab is their dedicated entry point and listing the
             // section twice is noise (MUSIC-DESIGN §2 — a considered exception to
@@ -218,7 +221,12 @@ struct LibrariesView: View {
             loadState = .loaded
             span.end(fields: ["library_count": rootItems.count])
         } catch {
-            guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
+            guard generation == loadGeneration,
+                  loadIdentity == activeIdentity,
+                  !Task.isCancelled else {
+                span.end(result: Task.isCancelled ? "cancelled" : "superseded")
+                return
+            }
             span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
             loadState = .failed(friendlyMessage(error))
         }
