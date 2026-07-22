@@ -407,29 +407,6 @@ public final class DownloadManager {
     /// `teardownOrphanedEncodersOnLaunch()`.
     var embyPlaySessionByAttempt: [DownloadAttemptKey: String] = [:]
     var jellyfinPlaySessionByAttempt: [DownloadAttemptKey: String] = [:]
-    /// Generation-guarded keepalive task handle shared by both backend loops. A task that RETURNS
-    /// (auth-dead, session mismatch, natural exit) must remove itself from its map, or the
-    /// `ensure*Keepalives` gate sees a live entry forever and never restarts the keepalive after
-    /// recovery (re-login) — the server then idle-kills the encoder mid-download.
-    private struct KeepaliveTaskHandle {
-        let generation: UUID
-        let task: Task<Void, Never>
-    }
-
-    /// Jellyfin kills idle transcodes when no session progress/ping arrives. Offline downloads
-    /// consume `/Videos/{id}/stream.mp4` as a file transfer, not through the playback controller, so
-    /// keep the server-minted PlaySessionId alive until the transfer reaches a terminal row state.
-    @ObservationIgnored private var jellyfinDownloadKeepaliveTasks: [DownloadAttemptKey: KeepaliveTaskHandle] = [:]
-    /// Emby applies the same ~60-second idle expiry to compatible-remux encoders. This is separate
-    /// bookkeeping because only Emby's `.compatibleRemux` lane is live; its optimize lane is a
-    /// persistent Convert job and must never emit playback keepalives.
-    @ObservationIgnored private var embyDownloadKeepaliveTasks: [DownloadAttemptKey: KeepaliveTaskHandle] = [:]
-    /// Auth-dead tasks exit permanently for the credential generation that received 401/403.
-    /// Without this sentinel every `refreshRecords()` would immediately recreate the task and
-    /// hammer the server. Values are non-secret stable digests of server+user+token identity.
-    @ObservationIgnored private var jellyfinKeepaliveAuthQuarantine: [String: String] = [:]
-    @ObservationIgnored private var embyKeepaliveAuthQuarantine: [String: String] = [:]
-
     /// Last (progress 0…1, time) sample per ratingKey, used to derive `optimizeETA` rate.
     private var optimizeProgressSamples: [String: (p: Double, time: Date)] = [:]
     /// Smoothed %/sec rate per ratingKey (EMA), used to derive `optimizeETA`.
@@ -440,6 +417,8 @@ public final class DownloadManager {
     let appModel: AppModel
     let store: DownloadStore
     let session: BackgroundDownloadSession
+    /// Owns exact-attempt Jellyfin/Emby encoder keepalive tasks and auth quarantine.
+    @ObservationIgnored private let keepaliveCoordinator: DownloadKeepaliveCoordinator
     /// Attempt-scoped server cleanup survives row/file removal in a separate durability domain.
     let cleanupIntentJournal: DownloadCleanupIntentJournal
     @ObservationIgnored private var cleanupIntentsInFlight: Set<UUID> = []
@@ -465,6 +444,7 @@ public final class DownloadManager {
         let startupAdmission = store.startupIndexAdmission()
         self.store = store
         self.session = injectedSession ?? BackgroundDownloadSession(store: store)
+        self.keepaliveCoordinator = DownloadKeepaliveCoordinator(appModel: appModel, store: store)
         self.sideAssetFetchCoordinator = injectedSideAssetFetchCoordinator ?? .shared
         self.cleanupIntentJournal = injectedCleanupIntentJournal
             ?? DownloadCleanupIntentJournal(directory: store.durableCleanupAuthorityDirectory)
@@ -3135,8 +3115,24 @@ public final class DownloadManager {
         _ = downloadWorkRegistry.cancelCancellableWork(for: key)
         _ = serverPrepAttempts.releaseAll(for: key)
         serverPrepPollerTasks.removeValue(forKey: key)?.cancel()
-        jellyfinDownloadKeepaliveTasks.removeValue(forKey: key)?.task.cancel()
-        embyDownloadKeepaliveTasks.removeValue(forKey: key)?.task.cancel()
+        keepaliveCoordinator.cancel(key)
+    }
+
+    func startJellyfinDownloadKeepalive(
+        attemptKey: DownloadAttemptKey,
+        itemId: String,
+        mediaSourceId: String,
+        playSessionId: String,
+        userId: String,
+        durationMs: Int?
+    ) {
+        keepaliveCoordinator.startJellyfinDownloadKeepalive(
+            attemptKey: attemptKey,
+            itemId: itemId,
+            mediaSourceId: mediaSourceId,
+            playSessionId: playSessionId,
+            userId: userId,
+            durationMs: durationMs)
     }
 
     #if DEBUG
@@ -3145,12 +3141,7 @@ public final class DownloadManager {
         for key: DownloadAttemptKey,
         backend: DownloadBackendKind
     ) {
-        let handle = KeepaliveTaskHandle(generation: UUID(), task: task)
-        switch backend {
-        case .jellyfin: jellyfinDownloadKeepaliveTasks[key] = handle
-        case .emby: embyDownloadKeepaliveTasks[key] = handle
-        case .plex: break
-        }
+        keepaliveCoordinator.registerTaskForTesting(task, for: key, backend: backend)
     }
     #endif
 
@@ -4270,8 +4261,7 @@ public final class DownloadManager {
             case .embyConvert: executeEmbyConvertCleanupIntent(intent)
             }
         }
-        ensureJellyfinDownloadKeepalives(for: recoveryEligibleFresh)
-        ensureEmbyDownloadKeepalives(for: recoveryEligibleFresh)
+        keepaliveCoordinator.reconcile(records: recoveryEligibleFresh)
         for restart in forwardOnlyRestarts {
             Task { @MainActor [weak self] in
                 self?.restartStalledForwardOnlyStream(restart)
@@ -4350,7 +4340,7 @@ public final class DownloadManager {
             pendingStaticResumeCount: staticRangeRecovery.pendingResumeCount,
             finalizingStaticRecoveryCount: staticRangeRecovery.finalizingCount,
             serverPrepPollerCount: serverPrepPollerTasks.count,
-            jellyfinKeepaliveCount: jellyfinDownloadKeepaliveTasks.count,
+            jellyfinKeepaliveCount: keepaliveCoordinator.activeCount(for: .jellyfin),
             forwardStallWatchCount: forwardOnlyStallTracker.trackedCount,
             session: makeDownloadHealthSessionSnapshot(from: sessionSnapshot))
         guard DownloadHealthSnapshotPolicy.shouldRecord(snapshot: snapshot,
@@ -4373,339 +4363,6 @@ public final class DownloadManager {
             backgroundCompletionHandlerCount: snapshot.backgroundCompletionHandlerCount,
             finalizingRatingKeyCount: snapshot.finalizingRatingKeyCount,
             pendingTempCleanupBytes: snapshot.pendingTempCleanupBytes)
-    }
-
-    private func ensureJellyfinDownloadKeepalives(for records: [DownloadRecord]) {
-        // Session and auth generation are loop-invariant: resolve once, not per record per refresh.
-        guard let session = appModel.backendSession(for: .jellyfin),
-              let userId = session.userID else { return }
-        let authGeneration = Self.keepaliveAuthGeneration(session)
-        for record in records {
-            guard let metadata = record.metadata,
-                  let key = attemptKey(for: record),
-                  session.matchesPersistedServer(metadata)
-            else { continue }
-            switch DownloadKeepaliveLifecyclePolicy.authQuarantineAction(
-                quarantinedGeneration: jellyfinKeepaliveAuthQuarantine[record.ratingKey],
-                currentGeneration: authGeneration) {
-            case .suppress:
-                continue
-            case .clear:
-                jellyfinKeepaliveAuthQuarantine.removeValue(forKey: record.ratingKey)
-            case .none:
-                break
-            }
-            guard let candidate = JellyfinDownloadKeepalivePolicy.candidate(
-                for: record,
-                hasExistingTask: jellyfinDownloadKeepaliveTasks[key] != nil)
-            else { continue }
-
-            startJellyfinDownloadKeepalive(
-                attemptKey: key,
-                itemId: candidate.itemID,
-                mediaSourceId: candidate.mediaSourceID,
-                playSessionId: candidate.playSessionID,
-                session: session,
-                userId: userId,
-                durationMs: candidate.durationMs)
-        }
-    }
-
-    private func ensureEmbyDownloadKeepalives(for records: [DownloadRecord]) {
-        // Session and auth generation are loop-invariant: resolve once, not per record per refresh.
-        guard let session = appModel.backendSession(for: .emby),
-              let userId = session.userID else { return }
-        let authGeneration = Self.keepaliveAuthGeneration(session)
-        for record in records {
-            guard let metadata = record.metadata,
-                  let key = attemptKey(for: record),
-                  session.matchesPersistedServer(metadata),
-                  EmbyDownloadKeepalivePolicy.matchesPersistedUser(
-                    metadata.backendUserID, currentUserID: userId)
-            else { continue }
-            switch DownloadKeepaliveLifecyclePolicy.authQuarantineAction(
-                quarantinedGeneration: embyKeepaliveAuthQuarantine[record.ratingKey],
-                currentGeneration: authGeneration) {
-            case .suppress:
-                continue
-            case .clear:
-                embyKeepaliveAuthQuarantine.removeValue(forKey: record.ratingKey)
-            case .none:
-                break
-            }
-            guard let candidate = EmbyDownloadKeepalivePolicy.candidate(
-                for: record,
-                hasExistingTask: embyDownloadKeepaliveTasks[key] != nil)
-            else { continue }
-
-            startEmbyDownloadKeepalive(
-                attemptKey: key,
-                playSessionId: candidate.playSessionID,
-                userId: userId)
-        }
-    }
-
-    private nonisolated static func keepaliveAuthGeneration(_ session: BackendSession) -> String {
-        return DiagnosticRedactor.stableIdentifier(
-            for: "\(session.serverID ?? "")|\(session.baseURL.absoluteString)|\(session.userID ?? "")|\(session.token)")
-    }
-
-    func startEmbyDownloadKeepalive(attemptKey: DownloadAttemptKey,
-                                    playSessionId: String,
-                                    userId: String) {
-        let ratingKey = attemptKey.ratingKey
-        embyDownloadKeepaliveTasks.removeValue(forKey: attemptKey)?.task.cancel()
-        let identity = appModel.identity.emby
-        let enqueueUserId = userId
-        let generation = UUID()
-        let task = Task { [weak self] in
-            guard let self else { return }
-            defer {
-                Task { @MainActor [weak self] in
-                    guard let self,
-                          EmbyDownloadKeepalivePolicy.shouldRemoveTask(
-                            completingGeneration: generation,
-                            currentGeneration: self.embyDownloadKeepaliveTasks[attemptKey]?.generation)
-                    else { return }
-                    self.embyDownloadKeepaliveTasks.removeValue(forKey: attemptKey)
-                }
-            }
-            var lastTickOutcome: JellyfinKeepaliveTickOutcome?
-            while !Task.isCancelled {
-                guard !self.store.isDeletionPending(for: attemptKey),
-                      let record = self.store.record(for: attemptKey),
-                      EmbyDownloadKeepalivePolicy.candidate(for: record, hasExistingTask: false) != nil
-                else { return }
-                // Re-resolve every tick so token rotation, sign-out, or server replacement stops
-                // the old control plane rather than silently pinging with stale credentials.
-                guard let liveSession = self.appModel.backendSession(for: .emby),
-                      record.metadata.map(liveSession.matchesPersistedServer) != false,
-                      EmbyDownloadKeepalivePolicy.matchesPersistedUser(
-                        record.metadata?.backendUserID, currentUserID: liveSession.userID) else {
-                    self.recordDownloadDiagnostic("downloads.emby_keepalive_degraded", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "reason": .label("emby_session_mismatch_or_unavailable"),
-                        "action": .label("stopped"),
-                    ])
-                    return
-                }
-                let server = liveSession.baseURL
-                let token = liveSession.token
-                let liveUserId = liveSession.userID ?? enqueueUserId
-                var statuses: [Int?] = []
-                do {
-                    // Live evidence: Ping alone keeps Emby's compatible-remux encoder alive past
-                    // its ~60s idle deadline. Do not send Playing/Progress here: those mutate the
-                    // user's resume position/watch history for what is only a file download.
-                    let ping = try EmbyPlayback.pingRequest(
-                        server: server, token: token, identity: identity,
-                        userId: liveUserId, playSessionId: playSessionId)
-                    guard !self.store.isDeletionPending(for: attemptKey) else { return }
-                    statuses.append(await Self.controlPlaneRequestStatus(ping))
-                } catch {
-                    self.recordDownloadDiagnostic("downloads.emby_keepalive_failed", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "error": .error(error),
-                    ])
-                }
-                let outcome = JellyfinDownloadKeepalivePolicy.tickOutcome(statuses: statuses)
-                switch JellyfinDownloadKeepalivePolicy.healthAction(previous: lastTickOutcome,
-                                                                    outcome: outcome) {
-                case .none:
-                    break
-                case .emitDegraded(let reason):
-                    self.recordDownloadDiagnostic("downloads.emby_keepalive_degraded", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "reason": .label(reason),
-                    ])
-                case .emitRecovered:
-                    self.recordDownloadDiagnostic("downloads.emby_keepalive_recovered", fields: [
-                        "download_id": .identifier(ratingKey),
-                    ])
-                case .stopAuthDead(let statusCode):
-                    self.embyKeepaliveAuthQuarantine[ratingKey] =
-                        Self.keepaliveAuthGeneration(liveSession)
-                    self.recordDownloadDiagnostic("downloads.emby_keepalive_degraded", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "reason": .label("auth_dead"),
-                        "status_code": .int(statusCode),
-                        "action": .label("stopped"),
-                    ])
-                    return
-                }
-                lastTickOutcome = outcome
-                do {
-                    try await Task.sleep(for: .seconds(EmbyDownloadKeepalivePolicy.intervalSeconds))
-                } catch { return }
-            }
-        }
-        embyDownloadKeepaliveTasks[attemptKey] = KeepaliveTaskHandle(generation: generation,
-                                                                    task: task)
-        recordDownloadDiagnostic("downloads.emby_keepalive_start", fields: [
-            "download_id": .identifier(ratingKey),
-        ])
-    }
-
-    func startJellyfinDownloadKeepalive(attemptKey: DownloadAttemptKey,
-                                                 itemId: String,
-                                                 mediaSourceId: String,
-                                                 playSessionId: String,
-                                                 session: BackendSession,
-                                                 userId: String,
-                                                 durationMs: Int?) {
-        let ratingKey = attemptKey.ratingKey
-        jellyfinDownloadKeepaliveTasks.removeValue(forKey: attemptKey)?.task.cancel()
-        let identity = appModel.identity.jellyfin
-        let enqueueUserId = userId
-        let generation = UUID()
-        let task = Task { [weak self] in
-            guard let self else { return }
-            defer {
-                // Self-remove on ANY exit (auth-dead, session mismatch, natural). Leaving the
-                // entry behind made `ensureJellyfinDownloadKeepalives` see hasExistingTask forever
-                // and never restart the keepalive after re-login — the server then idle-killed the
-                // transcode mid-download.
-                Task { @MainActor [weak self] in
-                    guard let self,
-                          DownloadKeepaliveLifecyclePolicy.shouldRemoveTask(
-                            completingGeneration: generation,
-                            currentGeneration: self.jellyfinDownloadKeepaliveTasks[attemptKey]?.generation)
-                    else { return }
-                    self.jellyfinDownloadKeepaliveTasks.removeValue(forKey: attemptKey)
-                }
-            }
-            var sentPlaying = false
-            // N2/F2c: report an advancing position, not a stationary one. Forward-only rows have
-            // no progress fraction (no Content-Length), so `positionTicks(progress:)` pinned every
-            // ping to 0 and the server saw a frozen session it could idle-kill mid-download — the
-            // very truncation these keepalives exist to prevent. Derive position from received
-            // bytes vs the transcode size estimate, falling back to elapsed wall clock, kept
-            // monotonic across pings.
-            let keepaliveStartedAt = Date()
-            var lastReportedTicks = 0
-            var lastTickOutcome: JellyfinKeepaliveTickOutcome?
-            while !Task.isCancelled {
-                guard !self.store.isDeletionPending(for: attemptKey),
-                      let record = self.store.record(for: attemptKey),
-                      record.status == .queued || record.status == .downloading else { return }
-                // A-2 (audit lens 8): re-resolve the Jellyfin lane per tick — token rotation or a
-                // re-login mid-download must not keep pinging with the enqueue-time snapshot (the
-                // server sees silence and idle-kills the encoder with no diagnostic trail).
-                guard let liveSession = self.appModel.backendSession(for: .jellyfin),
-                      record.metadata.map(liveSession.matchesPersistedServer) != false else {
-                    self.recordDownloadDiagnostic("downloads.jellyfin_keepalive_degraded", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "reason": .label("jellyfin_session_mismatch_or_unavailable"),
-                        "action": .label("stopped"),
-                    ])
-                    return
-                }
-                let server = liveSession.baseURL
-                let token = liveSession.token
-                let liveUserId = liveSession.userID ?? enqueueUserId
-                let progress = max(0, min(record.progress, 1))
-                let positionTicks = JellyfinDownloadKeepalivePolicy.reportedPositionTicks(
-                    progress: progress,
-                    bytes: record.bytes,
-                    estimatedTotalBytes: DownloadPresetPolicy.estimatedTranscodeBytes(for: record),
-                    elapsedSeconds: Date().timeIntervalSince(keepaliveStartedAt),
-                    durationMs: durationMs,
-                    lastReportedTicks: lastReportedTicks)
-                lastReportedTicks = positionTicks
-                var statuses: [Int?] = []
-                do {
-                    if !sentPlaying {
-                        let playing = try JellyfinPlayback.playingRequest(
-                            server: server,
-                            token: token,
-                            identity: identity,
-                            userId: liveUserId,
-                            itemId: itemId,
-                            mediaSourceId: mediaSourceId,
-                            playSessionId: playSessionId,
-                            playMethod: .transcode,
-                            positionTicks: positionTicks)
-                        guard !self.store.isDeletionPending(for: attemptKey) else { return }
-                        let status = await Self.controlPlaneRequestStatus(playing)
-                        statuses.append(status)
-                        // Only mark the session opened once the server actually accepted it, so a
-                        // transient failure retries the open instead of orphaning the session.
-                        if let status, (200..<300).contains(status) { sentPlaying = true }
-                    }
-                    let progressReq = try JellyfinPlayback.progressRequest(
-                        server: server,
-                        token: token,
-                        identity: identity,
-                        userId: liveUserId,
-                        itemId: itemId,
-                        mediaSourceId: mediaSourceId,
-                        playSessionId: playSessionId,
-                        playMethod: .transcode,
-                        positionTicks: positionTicks,
-                        isPaused: false)
-                    guard !self.store.isDeletionPending(for: attemptKey) else { return }
-                    statuses.append(await Self.controlPlaneRequestStatus(progressReq))
-                    let ping = try JellyfinPlayback.pingRequest(server: server,
-                                                                token: token,
-                                                                identity: identity,
-                                                                playSessionId: playSessionId)
-                    guard !self.store.isDeletionPending(for: attemptKey) else { return }
-                    statuses.append(await Self.controlPlaneRequestStatus(ping))
-                } catch {
-                    recordDownloadDiagnostic("downloads.jellyfin_keepalive_failed", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "error": .error(error),
-                    ])
-                }
-                let outcome = JellyfinDownloadKeepalivePolicy.tickOutcome(statuses: statuses)
-                switch JellyfinDownloadKeepalivePolicy.healthAction(previous: lastTickOutcome,
-                                                                    outcome: outcome) {
-                case .none:
-                    break
-                case .emitDegraded(let reason):
-                    self.recordDownloadDiagnostic("downloads.jellyfin_keepalive_degraded", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "reason": .label(reason),
-                    ])
-                case .emitRecovered:
-                    self.recordDownloadDiagnostic("downloads.jellyfin_keepalive_recovered", fields: [
-                        "download_id": .identifier(ratingKey),
-                    ])
-                case .stopAuthDead(let statusCode):
-                    // Quarantine THIS credential generation so refreshRecords doesn't immediately
-                    // recreate the task and hammer the server; a re-login mints a new generation
-                    // and the ensure gate clears the sentinel and restarts the keepalive.
-                    self.jellyfinKeepaliveAuthQuarantine[ratingKey] =
-                        Self.keepaliveAuthGeneration(liveSession)
-                    self.recordDownloadDiagnostic("downloads.jellyfin_keepalive_degraded", fields: [
-                        "download_id": .identifier(ratingKey),
-                        "reason": .label("auth_dead"),
-                        "status_code": .int(statusCode),
-                        "action": .label("stopped"),
-                    ])
-                    return
-                }
-                lastTickOutcome = outcome
-                do {
-                    try await Task.sleep(for: .seconds(JellyfinDownloadKeepalivePolicy.intervalSeconds))
-                } catch {
-                    return
-                }
-            }
-        }
-        jellyfinDownloadKeepaliveTasks[attemptKey] = KeepaliveTaskHandle(generation: generation,
-                                                                        task: task)
-        recordDownloadDiagnostic("downloads.jellyfin_keepalive_start", fields: [
-            "download_id": .identifier(ratingKey),
-        ])
-    }
-
-    /// Send one control-plane request (keepalive/report ping) and surface its HTTP status
-    /// (nil = transport failure). Control-plane traffic is deliberately EXEMPT from the
-    /// Wi-Fi-only download policy — tiny bodies that keep the server encoder alive.
-    private nonisolated static func controlPlaneRequestStatus(_ request: URLRequest) async -> Int? {
-        guard let (_, response) = try? await URLSession.shared.data(for: request) else { return nil }
-        return (response as? HTTPURLResponse)?.statusCode
     }
 
     /// Drop the in-flight protection (`activeJobs` slot + protected optimize-queue title) for a
@@ -4733,8 +4390,7 @@ public final class DownloadManager {
         }
         _ = serverPrepAttempts.releaseAll(for: attemptKey)
         serverPrepPollerTasks.removeValue(forKey: attemptKey)?.cancel()
-        jellyfinDownloadKeepaliveTasks.removeValue(forKey: attemptKey)?.task.cancel()
-        embyDownloadKeepaliveTasks.removeValue(forKey: attemptKey)?.task.cancel()
+        keepaliveCoordinator.cancel(attemptKey)
 
         if releasePlan.releaseCurrentState, inFlightAttempts.release(ifOwnedBy: attemptKey) {
             clearCurrentInFlightState(ratingKey: ratingKey)
@@ -4756,8 +4412,7 @@ public final class DownloadManager {
         // would display and extrapolate from them.
         clearOptimizeProgress(ratingKey: ratingKey)
         forwardOnlyStallTracker.remove(ratingKey)
-        jellyfinKeepaliveAuthQuarantine.removeValue(forKey: ratingKey)
-        embyKeepaliveAuthQuarantine.removeValue(forKey: ratingKey)
+        keepaliveCoordinator.clearAuthQuarantine(forRatingKey: ratingKey)
     }
 
     /// Repairs manager bookkeeping only when start admission has already proven that no live

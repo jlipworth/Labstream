@@ -205,9 +205,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private var loggedExpectation: Set<Int> = []
     /// Retry count by exact attempt for transient URLSession drops that provide resume data.
     private var retryCounts: [DownloadAttemptKey: Int] = [:]
-    /// Exact `.unverified` rows whose local probe was withheld for an OS background wake. Guarded
-    /// by `lock` so registration and gate-drain extraction are one atomic transition.
-    private var backgroundDeferredRevalidationKeys: Set<DownloadAttemptKey> = []
     /// JF-F2 loop guard: consecutive `.truncated` finalize outcomes per attempt. Deliberately NOT
     /// reset by `start`/`clearRetryCount` (a retry that truncates again must keep counting toward
     /// the parking budget); reset only on a `.complete` finalize. Only touched inside
@@ -279,7 +276,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// reached a safe state. `urlSessionDidFinishEvents` must not release the app delegate
     /// background completion handler until these reach zero, or visionOS can suspend us between a
     /// temp-stash move and the append/finalize/status write that makes the row durable.
-    private var backgroundCompletionGate = BackgroundDownloadCompletionGate()
+    private let backgroundWakeCoordinator = BackgroundDownloadWakeCoordinator()
     /// Last scene phase recorded only for diagnostics; scene changes no longer alter the transfer
     /// shape because foreground and background both use one open-ended remainder task.
     /// Task identifiers intentionally abandoned while replacing a range task (duplicate supersede,
@@ -294,12 +291,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// completion handler must be held until that finishes or times out, or the OS suspends us
     /// between the append and the next task's creation and the transfer stalls until the next
     /// (rate-limited) wake — the decisive half of the off-head multi-GB stall.
-    /// Value = the CURRENT grace generation for the key. The 20s timeout closure captures its own
-    /// generation and only ends a grace it still owns: without this, two begin/end cycles within
-    /// the window let cycle 1's timer end cycle 2's grace early — releasing the background
-    /// completion handler mid-rebuild (the device stall regression this grace exists to prevent),
-    /// invisibly (diagnostics would show a normal-looking "timeout" end).
-    private var rangeRequestRebuildGraceGenerations: [DownloadAttemptKey: UUID] = [:]
     private static let rangeRequestRebuildGraceSeconds: TimeInterval = 20
 
     /// One in-flight Range task of a static byte-range download. Unlike the opaque `downloadTask`
@@ -509,10 +500,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let opaqueInflightCount = inflight.count
         let rangeInflightCount = rangeInflight.count
         let haltedRangeKeyCount = rangeHaltKinds.count
-        let pendingBackgroundCompletionOperationCount = backgroundCompletionGate.pendingOperationCount
-        let deferredBackgroundCompletionIdentifierCount = backgroundCompletionGate.deferredIdentifierCount
-        let backgroundCompletionHandlerCount = backgroundCompletionGate.pendingHandlerCount
         lock.unlock()
+        let wakeSnapshot = backgroundWakeCoordinator.snapshot
         let finalizingRatingKeyCount = finalizationStateQueue.sync {
             finalizerRequestIDsByAttempt.count
         }
@@ -520,9 +509,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             opaqueInflightCount: opaqueInflightCount,
             rangeInflightCount: rangeInflightCount,
             haltedRangeKeyCount: haltedRangeKeyCount,
-            pendingBackgroundCompletionOperationCount: pendingBackgroundCompletionOperationCount,
-            deferredBackgroundCompletionIdentifierCount: deferredBackgroundCompletionIdentifierCount,
-            backgroundCompletionHandlerCount: backgroundCompletionHandlerCount,
+            pendingBackgroundCompletionOperationCount: wakeSnapshot.pendingOperationCount,
+            deferredBackgroundCompletionIdentifierCount: wakeSnapshot.deferredIdentifierCount,
+            backgroundCompletionHandlerCount: wakeSnapshot.pendingHandlerCount,
             finalizingRatingKeyCount: finalizingRatingKeyCount,
             pendingTempCleanupBytes: pendingCFNetworkTempBytes())
     }
@@ -671,9 +660,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
 
     func backgroundDeferredRevalidationKeysForTesting() -> Set<DownloadAttemptKey> {
-        lock.lock()
-        defer { lock.unlock() }
-        return backgroundDeferredRevalidationKeys
+        backgroundWakeCoordinator.deferredRevalidationKeysForTesting
     }
 
     /// D6 regression seam: the consecutive-truncation budget is only mutated inside
@@ -1096,9 +1083,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// Sync accessor for async contexts (`finalizeTransferredFile`): NSLock is unavailable in
     /// async functions, and a pending handler means the app is background-launched right now.
     private func hasPendingBackgroundCompletionHandler() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return backgroundCompletionGate.hasPendingHandler
+        backgroundWakeCoordinator.hasPendingHandler
     }
 
     /// Atomically observes the global wake gate and, for a revalidation request, registers the
@@ -1106,71 +1091,50 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private func deferPlaybackProbeIfBackgroundWakePending(
         revalidationKey: DownloadAttemptKey?
     ) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard backgroundCompletionGate.hasPendingHandler else { return false }
-        if let revalidationKey { backgroundDeferredRevalidationKeys.insert(revalidationKey) }
-        return true
+        backgroundWakeCoordinator.deferRevalidationIfWakePending(revalidationKey)
     }
 
     private func beginPendingBackgroundCompletionOperation() {
-        lock.lock()
-        backgroundCompletionGate.beginOperation()
-        lock.unlock()
+        backgroundWakeCoordinator.beginOperation()
     }
 
     private func endPendingBackgroundCompletionOperation() {
-        lock.lock()
-        let wasPending = backgroundCompletionGate.hasPendingHandler
-        let batches = backgroundCompletionGate.endOperation()
-        let didDrain = wasPending && !backgroundCompletionGate.hasPendingHandler
-        let deferredKeys = didDrain ? backgroundDeferredRevalidationKeys : []
-        if didDrain { backgroundDeferredRevalidationKeys.removeAll() }
-        lock.unlock()
-        if !deferredKeys.isEmpty { onBackgroundCompletionGateDrained?(deferredKeys) }
-        flushPersistenceThenFireBackgroundCompletions(batches)
+        applyBackgroundWakeDrain(backgroundWakeCoordinator.endOperation())
     }
 
     func noteBackgroundCompletionHandlerStored(
         identifier: String,
         token: BackgroundDownloadCompletionHandlerToken = .init()
     ) {
-        lock.lock()
-        backgroundCompletionGate.storeHandler(identifier: identifier, token: token)
-        lock.unlock()
+        backgroundWakeCoordinator.storeHandler(identifier: identifier, token: token)
     }
 
     /// Startup persistence failed/timed out before URLSession could be safely activated, so its
     /// finish-events callback cannot be awaited. The failure has already been observed by the
     /// manager; release the OS wake explicitly and leave admission dormant.
     func releaseBackgroundCompletionAfterStartupFailure() {
-        lock.lock()
-        let wasPending = backgroundCompletionGate.hasPendingHandler
-        let batches = backgroundCompletionGate.abortAwaitingHandlers()
-        let didDrain = wasPending && !backgroundCompletionGate.hasPendingHandler
-        let deferredKeys = didDrain ? backgroundDeferredRevalidationKeys : []
-        if didDrain { backgroundDeferredRevalidationKeys.removeAll() }
-        lock.unlock()
-        if !deferredKeys.isEmpty { onBackgroundCompletionGateDrained?(deferredKeys) }
-        guard !batches.isEmpty else { return }
+        let drain = backgroundWakeCoordinator.abortAwaitingHandlers()
+        if !drain.deferredRevalidationKeys.isEmpty {
+            onBackgroundCompletionGateDrained?(drain.deferredRevalidationKeys)
+        }
+        guard !drain.completionBatches.isEmpty else { return }
         let releaseBackgroundCompletion = self.releaseBackgroundCompletion
         Task { @MainActor in
-            for batch in batches {
+            for batch in drain.completionBatches {
                 releaseBackgroundCompletion(batch)
             }
         }
     }
 
     private func fireBackgroundCompletionWhenFinalizationIsSafe(identifier: String) {
-        lock.lock()
-        let wasPending = backgroundCompletionGate.hasPendingHandler
-        let batches = backgroundCompletionGate.finishEvents(identifier: identifier)
-        let didDrain = wasPending && !backgroundCompletionGate.hasPendingHandler
-        let deferredKeys = didDrain ? backgroundDeferredRevalidationKeys : []
-        if didDrain { backgroundDeferredRevalidationKeys.removeAll() }
-        lock.unlock()
-        if !deferredKeys.isEmpty { onBackgroundCompletionGateDrained?(deferredKeys) }
-        flushPersistenceThenFireBackgroundCompletions(batches)
+        applyBackgroundWakeDrain(backgroundWakeCoordinator.finishEvents(identifier: identifier))
+    }
+
+    private func applyBackgroundWakeDrain(_ drain: BackgroundDownloadWakeCoordinator.Drain) {
+        if !drain.deferredRevalidationKeys.isEmpty {
+            onBackgroundCompletionGateDrained?(drain.deferredRevalidationKeys)
+        }
+        flushPersistenceThenFireBackgroundCompletions(drain.completionBatches)
     }
 
     private func flushPersistenceThenFireBackgroundCompletions(
@@ -1225,16 +1189,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// registers for the key, or by timeout when the rebuild fails/defers.
     private func beginRangeRequestRebuildGrace(for key: DownloadAttemptKey) {
         let ratingKey = key.ratingKey
-        let generation = UUID()
-        lock.lock()
-        let alreadyHeld = rangeRequestRebuildGraceGenerations[key] != nil
-        // Re-arming while held advances the generation (extending the grace): the prior cycle's
-        // timer becomes a no-op instead of ending this cycle's grace early. The completion-gate
-        // operation stays balanced at one per held key.
-        rangeRequestRebuildGraceGenerations[key] = generation
-        lock.unlock()
-        if !alreadyHeld {
-            beginPendingBackgroundCompletionOperation()
+        let start = backgroundWakeCoordinator.beginGrace(for: key)
+        if start.acquiredHold {
             AppDiagnostics.record(.downloads, "downloads.range_request_rebuild_grace_start", fields: [
                 "download_id": .identifier(ratingKey),
                 "grace_seconds": .int(Int(Self.rangeRequestRebuildGraceSeconds)),
@@ -1243,28 +1199,23 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         DispatchQueue.global(qos: .utility).asyncAfter(
             deadline: .now() + Self.rangeRequestRebuildGraceSeconds
         ) { [weak self] in
-            self?.endRangeRequestRebuildGrace(for: key, reason: "timeout", generation: generation)
+            self?.endRangeRequestRebuildGrace(
+                for: key, reason: "timeout", generation: start.generation)
         }
     }
 
     /// `generation` is non-nil only for the timeout closure, which may end ONLY the grace cycle it
     /// armed. Every other end site clears unconditionally.
     private func endRangeRequestRebuildGrace(for key: DownloadAttemptKey, reason: String,
-                                             generation: UUID? = nil) {
+                                             generation: BackgroundDownloadWakeCoordinator.GraceGeneration? = nil) {
         let ratingKey = key.ratingKey
-        lock.lock()
-        if let generation, rangeRequestRebuildGraceGenerations[key] != generation {
-            lock.unlock()
-            return
-        }
-        let wasHeld = rangeRequestRebuildGraceGenerations.removeValue(forKey: key) != nil
-        lock.unlock()
-        guard wasHeld else { return }
+        let end = backgroundWakeCoordinator.endGrace(for: key, generation: generation)
+        guard end.ended else { return }
         AppDiagnostics.record(.downloads, "downloads.range_request_rebuild_grace_end", fields: [
             "download_id": .identifier(ratingKey),
             "reason": .label(reason),
         ])
-        endPendingBackgroundCompletionOperation()
+        applyBackgroundWakeDrain(end.drain)
         if reason == "timeout",
            !isTrackingTransfer(ratingKey: ratingKey),
            let record = store.record(for: key),

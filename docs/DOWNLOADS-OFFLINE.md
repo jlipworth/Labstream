@@ -210,12 +210,15 @@ User-facing expectations worth setting (the "downloads disclaimer"):
 | Component | Owns |
 | --- | --- |
 | `DownloadManager` | Main-actor queue coordination and user-visible state. |
+| `DownloadKeepaliveCoordinator` | Exact-attempt Jellyfin/Emby keepalive task ownership and credential-generation quarantine. |
 | Backend-specific manager extensions | Plex/Jellyfin/Emby route setup and server-prep polling. |
-| `BackgroundDownloadSession` | URLSession tasks, segment-train enqueue/refill, transfer callbacks, finalization. |
+| `BackgroundDownloadSession` | URLSession tasks, segment-train enqueue/refill, transfer callbacks, finalization, and wake-release effects. |
+| `BackgroundDownloadWakeCoordinator` | Locked background-completion gate, atomic deferred-revalidation keys, and range-rebuild grace generations. |
 | `DownloadStore` | Schema-v4 index state, exact-attempt mutation admission, and transactional artifact state. |
 | `DownloadArtifactLifecycleCoordinator` and file-effect seams | Order attempt-scoped resume/checkpoint/promotion/deletion work with its terminal persistence outcome. |
 | `DownloadWorkRegistry` | Attempt-scoped side-cache and encoder-task ownership. |
 | `DownloadCleanupIntentJournal` | Independent durable, credential-free Jellyfin/Emby server-cleanup authority. |
+| `EmbyConvertCleanupJournal` | Compatibility Emby Convert tombstone persistence under a queue-private lock. |
 | PMSKit download policies | Pure route, retry, row-display, and recovery decisions, including the segment-train planner and assembler. |
 
 ## Offline metadata

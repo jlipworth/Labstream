@@ -1130,11 +1130,24 @@ policy:
    Preferences use typed keys without changing shipped raw keys/defaults, diagnostics use a bounded
    serial buffer, and durability tiers explicitly separate barriers, recoverable checkpoints,
    best-effort state, and ephemeral state.
+7. `BackgroundDownloadWakeCoordinator` now privately owns the background completion gate, deferred
+   exact-attempt revalidation keys, and range-rebuild grace generations. Persistence, callbacks,
+   diagnostics, and timer effects remain in the session and execute only after the coordinator lock
+   is released.
+8. `EmbyConvertCleanupJournal` now owns its own lock and cleanup-authority file I/O, so durable
+   read-modify-write transactions no longer block unrelated `DownloadStore` index reads while
+   preserving exact-UUID ambiguous-write reconciliation.
+9. `DownloadKeepaliveCoordinator` owns Jellyfin/Emby exact-attempt task registries, generation-safe
+   self-removal, and credential-generation quarantine. The manager now uses narrow reconcile,
+   start, cancel, and health-count operations.
+10. `EmbyConnectAuthFlow` privately owns pending Connect secrets, linked-server selection authority,
+    server resolution, and exchange. `AuthManager` retains global attempt/publication authority and
+    the sole polling-task coordinator; cancellation is rechecked before every follow-up network hop
+    and secure runtime commit.
 
-Still required before Wave 4 is complete: decompose `BackgroundDownloadSession`, `DownloadManager`,
-`DownloadStore`, and backend auth flows into
-real state owners without widening mutable visibility; then run the complete serial target/test and
-runtime validation matrix. This checkpoint makes no measured performance claim.
+Still required before Wave 4 is complete: remove the current-schema dead range-resume branches and
+ignored destination parameters identified by the ownership audit, then run the complete serial
+target/test and runtime validation matrix. This checkpoint makes no measured performance claim.
 
 ### Wave 5 — Re-baseline the simplified app
 
