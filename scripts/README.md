@@ -123,7 +123,8 @@ scripts/perf-compare.py compare \
   the implementation issue; it also builds shared targets and runs focused diagnostics checks.
 - `perf-macos-launch-idle.py` — external paired runner for two already-built Mac
   `PerformanceAudit` apps using the same dedicated `com.jlipworth.Labstream.perf.*` identity. It validates both
-  products with `performance-audit-contract.py`, resets only that exact sandbox container, seeds the
+  products with `performance-audit-contract.py`, preserves the system-managed container root while
+  resetting only its mutable `Data` subtree, seeds the
   canonical empty download index, and records adjacent A/B launch logs or exact-PID 120-second
   System Trace captures after a bounded 10-second readiness/settle interval. Unified-log bounds
   still begin before launch. Start with `--plan` and supply exact distinct artifact commits, an
