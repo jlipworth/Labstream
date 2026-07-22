@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import pathlib
 import plistlib
@@ -137,6 +138,11 @@ def opaque(prefix: str, *values: object, length: int = 12) -> str:
     digest = hashlib.sha256("\0".join(map(str, values)).encode()).hexdigest()[:length]
     return f"{prefix}-{digest}"
 
+def log_time_bound(iso_timestamp: str, *, end: bool = False) -> str:
+    """Translate an exact UTC timestamp to log(1)'s supported epoch-second syntax."""
+    value = datetime.fromisoformat(iso_timestamp.replace("Z", "+00:00")).timestamp()
+    return f"@{math.ceil(value) if end else math.floor(value)}"
+
 def bundle_sha256(app: pathlib.Path) -> str:
     digest = hashlib.sha256()
     for path in sorted(app.rglob("*")):
@@ -248,8 +254,8 @@ def command_plan(apps: tuple[App, App], scenario: str, warmups: int, measured: i
             "app_arguments": [],
             "app_environment": {},
             "settle": {"seconds": settle, "health_check": "exact_pid_alive"},
-            "log": ["/usr/bin/log", "show", "--style", "json", "--start", "{start_utc}",
-                    "--end", "{end_utc}", "--process", "{exact_pid}"],
+            "log": ["/usr/bin/log", "show", "--style", "json", "--start", "{start_epoch_floor}",
+                    "--end", "{end_epoch_ceil}", "--process", "{exact_pid}"],
             "idle_trace": (["/usr/bin/xcrun", "xctrace", "record", "--template",
                             "System Trace", "--attach", "{exact_pid}", "--time-limit",
                             f"{duration}s", "--output", "{trace_path}", "--no-prompt"]
@@ -460,8 +466,9 @@ def capture(plan: dict[str, Any], apps: tuple[App, App], executor: Executor) -> 
             executor.sleep(plan["duration_seconds"])
             end_utc = executor.now().replace("+00:00", "Z")
             with log_path.open("ab" if facts is not None else "wb") as output:
-                executor.run(["/usr/bin/log", "show", "--style", "json", "--start", start_utc,
-                              "--end", end_utc, "--process", str(pid)], stdout=output)
+                executor.run(["/usr/bin/log", "show", "--style", "json", "--start",
+                              log_time_bound(start_utc), "--end", log_time_bound(end_utc, end=True),
+                              "--process", str(pid)], stdout=output)
             returncode = executor.poll(process)
             if returncode is not None:
                 fail(f"app PID {pid} exited during capture with status {returncode}")
