@@ -159,11 +159,11 @@ enum JellyfinTrickPlayTileRenderer {
 /// Small LRU of decoded tile sheets keyed by URI, owned by each Jellyfin trickplay provider so the
 /// eviction logic is defined once rather than copied per provider.
 struct JellyfinTrickPlayTileCache {
-    private var images: TrickPlayCostBoundedLRU<String, DecodedImage>
+    private var images: CostBoundedLRU<String, DecodedImage>
 
     init(byteLimit: Int = TrickPlayCacheBudget.decodedTileSheets,
          entryLimit: Int = TrickPlayCacheBudget.decodedTileSheetEntries) {
-        images = TrickPlayCostBoundedLRU(costLimit: byteLimit, countLimit: entryLimit)
+        images = CostBoundedLRU(costLimit: byteLimit, countLimit: entryLimit)
     }
 
     /// Promotes the accessed sheet to most-recently-used so an actively-revisited sheet (a scrub that
@@ -360,7 +360,7 @@ actor EmbyTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
 
     private var thumbnailSet: EmbyThumbnailSetInfo?
     private var thumbnailSetResolved = false
-    private var imageCache = TrickPlayCostBoundedLRU<Int64, Data>(
+    private var imageCache = CostBoundedLRU<Int64, Data>(
         costLimit: TrickPlayCacheBudget.encodedGeneratedFrames,
         countLimit: TrickPlayCacheBudget.encodedGeneratedFrameEntries
     )
@@ -485,7 +485,7 @@ actor EmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     private let session: URLSession
     private let coordinator: SideAssetFetchCoordinator
 
-    private var imageCache = TrickPlayCostBoundedLRU<Int, Data>(
+    private var imageCache = CostBoundedLRU<Int, Data>(
         costLimit: TrickPlayCacheBudget.encodedGeneratedFrames,
         countLimit: TrickPlayCacheBudget.encodedGeneratedFrameEntries
     )
@@ -573,7 +573,7 @@ actor LocalEmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
 
     private let frames: [Frame]
     private let imageURLsByChapterIndex: [Int: URL]
-    private var imageCache = TrickPlayCostBoundedLRU<Int, Data>(
+    private var imageCache = CostBoundedLRU<Int, Data>(
         costLimit: TrickPlayCacheBudget.encodedGeneratedFrames,
         countLimit: TrickPlayCacheBudget.encodedGeneratedFrameEntries
     )
@@ -624,11 +624,11 @@ actor LocalEmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
 
 @MainActor
 final class TrickPlayPreviewImageCache {
-    private var images: TrickPlayCostBoundedLRU<Int, DecodedImage>
+    private var images: CostBoundedLRU<Int, DecodedImage>
 
     init(byteLimit: Int = TrickPlayCacheBudget.decodedPreviewFrames,
          entryLimit: Int = TrickPlayCacheBudget.decodedPreviewFrameEntries) {
-        images = TrickPlayCostBoundedLRU(costLimit: byteLimit,
+        images = CostBoundedLRU(costLimit: byteLimit,
                                          countLimit: entryLimit)
     }
 

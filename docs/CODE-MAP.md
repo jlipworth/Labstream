@@ -199,8 +199,8 @@ are backend-scoped and cross-backend.
   `PlaybackController+Diagnostics.swift`, `PlaybackHDRProbe.swift`, and
   `StatsForNerdsView.swift` own runtime diagnostics surfaces.
 - `Labstream/Shared/Player/TrickPlayThumbnailProviders.swift` owns remote and local Plex BIF,
-  Jellyfin tile, and Emby chapter thumbnail providers; `TrickPlayCostBoundedLRU.swift` owns their
-  shared byte-and-entry cache bound.
+  Jellyfin tile, and Emby chapter thumbnail providers; `Labstream/Shared/Support/CostBoundedLRU.swift`
+  owns the cost-and-entry cache bound shared by trick-play and artwork memory caches.
 - `Labstream/Shared/Player/AudioSessionCoordinator.swift` owns non-Mac audio-session policy.
 - `Labstream/Platforms/Mobile/Player/MobilePlayerSystemCoordinator.swift` and
   `MobilePlayerOrientationCoordinator.swift` add iOS/iPadOS PiP, AirPlay, system media,

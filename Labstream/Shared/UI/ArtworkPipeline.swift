@@ -830,61 +830,6 @@ private enum ArtworkImageDecoder {
     }
 }
 
-private struct CostBoundedLRU<Key: Hashable, Value> {
-    private struct Entry {
-        var value: Value
-        var cost: Int
-        var access: UInt64
-    }
-
-    private let costLimit: Int
-    private var entries: [Key: Entry] = [:]
-    private var totalCost = 0
-    private var nextAccess: UInt64 = 0
-
-    init(costLimit: Int) {
-        self.costLimit = max(0, costLimit)
-    }
-
-    mutating func value(for key: Key) -> Value? {
-        guard var entry = entries[key] else { return nil }
-        nextAccess &+= 1
-        entry.access = nextAccess
-        entries[key] = entry
-        return entry.value
-    }
-
-    mutating func insert(_ value: Value, for key: Key, cost: Int) {
-        if let existing = entries.removeValue(forKey: key) { totalCost -= existing.cost }
-        guard costLimit > 0 else { return }
-        let normalizedCost = max(1, cost)
-        guard normalizedCost <= costLimit else {
-            evictToLimit()
-            return
-        }
-        nextAccess &+= 1
-        entries[key] = Entry(value: value, cost: normalizedCost, access: nextAccess)
-        totalCost += normalizedCost
-        evictToLimit()
-    }
-
-    mutating func removeValue(for key: Key) {
-        if let removed = entries.removeValue(forKey: key) { totalCost -= removed.cost }
-    }
-
-    mutating func removeAll() {
-        entries.removeAll(keepingCapacity: false)
-        totalCost = 0
-    }
-
-    private mutating func evictToLimit() {
-        while totalCost > costLimit,
-              let victim = entries.min(by: { $0.value.access < $1.value.access })?.key {
-            removeValue(for: victim)
-        }
-    }
-}
-
 private struct ArtworkPipelineEnvironmentKey: EnvironmentKey {
     static let defaultValue: ArtworkPipeline? = nil
 }
