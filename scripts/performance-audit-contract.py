@@ -234,6 +234,7 @@ def validate_trace_archive(path: pathlib.Path) -> None:
             names: set[str] = set()
             declared_total = 0
             streamed_total = 0
+            regular_members = 0
             for member in members:
                 candidate = pathlib.PurePosixPath(member.filename)
                 require(member.filename not in names, "idle trace archive has duplicate members")
@@ -259,6 +260,7 @@ def validate_trace_archive(path: pathlib.Path) -> None:
                         "idle trace archive exceeds the bounded uncompressed size")
                 if member.is_dir():
                     continue
+                regular_members += 1
                 streamed_member = 0
                 with archive.open(member, "r") as source:
                     while chunk := source.read(1024 * 1024):
@@ -274,10 +276,68 @@ def validate_trace_archive(path: pathlib.Path) -> None:
                         "idle trace archive member size does not match its directory entry")
             require(len(roots) == 1 and next(iter(roots)).endswith(".trace"),
                     "idle trace archive must contain exactly one top-level .trace bundle")
+            require(regular_members > 0, "idle trace archive must contain a regular trace payload")
             require(streamed_total == sum(member.file_size for member in members if not member.is_dir()),
                     "idle trace archive streamed size does not match its directory")
     except (OSError, RuntimeError, zipfile.BadZipFile, zlib.error) as error:
         raise ContractError("idle trace archive is not a readable ZIP file") from error
+
+
+def validate_idle_normalized_xml(path: pathlib.Path, *, build: str,
+                                 capture: dict[str, Any], metrics: dict[str, Any]) -> None:
+    """Validate the closed normalized XML and bind every value to the typed extraction."""
+    require(path.is_file() and not path.is_symlink(),
+            "idle normalized XML must be a regular non-symlink file")
+    require(path.stat().st_size <= 1024 * 1024, "idle normalized XML exceeds its bounded size")
+    data = path.read_bytes()
+    lowered = data.lower()
+    require(b"<!doctype" not in lowered and b"<!entity" not in lowered,
+            "idle normalized XML must not contain declarations")
+    try:
+        root = ET.fromstring(data)
+    except ET.ParseError as error:
+        raise ContractError("idle normalized XML is not well-formed") from error
+    require(root.tag == "trace-query-result"
+            and root.attrib == {"schema-version": "1", "xcode-build": build}
+            and [child.tag for child in root] == ["table"]
+            and not (root.text or "").strip(),
+            "idle normalized XML root/build is unsupported")
+    table = root[0]
+    require(table.attrib == {"name": "system-trace-process-summary", "unit": "nanoseconds"}
+            and [child.tag for child in table] == ["columns", "rows"]
+            and not (table.text or "").strip(),
+            "idle normalized XML table is unsupported")
+    columns, rows = table
+    expected_columns = [
+        {"name": "process-id", "unit": "count"},
+        {"name": "window-start", "unit": "nanoseconds"},
+        {"name": "window-end", "unit": "nanoseconds"},
+        {"name": "cpu-running", "unit": "nanoseconds"},
+        {"name": "wakeups", "unit": "count"},
+    ]
+    require(not columns.attrib and not (columns.text or "").strip()
+            and [column.tag for column in columns] == ["column"] * len(expected_columns)
+            and [column.attrib for column in columns] == expected_columns
+            and all(not list(column) and not (column.text or "").strip() for column in columns),
+            "idle normalized XML columns are unsupported")
+    require(not rows.attrib and not (rows.text or "").strip()
+            and [child.tag for child in rows] == ["row"],
+            "idle normalized XML rows are unsupported")
+    row = rows[0]
+    expected_row = {
+        "process-id": capture["pid"], "window-start": capture["window_start_ns"],
+        "window-end": capture["window_end_ns"], "cpu-running": metrics["cpu_running_ns"],
+        "wakeups": metrics["wakeups_count"],
+    }
+    require(not list(row) and not (row.text or "").strip()
+            and set(row.attrib) == set(expected_row),
+            "idle normalized XML row is unsupported")
+    for name, expected in expected_row.items():
+        raw = row.attrib[name]
+        require(re.fullmatch(r"0|[1-9][0-9]{0,19}", raw) is not None and int(raw) == expected,
+                f"idle normalized XML {name} does not match the typed extraction")
+    require(all(not (element.tail or "").strip() for element in root.iter()),
+            "idle normalized XML contains unexpected text")
 
 
 def validate_idle_evidence(manifest: dict[str, Any], run_dir: pathlib.Path) -> None:
@@ -359,10 +419,14 @@ def validate_idle_evidence(manifest: dict[str, Any], run_dir: pathlib.Path) -> N
     metrics = exact_keys(extraction["metrics"], "idle extraction metrics",
                          {"cpu_running_ns", "wakeups_count"})
     require(type(metrics["cpu_running_ns"]) is int
-            and 0 <= metrics["cpu_running_ns"] <= capture["window_duration_ns"],
+            and 0 <= metrics["cpu_running_ns"] <= 1024 * 86_400 * 1_000_000_000,
             "idle extraction CPU running time is invalid")
     require(type(metrics["wakeups_count"]) is int and 0 <= metrics["wakeups_count"] <= 1_000_000_000,
             "idle extraction wakeup count is invalid")
+    normalized_path = run_dir.joinpath(*pathlib.PurePosixPath(
+        extraction_sources["source_export"]["path"]).parts)
+    validate_idle_normalized_xml(normalized_path, build=product["xcode_build"],
+                                 capture=capture, metrics=metrics)
     require(summary["metrics"] == metrics, "idle summary metrics do not match the typed extraction")
     summary_capture = exact_keys(summary["capture"], "idle redacted summary capture", {
         "xcode_build", "pid", "expected_duration_ns", "window_tolerance_ns", "actual_duration_ns",

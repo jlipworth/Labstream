@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -26,7 +27,9 @@ from typing import Any
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "scripts" / "performance-audit-contract.py"
 SUMMARY = ROOT / "scripts" / "perf-log-summary.py"
+IDLE_EXTRACTOR = ROOT / "scripts" / "perf-xctrace-idle-summary.py"
 COMPARE = ROOT / "scripts" / "perf-compare.py"
+IDLE_XCTRACE_XPATH = '//trace-toc[1]/run[1]/data[1]/table[@schema="thread-state"]'
 PRODUCTION_IDS = {"com.jlipworth.Labstream", "com.visionplay.app"}
 BUNDLE_ID_RE = re.compile(r"^com\.jlipworth\.Labstream\.perf\.[a-z0-9][a-z0-9-]{0,47}$")
 SAFE_BUNDLE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{2,199}$")
@@ -36,6 +39,11 @@ INDEX_RELATIVE = pathlib.Path("Data/Library/Application Support/Labstream/Downlo
 DEFAULTS = {
     "launch": {"warmups": 3, "measured": 20, "duration_seconds": 30, "settle_seconds": 0},
     "idle": {"warmups": 1, "measured": 5, "duration_seconds": 120, "settle_seconds": 10},
+}
+IDLE_FAILURE_DETAIL_MAX_BYTES = 2 * 1024
+IDLE_TOOL_ERROR_PREFIXES = {
+    str(IDLE_EXTRACTOR): "error: ",
+    str(CONTRACT): "performance-audit-contract: FAIL: ",
 }
 
 def _load_compare() -> Any:
@@ -95,6 +103,53 @@ class Executor:
 
 def fail(message: str) -> None:
     raise RunnerError(message)
+
+
+def _redact_idle_tool_error(text: str) -> str:
+    text = re.sub(r"(?i)\b(?:https?|file)://\S+", "<url>", text)
+    text = re.sub(
+        r"(?i)\b(password|passwd|token|api[_-]?key|authorization)\s*[:=]\s*\S+",
+        lambda match: f"{match.group(1)}=<redacted>", text,
+    )
+    text = re.sub(r"(?i)\bbearer\s+\S+", "Bearer <redacted>", text)
+    text = re.sub(r"(?<![A-Za-z0-9.])/(?:[^\s'\"<>]|\\ )+", "<path>", text)
+    text = "".join(character if character.isprintable() else " " for character in text)
+    return " ".join(text.split())
+
+
+def idle_failure_record(error: Exception) -> dict[str, str]:
+    """Expose only bounded closed-tool diagnostics for idle extractor/contract failures."""
+    if not isinstance(error, subprocess.CalledProcessError):
+        return {"type": type(error).__name__, "message": str(error)}
+    command = error.cmd if isinstance(error.cmd, (list, tuple)) else []
+    tool = next((path for path in IDLE_TOOL_ERROR_PREFIXES if path in command), None)
+    if tool is None:
+        return {"type": type(error).__name__, "message": str(error)}
+    label = "idle extractor" if tool == str(IDLE_EXTRACTOR) else "performance audit contract"
+    message = f"{label} failed with exit status {error.returncode}"
+    chunks = [value for value in (error.stdout, error.stderr) if value not in (None, b"", "")]
+    details: list[str] = []
+    for chunk in chunks:
+        if isinstance(chunk, bytes):
+            try:
+                decoded = chunk.decode("utf-8", errors="strict")
+            except UnicodeDecodeError:
+                continue
+        elif isinstance(chunk, str):
+            decoded = chunk
+        else:
+            continue
+        prefix = IDLE_TOOL_ERROR_PREFIXES[tool]
+        details.extend(_redact_idle_tool_error(line) for line in decoded.splitlines()
+                       if line.startswith(prefix))
+    detail = " | ".join(value for value in details if value)
+    if detail:
+        remaining = max(0, IDLE_FAILURE_DETAIL_MAX_BYTES - len((message + ": ").encode("utf-8")))
+        encoded = detail.encode("utf-8")[:remaining]
+        detail = encoded.decode("utf-8", errors="ignore").rstrip()
+        if detail:
+            message += f": {detail}"
+    return {"type": type(error).__name__, "message": message}
 
 def validate_app(role: str, raw_path: pathlib.Path) -> App:
     path = raw_path.expanduser().absolute()
@@ -243,6 +298,130 @@ def launch_manifest(plan: dict[str, Any], sample: dict[str, Any], app: App,
     }
     return manifest, workload
 
+
+def idle_manifest(plan: dict[str, Any], sample: dict[str, Any], app: App,
+                  facts: dict[str, Any], recorded_at: str) -> dict[str, Any]:
+    commits = plan["commits"]
+    identities = plan.get("identities", {})
+    comparison = identities.get(
+        "comparison_id", opaque("comparison", plan["seed"], *commits.values()))
+    scenario = identities.get(
+        "scenario_id", opaque("scenario", plan["seed"], *commits.values(), "idle"))
+    fixture = identities.get(
+        "fixture_id", opaque("fixture", plan["seed"], *commits.values(), CANONICAL_INDEX_SHA256))
+    run_id = idle_run_id(plan, sample)
+    return {
+        "schema_version": 1, "tool": {"name": "labstream-performance-audit", "version": "1"},
+        "run": {"id": run_id, "recorded_at": recorded_at, "comparison_id": comparison,
+                "artifact_role": sample["role"], "sample_kind": sample["sample_kind"],
+                "sample_index": sample["sample_index"],
+                "order_seed": identities.get("order_seed", opaque("seed", plan["seed"], length=16))},
+        "product": {"commit": commits[sample["role"]], "sha256": bundle_sha256(app.path),
+                    "configuration": "PerformanceAudit", "target": "LabstreamMac", "platform": "macos",
+                    "os_build": facts["os_build"], "xcode_build": facts["xcode_build"]},
+        "device": {"label": plan["device_label"], **{key: facts[key] for key in
+                   ("power_source", "battery_state", "thermal_state", "free_storage_bytes", "display_mode")}},
+        "state": {"install_state": "direct_staged_artifact", "container_state": "restored_fixture",
+                  "cache_reset": {"command_id": "fixture-cache-seed-v1", "result": "success"}},
+        "scenario": {"id": scenario, "category": "idle", "run_kind": "deterministic_fixture",
+                     "fixture_id": fixture, "fixture_sha256": CANONICAL_INDEX_SHA256,
+                     "backend_kind": "none", "server_version": None, "cache_state": "declared_seed"},
+        "launch_contract": {"arguments": [], "environment_keys": [], "ui_test_fixture": False,
+                            "live_probe": False, "tv_event_swizzle": False,
+                            "verbose_debug_evidence": False},
+        "evidence": {
+            "artifacts": [
+                {"path": "raw/artifact-0001.trace.zip", "sha256": "0" * 64},
+                {"path": "raw/artifact-0002.xml", "sha256": "0" * 64},
+                {"path": "raw/artifact-0003.json", "sha256": "0" * 64},
+            ],
+            "redacted_summary": {"path": "summary/redacted.json", "sha256": "0" * 64},
+            "privacy_review": "pending", "retention_deadline": plan["retention_deadline"],
+            "publishable": False,
+        },
+    }
+
+
+def idle_run_id(plan: dict[str, Any], sample: dict[str, Any]) -> str:
+    comparison = plan.get("identities", {}).get(
+        "comparison_id", opaque("comparison", plan["seed"], *plan["commits"].values()))
+    return opaque("run", comparison, "idle", sample["role"], sample["sample_kind"],
+                  sample["sample_index"], sample["pair_order"])
+
+
+def _zip_info(name: str, mode: int, *, directory: bool) -> zipfile.ZipInfo:
+    info = zipfile.ZipInfo(name + ("/" if directory and not name.endswith("/") else ""),
+                           date_time=(1980, 1, 1, 0, 0, 0))
+    info.create_system = 3
+    info.compress_type = zipfile.ZIP_DEFLATED
+    info.external_attr = mode << 16
+    return info
+
+
+def archive_trace_directory(trace: pathlib.Path, output: pathlib.Path) -> None:
+    """Write one deterministic, no-follow ZIP containing exactly this trace bundle."""
+    if trace.is_symlink() or not trace.is_dir() or not trace.name.endswith(".trace"):
+        fail("System Trace output must be one real .trace directory")
+    if output.exists() or output.is_symlink():
+        fail("idle trace archive output collision")
+    entries: list[tuple[pathlib.Path, pathlib.PurePosixPath, os.stat_result]] = []
+    root_parent = trace.parent
+    for current, names, files in os.walk(trace, topdown=True, followlinks=False):
+        directory = pathlib.Path(current)
+        names.sort()
+        files.sort()
+        for name in names:
+            metadata = (directory / name).lstat()
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                fail("System Trace output contains a symlink or special file")
+        for child in [directory, *(directory / name for name in files)]:
+            metadata = child.lstat()
+            relative = pathlib.PurePosixPath(child.relative_to(root_parent).as_posix())
+            if (not relative.parts or any(part in {"", ".", ".."} or "\\" in part
+                                          or any(ord(character) < 32 for character in part)
+                                          for part in relative.parts)):
+                fail("System Trace output contains an unsafe archive name")
+            if stat.S_ISLNK(metadata.st_mode) or not (
+                    stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode)):
+                fail("System Trace output contains a symlink or special file")
+            entries.append((child, relative, metadata))
+    entries.sort(key=lambda entry: entry[1].as_posix())
+    if not any(stat.S_ISREG(metadata.st_mode) for _, _, metadata in entries):
+        fail("System Trace output contains no regular trace payload")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with zipfile.ZipFile(output, "x", compression=zipfile.ZIP_DEFLATED,
+                             compresslevel=9, strict_timestamps=True) as archive:
+            for path, relative, metadata in entries:
+                if stat.S_ISDIR(metadata.st_mode):
+                    archive.writestr(_zip_info(relative.as_posix(), stat.S_IFDIR | 0o700,
+                                               directory=True), b"")
+                    continue
+                info = _zip_info(relative.as_posix(), stat.S_IFREG | 0o600, directory=False)
+                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                try:
+                    opened = os.fstat(descriptor)
+                    if ((opened.st_dev, opened.st_ino, opened.st_size)
+                            != (metadata.st_dev, metadata.st_ino, metadata.st_size)
+                            or not stat.S_ISREG(opened.st_mode)):
+                        fail("System Trace output changed during archive creation")
+                    with archive.open(info, "w", force_zip64=True) as destination:
+                        while chunk := os.read(descriptor, 1024 * 1024):
+                            destination.write(chunk)
+                    after = os.fstat(descriptor)
+                    if (after.st_size, after.st_mtime_ns) != (opened.st_size, opened.st_mtime_ns):
+                        fail("System Trace output changed during archive creation")
+                finally:
+                    os.close(descriptor)
+        archive_fd = os.open(output, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            os.fsync(archive_fd)
+        finally:
+            os.close(archive_fd)
+    except Exception:
+        output.unlink(missing_ok=True)
+        raise
+
 def command_plan(apps: tuple[App, App], scenario: str, warmups: int, measured: int,
                  duration: int, seed: int, output: pathlib.Path, *, settle_seconds: int | None = None,
                  containers_root: pathlib.Path | None = None, control_commit: str = "0" * 40,
@@ -282,13 +461,28 @@ def command_plan(apps: tuple[App, App], scenario: str, warmups: int, measured: i
                             "System Trace", "--attach", "{exact_pid}", "--time-limit",
                             f"{duration}s", "--output", "{trace_path}", "--no-prompt"]
                            if scenario == "idle" else None),
+            "idle_export_toc": (["/usr/bin/xcrun", "xctrace", "export", "--input",
+                                  "{trace_path}", "--toc", "--output", "{private_toc_path}"]
+                                 if scenario == "idle" else None),
+            "idle_export_thread_state": (["/usr/bin/xcrun", "xctrace", "export", "--input",
+                                           "{trace_path}", "--xpath", IDLE_XCTRACE_XPATH,
+                                           "--output", "{private_thread_state_path}"]
+                                          if scenario == "idle" else None),
+            "idle_archive": ({"operation": "deterministic_safe_trace_zip",
+                              "input": "{trace_path}", "output": "{trace_archive_path}"}
+                             if scenario == "idle" else None),
+            "idle_extract": ([sys.executable, str(IDLE_EXTRACTOR), "--toc-xml",
+                              "{private_toc_path}", "--thread-state-xml",
+                              "{private_thread_state_path}", "--normalized-xml-out", "{xml_path}",
+                              "--trace-archive", "{trace_archive_path}", "--expected-pid",
+                              "{exact_pid}"] if scenario == "idle" else None),
             "terminate": ["SIGTERM", "{exact_pid}"],
         }
     identities = {
         "comparison_id": opaque("comparison", seed, control_commit, candidate_commit),
         "workload_id": opaque("workload", seed, control_commit, candidate_commit,
-                              "runtime.composition"),
-        "scenario_id": opaque("scenario", seed, control_commit, candidate_commit, "launch"),
+                              "runtime.composition" if scenario == "launch" else "idle.metrics"),
+        "scenario_id": opaque("scenario", seed, control_commit, candidate_commit, scenario),
         "fixture_id": opaque("fixture", seed, control_commit, candidate_commit,
                              CANONICAL_INDEX_SHA256),
         "order_seed": opaque("seed", seed, length=16),
@@ -296,7 +490,7 @@ def command_plan(apps: tuple[App, App], scenario: str, warmups: int, measured: i
     return {
         "schema_version": 1,
         "artifact_status": ("planned_admissible_per_run_manifests" if scenario == "launch"
-                            else "pre_manifest_raw_capture"),
+                            else "planned_typed_idle_per_run_manifests"),
         "mode": "capture",
         "scenario": scenario,
         "bundle_id": apps[0].bundle_id,
@@ -440,105 +634,256 @@ def stop_and_prove_gone(process: Any, executor: Executor) -> str | None:
             return f"could not prove PID {pid} terminated"
     return None
 
-def capture(plan: dict[str, Any], apps: tuple[App, App], executor: Executor) -> dict[str, Any]:
+
+def cleanup_idle_handles(process: Any | None, trace_process: Any | None,
+                         executor: Executor) -> list[str]:
+    """Attempt both cleanups independently; callers retain handles until this returns clean."""
+    errors: list[str] = []
+    for label, handle in (("app", process), ("trace", trace_process)):
+        if handle is None:
+            continue
+        try:
+            cleanup = (None if executor.poll(handle) is not None
+                       else stop_and_prove_gone(handle, executor))
+            if cleanup:
+                errors.append(f"{label}: {cleanup}")
+        except Exception as error:
+            errors.append(f"{label}: {type(error).__name__}: {error}")
+    return errors
+
+
+def capture_idle_sample(plan: dict[str, Any], sample: dict[str, Any], app: App,
+                        run_dir: pathlib.Path, executor: Executor) -> dict[str, Any]:
+    record = {key: sample[key] for key in
+              ("scenario", "sample_kind", "sample_index", "pair_order", "role")}
+    raw_dir = run_dir / "raw"
+    summary_dir = run_dir / "summary"
+    raw_dir.mkdir()
+    summary_dir.mkdir()
+    trace_path = run_dir / "artifact.trace"
+    archive_path = raw_dir / "artifact-0001.trace.zip"
+    xml_path = raw_dir / "artifact-0002.xml"
+    extraction_path = raw_dir / "artifact-0003.json"
+    summary_path = summary_dir / "redacted.json"
+    manifest_path = run_dir / "manifest.json"
+    private_log = run_dir / ".capture-log.jsonl"
+    private_toc = run_dir / ".xctrace-toc.xml"
+    private_thread_state = run_dir / ".xctrace-thread-state.xml"
+    process = trace_process = None
+    try:
+        seed_container(pathlib.Path(plan["container"]), executor)
+        facts = host_facts(executor, pathlib.Path(plan["container"]).parent)
+        start_utc = executor.now().replace("+00:00", "Z")
+        manifest = idle_manifest(plan, sample, app, facts, start_utc)
+        process = executor.spawn([str(app.executable)])
+        pid = int(process.pid)
+        record["pid"] = pid
+        if executor.poll(process) is not None:
+            fail(f"app PID {pid} exited at launch")
+        executor.sleep(plan["settle_seconds"])
+        if executor.poll(process) is not None:
+            fail(f"app PID {pid} exited while settling")
+        trace_process = executor.spawn([
+            "/usr/bin/xcrun", "xctrace", "record", "--template", "System Trace",
+            "--attach", str(pid), "--time-limit", f'{plan["duration_seconds"]}s',
+            "--output", str(trace_path), "--no-prompt",
+        ])
+        if executor.poll(trace_process) is not None:
+            fail("System Trace xctrace exited at launch")
+        executor.sleep(plan["duration_seconds"])
+        end_utc = executor.now().replace("+00:00", "Z")
+        with private_log.open("wb") as output:
+            executor.run(["/usr/bin/log", "show", "--info", "--style", "ndjson", "--start",
+                          log_time_bound(start_utc), "--end", log_time_bound(end_utc, end=True),
+                          "--process", str(pid)], stdout=output)
+        if executor.poll(process) is not None:
+            fail(f"app PID {pid} exited during capture")
+        trace_status = executor.wait(trace_process, 15)
+        if trace_status != 0:
+            fail(f"System Trace xctrace failed with status {trace_status}")
+        if trace_path.is_symlink() or not trace_path.is_dir():
+            fail("System Trace xctrace did not produce one real trace directory")
+        cleanup_errors = cleanup_idle_handles(process, trace_process, executor)
+        if cleanup_errors:
+            fail("idle process cleanup failed: " + "; ".join(cleanup_errors))
+        process = trace_process = None
+
+        executor.run([
+            "/usr/bin/xcrun", "xctrace", "export", "--input", str(trace_path),
+            "--toc", "--output", str(private_toc),
+        ])
+        executor.run([
+            "/usr/bin/xcrun", "xctrace", "export", "--input", str(trace_path),
+            "--xpath", IDLE_XCTRACE_XPATH, "--output", str(private_thread_state),
+        ])
+        if (private_toc.is_symlink() or not private_toc.is_file()
+                or private_thread_state.is_symlink() or not private_thread_state.is_file()):
+            fail("xctrace did not produce the private native idle XML inputs")
+        archive_trace_directory(trace_path, archive_path)
+        shutil.rmtree(trace_path)
+        private_log.unlink(missing_ok=True)
+
+        extractor = [
+            sys.executable, str(IDLE_EXTRACTOR), "--toc-xml", str(private_toc),
+            "--thread-state-xml", str(private_thread_state),
+            "--normalized-xml-out", str(xml_path),
+            "--trace-archive", str(archive_path), "--run-dir", str(run_dir),
+            "--extraction-out", str(extraction_path), "--summary-out", str(summary_path),
+            "--xcode-build", facts["xcode_build"], "--expected-pid", str(pid),
+            "--duration-seconds", str(plan["duration_seconds"]), "--window-tolerance-ms", "1000",
+            "--run-id", manifest["run"]["id"], "--comparison-id", manifest["run"]["comparison_id"],
+            "--artifact-role", sample["role"], "--sample-kind", sample["sample_kind"],
+            "--sample-index", str(sample["sample_index"]),
+            "--scenario-id", manifest["scenario"]["id"],
+        ]
+        executor.run(extractor)
+        private_toc.unlink()
+        private_thread_state.unlink()
+        for pointer, path in zip(manifest["evidence"]["artifacts"],
+                                 (archive_path, xml_path, extraction_path), strict=True):
+            pointer["sha256"] = hashlib.sha256(read_regular_bytes(path)).hexdigest()
+        manifest["evidence"]["redacted_summary"]["sha256"] = hashlib.sha256(
+            read_regular_bytes(summary_path)).hexdigest()
+        manifest_path.write_bytes(_json_bytes(manifest))
+        if bundle_sha256(app.path) != manifest["product"]["sha256"]:
+            fail("measured app bundle mutated during idle capture")
+        executor.run([sys.executable, str(CONTRACT), "manifest", str(manifest_path)])
+        record.update(status="success", failure=None, manifest=str(manifest_path),
+                      manifest_sha256=hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                      trace=str(archive_path), start_utc=start_utc, end_utc=end_utc)
+        return record
+    finally:
+        private_log.unlink(missing_ok=True)
+        private_toc.unlink(missing_ok=True)
+        private_thread_state.unlink(missing_ok=True)
+        cleanup_errors = cleanup_idle_handles(process, trace_process, executor)
+        if cleanup_errors:
+            fail("idle process cleanup retry failed: " + "; ".join(cleanup_errors))
+
+
+def capture_idle(plan: dict[str, Any], apps: tuple[App, App], executor: Executor) -> dict[str, Any]:
     by_role = {app.role: app for app in apps}
     preflight_no_existing_app(apps, executor)
+    templates = executor.output(["/usr/bin/xcrun", "xctrace", "list", "templates"])
+    if "System Trace" not in templates:
+        fail("required xctrace template 'System Trace' is unavailable; no capture started")
+    for command in plan["configuration_contract_commands"]:
+        executor.run(command)
+    log_root = pathlib.Path(plan["output"]).parent / (pathlib.Path(plan["output"]).stem + "-logs")
+    if log_root.is_symlink() or (log_root.exists() and not log_root.is_dir()):
+        fail("idle evidence root is unsafe")
+    log_root.mkdir(parents=True, exist_ok=True)
+    records: list[dict[str, Any]] = []
+    for sample in plan["samples"]:
+        record = {key: sample[key] for key in
+                  ("scenario", "sample_kind", "sample_index", "pair_order", "role")}
+        final_dir = log_root / idle_run_id(plan, sample)
+        pending: pathlib.Path | None = None
+        try:
+            if final_dir.exists() or final_dir.is_symlink():
+                fail(f"idle evidence destination already exists: {final_dir}")
+            pending = pathlib.Path(tempfile.mkdtemp(prefix=".incomplete-idle-", dir=log_root))
+            record = capture_idle_sample(
+                plan, sample, by_role[sample["role"]], pending, executor)
+            publish_evidence_directory(pending, final_dir)
+            pending = None
+            record["manifest"] = str(final_dir / "manifest.json")
+            record["manifest_sha256"] = hashlib.sha256(
+                read_regular_bytes(final_dir / "manifest.json")).hexdigest()
+            record["trace"] = str(final_dir / "raw/artifact-0001.trace.zip")
+        except Exception as error:
+            record.update(status="failure", failure=idle_failure_record(error))
+        finally:
+            if pending is not None:
+                discard_private_directory(pending)
+        records.append(record)
+    measured_successes = sum(record["sample_kind"] == "measured" and record["status"] == "success"
+                             for record in records)
+    result = dict(plan)
+    result.pop("samples")
+    result.update(
+        records=records,
+        verdict={"status": "insufficient_data",
+                 "reason": "paired idle metric comparison support has not landed",
+                 "measured_successes": measured_successes},
+        capture_status=("failure" if any(record["status"] == "failure" for record in records)
+                        else "success"),
+        artifact_status="typed_idle_per_run_manifests",
+    )
+    return result
+
+def capture(plan: dict[str, Any], apps: tuple[App, App], executor: Executor) -> dict[str, Any]:
     if plan["scenario"] == "idle":
-        templates = executor.output(["/usr/bin/xcrun", "xctrace", "list", "templates"])
-        if "System Trace" not in templates:
-            fail("required xctrace template 'System Trace' is unavailable; no capture started")
+        return capture_idle(plan, apps, executor)
+    by_role = {app.role: app for app in apps}
+    preflight_no_existing_app(apps, executor)
     for command in plan["configuration_contract_commands"]:
         executor.run(command)
     container = pathlib.Path(plan["container"])
     records: list[dict[str, Any]] = []
     log_root = pathlib.Path(plan["output"]).parent / (pathlib.Path(plan["output"]).stem + "-logs")
     log_root.mkdir(parents=True, exist_ok=True)
-    for ordinal, sample in enumerate(plan["samples"], 1):
+    for sample in plan["samples"]:
         record = {key: sample[key] for key in
                   ("scenario", "sample_kind", "sample_index", "pair_order", "role")}
-        process = trace_process = None
+        process = None
         manifest_path = temp_dir = None
         try:
             seed_container(container, executor)
             app = by_role[sample["role"]]
             start_utc = executor.now().replace("+00:00", "Z")
-            facts = host_facts(executor, container.parent) if plan["scenario"] == "launch" else None
-            if facts is not None:
-                manifest, workload = launch_manifest(plan, sample, app, facts, log_root, start_utc)
-                final_dir = log_root / manifest["run"]["id"]
-                temp_dir = pathlib.Path(tempfile.mkdtemp(prefix=".incomplete-", dir=log_root))
-                run_dir = temp_dir
-                raw = run_dir / "raw/artifact-0001.log"
-                summary = run_dir / "summary/redacted.json"
-                raw.parent.mkdir(parents=True)
-                summary.parent.mkdir()
-                manifest_path = run_dir / "manifest.json"
-                manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-                nonce = opaque("nonce", manifest["run"]["id"], workload, length=16)
-                with raw.open("wb") as output:
-                    executor.run([sys.executable, str(SUMMARY), "--emit-capture-marker", "--manifest",
-                                  str(manifest_path), "--workload-id", workload, "--launch-nonce", nonce], stdout=output)
+            facts = host_facts(executor, container.parent)
+            manifest, workload = launch_manifest(plan, sample, app, facts, log_root, start_utc)
+            final_dir = log_root / manifest["run"]["id"]
+            temp_dir = pathlib.Path(tempfile.mkdtemp(prefix=".incomplete-", dir=log_root))
+            run_dir = temp_dir
+            raw = run_dir / "raw/artifact-0001.log"
+            summary = run_dir / "summary/redacted.json"
+            raw.parent.mkdir(parents=True)
+            summary.parent.mkdir()
+            manifest_path = run_dir / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+            nonce = opaque("nonce", manifest["run"]["id"], workload, length=16)
+            with raw.open("wb") as output:
+                executor.run([sys.executable, str(SUMMARY), "--emit-capture-marker", "--manifest",
+                              str(manifest_path), "--workload-id", workload, "--launch-nonce", nonce], stdout=output)
             process = executor.spawn([str(app.executable)])
             pid = int(process.pid)
             record["pid"] = pid
             immediate_status = executor.poll(process)
             if immediate_status is not None:
                 fail(f"app PID {pid} exited at launch with status {immediate_status}")
-            log_path = raw if facts is not None else log_root / f"sample-{ordinal:04d}.jsonl"
-            trace_path = log_root / f"sample-{ordinal:04d}.trace"
-            if plan["scenario"] == "idle":
-                executor.sleep(plan["settle_seconds"])
-                settled_status = executor.poll(process)
-                if settled_status is not None:
-                    fail(f"app PID {pid} exited while settling with status {settled_status}")
-                trace_process = executor.spawn([
-                    "/usr/bin/xcrun", "xctrace", "record", "--template", "System Trace",
-                    "--attach", str(pid), "--time-limit", f'{plan["duration_seconds"]}s',
-                    "--output", str(trace_path), "--no-prompt",
-                ])
-                immediate_trace_status = executor.poll(trace_process)
-                if immediate_trace_status is not None:
-                    fail(f"System Trace xctrace exited at launch with status {immediate_trace_status}")
             executor.sleep(plan["duration_seconds"])
             end_utc = executor.now().replace("+00:00", "Z")
-            with log_path.open("ab" if facts is not None else "wb") as output:
+            with raw.open("ab") as output:
                 executor.run(["/usr/bin/log", "show", "--info", "--style", "ndjson", "--start",
                               log_time_bound(start_utc), "--end", log_time_bound(end_utc, end=True),
                               "--process", str(pid)], stdout=output)
             returncode = executor.poll(process)
             if returncode is not None:
                 fail(f"app PID {pid} exited during capture with status {returncode}")
-            if trace_process is not None:
-                trace_status = executor.wait(trace_process, 15)
-                trace_process = None
-                if trace_status != 0:
-                    fail(f"System Trace xctrace failed with status {trace_status}")
-                if not trace_path.exists():
-                    fail("System Trace xctrace did not produce its trace")
             cleanup_error = stop_and_prove_gone(process, executor)
             process = None
             if cleanup_error:
                 fail(cleanup_error)
-            if facts is not None:
-                manifest["evidence"]["artifacts"][0]["sha256"] = hashlib.sha256(raw.read_bytes()).hexdigest()
-                manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-                with summary.open("wb") as output:
-                    executor.run([sys.executable, str(SUMMARY), "--json", "--strict", "--manifest",
-                                  str(manifest_path), "--raw-artifact", str(raw), "--workload-id", workload,
-                                  "--phase", "runtime.composition", "--backend", "App", "--field",
-                                  "downloads_capable=1", "--correctness-field", "downloads_capable",
-                                  "--expected-span-count", "1"], stdout=output)
-                manifest["evidence"]["redacted_summary"]["sha256"] = hashlib.sha256(summary.read_bytes()).hexdigest()
-                manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-                if bundle_sha256(app.path) != manifest["product"]["sha256"]:
-                    fail("measured app bundle mutated during capture")
-                executor.run([sys.executable, str(CONTRACT), "manifest", str(manifest_path)])
-                os.replace(temp_dir, final_dir)
-                temp_dir = None
-                manifest_path = final_dir / "manifest.json"
-                log_path = final_dir / "raw/artifact-0001.log"
-            record.update({"status": "success", "failure": None, "log": str(log_path),
-                           "trace": str(trace_path) if plan["scenario"] == "idle" else None,
+            manifest["evidence"]["artifacts"][0]["sha256"] = hashlib.sha256(raw.read_bytes()).hexdigest()
+            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+            with summary.open("wb") as output:
+                executor.run([sys.executable, str(SUMMARY), "--json", "--strict", "--manifest",
+                              str(manifest_path), "--raw-artifact", str(raw), "--workload-id", workload,
+                              "--phase", "runtime.composition", "--backend", "App", "--field",
+                              "downloads_capable=1", "--correctness-field", "downloads_capable",
+                              "--expected-span-count", "1"], stdout=output)
+            manifest["evidence"]["redacted_summary"]["sha256"] = hashlib.sha256(summary.read_bytes()).hexdigest()
+            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+            if bundle_sha256(app.path) != manifest["product"]["sha256"]:
+                fail("measured app bundle mutated during capture")
+            executor.run([sys.executable, str(CONTRACT), "manifest", str(manifest_path)])
+            os.replace(temp_dir, final_dir)
+            temp_dir = None
+            manifest_path = final_dir / "manifest.json"
+            log_path = final_dir / "raw/artifact-0001.log"
+            record.update({"status": "success", "failure": None, "log": str(log_path), "trace": None,
                            "start_utc": start_utc, "end_utc": end_utc})
             if manifest_path is not None:
                 record["manifest"] = str(manifest_path)
@@ -546,12 +891,6 @@ def capture(plan: dict[str, Any], apps: tuple[App, App], executor: Executor) -> 
             record.update({"status": "failure", "failure": {"type": type(error).__name__,
                                                                "message": str(error)}})
         finally:
-            if trace_process is not None:
-                cleanup_error = stop_and_prove_gone(trace_process, executor)
-                if cleanup_error:
-                    record.setdefault("cleanup_errors", []).append(cleanup_error)
-                    record["status"] = "failure"
-                    record.setdefault("failure", {"type": "CleanupError", "message": cleanup_error})
             if process is not None:
                 cleanup_error = stop_and_prove_gone(process, executor)
                 if cleanup_error:
@@ -567,12 +906,10 @@ def capture(plan: dict[str, Any], apps: tuple[App, App], executor: Executor) -> 
     result.pop("samples")
     result["records"] = records
     result["verdict"] = {"status": "insufficient_data", "reason":
-                         ("admissible samples require a separate paired comparison" if plan["scenario"] == "launch"
-                          else "idle remains pre-manifest until trace packaging and extraction lands"),
+                         "admissible samples require a separate paired comparison",
                          "measured_successes": measured_successes}
     result["capture_status"] = "failure" if any(r["status"] == "failure" for r in records) else "success"
-    result["artifact_status"] = ("admissible_per_run_manifests" if plan["scenario"] == "launch"
-                                 else "pre_manifest_raw_capture")
+    result["artifact_status"] = "admissible_per_run_manifests"
     return result
 
 
@@ -654,6 +991,21 @@ def validate_directory_ancestors(path: pathlib.Path, *, leaf_directory: bool = F
             return
         if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
             fail(f"integrated private root is not a real directory: {absolute}")
+
+
+def preflight_nonintegrated_output(path: pathlib.Path) -> pathlib.Path:
+    """Reject output aliases/collisions before any non-integrated capture work begins."""
+    output = path.absolute()
+    if output.exists() or output.is_symlink():
+        fail("non-integrated result output must not already exist")
+    parent = output.parent
+    validate_directory_ancestors(parent, leaf_directory=True)
+    parent.mkdir(parents=True, exist_ok=True)
+    validate_directory_ancestors(parent, leaf_directory=True)
+    canonical = parent.resolve() / output.name
+    if canonical.exists() or canonical.is_symlink():
+        fail("non-integrated result output appeared during preflight")
+    return canonical
 
 
 def write_private_json_atomic(path: pathlib.Path, value: Any) -> None:
@@ -1377,11 +1729,11 @@ def main(argv: list[str] | None = None, *, executor: Executor | None = None) -> 
     if args.scenario != "idle" and args.idle_settle_seconds is not None:
         fail("--idle-settle-seconds is valid only for the idle scenario")
     settle = defaults["settle_seconds"] if args.idle_settle_seconds is None else args.idle_settle_seconds
-    if (warmups < 0 or measured < 1 or duration < 1 or settle < 0
+    if (warmups < 0 or measured < 1 or not 1 <= duration <= 86_400 or settle < 0
             or not math.isfinite(args.cooldown_seconds) or args.cooldown_seconds < 0
             or args.max_calibration_storage_drift_bytes < 0
             or not math.isfinite(args.max_pair_gap_seconds) or args.max_pair_gap_seconds <= 0):
-        fail("warmups and settle must be nonnegative; measured and duration must be positive")
+        fail("warmups and settle must be nonnegative; measured must be positive; duration must be 1...86400 seconds")
     integrated = args.calibration_output is not None or args.frozen_mde_output is not None
     if integrated and (args.calibration_output is None or args.frozen_mde_output is None):
         fail("integrated launch capture requires both calibration and frozen-MDE outputs")
@@ -1411,6 +1763,8 @@ def main(argv: list[str] | None = None, *, executor: Executor | None = None) -> 
             document["resume"] = args.resume
         print(json.dumps(document, indent=2, sort_keys=True))
         return 0
+    result_output = (preflight_nonintegrated_output(args.output)
+                     if calibration is None else args.output)
     active_executor = executor or Executor()
     if calibration is not None:
         result = capture_integrated(
@@ -1420,8 +1774,7 @@ def main(argv: list[str] | None = None, *, executor: Executor | None = None) -> 
             max_pair_gap_seconds=args.max_pair_gap_seconds)
     else:
         result = capture(plan, apps, active_executor)
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+        write_durable_json_exclusive(result_output, result)
     return 1 if result["capture_status"] == "failure" else 0
 
 if __name__ == "__main__":

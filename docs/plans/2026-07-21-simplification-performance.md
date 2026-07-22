@@ -1349,15 +1349,28 @@ policy:
     ambiguous unbound state remains operator-gated. Two adversarial passes closed cross-pair clock,
     symlink-ancestor, and post-capture calibration-covariate gaps with no remaining reviewed P0-P2.
 
-17. Idle evidence now has an honest typed foundation rather than pretending CPU or wakeup data is a
-    latency span. A strict xctrace XML extractor binds one exact PID and capture window to
-    `cpu_running_ns` and `wakeups_count`, rejecting table, column, unit, Xcode, PID, window, XML, and
-    output drift. The manifest contract accepts only a bounded, fully streamed and CRC-validated
-    `.trace.zip` with one top-level trace bundle plus the selected XML and typed extraction, and binds
-    that chain to a local, non-publishable redacted summary. Metadata-only validation and JSON Schema
-    both enforce that idle evidence cannot be publishable. Atomic runner packaging and typed paired
-    comparison remain follow-ups; one short real System Trace compatibility smoke must lock the
-    current Xcode export shape before the expensive 1-warmup/5-measured paired idle sequence.
+17. Idle evidence now has an honest typed path rather than pretending CPU or wakeup data is a latency
+    span. The runner captures exact-PID System Trace, privately exports the native TOC and
+    `thread-state` table, resolves Xcode's closed id/ref representation, and publishes only a
+    normalized privacy-safe XML, typed extraction, redacted summary, and deterministic trace archive.
+    `cpu_running_ns` is the clipped sum of target `Running` intervals; `wakeups_count` counts in-window
+    `Runnable` transitions with a recorded waking thread. Boundary-crossing scheduler intervals are
+    clipped to the exact TOC window, while wholly outside, invalid, cyclic, missing-reference,
+    wrong-PID, unknown-state, schema/unit/build, overflow, and malformed XML inputs fail closed.
+
+    The manifest contract accepts only a bounded, fully streamed and CRC-validated `.trace.zip` with
+    one top-level trace bundle plus the normalized XML and typed extraction, cryptographically binds
+    that chain to a local non-publishable summary, and re-parses every normalized value. Metadata-only
+    validation and JSON Schema both enforce that idle evidence cannot be publishable. App and xctrace
+    cleanup are independently attempted and jointly proved; output collisions fail before capture,
+    and complete run directories plus the top-level result publish exclusively and durably.
+
+    Live compatibility smoke `mac-idle-smoke-20260723-v5` succeeded end to end on Xcode build
+    `27A5218g`: both exact-PID arms produced contract-valid manifests. The candidate recorded
+    1,122,126 CPU-running nanoseconds and 44 wakeups; control recorded 1,186,376 nanoseconds and 44
+    wakeups over the short two-second compatibility window. This one pair remains
+    `insufficient_data`; typed paired comparison support is still required before the expensive
+    1-warmup/5-measured 120-second idle sequence can produce a verdict.
 
     A fresh Home admission retry (`mac-emby-home-smoke-20260722-v13`) again failed inside the AX
     workload before producing admissible evidence, with no app, fixture, build, or simulator process

@@ -166,13 +166,22 @@ scripts/perf-compare.py compare \
   still begin before launch. Start with `--plan` and supply exact distinct artifact commits, an
   opaque device label, and retention deadline. Successful launch samples atomically publish a
   validated manifest, raw log, and strict `runtime.composition` summary consumable by
-  `perf-compare.py`; failures publish no manifest and make the runner nonzero. Idle traces remain
-  explicitly pre-manifest and `insufficient_data` until trace extraction lands.
-- `perf-xctrace-idle-summary.py` — strict measurement-only extractor for the closed
-  single-process System Trace aggregate XML contract. It rejects Xcode/table/column/unit/PID/window
-  drift, writes a typed nanosecond/count extraction plus privacy-safe idle summary, and binds both
-  to an honestly named regular `.trace.zip` artifact. This foundation does not itself archive a
-  trace, modify the launch/idle runner, or make a paired performance claim.
+  `perf-compare.py`. The idle path cleanly stops the exact app, privately exports the native
+  System Trace TOC and `thread-state` table, creates a deterministic no-follow `.trace.zip`, and
+  normalizes the native id/ref XML into the closed typed XML artifact. Native exports can contain
+  paths and environment values, so they are deleted before atomic publication; the archived trace
+  remains the authoritative raw evidence. Schema, build, PID, reference, state, and timing drift
+  fail closed.
+  Failures publish no run directory and make the runner nonzero. Idle remains `insufficient_data`
+  until typed paired comparison support lands.
+- `perf-xctrace-idle-summary.py` — strict measurement-only normalizer for Xcode's native System
+  Trace TOC and 16-column `thread-state` XML. It clips native intervals that cross the exact TOC
+  boundary and sums only the in-window portion of target-process `Running` rows as
+  `cpu_running_ns`; `wakeups_count` is the number of target-process `Runnable` transitions whose
+  start lies inside that window and whose `made-runnable-by-thread` source is non-sentinel. It
+  rejects zero-length or wholly out-of-window intervals plus Xcode/table/column/type/PID/window/state
+  and id/ref drift, then writes the closed normalized XML, typed extraction, and privacy-safe idle
+  summary bound to the regular `.trace.zip`. It makes no paired performance claim.
 - `perf-macos-emby-browse.py` — paired external Home, catalog, and Search runner for the same
   dedicated Mac `PerformanceAudit` artifacts. It launches the loopback-only Emby fixture, resets
   that performance identity's closed Keychain account set (including per-arm routing identity) and
