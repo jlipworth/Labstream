@@ -22,12 +22,6 @@ public protocol TrickPlayThumbnailProviding: Sendable {
     func thumbnail(nearMs targetMs: Int) async -> TrickPlayThumbnail?
 }
 
-/// Graceful no-op provider for backends/items that do not currently expose trick-play images.
-public struct UnavailableTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
-    public init() {}
-    public func thumbnail(nearMs targetMs: Int) async -> TrickPlayThumbnail? { nil }
-}
-
 /// Ordered, non-fatal provider fallback used by shared online/offline player entry points.
 /// A missing or malformed higher-quality asset never prevents a lower-quality preview source.
 public struct HierarchicalTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
