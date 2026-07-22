@@ -5,7 +5,7 @@ import PMSKit
 /// `JellyfinBrowseService` but uses the Emby PMSKit lane (distinct auth header
 /// scheme, `UserId` in PlaybackInfo query+body, base-path preservation).
 @MainActor
-struct EmbyBrowseService {
+struct EmbyBrowseService: MediaBrowserBrowseFacade {
     let appModel: AppModel
     var session: URLSession = .shared
 
@@ -29,10 +29,6 @@ struct EmbyBrowseService {
 
     func userViews() async throws -> [EmbyBaseItemDto] {
         try await browseCore().userViews()
-    }
-
-    func userViewLinks() async throws -> [MediaBrowserLibraryLink] {
-        try await browseCore().userViewLinks()
     }
 
     func items(parentId: String?,
@@ -127,77 +123,6 @@ struct EmbyBrowseService {
             items += rows.compactMap { $0.toMediaItem() }
         }
         return items
-    }
-
-    /// Tag-aggregated album artists for a music library (#111), via `/Artists/AlbumArtists`.
-    func albumArtistsPage(parentId: String?,
-                          startIndex: Int? = nil,
-                          limit: Int? = nil,
-                          nameStartsWith: String? = nil,
-                          sortBy: String = "SortName",
-                          sortOrder: String = "Ascending") async throws -> (items: [MediaItem], total: Int?) {
-        let page = try await browseCore().albumArtistsPage(
-            parentID: parentId, startIndex: startIndex, limit: limit,
-            nameStartsWith: nameStartsWith, sortBy: sortBy, sortOrder: sortOrder
-        )
-        return (page.items, page.total)
-    }
-
-    /// Ordered tracks of an audio playlist (#111) — see the Jellyfin twin. Playlist order
-    /// is preserved by `/Playlists/{id}/Items`, so the caller must not re-sort.
-    func playlistItems(playlistId: String) async throws -> [MediaItem] {
-        try await browseCore().playlistItems(playlistID: playlistId)
-    }
-
-    func playlistItemsPage(playlistId: String,
-                           startIndex: Int,
-                           limit: Int) async throws -> (items: [MediaItem], total: Int?) {
-        let page = try await browseCore().playlistItemsPage(
-            playlistID: playlistId, startIndex: startIndex, limit: limit)
-        return (page.items, page.total)
-    }
-
-    func searchResults(query: String,
-                       views: [MediaBrowserLibraryLink],
-                       limitPerLibrary: Int = 50) async throws -> SearchResults {
-        try await browseCore().searchResults(query: query,
-                                             limitPerLibrary: limitPerLibrary,
-                                             views: views)
-    }
-
-    func resumeItems(parentId: String? = nil, limit: Int = 20) async throws -> [MediaItem] {
-        try await resumeItemsPage(parentId: parentId, startIndex: 0, limit: limit).items
-    }
-
-    func resumeItemsPage(parentId: String? = nil,
-                         startIndex: Int,
-                         limit: Int) async throws -> (items: [MediaItem], total: Int?) {
-        let page = try await browseCore().resumeItemsPage(
-            parentID: parentId, startIndex: startIndex, limit: limit)
-        return (page.items, page.total)
-    }
-
-    func nextUp(parentId: String? = nil, limit: Int = 20) async throws -> [MediaItem] {
-        try await nextUpPage(parentId: parentId, startIndex: 0, limit: limit).items
-    }
-
-    func nextUpPage(parentId: String? = nil,
-                    startIndex: Int,
-                    limit: Int) async throws -> (items: [MediaItem], total: Int?) {
-        let page = try await browseCore().nextUpPage(
-            parentID: parentId, startIndex: startIndex, limit: limit)
-        return (page.items, page.total)
-    }
-
-    func latestItems(parentId: String?,
-                     includeItemTypes: String = "Movie,Episode,Video",
-                     limit: Int = 20,
-                     metadataProfile: MediaBrowserMetadataFieldProfile =
-                         MediaBrowserMetadataFieldProfiles.home) async throws -> [MediaItem] {
-        try await browseCore().latestItems(parentID: parentId,
-                                           includeItemTypes: includeItemTypes,
-                                           limit: limit,
-                                           metadataProfile: metadataProfile)
     }
 
     func metadata(itemId: String) async throws -> MediaItem {
