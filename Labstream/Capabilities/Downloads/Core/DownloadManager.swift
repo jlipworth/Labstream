@@ -1360,13 +1360,6 @@ public final class DownloadManager {
         return DownloadPresetPolicy.visiblePresetNames(serverTargets: serverTargets)
     }
 
-    /// Whether a download already exists (completed or in-flight) for `ratingKey`.
-    /// Lets the options sheet show "Downloaded" / disable re-download.
-    public func hasDownload(for ratingKey: String) -> Bool {
-        records.contains { $0.ratingKey == ratingKey }
-    }
-
-
     /// Acquire the per-ratingKey in-flight slot before starting a new download.
     ///
     /// A retry can remove the only visible row while the previous terminal callback is still
