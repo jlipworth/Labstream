@@ -1288,9 +1288,9 @@ policy:
 
 #### Wave 6 deletion checkpoint journal
 
-1. Commits `78f2df3a` through `d79a5f35` remove **555 net production LOC** and **109
+1. Commits `78f2df3a` through `30327d9c` remove **651 net production LOC** and **109
    net test LOC**; the only configuration change is one stale Xcode test-membership exception.
-   Production accounting is `+151/-706` across `Labstream/` and `PMSKit/Sources/`; tests are
+   Production accounting is `+151/-802` across `Labstream/` and `PMSKit/Sources/`; tests are
    `+30/-139`. This is an opportunistic simplification checkpoint, not a performance result.
 2. The first slices delete an orphan held-range ownership policy, backend identity adapters, a
    test-only string lifecycle bridge, and a blocking alphabet-load mode that no production caller
@@ -1320,17 +1320,24 @@ policy:
    remote reopen remains literal `false`, while the separate startup-deadline and settled-seek paths
    retain the live `true` default. The Mac player now owns `VideoNowPlayingCore` directly with the
    exact process-wide 30-second command profile; configure/teardown, leases, and media keys remain.
-9. Independent read-only reviews passed every slice. Focused validation passed the initial 50-test
+9. Declaration-only app helpers superseded by attempt-scoped metadata/recovery mutation are gone,
+   along with an unused atomic Plex-session writer and download lookup wrapper. PMSKit also drops
+   seven unused compatibility aliases/helpers and its unused no-op trick-play provider; the local
+   source package retains its canonical classifiers, attempt ownership, generic DTOs, and optional
+   `nil` representation for unavailable previews.
+10. Independent read-only reviews passed every slice. Focused validation passed the initial 50-test
    hosted deletion set, 23 catalog/search tests, 28 attempt-owned recovery tests, 4 PMSKit temp-policy
    tests, 37 repository-waiter tests, 45 cache tests, 3 typed-restart tests, 3 PMSKit buffering tests,
    8 system-media tests, all 149 script tests, the 8-test topology suite, and repeated clean Debug
    compile gates for macOS, visionOS, iOS, and tvOS. The current production-identity Mac app also
    built, staged, and launched successfully; physical media-key/Control Center behavior remains an
    acceptance gate rather than a build claim.
+   The later declaration-only slices passed 63 auth/download tests, 14 hosted trick-play tests,
+   21 BIF tests, 4 preview-resolution tests, and the full 1,640-test non-live PMSKit suite.
    A pre-existing `DownloadStorePersistenceTests` order/isolation failure still reproduces when its
    class runs as a group (`57/58` pass) but the named failing test passes alone; track that harness
    defect separately rather than attributing it to definition-only deletion.
-10. No measured optimization has landed. Wave 5 still lacks the identical external UI workload and
+11. No measured optimization has landed. Wave 5 still lacks the identical external UI workload and
    statistically eligible paired samples needed for launch, browse, artwork, playback, download,
    memory, energy, or compile-time claims.
 
