@@ -121,6 +121,14 @@ scripts/perf-compare.py compare \
 - `smoke-macos-host.sh` — bounded signed-out host launch smoke under an isolated identity.
 - `validate-macos-228.sh` — repeatable Mac-preview validation sweep. The filename is retained from
   the implementation issue; it also builds shared targets and runs focused diagnostics checks.
+- `perf-macos-launch-idle.py` — external paired runner for two already-built Mac
+  `PerformanceAudit` apps using the same dedicated `com.jlipworth.Labstream.perf.*` identity. It validates both
+  products with `performance-audit-contract.py`, resets only that exact sandbox container, seeds the
+  canonical empty download index, and records adjacent A/B launch logs or exact-PID 120-second
+  System Trace captures after a bounded 10-second readiness/settle interval. Unified-log bounds
+  still begin before launch. Start with `--plan`. Output is explicitly pre-manifest raw capture:
+  it cannot enter `perf-compare.py` until per-run manifest/covariate binding and strict summaries
+  land, and therefore always reports `insufficient_data` rather than a performance verdict.
 
 There is no macOS simulator lane. See [`docs/MACOS.md`](../docs/MACOS.md).
 
