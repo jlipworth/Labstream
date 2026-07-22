@@ -1,6 +1,6 @@
 # Cross-platform simplification and performance program
 
-Status: **Waves 0–4 implemented and validated; Wave 5 measurement prerequisites and the Wave 6 deletion pass are in progress**
+Status: **Waves 0–4 implemented and validated; the independent Wave 6 simplification pass is complete; Wave 5 measurement prerequisites are next**
 
 Audit baseline: `b3045bc0` (`Record tvOS merge checkpoint`) on
 `codex/audit-simplification-performance`
@@ -1288,10 +1288,10 @@ policy:
 
 #### Wave 6 deletion checkpoint journal
 
-1. Commits `78f2df3a` through `0bd3da68` remove **917 net production LOC** and **207
+1. Commits `78f2df3a` through `3068b04e` remove **992 net production LOC** and **207
    net test LOC**; the only configuration change is one stale Xcode test-membership exception.
-   Production accounting is `+174/-1091` across `Labstream/` and `PMSKit/Sources/`; tests are
-   `+82/-289`. This is an opportunistic simplification checkpoint, not a performance result.
+   Production accounting is `+283/-1275` across `Labstream/` and `PMSKit/Sources/`; tests are
+   `+84/-291`. This is an opportunistic simplification checkpoint, not a performance result.
 2. The first slices delete an orphan held-range ownership policy, backend identity adapters, a
    test-only string lifecycle bridge, and a blocking alphabet-load mode that no production caller
    enabled. The retained paging path still publishes page zero before its alphabet rail completes.
@@ -1332,7 +1332,14 @@ policy:
     requests, session facts, encoding cleanup, progress payloads, and authenticated live-probe
     contracts remain distinct, while backend-name aliases, forwarding resolvers, and copy bridges
     are deleted.
-11. Independent read-only reviews passed every slice. Focused validation passed the initial 50-test
+11. The final static pass removes the last three misleading MediaBrowser compatibility aliases,
+    hoists identical player-menu alignment and drops unused platform imports, and moves the exact
+    Jellyfin/Emby browse-core forwards behind one `@MainActor` facade protocol. Backend context,
+    auth, request construction, playback, cleanup, and mutable-session resolution remain concrete.
+    The final dead/declaration and duplicate scans found no other safe production candidate of at
+    least 10 LOC: remaining large hits are current durability/instrumentation or real platform and
+    backend differences. The independent simplification/deletion lane is therefore complete.
+12. Independent read-only reviews passed every slice. Focused validation passed the initial 50-test
    hosted deletion set, 23 catalog/search tests, 28 attempt-owned recovery tests, 4 PMSKit temp-policy
    tests, 37 repository-waiter tests, 45 cache tests, 3 typed-restart tests, 3 PMSKit buffering tests,
    8 system-media tests, all 149 script tests, the 8-test topology suite, and repeated clean Debug
@@ -1345,10 +1352,12 @@ policy:
    season-planning tests, and 28 attempt-owned checkpoint tests. The neutral playback-carrier slice
    passed the resulting 1,636-test non-live PMSKit suite and another clean four-platform compile
    matrix; authenticated live probes were compile-gated and preserved but not run against servers.
+   The final alias/browse-facade slices passed 43 hosted browse tests and another clean compile
+   matrix across macOS, visionOS, iOS, and tvOS.
    A pre-existing `DownloadStorePersistenceTests` order/isolation failure still reproduces when its
    class runs as a group (`57/58` pass) but the named failing test passes alone; track that harness
    defect separately rather than attributing it to definition-only deletion.
-12. No measured optimization has landed. Wave 5 still lacks the identical external UI workload and
+13. No measured optimization has landed. Wave 5 still lacks the identical external UI workload and
    statistically eligible paired samples needed for launch, browse, artwork, playback, download,
    memory, energy, or compile-time claims.
 
