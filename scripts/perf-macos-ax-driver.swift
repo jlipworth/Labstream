@@ -466,7 +466,10 @@ private final class AccessibilityDriver {
         let error = AXUIElementCopyAttributeValue(element, attribute.rawValue as CFString, &value)
         if error == .success, let value { return .success(value) }
         if error == .attributeUnsupported || error == .noValue { return .unsupported }
-        if error == .cannotComplete { return .unsupported }
+        // SwiftUI replaces whole subtrees during authentication and modal transitions. A queued
+        // element can become invalid between its role and children reads; skip that stale snapshot
+        // and let the bounded outer poll traverse the new tree rather than failing the workload.
+        if error == .cannotComplete || error == .invalidUIElement { return .unsupported }
         return .failure
     }
 
