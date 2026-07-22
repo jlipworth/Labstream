@@ -120,6 +120,36 @@ class PerformanceAuditContractTests(unittest.TestCase):
             manifest["state"]["install_state"] = "direct_staged_artifact"
             contract.validate_manifest(manifest, root)
 
+    def test_manifest_accepts_closed_external_automation_provenance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            manifest = self.manifest(root)
+            manifest["automation"] = {
+                "fixture_implementation_sha256": "d" * 64,
+                "driver_sha256": "e" * 64,
+                "workload_spec_sha256": "f" * 64,
+                "fixture_protocol_version": 1,
+                "driver_protocol_version": 1,
+            }
+            contract.validate_manifest(manifest, root)
+
+    def test_manifest_rejects_incomplete_or_unbounded_automation_provenance(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            manifest = self.manifest(root)
+            manifest["automation"] = {
+                "fixture_implementation_sha256": "d" * 64,
+                "driver_sha256": "e" * 64,
+                "workload_spec_sha256": "f" * 64,
+                "fixture_protocol_version": 0,
+                "driver_protocol_version": 1,
+            }
+            with self.assertRaisesRegex(contract.ContractError, "fixture_protocol_version"):
+                contract.validate_manifest(manifest, root)
+            del manifest["automation"]["driver_sha256"]
+            with self.assertRaisesRegex(contract.ContractError, "missing fields"):
+                contract.validate_manifest(manifest, root)
+
     def test_manifest_rejects_unreviewed_publishable_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)

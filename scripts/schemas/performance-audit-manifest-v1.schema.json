@@ -43,6 +43,9 @@
     },
     "evidence": {
       "$ref": "#/$defs/evidence"
+    },
+    "automation": {
+      "$ref": "#/$defs/automation"
     }
   },
   "$defs": {
@@ -543,6 +546,38 @@
         },
         "sha256": {
           "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "automation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fixture_implementation_sha256",
+        "driver_sha256",
+        "workload_spec_sha256",
+        "fixture_protocol_version",
+        "driver_protocol_version"
+      ],
+      "properties": {
+        "fixture_implementation_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "driver_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "workload_spec_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "fixture_protocol_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "driver_protocol_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
         }
       }
     }
