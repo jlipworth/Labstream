@@ -234,42 +234,7 @@ struct SearchView: View {
         let span = PerformanceInstrumentation.begin(.searchLoad,
                                                      backend: appModel.activeBackend.performanceLabel)
 
-        if appModel.activeBackend == .jellyfin {
-            loadState = .loading
-            do {
-                let client = try MediaBrowserCatalogClient(appModel: appModel)
-                let request = try catalogRepository.request(appModel: appModel)
-                let snapshot = try await catalogRepository.catalog(for: request)
-                guard client.matches(snapshot), client.isCurrent(in: appModel) else {
-                    throw LibraryCatalogRepositoryError.authorityExpired
-                }
-                let views = snapshot.descriptors.compactMap(\.mediaBrowserLink)
-                let searchResults = try await client.searchResults(query: trimmed, views: views)
-                guard SearchRequestAuthority.accepts(capturedKey: searchKey,
-                                                     currentKey: currentSearchAuthorityKey,
-                                                     isCancelled: Task.isCancelled) else {
-                    span.end(result: Task.isCancelled ? "cancelled" : "superseded")
-                    return
-                }
-                results = searchResults
-                loadedQuery = searchKey
-                loadState = .loaded
-                span.end(fields: searchPerformanceFields(searchResults))
-            } catch {
-                guard SearchRequestAuthority.accepts(capturedKey: searchKey,
-                                                     currentKey: currentSearchAuthorityKey,
-                                                     isCancelled: Task.isCancelled) else {
-                    span.end(result: Task.isCancelled ? "cancelled" : "superseded")
-                    return
-                }
-                span.end(result: "failure",
-                         fields: ["error": PerformanceInstrumentation.errorLabel(error)])
-                loadState = .failed(friendlyMessage(error))
-            }
-            return
-        }
-
-        if appModel.activeBackend == .emby {
+        if appModel.activeBackend.isMediaBrowser {
             loadState = .loading
             do {
                 let client = try MediaBrowserCatalogClient(appModel: appModel)
