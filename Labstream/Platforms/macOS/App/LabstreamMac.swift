@@ -16,12 +16,11 @@ struct LabstreamMac: App {
     }
 
     var body: some Scene {
-        // The Mac product has one reusable browse/player surface. Unlike WindowGroup, Window(id:)
-        // cannot manufacture a second independent navigation stack from File > New Window. The
-        // close button is intercepted by MacMainWindowController and orders this window out rather
-        // than tearing its SwiftUI graph down, so an active player and the app-lifetime runtime stay
-        // alive until the user actually quits the application.
-        Window("Labstream", id: MacMainWindowController.mainWindowID) {
+        // The Mac product exposes one reusable browse/player surface. WindowGroup is retained for
+        // reliable cold/direct-executable launch; the New Window command is removed below, and the
+        // close button is intercepted by MacMainWindowController so the only scene is hidden and
+        // reused rather than destroyed or duplicated.
+        WindowGroup("Labstream", id: MacMainWindowController.mainWindowID) {
             if let runtime {
                 ContentView(runtime: runtime)
                     // The source list can collapse natively at compact widths; 760 keeps the
@@ -36,11 +35,9 @@ struct LabstreamMac: App {
             }
         }
         .defaultSize(width: 1180, height: 760)
-        // A unique Window remembers that it was hidden. Always present the one retained scene on
-        // a fresh process launch, including direct PerformanceAudit executable launches that do
-        // not arrive through a Finder/Dock reopen event.
         .defaultLaunchBehavior(.presented)
         .commands {
+            CommandGroup(replacing: .newItem) { }
             if let runtime {
                 CommandMenu("Navigate") {
                     Button("Back") {
