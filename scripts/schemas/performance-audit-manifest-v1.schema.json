@@ -48,6 +48,41 @@
       "$ref": "#/$defs/automation"
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "scenario"
+        ],
+        "properties": {
+          "scenario": {
+            "required": [
+              "category"
+            ],
+            "properties": {
+              "category": {
+                "const": "idle"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "evidence": {
+            "required": [
+              "publishable"
+            ],
+            "properties": {
+              "publishable": {
+                "const": false
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "sha256": {
       "type": "string",
@@ -308,6 +343,7 @@
             "background_recovery",
             "compile",
             "test",
+            "idle",
             "other"
           ]
         },
@@ -512,7 +548,7 @@
     },
     "rawArtifactPath": {
       "type": "string",
-      "pattern": "^raw/artifact-[0-9]{4}\\.(trace|json|jsonl|csv|log|txt|plist|spindump|ips)$"
+      "pattern": "^raw/artifact-[0-9]{4}(\\.trace\\.zip|\\.(trace|xml|json|jsonl|csv|log|txt|plist|spindump|ips))$"
     },
     "summaryPath": {
       "const": "summary/redacted.json"

@@ -9,9 +9,12 @@ import json
 import pathlib
 import plistlib
 import re
+import stat
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
+import zipfile
+import zlib
 from datetime import datetime
 from typing import Any
 
@@ -30,9 +33,13 @@ DEVICE_LABEL_RE = re.compile(r"^local-device-[0-9]{2,3}$")
 APPLE_BUILD_RE = re.compile(r"^[0-9]{1,3}[A-Z][A-Za-z0-9]{1,16}$")
 SERVER_VERSION_RE = re.compile(r"^[0-9]+(?:\.[0-9]+){1,3}(?:-[a-f0-9]{7,16})?$")
 RAW_ARTIFACT_PATH_RE = re.compile(
-    r"^raw/artifact-[0-9]{4}\.(?:trace|json|jsonl|csv|log|txt|plist|spindump|ips)$"
+    r"^raw/artifact-[0-9]{4}(?:\.trace\.zip|\.(?:trace|xml|json|jsonl|csv|log|txt|plist|spindump|ips))$"
 )
 SUMMARY_PATH = "summary/redacted.json"
+MAX_TRACE_ARCHIVE_MEMBERS = 100_000
+MAX_TRACE_ARCHIVE_MEMBER_BYTES = 8 * 1024**3
+MAX_TRACE_ARCHIVE_UNCOMPRESSED_BYTES = 20 * 1024**3
+MAX_TRACE_ARCHIVE_COMPRESSION_RATIO = 1_000
 SHA256_RE = re.compile(r"^[a-f0-9]{64}$")
 COMMIT_RE = re.compile(r"^[a-f0-9]{40}$")
 PRIVATE_STRING_PATTERNS = (
@@ -207,6 +214,174 @@ def reject_private_strings(value: Any, path: str = "manifest") -> None:
             require(pattern.search(value) is None, f"{path} contains a forbidden {label}")
 
 
+def read_json_file(path: pathlib.Path, label: str) -> Any:
+    require(path.is_file() and not path.is_symlink(), f"{label} must be a regular non-symlink file")
+    require(path.stat().st_size <= 1024 * 1024, f"{label} exceeds the bounded JSON size")
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ContractError(f"{label} must be readable versioned JSON") from error
+
+
+def validate_trace_archive(path: pathlib.Path) -> None:
+    """Fully stream and reject misleading, corrupt, traversing, or bomb-like trace ZIPs."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            members = archive.infolist()
+            require(0 < len(members) <= MAX_TRACE_ARCHIVE_MEMBERS,
+                    "idle trace archive has an invalid member count")
+            roots: set[str] = set()
+            names: set[str] = set()
+            declared_total = 0
+            streamed_total = 0
+            for member in members:
+                candidate = pathlib.PurePosixPath(member.filename)
+                require(member.filename not in names, "idle trace archive has duplicate members")
+                names.add(member.filename)
+                require(not candidate.is_absolute() and candidate.parts
+                        and all(part not in {"", ".", ".."} for part in candidate.parts),
+                        "idle trace archive member escapes its root")
+                roots.add(candidate.parts[0])
+                require(member.flag_bits & 0x1 == 0, "idle trace archive must not be encrypted")
+                mode = member.external_attr >> 16
+                if mode:
+                    require((member.is_dir() and stat.S_ISDIR(mode))
+                            or (not member.is_dir() and stat.S_ISREG(mode)),
+                            "idle trace archive contains a symlink or special file")
+                require(member.file_size <= MAX_TRACE_ARCHIVE_MEMBER_BYTES,
+                        "idle trace archive member exceeds its size bound")
+                if member.file_size:
+                    require(member.compress_size > 0
+                            and member.file_size <= member.compress_size * MAX_TRACE_ARCHIVE_COMPRESSION_RATIO,
+                            "idle trace archive member exceeds its compression-ratio bound")
+                declared_total += member.file_size
+                require(declared_total <= MAX_TRACE_ARCHIVE_UNCOMPRESSED_BYTES,
+                        "idle trace archive exceeds the bounded uncompressed size")
+                if member.is_dir():
+                    continue
+                streamed_member = 0
+                with archive.open(member, "r") as source:
+                    while chunk := source.read(1024 * 1024):
+                        streamed_member += len(chunk)
+                        streamed_total += len(chunk)
+                        require(streamed_member <= member.file_size
+                                and streamed_member <= MAX_TRACE_ARCHIVE_MEMBER_BYTES,
+                                "idle trace archive member expanded beyond its declared or bounded size")
+                        require(streamed_total <= declared_total
+                                and streamed_total <= MAX_TRACE_ARCHIVE_UNCOMPRESSED_BYTES,
+                                "idle trace archive expanded beyond its declared or bounded total size")
+                require(streamed_member == member.file_size,
+                        "idle trace archive member size does not match its directory entry")
+            require(len(roots) == 1 and next(iter(roots)).endswith(".trace"),
+                    "idle trace archive must contain exactly one top-level .trace bundle")
+            require(streamed_total == sum(member.file_size for member in members if not member.is_dir()),
+                    "idle trace archive streamed size does not match its directory")
+    except (OSError, RuntimeError, zipfile.BadZipFile, zlib.error) as error:
+        raise ContractError("idle trace archive is not a readable ZIP file") from error
+
+
+def validate_idle_evidence(manifest: dict[str, Any], run_dir: pathlib.Path) -> None:
+    """Validate the typed summary/extraction chain for one idle trace sample."""
+    evidence = manifest["evidence"]
+    artifacts = evidence["artifacts"]
+    by_path = {pointer["path"]: pointer for pointer in artifacts}
+    require(len(by_path) == len(artifacts), "idle evidence artifact paths must be unique")
+    summary_path = run_dir / SUMMARY_PATH
+    summary = exact_keys(read_json_file(summary_path, "idle redacted summary"),
+                         "idle redacted summary",
+                         {"schema_version", "tool", "binding", "sources", "capture", "metrics"})
+    reject_private_strings(summary, "idle redacted summary")
+    require(summary["schema_version"] == 1, "idle redacted summary schema version is unsupported")
+    require(summary["tool"] == {"name": "labstream-xctrace-idle-summary", "version": "1"},
+            "idle redacted summary tool is unsupported")
+    run, scenario, product = manifest["run"], manifest["scenario"], manifest["product"]
+    expected_binding = {
+        "run_id": run["id"], "comparison_id": run["comparison_id"],
+        "artifact_role": run["artifact_role"], "sample_kind": run["sample_kind"],
+        "sample_index": run["sample_index"], "scenario_id": scenario["id"],
+    }
+    require(summary["binding"] == expected_binding,
+            "idle redacted summary binding does not match its manifest")
+    sources = exact_keys(summary["sources"], "idle redacted summary sources",
+                         {"trace_archive", "extraction"})
+    for name, pointer in sources.items():
+        require(pointer in artifacts, f"idle summary {name} is not an exact manifest artifact pointer")
+    require(sources["trace_archive"]["path"].endswith(".trace.zip"),
+            "idle trace archive must use the honest .trace.zip suffix")
+    archive_path = run_dir.joinpath(*pathlib.PurePosixPath(sources["trace_archive"]["path"]).parts)
+    validate_trace_archive(archive_path)
+    require(sources["extraction"]["path"].endswith(".json"),
+            "idle extraction must be a JSON artifact")
+
+    extraction_path = run_dir.joinpath(*pathlib.PurePosixPath(sources["extraction"]["path"]).parts)
+    extraction = exact_keys(read_json_file(extraction_path, "idle extraction"), "idle extraction",
+                            {"schema_version", "tool", "xcode_build", "table", "sources",
+                             "capture", "metrics"})
+    reject_private_strings(extraction, "idle extraction")
+    require(extraction["schema_version"] == 1 and extraction["tool"] == summary["tool"],
+            "idle extraction schema/tool is unsupported")
+    require(extraction["xcode_build"] == product["xcode_build"],
+            "idle extraction Xcode build does not match the measured product")
+    table = exact_keys(extraction["table"], "idle extraction table", {"name", "unit", "columns"})
+    expected_columns = [
+        {"name": "process-id", "unit": "count"},
+        {"name": "window-start", "unit": "nanoseconds"},
+        {"name": "window-end", "unit": "nanoseconds"},
+        {"name": "cpu-running", "unit": "nanoseconds"},
+        {"name": "wakeups", "unit": "count"},
+    ]
+    require(table == {"name": "system-trace-process-summary", "unit": "nanoseconds",
+                      "columns": expected_columns},
+            "idle extraction table/column/unit contract is unsupported")
+    extraction_sources = exact_keys(extraction["sources"], "idle extraction sources",
+                                    {"trace_archive", "source_export"})
+    require(extraction_sources["trace_archive"] == sources["trace_archive"],
+            "idle extraction is not bound to the summary trace archive")
+    require(extraction_sources["source_export"] in artifacts,
+            "idle extraction source export is not an exact manifest artifact pointer")
+    require(extraction_sources["source_export"]["path"].endswith(".xml"),
+            "idle extraction source must be an XML artifact")
+    require(set(by_path) == {
+        sources["trace_archive"]["path"], sources["extraction"]["path"],
+        extraction_sources["source_export"]["path"],
+    }, "idle manifest must contain exactly the archive, XML export, and typed extraction")
+
+    capture = exact_keys(extraction["capture"], "idle extraction capture",
+                         {"pid", "window_start_ns", "window_end_ns", "window_duration_ns"})
+    require(type(capture["pid"]) is int and 0 < capture["pid"] <= 2**31 - 1,
+            "idle extraction PID is invalid")
+    for field in ("window_start_ns", "window_end_ns", "window_duration_ns"):
+        require(type(capture[field]) is int and 0 <= capture[field] <= 86_400 * 1_000_000_000,
+                f"idle extraction {field} is invalid")
+    require(capture["window_end_ns"] > capture["window_start_ns"]
+            and capture["window_duration_ns"] == capture["window_end_ns"] - capture["window_start_ns"],
+            "idle extraction window is inconsistent")
+    metrics = exact_keys(extraction["metrics"], "idle extraction metrics",
+                         {"cpu_running_ns", "wakeups_count"})
+    require(type(metrics["cpu_running_ns"]) is int
+            and 0 <= metrics["cpu_running_ns"] <= capture["window_duration_ns"],
+            "idle extraction CPU running time is invalid")
+    require(type(metrics["wakeups_count"]) is int and 0 <= metrics["wakeups_count"] <= 1_000_000_000,
+            "idle extraction wakeup count is invalid")
+    require(summary["metrics"] == metrics, "idle summary metrics do not match the typed extraction")
+    summary_capture = exact_keys(summary["capture"], "idle redacted summary capture", {
+        "xcode_build", "pid", "expected_duration_ns", "window_tolerance_ns", "actual_duration_ns",
+    })
+    require(summary_capture["xcode_build"] == product["xcode_build"]
+            and summary_capture["pid"] == capture["pid"]
+            and summary_capture["actual_duration_ns"] == capture["window_duration_ns"],
+            "idle summary capture does not match its extraction/product")
+    require(type(summary_capture["expected_duration_ns"]) is int
+            and 0 < summary_capture["expected_duration_ns"] <= 86_400 * 1_000_000_000,
+            "idle summary expected duration is invalid")
+    require(type(summary_capture["window_tolerance_ns"]) is int
+            and 0 <= summary_capture["window_tolerance_ns"] <= 5_000_000_000,
+            "idle summary window tolerance is invalid")
+    require(abs(summary_capture["actual_duration_ns"] - summary_capture["expected_duration_ns"])
+            <= summary_capture["window_tolerance_ns"],
+            "idle summary capture window exceeds its declared tolerance")
+
+
 def validate_manifest(data: Any, run_dir: pathlib.Path, verify_files: bool = True) -> None:
     manifest = closed_keys(data, "manifest", {
         "schema_version", "tool", "run", "product", "device", "state", "scenario",
@@ -291,7 +466,7 @@ def validate_manifest(data: Any, run_dir: pathlib.Path, verify_files: bool = Tru
     enum_value(scenario["category"], "manifest.scenario.category", {
         "launch", "home", "catalog", "search", "detail", "artwork", "music", "playback",
         "seek", "cinema", "shareplay", "download", "diagnostics", "background_recovery",
-        "compile", "test", "other",
+        "compile", "test", "idle", "other",
     })
     run_kind = enum_value(scenario["run_kind"], "manifest.scenario.run_kind",
                           {"deterministic_fixture", "live_server"})
@@ -352,6 +527,11 @@ def validate_manifest(data: Any, run_dir: pathlib.Path, verify_files: bool = Tru
     require(type(evidence["publishable"]) is bool, "manifest.evidence.publishable must be a boolean")
     if evidence["publishable"]:
         require(privacy == "reviewed", "publishable evidence requires completed privacy review")
+    if scenario["category"] == "idle":
+        require(evidence["publishable"] is False,
+                "idle System Trace evidence must remain local and non-publishable")
+        if verify_files:
+            validate_idle_evidence(manifest, run_dir)
 
 
 def parse_build_settings(output: str) -> dict[str, str]:

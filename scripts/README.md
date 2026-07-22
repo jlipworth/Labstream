@@ -168,6 +168,11 @@ scripts/perf-compare.py compare \
   validated manifest, raw log, and strict `runtime.composition` summary consumable by
   `perf-compare.py`; failures publish no manifest and make the runner nonzero. Idle traces remain
   explicitly pre-manifest and `insufficient_data` until trace extraction lands.
+- `perf-xctrace-idle-summary.py` — strict measurement-only extractor for the closed
+  single-process System Trace aggregate XML contract. It rejects Xcode/table/column/unit/PID/window
+  drift, writes a typed nanosecond/count extraction plus privacy-safe idle summary, and binds both
+  to an honestly named regular `.trace.zip` artifact. This foundation does not itself archive a
+  trace, modify the launch/idle runner, or make a paired performance claim.
 - `perf-macos-emby-browse.py` — paired external Home, catalog, and Search runner for the same
   dedicated Mac `PerformanceAudit` artifacts. It launches the loopback-only Emby fixture, resets
   that performance identity's closed Keychain account set (including per-arm routing identity) and
