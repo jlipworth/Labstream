@@ -391,11 +391,11 @@ struct SubtitlesTabView: View {
     /// `AVMediaSelectionOption`, so it must never cross actor boundaries. Keeping the
     /// picker entirely on the main actor (where the `AVPlayerItem` lives anyway) sidesteps
     /// the data race the compiler would otherwise flag.
-    let load: @MainActor () async throws -> (tracks: [PlaybackController.SubtitleTrack], selectedID: Int)??
-    let onSelect: @MainActor (PlaybackController.SubtitleTrack) async throws -> Void
+    let load: @MainActor () async throws -> PlaybackTrackSnapshot<PlaybackSubtitleTrack>??
+    let onSelect: @MainActor (PlaybackSubtitleTrack) async throws -> Void
 
-    @State private var tracks: [PlaybackController.SubtitleTrack] = []
-    @State private var selectedID: Int = -1
+    @State private var tracks: [PlaybackSubtitleTrack] = []
+    @State private var selectedID: PlaybackSubtitleTrack.ID?
     @State private var didLoad = false
     @State private var loadError: String?
 
@@ -476,12 +476,12 @@ struct SubtitlesTabView: View {
 
         while !Task.isCancelled {
             do {
-                if let result = try await load(), let (tracks, selectedID) = result {
-                    self.tracks = tracks
-                    self.selectedID = selectedID
+                if let result = try await load(), let snapshot = result {
+                    tracks = snapshot.tracks
+                    selectedID = snapshot.selectedID
                 } else {
-                    self.tracks = []
-                    self.selectedID = -1
+                    tracks = []
+                    selectedID = nil
                 }
                 didLoad = true
                 return
@@ -514,11 +514,11 @@ struct AudioTabView: View {
     ///
     /// Both closures are `@MainActor`: an `AudioTrack` carries a non-`Sendable`
     /// `AVMediaSelectionOption`, so it must never cross actor boundaries — see `SubtitlesTabView`.
-    let load: @MainActor () async -> (tracks: [PlaybackController.AudioTrack], selectedID: Int)??
-    let onSelect: @MainActor (PlaybackController.AudioTrack) async -> Void
+    let load: @MainActor () async -> PlaybackTrackSnapshot<PlaybackAudioTrack>??
+    let onSelect: @MainActor (PlaybackAudioTrack) async -> Void
 
-    @State private var tracks: [PlaybackController.AudioTrack] = []
-    @State private var selectedID: Int = 0
+    @State private var tracks: [PlaybackAudioTrack] = []
+    @State private var selectedID: PlaybackAudioTrack.ID?
     @State private var didLoad = false
 
     var body: some View {
@@ -580,12 +580,12 @@ struct AudioTabView: View {
     private func refresh() async {
         // `load` is doubly-optional: the outer `?` is the weak-self capture, the inner is "no
         // audible group / single track". Flatten both to a single optional result.
-        if let result = await load(), let (tracks, selectedID) = result {
-            self.tracks = tracks
-            self.selectedID = selectedID
+        if let result = await load(), let snapshot = result {
+            tracks = snapshot.tracks
+            selectedID = snapshot.selectedID
         } else {
-            self.tracks = []
-            self.selectedID = 0
+            tracks = []
+            selectedID = nil
         }
     }
 }
@@ -598,32 +598,32 @@ struct AudioTabView: View {
 /// rebuilds the transcode at the live playhead (a brief rebuffer, like a Quality switch).
 struct AudioStreamsTabView: View {
     /// Reads the current track list from the item metadata (synchronous, pure).
-    let load: @MainActor () -> [PlaybackController.AudioStreamChoice]
+    let load: @MainActor () -> PlaybackTrackSnapshot<PlaybackAudioTrack>?
     /// Applies a pick: PUTs the selection on the part + reloads the transcode.
-    let onSelect: @MainActor (PlaybackController.AudioStreamChoice) async -> Void
+    let onSelect: @MainActor (PlaybackAudioTrack) async -> Void
 
-    @State private var choices: [PlaybackController.AudioStreamChoice] = []
+    @State private var snapshot: PlaybackTrackSnapshot<PlaybackAudioTrack>?
     @State private var didLoad = false
     /// Optimistic checkmark target while the PUT + reload is in flight.
-    @State private var pendingID: Int?
+    @State private var pendingID: PlaybackAudioTrack.ID?
 
     var body: some View {
         // ScrollView + VStack, NOT List — see QualityTabView for why: a release with many dub
         // languages must keep the bottom rows reachable. Matches the Quality/Speed menus.
         ScrollView {
             VStack(alignment: .leading, spacing: PlayerPickerMetrics.rowSpacing) {
-                if didLoad && choices.isEmpty {
+                if didLoad && snapshot == nil {
                     Text("No audio track metadata")
                         .foregroundStyle(.secondary)
                     .padding(.vertical, PlayerPickerMetrics.rowVerticalPadding)
                 } else {
-                    ForEach(choices) { choice in
+                    ForEach(snapshot?.tracks ?? []) { choice in
                         Button {
-                            guard !choice.isSelected else { return }
+                            guard choice.id != snapshot?.selectedID else { return }
                             pendingID = choice.id
                             Task {
                                 await onSelect(choice)
-                                choices = load()
+                                snapshot = load()
                                 pendingID = nil
                             }
                         } label: {
@@ -647,12 +647,12 @@ struct AudioStreamsTabView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onAppear {
-            choices = load()
+            snapshot = load()
             didLoad = true
         }
     }
 
-    private var activeID: Int? { choices.first { $0.isSelected }?.id }
+    private var activeID: PlaybackAudioTrack.ID? { snapshot?.selectedID }
 }
 
 /// Stats menu (#6): the live "Stats for Nerds" diagnostics grid, rendered inline.

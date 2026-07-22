@@ -218,10 +218,17 @@ struct LibraryCatalogLoaderTests {
             "Labstream/Shared/Music/MediaBrowserMusicProvider.swift"), encoding: .utf8)
         #expect(!musicProvider.contains("musicLibraryLinks()"))
 
-        let rootView = try String(contentsOf: root.appendingPathComponent(
-            "Labstream/Shared/UI/RootView.swift"), encoding: .utf8)
-        #expect(rootView.contains("SearchView(focusRequest: searchFocusRequest,"))
-        #expect(rootView.contains("MusicLibraryView(catalogRepository: runtime.libraryCatalogRepository)"))
+        let shellSources = try [
+            "Labstream/Platforms/visionOS/UI/VisionRootShell.swift",
+            "Labstream/Platforms/Mobile/UI/MobileRootShell.swift",
+            "Labstream/Platforms/macOS/UI/MacRootShell.swift",
+            "Labstream/Platforms/tvOS/UI/TVRootShell.swift",
+        ].map {
+            try String(contentsOf: root.appendingPathComponent($0), encoding: .utf8)
+        }.joined(separator: "\n")
+        #expect(shellSources.contains("SearchView("))
+        #expect(shellSources.contains(
+            "MusicLibraryView(catalogRepository: runtime.libraryCatalogRepository)"))
 
         for path in [
             "Labstream/Shared/Backend/MediaBrowserBrowseCore.swift",

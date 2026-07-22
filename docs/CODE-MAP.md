@@ -132,9 +132,11 @@ not necessarily the backend currently visible in the UI.
   frame cache remain provider-scoped time-indexed exceptions rather than `ArtworkPipeline`
   consumers.
   Authenticated requests use the nonpersistent side-asset transport, and their leaf caches are
-  memory-only and fixed-entry-count bounded. Byte-cost eviction, off-main preview decode, full-BIF
-  mapping/selected-frame copying, and largest-BIF/tile-sheet peak-RSS validation remain Phase 3/5
-  performance gates. Using `DecodedImage` there is not pipeline adoption. Downloaded image-payload
+  memory-only and bounded by byte cost plus entry count. Sprite sheets and final scrub previews cross
+  the eager off-main `DecodedImage` boundary before cache publication; BIF indexes retain/map one
+  backing payload and normal seek lookup copies only a selected frame (`frames` remains an explicit,
+  source-compatible materializing accessor). Largest-real-BIF and tile-sheet peak-RSS validation
+  remains a Phase 5 measurement gate. Using `DecodedImage` there is not pipeline adoption. Downloaded image-payload
   validation remains in the Wave 4 side-asset work.
 
 Request/DTO implementations live under `PMSKit/Sources/PMSKit/Auth/`,
@@ -144,9 +146,17 @@ root Plex request files such as `PlexRequest.swift` and `PlexPhotoTranscode.swif
 
 ## Root navigation and shared UI
 
-- `Labstream/Shared/UI/RootView.swift` is the authenticated shell. It contains the native Mac
-  split view, visionOS tab shell, and adaptive iPhone tab bar/iPad sidebar presentation,
-  and owns the paths used by system entries and Cinema return routing.
+- `Labstream/Shared/UI/RootView.swift` is the common authenticated composition wrapper. It installs
+  shared repositories/services and connects browse-session, music, system-entry, and Cinema-return
+  events to `RootNavigationCoordinator.swift`.
+- `Labstream/Shared/UI/RootNavigationCoordinator.swift` owns destination selection, online/music
+  paths, Search return/focus transitions, exact-session system-entry routing, and the offline Cinema
+  return focus key. `BrowseNavigationStack.swift` is the repeated session-keyed stack/push boundary.
+- `Labstream/Platforms/visionOS/UI/VisionRootShell.swift`,
+  `Labstream/Platforms/Mobile/UI/MobileRootShell.swift`,
+  `Labstream/Platforms/macOS/UI/MacRootShell.swift`, and
+  `Labstream/Platforms/tvOS/UI/TVRootShell.swift` independently own the native vision tab/ornament,
+  adaptive iPhone/iPad, Mac split-view/player, and focus-driven TV presentations respectively.
 - `Labstream/Shared/UI/LoginView.swift`, `BackendSignInComponents.swift`,
   `LoginChromeComponents.swift`, and `PairingCodeView.swift` own shared backend login UI.
 - `Labstream/Shared/UI/DetailView.swift` owns item-detail presentation state. Extracted backend
@@ -181,7 +191,8 @@ are backend-scoped and cross-backend.
   `PlaybackController+Diagnostics.swift`, `PlaybackHDRProbe.swift`, and
   `StatsForNerdsView.swift` own runtime diagnostics surfaces.
 - `Labstream/Shared/Player/TrickPlayThumbnailProviders.swift` owns remote and local Plex BIF,
-  Jellyfin tile, and Emby chapter thumbnail providers.
+  Jellyfin tile, and Emby chapter thumbnail providers; `TrickPlayCostBoundedLRU.swift` owns their
+  shared byte-and-entry cache bound.
 - `Labstream/Shared/Player/AudioSessionCoordinator.swift` owns non-Mac audio-session policy.
 - `Labstream/Platforms/Mobile/Player/MobilePlayerSystemCoordinator.swift` and
   `MobilePlayerOrientationCoordinator.swift` add iOS/iPadOS PiP, AirPlay, system media,

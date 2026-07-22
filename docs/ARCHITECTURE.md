@@ -63,10 +63,11 @@ Shared files still use conditional compilation for genuinely inline framework an
 differences. Capability and build variants also use `#if canImport(...)`,
 `#if targetEnvironment(simulator)`, and `#if DEBUG`; these are compile-time conditions, not
 runtime feature flags. Whole-platform entrypoints/adapters instead rely on exclusive target
-membership and contain no redundant whole-file platform guard. The densest shared-platform branches are in
-`Labstream/Shared/Player/CustomPlayerChrome.swift`,
-`Labstream/Shared/Player/CustomPlayerView.swift`, `Labstream/Shared/UI/RootView.swift`, and the
-shared login/detail UI. Whole-platform adapters remain in small files where possible.
+membership and contain no redundant whole-file platform guard. Authenticated navigation no longer
+embeds four shells in one conditional view: `RootView` owns common composition,
+`RootNavigationCoordinator` owns shared transitions, and each exclusive
+`Labstream/Platforms/*/UI/*RootShell.swift` file owns native presentation. The densest remaining
+shared-platform branches are in the shared player and login/detail UI.
 
 ## App-lifetime composition
 
@@ -234,9 +235,12 @@ does not inject the pipeline or an exact pixel contract. BIF and sprite-sheet pr
 generated per-position frames, Emby online/offline chapter fallback, and the player nearest-frame
 cache remain provider-scoped time-indexed exceptions rather than `ArtworkPipeline` consumers.
 Authenticated requests use the nonpersistent side-asset transport, and their leaf caches are
-memory-only and fixed-entry-count bounded. Byte-cost eviction, off-main preview decode, full-BIF
-mapping/selected-frame copying, and largest-BIF/tile-sheet peak-RSS validation remain Phase 3/5
-performance gates. Their `DecodedImage` conversion is not shared-pipeline migration. Validation of
+memory-only and bounded by both byte cost and entry count. Sprite sheets and final scrub previews
+cross a detached, eager ImageIO decode boundary before provider or MainActor cache publication; one
+BIF backing payload is retained, safe offline files are mapped, and normal seek lookup copies only
+the selected frame; the source-compatible `frames` accessor materializes all payloads only when
+explicitly read. Largest-real-BIF and tile-sheet peak-RSS validation remains a Phase 5 measurement gate.
+Their `DecodedImage` conversion is not shared-pipeline migration. Validation of
 downloaded poster/chapter payloads before promotion remains a Wave 4 download-side-asset obligation.
 
 ## Video playback and theater surfaces

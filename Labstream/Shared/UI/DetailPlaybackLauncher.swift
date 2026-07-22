@@ -125,41 +125,44 @@ enum DetailPlaybackLauncher {
         case .emby: .emby
         case .plex: preconditionFailure("Plex cannot produce MediaBrowser remote playback")
         }
-        return PlaybackController(
-            remoteStreamURL: remote.url,
+        let progressSession = mediaBrowserProgressSession(
+            backend: progressBackend,
             item: item,
-            identity: remote.context.identity,
-            client: appModel.client,
-            remoteBackendLabel: remote.backend.displayName,
+            context: remote.context,
+            mediaSourceId: remote.mediaSourceId,
+            playSessionId: remote.playSessionId,
+            playMethod: remote.playMethod)
+        let session = MediaBrowserPlaybackSession(
+            streamURL: remote.url,
+            backendLabel: remote.backend.displayName,
             httpHeaders: remote.headers,
-            remotePlaySessionId: remote.playSessionId,
+            playSessionID: remote.playSessionId,
             sourceMetadata: remote.sourceMetadata,
             playMethod: remote.playMethod,
             transcodeReasons: remote.transcodeReasons,
-            mediaBrowserProgressSession: mediaBrowserProgressSession(
-                backend: progressBackend,
-                item: item,
-                context: remote.context,
-                mediaSourceId: remote.mediaSourceId,
-                playSessionId: remote.playSessionId,
-                playMethod: remote.playMethod),
-            onStopRemoteSession: {
+            progressSession: progressSession,
+            onStop: {
                 stopActiveEncoding(remote: remote, appModel: appModel)
             },
-            remoteStreamReopener: { request in
+            reopener: { request in
                 try await reopenStream(context: remote.context,
                                        item: item,
                                        appModel: appModel,
                                        mediaSourceId: remote.mediaSourceId,
                                        request: request)
-            },
+            })
+        return PlaybackController(
+            item: item,
+            sessionSource: .mediaBrowser(session),
+            identity: remote.context.identity,
+            client: appModel.client,
+            maxVideoBitrateKbps: maxVideoBitrateKbps,
+            qualityDefaultsKey: qualityDefaultsKey,
+            mediaIndex: remote.mediaIndex,
             initialAudioStreamIndex: MediaBrowserPlaybackPreferencePolicy
                 .initialAudioStreamIndex(for: item, mediaIndex: remote.mediaIndex),
             initialSubtitleStreamIndex: MediaBrowserPlaybackPreferencePolicy
-                .preferredSubtitleStreamIndex(for: item, mediaIndex: remote.mediaIndex),
-            mediaIndex: remote.mediaIndex,
-            maxVideoBitrateKbps: maxVideoBitrateKbps,
-            qualityDefaultsKey: qualityDefaultsKey)
+                .preferredSubtitleStreamIndex(for: item, mediaIndex: remote.mediaIndex))
     }
 
     /// Resolve the race between an async PlaybackInfo response and detail/auth replacement. A

@@ -752,7 +752,7 @@ struct MetadataRepositoryTests {
 
         #expect(try source("Labstream/Shared/App/AppRuntime.swift")
             .contains("let metadataRepository = MetadataRepository()"))
-        #expect(try source("Labstream/Shared/UI/RootView.swift")
+        #expect(try source("Labstream/Shared/UI/RootNavigationCoordinator.swift")
             .contains("policy: .authoritative"))
         let detail = try source("Labstream/Shared/UI/DetailView.swift")
         #expect(detail.contains("policy: .display"))

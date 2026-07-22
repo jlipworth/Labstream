@@ -1,6 +1,6 @@
 # Cross-platform simplification and performance program
 
-Status: **Wave 0 committed at `40af93f3`; Wave 1 committed at `507b149a`; Wave 2 implementation and automated acceptance complete, uncommitted**
+Status: **Wave 0 committed at `40af93f3`; Wave 1 committed at `507b149a`; Wave 2 committed at `e6e67519`; Wave 3 implementation and automated acceptance complete in the current checkpoint**
 
 Audit baseline: `b3045bc0` (`Record tvOS merge checkpoint`) on
 `codex/audit-simplification-performance`
@@ -915,7 +915,7 @@ and current-document drift. It produced these ordering constraints:
 - Plex native `/hubs` remains server-composed; progressive Home applies only to the independent
   Jellyfin/Emby rail requests.
 
-Wave 2 implementation slices are complete but uncommitted:
+Wave 2 implementation slices were committed at `e6e67519`:
 
 1. `AppModel` vends an immutable `AuthenticatedBrowseSessionContext` with an opaque process-local
    authority. Production auth apply/select/clear paths publish multi-field Plex/Jellyfin/Emby lane
@@ -983,10 +983,11 @@ Wave 2 implementation slices are complete but uncommitted:
     BIF and sprite-sheet providers, Emby generated per-position frames, Emby online/offline chapter
     fallback, and the player nearest-frame cache remain provider-scoped time-indexed exceptions
     rather than `ArtworkPipeline` consumers. Authenticated requests use the nonpersistent side-asset
-    transport, and their leaf caches are memory-only and fixed-entry-count bounded. Byte-cost
-    eviction, off-main preview decode, full-BIF mapping/selected-frame copying, and
-    largest-BIF/tile-sheet peak-RSS validation remain Phase 3/5 performance gates. `DecodedImage`
-    use in those deferred paths is an image boundary, not pipeline migration; downloaded
+    transport. Wave 3 retained those provider-scoped boundaries while adding byte-and-entry-cost
+    cache limits, eager off-main preview decode, one-backing BIF indexes, mapped offline BIF reads,
+    and selected-frame copying. Largest-BIF/tile-sheet peak-RSS validation remains a Wave 5
+    measurement gate; the structural work alone is not claimed as a runtime win. `DecodedImage`
+    use in those paths is an image boundary, not pipeline migration; downloaded
     image-payload validation remains Wave 4 side-asset work.
 12. The paired measurement gate now regenerates strict summaries from exact checksummed raw
     captures, requires an opaque run/workload/launch marker plus closed privacy and correctness
@@ -1041,9 +1042,10 @@ page-flight, incremental-collapse, playlist, `DecodedImage`, actor artwork core,
 adoption, offline poster generation, unified clear, and shared-shimmer slices now address their
 corresponding findings. AVKit-hosted chapter stills, BIF and sprite-sheet providers, Emby generated
 per-position frames, Emby online/offline chapter fallback, and the player nearest-frame cache retain
-explicit provider-scoped time-indexed boundaries. Their byte-cost eviction, off-main preview decode,
-full-BIF mapping/selected-frame copying, and largest-BIF/tile-sheet peak-RSS validation remain Phase
-3/5 performance gates, while downloaded side-asset validation is deferred to Wave 4.
+explicit provider-scoped time-indexed boundaries. Wave 3 added byte-cost eviction, off-main eager
+preview decode, one-backing/mapped BIF indexes, and selected-frame copying while retaining those
+boundaries. Largest-BIF/tile-sheet peak-RSS validation remains a Wave 5 measurement gate, while
+downloaded side-asset validation is deferred to Wave 4.
 None of these structural changes is treated as a runtime performance win until the paired
 comparison gate produces valid evidence.
 
@@ -1054,6 +1056,43 @@ comparison gate produces valid evidence.
 - Split platform chrome leaves.
 - Consolidate system-media pure policy while retaining publishers.
 - Centralize Cinema transition ownership only after contract tests.
+
+#### Wave 3 implementation journal
+
+Wave 3 began from committed Wave 2 base `e6e67519`. Parallel read-only inventories covered native
+shell/navigation ownership, playback sessions/restarts/position/tracks, player chrome, system-media
+publication, visionOS Cinema transitions, and preview/BIF memory structure. Implementation kept
+platform-native layout and input behavior in exclusive leaves while sharing only typed state and pure
+policy:
+
+1. `RootView` is now a small common composition wrapper. A typed `RootNavigationCoordinator` owns
+   destination selection, session-scoped online paths, Search transitions, system-entry fencing,
+   Cinema return, and Offline focus; `BrowseNavigationStack` owns the common session/destination
+   boundary. Mobile, Mac, TV, and visionOS retain exclusive native root shells.
+2. Playback construction uses explicit Plex, MediaBrowser, and Offline session sources rather than
+   mutually exclusive optionals. Restart recipes, position evidence/seek holds, progress causes, and
+   subtitle/audio mechanisms are typed and contract-tested. Offline subtitle payloads parse only on
+   selection, and async subtitle/audio changes use latest-intent plus serialized server authority so
+   stale work cannot overwrite local or account-sticky track state.
+3. `CustomPlayerChrome` is split into shared interaction/components/menus and target-exclusive
+   Mobile, Mac, TV, and visionOS leaves. Mac Escape routing is explicitly ordered as menu, exit
+   fullscreen, close player, then pass through; TV focus and native remote behavior remain TV-owned.
+4. Global iOS/macOS and scoped visionOS system-media publishers remain separate. They consume shared
+   pure Now Playing snapshots and typed command profiles, while token-fenced controller events replace
+   the former 500-ms global metadata polling dependency; the UI scrubber clock remains unchanged.
+5. An app-lifetime visionOS `CinemaTransitionCoordinator` is the single mutable transition owner.
+   Open confirmation and matching-generation immersive appearance are both required before the player
+   window detaches; stale scaffolds cannot bind callbacks or attachment work; exit finalization remains
+   exact-once in leave, stop, route, reopen, clear order with the same controller/player/audio path.
+6. Provider-scoped trick-play caches now enforce byte and entry limits. BIF indexes retain one backing
+   payload, map offline files where safe, and copy only the selected frame; Jellyfin sheets and final
+   previews eagerly decode off-main with cancellation and publication-generation fences. Peak RSS and
+   first-preview latency remain Wave 5 measurement work rather than asserted improvements.
+7. Deterministic policy/controller tests cover the new navigation, session, restart, position, track,
+   system-media observer, Cinema, eager-decode, cache, and BIF contracts. Source topology, affected-lane
+   selection, PMSKit correctness, all four generic target builds, Mac hosted tests, and documentation
+   hygiene are the automated acceptance boundary. visionOS-hosted execution and physical AVP/Siri
+   Remote/system-surface acceptance remain explicit later gates rather than simulator claims.
 
 ### Wave 4 — Heavy coordinators and durable state
 

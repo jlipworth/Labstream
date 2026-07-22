@@ -15,7 +15,8 @@ final class MobilePlayerSystemCoordinator: NSObject, @preconcurrency AVPictureIn
     private let core: VideoNowPlayingCore
 
     init(mediaSession: SystemMediaSessionCoordinator) {
-        core = VideoNowPlayingCore(defaultSkipIntervalSeconds: 10, mediaSession: mediaSession)
+        core = VideoNowPlayingCore(commandProfile: .processWide(fallbackSeconds: 10),
+                                   mediaSession: mediaSession)
     }
     private weak var controller: PlaybackController?
     private weak var playerLayer: AVPlayerLayer?
@@ -67,10 +68,6 @@ final class MobilePlayerSystemCoordinator: NSObject, @preconcurrency AVPictureIn
         } else if pictureInPictureController.isPictureInPicturePossible {
             pictureInPictureController.startPictureInPicture()
         }
-    }
-
-    func updateNowPlayingInfo() {
-        core.updateNowPlayingInfo()
     }
 
     func teardown() {

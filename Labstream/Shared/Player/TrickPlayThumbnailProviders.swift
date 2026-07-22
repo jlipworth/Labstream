@@ -1,19 +1,46 @@
 import Foundation
 import PMSKit
 
+enum TrickPlayCacheBudget {
+    /// Two ordinary 3200x1800 RGBA Jellyfin sheets fit; unusually large sheets are used once but
+    /// never retained. The entry ceiling also protects servers that advertise many tiny sheets.
+    static let decodedTileSheets = 64 * 1_024 * 1_024
+    static let decodedTileSheetEntries = 4
+    static let encodedGeneratedFrames = 8 * 1_024 * 1_024
+    static let encodedGeneratedFrameEntries = 12
+    static let decodedPreviewFrames = 16 * 1_024 * 1_024
+    static let decodedPreviewFrameEntries = 32
+}
+
+private func decodedImageByteCost(_ image: DecodedImage) -> Int {
+    let (cost, overflow) = image.cgImage.bytesPerRow.multipliedReportingOverflow(
+        by: image.cgImage.height
+    )
+    return overflow ? Int.max : max(1, cost)
+}
+
 /// Shared one-load BIF frame source used by Plex, Emby, and local offline providers. Parsing,
 /// malformed-asset fallback, nearest-frame lookup, and cancellation retry behavior live here so
 /// backend wrappers cannot drift or introduce a second Roku BIF implementation.
 actor BIFBackedTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     typealias DataLoader = @Sendable () async throws -> Data
+    typealias IndexLoader = @Sendable () async throws -> BIFIndex
 
-    private let dataLoader: DataLoader
+    private let indexLoader: IndexLoader
     private var loadedIndex: BIFIndex?
     private var resolved = false
     private var loadTask: Task<BIFIndex?, Never>?
 
     init(dataLoader: @escaping DataLoader) {
-        self.dataLoader = dataLoader
+        self.indexLoader = {
+            try BIFParser.parse(try await dataLoader())
+        }
+    }
+
+    init(mappedFileURL: URL) {
+        self.indexLoader = {
+            try BIFParser.parse(contentsOf: mappedFileURL)
+        }
     }
 
     func thumbnail(nearMs targetMs: Int) async -> TrickPlayThumbnail? {
@@ -33,10 +60,10 @@ actor BIFBackedTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
         if let loadTask {
             task = loadTask
         } else {
-            let dataLoader = dataLoader
+            let indexLoader = indexLoader
             task = Task {
                 do {
-                    return try BIFParser.parse(try await dataLoader())
+                    return try await indexLoader()
                 } catch {
                     // Unavailable/malformed BIFs are expected for some items/servers; cache the miss
                     // silently and never log the URL (the request carries an auth token in its query).
@@ -104,9 +131,7 @@ actor LocalBIFTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
 
     init?(bifURL: URL?) {
         guard let bifURL else { return nil }
-        self.provider = BIFBackedTrickPlayThumbnailProvider {
-            try Data(contentsOf: bifURL)
-        }
+        self.provider = BIFBackedTrickPlayThumbnailProvider(mappedFileURL: bifURL)
     }
 
     func thumbnail(nearMs targetMs: Int) async -> TrickPlayThumbnail? {
@@ -134,30 +159,21 @@ enum JellyfinTrickPlayTileRenderer {
 /// Small LRU of decoded tile sheets keyed by URI, owned by each Jellyfin trickplay provider so the
 /// eviction logic is defined once rather than copied per provider.
 struct JellyfinTrickPlayTileCache {
-    private var images: [String: DecodedImage] = [:]
-    private var order: [String] = []
-    private let limit: Int
+    private var images: TrickPlayCostBoundedLRU<String, DecodedImage>
 
-    init(limit: Int = 4) { self.limit = limit }
+    init(byteLimit: Int = TrickPlayCacheBudget.decodedTileSheets,
+         entryLimit: Int = TrickPlayCacheBudget.decodedTileSheetEntries) {
+        images = TrickPlayCostBoundedLRU(costLimit: byteLimit, countLimit: entryLimit)
+    }
 
     /// Promotes the accessed sheet to most-recently-used so an actively-revisited sheet (a scrub that
     /// lingers on one range) isn't the next thing evicted and re-decoded from disk/network.
     mutating func image(for uri: String) -> DecodedImage? {
-        guard let image = images[uri] else { return nil }
-        if let idx = order.firstIndex(of: uri) {
-            order.remove(at: idx)
-            order.append(uri)
-        }
-        return image
+        images.value(for: uri)
     }
 
     mutating func insert(_ image: DecodedImage, for uri: String) {
-        if images[uri] == nil { order.append(uri) }
-        images[uri] = image
-        while order.count > limit, let oldest = order.first {
-            order.removeFirst()
-            images[oldest] = nil
-        }
+        images.insert(image, for: uri, cost: decodedImageByteCost(image))
     }
 }
 
@@ -247,7 +263,8 @@ actor JellyfinTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
                 owner: SideAssetOwner(rawValue: "player-trickplay"),
                 session: session
             )
-            guard let image = DecodedImage(data: data) else { return nil }
+            guard let image = await DecodedImage.decodeEagerlyOffMain(data: data) else { return nil }
+            guard !Task.isCancelled else { return nil }
             tileCache.insert(image, for: tile.uri)
             return image
         } catch {
@@ -313,7 +330,9 @@ actor LocalJellyfinTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     private func tileImage(for tile: JellyfinTrickPlayTile) async -> DecodedImage? {
         if let cached = tileCache.image(for: tile.uri) { return cached }
         let url = playlistURL.deletingLastPathComponent().appendingPathComponent(tile.uri)
-        guard let data = try? Data(contentsOf: url), let image = DecodedImage(data: data) else { return nil }
+        guard let data = try? Data(contentsOf: url),
+              let image = await DecodedImage.decodeEagerlyOffMain(data: data),
+              !Task.isCancelled else { return nil }
         tileCache.insert(image, for: tile.uri)
         return image
     }
@@ -341,9 +360,10 @@ actor EmbyTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
 
     private var thumbnailSet: EmbyThumbnailSetInfo?
     private var thumbnailSetResolved = false
-    private var imageCache: [Int64: Data] = [:]
-    private var imageCacheOrder: [Int64] = []
-    private let imageCacheLimit = 12
+    private var imageCache = TrickPlayCostBoundedLRU<Int64, Data>(
+        costLimit: TrickPlayCacheBudget.encodedGeneratedFrames,
+        countLimit: TrickPlayCacheBudget.encodedGeneratedFrameEntries
+    )
 
     init?(item: MediaItem,
           mediaSourceId: String,
@@ -419,8 +439,7 @@ actor EmbyTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     }
 
     private func perPositionImage(_ advertised: EmbyThumbnailInfo) async -> Data? {
-        if let cached = imageCache[advertised.positionTicks] {
-            promoteCachedPosition(advertised.positionTicks)
+        if let cached = imageCache.value(for: advertised.positionTicks) {
             return cached
         }
         do {
@@ -440,17 +459,8 @@ actor EmbyTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
         }
     }
 
-    private func promoteCachedPosition(_ positionTicks: Int64) {
-        imageCacheOrder.removeAll { $0 == positionTicks }
-        imageCacheOrder.append(positionTicks)
-    }
-
     private func insertImage(_ data: Data, for positionTicks: Int64) {
-        imageCache[positionTicks] = data
-        promoteCachedPosition(positionTicks)
-        while imageCacheOrder.count > imageCacheLimit {
-            imageCache[imageCacheOrder.removeFirst()] = nil
-        }
+        imageCache.insert(data, for: positionTicks, cost: data.count)
     }
 }
 
@@ -475,9 +485,10 @@ actor EmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     private let session: URLSession
     private let coordinator: SideAssetFetchCoordinator
 
-    private var imageCache: [Int: Data] = [:]
-    private var cacheOrder: [Int] = []
-    private let cacheLimit = 12
+    private var imageCache = TrickPlayCostBoundedLRU<Int, Data>(
+        costLimit: TrickPlayCacheBudget.encodedGeneratedFrames,
+        countLimit: TrickPlayCacheBudget.encodedGeneratedFrameEntries
+    )
 
     init?(item: MediaItem,
           server: URL?,
@@ -508,7 +519,7 @@ actor EmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
 
     func thumbnail(nearMs targetMs: Int) async -> TrickPlayThumbnail? {
         guard let frame = nearestFrame(to: targetMs) else { return nil }
-        if let data = imageCache[frame.index] {
+        if let data = imageCache.value(for: frame.index) {
             return TrickPlayThumbnail(timeMs: frame.timeMs, imageData: data, contentType: "image/jpeg")
         }
         do {
@@ -545,12 +556,7 @@ actor EmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     }
 
     private func insert(_ data: Data, for index: Int) {
-        if imageCache[index] == nil { cacheOrder.append(index) }
-        imageCache[index] = data
-        while cacheOrder.count > cacheLimit, let oldest = cacheOrder.first {
-            cacheOrder.removeFirst()
-            imageCache[oldest] = nil
-        }
+        imageCache.insert(data, for: index, cost: data.count)
     }
 
 }
@@ -567,9 +573,10 @@ actor LocalEmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
 
     private let frames: [Frame]
     private let imageURLsByChapterIndex: [Int: URL]
-    private var imageCache: [Int: Data] = [:]
-    private var cacheOrder: [Int] = []
-    private let cacheLimit = 12
+    private var imageCache = TrickPlayCostBoundedLRU<Int, Data>(
+        costLimit: TrickPlayCacheBudget.encodedGeneratedFrames,
+        countLimit: TrickPlayCacheBudget.encodedGeneratedFrameEntries
+    )
 
     /// - Parameters:
     ///   - chapters: the offline chapter markers (each carries a `startTimeOffset`), in the same
@@ -590,7 +597,7 @@ actor LocalEmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
 
     func thumbnail(nearMs targetMs: Int) async -> TrickPlayThumbnail? {
         guard let frame = nearestFrame(to: targetMs) else { return nil }
-        if let data = imageCache[frame.chapterIndex] {
+        if let data = imageCache.value(for: frame.chapterIndex) {
             return TrickPlayThumbnail(timeMs: frame.timeMs, imageData: data, contentType: "image/jpeg")
         }
         guard let url = imageURLsByChapterIndex[frame.chapterIndex],
@@ -611,53 +618,48 @@ actor LocalEmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
     }
 
     private func insert(_ data: Data, for index: Int) {
-        if imageCache[index] == nil { cacheOrder.append(index) }
-        imageCache[index] = data
-        while cacheOrder.count > cacheLimit, let oldest = cacheOrder.first {
-            cacheOrder.removeFirst()
-            imageCache[oldest] = nil
-        }
+        imageCache.insert(data, for: index, cost: data.count)
     }
 }
 
 @MainActor
 final class TrickPlayPreviewImageCache {
-    private let limit: Int
-    private var images: [Int: DecodedImage] = [:]
-    private var order: [Int] = []
+    private var images: TrickPlayCostBoundedLRU<Int, DecodedImage>
 
-    init(limit: Int = 32) {
-        self.limit = max(1, limit)
+    init(byteLimit: Int = TrickPlayCacheBudget.decodedPreviewFrames,
+         entryLimit: Int = TrickPlayCacheBudget.decodedPreviewFrameEntries) {
+        images = TrickPlayCostBoundedLRU(costLimit: byteLimit,
+                                         countLimit: entryLimit)
+    }
+
+    /// Compatibility spelling for existing player construction; byte-cost eviction remains active.
+    convenience init(limit: Int) {
+        self.init(byteLimit: TrickPlayCacheBudget.decodedPreviewFrames,
+                  entryLimit: max(1, limit))
     }
 
     func image(for timeMs: Int) -> DecodedImage? {
-        images[timeMs]
+        images.value(for: timeMs)
     }
 
     func nearestImage(to targetMs: Int, toleranceMs: Int) -> (timeMs: Int, image: DecodedImage)? {
-        guard !images.isEmpty else { return nil }
-        let nearest = images.keys.min { lhs, rhs in
+        let keys = images.keys
+        guard !keys.isEmpty else { return nil }
+        let nearest = keys.min { lhs, rhs in
             abs(lhs - targetMs) < abs(rhs - targetMs)
         }
-        guard let nearest, abs(nearest - targetMs) <= toleranceMs, let image = images[nearest] else {
+        guard let nearest, abs(nearest - targetMs) <= toleranceMs,
+              let image = images.value(for: nearest) else {
             return nil
         }
         return (nearest, image)
     }
 
     func insert(_ image: DecodedImage, for timeMs: Int) {
-        if images[timeMs] == nil {
-            order.append(timeMs)
-        }
-        images[timeMs] = image
-        while order.count > limit, let oldest = order.first {
-            order.removeFirst()
-            images[oldest] = nil
-        }
+        images.insert(image, for: timeMs, cost: decodedImageByteCost(image))
     }
 
     func clear() {
         images.removeAll()
-        order.removeAll()
     }
 }

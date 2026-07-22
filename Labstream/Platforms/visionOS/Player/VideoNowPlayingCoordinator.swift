@@ -10,6 +10,8 @@ import PMSKit
 /// `AVPlayerItem.nowPlayingInfo`, never to `session.nowPlayingInfoCenter`.
 @MainActor
 final class VideoNowPlayingCoordinator {
+    private static let commandProfile = VideoNowPlayingCommandProfile.playbackScoped
+
     private weak var controller: PlaybackController?
     private let player: AVPlayer
     private let session: MPNowPlayingSession
@@ -36,11 +38,12 @@ final class VideoNowPlayingCoordinator {
                               playbackRate: Double,
                               defaultPlaybackRate: Double,
                               artworkImage: DecodedImage? = nil) {
-        playerItem.nowPlayingInfo = Self.nowPlayingInfo(mediaItem: mediaItem,
-                                                        durationMilliseconds: durationMilliseconds,
-                                                        elapsedMilliseconds: elapsedMilliseconds,
-                                                        playbackRate: playbackRate,
-                                                        defaultPlaybackRate: defaultPlaybackRate,
+        let snapshot = VideoNowPlayingSnapshot(mediaItem: mediaItem,
+                                               durationMilliseconds: durationMilliseconds,
+                                               elapsedMilliseconds: elapsedMilliseconds,
+                                               playbackRate: playbackRate,
+                                               defaultPlaybackRate: defaultPlaybackRate)
+        playerItem.nowPlayingInfo = Self.nowPlayingInfo(snapshot: snapshot,
                                                         artworkImage: artworkImage)
     }
 
@@ -50,18 +53,18 @@ final class VideoNowPlayingCoordinator {
                                 playbackRate: Double,
                                 defaultPlaybackRate: Double) {
         guard let playerItem = player.currentItem else { return }
-        var info = playerItem.nowPlayingInfo
-            ?? Self.nowPlayingInfo(mediaItem: mediaItem,
-                                   durationMilliseconds: durationMilliseconds,
-                                   elapsedMilliseconds: elapsedMilliseconds,
-                                   playbackRate: playbackRate,
-                                   defaultPlaybackRate: defaultPlaybackRate)
-        if let durationMilliseconds, durationMilliseconds > 0 {
+        let snapshot = VideoNowPlayingSnapshot(mediaItem: mediaItem,
+                                               durationMilliseconds: durationMilliseconds,
+                                               elapsedMilliseconds: elapsedMilliseconds,
+                                               playbackRate: playbackRate,
+                                               defaultPlaybackRate: defaultPlaybackRate)
+        var info = playerItem.nowPlayingInfo ?? Self.nowPlayingInfo(snapshot: snapshot)
+        if let durationMilliseconds = snapshot.durationMilliseconds {
             info[MPMediaItemPropertyPlaybackDuration] = Double(durationMilliseconds) / 1000.0
         }
-        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = Double(max(0, elapsedMilliseconds)) / 1000.0
-        info[MPNowPlayingInfoPropertyPlaybackRate] = playbackRate
-        info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = defaultPlaybackRate
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = Double(snapshot.elapsedMilliseconds) / 1000.0
+        info[MPNowPlayingInfoPropertyPlaybackRate] = snapshot.playbackRate
+        info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = snapshot.defaultPlaybackRate
         info[MPNowPlayingInfoPropertyMediaType] = MPNowPlayingInfoMediaType.video.rawValue
         playerItem.nowPlayingInfo = info
     }
@@ -83,8 +86,10 @@ final class VideoNowPlayingCoordinator {
         let center = session.remoteCommandCenter
 
         setCommandAvailability(enabled: true)
-        center.skipBackwardCommand.preferredIntervals = [NSNumber(value: 10)]
-        center.skipForwardCommand.preferredIntervals = [NSNumber(value: 30)]
+        center.skipBackwardCommand.preferredIntervals = Self.commandProfile
+            .advertisedBackwardIntervals.map { NSNumber(value: $0) }
+        center.skipForwardCommand.preferredIntervals = Self.commandProfile
+            .advertisedForwardIntervals.map { NSNumber(value: $0) }
 
         store(center.playCommand) { [weak self] _ in
             self?.dispatchMainCommand { controller in
@@ -105,7 +110,7 @@ final class VideoNowPlayingCoordinator {
             guard let event = event as? MPSkipIntervalCommandEvent,
                   let intent = VideoNowPlayingCommandPolicy.skipIntent(
                     interval: event.interval,
-                    fallbackSeconds: 10,
+                    fallbackSeconds: Self.commandProfile.backwardFallbackSeconds,
                     direction: .backward) else { return .commandFailed }
             return self?.dispatchMainCommand { controller in
                 controller.performVideoNowPlayingCommand(intent)
@@ -115,7 +120,7 @@ final class VideoNowPlayingCoordinator {
             guard let event = event as? MPSkipIntervalCommandEvent,
                   let intent = VideoNowPlayingCommandPolicy.skipIntent(
                     interval: event.interval,
-                    fallbackSeconds: 30,
+                    fallbackSeconds: Self.commandProfile.forwardFallbackSeconds,
                     direction: .forward) else { return .commandFailed }
             return self?.dispatchMainCommand { controller in
                 controller.performVideoNowPlayingCommand(intent)
@@ -203,26 +208,22 @@ final class VideoNowPlayingCoordinator {
         center.changeRepeatModeCommand.isEnabled = false
     }
 
-    private static func nowPlayingInfo(mediaItem item: MediaItem,
-                                       durationMilliseconds: Int?,
-                                       elapsedMilliseconds: Int,
-                                       playbackRate: Double,
-                                       defaultPlaybackRate: Double,
+    private static func nowPlayingInfo(snapshot: VideoNowPlayingSnapshot,
                                        artworkImage: DecodedImage? = nil) -> [String: Any] {
         var info: [String: Any] = [
-            MPMediaItemPropertyTitle: item.title,
+            MPMediaItemPropertyTitle: snapshot.title,
             MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.video.rawValue,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: Double(max(0, elapsedMilliseconds)) / 1000.0,
-            MPNowPlayingInfoPropertyPlaybackRate: playbackRate,
-            MPNowPlayingInfoPropertyDefaultPlaybackRate: defaultPlaybackRate,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: Double(snapshot.elapsedMilliseconds) / 1000.0,
+            MPNowPlayingInfoPropertyPlaybackRate: snapshot.playbackRate,
+            MPNowPlayingInfoPropertyDefaultPlaybackRate: snapshot.defaultPlaybackRate,
         ]
-        if let durationMilliseconds, durationMilliseconds > 0 {
+        if let durationMilliseconds = snapshot.durationMilliseconds {
             info[MPMediaItemPropertyPlaybackDuration] = Double(durationMilliseconds) / 1000.0
         }
-        if let context = contextLabel(for: item) {
+        if let context = snapshot.context {
             info[MPMediaItemPropertyAlbumTitle] = context
         }
-        if let year = item.year {
+        if let year = snapshot.releaseYear {
             info[MPMediaItemPropertyReleaseDate] = DateComponents(calendar: Calendar(identifier: .gregorian),
                                                                   year: year,
                                                                   month: 1,
@@ -232,23 +233,6 @@ final class VideoNowPlayingCoordinator {
             info[MPMediaItemPropertyArtwork] = NowPlayingArtwork.make(artworkImage)
         }
         return info
-    }
-
-    private static func contextLabel(for item: MediaItem) -> String? {
-        if item.kind == .episode {
-            var parts: [String] = []
-            if let show = item.grandparentTitle, !show.isEmpty { parts.append(show) }
-            if let code = item.seasonEpisodeCode {
-                // Shared "S1E3" formatting — keeps the Now Playing card consistent with
-                // every other episode label in the app.
-                parts.append(code)
-            } else if let seasonTitle = item.parentTitle, !seasonTitle.isEmpty {
-                parts.append(seasonTitle)
-            }
-            return parts.isEmpty ? nil : parts.joined(separator: " · ")
-        }
-        if let year = item.year { return String(year) }
-        return nil
     }
 
 }

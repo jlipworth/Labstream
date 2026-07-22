@@ -39,6 +39,32 @@ final class DecodedImage: Sendable {
                   orientation: CGImagePropertyOrientation(rawValue: rawOrientation) ?? .up)
     }
 
+    /// Eagerly materialize pixels on a detached executor before the immutable image crosses back to
+    /// UI or provider actor state. ImageIO otherwise permits lazy decompression, which can move the
+    /// expensive work to first SwiftUI render even when `CGImageSourceCreateImageAtIndex` succeeded.
+    static func decodeEagerlyOffMain(
+        data: Data,
+        scale: CGFloat = 1,
+        executorProbe: (@Sendable () -> Void)? = nil
+    ) async -> DecodedImage? {
+        guard !Task.isCancelled else { return nil }
+        let flight = Task.detached(priority: .userInitiated) {
+            guard !Task.isCancelled else { return nil as DecodedImage? }
+            // The DEBUG test hook runs in the exact detached job that performs ImageIO work. It is
+            // deliberately injectable rather than a separate probe task so the test cannot pass
+            // while a future refactor accidentally moves decoding back onto the caller's actor.
+            executorProbe?()
+            return DecodedImage(eagerData: data, scale: scale)
+        }
+        let decoded = await withTaskCancellationHandler {
+            await flight.value
+        } onCancel: {
+            flight.cancel()
+        }
+        guard !Task.isCancelled else { return nil }
+        return decoded
+    }
+
     var pixelWidth: Int { cgImage.width }
     var pixelHeight: Int { cgImage.height }
 
@@ -96,6 +122,21 @@ final class DecodedImage: Sendable {
     private static let orientationContext = CIContext(options: [
         .cacheIntermediates: false,
     ])
+
+    private convenience init?(eagerData data: Data, scale: CGFloat) {
+        guard let source = CGImageSourceCreateWithData(data as CFData, [
+            kCGImageSourceShouldCache: false,
+        ] as CFDictionary) else { return nil }
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        let rawOrientation = (properties?[kCGImagePropertyOrientation] as? NSNumber)?.uint32Value ?? 1
+        guard let image = CGImageSourceCreateImageAtIndex(source, 0, [
+            kCGImageSourceShouldCache: true,
+            kCGImageSourceShouldCacheImmediately: true,
+        ] as CFDictionary) else { return nil }
+        self.init(cgImage: image,
+                  scale: scale,
+                  orientation: CGImagePropertyOrientation(rawValue: rawOrientation) ?? .up)
+    }
 
     private var orientationOutputColorSpace: CGColorSpace? {
         guard let sourceColorSpace = cgImage.colorSpace else { return nil }

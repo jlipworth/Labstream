@@ -23,7 +23,6 @@ struct CustomPlayerView: View {
     #if os(visionOS)
     @Environment(CustomCinemaSessionStore.self) private var cinemaSession
     @Environment(WatchTogetherCoordinator.self) private var watchTogetherCoordinator
-    @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     #endif
 
     private let item: MediaItem
@@ -102,13 +101,14 @@ struct CustomPlayerView: View {
         let client = PlexClient(identity: identity)
         self.init(item: item,
                   controllerFactory: {
-                      PlaybackController(localFile: localFile,
-                                         item: item,
+                      PlaybackController(item: item,
+                                         sessionSource: .offline(OfflinePlaybackSession(
+                                            fileURL: localFile,
+                                            textSubtitles: offlineTextSubtitles,
+                                            chapterImageURLs: offlineChapterImageURLs,
+                                            onPlaybackProgress: onLocalPlaybackProgress)),
                                          identity: identity,
-                                         client: client,
-                                         offlineTextSubtitles: offlineTextSubtitles,
-                                         offlineChapterImageURLs: offlineChapterImageURLs,
-                                         onLocalPlaybackProgress: onLocalPlaybackProgress)
+                                         client: client)
                   },
                   trickPlayProvider: trickPlayProvider,
                   onClose: onClose,
@@ -213,15 +213,19 @@ struct CustomPlayerView: View {
             #if os(visionOS)
             watchTogetherAttachTask?.cancel()
             watchTogetherAttachTask = nil
-            if cinemaSession.presentationState == .closed {
+            if let generation = cinemaSession.handoffGeneration(for: controller) {
+                // The coordinator, not window disappearance, owns the transition. Tag this
+                // expected handoff with the generation captured for the retained controller so a
+                // late callback cannot affect a replacement Cinema session.
+                cinemaSession.transitionCoordinator.playerWindowDidDisappear(
+                    generation: generation)
+            } else {
                 // An actual player dismissal (including single-item playback ending/advancing)
                 // leaves SharePlay so peers never retain a ghost participant. The Cinema handoff
-                // sets a non-closed presentation state before this view disappears, so it keeps
-                // the session and live PlaybackController coordinated in the immersive scaffold.
+                // is recognized above by controller identity plus transition generation.
                 watchTogetherCoordinator.leaveIfPlaying(item, playerLaunchEpoch: watchTogetherLaunchEpoch)
                 controller?.stop()
-                cinemaSession.clear()
-                Task { @MainActor in await dismissImmersiveSpace() }
+                cinemaSession.clear(ifOwnedBy: controller)
             }
             #else
             // Non-vision platforms have no Cinema handoff. A disappearing player owns its
@@ -312,12 +316,6 @@ struct CustomPlayerView: View {
             await MainActor.run {
                 if let controller {
                     refreshScrubberClock(from: controller)
-                    #if os(iOS)
-                    mobileSystemCoordinator?.updateNowPlayingInfo()
-                    #endif
-                    #if os(macOS)
-                    macSystemCoordinator?.updateNowPlayingInfo()
-                    #endif
                 }
             }
         }

@@ -42,8 +42,11 @@ struct Labstream: App {
         .windowStyle(.plain)
 
         ImmersiveSpace(id: CustomCinemaMode.immersiveSpaceID) {
-            if let runtime {
-                CustomCinemaScaffoldView()
+            if let runtime,
+               let generation = customCinemaSession.transitionCoordinator.activeGeneration {
+                // Bind this scene instance to the generation that requested it. A late disappear
+                // from an older instance can then be rejected after a replacement session starts.
+                CustomCinemaScaffoldView(generation: generation)
                     .environment(customCinemaSession)
                     .environment(watchTogetherCoordinator)
                     .environment(\.artworkShimmerClock, runtime.artworkShimmerClock)

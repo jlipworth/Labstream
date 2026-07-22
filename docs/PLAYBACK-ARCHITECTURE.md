@@ -7,6 +7,11 @@ teardown. Presenter views own the `AVPlayerLayer` instances that display that pl
 presenter for the same live controller. The retired `AVPlayerViewController` path is not part of
 the current architecture.
 
+Every controller is constructed from one typed `PlaybackSessionSource`: `.plex` carries Plex
+server authority, `.mediaBrowser` carries the negotiated Jellyfin/Emby stream together with its
+reopener, progress context, and cleanup callback, and `.offline` carries the local file and side
+assets. The controller never infers its lane from independent optional URLs, tokens, or callbacks.
+
 Each item replacement advances a playback generation. Observer callbacks, notifications,
 timers, artwork/metadata loads, reconnect watchdogs, and other queued work capture that
 generation and re-check it on the main actor through `PlaybackLifecycleCallbackSink` and
@@ -56,7 +61,8 @@ regressed high-bitrate 10-bit HEVC. Do not change these values casually.
 
 `DetailPlaybackLauncher` orchestrates Jellyfin's initial PlaybackInfo negotiation through
 `JellyfinBrowseService` before `PlaybackController` is constructed. The controller receives the
-resolved stream and callbacks it needs for later reopens, progress, and cleanup. The app adapts
+resolved stream and callbacks as one typed MediaBrowser session for later reopens, progress, and
+cleanup. The app adapts
 the native open result to the neutral MediaBrowser carrier at the app boundary,
 preserves required request headers, and reports `Sessions/Playing`,
 `Sessions/Playing/Progress`, and `Sessions/Playing/Stopped` with the current play session,
@@ -140,6 +146,17 @@ debounced into one settled final-target rebuild instead of restarting for every 
 - `FinalTargetRebuildPolicy` and `SeekRestartBudget` prevent concurrent/unbounded restart
   pipelines. When the budget is exhausted, recovery stops and the user gets Retry rather
   than a hidden server-hammering loop.
+- Playhead evidence is carried as typed `PlaybackPositionSample`s rather than parallel
+  millisecond/timestamp/source/near-zero fields. `PlaybackPositionSnapshot` captures the chosen
+  restart target and all evidence together; `PlaybackSeekHold` owns its target, latest generation,
+  and 12-second deadline so a stale completion cannot release a newer seek.
+- Explicit seek-to-zero samples remain authoritative. Unintended near-zero clocks observed while
+  replacing an item are suppressed when newer meaningful evidence exists, and terminal reporting
+  uses the same typed evidence without regressing to a detached item's transient zero.
+- Track, quality, explicit-Retry, and adaptive-bitrate replacements enter the controller through
+  a typed `PlaybackRestartIntent`. Its value-only `PlaybackRestartPlan` fixes the preparation
+  order (final-target reset, reason-specific recovery reset, startup-deadline re-arm, error
+  handling, observer teardown) instead of letting callers assemble Boolean restart recipes.
 - Every intentional Plex in-place restart that supersedes a transcode (quality/audio
   reload, Retry, or final-target rebuild) stops the old job first with a bounded wait before
   requesting the replacement under the reused session id.
@@ -148,12 +165,29 @@ debounced into one settled final-target rebuild instead of restarting for every 
   backend reused the same play-session id, skip that prior stop so it cannot tear down the new
   stream.
 
+## Audio and subtitle selection
+
+Player pickers consume one validated `PlaybackTrackSnapshot`: its rows and selected typed ID are
+captured together, so a stale or magic numeric selection cannot describe a different list. Every
+row carries exactly one mechanism—AVFoundation, Plex stream, MediaBrowser stream, or offline
+sidecar—and subtitle Off is a lane-specific typed choice. Plex's `0` and MediaBrowser's `-1` Off
+values exist only in the controller's backend adapter immediately next to wire-facing requests.
+
+Offline subtitle menus read only the downloaded track metadata. The controller opens and parses
+the selected SRT/VTT sidecar off the main actor when the viewer chooses it; opening the menu no
+longer parses every sidecar up front. Offline subtitle and metadata-audio selections are
+generation-fenced: a later track or Off choice invalidates stale async parse/PUT completions before
+they can change the active track, preference, overlay, or restart the stream. Plex's account-sticky
+audio PUTs also run through a serialized latest-intent tail: an in-flight mutation finishes before
+the newest choice is sent, while superseded queued choices are skipped, making the newest intent
+the final server mutation as well as the final local selection.
+
 ## Local/offline playback
 
 Completed downloads play from local file URLs. Local playback has no remote progress stream,
 server session, or transcode cleanup path. Its playhead is persisted on the offline record,
-and it still shares player UI, diagnostics, chapters/subtitles, Cinema, and error surfaces
-with remote playback.
+and its typed offline session still shares player UI, diagnostics, chapters/subtitles, Cinema,
+and error surfaces with remote playback.
 
 ## HDR and Dolby Vision
 
@@ -215,9 +249,11 @@ The chapter info tab is the deliberate exception: AVKit hosts it in an independe
 per-position frames, Emby online/offline chapter fallback, and the player nearest-frame cache remain
 provider-scoped time-indexed exceptions rather than `ArtworkPipeline` consumers. Authenticated
 requests use the nonpersistent side-asset transport, and their leaf caches are memory-only and
-fixed-entry-count bounded. Byte-cost eviction, off-main preview decode,
-full-BIF mapping/selected-frame copying, and largest-BIF/tile-sheet peak-RSS validation remain Phase
-3/5 performance gates.
+bounded by both byte cost and entry count. Sprite sheets and final scrub previews cross a detached,
+eager ImageIO decode boundary before entering provider or MainActor cache state. A parsed BIF retains
+one backing payload, maps safe offline files, and normal seek lookup copies only the selected frame;
+the source-compatible `frames` accessor materializes all payloads only when explicitly read. Largest-real-BIF and
+tile-sheet peak-RSS validation remains a Phase 5 measurement gate.
 Those paths use `DecodedImage` at their image boundary, but that conversion is not shared-pipeline
 migration.
 
@@ -235,10 +271,18 @@ hosts the same `PlayerLayerView` and `CustomPlayerChrome` in one RealityView att
 attachment is scaled from its measured `visualBounds`; hard-coding points-to-meters density
 can make a present and hit-testable surface effectively invisible.
 
-The immersive session owns the active controller. Exit, Crown dismissal, EOF, and Up Next
-stop that controller, reopen the main window, and route back
-through `CinemaExitRouting` to the originating tab/item or the resolved next item. Do not
-restore a hidden second player or reintroduce an AVKit-only control surface.
+The immersive session owns the active controller. `CinemaTransitionCoordinator` is the sole
+presentation-transition owner: its pure reducer generation-fences open, appear, window-detach,
+dismiss, and disappear callbacks. Explicit Exit, Crown/system dismissal, EOF, and Up Next all
+converge on one exact-once finalizer ordered as SharePlay leave, controller stop, return routing,
+main-window open, and retained-session clear. `CinemaExitRouting` preserves the originating
+tab/item, resolved next item, or offline destination without introducing a server fetch for an
+offline return. The player window detaches only after both the platform open result and the exact
+immersive generation's appearance have succeeded; a failed or missing appearance leaves it in
+place. Window disappearance during the accepted handoff is not an exit and preserves the same
+controller, `AVPlayer`, and audio path. Stale scaffold generations cannot bind player callbacks,
+maintain SharePlay attachment, tick, or finalize. Do not restore a hidden second player or
+reintroduce an AVKit-only control surface.
 
 ## Restart and cleanup principles
 

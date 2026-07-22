@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import PMSKit
 import XCTest
@@ -215,7 +216,7 @@ final class EmbyTrickPlayThumbnailProviderTests: XCTestCase {
         // shared task before releasing the gate.
         while await loadCount.value == 0 { await Task.yield() }
         for _ in 0..<50 { await Task.yield() }
-        await gate.open()
+        gate.open()
 
         var frames: [TrickPlayThumbnail?] = []
         for caller in callers { frames.append(await caller.value) }
@@ -226,6 +227,66 @@ final class EmbyTrickPlayThumbnailProviderTests: XCTestCase {
         for frame in frames.compactMap({ $0 }) {
             XCTAssertEqual(frame.imageData, Data("bif-frame".utf8))
         }
+    }
+
+    func testLocalBIFProviderUsesMappedParserAndReturnsSelectedFrame() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("preview.bif")
+        try makeBIF(payload: Data("mapped-provider-frame".utf8)).write(to: url)
+        let provider = try XCTUnwrap(LocalBIFTrickPlayThumbnailProvider(bifURL: url))
+
+        let frame = await provider.thumbnail(nearMs: 0)
+
+        XCTAssertEqual(frame?.imageData, Data("mapped-provider-frame".utf8))
+    }
+
+    func testCostBoundedLRUPromotesReplacesAndRejectsOversizeEntries() {
+        var cache = TrickPlayCostBoundedLRU<String, String>(costLimit: 10, countLimit: 3)
+        cache.insert("a", for: "a", cost: 4)
+        cache.insert("b", for: "b", cost: 4)
+        XCTAssertEqual(cache.value(for: "a"), "a", "a hit should promote it over b")
+
+        cache.insert("c", for: "c", cost: 4)
+        XCTAssertNil(cache.value(for: "b"))
+        XCTAssertEqual(cache.value(for: "a"), "a")
+        XCTAssertEqual(cache.value(for: "c"), "c")
+        XCTAssertEqual(cache.totalCost, 8)
+
+        cache.insert("a2", for: "a", cost: 2)
+        XCTAssertEqual(cache.value(for: "a"), "a2")
+        XCTAssertEqual(cache.totalCost, 6, "replacement must subtract the old cost")
+
+        cache.insert("too-large", for: "oversize", cost: 11)
+        XCTAssertNil(cache.value(for: "oversize"))
+        XCTAssertEqual(cache.totalCost, 6)
+    }
+
+    func testCostBoundedLRUAlsoEnforcesEntryCeiling() {
+        var cache = TrickPlayCostBoundedLRU<Int, Int>(costLimit: 1_000, countLimit: 2)
+        cache.insert(1, for: 1, cost: 1)
+        cache.insert(2, for: 2, cost: 1)
+        _ = cache.value(for: 1)
+        cache.insert(3, for: 3, cost: 1)
+
+        XCTAssertEqual(cache.count, 2)
+        XCTAssertNotNil(cache.value(for: 1))
+        XCTAssertNil(cache.value(for: 2))
+        XCTAssertNotNil(cache.value(for: 3))
+    }
+
+    func testDecodedTileCacheEvictsByPixelBytesRatherThanOnlyEntryCount() throws {
+        let first = DecodedImage(cgImage: try makeImage(width: 4, height: 4))
+        let second = DecodedImage(cgImage: try makeImage(width: 4, height: 4))
+        let oneImageCost = first.cgImage.bytesPerRow * first.cgImage.height
+        var cache = JellyfinTrickPlayTileCache(byteLimit: oneImageCost, entryLimit: 4)
+
+        cache.insert(first, for: "first")
+        cache.insert(second, for: "second")
+
+        XCTAssertNil(cache.image(for: "first"))
+        XCTAssertNotNil(cache.image(for: "second"))
     }
 
     private func makeProvider(item: MediaItem) throws -> EmbyTrickPlayThumbnailProvider {
@@ -243,6 +304,19 @@ final class EmbyTrickPlayThumbnailProviderTests: XCTestCase {
 
     private var onePixelPNG: Data {
         Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")!
+    }
+
+    private func makeImage(width: Int, height: Int) throws -> CGImage {
+        let context = try XCTUnwrap(CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        return try XCTUnwrap(context.makeImage())
     }
 }
 
