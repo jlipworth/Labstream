@@ -3,49 +3,6 @@ import Foundation
 import FoundationNetworking
 #endif
 
-// Source-compatible backend spellings. Playback resolution now produces the neutral carriers
-// directly so app callers cannot lose fields at a conversion boundary.
-public typealias JellyfinPlayMethod = MediaBrowserPlayMethod
-public typealias JellyfinPlaybackSourceMetadata = MediaBrowserPlaybackSourceMetadata
-
-/// Source-compatible Jellyfin spelling retained while app callers migrate to
-/// `resolveMediaBrowserStream`. The neutral result is the authoritative resolver output.
-public struct JellyfinPlaybackOpenResult: Sendable, Equatable {
-    public let url: URL
-    public let playSessionId: String
-    public let mediaSourceId: String
-    public let playMethod: JellyfinPlayMethod
-    public let requiredHTTPHeaders: [String: String]
-    public let sourceMetadata: JellyfinPlaybackSourceMetadata
-    public let transcodeReasons: [String]
-
-    public init(url: URL,
-                playSessionId: String,
-                mediaSourceId: String,
-                playMethod: JellyfinPlayMethod,
-                requiredHTTPHeaders: [String: String] = [:],
-                sourceMetadata: JellyfinPlaybackSourceMetadata = .empty,
-                transcodeReasons: [String] = []) {
-        self.url = url
-        self.playSessionId = playSessionId
-        self.mediaSourceId = mediaSourceId
-        self.playMethod = playMethod
-        self.requiredHTTPHeaders = requiredHTTPHeaders
-        self.sourceMetadata = sourceMetadata
-        self.transcodeReasons = transcodeReasons
-    }
-
-    init(_ result: MediaBrowserPlaybackOpenResult) {
-        self.init(url: result.url,
-                  playSessionId: result.playSessionId,
-                  mediaSourceId: result.mediaSourceId,
-                  playMethod: result.playMethod,
-                  requiredHTTPHeaders: result.requiredHTTPHeaders,
-                  sourceMetadata: result.sourceMetadata,
-                  transcodeReasons: result.transcodeReasons)
-    }
-}
-
 public struct JellyfinPlaybackInfoResponse: Decodable, Sendable, Equatable {
     public let playSessionId: String?
     public let mediaSources: [JellyfinMediaSourceInfo]
@@ -126,12 +83,12 @@ public struct JellyfinMediaSourceInfo: Decodable, Sendable, Equatable {
         transcodeReasons = try c.decodeIfPresent([String].self, forKey: .transcodeReasons) ?? []
     }
 
-    func playbackSourceMetadata(audioStreamIndex: Int? = nil) -> JellyfinPlaybackSourceMetadata {
+    func playbackSourceMetadata(audioStreamIndex: Int? = nil) -> MediaBrowserPlaybackSourceMetadata {
         let video = mediaStreams.first { $0.type == "Video" }
         let audio = audioStreamIndex.flatMap { index in
             mediaStreams.first { $0.type == "Audio" && $0.index == index }
         } ?? mediaStreams.first { $0.type == "Audio" }
-        return JellyfinPlaybackSourceMetadata(
+        return MediaBrowserPlaybackSourceMetadata(
             container: container?.split(separator: ",").first.map(String.init),
             width: width ?? video?.width,
             height: height ?? video?.height,
@@ -142,7 +99,7 @@ public struct JellyfinMediaSourceInfo: Decodable, Sendable, Equatable {
             audioProfile: audio?.profile)
     }
 
-    var playbackSourceMetadata: JellyfinPlaybackSourceMetadata {
+    var playbackSourceMetadata: MediaBrowserPlaybackSourceMetadata {
         playbackSourceMetadata()
     }
 
@@ -382,37 +339,6 @@ public enum JellyfinPlayback {
             transcodeReasons: source.transcodeReasons)
     }
 
-    /// Source-compatible wrapper. New app-facing code should consume the neutral resolver above.
-    public static func resolveStream(response: JellyfinPlaybackInfoResponse,
-                                     server: URL,
-                                     identity: JellyfinClientIdentity,
-                                     token: String,
-                                     itemId: String,
-                                     preferredMediaSourceId: String? = nil,
-                                     startTimeTicks: Int? = nil,
-                                     maxVideoBitrate: Int? = nil,
-                                     maxWidth: Int? = nil,
-                                     maxHeight: Int? = nil,
-                                     audioBitrate: Int? = nil,
-                                     audioStreamIndex: Int? = nil,
-                                     subtitleStreamIndex: Int? = nil) throws -> JellyfinPlaybackOpenResult {
-        JellyfinPlaybackOpenResult(try resolveMediaBrowserStream(
-            response: response,
-            server: server,
-            identity: identity,
-            token: token,
-            itemId: itemId,
-            preferredMediaSourceId: preferredMediaSourceId,
-            startTimeTicks: startTimeTicks,
-            maxVideoBitrate: maxVideoBitrate,
-            maxWidth: maxWidth,
-            maxHeight: maxHeight,
-            audioBitrate: audioBitrate,
-            audioStreamIndex: audioStreamIndex,
-            subtitleStreamIndex: subtitleStreamIndex))
-    }
-
-
     // MARK: - Progress reporting
 
     /// `POST /Sessions/Playing`
@@ -423,7 +349,7 @@ public enum JellyfinPlayback {
                                       itemId: String,
                                       mediaSourceId: String,
                                       playSessionId: String,
-                                      playMethod: JellyfinPlayMethod,
+                                      playMethod: MediaBrowserPlayMethod,
                                       positionTicks: Int = 0) throws -> URLRequest {
         try progressBody(server: server, token: token, identity: identity, userId: userId,
                          event: .playing,
@@ -440,7 +366,7 @@ public enum JellyfinPlayback {
                                        itemId: String,
                                        mediaSourceId: String,
                                        playSessionId: String,
-                                       playMethod: JellyfinPlayMethod,
+                                       playMethod: MediaBrowserPlayMethod,
                                        positionTicks: Int,
                                        isPaused: Bool) throws -> URLRequest {
         try progressBody(server: server, token: token, identity: identity, userId: userId,
@@ -458,7 +384,7 @@ public enum JellyfinPlayback {
                                       itemId: String,
                                       mediaSourceId: String,
                                       playSessionId: String,
-                                      playMethod: JellyfinPlayMethod,
+                                      playMethod: MediaBrowserPlayMethod,
                                       positionTicks: Int) throws -> URLRequest {
         try progressBody(server: server, token: token, identity: identity, userId: userId,
                          event: .stopped,
@@ -494,7 +420,7 @@ public enum JellyfinPlayback {
                                      itemId: String,
                                      mediaSourceId: String,
                                      playSessionId: String,
-                                     playMethod: JellyfinPlayMethod,
+                                     playMethod: MediaBrowserPlayMethod,
                                      positionTicks: Int) throws -> URLRequest {
         let url = try jellyfinURL(server: server, path: event.endpoint.rawValue)
         return try MediaBrowserPlaybackProgressRequestPlan(
@@ -506,7 +432,7 @@ public enum JellyfinPlayback {
                 itemId: itemId,
                 mediaSourceId: mediaSourceId,
                 playSessionId: playSessionId,
-                playMethod: MediaBrowserPlayMethod(playMethod),
+                playMethod: playMethod,
                 positionTicks: positionTicks
             )
         ).request(token: token)

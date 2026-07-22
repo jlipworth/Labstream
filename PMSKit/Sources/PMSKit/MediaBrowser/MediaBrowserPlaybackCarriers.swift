@@ -8,12 +8,6 @@ public enum MediaBrowserPlayMethod: String, Sendable, Equatable {
     case directPlay
     case directStream
     case transcode
-
-    /// Source-compatible copy initializer retained for callers that previously converted a
-    /// backend-specific play method into this carrier. The backend spellings are now aliases.
-    public init(_ method: MediaBrowserPlayMethod) {
-        self = method
-    }
 }
 
 /// Backend-neutral source metadata for the app's shared Jellyfin/Emby remote-player path.
@@ -49,11 +43,6 @@ public struct MediaBrowserPlaybackSourceMetadata: Sendable, Equatable {
         self.hdr = hdr
         self.audioProfile = audioProfile
     }
-
-    /// Source-compatible copy initializer retained for the former backend-to-neutral bridge.
-    public init(_ source: MediaBrowserPlaybackSourceMetadata) {
-        self = source
-    }
 }
 
 /// Backend-neutral playback open result produced directly by Jellyfin and Emby resolution.
@@ -85,32 +74,5 @@ public struct MediaBrowserPlaybackOpenResult: Sendable, Equatable {
         self.sourceMetadata = sourceMetadata
         self.usesServerEncoding = usesServerEncoding
         self.transcodeReasons = transcodeReasons
-    }
-
-    /// Source-compatible copy initializer retained for the former backend-to-neutral bridge.
-    public init(_ result: MediaBrowserPlaybackOpenResult) {
-        self = result
-    }
-
-    public init(_ result: JellyfinPlaybackOpenResult) {
-        self.init(url: result.url,
-                  playSessionId: result.playSessionId,
-                  mediaSourceId: result.mediaSourceId,
-                  playMethod: result.playMethod,
-                  requiredHTTPHeaders: result.requiredHTTPHeaders,
-                  sourceMetadata: result.sourceMetadata,
-                  usesServerEncoding: result.playMethod == .transcode,
-                  transcodeReasons: result.transcodeReasons)
-    }
-
-    public init(_ result: EmbyPlaybackOpenResult) {
-        self.init(url: result.url,
-                  playSessionId: result.playSessionId,
-                  mediaSourceId: result.mediaSourceId,
-                  playMethod: result.playMethod,
-                  requiredHTTPHeaders: result.requiredHTTPHeaders,
-                  sourceMetadata: result.sourceMetadata,
-                  usesServerEncoding: result.usesServerEncoding,
-                  transcodeReasons: result.transcodeReasons)
     }
 }

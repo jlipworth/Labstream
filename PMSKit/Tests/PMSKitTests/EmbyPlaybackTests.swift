@@ -56,7 +56,7 @@ struct EmbyPlaybackTests {
         #expect(hlsProfile["VideoCodec"] as? String == "h264,hevc")
     }
 
-    @Test func resolveStreamPrefersTranscodingURLPrependsBaseAndKeepsApiKeyWithNoAuthHeader() throws {
+    @Test func resolveMediaBrowserStreamPrefersTranscodingURLPrependsBaseAndKeepsApiKeyWithNoAuthHeader() throws {
         let response = try EmbyPlaybackInfoResponse.decode(from: Data(#"""
         {
           "PlaySessionId": "play-1",
@@ -83,7 +83,7 @@ struct EmbyPlaybackTests {
         }
         """#.utf8))
 
-        let result = try EmbyPlayback.resolveStream(
+        let result = try EmbyPlayback.resolveMediaBrowserStream(
             response: response,
             server: server,
             identity: identity,
@@ -141,7 +141,7 @@ struct EmbyPlaybackTests {
         }
         """#.utf8))
 
-        let result = try EmbyPlayback.resolveStream(
+        let result = try EmbyPlayback.resolveMediaBrowserStream(
             response: response,
             server: server,
             identity: identity,
@@ -180,7 +180,7 @@ struct EmbyPlaybackTests {
         }
         """#.utf8))
 
-        let result = try EmbyPlayback.resolveStream(
+        let result = try EmbyPlayback.resolveMediaBrowserStream(
             response: response,
             server: server,
             identity: identity,
@@ -194,7 +194,7 @@ struct EmbyPlaybackTests {
         #expect(q["AudioStreamIndex"] == "2")
     }
 
-    @Test func resolveStreamClassifiesTranscodingURLAsTranscodeEvenWhenDirectStreamSupported() throws {
+    @Test func resolveMediaBrowserStreamClassifiesTranscodingURLAsTranscodeEvenWhenDirectStreamSupported() throws {
         let response = try EmbyPlaybackInfoResponse.decode(from: Data(#"""
         {
           "PlaySessionId": "play-hls-direct-stream",
@@ -211,7 +211,7 @@ struct EmbyPlaybackTests {
         }
         """#.utf8))
 
-        let result = try EmbyPlayback.resolveStream(
+        let result = try EmbyPlayback.resolveMediaBrowserStream(
             response: response,
             server: server,
             identity: identity,
@@ -223,7 +223,7 @@ struct EmbyPlaybackTests {
         #expect(result.usesServerEncoding)
     }
 
-    @Test func resolveStreamFallsBackToDirectStreamURLAndAddsApiKeyWhenRequested() throws {
+    @Test func resolveMediaBrowserStreamFallsBackToDirectStreamURLAndAddsApiKeyWhenRequested() throws {
         let response = try EmbyPlaybackInfoResponse.decode(from: Data(#"""
         {
           "PlaySessionId": "play-2",
@@ -239,7 +239,7 @@ struct EmbyPlaybackTests {
         }
         """#.utf8))
 
-        let result = try EmbyPlayback.resolveStream(
+        let result = try EmbyPlayback.resolveMediaBrowserStream(
             response: response,
             server: server,
             identity: identity,
@@ -258,7 +258,7 @@ struct EmbyPlaybackTests {
         #expect(result.requiredHTTPHeaders["X-Emby-Token"] == nil)
     }
 
-    @Test func resolveStreamRejectsCrossOriginDirectStreamURLBeforeAppendingApiKey() throws {
+    @Test func resolveMediaBrowserStreamRejectsCrossOriginDirectStreamURLBeforeAppendingApiKey() throws {
         let response = try EmbyPlaybackInfoResponse.decode(from: Data(#"""
         {
           "PlaySessionId": "play-evil",
@@ -274,7 +274,7 @@ struct EmbyPlaybackTests {
         """#.utf8))
 
         #expect(throws: EmbyPlaybackError.invalidURL) {
-            _ = try EmbyPlayback.resolveStream(
+            _ = try EmbyPlayback.resolveMediaBrowserStream(
                 response: response,
                 server: server,
                 identity: identity,
@@ -284,7 +284,7 @@ struct EmbyPlaybackTests {
         }
     }
 
-    @Test func resolveStreamSynthesizesDirectPlayURLWhenNoServerURLs() throws {
+    @Test func resolveMediaBrowserStreamSynthesizesDirectPlayURLWhenNoServerURLs() throws {
         let response = try EmbyPlaybackInfoResponse.decode(from: Data(#"""
         {
           "PlaySessionId": "play-3",
@@ -299,7 +299,7 @@ struct EmbyPlaybackTests {
         }
         """#.utf8))
 
-        let result = try EmbyPlayback.resolveStream(
+        let result = try EmbyPlayback.resolveMediaBrowserStream(
             response: response,
             server: server,
             identity: identity,
@@ -320,25 +320,25 @@ struct EmbyPlaybackTests {
         #expect(result.usesServerEncoding == false)
     }
 
-    @Test func resolveStreamThrowsWhenPlaySessionIdMissing() throws {
+    @Test func resolveMediaBrowserStreamThrowsWhenPlaySessionIdMissing() throws {
         let response = try EmbyPlaybackInfoResponse.decode(from: Data(#"""
         { "MediaSources": [{ "Id": "mediasource_abc", "SupportsDirectPlay": true }] }
         """#.utf8))
 
         #expect(throws: EmbyPlaybackError.missingPlaySessionId) {
-            _ = try EmbyPlayback.resolveStream(
+            _ = try EmbyPlayback.resolveMediaBrowserStream(
                 response: response, server: server, identity: identity,
                 token: "token-abc", userId: "user-9", itemId: "movie-1")
         }
     }
 
-    @Test func resolveStreamThrowsWhenNoMediaSources() throws {
+    @Test func resolveMediaBrowserStreamThrowsWhenNoMediaSources() throws {
         let response = try EmbyPlaybackInfoResponse.decode(from: Data(#"""
         { "PlaySessionId": "play-1", "MediaSources": [] }
         """#.utf8))
 
         #expect(throws: EmbyPlaybackError.noMediaSources) {
-            _ = try EmbyPlayback.resolveStream(
+            _ = try EmbyPlayback.resolveMediaBrowserStream(
                 response: response, server: server, identity: identity,
                 token: "token-abc", userId: "user-9", itemId: "movie-1")
         }
