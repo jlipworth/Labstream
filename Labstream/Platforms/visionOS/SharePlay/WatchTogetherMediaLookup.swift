@@ -25,18 +25,7 @@ struct WatchTogetherMediaLookup {
                 return []
             }
             snapshots = response.mediaContainer.hub.flatMap(\.metadata)
-        case .jellyfin:
-            guard let client = try? MediaBrowserCatalogClient(appModel: appModel),
-                  let request = try? catalogRepository.request(appModel: appModel),
-                  let catalog = try? await catalogRepository.catalog(for: request),
-                  client.matches(catalog), client.isCurrent(in: appModel) else {
-                return []
-            }
-            let views = catalog.descriptors.compactMap(\.mediaBrowserLink)
-            guard let results = try? await client.searchResults(query: trimmed, views: views),
-                  client.isCurrent(in: appModel), !Task.isCancelled else { return [] }
-            snapshots = results.groups.flatMap(\.hubs).flatMap(\.metadata)
-        case .emby:
+        case .jellyfin, .emby:
             guard let client = try? MediaBrowserCatalogClient(appModel: appModel),
                   let request = try? catalogRepository.request(appModel: appModel),
                   let catalog = try? await catalogRepository.catalog(for: request),

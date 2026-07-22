@@ -103,18 +103,7 @@ struct MediaItemEntityQuery: EntityStringQuery {
             guard let service = plexBrowseService(context: ctx),
                   let hubs = try? await service.search(query: string) else { return [] }
             matches = hubs.flatMap(\.metadata)
-        case .jellyfin:
-            guard let catalogRepository = SystemEntryRouter.shared.libraryCatalogRepository,
-                  let client = try? MediaBrowserCatalogClient(appModel: appModel),
-                  let request = try? catalogRepository.request(appModel: appModel),
-                  let catalog = try? await catalogRepository.catalog(for: request),
-                  client.matches(catalog), client.isCurrent(in: appModel) else { return [] }
-            let views = catalog.descriptors.compactMap(\.mediaBrowserLink)
-            let results = try? await client.searchResults(query: string, views: views,
-                                                          limitPerLibrary: 15)
-            guard client.isCurrent(in: appModel), !Task.isCancelled else { return [] }
-            matches = results?.groups.flatMap(\.hubs).flatMap(\.metadata) ?? []
-        case .emby:
+        case .jellyfin, .emby:
             guard let catalogRepository = SystemEntryRouter.shared.libraryCatalogRepository,
                   let client = try? MediaBrowserCatalogClient(appModel: appModel),
                   let request = try? catalogRepository.request(appModel: appModel),
