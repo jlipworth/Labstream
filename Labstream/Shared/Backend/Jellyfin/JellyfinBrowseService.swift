@@ -28,7 +28,7 @@ struct JellyfinBrowseService {
         try await browseCore().userViews()
     }
 
-    func userViewLinks() async throws -> [JellyfinLibraryLink] {
+    func userViewLinks() async throws -> [MediaBrowserLibraryLink] {
         try await browseCore().userViewLinks()
     }
 

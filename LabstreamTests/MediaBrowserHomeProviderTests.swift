@@ -603,11 +603,11 @@ struct MediaBrowserHomeProviderTests {
         await waitUntil("planned requests") { await harness.browser.started.count == 3 }
 
         let oldSessionKey = harness.model.activeBrowseSessionKey
-        let oldLoadIdentity = MediaBrowserHomeLoadIdentity(appModel: harness.model)
+        let oldLoadIdentity = AuthenticatedBrowseLoadIdentity(appModel: harness.model)
         harness.model.identity = PlatformClientIdentity.make(
             clientIdentifier: "home-provider-replacement-identity"
         )
-        let replacementLoadIdentity = MediaBrowserHomeLoadIdentity(appModel: harness.model)
+        let replacementLoadIdentity = AuthenticatedBrowseLoadIdentity(appModel: harness.model)
         #expect(harness.model.activeBrowseSessionKey == oldSessionKey)
         #expect(replacementLoadIdentity != oldLoadIdentity)
         for request in await harness.browser.activeRequests {

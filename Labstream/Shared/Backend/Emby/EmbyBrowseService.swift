@@ -31,7 +31,7 @@ struct EmbyBrowseService {
         try await browseCore().userViews()
     }
 
-    func userViewLinks() async throws -> [EmbyLibraryLink] {
+    func userViewLinks() async throws -> [MediaBrowserLibraryLink] {
         try await browseCore().userViewLinks()
     }
 
