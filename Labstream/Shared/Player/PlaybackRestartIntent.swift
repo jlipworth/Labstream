@@ -17,8 +17,7 @@ enum PlaybackRestartIntent: CaseIterable, Sendable {
                     .rearmStartupDeadlineRetry,
                     .removeObservers,
                 ],
-                plexControlClient: .preserve,
-                remoteBuffering: .standard
+                plexControlClient: .preserve
             )
         case .explicitRetry:
             PlaybackRestartPlan(
@@ -29,8 +28,7 @@ enum PlaybackRestartIntent: CaseIterable, Sendable {
                     .clearPlaybackError,
                     .removeObservers,
                 ],
-                plexControlClient: .refreshForRecovery,
-                remoteBuffering: .standard
+                plexControlClient: .refreshForRecovery
             )
         }
     }
@@ -56,16 +54,6 @@ struct PlaybackRestartPlan: Equatable, Sendable {
         case refreshForRecovery
     }
 
-    enum RemoteBufferingPolicy: Equatable, Sendable {
-        case standard
-        case shortReopen
-
-        var prefersShortBuffer: Bool {
-            self == .shortReopen
-        }
-    }
-
     let preparationSteps: [PreparationStep]
     let plexControlClient: PlexControlClientPolicy
-    let remoteBuffering: RemoteBufferingPolicy
 }

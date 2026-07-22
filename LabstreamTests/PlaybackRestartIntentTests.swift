@@ -18,8 +18,6 @@ struct PlaybackRestartIntentTests {
                 .removeObservers,
             ])
             #expect(plan.plexControlClient == .preserve)
-            #expect(plan.remoteBuffering == .standard)
-            #expect(!plan.remoteBuffering.prefersShortBuffer)
         }
     }
 
@@ -34,7 +32,6 @@ struct PlaybackRestartIntentTests {
             .removeObservers,
         ])
         #expect(plan.plexControlClient == .refreshForRecovery)
-        #expect(plan.remoteBuffering == .standard)
     }
 
     @Test func everyRestartIntentHasAnExplicitPlan() {
