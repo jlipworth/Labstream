@@ -5,7 +5,7 @@ import Testing
 @Suite("Library paging model")
 @MainActor
 struct LibraryPagingModelTests {
-    @Test func initialPageDoesNotWaitForAlphabetRail() async {
+    @Test func initialPagePublishesBeforeAlphabetRailCompletes() async {
         let gate = AlphabetGate()
         let source = LibraryPagingSource(
             title: "Movies",
@@ -13,7 +13,6 @@ struct LibraryPagingModelTests {
             backendLabel: "Plex",
             pageSize: 2,
             cacheEmptyFirstPage: true,
-            awaitAlphabetBeforeInitialLoad: false,
             fetchPage: { _, _ in
                 LibraryPagingPage(items: [Self.item("a"), Self.item("b")], reportedTotal: 4)
             },
@@ -48,7 +47,6 @@ struct LibraryPagingModelTests {
             backendLabel: "Plex",
             pageSize: 2,
             cacheEmptyFirstPage: true,
-            awaitAlphabetBeforeInitialLoad: true,
             fetchPage: { start, _ in
                 starts.append(start)
                 let items = start == 0
@@ -230,7 +228,6 @@ struct LibraryPagingModelTests {
             backendLabel: "Test",
             pageSize: 2,
             cacheEmptyFirstPage: true,
-            awaitAlphabetBeforeInitialLoad: false,
             fetchPage: { start, _ in
                 #expect(start == 0)
                 return LibraryPagingPage(items: [Self.item("new-a"), Self.item("new-b")],
@@ -335,7 +332,6 @@ struct LibraryPagingModelTests {
             backendLabel: "Test",
             pageSize: 2,
             cacheEmptyFirstPage: true,
-            awaitAlphabetBeforeInitialLoad: false,
             collapsesMovieVersions: true,
             fetchPage: { start, _ in
                 guard start == 0 else { throw PageFailure() }
@@ -377,7 +373,6 @@ struct LibraryPagingModelTests {
             backendLabel: "Test",
             pageSize: 2,
             cacheEmptyFirstPage: true,
-            awaitAlphabetBeforeInitialLoad: false,
             collapsesMovieVersions: true,
             fetchPage: { start, _ in
                 #expect(start == 0)
@@ -414,7 +409,6 @@ struct LibraryPagingModelTests {
             backendLabel: "Test",
             pageSize: 2,
             cacheEmptyFirstPage: true,
-            awaitAlphabetBeforeInitialLoad: false,
             fetchPage: { start, _ in
                 if start == 0 {
                     return LibraryPagingPage(items: [Self.item("a"), Self.item("b")],
@@ -434,7 +428,6 @@ struct LibraryPagingModelTests {
             backendLabel: "Test",
             pageSize: 2,
             cacheEmptyFirstPage: true,
-            awaitAlphabetBeforeInitialLoad: false,
             collapsesMovieVersions: true,
             fetchPage: { start, _ in try await probe.fetch(start: start) },
             fetchAlphabetCounts: { [] }

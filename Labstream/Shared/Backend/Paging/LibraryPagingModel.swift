@@ -99,78 +99,43 @@ final class LibraryPagingModel {
             async let alphabetCounts = source.fetchAlphabetCounts()
             let page = try await pageResult
 
-            if source.awaitAlphabetBeforeInitialLoad {
-                let buckets = AlphabetBucket.buckets(from: await alphabetCounts, total: page.total)
-                guard isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else {
-                    firstContentSpan.end(result: "superseded")
-                    completeSpan.end(result: "superseded")
-                    span.end(result: "stale")
-                    return
-                }
-                applyInitialPage(page,
-                                 alphabetBuckets: buckets,
-                                 source: source,
-                                 identity: identity)
-                firstContentSpan.end(
-                    result: BrowsePerformanceMeasurementPolicy.firstContentResult(itemCount: page.items.count),
-                    fields: [
-                        "item_count": page.items.count,
-                        "total_count": page.total,
-                        "page_count": 1,
-                        "publication_count": 1,
-                        "collapse_mode": "sparse",
-                    ])
-                completeSpan.end(fields: [
-                    "item_count": page.items.count,
-                    "total_count": page.total,
-                    "page_count": 1,
-                    "publication_count": 1,
-                    "collapse_mode": "sparse",
-                ])
-                span.end(fields: [
-                    "item_count": page.items.count,
-                    "total_count": page.total,
-                    "alphabet_count": buckets.count,
-                ])
-            } else {
-                guard isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else {
-                    firstContentSpan.end(result: "superseded")
-                    completeSpan.end(result: "superseded")
-                    span.end(result: "stale")
-                    return
-                }
-                applyInitialPage(page,
-                                 alphabetBuckets: [],
-                                 source: source,
-                                 identity: identity)
-                firstContentSpan.end(
-                    result: BrowsePerformanceMeasurementPolicy.firstContentResult(itemCount: page.items.count),
-                    fields: [
-                    "item_count": page.items.count,
-                    "total_count": page.total,
-                    "page_count": 1,
-                    "publication_count": 1,
-                    "collapse_mode": "sparse",
-                ])
-                span.end(fields: [
-                    "item_count": page.items.count,
-                    "total_count": page.total,
-                ])
-
-                let buckets = AlphabetBucket.buckets(from: await alphabetCounts, total: page.total)
-                guard isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else {
-                    completeSpan.end(result: "superseded")
-                    return
-                }
-                alphabetBuckets = buckets
-                completeSpan.end(fields: [
-                    "item_count": page.items.count,
-                    "total_count": page.total,
-                    "page_count": 1,
-                    "publication_count": 2,
-                    "collapse_mode": "sparse",
-                ])
+            guard isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else {
+                firstContentSpan.end(result: "superseded")
+                completeSpan.end(result: "superseded")
+                span.end(result: "stale")
+                return
             }
+            applyInitialPage(page,
+                             alphabetBuckets: [],
+                             source: source,
+                             identity: identity)
+            firstContentSpan.end(
+                result: BrowsePerformanceMeasurementPolicy.firstContentResult(itemCount: page.items.count),
+                fields: [
+                "item_count": page.items.count,
+                "total_count": page.total,
+                "page_count": 1,
+                "publication_count": 1,
+                "collapse_mode": "sparse",
+            ])
+            span.end(fields: [
+                "item_count": page.items.count,
+                "total_count": page.total,
+            ])
+
+            let buckets = AlphabetBucket.buckets(from: await alphabetCounts, total: page.total)
+            guard isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else {
+                completeSpan.end(result: "superseded")
+                return
+            }
+            alphabetBuckets = buckets
+            completeSpan.end(fields: [
+                "item_count": page.items.count,
+                "total_count": page.total,
+                "page_count": 1,
+                "publication_count": 2,
+                "collapse_mode": "sparse",
+            ])
         } catch {
             let isCurrentIdentity = isCurrent()
                 && activeIdentity == identity
