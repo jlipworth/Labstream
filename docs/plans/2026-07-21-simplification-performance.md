@@ -1,6 +1,6 @@
 # Cross-platform simplification and performance program
 
-Status: **Wave 0 committed at `40af93f3`; Wave 1 implementation and automated/simulator validation complete — committed on this branch**
+Status: **Wave 0 committed at `40af93f3`; Wave 1 committed at `507b149a`; Wave 2 implementation and automated acceptance complete, uncommitted**
 
 Audit baseline: `b3045bc0` (`Record tvOS merge checkpoint`) on
 `codex/audit-simplification-performance`
@@ -49,11 +49,12 @@ The target is not “fewest files” or “fewest `#if`s.” The target is:
 
 ## Audit snapshot
 
-The audit was static and read-only. No builds, simulators, devices, live servers,
+This section records the **pre-Wave 0 audited starting point**, not the current
+post-Wave 1 tree. The audit was static and read-only. No builds, simulators, devices, live servers,
 or runtime performance measurements were used, so all performance findings below
 are hypotheses until the measurement phase proves them.
 
-| Signal | Current baseline |
+| Signal | Pre-Wave 0 baseline |
 | --- | ---: |
 | Production Swift | about 92,000 lines |
 | App download implementation | 26,138 lines / 29 files |
@@ -70,7 +71,7 @@ are hypotheses until the measurement phase proves them.
 | Existing runtime phases | 9 Debug-only browse/artwork/playback signposts |
 | Existing committed runtime evidence | two small June Plex/visionOS-simulator baselines |
 
-All four apps currently attach the same filesystem-synchronized `Labstream/`
+At that starting point, all four apps attached the same filesystem-synchronized `Labstream/`
 source root. Platform ownership is therefore expressed almost entirely through
 conditional compilation and no-op compatibility types. This is useful for truly
 shared code, but it also causes tvOS to compile and instantiate unsupported
@@ -105,6 +106,11 @@ Theater, and SharePlay state.
 10. **Performance wins do not excuse behavior drift.** A faster path that breaks
     offline integrity, focus, Cinema, PiP, SharePlay, playback progress, or
     backend ordering is a regression.
+11. **Documentation ships with each durable change.** Every slice must review the
+    current architecture, code-map, platform, testing, and operator docs that its
+    changes could invalidate, and update affected current docs in the same slice.
+    Wave 7 still performs the final whole-repository reconciliation and archives
+    superseded plans/evidence; it is not the first time documentation is updated.
 
 ## Behaviors that must remain platform-specific
 
@@ -161,9 +167,9 @@ Theater, and SharePlay state.
 | --- | --- | --- |
 | Download recovery | Keep app-owned deterministic checkpoint/recovery; native resume-data-only path rejected | Download decomposition |
 | Client ABR | May be removed if paired measurements show little benefit | Playback typed restart work |
-| Mac browse windows | **Open.** Default recommendation: enforce the documented single-window model; multiwindow requires focused-scene routing | Mac shell extraction |
+| Mac browse windows | **Resolved in Wave 1: one reusable main browse/player window plus singleton Settings.** Focused-scene multiwindow routing is intentionally out of scope | Mac shell extraction |
 | visionOS Cinema | **Keep.** The shipping app-owned `CustomCinemaMode` remains a first-class visionOS capability; its ownership and implementation may be simplified, but the product surface and handoff invariants must remain | Every visionOS/player slice |
-| Reality Theater prototype | **Remove.** Issue #12/#51 history and current scene/chrome routing confirm that the hidden `RealityTheater*` lab is independent from shipping `CustomCinemaMode`; delete the prototype and its cross-target production plumbing in Wave 1 while retaining useful historical context in Git/archive docs | visionOS source split |
+| Reality Theater prototype | **Removed in Wave 1.** Issue #12/#51 history and scene/chrome routing confirmed that the hidden `RealityTheater*` lab was independent from shipping `CustomCinemaMode`; useful historical context remains in Git/archive docs | visionOS source split |
 | Offline Detail action | **Open.** Keep explicit “Play Offline” unless product direction says primary Play should prefer local media | Offline launch consolidation |
 | Storage cap semantics | Recommendation: enforce durable bytes + known reservations; present side assets, held/resume data, and OS temp separately | Storage snapshot work |
 | Legacy download schemas/tasks | **Remove fully.** Delete compatibility for legacy schemas and abandoned OS tasks; keep only the current schema and the app-owned checkpoint/recovery authority required by current downloads | Migration sunset |
@@ -205,7 +211,7 @@ re-review as runtime proof.
 
 ### Wave 0 implementation journal
 
-The following work is present but uncommitted in the audit worktree. Wave 0's
+The following work was committed at `40af93f3`. Wave 0's
 deterministic package, hosted-test, all-target build, tooling, and serialized
 simulator-smoke gates now pass. Physical-device acceptance remains a later explicit
 gate and is not inferred from these results. A dev-identity macOS host launch remains
@@ -893,6 +899,154 @@ or simulator-proven checks.
 - Add shared artwork pipeline and explicit platform image boundary.
 - Fix page/task coalescing and incremental movie collapsing.
 
+#### Wave 2 audit and implementation journal
+
+Wave 2 began from committed Wave 1 base `507b149a`. A parallel read-only inventory covered
+session authority, decode/map execution, catalog and metadata duplication, progressive Home,
+fan-out/paging/collapsing, artwork ownership, image compatibility, tests, performance tooling,
+and current-document drift. It produced these ordering constraints:
+
+- establish exact opaque session authority before adding any cache or in-flight repository;
+- move decode/map behind immutable Sendable execution seams before changing fan-out timing;
+- keep catalog enumeration, metadata hydration, progressive Home, page coalescing, movie
+  collapsing, and artwork adoption as separate rollback boundaries;
+- stale metadata may paint only within the exact same authority and must never authorize Play,
+  Download, watched mutation, Spotlight, or SharePlay matching; and
+- Plex native `/hubs` remains server-composed; progressive Home applies only to the independent
+  Jellyfin/Emby rail requests.
+
+Wave 2 implementation slices are complete but uncommitted:
+
+1. `AppModel` vends an immutable `AuthenticatedBrowseSessionContext` with an opaque process-local
+   authority. Production auth apply/select/clear paths publish multi-field Plex/Jellyfin/Emby lane
+   changes coherently; token A-to-B-to-A, server/base/user/client changes, sign-out/reauth, backend
+   selection, and inactive-lane isolation have deterministic tests.
+2. Plex, Jellyfin, and Emby now decode/map browse responses behind immutable Sendable execution
+   seams. The Jellyfin/Emby facades snapshot session plus transport into
+   `MediaBrowserBrowseCore`; `PlexBrowseService` pins session plus client identity and keeps its
+   existing MainActor transport callback while `PlexBrowseResponseExecutor` performs JSON decode
+   and normalization off the main actor. Request shape, ordering, typed errors, transport
+   isolation, and cancellation fences are pinned. This is an execution-boundary improvement only;
+   no runtime speedup is claimed before paired evidence.
+3. The open Emby warped-poster defect, GitHub #245, was confirmed as an image-type selection and
+   request-aspect mismatch rather than a cache problem. Home now prefers portrait season/series
+   Primary art and keeps Thumb/Backdrop fallbacks at 16:9 request and presentation dimensions.
+   Automated policy/request/mapping and hosted-app gates pass, but the issue remains open until its
+   required physical-iPhone Emby check plus movie and episode-fallback regressions are recorded.
+4. One ordered bounded fan-out now has explicit fail-fast and partial-result APIs. MediaBrowser
+   search and all three video/music A-Z probe paths cap active work at four while retaining server
+   order, all-or-error search, failed-letter degradation, and cancellation behavior.
+5. A behavior-neutral `LibraryCatalogLoader` normalizes one native section/view enumeration, and
+   the app-lifetime `LibraryCatalogRepository` now shares the exact-authority value/in-flight read
+   across Libraries, MediaBrowser Home, Search, Music, the Mac sidebar, visibility editing, system
+   entries, and Watch Together. Backend/authority mismatches, delayed old work, queued forced work
+   after auth replacement, failures, cancellation, and force-refresh chains are fenced; each
+   surface's query, visibility, ordering, and destination policy remains outside the repository.
+6. Current docs are updated continuously rather than deferred: the Wave 1 target topology, tvOS
+   streaming-only boundary, simulator/test lanes, single-window Mac model, and current source map
+   have been reconciled; Wave 7 remains the final whole-repository sweep and archive step.
+7. Jellyfin/Emby metadata fields now use intent-bearing `grid`, `search`, `home`, `playlist`,
+   `item`, `relatedMedia`, and `music` profiles. Every profile is currently an exact alias of the
+   pre-slice grid/full field bytes; purpose-routing tests prevent a later Home trim from silently
+   changing Music, item hydration, downloads, playback probes, or Detail extras.
+8. Sparse library pages now use one model-owned task flight per page instead of 50-ms polling.
+   Duplicate callers share one fetch/commit, a cancelled waiter cannot poison a surviving waiter,
+   last-waiter/reset cancellation releases the flight, stale completions are fenced, and the prior
+   one-retry rail-jump contract is retained for failures and short successful pages. This removes
+   polling and duplicate work; no runtime speedup is claimed before paired evidence.
+9. Shared image values now cross an explicit immutable `DecodedImage` boundary instead of the
+   macOS `UIImage == NSImage` compatibility alias. Native AppKit/UIKit values exist only at
+   framework bridges; orientation, scale, wide-gamut/high-depth color, CMYK fallback, crop, JPEG,
+   fetch, and cache behavior are pinned as a behavior-neutral extraction. All-target builds and
+   smokes remain required before this slice is accepted.
+10. Movie-version collapsing now retains stable identity/group indexes and publishes only the
+    projection positions touched by each new page rather than re-collapsing all prior raw items.
+    First-seen representatives/order, progressive version chooser updates, dense monotonically
+    growing slots, final alphabet offsets, partial-prefix failure behavior, and reset/source fences
+    remain pinned. Work is proportional to new items plus the immutable snapshots for touched
+    version groups; the plan does not make a false strict-linear claim for a pathological group.
+11. `MediaArtwork` now produces authenticated ordinary-poster descriptors with a token-free task
+    identity containing backend, opaque authority, purpose, source digest, and requested pixels;
+    debug strings, reflection, transport failures, and cache keys cannot reveal the private
+    request. The app-lifetime actor-owned `ArtworkPipeline` performs exact joins, independent
+    waiter/last-waiter cancellation, priority admission under one four-request ceiling per
+    canonical origin, off-main ImageIO downsampling/eager decode, actual-display-scale requests,
+    bounded compressed/decoded/definitive-4xx caches, and epoch-fenced clear through a
+    nonpersistent ephemeral session. Ordinary `PosterImage`, music/video system Now Playing,
+    `AVPlayerItem` external metadata, offline rows, and offline player artwork now share that
+    boundary, including visionOS scoped metadata. Exact descriptor, pipeline, consumer-generation,
+    and current-item fences cover both success and terminal-failure publication. Settings clears
+    the one app-lifetime pipeline; persisted `posterGeneration` prevents same-path/same-byte-count
+    offline replacement aliases; and one reference-counted shimmer clock spans the root UI plus
+    visionOS Custom Cinema ImmersiveSpace while Reduce Motion remains static. AVKit-hosted
+    chapter stills remain request-backed because they lack the injected pipeline/pixel contract.
+    BIF and sprite-sheet providers, Emby generated per-position frames, Emby online/offline chapter
+    fallback, and the player nearest-frame cache remain provider-scoped time-indexed exceptions
+    rather than `ArtworkPipeline` consumers. Authenticated requests use the nonpersistent side-asset
+    transport, and their leaf caches are memory-only and fixed-entry-count bounded. Byte-cost
+    eviction, off-main preview decode, full-BIF mapping/selected-frame copying, and
+    largest-BIF/tile-sheet peak-RSS validation remain Phase 3/5 performance gates. `DecodedImage`
+    use in those deferred paths is an image boundary, not pipeline migration; downloaded
+    image-payload validation remains Wave 4 side-asset work.
+12. The paired measurement gate now regenerates strict summaries from exact checksummed raw
+    captures, requires an opaque run/workload/launch marker plus closed privacy and correctness
+    profiles, freezes a deterministic control-only MDE artifact, validates seeded same-index order
+    and pairwise device covariates, and emits provenance-complete JSON/CSV. Invalid evidence is
+    insufficient rather than a regression/improvement. The current schema cannot machine-prove
+    that freezing preceded candidate capture, so results disclose that timing as operator-attested.
+13. Jellyfin/Emby Home now builds one stable, duplicate-safe rail plan and reduces keyed results
+    into canonical order while retaining pending, empty-success, failure, completeness, degraded,
+    and authoritative state separately. Resume, next-up, and per-library latest work share one
+    four-request ceiling; successful rails publish as each completion arrives, and one automatic
+    retry requests only failed keys while preserving successful and empty-success rails. Exact
+    authority, generation, and attempt fences reject late/third-pass results, and Home pins only a
+    complete non-degraded identity. Plex native `/hubs` is unchanged.
+14. The app-lifetime `MetadataRepository` joins exact backend/opaque-authority/item native reads.
+    Display hydration reuses values for ten seconds, then can immediately paint bounded stale data
+    through sixty seconds while one refresh runs; Detail visibly joins that refresh before actions
+    re-enable. Authoritative callers ignore completed cache values. Provenance, source revision,
+    TTL, item, and authority admission prevent reused/stale/patched/superseded values from
+    authorizing actions, while an exact current native Detail value supports immediate Play without
+    a second read. Accepted watched mutations patch only exact presentation state, reconcile with
+    older flights, and never become action authority.
+15. Plex, Jellyfin, and Emby playlist requests now expose native start/limit paging through a
+    dedicated positional `PlaylistPagingModel`. More-than-200-row fixtures, duplicates spanning
+    page boundaries, server order, clamped pages, retry, cancellation, generation, and opaque
+    authority replacement are pinned. Page zero paints progressively, but Play/Shuffle/row/queue
+    actions retain the old complete-list semantic.
+16. The durable slices above have focused package/hosted tests and adversarial review at their
+    owning boundaries, followed by a final independent closure audit with no remaining blocker.
+    Automated product acceptance is complete: PMSKit passed 1,678 tests in 219 suites; clean
+    isolated visionOS, iOS/iPadOS, tvOS, and macOS builds passed; Mac hosted tests passed 499 tests
+    in 50 suites; iPhone hosted tests passed 485 tests in 47 suites; tvOS hosted tests passed 229
+    tests in 25 suites; and both tvOS launch/remote fixture UI tests passed. Exact worktree
+    simulators then passed install/build UUID, bounded-log, live-process, and screenshot smokes on
+    visionOS, iPhone, iPad, and tvOS, with all four shut down afterward; the isolated unsigned Mac
+    matrix product also launched and remained live on the host before explicit termination. The
+    iPhone test run's Xcode diagnostic collector stalled after every selected test had passed; it
+    was terminated independently, after which `xcodebuild` finalized the result as `TEST
+    SUCCEEDED`. Strict MkDocs, 14/14 Mermaid rendering, generated-site links/anchors across 24
+    pages, all 107 repository-hygiene tests, and `git diff --check` pass. Optional live-backend and
+    physical-device gates remain without weakening this automated acceptance. In particular,
+    GitHub #245 stays open until the physical-iPhone Emby poster matrix in item 3 is recorded.
+
+The deeper inventory found duplicate catalog reads across Libraries, Mac sidebar, visibility,
+Home, Search, and Music; uncached repeated detail metadata reads; a slowest-rail Jellyfin/Emby Home
+barrier; unbounded search and 26-letter probes; 50-ms page polling; quadratic whole-history movie
+collapsing; eager unpaged playlists whose duplicates cannot use the deduplicating rail model;
+fragmented artwork fetch/decode/cache ownership; stale same-path offline poster caching;
+unvalidated downloaded image payloads; per-placeholder perpetual shimmer; and incomplete
+image-cache clearing. The catalog-adoption, metadata, progressive-Home, bounded-fan-out,
+page-flight, incremental-collapse, playlist, `DecodedImage`, actor artwork core, named consumer
+adoption, offline poster generation, unified clear, and shared-shimmer slices now address their
+corresponding findings. AVKit-hosted chapter stills, BIF and sprite-sheet providers, Emby generated
+per-position frames, Emby online/offline chapter fallback, and the player nearest-frame cache retain
+explicit provider-scoped time-indexed boundaries. Their byte-cost eviction, off-main preview decode,
+full-BIF mapping/selected-frame copying, and largest-BIF/tile-sheet peak-RSS validation remain Phase
+3/5 performance gates, while downloaded side-asset validation is deferred to Wave 4.
+None of these structural changes is treated as a runtime performance win until the paired
+comparison gate produces valid evidence.
+
 ### Wave 3 — Presentation and playback structure
 
 - Split platform shells and shared navigation coordinator.
@@ -966,6 +1120,8 @@ Each slice should state:
 - before/after files and deleted compatibility surface;
 - automated and physical gates;
 - paired performance scenarios, or “no runtime claim” for mechanical slices;
+- current-docs impact, listing updated files or an explicit evidence-backed
+  “no current documentation change” disposition;
 - rollback boundary; and
 - remaining follow-up IDs.
 
@@ -982,8 +1138,11 @@ Each slice should state:
 - worktree simulator install/launch/log/screenshot smoke for visionOS, iPhone,
   iPad, or an explicitly assigned TV simulator as applicable, serialized through
   the one-simulator lease; Mac uses the isolated host deploy/launch/log/cleanup
-  path instead; and
-- repository hygiene plus strict docs/link/Mermaid checks for documentation work.
+  path instead;
+- a current-docs drift review for the changed ownership, behavior, tooling, and
+  validation surfaces; and
+- repository hygiene plus strict docs/link/Mermaid checks whenever documentation
+  changes, including every slice whose drift review requires an update.
 
 ### Backend matrix
 

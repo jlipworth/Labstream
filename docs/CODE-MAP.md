@@ -12,8 +12,9 @@ would become stale as implementations move.
 ## App shell and lifecycle
 
 - `Labstream/Shared/App/AppRuntime.swift` is the shared composition root for app-lifetime
-  `AppModel`, `AuthManager`, `MusicPlayerController`, and `SessionBootstrap` instances. It also
-  owns the real `DownloadManager` on download-capable products; tvOS has no download field or
+  `AppModel`, `AuthManager`, `MusicPlayerController`, `SessionBootstrap`,
+  `LibraryCatalogRepository`, `MetadataRepository`, and `ArtworkPipeline` instances. It also owns
+  the real `DownloadManager` on download-capable products; tvOS has no download field or
   construction path.
 - `Labstream/Platforms/visionOS/App/Labstream.swift` is the visionOS entry point. It declares the main window,
   declares Custom Cinema, and owns the live app-lifetime `WatchTogetherCoordinator` shared by
@@ -38,8 +39,8 @@ vary presentation.
 ## Session state, authentication, and secrets
 
 - `Labstream/Shared/App/AppModel.swift` owns live, separate Plex/Jellyfin/Emby server and
-  credential lanes, the active backend, token-free session identities, and the shared
-  `PlexClient`.
+  credential lanes, the active backend, token-free UI session identities, exact opaque browse
+  authorities, immutable authenticated browse contexts, and the shared `PlexClient`.
 - `Labstream/Shared/Auth/AuthManager.swift` owns sign-in, restore, server selection, backend
   switching, and sign-out. It covers Plex PIN auth, Jellyfin credentials/Quick Connect,
   and Emby credentials/Connect PIN.
@@ -60,27 +61,81 @@ not necessarily the backend currently visible in the UI.
 - `PMSKit/Sources/PMSKit/Models/PlexBrowseRequest.swift` contains pure Plex browse request
   builders; `Labstream/Shared/Backend/PlexBrowseAPI.swift` is their source-compatible app facade.
   `Labstream/Shared/Backend/PlexBrowseService.swift` pins one immutable Plex session and owns
-  execution, decoding, and normalized browse results.
+  execution. Its `PlexBrowseResponseExecutor` moves JSON decoding and normalized-result mapping off
+  the main actor while preserving the existing MainActor transport callback and typed errors.
 - `Labstream/Shared/Backend/Jellyfin/JellyfinBrowseService.swift` and
   `Labstream/Shared/Backend/Emby/EmbyBrowseService.swift` are the live MediaBrowser browse
-  facades. Their shared browse-only execution/decode/map core is
-  `Labstream/Shared/Backend/MediaBrowserBrowseCore.swift`; playback and downloads stay outside it.
+  facades. They snapshot MainActor session state into the Sendable browse-only
+  `Labstream/Shared/Backend/MediaBrowserBrowseCore.swift`, which performs transport, decode, and
+  DTO mapping off the main actor; playback and downloads stay outside it.
 - `Labstream/Shared/Backend/Paging/` owns backend-neutral paging sources/models and the
-  Plex/Jellyfin/Emby grid and rail adapters. `RailPagingModel`, `RailPagingSource`, and
-  `RailViewAllDestination` power paged Home “View All” destinations.
+  Plex/Jellyfin/Emby grid and rail adapters. Sparse library pages join one model-owned task flight
+  per page rather than polling or issuing duplicate fetches. Movie-version grids retain stable
+  first-seen groups and apply only each page's changed dense projection positions instead of
+  re-collapsing all earlier pages. `PlaylistPagingModel` is deliberately positional: it pages long
+  playlists while retaining duplicates, server order, retry, cancellation, clamped-page, and
+  exact-authority semantics. `RailPagingModel`,
+  `RailPagingSource`, and `RailViewAllDestination` power paged Home “View All” destinations.
+- `Labstream/Shared/Backend/BoundedAsyncMap.swift` provides ordered fail-fast and
+  partial-result fan-out. MediaBrowser library search and video/music alphabet probes cap their
+  active requests at four while preserving the pre-existing order and failure contracts.
+- `Labstream/Shared/Backend/LibraryCatalogLoader.swift` normalizes one native Plex section or
+  Jellyfin/Emby view enumeration into ordered descriptors. The app-lifetime
+  `LibraryCatalogRepository` shares exact-authority values and in-flight work across Libraries,
+  MediaBrowser Home, Search, Music, the Mac sidebar, visibility editing, system entries, and Watch
+  Together; force refresh, failure eviction, and stale-work fencing remain repository concerns,
+  while per-surface query, visibility, ordering, and destination policy stay out.
+- `Labstream/Shared/Backend/MetadataRepository.swift` owns exact backend/opaque-authority/item
+  metadata flights, ten-second fresh display reuse, bounded stale-while-revalidate through sixty
+  seconds, watched-state presentation patches, and provenance-based action admission.
+  `DetailMetadataLoader.swift` and `DetailPlaybackLauncher.swift` consume that boundary: an exact
+  fresh native Detail result can authorize immediate Play without a second read, while reused,
+  stale, patched, expired, or superseded values require a native read.
 - `PMSKit/Sources/PMSKit/Search/SearchResults.swift` owns the pure grouped,
   deduplicated, library-aware search presentation model; `Labstream/Shared/UI/SearchView.swift`
   renders its backend-neutral sections and routes standard versus music results.
 - `Labstream/Shared/UI/HomeView.swift` uses Plex native hubs or
   `Labstream/Shared/UI/MediaBrowserHomeProvider.swift` for shared Jellyfin/Emby Home rails.
+  `MediaBrowserHomeRailPlan.swift` assigns duplicate-safe canonical rail keys and reduces
+  authority/attempt-fenced results. The provider publishes successful rails progressively under a
+  single four-request ceiling and runs one failed-key-only retry while preserving successful and
+  empty-success rails; only a complete, non-degraded result pins Home's loaded identity. Plex
+  remains on native `/hubs`.
+  `HomeRailArtworkPolicy` classifies synthetic Primary artwork as portrait and Thumb/Backdrop as
+  landscape so Home request dimensions match the selected source instead of reshaping it.
 - `Labstream/Shared/UI/LibraryGridView.swift` owns library roots and the shared sparse grid;
   `LibraryAlphabetRail.swift` owns the A–Z interaction.
 - `Labstream/Shared/UI/ContainerBrowserView.swift` handles show/season child navigation and
   normalizes duplicate visible episode rows.
 - `Labstream/Shared/UI/SearchView.swift` owns the shared search surface and music-result queue
   actions.
-- `Labstream/Shared/UI/MediaArtwork.swift` builds backend-authenticated artwork requests;
-  `PosterImage.swift` loads them.
+- `Labstream/Shared/UI/MediaArtwork.swift` resolves backend-authenticated, exact-authority artwork
+  descriptors whose task/debug/reflection identity contains no request credentials. The
+  app-lifetime actor-owned `ArtworkPipeline` executes remote and local requests with exact in-flight
+  joining, independent waiter cancellation, canonical-origin priority admission, ephemeral
+  nonpersistent remote transport, ImageIO downsampling/eager decode, and bounded
+  compressed/decoded/negative caches. `PosterImage`, music/video system Now Playing,
+  `AVPlayerItem` external and visionOS scoped metadata, offline row thumbnails, and offline player
+  artwork consume it. Their success/failure callbacks publish only while the exact descriptor,
+  pipeline instance, and owning view/playback generation remain current.
+  `Labstream/Shared/UI/OfflineArtworkSource.swift` turns persisted row ownership plus
+  `posterGeneration` into an opaque local authority, including same-path replacements.
+  `SettingsView` clears the one pipeline, and `ArtworkShimmerClock.swift` owns one app-lifetime,
+  reference-counted ticker for visible placeholders in the root UI and visionOS Custom Cinema
+  ImmersiveSpace, with a static Reduce Motion path. Shared image
+  values use the immutable CGImage-backed `Labstream/Shared/Platform/DecodedImage.swift`; native
+  images are created only at framework bridges.
+
+  `RequestBackedChapterImage` remains outside the pipeline because AVKit hosts the chapter tab in
+  an independent environment without an injected pixel contract. BIF and sprite-sheet providers,
+  Emby generated per-position frames, Emby online/offline chapter fallback, and the player nearest-
+  frame cache remain provider-scoped time-indexed exceptions rather than `ArtworkPipeline`
+  consumers.
+  Authenticated requests use the nonpersistent side-asset transport, and their leaf caches are
+  memory-only and fixed-entry-count bounded. Byte-cost eviction, off-main preview decode, full-BIF
+  mapping/selected-frame copying, and largest-BIF/tile-sheet peak-RSS validation remain Phase 3/5
+  performance gates. Using `DecodedImage` there is not pipeline adoption. Downloaded image-payload
+  validation remains in the Wave 4 side-asset work.
 
 Request/DTO implementations live under `PMSKit/Sources/PMSKit/Auth/`,
 `PMSKit/Sources/PMSKit/Jellyfin/`, `PMSKit/Sources/PMSKit/Emby/`,
@@ -285,10 +340,10 @@ paths, filenames, client identifiers, or media titles to diagnostics.
 
 - `PMSKit/Tests/PMSKitTests/` covers pure policies, request builders, decoders, state
   machines, and redaction. Run it with `cd PMSKit && swift test`.
-- `Labstream.xcodeproj/project.pbxproj` is the source of truth for the three native target
+- `Labstream.xcodeproj/project.pbxproj` is the source of truth for the four native app target
   versions, platforms, and deployment settings.
 - `scripts/worktree-sim.sh` provisions the visionOS worktree simulator or explicit
-  iPhone/iPad simulators.
+  iPhone/iPad and Apple TV simulators.
 - `scripts/deploy-mobile-to-device.sh` deploys the signed mobile target to iPhone/iPad;
   `scripts/deploy-to-device.sh` deploys the signed visionOS target.
 - `scripts/` also contains docs, hygiene, version stamping, and optional live-probe tools.

@@ -5,6 +5,23 @@ import Testing
 @Suite("MediaBrowser library dialect")
 struct MediaBrowserLibraryDialectTests {
     @Test func sharedFieldStringsBackJellyfinAndEmbyConstants() {
+        let expectedGrid = "Overview,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,ProviderIds,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags,ParentPrimaryImageItemId,ParentPrimaryImageTag,SeriesPrimaryImageTag"
+        let expectedFull = "Overview,Genres,MediaSources,People,Studios,ProviderIds,ParentId,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,CriticRating,Taglines,Chapters,ExtraIds,LocalTrailerCount,SpecialFeatureCount,RemoteTrailers,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags,ParentPrimaryImageItemId,ParentPrimaryImageTag,SeriesPrimaryImageTag"
+
+        #expect(MediaBrowserMetadataFieldProfiles.grid.fields == expectedGrid)
+        #expect(MediaBrowserMetadataFieldProfiles.search.fields == expectedFull)
+        #expect(MediaBrowserMetadataFieldProfiles.home.fields == expectedFull)
+        #expect(MediaBrowserMetadataFieldProfiles.playlist.fields == expectedFull)
+        #expect(MediaBrowserMetadataFieldProfiles.item.fields == expectedFull)
+        #expect(MediaBrowserMetadataFieldProfiles.relatedMedia.fields == expectedFull)
+        #expect(MediaBrowserMetadataFieldProfiles.music.fields == expectedFull)
+        #expect(MediaBrowserMetadataFieldProfiles.grid.purpose == .grid)
+        #expect(MediaBrowserMetadataFieldProfiles.search.purpose == .search)
+        #expect(MediaBrowserMetadataFieldProfiles.home.purpose == .home)
+        #expect(MediaBrowserMetadataFieldProfiles.playlist.purpose == .playlist)
+        #expect(MediaBrowserMetadataFieldProfiles.item.purpose == .item)
+        #expect(MediaBrowserMetadataFieldProfiles.relatedMedia.purpose == .relatedMedia)
+        #expect(MediaBrowserMetadataFieldProfiles.music.purpose == .music)
         #expect(JellyfinLibrary.gridItemFields == MediaBrowserLibraryFields.gridItem)
         #expect(EmbyLibrary.gridItemFields == MediaBrowserLibraryFields.gridItem)
         #expect(JellyfinLibrary.fullItemFields == MediaBrowserLibraryFields.fullItem)

@@ -1,9 +1,4 @@
 import SwiftUI
-#if os(macOS)
-import AppKit
-#elseif canImport(UIKit)
-import UIKit
-#endif
 import PMSKit
 
 /// Async artwork loader for Plex thumbnails / art.
@@ -26,27 +21,33 @@ struct PosterImage: View {
     var width: CGFloat = 200
     var height: CGFloat = 300
     var cornerRadius: CGFloat = DS.Radius.poster
-    /// Request scale for backend image transcodes. Most posters use @2x for crispness;
-    /// decorative blurred/backdrop art can opt into @1x to avoid fetching oversized images.
-    var requestScale: CGFloat = 2.0
+    /// Optional request-scale override. Ordinary posters use the environment's actual display
+    /// scale; decorative blurred/backdrop art can retain its explicit @1x request.
+    var requestScale: CGFloat? = nil
     /// SF Symbol shown when there's no artwork (or it fails). Defaults to the film glyph
     /// for video posters; music cells pass a `music.*` glyph so an art-less artist/album
     /// reads as "no cover" rather than "broken" (#111).
     var placeholderSymbol: String = "film"
 
     @Environment(AppModel.self) private var appModel
+    @Environment(\.artworkPipeline) private var artworkPipeline
+    @Environment(\.displayScale) private var displayScale
 
     @State private var loaded: Image?
     @State private var failed = false
 
     var body: some View {
         Group {
-            if let loaded {
+            // Hide old pixels immediately on sign-out, path removal, or facade loss; do not wait
+            // for the replacement task to run and clear state.
+            if artworkDescriptor == nil || artworkPipeline == nil {
+                placeholder
+            } else if let loaded {
                 loaded
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .transition(.opacity)
-            } else if failed || imageRequest == nil {
+            } else if failed {
                 placeholder
             } else {
                 skeleton
@@ -67,9 +68,10 @@ struct PosterImage: View {
     }
 
     private func load() async {
-        guard let request = imageRequest else { return }
         loaded = nil
         failed = false
+        guard let descriptor = artworkDescriptor,
+              let artworkPipeline else { return }
 
         var attempts = 0
         var completed = false
@@ -78,8 +80,8 @@ struct PosterImage: View {
                                                      fields: [
                                                         "width": Int(width),
                                                         "height": Int(height),
-                                                        "pixel_width": Int(width * requestScale),
-                                                        "pixel_height": Int(height * requestScale),
+                                                        "pixel_width": pixelDimensions.width,
+                                                        "pixel_height": pixelDimensions.height,
                                                      ])
         defer {
             if !completed {
@@ -95,28 +97,45 @@ struct PosterImage: View {
             }
             guard !Task.isCancelled else { return }
             do {
-                let (data, response) = try await URLSession.shared.data(for: request)
-                let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-                if (400..<500).contains(status) { break } // missing art — don't hammer
-                guard status == 200, let ui = UIImage(data: data) else { continue }
-                withAnimation(.easeOut(duration: 0.35)) { loaded = Image(uiImage: ui) }
+                let response = try await artworkPipeline.fetch(descriptor)
+                try Task.checkCancellation()
+                // `.task(id:)` requests cancellation when identity changes, but the transport may
+                // not cooperate. Fence publication against the exact current backend authority,
+                // purpose, source, and size as well as the Task cancellation bit.
+                guard PosterLoadPublicationPolicy.canPublish(
+                    expectedIdentity: descriptor.taskIdentity,
+                    currentIdentity: artworkDescriptor?.taskIdentity,
+                    expectedPipeline: artworkPipeline,
+                    currentPipeline: self.artworkPipeline,
+                    isCancelled: Task.isCancelled) else { return }
+                withAnimation(.easeOut(duration: 0.35)) {
+                    loaded = Image(decodedImage: response.image)
+                }
                 completed = true
                 span.end(fields: [
                     "attempts": attempts,
-                    "bytes": data.count,
-                    "status": status,
+                    "bytes": response.byteCount,
+                    "status": response.statusCode,
                     "width": Int(width),
                     "height": Int(height),
-                    "pixel_width": Int(width * requestScale),
-                    "pixel_height": Int(height * requestScale),
+                    "pixel_width": pixelDimensions.width,
+                    "pixel_height": pixelDimensions.height,
                 ])
                 return
             } catch is CancellationError {
                 return
+            } catch let error as ArtworkPipelineError where error.isDefinitiveClientFailure {
+                break // missing/forbidden art — don't hammer
             } catch {
                 continue // transient (timeout, reset under burst load) — retry
             }
         }
+        guard PosterLoadPublicationPolicy.canPublish(
+            expectedIdentity: descriptor.taskIdentity,
+            currentIdentity: artworkDescriptor?.taskIdentity,
+            expectedPipeline: artworkPipeline,
+            currentPipeline: self.artworkPipeline,
+            isCancelled: Task.isCancelled) else { return }
         failed = true
     }
 
@@ -144,17 +163,43 @@ struct PosterImage: View {
     }
 
     /// Build the `/photo/:/transcode` URL for `path` at the requested size.
-    private var loadKey: String? {
-        imageRequest?.url?.absoluteString
+    private var loadKey: PosterLoadKey {
+        PosterLoadKey(identity: artworkDescriptor?.taskIdentity,
+                      pipelineIdentity: artworkPipeline.map(ObjectIdentifier.init))
     }
 
-    /// Authenticated request for `path` at the requested pixel size, resolved by the
-    /// shared `MediaArtwork` helper (Plex transcode / Jellyfin / Emby by ref scheme).
-    private var imageRequest: URLRequest? {
-        MediaArtwork.imageRequest(path: path,
-                                  appModel: appModel,
-                                  pixelWidth: Int(width * requestScale),
-                                  pixelHeight: Int(height * requestScale))
+    /// Authenticated, non-loggable descriptor for `path` at the requested pixel size.
+    private var artworkDescriptor: ArtworkRequestDescriptor? {
+        MediaArtwork.descriptor(path: path,
+                                appModel: appModel,
+                                pixelWidth: pixelDimensions.width,
+                                pixelHeight: pixelDimensions.height)
+    }
+
+    private var pixelDimensions: (width: Int, height: Int) {
+        MediaArtwork.pixelDimensions(width: width,
+                                     height: height,
+                                     displayScale: displayScale,
+                                     requestScale: requestScale)
+    }
+}
+
+private struct PosterLoadKey: Hashable {
+    let identity: ArtworkTaskIdentity?
+    let pipelineIdentity: ObjectIdentifier?
+}
+
+/// Pure publication fence shared by success and terminal failure. Cancellation is advisory for
+/// transports, so publication also requires the exact current descriptor and facade instance.
+enum PosterLoadPublicationPolicy {
+    static func canPublish(expectedIdentity: ArtworkTaskIdentity,
+                           currentIdentity: ArtworkTaskIdentity?,
+                           expectedPipeline: ArtworkPipeline,
+                           currentPipeline: ArtworkPipeline?,
+                           isCancelled: Bool) -> Bool {
+        !isCancelled
+            && currentIdentity == expectedIdentity
+            && currentPipeline === expectedPipeline
     }
 }
 
@@ -162,32 +207,53 @@ struct PosterImage: View {
 /// highlight sweeps across translucently, the standard "content is on its way" cue.
 struct ShimmerView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var phase: CGFloat = -1
+    @Environment(\.artworkShimmerClock) private var shimmerClock
+    @State private var subscribedClock: ArtworkShimmerClock?
+    @State private var subscription: ArtworkShimmerClock.Subscription?
 
     var body: some View {
         GeometryReader { geo in
             let w = geo.size.width
-            if reduceMotion {
-                LinearGradient(
-                    colors: [.clear, .white.opacity(0.10), .clear],
-                    startPoint: .leading, endPoint: .trailing
-                )
+            if !reduceMotion, let shimmerClock {
+                shimmerGradient(highlightOpacity: 0.18)
+                .frame(width: w * 1.4)
+                .offset(x: shimmerClock.phase * w * 1.6)
+            } else {
+                shimmerGradient(highlightOpacity: 0.10)
                 .frame(width: w * 1.4)
                 .offset(x: -0.2 * w)
-            } else {
-                LinearGradient(
-                    colors: [.clear, .white.opacity(0.18), .clear],
-                    startPoint: .leading, endPoint: .trailing
-                )
-                .frame(width: w * 1.4)
-                .offset(x: phase * w * 1.6)
-                .onAppear {
-                    withAnimation(.linear(duration: 1.4).repeatForever(autoreverses: false)) {
-                        phase = 1
-                    }
-                }
             }
         }
         .allowsHitTesting(false)
+        .onAppear { updateSubscription() }
+        .onDisappear { releaseSubscription() }
+        .onChange(of: reduceMotion) { _, _ in updateSubscription() }
+    }
+
+    private func shimmerGradient(highlightOpacity: Double) -> LinearGradient {
+        LinearGradient(
+            colors: [.clear, .white.opacity(highlightOpacity), .clear],
+            startPoint: .leading,
+            endPoint: .trailing
+        )
+    }
+
+    private func updateSubscription() {
+        if subscribedClock !== shimmerClock || reduceMotion {
+            releaseSubscription()
+        }
+        guard subscription == nil, let shimmerClock else { return }
+        subscription = shimmerClock.subscribe(reduceMotion: reduceMotion)
+        if subscription != nil {
+            subscribedClock = shimmerClock
+        }
+    }
+
+    private func releaseSubscription() {
+        if let subscription {
+            subscribedClock?.unsubscribe(subscription)
+        }
+        subscription = nil
+        subscribedClock = nil
     }
 }

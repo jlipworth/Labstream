@@ -23,7 +23,10 @@ media details out of commits and public issues.
 - `publication-audit.py` — audits tracked text, Git history, and optionally GitHub issue text for
   sensitive publication regressions without echoing matched secrets.
 - `loc.sh` — informational per-module source line counts.
-- `perf-log-summary.py` — converts privacy-safe performance signposts into summaries/Markdown.
+- `perf-log-summary.py` — converts privacy-safe performance signposts into summaries/Markdown and
+  produces strict, raw-artifact-bound comparison summaries.
+- `perf-compare.py` — freezes a control-only minimum detectable effect, then validates and compares
+  seeded paired control/candidate runs with correctness, provenance, failure, and covariate gates.
 - `performance-audit-contract.py` — validates Release-parity `PerformanceAudit` build
   settings, scans a built app for Debug-only fixture/probe/evidence contracts, and validates
   version-1 local evidence manifests plus their checksums. The closed JSON schema lives at
@@ -50,10 +53,51 @@ media details out of commits and public issues.
   status. The configuration check compares effective Swift/C/C++ flags, definitions, optimization,
   coverage, sanitizers, signing, and other Release-parity settings; the profiling compilation
   condition is the sole permitted condition difference.
+
+### Paired performance comparison
+
+Comparison evidence is fail-closed. Each raw log contains the opaque capture marker generated from
+its manifest, and that manifest points to the exact raw artifact and SHA-256. Generate the marker
+before appending the bounded unified-log capture, update the raw checksum, then derive the strict
+summary with the closed correctness fields required for that phase/backend:
+
+```sh
+scripts/perf-log-summary.py --emit-capture-marker \
+  --manifest run/manifest.json --workload-id workload-0123456789ab \
+  >> run/raw/artifact-0001.log
+# Append only this launched run's bounded `log show`, then update the manifest raw checksum.
+scripts/perf-log-summary.py --json --strict \
+  --manifest run/manifest.json --raw-artifact run/raw/artifact-0001.log \
+  --workload-id workload-0123456789ab --phase home.load --backend Plex \
+  --correctness-field hub_count --correctness-field item_count \
+  --expected-span-count 1 > run/summary/redacted.json
+```
+
+Freeze the MDE from control-only evidence **before** candidate capture, record the printed checksum,
+then compare separately collected seeded pairs. `short` requires three warmups and twenty measured
+pairs; `long` requires one warmup and five measured pairs. Invalid, incomplete, failed, mismatched-
+work, privacy-unsafe, out-of-order, or materially drifted evidence produces insufficient data rather
+than an improvement. The current manifest schema does not cryptographically bind the frozen checksum
+before candidate capture, so the result records that ordering as operator-attested.
+
+```sh
+scripts/perf-compare.py freeze --control-manifest runs/control-*/*.json \
+  --phase home.load --backend Plex --correctness-field hub_count \
+  --correctness-field item_count --sample-policy short --out frozen-mde.json
+scripts/perf-compare.py compare \
+  --control-manifest runs/pairs/control-*/*.json \
+  --candidate-manifest runs/pairs/candidate-*/*.json \
+  --phase home.load --backend Plex --correctness-field hub_count \
+  --correctness-field item_count --sample-policy short \
+  --frozen-mde frozen-mde.json --frozen-mde-sha256 <printed-checksum> \
+  --max-free-storage-drift-bytes 1073741824 --max-pair-gap-seconds 120 \
+  --json-out result.json --csv-out pairs.csv
+```
 - `compile-audit.py` — opt-in, isolated arm64 compile-cost baseline for PMSKit and all app schemes;
   see [`docs/COMPILE-PERFORMANCE.md`](../docs/COMPILE-PERFORMANCE.md).
 - `tests/test_compile_audit.py`, `tests/test_docs_mermaid.py`,
-  `tests/test_perf_log_summary.py`, and `tests/test_tooling_hardening.py` —
+  `tests/test_perf_log_summary.py`, `tests/test_perf_compare.py`, and
+  `tests/test_tooling_hardening.py` —
   script/tooling tests. They run as part of
   `scripts/ci-hygiene.sh` when `pyproject.toml` is present.
 

@@ -11,6 +11,84 @@ struct PlexSearchSnapshot: Sendable {
     let libraries: [PlexSection]
 }
 
+/// Immutable authentication and request-identity values captured when a Plex browse service is
+/// created. Mutable `AppModel` state must never cross the browse execution boundary.
+struct PlexBrowseExecutionSnapshot: Sendable {
+    let session: BackendSession
+    let identity: ClientIdentity
+}
+
+/// Nonisolated execution/decode/map seam for Plex browse responses.
+///
+/// `PlexBrowseService` remains a MainActor facade because its callers resolve mutable app state
+/// there. Once the facade has captured `snapshot`, this Sendable executor builds requests from that
+/// immutable state and performs response decoding and normalization on Swift's generic executor.
+/// The injected witness is test-only observability: production leaves it nil.
+struct PlexBrowseResponseExecutor: Sendable {
+    enum Stage: Sendable, Equatable {
+        case decode
+        case transform
+    }
+
+    // Preserve the facade's pre-refactor transport isolation exactly. Only immutable request
+    // construction plus response decode/map cross the boundary in this slice.
+    typealias Send = @MainActor @Sendable (PlexRequest) async throws -> Data
+    typealias Witness = @Sendable (Stage) -> Void
+
+    let snapshot: PlexBrowseExecutionSnapshot
+    private let send: Send
+    private let witness: Witness?
+
+    init(snapshot: PlexBrowseExecutionSnapshot,
+         send: @escaping Send,
+         witness: Witness? = nil) {
+        self.snapshot = snapshot
+        self.send = send
+        self.witness = witness
+    }
+
+    @discardableResult
+    func execute(_ build: @Sendable (PlexBrowseExecutionSnapshot) -> PlexRequest) async throws -> Data {
+        try await send(build(snapshot))
+    }
+
+    func execute<Value: Decodable & Sendable, Output: Sendable>(
+        _ build: @Sendable (PlexBrowseExecutionSnapshot) -> PlexRequest,
+        as type: Value.Type,
+        transform: @escaping @Sendable (Value) throws -> Output
+    ) async throws -> Output {
+        let data = try await send(build(snapshot))
+        // A transport can legally return buffered bytes after its waiter was cancelled. Do not
+        // spend CPU decoding them or let a cancelled browse publish a successful value.
+        try Task.checkCancellation()
+        let value: Value
+        do {
+            witness?(.decode)
+            value = try JSONDecoder().decode(type, from: data)
+        } catch {
+            throw PlexError.decoding(error)
+        }
+        // Decoding is synchronous, so cancellation may arrive while a large payload is being
+        // decoded. Fence the production normalization step independently.
+        try Task.checkCancellation()
+        witness?(.transform)
+        let output = try transform(value)
+        try Task.checkCancellation()
+        return output
+    }
+
+    func transform<Input: Sendable, Output: Sendable>(
+        _ input: Input,
+        using operation: @escaping @Sendable (Input) -> Output
+    ) async throws -> Output {
+        try Task.checkCancellation()
+        witness?(.transform)
+        let output = operation(input)
+        try Task.checkCancellation()
+        return output
+    }
+}
+
 /// App execution boundary for native Plex browse capabilities.
 ///
 /// Pure request construction remains in PMSKit/`BrowseAPI`; this service owns one immutable Plex
@@ -32,12 +110,13 @@ struct PlexBrowseService {
         }
     }
 
-    typealias Send = @MainActor @Sendable (PlexRequest) async throws -> Data
+    typealias Send = PlexBrowseResponseExecutor.Send
 
-    let session: BackendSession
-    let identity: ClientIdentity
-    private let send: Send
-    private let decoder = JSONDecoder()
+    let executionSnapshot: PlexBrowseExecutionSnapshot
+    private let executor: PlexBrowseResponseExecutor
+
+    var session: BackendSession { executionSnapshot.session }
+    var identity: ClientIdentity { executionSnapshot.identity }
 
     init(appModel: AppModel) throws {
         guard let session = appModel.backendSession(for: .plex) else {
@@ -56,11 +135,14 @@ struct PlexBrowseService {
 
     init(session: BackendSession,
          identity: ClientIdentity,
-         send: @escaping Send) throws {
+         send: @escaping Send,
+         executionWitness: PlexBrowseResponseExecutor.Witness? = nil) throws {
         guard session.kind == .plex else { throw ServiceError.wrongBackend }
-        self.session = session
-        self.identity = identity
-        self.send = send
+        let snapshot = PlexBrowseExecutionSnapshot(session: session, identity: identity)
+        self.executionSnapshot = snapshot
+        self.executor = PlexBrowseResponseExecutor(snapshot: snapshot,
+                                                   send: send,
+                                                   witness: executionWitness)
     }
 
     func metadata(ratingKey: String) async throws -> MediaItem {
@@ -71,29 +153,35 @@ struct PlexBrowseService {
     }
 
     func metadataItems(ratingKeys: String) async throws -> [MediaItem] {
-        let request = BrowseAPI.metadata(server: session.baseURL,
-                                         token: session.token,
-                                         identity: identity,
-                                         ratingKey: ratingKeys)
-        let response: MetadataResponse = try await execute(request)
-        return response.mediaContainer.metadata
+        try await executor.execute({ snapshot in
+            BrowseAPI.metadata(server: snapshot.session.baseURL,
+                               token: snapshot.session.token,
+                               identity: snapshot.identity,
+                               ratingKey: ratingKeys)
+        }, as: MetadataResponse.self) { response in
+            response.mediaContainer.metadata
+        }
     }
 
     func children(ratingKey: String) async throws -> [MediaItem] {
-        let request = BrowseAPI.children(server: session.baseURL,
-                                         token: session.token,
-                                         identity: identity,
-                                         ratingKey: ratingKey)
-        let response: MetadataResponse = try await execute(request)
-        return response.mediaContainer.metadata
+        try await executor.execute({ snapshot in
+            BrowseAPI.children(server: snapshot.session.baseURL,
+                               token: snapshot.session.token,
+                               identity: snapshot.identity,
+                               ratingKey: ratingKey)
+        }, as: MetadataResponse.self) { response in
+            response.mediaContainer.metadata
+        }
     }
 
     func libraries() async throws -> [PlexSection] {
-        let request = BrowseAPI.sections(server: session.baseURL,
-                                         token: session.token,
-                                         identity: identity)
-        let response: SectionsResponse = try await execute(request)
-        return response.mediaContainer.directory
+        try await executor.execute({ snapshot in
+            BrowseAPI.sections(server: snapshot.session.baseURL,
+                               token: snapshot.session.token,
+                               identity: snapshot.identity)
+        }, as: SectionsResponse.self) { response in
+            response.mediaContainer.directory
+        }
     }
 
     func sectionPage(sectionKey: String,
@@ -102,46 +190,54 @@ struct PlexBrowseService {
                      sort: String? = nil,
                      firstCharacter: String? = nil,
                      browseQuery: LibraryBrowseQuery = .default) async throws -> PlexBrowsePage {
-        let request = BrowseAPI.sectionItems(server: session.baseURL,
-                                             token: session.token,
-                                             identity: identity,
-                                             sectionKey: sectionKey,
-                                             containerStart: startIndex,
-                                             containerSize: limit,
-                                             sort: sort,
-                                             firstCharacter: firstCharacter,
-                                             browseQuery: browseQuery)
-        let response: MetadataResponse = try await execute(request)
-        return PlexBrowsePage(items: response.mediaContainer.metadata,
-                              total: response.mediaContainer.totalSize)
+        try await executor.execute({ snapshot in
+            BrowseAPI.sectionItems(server: snapshot.session.baseURL,
+                                   token: snapshot.session.token,
+                                   identity: snapshot.identity,
+                                   sectionKey: sectionKey,
+                                   containerStart: startIndex,
+                                   containerSize: limit,
+                                   sort: sort,
+                                   firstCharacter: firstCharacter,
+                                   browseQuery: browseQuery)
+        }, as: MetadataResponse.self) { response in
+            PlexBrowsePage(items: response.mediaContainer.metadata,
+                           total: response.mediaContainer.totalSize)
+        }
     }
 
     func alphabetCounts(sectionKey: String,
                         type: Int? = nil) async throws -> [(display: String, count: Int)] {
-        let request = BrowseAPI.firstCharacters(server: session.baseURL,
-                                                token: session.token,
-                                                identity: identity,
-                                                sectionKey: sectionKey,
-                                                type: type)
-        let response: PlexFirstCharacterResponse = try await execute(request)
-        return response.libraryCounts()
+        try await executor.execute({ snapshot in
+            BrowseAPI.firstCharacters(server: snapshot.session.baseURL,
+                                      token: snapshot.session.token,
+                                      identity: snapshot.identity,
+                                      sectionKey: sectionKey,
+                                      type: type)
+        }, as: PlexFirstCharacterResponse.self) { response in
+            response.libraryCounts()
+        }
     }
 
     func hubs() async throws -> [Hub] {
-        let request = BrowseAPI.hubs(server: session.baseURL,
-                                     token: session.token,
-                                     identity: identity)
-        let response: HubsResponse = try await execute(request)
-        return response.mediaContainer.hub
+        try await executor.execute({ snapshot in
+            BrowseAPI.hubs(server: snapshot.session.baseURL,
+                           token: snapshot.session.token,
+                           identity: snapshot.identity)
+        }, as: HubsResponse.self) { response in
+            response.mediaContainer.hub
+        }
     }
 
     func search(query: String) async throws -> [Hub] {
-        let request = BrowseAPI.search(server: session.baseURL,
-                                       token: session.token,
-                                       identity: identity,
-                                       query: query)
-        let response: HubsResponse = try await execute(request)
-        return response.mediaContainer.hub
+        try await executor.execute({ snapshot in
+            BrowseAPI.search(server: snapshot.session.baseURL,
+                             token: snapshot.session.token,
+                             identity: snapshot.identity,
+                             query: query)
+        }, as: HubsResponse.self) { response in
+            response.mediaContainer.hub
+        }
     }
 
     /// Search hits are primary while section titles are best-effort, matching the prior UI
@@ -153,92 +249,215 @@ struct PlexBrowseService {
     }
 
     func onDeck() async throws -> [MediaItem] {
-        let request = BrowseAPI.onDeck(server: session.baseURL,
-                                       token: session.token,
-                                       identity: identity)
-        let response: MetadataResponse = try await execute(request)
-        return response.mediaContainer.metadata
+        try await executor.execute({ snapshot in
+            BrowseAPI.onDeck(server: snapshot.session.baseURL,
+                             token: snapshot.session.token,
+                             identity: snapshot.identity)
+        }, as: MetadataResponse.self) { response in
+            response.mediaContainer.metadata
+        }
     }
 
     /// Pages a server-provided native Home rail path without moving execution back into UI/paging.
     /// The path and query shape intentionally match the former `RailPagingSource` request exactly.
     func homeRailPage(path: String, type: Int?, start: Int, limit: Int) async throws -> PlexBrowsePage {
-        let request = PlexRequest(
-            url: session.baseURL.appendingPathComponent(path),
-            method: "GET",
-            queryItems: [
-                .init(name: "X-Plex-Container-Start", value: String(start)),
-                .init(name: "X-Plex-Container-Size", value: String(limit)),
-            ] + (type.map { [.init(name: "type", value: String($0))] } ?? []),
-            headers: PlexHeaders.standard(identity: identity, token: session.token)
-        )
-        let response: MetadataResponse = try await execute(request)
-        return PlexBrowsePage(items: response.mediaContainer.metadata,
-                              total: response.mediaContainer.totalSize)
+        try await executor.execute({ snapshot in
+            PlexRequest(
+                url: snapshot.session.baseURL.appendingPathComponent(path),
+                method: "GET",
+                queryItems: [
+                    .init(name: "X-Plex-Container-Start", value: String(start)),
+                    .init(name: "X-Plex-Container-Size", value: String(limit)),
+                ] + (type.map { [.init(name: "type", value: String($0))] } ?? []),
+                headers: PlexHeaders.standard(identity: snapshot.identity,
+                                              token: snapshot.session.token)
+            )
+        }, as: MetadataResponse.self) { response in
+            PlexBrowsePage(items: response.mediaContainer.metadata,
+                           total: response.mediaContainer.totalSize)
+        }
     }
 
     func musicArtists(libraryID: String, sort: String, start: Int, size: Int) async throws -> MusicPage {
-        let request = MusicRequest.artists(server: session.baseURL, token: session.token,
-                                           identity: identity, sectionKey: libraryID, sort: sort,
-                                           containerStart: start, containerSize: size)
-        return try await musicPage(request)
+        try await musicPage { snapshot in
+            MusicRequest.artists(server: snapshot.session.baseURL,
+                                 token: snapshot.session.token,
+                                 identity: snapshot.identity,
+                                 sectionKey: libraryID, sort: sort,
+                                 containerStart: start, containerSize: size)
+        }
     }
 
     func musicAlbums(libraryID: String, sort: String, start: Int, size: Int) async throws -> MusicPage {
-        let request = MusicRequest.albums(server: session.baseURL, token: session.token,
-                                          identity: identity, sectionKey: libraryID, sort: sort,
-                                          containerStart: start, containerSize: size)
-        return try await musicPage(request)
+        try await musicPage { snapshot in
+            MusicRequest.albums(server: snapshot.session.baseURL,
+                                token: snapshot.session.token,
+                                identity: snapshot.identity,
+                                sectionKey: libraryID, sort: sort,
+                                containerStart: start, containerSize: size)
+        }
     }
 
     func discographyTracks(artistRatingKey: String) async throws -> [MediaItem] {
-        let request = MusicRequest.allLeaves(server: session.baseURL, token: session.token,
-                                             identity: identity, ratingKey: artistRatingKey)
-        let response: MetadataResponse = try await execute(request)
-        return response.mediaContainer.metadata.filter { $0.kind == .track }
+        try await executor.execute({ snapshot in
+            MusicRequest.allLeaves(server: snapshot.session.baseURL,
+                                   token: snapshot.session.token,
+                                   identity: snapshot.identity,
+                                   ratingKey: artistRatingKey)
+        }, as: MetadataResponse.self) { response in
+            response.mediaContainer.metadata.filter { $0.kind == .track }
+        }
     }
 
     func musicPlaylists() async throws -> [MediaItem] {
-        let request = PlaylistRequest.audioPlaylists(server: session.baseURL,
-                                                     token: session.token,
-                                                     identity: identity)
-        let response: MetadataResponse = try await execute(request)
-        return response.mediaContainer.metadata.filter { $0.kind == .playlist }
+        try await executor.execute({ snapshot in
+            PlaylistRequest.audioPlaylists(server: snapshot.session.baseURL,
+                                           token: snapshot.session.token,
+                                           identity: snapshot.identity)
+        }, as: MetadataResponse.self) { response in
+            response.mediaContainer.metadata.filter { $0.kind == .playlist }
+        }
     }
 
     func playlistTracks(ratingKey: String) async throws -> [MediaItem] {
-        let request = PlaylistRequest.items(server: session.baseURL, token: session.token,
-                                            identity: identity, ratingKey: ratingKey)
-        let response: MetadataResponse = try await execute(request)
-        // Playlist order and duplicate rows are native server semantics; never sort or dedupe.
-        return response.mediaContainer.metadata.filter { $0.kind == .track }
+        try await playlistTracksPage(ratingKey: ratingKey, start: nil, size: nil).items
+    }
+
+    func playlistTracksPage(ratingKey: String,
+                            start: Int?,
+                            size: Int?) async throws -> PlaylistPage {
+        try await executor.execute({ snapshot in
+            PlaylistRequest.items(server: snapshot.session.baseURL,
+                                  token: snapshot.session.token,
+                                  identity: snapshot.identity,
+                                  ratingKey: ratingKey,
+                                  containerStart: start,
+                                  containerSize: size)
+        }, as: MetadataResponse.self) { response in
+            // Playlist order and duplicate rows are native server semantics; never sort or dedupe.
+            PlaylistPage(items: response.mediaContainer.metadata.filter { $0.kind == .track },
+                         reportedTotal: response.mediaContainer.totalSize)
+        }
     }
 
     func artistDetail(artist: MediaItem, libraryID: String?) async throws -> ArtistDetailContent {
         guard let libraryID else {
             let albums = try await children(ratingKey: artist.ratingKey)
-            return ArtistDetailContent(albums: albums.filter { $0.kind == .album })
+            return try await executor.transform(albums) { values in
+                ArtistDetailContent(albums: values.filter { $0.kind == .album })
+            }
         }
 
-        async let related: HubsResponse? = try? execute(
-            MusicRequest.relatedHubs(server: session.baseURL, token: session.token,
-                                     identity: identity, ratingKey: artist.ratingKey))
-        async let appears: MetadataResponse? = try? execute(
-            MusicRequest.appearsOnAlbums(server: session.baseURL, token: session.token,
-                                         identity: identity, sectionKey: libraryID,
-                                         artistTitle: artist.title))
-        async let popular: MetadataResponse? = try? execute(
-            MusicRequest.popularTracks(server: session.baseURL, token: session.token,
-                                       identity: identity, sectionKey: libraryID,
-                                       artistRatingKey: artist.ratingKey))
+        async let related: [Hub]? = try? executor.execute({ snapshot in
+            MusicRequest.relatedHubs(server: snapshot.session.baseURL,
+                                     token: snapshot.session.token,
+                                     identity: snapshot.identity,
+                                     ratingKey: artist.ratingKey)
+        }, as: HubsResponse.self) { $0.mediaContainer.hub }
+        async let appears: [MediaItem]? = try? executor.execute({ snapshot in
+            MusicRequest.appearsOnAlbums(server: snapshot.session.baseURL,
+                                         token: snapshot.session.token,
+                                         identity: snapshot.identity,
+                                         sectionKey: libraryID,
+                                         artistTitle: artist.title)
+        }, as: MetadataResponse.self) { $0.mediaContainer.metadata }
+        async let popular: [MediaItem]? = try? executor.execute({ snapshot in
+            MusicRequest.popularTracks(server: snapshot.session.baseURL,
+                                       token: snapshot.session.token,
+                                       identity: snapshot.identity,
+                                       sectionKey: libraryID,
+                                       artistRatingKey: artist.ratingKey)
+        }, as: MetadataResponse.self) { $0.mediaContainer.metadata }
 
-        let ownRequest = MusicRequest.artistAlbums(server: session.baseURL, token: session.token,
-                                                   identity: identity, sectionKey: libraryID,
-                                                   artistRatingKey: artist.ratingKey)
-        let ownResponse: MetadataResponse = try await execute(ownRequest)
-        let own = ownResponse.mediaContainer.metadata
+        let own: [MediaItem] = try await executor.execute({ snapshot in
+            MusicRequest.artistAlbums(server: snapshot.session.baseURL,
+                                      token: snapshot.session.token,
+                                      identity: snapshot.identity,
+                                      sectionKey: libraryID,
+                                      artistRatingKey: artist.ratingKey)
+        }, as: MetadataResponse.self) { $0.mediaContainer.metadata }
 
-        let hubs = (await related)?.mediaContainer.hub ?? []
+        let input = PlexArtistDetailMappingInput(
+            own: own,
+            hubs: await related ?? [],
+            appears: await appears ?? [],
+            popular: await popular ?? []
+        )
+        return try await executor.transform(input) { $0.content() }
+    }
+
+    func musicSectionHubs(sectionKey: String) async throws -> [Hub] {
+        try await executor.execute({ snapshot in
+            MusicRequest.sectionHubs(server: snapshot.session.baseURL,
+                                     token: snapshot.session.token,
+                                     identity: snapshot.identity,
+                                     sectionKey: sectionKey)
+        }, as: HubsResponse.self) { $0.mediaContainer.hub }
+    }
+
+    func playHistory(librarySectionID: String, count: Int) async throws -> [MediaItem] {
+        try await executor.execute({ snapshot in
+            MusicRequest.playHistory(server: snapshot.session.baseURL,
+                                     token: snapshot.session.token,
+                                     identity: snapshot.identity,
+                                     librarySectionID: librarySectionID,
+                                     count: count)
+        }, as: MetadataResponse.self) { $0.mediaContainer.metadata }
+    }
+
+    func recentlyAddedAlbums(sectionKey: String) async throws -> [MediaItem] {
+        try await executor.execute({ snapshot in
+            MusicRequest.recentlyAddedAlbums(server: snapshot.session.baseURL,
+                                             token: snapshot.session.token,
+                                             identity: snapshot.identity,
+                                             sectionKey: sectionKey)
+        }, as: MetadataResponse.self) { $0.mediaContainer.metadata }
+    }
+
+    func randomTracks(sectionKey: String) async throws -> [MediaItem] {
+        try await executor.execute({ snapshot in
+            MusicRequest.randomTracks(server: snapshot.session.baseURL,
+                                      token: snapshot.session.token,
+                                      identity: snapshot.identity,
+                                      sectionKey: sectionKey)
+        }, as: MetadataResponse.self) { response in
+            response.mediaContainer.metadata.filter { $0.kind == .track }
+        }
+    }
+
+    func setPlayed(ratingKey: String, played: Bool) async throws {
+        _ = try await executor.execute { snapshot in
+            played
+                ? TimelineRequest.scrobble(server: snapshot.session.baseURL,
+                                           token: snapshot.session.token,
+                                           identity: snapshot.identity,
+                                           ratingKey: ratingKey)
+                : TimelineRequest.unscrobble(server: snapshot.session.baseURL,
+                                             token: snapshot.session.token,
+                                             identity: snapshot.identity,
+                                             ratingKey: ratingKey)
+        }
+    }
+
+    private func musicPage(
+        _ build: @escaping @Sendable (PlexBrowseExecutionSnapshot) -> PlexRequest
+    ) async throws -> MusicPage {
+        try await executor.execute(build, as: MetadataResponse.self) { response in
+            let items = response.mediaContainer.metadata
+            return MusicPage(items: items,
+                             total: max(response.mediaContainer.totalSize ?? items.count,
+                                        items.count))
+        }
+    }
+}
+
+private struct PlexArtistDetailMappingInput: Sendable {
+    let own: [MediaItem]
+    let hubs: [Hub]
+    let appears: [MediaItem]
+    let popular: [MediaItem]
+
+    func content() -> ArtistDetailContent {
         let categorized: [ArtistShelf] = hubs.compactMap { hub in
             guard (hub.hubIdentifier ?? "").hasPrefix("artist.albums.") else { return nil }
             let items = hub.metadata.filter { $0.kind == .album }
@@ -250,80 +469,18 @@ struct PlexBrowseService {
         let categorizedKeys = Set(categorized.flatMap(\.items).map(\.ratingKey))
         let albums = own.filter { !categorizedKeys.contains($0.ratingKey) }
         let ownKeys = Set(own.map(\.ratingKey))
-        let appearsOn = ((await appears)?.mediaContainer.metadata ?? [])
-            .filter { $0.kind == .album && !ownKeys.contains($0.ratingKey) }
-        let popularTracks = (await popular)?.mediaContainer.metadata.filter { $0.kind == .track } ?? []
+        let appearsOn = appears.filter { $0.kind == .album && !ownKeys.contains($0.ratingKey) }
+        let popularTracks = popular.filter { $0.kind == .track }
         return ArtistDetailContent(albums: albums, popular: popularTracks,
                                    categorized: categorized, appearsOn: appearsOn, similar: similar)
     }
-
-    func musicSectionHubs(sectionKey: String) async throws -> [Hub] {
-        let request = MusicRequest.sectionHubs(server: session.baseURL, token: session.token,
-                                               identity: identity, sectionKey: sectionKey)
-        let response: HubsResponse = try await execute(request)
-        return response.mediaContainer.hub
-    }
-
-    func playHistory(librarySectionID: String, count: Int) async throws -> [MediaItem] {
-        let request = MusicRequest.playHistory(server: session.baseURL, token: session.token,
-                                               identity: identity,
-                                               librarySectionID: librarySectionID,
-                                               count: count)
-        let response: MetadataResponse = try await execute(request)
-        return response.mediaContainer.metadata
-    }
-
-    func recentlyAddedAlbums(sectionKey: String) async throws -> [MediaItem] {
-        let request = MusicRequest.recentlyAddedAlbums(server: session.baseURL,
-                                                       token: session.token,
-                                                       identity: identity,
-                                                       sectionKey: sectionKey)
-        let response: MetadataResponse = try await execute(request)
-        return response.mediaContainer.metadata
-    }
-
-    func randomTracks(sectionKey: String) async throws -> [MediaItem] {
-        let request = MusicRequest.randomTracks(server: session.baseURL, token: session.token,
-                                                identity: identity, sectionKey: sectionKey)
-        let response: MetadataResponse = try await execute(request)
-        return response.mediaContainer.metadata.filter { $0.kind == .track }
-    }
-
-    func setPlayed(ratingKey: String, played: Bool) async throws {
-        let request = played
-            ? TimelineRequest.scrobble(server: session.baseURL,
-                                       token: session.token,
-                                       identity: identity,
-                                       ratingKey: ratingKey)
-            : TimelineRequest.unscrobble(server: session.baseURL,
-                                         token: session.token,
-                                         identity: identity,
-                                         ratingKey: ratingKey)
-        _ = try await send(request)
-    }
-
-    private func execute<Value: Decodable>(_ request: PlexRequest) async throws -> Value {
-        let data = try await send(request)
-        do {
-            return try decoder.decode(Value.self, from: data)
-        } catch {
-            throw PlexError.decoding(error)
-        }
-    }
-
-    private func musicPage(_ request: PlexRequest) async throws -> MusicPage {
-        let response: MetadataResponse = try await execute(request)
-        let items = response.mediaContainer.metadata
-        return MusicPage(items: items,
-                         total: max(response.mediaContainer.totalSize ?? items.count, items.count))
-    }
 }
 
-private struct PlexFirstCharacterResponse: Decodable {
+private struct PlexFirstCharacterResponse: Decodable, Sendable {
     let mediaContainer: Container
     enum CodingKeys: String, CodingKey { case mediaContainer = "MediaContainer" }
 
-    struct Container: Decodable {
+    struct Container: Decodable, Sendable {
         let directory: [Entry]
         enum CodingKeys: String, CodingKey { case directory = "Directory" }
 
@@ -333,7 +490,7 @@ private struct PlexFirstCharacterResponse: Decodable {
         }
     }
 
-    struct Entry: Decodable {
+    struct Entry: Decodable, Sendable {
         let key: String?
         let title: String?
         let count: Int

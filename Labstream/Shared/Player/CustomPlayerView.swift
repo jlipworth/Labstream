@@ -16,11 +16,10 @@ import UIKit
 /// seek weirdness that motivated the switch.
 struct CustomPlayerView: View {
     @Environment(MusicPlayerController.self) private var musicPlayer
-    #if os(iOS) || os(macOS)
-    /// Only read to build the authenticated Now Playing artwork request; the player
-    /// itself never touches browse state.
+    /// Only read to resolve an authority-fenced artwork descriptor; playback transport remains
+    /// independent from browse state.
     @Environment(AppModel.self) private var appModel
-    #endif
+    @Environment(\.artworkPipeline) private var artworkPipeline
     #if os(visionOS)
     @Environment(CustomCinemaSessionStore.self) private var cinemaSession
     @Environment(WatchTogetherCoordinator.self) private var watchTogetherCoordinator
@@ -30,6 +29,8 @@ struct CustomPlayerView: View {
     private let item: MediaItem
     private let controllerFactory: @MainActor () -> PlaybackController
     private let trickPlayProvider: (any TrickPlayThumbnailProviding)?
+    private var offlineArtworkSource: OfflineArtworkSource?
+    private var isLocalPlayback: Bool
     private let onClose: (() -> Void)?
     private let onRequestPlay: ((MediaItem) -> Void)?
     #if os(visionOS)
@@ -66,6 +67,8 @@ struct CustomPlayerView: View {
         self.item = item
         self.controllerFactory = controllerFactory
         self.trickPlayProvider = trickPlayProvider
+        self.offlineArtworkSource = nil
+        self.isLocalPlayback = false
         #if os(visionOS)
         self.cinemaOrigin = .systemEntry
         #endif
@@ -88,7 +91,7 @@ struct CustomPlayerView: View {
     init(localFile: URL,
          item: MediaItem,
          trickPlayProvider: (any TrickPlayThumbnailProviding)? = nil,
-         offlinePosterURL: URL? = nil,
+         offlineArtworkSource: OfflineArtworkSource? = nil,
          offlineTextSubtitles: [OfflineTextSubtitleTrack] = [],
          offlineChapterImageURLs: [Int: URL] = [:],
          onLocalPlaybackProgress: ((Int, Int?) -> Void)? = nil,
@@ -103,7 +106,6 @@ struct CustomPlayerView: View {
                                          item: item,
                                          identity: identity,
                                          client: client,
-                                         offlinePosterURL: offlinePosterURL,
                                          offlineTextSubtitles: offlineTextSubtitles,
                                          offlineChapterImageURLs: offlineChapterImageURLs,
                                          onLocalPlaybackProgress: onLocalPlaybackProgress)
@@ -111,6 +113,8 @@ struct CustomPlayerView: View {
                   trickPlayProvider: trickPlayProvider,
                   onClose: onClose,
                   onRequestPlay: nil)
+        self.offlineArtworkSource = offlineArtworkSource
+        self.isLocalPlayback = true
         #if os(visionOS)
         // A local file is always an offline origin; default to the item's own ratingKey (#87).
         cinemaOrigin = .offline(ratingKey: item.ratingKey)
@@ -244,31 +248,36 @@ struct CustomPlayerView: View {
             playback.onAdvanceToNext = onRequestPlay
             playback.onPlaybackEnded = onClose == nil ? nil : { requestPlayerClose() }
             controller = playback
+            let artworkDescriptor = PlayerArtworkDescriptorPolicy.descriptor(
+                isLocalPlayback: isLocalPlayback,
+                offlineSource: offlineArtworkSource,
+                path: item.thumb ?? item.art,
+                appModel: appModel,
+                pixelWidth: 600,
+                pixelHeight: 900)
+            playback.configureExternalArtwork(descriptor: artworkDescriptor,
+                                              pipeline: artworkPipeline)
             #if os(iOS)
             // Keep playing into the PiP window or an active AirPlay route when the app
             // backgrounds; otherwise ordinary in-app video pauses on background. The same
             // authenticated transcode request the browse grids use gives Now Playing a
             // lock-screen poster at roughly card size.
-            let artworkRequest = MediaArtwork.imageRequest(path: item.thumb,
-                                                           appModel: appModel,
-                                                           pixelWidth: 600,
-                                                           pixelHeight: 900)
             let systemCoordinator = MobilePlayerSystemCoordinator(
                 mediaSession: musicPlayer.systemMediaSessionCoordinator)
             mobileSystemCoordinator = systemCoordinator
-            systemCoordinator.configure(controller: playback, item: item,
-                                        artworkRequest: artworkRequest)
+            systemCoordinator.configure(controller: playback,
+                                        item: item,
+                                        artworkDescriptor: artworkDescriptor,
+                                        artworkPipeline: artworkPipeline)
             #endif
             #if os(macOS)
-            let artworkRequest = MediaArtwork.imageRequest(path: item.thumb,
-                                                           appModel: appModel,
-                                                           pixelWidth: 600,
-                                                           pixelHeight: 900)
             let systemCoordinator = MacPlayerSystemCoordinator(
                 mediaSession: musicPlayer.systemMediaSessionCoordinator)
             macSystemCoordinator = systemCoordinator
-            systemCoordinator.configure(controller: playback, item: item,
-                                         artworkRequest: artworkRequest)
+            systemCoordinator.configure(controller: playback,
+                                         item: item,
+                                         artworkDescriptor: artworkDescriptor,
+                                         artworkPipeline: artworkPipeline)
             #endif
             #if os(visionOS)
             // Capture the launch epoch in the same synchronous block that mints the controller: a
@@ -341,6 +350,27 @@ struct CustomPlayerView: View {
                                               launchEpoch: launchEpoch) { controller === playback }
     }
     #endif
+}
+
+/// Offline playback is a strict provenance boundary: if its persisted side-asset owner or content
+/// generation is absent, system metadata remains text-only. It must never reinterpret a persisted
+/// thumb path using whichever account happens to be authenticated now.
+@MainActor
+enum PlayerArtworkDescriptorPolicy {
+    static func descriptor(isLocalPlayback: Bool,
+                           offlineSource: OfflineArtworkSource?,
+                           path: String?,
+                           appModel: AppModel,
+                           pixelWidth: Int,
+                           pixelHeight: Int) -> ArtworkRequestDescriptor? {
+        if isLocalPlayback {
+            return offlineSource?.descriptor(pixelWidth: pixelWidth, pixelHeight: pixelHeight)
+        }
+        return MediaArtwork.descriptor(path: path,
+                                       appModel: appModel,
+                                       pixelWidth: pixelWidth,
+                                       pixelHeight: pixelHeight)
+    }
 }
 
 #if os(visionOS)

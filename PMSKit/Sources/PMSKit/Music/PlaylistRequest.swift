@@ -23,9 +23,19 @@ public enum PlaylistRequest {
     public static func items(server: URL,
                              token: String,
                              identity: ClientIdentity,
-                             ratingKey: String) -> PlexRequest {
+                             ratingKey: String,
+                             containerStart: Int? = nil,
+                             containerSize: Int? = nil) -> PlexRequest {
         PlexRequest(url: server.appendingPathComponent("/playlists/\(ratingKey)/items"),
                     method: "GET",
+                    queryItems: [
+                        containerStart.map {
+                            URLQueryItem(name: "X-Plex-Container-Start", value: String($0))
+                        },
+                        containerSize.map {
+                            URLQueryItem(name: "X-Plex-Container-Size", value: String($0))
+                        },
+                    ].compactMap { $0 },
                     headers: PlexHeaders.standard(identity: identity, token: token))
     }
 }

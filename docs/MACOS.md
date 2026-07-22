@@ -1,8 +1,9 @@
 # macOS development preview
 
 Labstream includes a native macOS target on `main` for local source builds. The target and
-scheme are named `LabstreamMac`, require macOS 26, and share the app source tree and `PMSKit`
-package with the visionOS and iOS/iPadOS targets.
+scheme are named `LabstreamMac` and require macOS 26. It compiles `Labstream/Shared/`,
+`Labstream/Capabilities/Downloads/`, and its exclusive `Labstream/Platforms/macOS/` owner
+root, plus the shared `PMSKit` package.
 
 The Mac target is a **development preview**, not a released or supported App Store product.
 Its final distribution, signing, credential-sharing, versioning, and App Store Connect strategy

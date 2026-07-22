@@ -12,9 +12,9 @@ The repository also contains `LabstreamMac` as a local-build development preview
 separately in [macOS development preview](MACOS.md) and is not part of the supported mobile product
 path.
 
-`LabstreamMobile` is the universal iPhone/iPad target. It shares the app source tree and
-`PMSKit` package with the visionOS target, but uses the mobile app entry point and an
-adaptive mobile shell. The public mobile support floor is iOS/iPadOS 26.1+.
+`LabstreamMobile` is the universal iPhone/iPad target. It compiles `Labstream/Shared/`,
+`Labstream/Capabilities/Downloads/`, and its exclusive `Labstream/Platforms/Mobile/` owner
+root, plus the shared `PMSKit` package. The public mobile support floor is iOS/iPadOS 26.1+.
 
 ## Current mobile behavior
 

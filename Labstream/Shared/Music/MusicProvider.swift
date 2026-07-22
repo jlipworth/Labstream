@@ -13,7 +13,8 @@ import PMSKit
 @MainActor
 protocol MusicProvider {
     /// The server's music libraries (Plex `artist` sections / MediaBrowser music views).
-    func musicLibraries() async throws -> [MusicLibrary]
+    func musicLibraries(catalogRepository: LibraryCatalogRepository,
+                        forceRefresh: Bool) async throws -> [MusicLibrary]
 
     /// One page of artists in a library.
     func artists(libraryID: String, sort: MusicBrowseSort, start: Int, size: Int) async throws -> MusicPage
@@ -32,10 +33,32 @@ protocol MusicProvider {
     func discographyTracks(artist: MediaItem) async throws -> [MediaItem]
 
     /// Audio playlists in the provider's natural display order.
-    func musicPlaylists() async throws -> [MediaItem]
+    func musicPlaylists(catalogRepository: LibraryCatalogRepository,
+                        forceRefresh: Bool) async throws -> [MediaItem]
 
-    /// A playlist's tracks in playlist order. Duplicate entries must be preserved.
-    func playlistTracks(playlist: MediaItem) async throws -> [MediaItem]
+    /// One page of a playlist in server order. Duplicate entries must be preserved, including
+    /// repeated backend ids within one page or across page boundaries.
+    func playlistTracksPage(playlist: MediaItem, start: Int, size: Int) async throws -> PlaylistPage
+}
+
+extension MusicProvider {
+    /// Compatibility/full-list convenience for non-UI probes. Playlist detail uses the dedicated
+    /// pager, but callers that need a complete queue still receive every positional occurrence.
+    func playlistTracks(playlist: MediaItem) async throws -> [MediaItem] {
+        let pageSize = PlaylistPagingSource.defaultPageSize
+        var items: [MediaItem] = []
+        var offset = 0
+        while true {
+            let page = try await playlistTracksPage(playlist: playlist, start: offset, size: pageSize)
+            items.append(contentsOf: page.items)
+            offset += page.items.count
+            if page.items.isEmpty
+                || page.reportedTotal.map({ offset >= max($0, 0) }) == true
+                || (page.reportedTotal == nil && page.items.count < pageSize) {
+                return items
+            }
+        }
+    }
 }
 
 /// A browsable music library/section.
@@ -44,11 +67,45 @@ struct MusicLibrary: Identifiable, Hashable {
     let title: String
 }
 
+/// Music owns its catalog filtering and destination inputs; the shared repository deliberately
+/// knows only the server's ordered section/view descriptors.
+enum MusicCatalogPolicy {
+    static func musicLibraries(from catalog: [LibraryCatalogDescriptor]) -> [MusicLibrary] {
+        catalog.filter { $0.kind == .music }
+            .map { MusicLibrary(id: $0.sourceID, title: $0.title) }
+    }
+
+    static func firstPlaylistViewID(from catalog: [LibraryCatalogDescriptor]) -> String? {
+        catalog.first { $0.sourceKind?.lowercased() == "playlists" }?.sourceID
+    }
+}
+
+/// Catalog task/publication identity for Music. The opaque authority closes credential and
+/// client-identity changes that intentionally leave the display-oriented session key unchanged;
+/// the allowed-id set also makes a live macOS sidebar visibility edit refilter mounted content.
+struct MusicCatalogLoadIdentity: Hashable {
+    let browse: AuthenticatedBrowseLoadIdentity
+    let allowedLibraryIDs: Set<String>?
+
+    @MainActor
+    init(appModel: AppModel, allowedLibraryIDs: Set<String>?) {
+        browse = AuthenticatedBrowseLoadIdentity(appModel: appModel)
+        self.allowedLibraryIDs = allowedLibraryIDs
+    }
+}
+
 /// One page of a paged listing, carrying the full library size so a grid can pre-size.
-struct MusicPage {
+struct MusicPage: Sendable {
     let items: [MediaItem]
     /// Total items in the listing (for scroll pre-sizing); falls back to `items.count`.
     let total: Int
+}
+
+/// A page of a playlist. Unlike grids/rails, playlist rows are positional: `items` may contain
+/// the same backend identity any number of times and callers must append every occurrence.
+struct PlaylistPage: Sendable {
+    let items: [MediaItem]
+    let reportedTotal: Int?
 }
 
 /// Cross-backend sort options for the artist/album grids. Each provider maps these onto
@@ -81,7 +138,7 @@ enum MusicBrowseSort: String, CaseIterable, Identifiable, Sendable {
 
 /// Everything an artist page renders. The categorized shelves / popular / appears-on /
 /// similar lists are Plex-specific enrichments; MediaBrowser providers leave them empty.
-struct ArtistDetailContent {
+struct ArtistDetailContent: Sendable {
     var albums: [MediaItem] = []
     var popular: [MediaItem] = []
     var categorized: [ArtistShelf] = []
@@ -95,7 +152,7 @@ struct ArtistDetailContent {
 }
 
 /// A named shelf of album items on the artist page (PMS "Singles & EPs", "Compilations", …).
-struct ArtistShelf: Identifiable {
+struct ArtistShelf: Identifiable, Sendable {
     let id: String
     let title: String
     let items: [MediaItem]

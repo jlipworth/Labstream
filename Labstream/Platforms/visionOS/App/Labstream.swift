@@ -29,7 +29,9 @@ struct Labstream: App {
                     .environment(customCinemaSession)
                     .environment(watchTogetherCoordinator)
                     .task {
-                        watchTogetherCoordinator.configure(appModel: runtime.appModel)
+                        watchTogetherCoordinator.configure(
+                            appModel: runtime.appModel,
+                            catalogRepository: runtime.libraryCatalogRepository)
                         watchTogetherCoordinator.startObservingSessionsIfNeeded()
                     }
                     .reportsAppSceneActivity(runtime.sceneActivity, role: .mainWindow)
@@ -44,6 +46,7 @@ struct Labstream: App {
                 CustomCinemaScaffoldView()
                     .environment(customCinemaSession)
                     .environment(watchTogetherCoordinator)
+                    .environment(\.artworkShimmerClock, runtime.artworkShimmerClock)
                     .reportsAppSceneActivity(runtime.sceneActivity, role: .cinemaImmersive)
             }
         }

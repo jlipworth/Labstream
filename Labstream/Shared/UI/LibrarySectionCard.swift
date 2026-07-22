@@ -116,7 +116,7 @@ struct LibrarySectionCard: View {
 /// The backend-agnostic library kind that drives a `LibrarySectionCard`'s icon and
 /// subtitle. Plex `Section.type` and Jellyfin/Emby `collectionType` both map here, so
 /// the card never branches on backend.
-enum LibrarySectionKind: Hashable {
+enum LibrarySectionKind: Hashable, Sendable {
     case movies
     case tvShows
     case music

@@ -246,7 +246,7 @@ extension DownloadManager {
             await MainActor.run {
                 let result = store.updateMetadata(
                     for: attemptKey, expectedSideAssetSource: sourceIdentity) {
-                    $0.posterRelativePath = posterURL.lastPathComponent
+                    $0.recordCachedPoster(relativePath: posterURL.lastPathComponent)
                 }
                 if result == .applied || result == .noChange { self.refreshRecords() }
             }

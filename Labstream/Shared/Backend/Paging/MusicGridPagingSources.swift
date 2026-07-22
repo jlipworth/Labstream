@@ -80,67 +80,47 @@ private func musicPagingIdentity(kind: MusicGridKind,
 
 private let musicAlphabetLetters = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ").map(String.init)
 
-/// Probe each A–Z letter's count in parallel and return raw `(display, count)` pairs;
+/// Probe each A-Z letter's count with the shared four-request bound and return raw pairs;
 /// `LibraryPagingModel` turns them into `AlphabetBucket`s once the first page reports the
 /// listing total. Mirrors `jellyfinAlphabetCounts` for the video grids (#96, #111).
 private func jellyfinMusicAlphabetCounts(kind: MusicGridKind,
                                          libraryID: String,
                                          appModel: AppModel) async -> [(display: String, count: Int)] {
     let service = JellyfinBrowseService(appModel: appModel)
-    let counts = await withTaskGroup(of: (Int, String, Int).self) { group -> [Int: (String, Int)] in
-        for (index, letter) in musicAlphabetLetters.enumerated() {
-            group.addTask {
-                let total: Int?
-                switch kind {
-                case .artists:
-                    total = try? await service.albumArtistsPage(parentId: libraryID,
-                                                                limit: 1,
-                                                                nameStartsWith: letter).total
-                case .albums:
-                    total = try? await service.itemsPage(parentId: libraryID,
-                                                         recursive: true,
-                                                         limit: 1,
-                                                         nameStartsWith: letter,
-                                                         includeItemTypes: "MusicAlbum").total
-                }
-                return (index, letter, total ?? 0)
-            }
+    return (try? await AlphabetCountFanout.counts(letters: musicAlphabetLetters) { letter in
+        switch kind {
+        case .artists:
+            return try await service.albumArtistsPage(parentId: libraryID,
+                                                       limit: 1,
+                                                       nameStartsWith: letter).total ?? 0
+        case .albums:
+            return try await service.itemsPage(parentId: libraryID,
+                                                recursive: true,
+                                                limit: 1,
+                                                nameStartsWith: letter,
+                                                includeItemTypes: "MusicAlbum").total ?? 0
         }
-        var byIndex: [Int: (String, Int)] = [:]
-        for await (index, letter, count) in group where count > 0 { byIndex[index] = (letter, count) }
-        return byIndex
-    }
-    return counts.keys.sorted().map { (display: counts[$0]!.0, count: counts[$0]!.1) }
+    }) ?? []
 }
 
 private func embyMusicAlphabetCounts(kind: MusicGridKind,
                                      libraryID: String,
                                      appModel: AppModel) async -> [(display: String, count: Int)] {
     let service = EmbyBrowseService(appModel: appModel)
-    let counts = await withTaskGroup(of: (Int, String, Int).self) { group -> [Int: (String, Int)] in
-        for (index, letter) in musicAlphabetLetters.enumerated() {
-            group.addTask {
-                let total: Int?
-                switch kind {
-                case .artists:
-                    total = try? await service.albumArtistsPage(parentId: libraryID,
-                                                                limit: 1,
-                                                                nameStartsWith: letter).total
-                case .albums:
-                    total = try? await service.itemsPage(parentId: libraryID,
-                                                         recursive: true,
-                                                         limit: 1,
-                                                         nameStartsWith: letter,
-                                                         includeItemTypes: "MusicAlbum").total
-                }
-                return (index, letter, total ?? 0)
-            }
+    return (try? await AlphabetCountFanout.counts(letters: musicAlphabetLetters) { letter in
+        switch kind {
+        case .artists:
+            return try await service.albumArtistsPage(parentId: libraryID,
+                                                       limit: 1,
+                                                       nameStartsWith: letter).total ?? 0
+        case .albums:
+            return try await service.itemsPage(parentId: libraryID,
+                                                recursive: true,
+                                                limit: 1,
+                                                nameStartsWith: letter,
+                                                includeItemTypes: "MusicAlbum").total ?? 0
         }
-        var byIndex: [Int: (String, Int)] = [:]
-        for await (index, letter, count) in group where count > 0 { byIndex[index] = (letter, count) }
-        return byIndex
-    }
-    return counts.keys.sorted().map { (display: counts[$0]!.0, count: counts[$0]!.1) }
+    }) ?? []
 }
 
 /// Plex reads its single `/firstCharacter` response, scoped to the artist (8) / album (9)

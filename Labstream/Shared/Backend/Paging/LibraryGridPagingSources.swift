@@ -192,21 +192,21 @@ private func mediaBrowserItemsPage(backend: MediaBackendID,
         return try await JellyfinBrowseService(appModel: appModel).itemsPage(
             parentId: view.id, recursive: recursive, startIndex: startIndex, limit: limit,
             nameStartsWith: nameStartsWith, includeItemTypes: includeItemTypes,
-            fields: JellyfinLibrary.gridItemFields, browseQuery: browseQuery
+            fields: MediaBrowserMetadataFieldProfiles.grid.fields, browseQuery: browseQuery
         )
     case .emby:
         return try await EmbyBrowseService(appModel: appModel).itemsPage(
             parentId: view.id, recursive: recursive, startIndex: startIndex, limit: limit,
             nameStartsWith: nameStartsWith, includeItemTypes: includeItemTypes,
-            fields: EmbyLibrary.gridItemFields, browseQuery: browseQuery
+            fields: MediaBrowserMetadataFieldProfiles.grid.fields, browseQuery: browseQuery
         )
     case .plex:
         preconditionFailure("Plex does not use MediaBrowser paging")
     }
 }
 
-/// Probe each A-Z letter's MediaBrowser item count in parallel (GH #96). Individual probe
-/// failures remain degraded to zero while stable letter order is reconstructed after completion.
+/// Probe each A-Z letter's MediaBrowser item count with a four-request bound (GH #96). Individual
+/// probe failures remain degraded to zero while stable letter order is preserved.
 @MainActor
 private func mediaBrowserAlphabetCounts(backend: MediaBackendID,
                                         appModel: AppModel,
@@ -214,22 +214,12 @@ private func mediaBrowserAlphabetCounts(backend: MediaBackendID,
     let letters = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ").map(String.init)
     let itemTypes = MediaBrowserLibraryGridPolicy.itemTypes(collectionType: view.collectionType)
     let recursive = MediaBrowserLibraryGridPolicy.recursive(collectionType: view.collectionType)
-    let counts = await withTaskGroup(of: (Int, String, Int).self) { group -> [Int: (String, Int)] in
-        for (index, letter) in letters.enumerated() {
-            group.addTask {
-                let page = try? await mediaBrowserItemsPage(
-                    backend: backend, view: view, appModel: appModel,
-                    recursive: recursive, startIndex: nil, limit: 1,
-                    nameStartsWith: letter, includeItemTypes: itemTypes
-                )
-                return (index, letter, page?.total ?? 0)
-            }
-        }
-        var byIndex: [Int: (String, Int)] = [:]
-        for await (index, letter, count) in group where count > 0 {
-            byIndex[index] = (letter, count)
-        }
-        return byIndex
-    }
-    return counts.keys.sorted().map { (display: counts[$0]!.0, count: counts[$0]!.1) }
+    return (try? await AlphabetCountFanout.counts(letters: letters) { letter in
+        let page = try await mediaBrowserItemsPage(
+            backend: backend, view: view, appModel: appModel,
+            recursive: recursive, startIndex: nil, limit: 1,
+            nameStartsWith: letter, includeItemTypes: itemTypes
+        )
+        return page.total ?? 0
+    }) ?? []
 }

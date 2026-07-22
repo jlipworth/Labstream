@@ -3,11 +3,6 @@ import Observation
 import AVFoundation
 import AVFAudio
 import MediaPlayer
-#if os(macOS)
-import AppKit
-#elseif canImport(UIKit)
-import UIKit
-#endif
 import PMSKit
 
 /// Queue-based music playback for the Plexamp-style music module (#17).
@@ -125,6 +120,7 @@ final class MusicPlayerController {
     @ObservationIgnored private let player = AVPlayer()
 
     @ObservationIgnored private let appModel: AppModel
+    @ObservationIgnored private let artworkPipeline: ArtworkPipeline
     @ObservationIgnored private let lifecycle = MusicPlaybackLifecycle()
     @ObservationIgnored private lazy var lifecycleCallbacks = PlaybackLifecycleCallbackSink<MusicPlaybackLifecycle.Generation> { [weak self] generation in
         self?.lifecycle.isCurrent(generation) == true
@@ -190,8 +186,10 @@ final class MusicPlayerController {
     // MARK: - Init
 
     init(appModel: AppModel,
+         artworkPipeline: ArtworkPipeline,
          systemMediaSessionCoordinator: SystemMediaSessionCoordinator = .init()) {
         self.appModel = appModel
+        self.artworkPipeline = artworkPipeline
         self.systemMediaSessionCoordinator = systemMediaSessionCoordinator
     }
 
@@ -830,45 +828,40 @@ final class MusicPlayerController {
     private func fetchArtwork(for track: MediaItem) {
         artworkTask?.cancel()
         let artworkToken = artworkRequestAuthority.begin()
-        guard let request = MediaArtwork.imageRequest(path: track.musicArtPath,
-                                                      appModel: appModel,
-                                                      pixelWidth: 600,
-                                                      pixelHeight: 600) else { return }
+        guard let descriptor = MediaArtwork.descriptor(path: track.musicArtPath,
+                                                       appModel: appModel,
+                                                       pixelWidth: 600,
+                                                       pixelHeight: 600) else { return }
         let ratingKey = track.ratingKey
-        artworkTask = Task { [weak self] in
-            guard let data = await Self.fetchArtworkData(request: request),
-                  let image = UIImage(data: data) else { return }
-            let artwork = Self.makeArtwork(image)
-            await MainActor.run {
+        artworkTask = Task { [weak self, artworkPipeline = self.artworkPipeline] in
+            do {
+                let response = try await artworkPipeline.fetch(descriptor, priority: .visible)
+                try Task.checkCancellation()
                 guard let self, self.current?.ratingKey == ratingKey,
-                      self.artworkRequestAuthority.accepts(artworkToken) else { return }
-                self.currentArtwork = artwork
+                      self.artworkRequestAuthority.accepts(artworkToken),
+                      MediaArtwork.descriptor(path: self.current?.musicArtPath,
+                                              appModel: self.appModel,
+                                              pixelWidth: 600,
+                                              pixelHeight: 600)?.taskIdentity
+                        == descriptor.taskIdentity else { return }
+                self.currentArtwork = Self.makeArtwork(response.image)
                 // Cache while video owns the shared media session. Reclaiming music
                 // republishes this image through the newly-acquired music lease.
                 if self.mediaLease?.isCurrent == true, let track = self.current {
                     self.updateNowPlayingInfo(for: track)
                 }
+            } catch {
+                // System artwork is best-effort and must never black-hole playback. Cancellation,
+                // negative-cache hits, transport failures, and invalid images all keep text-only
+                // Now Playing metadata.
             }
         }
     }
 
     // Artwork must be built in a nonisolated context (SIGTRAP otherwise); the shared
     // `NowPlayingArtwork` factory carries the full rationale.
-    private nonisolated static func makeArtwork(_ image: UIImage) -> MPMediaItemArtwork {
+    private nonisolated static func makeArtwork(_ image: DecodedImage) -> MPMediaItemArtwork {
         NowPlayingArtwork.make(image)
-    }
-
-    /// Best-effort artwork fetch. Returns `nil` (never throws) on any failure so it
-    /// can't black-hole playback. `nonisolated` + returns Sendable `Data`.
-    private nonisolated static func fetchArtworkData(request: URLRequest) async -> Data? {
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            if let http = response as? HTTPURLResponse,
-               !(200...299).contains(http.statusCode) { return nil }
-            return data.isEmpty ? nil : data
-        } catch {
-            return nil
-        }
     }
 
     // MARK: - Remote commands (MPRemoteCommandCenter)

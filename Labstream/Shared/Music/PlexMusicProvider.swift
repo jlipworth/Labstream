@@ -16,12 +16,11 @@ struct PlexMusicProvider: MusicProvider {
         var errorDescription: String? { "No server selected." }
     }
 
-    func musicLibraries() async throws -> [MusicLibrary] {
-        guard let service = try? PlexBrowseService(appModel: appModel) else {
-            throw NotConnected()
-        }
-        return try await service.libraries().filter(\.isMusic)
-            .map { MusicLibrary(id: $0.key, title: $0.title) }
+    func musicLibraries(catalogRepository: LibraryCatalogRepository,
+                        forceRefresh: Bool) async throws -> [MusicLibrary] {
+        let snapshot = try await catalogRepository.catalog(appModel: appModel,
+                                                           forceRefresh: forceRefresh)
+        return MusicCatalogPolicy.musicLibraries(from: snapshot.descriptors)
     }
 
     func artists(libraryID: String, sort: MusicBrowseSort, start: Int, size: Int) async throws -> MusicPage {
@@ -48,14 +47,17 @@ struct PlexMusicProvider: MusicProvider {
         return try await service.discographyTracks(artistRatingKey: artist.ratingKey)
     }
 
-    func musicPlaylists() async throws -> [MediaItem] {
+    func musicPlaylists(catalogRepository: LibraryCatalogRepository,
+                        forceRefresh: Bool) async throws -> [MediaItem] {
         guard let service = try? PlexBrowseService(appModel: appModel) else { throw NotConnected() }
         return try await service.musicPlaylists()
     }
 
-    func playlistTracks(playlist: MediaItem) async throws -> [MediaItem] {
+    func playlistTracksPage(playlist: MediaItem, start: Int, size: Int) async throws -> PlaylistPage {
         guard let service = try? PlexBrowseService(appModel: appModel) else { throw NotConnected() }
-        return try await service.playlistTracks(ratingKey: playlist.ratingKey)
+        return try await service.playlistTracksPage(ratingKey: playlist.ratingKey,
+                                                    start: start,
+                                                    size: size)
     }
 
     func artistDetail(artist: MediaItem, libraryID: String?) async throws -> ArtistDetailContent {

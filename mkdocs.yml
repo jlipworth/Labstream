@@ -55,6 +55,7 @@ nav:
       - Testing strategy: TESTING-STRATEGY.md
       - Compile performance: COMPILE-PERFORMANCE.md
       - iOS and iPadOS target: MOBILE-IOS.md
+      - tvOS development target: TVOS.md
       - macOS development preview: MACOS.md
       - Native macOS CI: MACOS-CI.md
       - Scripts catalog: SCRIPTS.md

@@ -108,6 +108,7 @@ struct RootView: View {
 
     var body: some View {
         rootContent
+        .environment(\.metadataRepository, runtime.metadataRepository)
         // A custom visionOS presentation must make the obscured hierarchy inert;
         // otherwise gaze/pinch can fall through even when an overlay is visible.
         .allowsHitTesting(!nowPlayingPresentation.isPresented)
@@ -259,6 +260,8 @@ struct RootView: View {
         .environment(downloadManager)
         #endif
         .environment(musicPlayer)
+        .environment(\.artworkPipeline, runtime.artworkPipeline)
+        .environment(\.artworkShimmerClock, runtime.artworkShimmerClock)
     }
 
     @ViewBuilder
@@ -281,7 +284,7 @@ struct RootView: View {
     private var tvRootContent: some View {
         TabView(selection: $selection) {
             Tab("Home", systemImage: "house", value: AppTab.home) {
-                NavigationStack(path: $homePath) { HomeView() }
+                NavigationStack(path: $homePath) { HomeView(catalogRepository: runtime.libraryCatalogRepository) }
                     .environment(\.pushMediaItem, { (item: MediaItem) in homePath.append(item) })
                     .id(appModel.activeBrowseSessionKey)
             }
@@ -292,17 +295,21 @@ struct RootView: View {
                 NavigationStack(path: $searchPath) {
                     // No onClearSearch: Search is a persistent tab in this shell, so Clear
                     // resets the query in place instead of bouncing to the prior tab.
-                    SearchView(focusRequest: searchFocusRequest)
+                    SearchView(focusRequest: searchFocusRequest,
+                               catalogRepository: runtime.libraryCatalogRepository)
                 }
                 .environment(\.pushMediaItem, { (item: MediaItem) in searchPath.append(item) })
                 .id(appModel.activeBrowseSessionKey)
             }
             Tab("Music", systemImage: "music.note", value: AppTab.music) {
-                NavigationStack(path: $musicPath) { MusicLibraryView() }
+                NavigationStack(path: $musicPath) {
+                    MusicLibraryView(catalogRepository: runtime.libraryCatalogRepository)
+                }
                     .id(appModel.activeBrowseSessionKey)
             }
             Tab("Settings", systemImage: "gearshape", value: AppTab.settings) {
-                NavigationStack { SettingsView(authManager: authManager) }
+                NavigationStack { SettingsView(authManager: authManager,
+                             catalogRepository: runtime.libraryCatalogRepository) }
             }
         }
         .safeAreaInset(edge: .bottom) {
@@ -330,7 +337,7 @@ struct RootView: View {
     }
 
     private var tvLibrariesContent: some View {
-        NavigationStack(path: $librariesPath) { LibrariesView() }
+        NavigationStack(path: $librariesPath) { LibrariesView(catalogRepository: runtime.libraryCatalogRepository) }
             .environment(\.pushMediaItem, { (item: MediaItem) in librariesPath.append(item) })
             .id(appModel.activeBrowseSessionKey)
     }
@@ -515,7 +522,9 @@ struct RootView: View {
     private var macDetail: some View {
         if macSearchPresented {
             NavigationStack(path: $searchPath) {
-                SearchView(query: $macSearchText, onClearSearch: dismissMacSearch)
+                SearchView(query: $macSearchText,
+                           onClearSearch: dismissMacSearch,
+                           catalogRepository: runtime.libraryCatalogRepository)
                     .navigationTitle("Search")
             }
             .environment(\.pushMediaItem, { (item: MediaItem) in searchPath.append(item) })
@@ -549,7 +558,8 @@ struct RootView: View {
 
     private func reloadMacSidebar() async {
         let previousIdentity = macLoadedServerIdentity
-        await macSidebarModel.load(appModel: appModel)
+        await macSidebarModel.load(appModel: appModel,
+                                       catalogRepository: runtime.libraryCatalogRepository)
         guard !Task.isCancelled else { return }
 
         let catalog = macSidebarModel.catalog
@@ -688,7 +698,7 @@ struct RootView: View {
         switch destination {
         case .home:
             NavigationStack(path: $homePath) {
-                HomeView()
+                HomeView(catalogRepository: runtime.libraryCatalogRepository)
                     .navigationTitle("Home")
             }
             .environment(\.pushMediaItem, { (item: MediaItem) in homePath.append(item) })
@@ -708,13 +718,14 @@ struct RootView: View {
                 .environment(\.pushMediaItem, { (item: MediaItem) in librariesPath.append(item) })
                 .id(appModel.activeBrowseSessionKey)
             } else {
-                HomeView()
+                HomeView(catalogRepository: runtime.libraryCatalogRepository)
             }
         case .music(let pivot):
             NavigationStack(path: $musicPath) {
                 MusicLibraryView(macPivot: pivot,
                                  selectedLibraryID: $macSelectedMusicLibraryID,
-                                 allowedLibraryIDs: Set(macSidebarModel.catalog.musicLibraries.map(\.id)))
+                                 allowedLibraryIDs: Set(macSidebarModel.catalog.musicLibraries.map(\.id)),
+                                 catalogRepository: runtime.libraryCatalogRepository)
                     .navigationTitle(pivot == .home ? "Music" : pivot.rawValue)
             }
             .id(appModel.activeBrowseSessionKey)
@@ -738,27 +749,31 @@ struct RootView: View {
             // NOT keyed: Downloads is cross-backend by design (each DownloadRecord carries its own
             // backendKind) and must persist across switches.
             Tab("Home", systemImage: "house", value: AppTab.home) {
-                NavigationStack(path: $homePath) { HomeView() }
+                NavigationStack(path: $homePath) { HomeView(catalogRepository: runtime.libraryCatalogRepository) }
                     .environment(\.cinemaOriginTab, .home)
                     .environment(\.pushMediaItem, { (item: MediaItem) in homePath.append(item) })
                     .id(appModel.activeBrowseSessionKey)
             }
             Tab("Libraries", systemImage: "rectangle.stack", value: AppTab.libraries) {
-                NavigationStack(path: $librariesPath) { LibrariesView() }
+                NavigationStack(path: $librariesPath) { LibrariesView(catalogRepository: runtime.libraryCatalogRepository) }
                     .environment(\.cinemaOriginTab, .libraries)
                     .environment(\.pushMediaItem, { (item: MediaItem) in librariesPath.append(item) })
                     .id(appModel.activeBrowseSessionKey)
             }
             Tab("Search", systemImage: "magnifyingglass", value: AppTab.search) {
                 NavigationStack(path: $searchPath) {
-                    SearchView(focusRequest: searchFocusRequest, onClearSearch: exitSearch)
+                    SearchView(focusRequest: searchFocusRequest,
+                               onClearSearch: exitSearch,
+                               catalogRepository: runtime.libraryCatalogRepository)
                 }
                     .environment(\.cinemaOriginTab, .search)
                     .environment(\.pushMediaItem, { (item: MediaItem) in searchPath.append(item) })
                     .id(appModel.activeBrowseSessionKey)
             }
             Tab("Music", systemImage: "music.note", value: AppTab.music) {
-                NavigationStack(path: $musicPath) { MusicLibraryView() }
+                NavigationStack(path: $musicPath) {
+                    MusicLibraryView(catalogRepository: runtime.libraryCatalogRepository)
+                }
                     .id(appModel.activeBrowseSessionKey)
             }
             Tab("Offline", systemImage: "arrow.down.circle", value: AppTab.offline) {
@@ -768,7 +783,8 @@ struct RootView: View {
                 }
             }
             Tab("Settings", systemImage: "gearshape", value: AppTab.settings) {
-                NavigationStack { SettingsView(authManager: authManager) }
+                NavigationStack { SettingsView(authManager: authManager,
+                             catalogRepository: runtime.libraryCatalogRepository) }
             }
         }
         // The mini player spans every tab so music keeps a visible handle while
@@ -811,7 +827,8 @@ struct RootView: View {
         }
         .sheet(isPresented: $showsSettingsSheet) {
             NavigationStack {
-                SettingsView(authManager: authManager)
+                SettingsView(authManager: authManager,
+                             catalogRepository: runtime.libraryCatalogRepository)
                     .toolbar {
                         ToolbarItem(placement: .confirmationAction) {
                             Button("Done") { showsSettingsSheet = false }
@@ -863,27 +880,29 @@ struct RootView: View {
         switch tab {
         case .home:
             NavigationStack(path: $homePath) {
-                HomeView()
+                HomeView(catalogRepository: runtime.libraryCatalogRepository)
                     .toolbar { compactSettingsToolbar }
             }
                 .environment(\.pushMediaItem, { (item: MediaItem) in homePath.append(item) })
                 .id(appModel.activeBrowseSessionKey)
         case .libraries:
             NavigationStack(path: $librariesPath) {
-                LibrariesView()
+                LibrariesView(catalogRepository: runtime.libraryCatalogRepository)
                     .toolbar { compactSettingsToolbar }
             }
                 .environment(\.pushMediaItem, { (item: MediaItem) in librariesPath.append(item) })
                 .id(appModel.activeBrowseSessionKey)
         case .search:
             NavigationStack(path: $searchPath) {
-                SearchView(focusRequest: searchFocusRequest, onClearSearch: exitSearch)
+                SearchView(focusRequest: searchFocusRequest,
+                           onClearSearch: exitSearch,
+                           catalogRepository: runtime.libraryCatalogRepository)
             }
                 .environment(\.pushMediaItem, { (item: MediaItem) in searchPath.append(item) })
                 .id(appModel.activeBrowseSessionKey)
         case .music:
             NavigationStack(path: $musicPath) {
-                MusicLibraryView()
+                MusicLibraryView(catalogRepository: runtime.libraryCatalogRepository)
                     .toolbar { compactSettingsToolbar }
             }
                 .id(appModel.activeBrowseSessionKey)
@@ -893,7 +912,8 @@ struct RootView: View {
                     .toolbar { compactSettingsToolbar }
             }
         case .settings:
-            NavigationStack { SettingsView(authManager: authManager) }
+            NavigationStack { SettingsView(authManager: authManager,
+                             catalogRepository: runtime.libraryCatalogRepository) }
         }
     }
     #endif
@@ -942,6 +962,7 @@ struct RootView: View {
             // `.item` is reserved for callers that JUST fetched the metadata
             // (Continue Watching), so no snapshot can grow stale in between.
             var item: MediaItem?
+            var authoritativeSnapshot: MetadataSnapshot?
             switch route.target {
             case .item(let given):
                 item = given
@@ -955,10 +976,14 @@ struct RootView: View {
                    namespace != BackendScopedMediaID.serverNamespace(session.baseURL) {
                     return
                 }
-                let result = await DetailMetadataLoader.load(ratingKey: routeKey.ratingKey,
-                                                             backend: routeBackend,
-                                                             appModel: appModel)
+                let result = await DetailMetadataLoader.load(
+                    ratingKey: routeKey.ratingKey,
+                    backend: routeBackend,
+                    appModel: appModel,
+                    repository: runtime.metadataRepository,
+                    policy: .authoritative)
                 item = result.item
+                authoritativeSnapshot = result.snapshot
                 guard isCurrentRoute() else { return }
             }
             // Unresolvable (deleted item, stale index from another server): the
@@ -973,6 +998,9 @@ struct RootView: View {
                 guard isCurrentRoute() else { return }
                 if let leaf {
                     item = leaf
+                    // The route-key read described the container, not the resolved leaf. Detail
+                    // performs the leaf's single native hydration before autoplay.
+                    authoritativeSnapshot = nil
                 } else {
                     autoPlay = false // fall back to opening the container browser
                 }
@@ -997,7 +1025,8 @@ struct RootView: View {
                 // Arm the handshake immediately before pushing; DetailView consumes it in its
                 // `.task` and presents the player. The generation/session guard above keeps
                 // stale system-entry tasks from arming autoplay for a route they won't append.
-                router.requestAutoPlay(forRatingKey: item.ratingKey)
+                router.requestAutoPlay(forRatingKey: item.ratingKey,
+                                       snapshot: authoritativeSnapshot)
             }
             appendPath(for: targetTab, item)
         }

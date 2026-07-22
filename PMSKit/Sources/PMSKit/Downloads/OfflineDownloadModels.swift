@@ -465,6 +465,10 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     public var plexOptimizeStartedAtEpochSeconds: Double?
     /// Locally-cached poster path, relative to the Downloads base directory.
     public var posterRelativePath: String?
+    /// Persisted content revision for the locally-cached poster. This advances whenever the
+    /// poster is written or cleared, so consumers can distinguish a same-path replacement even
+    /// when the encoded byte count is unchanged. Rows written before this field existed decode 0.
+    public var posterGeneration: UInt64
     /// Locally-cached Plex BIF index path, relative to the Downloads base directory.
     /// Populated only for Plex items/parts that advertise a standard-definition BIF.
     public var plexBIFRelativePath: String?
@@ -652,6 +656,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
                 optimizeBaselinePartIDs: [Int]? = nil,
                 plexOptimizeStartedAtEpochSeconds: Double? = nil,
                 posterRelativePath: String? = nil,
+                posterGeneration: UInt64 = 0,
                 plexBIFRelativePath: String? = nil,
                 embyBIFRelativePath: String? = nil,
                 jellyfinTrickPlayPlaylistRelativePath: String? = nil,
@@ -720,6 +725,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         self.optimizeBaselinePartIDs = optimizeBaselinePartIDs
         self.plexOptimizeStartedAtEpochSeconds = plexOptimizeStartedAtEpochSeconds
         self.posterRelativePath = posterRelativePath
+        self.posterGeneration = posterGeneration
         self.plexBIFRelativePath = plexBIFRelativePath
         self.embyBIFRelativePath = embyBIFRelativePath
         self.jellyfinTrickPlayPlaylistRelativePath = jellyfinTrickPlayPlaylistRelativePath
@@ -793,6 +799,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         plexOptimizeStartedAtEpochSeconds = try c.decodeIfPresent(
             Double.self, forKey: .plexOptimizeStartedAtEpochSeconds)
         posterRelativePath = try c.decodeIfPresent(String.self, forKey: .posterRelativePath)
+        posterGeneration = try c.decodeIfPresent(UInt64.self, forKey: .posterGeneration) ?? 0
         plexBIFRelativePath = try c.decodeIfPresent(String.self, forKey: .plexBIFRelativePath)
         embyBIFRelativePath = try c.decodeIfPresent(String.self, forKey: .embyBIFRelativePath)
         jellyfinTrickPlayPlaylistRelativePath = try c.decodeIfPresent(String.self, forKey: .jellyfinTrickPlayPlaylistRelativePath)
@@ -845,8 +852,13 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         let canPreserveBundle = expectedOwner != nil
             && expectedOwner == previous.sideAssetBundleOwner
         if canPreserveBundle {
-            if posterRelativePath == nil {
-                posterRelativePath = previous.posterRelativePath
+            if posterRelativePath == nil, let previousPoster = previous.posterRelativePath {
+                posterRelativePath = previousPoster
+                posterGeneration = previous.posterGeneration
+            } else if posterRelativePath == previous.posterRelativePath {
+                // A stale metadata snapshot may already carry the stable poster filename. Keep
+                // the newest persisted revision so that upsert cannot roll content identity back.
+                posterGeneration = max(posterGeneration, previous.posterGeneration)
             }
             if plexBIFRelativePath == nil {
                 plexBIFRelativePath = previous.plexBIFRelativePath
@@ -957,7 +969,7 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
     }
 
     public mutating func clearCachedSideAssets() {
-        posterRelativePath = nil
+        clearCachedPoster()
         plexBIFRelativePath = nil
         embyBIFRelativePath = nil
         jellyfinTrickPlayPlaylistRelativePath = nil
@@ -965,6 +977,20 @@ public struct OfflineMetadata: Codable, Sendable, Equatable {
         chapterImageRelativePaths = nil
         offlineTextSubtitles = nil
         sideAssetBundleOwner = nil
+    }
+
+    /// Publish a locally-cached poster and advance its content identity. The revision changes even
+    /// when `relativePath` is unchanged, because an atomic promotion may have replaced the bytes at
+    /// that stable path with a same-sized image.
+    public mutating func recordCachedPoster(relativePath: String) {
+        posterRelativePath = relativePath
+        posterGeneration &+= 1
+    }
+
+    /// Clear the locally-cached poster and invalidate any decoded image keyed by its prior revision.
+    public mutating func clearCachedPoster() {
+        posterRelativePath = nil
+        posterGeneration &+= 1
     }
 
     /// True when this row downloads a server-prepared version rather than the genuine source — see

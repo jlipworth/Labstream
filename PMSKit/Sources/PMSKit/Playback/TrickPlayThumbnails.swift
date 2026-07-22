@@ -79,24 +79,35 @@ public struct JellyfinTrickPlayTile: Equatable, Sendable {
                 columns: Int,
                 rows: Int) {
         self.uri = uri
-        self.startMs = max(0, startMs)
-        self.durationMs = max(1, durationMs)
-        self.tileDurationMs = max(1, tileDurationMs)
-        self.tileWidth = max(1, tileWidth)
-        self.tileHeight = max(1, tileHeight)
-        self.columns = max(1, columns)
-        self.rows = max(1, rows)
+        self.startMs = min(max(0, startMs), JellyfinTrickPlayLimits.maximumTimelineMs)
+        self.durationMs = min(max(1, durationMs), JellyfinTrickPlayLimits.maximumSegmentDurationMs)
+        self.tileDurationMs = min(max(1, tileDurationMs), JellyfinTrickPlayLimits.maximumFrameDurationMs)
+        self.tileWidth = min(max(1, tileWidth), JellyfinTrickPlayLimits.maximumTileDimension)
+        self.tileHeight = min(max(1, tileHeight), JellyfinTrickPlayLimits.maximumTileDimension)
+
+        let boundedColumns = min(max(1, columns), JellyfinTrickPlayLimits.maximumLayoutDimension)
+        self.columns = boundedColumns
+        self.rows = min(max(1, rows),
+                        min(JellyfinTrickPlayLimits.maximumLayoutDimension,
+                            JellyfinTrickPlayLimits.maximumFrameCapacity / boundedColumns))
     }
 
-    public var frameCapacity: Int { columns * rows }
+    public var frameCapacity: Int {
+        let (capacity, overflow) = columns.multipliedReportingOverflow(by: rows)
+        return overflow ? JellyfinTrickPlayLimits.maximumFrameCapacity : capacity
+    }
 
     public func frameIndex(nearMs targetMs: Int) -> Int {
-        let localMs = min(max(0, targetMs - startMs), max(0, durationMs - 1))
+        let localMs = targetMs <= startMs ? 0 : min(targetMs - startMs, durationMs - 1)
         return min(frameCapacity - 1, localMs / tileDurationMs)
     }
 
     public func frameTimeMs(frameIndex: Int) -> Int {
-        startMs + min(max(0, frameIndex), frameCapacity - 1) * tileDurationMs
+        let boundedIndex = min(max(0, frameIndex), frameCapacity - 1)
+        let (offset, multiplicationOverflow) = boundedIndex.multipliedReportingOverflow(by: tileDurationMs)
+        let boundedOffset = multiplicationOverflow ? durationMs - 1 : min(offset, durationMs - 1)
+        let (timeMs, additionOverflow) = startMs.addingReportingOverflow(boundedOffset)
+        return additionOverflow ? Int.max : timeMs
     }
 }
 
@@ -126,6 +137,20 @@ public struct JellyfinTrickPlayPlaylist: Equatable, Sendable {
 
 public enum JellyfinTrickPlayPlaylistParserError: Error, Equatable, Sendable {
     case empty
+    case invalidMetadata
+    case arithmeticOverflow
+}
+
+private enum JellyfinTrickPlayLimits {
+    // These are deliberately generous compared with Jellyfin's usual 320x180, 10x10,
+    // ten-second tiles, but keep hostile playlists from constructing nonsensical model math.
+    static let maximumTileDimension = 16_384
+    static let maximumLayoutDimension = 1_000
+    static let maximumFrameCapacity = 100_000
+    static let maximumSheetDimension = 65_536
+    static let maximumFrameDurationMs = 7 * 24 * 60 * 60 * 1_000
+    static let maximumSegmentDurationMs = 7 * 24 * 60 * 60 * 1_000
+    static let maximumTimelineMs = 31 * 24 * 60 * 60 * 1_000
 }
 
 /// Parser for Jellyfin's image-only trickplay HLS playlist. Jellyfin emits tile sheets as
@@ -143,12 +168,17 @@ public enum JellyfinTrickPlayPlaylistParser {
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !line.isEmpty else { continue }
             if line.hasPrefix("#EXTINF:") {
-                pendingDurationMs = parseEXTINF(line)
+                pendingDurationMs = try parseEXTINF(line)
             } else if line.hasPrefix("#EXT-X-TILES:") {
-                pendingTiles = parseTiles(line)
+                pendingTiles = try parseTiles(line)
             } else if line.hasPrefix("#") {
                 continue
             } else if let durationMs = pendingDurationMs, let tileMeta = pendingTiles {
+                let (nextStartMs, overflow) = currentStartMs.addingReportingOverflow(durationMs)
+                guard !overflow else { throw JellyfinTrickPlayPlaylistParserError.arithmeticOverflow }
+                guard nextStartMs <= JellyfinTrickPlayLimits.maximumTimelineMs else {
+                    throw JellyfinTrickPlayPlaylistParserError.invalidMetadata
+                }
                 tiles.append(JellyfinTrickPlayTile(uri: line,
                                                    startMs: currentStartMs,
                                                    durationMs: durationMs,
@@ -157,7 +187,7 @@ public enum JellyfinTrickPlayPlaylistParser {
                                                    tileHeight: tileMeta.height,
                                                    columns: tileMeta.columns,
                                                    rows: tileMeta.rows))
-                currentStartMs += durationMs
+                currentStartMs = nextStartMs
                 pendingDurationMs = nil
                 pendingTiles = nil
             }
@@ -167,25 +197,76 @@ public enum JellyfinTrickPlayPlaylistParser {
         return JellyfinTrickPlayPlaylist(tiles: tiles)
     }
 
-    private static func parseEXTINF(_ line: String) -> Int? {
+    private static func parseEXTINF(_ line: String) throws -> Int {
         let raw = line.dropFirst("#EXTINF:".count).split(separator: ",", maxSplits: 1).first ?? ""
-        guard let seconds = Double(raw.trimmingCharacters(in: .whitespaces)) else { return nil }
-        return max(1, Int((seconds * 1000).rounded()))
+        guard let seconds = Double(raw.trimmingCharacters(in: .whitespaces)) else {
+            throw JellyfinTrickPlayPlaylistParserError.invalidMetadata
+        }
+        return try milliseconds(seconds: seconds,
+                                maximum: JellyfinTrickPlayLimits.maximumSegmentDurationMs)
     }
 
-    private static func parseTiles(_ line: String) -> (width: Int, height: Int, columns: Int, rows: Int, durationMs: Int)? {
+    private static func parseTiles(_ line: String) throws -> (width: Int, height: Int, columns: Int, rows: Int, durationMs: Int) {
         let payload = line.dropFirst("#EXT-X-TILES:".count)
         var values: [String: String] = [:]
         for part in payload.split(separator: ",") {
             let pair = part.split(separator: "=", maxSplits: 1).map(String.init)
             if pair.count == 2 { values[pair[0].uppercased()] = pair[1] }
         }
-        guard let resolution = values["RESOLUTION"]?.split(separator: "x").compactMap({ Int($0) }),
-              resolution.count == 2,
-              let layout = values["LAYOUT"]?.split(separator: "x").compactMap({ Int($0) }),
-              layout.count == 2,
-              let durationSeconds = values["DURATION"].flatMap(Double.init) else { return nil }
-        return (resolution[0], resolution[1], layout[0], layout[1], max(1, Int((durationSeconds * 1000).rounded())))
+        guard let resolution = parsePair(values["RESOLUTION"]),
+              let layout = parsePair(values["LAYOUT"]),
+              let durationSeconds = values["DURATION"].flatMap(Double.init),
+              resolution.first > 0,
+              resolution.second > 0,
+              layout.first > 0,
+              layout.second > 0 else {
+            throw JellyfinTrickPlayPlaylistParserError.invalidMetadata
+        }
+
+        let (frameCapacity, frameCapacityOverflow) = layout.first.multipliedReportingOverflow(by: layout.second)
+        let (sheetWidth, sheetWidthOverflow) = resolution.first.multipliedReportingOverflow(by: layout.first)
+        let (sheetHeight, sheetHeightOverflow) = resolution.second.multipliedReportingOverflow(by: layout.second)
+        guard !frameCapacityOverflow, !sheetWidthOverflow, !sheetHeightOverflow else {
+            throw JellyfinTrickPlayPlaylistParserError.arithmeticOverflow
+        }
+        let durationMs = try milliseconds(seconds: durationSeconds,
+                                          maximum: JellyfinTrickPlayLimits.maximumFrameDurationMs)
+        let (representedDurationMs, representedDurationOverflow) = frameCapacity.multipliedReportingOverflow(by: durationMs)
+        guard !representedDurationOverflow else {
+            throw JellyfinTrickPlayPlaylistParserError.arithmeticOverflow
+        }
+        guard resolution.first <= JellyfinTrickPlayLimits.maximumTileDimension,
+              resolution.second <= JellyfinTrickPlayLimits.maximumTileDimension,
+              layout.first <= JellyfinTrickPlayLimits.maximumLayoutDimension,
+              layout.second <= JellyfinTrickPlayLimits.maximumLayoutDimension,
+              frameCapacity <= JellyfinTrickPlayLimits.maximumFrameCapacity,
+              sheetWidth <= JellyfinTrickPlayLimits.maximumSheetDimension,
+              sheetHeight <= JellyfinTrickPlayLimits.maximumSheetDimension,
+              representedDurationMs <= JellyfinTrickPlayLimits.maximumSegmentDurationMs else {
+            throw JellyfinTrickPlayPlaylistParserError.invalidMetadata
+        }
+
+        return (resolution.first, resolution.second, layout.first, layout.second, durationMs)
+    }
+
+    private static func parsePair(_ raw: String?) -> (first: Int, second: Int)? {
+        guard let raw else { return nil }
+        let components = raw.split(separator: "x", omittingEmptySubsequences: false)
+        guard components.count == 2,
+              let first = Int(components[0]),
+              let second = Int(components[1]) else { return nil }
+        return (first, second)
+    }
+
+    private static func milliseconds(seconds: Double, maximum: Int) throws -> Int {
+        guard seconds.isFinite, seconds > 0, seconds <= Double(maximum) / 1_000 else {
+            throw JellyfinTrickPlayPlaylistParserError.invalidMetadata
+        }
+        let milliseconds = (seconds * 1_000).rounded()
+        guard milliseconds.isFinite, milliseconds >= 1, milliseconds <= Double(maximum) else {
+            throw JellyfinTrickPlayPlaylistParserError.invalidMetadata
+        }
+        return Int(milliseconds)
     }
 }
 
@@ -287,6 +368,7 @@ public enum BIFParserError: Error, Equatable, Sendable {
     case invalidImageCount(UInt32)
     case truncatedIndexTable
     case invalidFrameOffsets
+    case timestampOverflow
     case noFrames
 }
 
@@ -336,12 +418,23 @@ public enum BIFParser {
             }
             let range = start..<end
             let timestamp = rows[index].timestamp
-            let timeMs = timestamp == UInt32.max ? index * intervalMs : Int(timestamp) * intervalMs
+            let timeMs = try timestampMilliseconds(timestamp: timestamp,
+                                                   frameIndex: index,
+                                                   intervalMs: intervalMs)
             frames.append(BIFIndex.Frame(timeMs: timeMs, data: data.subdata(in: range)))
         }
 
         guard !frames.isEmpty else { throw BIFParserError.noFrames }
         return BIFIndex(version: version, frameIntervalMs: intervalMs, frames: frames)
+    }
+
+    static func timestampMilliseconds(timestamp: UInt32,
+                                      frameIndex: Int,
+                                      intervalMs: Int) throws -> Int {
+        let factor = timestamp == UInt32.max ? frameIndex : Int(timestamp)
+        let (timeMs, overflow) = factor.multipliedReportingOverflow(by: intervalMs)
+        guard !overflow else { throw BIFParserError.timestampOverflow }
+        return timeMs
     }
 
     private static func isRecognizedMagic(_ header: [UInt8]) -> Bool {

@@ -15,6 +15,15 @@ struct AppRuntime {
     let sceneActivity: AppSceneActivity
     #endif
     let musicPlayer: MusicPlayerController
+    /// One exact-authority catalog repository shared across all windows and browse surfaces.
+    let libraryCatalogRepository = LibraryCatalogRepository()
+    /// One exact-authority item metadata repository shared by system entry and detail display.
+    let metadataRepository = MetadataRepository()
+    /// One credential-safe artwork execution facade shared by every artwork consumer: views,
+    /// system Now Playing, player metadata, and local Offline thumbnails.
+    let artworkPipeline: ArtworkPipeline
+    /// One reference-counted shimmer ticker shared by all visible artwork placeholders.
+    let artworkShimmerClock = ArtworkShimmerClock()
     /// One launch bootstrap shared by every window/scene that presents this runtime. In
     /// particular, dismissing and reopening the visionOS main window for Cinema must never
     /// re-run session restore or flash the sign-in UI over an already-restored session.
@@ -32,6 +41,7 @@ struct AppRuntime {
         let identity = PlatformClientIdentity.make(clientIdentifier: clientIdentifier)
         let model = AppModel(identity: identity, activeBackend: keychain.selectedBackend)
         let authManager = AuthManager(appModel: model, keychain: keychain)
+        let artworkPipeline = ArtworkPipeline()
 
         #if os(tvOS)
         // Downloads are not a TV product. Keep the capability absent from the tvOS service
@@ -40,7 +50,9 @@ struct AppRuntime {
         return AppRuntime(
             appModel: model,
             authManager: authManager,
-            musicPlayer: MusicPlayerController(appModel: model),
+            musicPlayer: MusicPlayerController(appModel: model,
+                                               artworkPipeline: artworkPipeline),
+            artworkPipeline: artworkPipeline,
             bootstrap: bootstrap
         )
         #else
@@ -63,7 +75,9 @@ struct AppRuntime {
             authManager: authManager,
             downloadManager: downloadManager,
             sceneActivity: sceneActivity,
-            musicPlayer: MusicPlayerController(appModel: model),
+            musicPlayer: MusicPlayerController(appModel: model,
+                                               artworkPipeline: artworkPipeline),
+            artworkPipeline: artworkPipeline,
             bootstrap: bootstrap
         )
         #endif

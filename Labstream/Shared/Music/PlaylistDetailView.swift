@@ -4,8 +4,8 @@ import PMSKit
 /// Playlist page — a structural clone of `AlbumDetailView` minus the year header and
 /// disc sort (MUSIC-DESIGN §3.4): blurred composite-art backdrop, title and
 /// track-count/duration credits, Play / Shuffle, and the ordered track list. Items
-/// come through `MusicProvider.playlistTracks` and PLAYLIST ORDER IS PRESERVED —
-/// no client-side sorting. Per-row 44-pt art because artwork varies across a
+/// come through the duplicate-preserving `PlaylistPagingModel` and PLAYLIST ORDER IS
+/// PRESERVED — no client-side sorting or identity de-duplication. Per-row 44-pt art because artwork varies across a
 /// playlist (unlike an album, where the cover is the header). Read-only in v1.
 struct PlaylistDetailView: View {
     let playlist: MediaItem
@@ -13,13 +13,18 @@ struct PlaylistDetailView: View {
     @Environment(AppModel.self) private var appModel
     @Environment(MusicPlayerController.self) private var player
 
-    @State private var tracks: [MediaItem] = []
-    @State private var loadState: BrowseLoadState = .idle
+    @State private var model = PlaylistPagingModel()
 
     @Environment(\.labstreamCompactWidth) private var compactWidth
 
     /// Hero art size, matching the album detail header (220 on compact).
     private var coverSize: CGFloat { compactWidth ? 220 : 300 }
+
+    private var source: PlaylistPagingSource {
+        PlaylistPagingSource(playlist: playlist, appModel: appModel)
+    }
+
+    private var tracks: [MediaItem] { model.items }
 
     #if os(iOS)
     /// Readable-measure cap for the header + track list in regular width (iPad). Mirrors
@@ -36,13 +41,18 @@ struct PlaylistDetailView: View {
                 VStack(alignment: .leading, spacing: DS.Space.xxl) {
                     header
 
-                    switch loadState {
+                    switch model.loadState {
                     case .idle, .loading:
                         trackSkeleton
                     case .failed(let message):
-                        ContentUnavailableView("Couldn’t load \(playlist.title)",
-                                               systemImage: "exclamationmark.triangle",
-                                               description: Text(message))
+                        ContentUnavailableView {
+                            Label("Couldn’t load \(playlist.title)",
+                                  systemImage: "exclamationmark.triangle")
+                        } description: {
+                            Text(message)
+                        } actions: {
+                            Button("Retry") { Task { await load(force: true) } }
+                        }
                             .frame(maxWidth: .infinity, minHeight: 240)
                     case .loaded:
                         if tracks.isEmpty {
@@ -52,6 +62,7 @@ struct PlaylistDetailView: View {
                                 .frame(maxWidth: .infinity, minHeight: 240)
                         } else {
                             trackList
+                            pagingStatus
                         }
                     }
                 }
@@ -67,7 +78,8 @@ struct PlaylistDetailView: View {
             }
         }
         .navigationTitle(playlist.title)
-        .task { await load() }
+        .task(id: source.identity) { await load() }
+        .refreshable { await load(force: true) }
     }
 
     // MARK: - Backdrop
@@ -159,7 +171,10 @@ struct PlaylistDetailView: View {
                 }
                 .labstreamGlassButtonStyle()
             }
-            .disabled(tracks.isEmpty)
+            // The old unpaged loader always produced a complete queue. Keep that semantic:
+            // page zero may render early, but transport controls stay disabled until every
+            // positional row (including duplicates) is present.
+            .disabled(tracks.isEmpty || !model.isComplete)
             .padding(.top, DS.Space.md)
         }
     }
@@ -167,10 +182,10 @@ struct PlaylistDetailView: View {
     /// "42 tracks · 2 hr 5 min" — counts the loaded items when present (truth), the
     /// playlist row's `leafCount`/`duration` before they arrive; drops missing halves.
     private var credits: String? {
-        let count = tracks.isEmpty ? playlist.leafCount : tracks.count
-        let totalMs = tracks.isEmpty
-            ? playlist.duration
-            : tracks.compactMap(\.duration).reduce(0, +)
+        let count = model.reportedTotal ?? playlist.leafCount ?? (tracks.isEmpty ? nil : tracks.count)
+        let totalMs = model.isComplete && !tracks.isEmpty
+            ? tracks.compactMap(\.duration).reduce(0, +)
+            : playlist.duration
         var parts: [String] = []
         if let count { parts.append(count == 1 ? "1 track" : "\(count) tracks") }
         if let totalMs, totalMs > 0 { parts.append(formatPlaylistDuration(milliseconds: totalMs)) }
@@ -193,6 +208,7 @@ struct PlaylistDetailView: View {
                                      isCurrent: player.current?.ratingKey == track.ratingKey)
                 }
                 .cardLink(cornerRadius: DS.Radius.chip)
+                .disabled(!model.isComplete)
                 // Queue actions (#17 Phase 4): playlist items are FULL tracks
                 // (Media/Part present), so the shared menu applies directly.
                 .contextMenu { TrackQueueMenu(track: track, player: player) }
@@ -222,14 +238,33 @@ struct PlaylistDetailView: View {
         }
     }
 
-    private func load() async {
-        loadState = .loading
-        do {
-            tracks = try await appModel.musicProvider.playlistTracks(playlist: playlist)
-            loadState = .loaded
-        } catch {
-            loadState = .failed(friendlyMessage(error))
+    @ViewBuilder
+    private var pagingStatus: some View {
+        if model.isLoadingNext {
+            ProgressView("Loading playlist…")
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, DS.Space.lg)
+        } else if let message = model.nextError {
+            VStack(spacing: DS.Space.sm) {
+                Text(message)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Button("Retry") {
+                    Task {
+                        await model.retryNext(source: source)
+                        await model.loadRemaining(source: source)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, DS.Space.lg)
         }
+    }
+
+    private func load(force: Bool = false) async {
+        await model.loadInitial(source: source, force: force)
+        guard case .loaded = model.loadState else { return }
+        await model.loadRemaining(source: source)
     }
 }
 

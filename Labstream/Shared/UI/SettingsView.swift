@@ -11,8 +11,10 @@ import PMSKit
 /// local/remote quality caps, download defaults/storage, maintenance, diagnostics, and sign out.
 struct SettingsView: View {
     let authManager: AuthManager
+    let catalogRepository: LibraryCatalogRepository
 
     @Environment(AppModel.self) private var appModel
+    @Environment(\.artworkPipeline) private var artworkPipeline
     #if !os(tvOS)
     @Environment(DownloadManager.self) private var downloadManager
     #endif
@@ -33,6 +35,7 @@ struct SettingsView: View {
     @State private var plexServerOperationID: UUID?
     /// Transient "done" feedback for the one-shot maintenance/About actions.
     @State private var clearedImageCache = false
+    @State private var clearingImageCache = false
     @State private var clearedImageCacheResetID: UUID?
     @State private var clearedSpotlightIndex = false
     @State private var clearedSpotlightIndexResetID: UUID?
@@ -555,7 +558,7 @@ struct SettingsView: View {
     private var librariesSection: some View {
         SwiftUI.Section {
             NavigationLink {
-                LibraryVisibilityEditor()
+                LibraryVisibilityEditor(catalogRepository: catalogRepository)
             } label: {
                 Label("Choose Libraries", systemImage: "rectangle.stack.badge.person.crop")
             }
@@ -667,19 +670,24 @@ struct SettingsView: View {
     private var maintenanceSection: some View {
         SwiftUI.Section {
             Button {
-                // PosterImage rides URLSession.shared's default cache — there is no
-                // bespoke image cache, so this is the whole story.
-                URLCache.shared.removeAllCachedResponses()
-                clearedImageCache = true
-                scheduleClearedImageCacheReset()
+                Task { @MainActor in
+                    guard let artworkPipeline else { return }
+                    clearingImageCache = true
+                    await artworkPipeline.clear()
+                    clearingImageCache = false
+                    clearedImageCache = true
+                    scheduleClearedImageCacheReset()
+                }
             } label: {
                 if clearedImageCache {
                     Label("Cache cleared", systemImage: "checkmark")
+                } else if clearingImageCache {
+                    Label("Clearing cache…", systemImage: "photo.on.rectangle.angled")
                 } else {
                     Label("Clear image cache", systemImage: "photo.on.rectangle.angled")
                 }
             }
-            .disabled(clearedImageCache)
+            .disabled(clearedImageCache || clearingImageCache || artworkPipeline == nil)
 
             #if !os(tvOS)
             Button {

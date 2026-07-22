@@ -202,7 +202,9 @@ final class MacSidebarModel {
 
     private let visibilityStore = LibraryVisibilityStore()
 
-    func load(appModel: AppModel) async {
+    func load(appModel: AppModel,
+              catalogRepository: LibraryCatalogRepository,
+              forceRefresh: Bool = false) async {
         let capturedSession = appModel.activeBrowseSessionKey
         let stableIdentity = appModel.activeStableServerUserKey
         if catalog.serverIdentity != stableIdentity {
@@ -213,51 +215,28 @@ final class MacSidebarModel {
             loadError = nil
         }
         do {
-            let candidates: [MacSidebarDestinationPolicy.Candidate]
-            let promptCandidates: [MacSidebarDestinationPolicy.Candidate]
-            let sources: [String: LibraryGridSource]
-            let supportsPlaylists: Bool
-
-            switch appModel.activeBackend {
-            case .plex:
-                guard let service = try? PlexBrowseService(appModel: appModel) else {
-                    throw MacSidebarLoadError.noServer
-                }
-                let sections = try await service.libraries()
-                candidates = sections.map {
-                    .init(id: $0.key, title: $0.title, kind: LibrarySectionKind(plexType: $0.type))
-                }
-                promptCandidates = candidates.filter { $0.kind != .music }
-                sources = Dictionary(uniqueKeysWithValues: sections.filter { !$0.isMusic }.map {
-                    ($0.key, LibraryGridSource.plex($0))
-                })
-                // Plex exposes an account-level audio playlists endpoint for every music section.
-                supportsPlaylists = true
-            case .jellyfin:
-                let views = try await JellyfinBrowseService(appModel: appModel).userViewLinks()
-                candidates = views.map {
-                    .init(id: $0.id, title: $0.title,
-                          kind: LibrarySectionKind(collectionType: $0.collectionType))
-                }
-                promptCandidates = candidates
-                sources = Dictionary(uniqueKeysWithValues: views.filter {
-                    LibrarySectionKind(collectionType: $0.collectionType) != .music
-                }.map { ($0.id, LibraryGridSource.jellyfin($0)) })
-                supportsPlaylists = views.contains { $0.collectionType?.lowercased() == "playlists" }
-            case .emby:
-                let views = try await EmbyBrowseService(appModel: appModel).userViewLinks()
-                candidates = views.map {
-                    .init(id: $0.id, title: $0.title,
-                          kind: LibrarySectionKind(collectionType: $0.collectionType))
-                }
-                promptCandidates = candidates
-                sources = Dictionary(uniqueKeysWithValues: views.filter {
-                    LibrarySectionKind(collectionType: $0.collectionType) != .music
-                }.map { ($0.id, LibraryGridSource.emby($0)) })
-                supportsPlaylists = views.contains { $0.collectionType?.lowercased() == "playlists" }
+            let snapshot = try await catalogRepository.catalog(appModel: appModel,
+                                                               forceRefresh: forceRefresh)
+            let descriptors = snapshot.descriptors
+            let candidates = descriptors.map {
+                MacSidebarDestinationPolicy.Candidate(id: $0.sourceID,
+                                                      title: $0.title,
+                                                      kind: $0.kind)
             }
+            let promptCandidates = snapshot.backend == .plex
+                ? candidates.filter { $0.kind != .music }
+                : candidates
+            let sources = Dictionary(uniqueKeysWithValues: descriptors
+                .filter { $0.kind != .music }
+                .map { ($0.sourceID, LibraryGridSource(catalog: $0)) })
+            // Plex exposes account-level audio playlists whenever Music exists. MediaBrowser
+            // advertises playlists as a native view in this same ordered catalog.
+            let supportsPlaylists = snapshot.backend == .plex
+                || descriptors.contains { $0.sourceKind?.lowercased() == "playlists" }
 
-            guard appModel.activeBrowseSessionKey == capturedSession, !Task.isCancelled else { return }
+            guard snapshot.isCurrent(in: appModel),
+                  appModel.activeBrowseSessionKey == capturedSession,
+                  !Task.isCancelled else { return }
             appModel.migrateLibraryVisibilityKeysIfNeeded(store: visibilityStore)
             let hidden = visibilityStore.hiddenIDs(forBackendKey: stableIdentity)
             let nextCatalog = MacSidebarDestinationPolicy.catalog(serverIdentity: stableIdentity,
@@ -305,9 +284,4 @@ final class MacSidebarModel {
             preselectedHidden: LibraryVisibility.defaultHiddenSelection(from: promptCandidates)
         )
     }
-}
-
-private enum MacSidebarLoadError: LocalizedError {
-    case noServer
-    var errorDescription: String? { "No server selected." }
 }

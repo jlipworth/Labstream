@@ -4,6 +4,147 @@ import XCTest
 @testable import Labstream
 
 final class SideAssetFetchCoordinatorTests: XCTestCase {
+    func testNonpersistentTransportPolicyDisablesCredentialStores() {
+        let configuration = SideAssetTransportPolicy.nonpersistentConfiguration()
+
+        XCTAssertNil(configuration.identifier)
+        XCTAssertNil(configuration.urlCache)
+        XCTAssertNil(configuration.httpCookieStorage)
+        XCTAssertNil(configuration.urlCredentialStorage)
+        XCTAssertFalse(configuration.httpShouldSetCookies)
+        XCTAssertEqual(configuration.httpCookieAcceptPolicy, .never)
+        XCTAssertEqual(configuration.requestCachePolicy,
+                       .reloadIgnoringLocalAndRemoteCacheData)
+    }
+
+    func testRequestGatewayPreservesAuthenticationAndCallerSemanticsWhileForcingReload() async throws {
+        let url = try XCTUnwrap(URL(string: "https://emby.example/Items/42?api_key=query-secret"))
+        let captured = TestLockedBox<URLRequest?>(nil)
+        let stub = TestURLProtocolStub { request in
+            captured.withValue { $0 = request }
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200,
+                                           httpVersion: nil, headerFields: nil)!
+            return (response, Data([4, 2]))
+        }
+        let session = URLSession(configuration: stub.configuration)
+        defer { session.invalidateAndCancel() }
+
+        var request = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad,
+                                 timeoutInterval: 17)
+        request.httpMethod = "POST"
+        request.httpBody = Data("body-secret".utf8)
+        request.setValue("Bearer header-secret", forHTTPHeaderField: "Authorization")
+        request.setValue("emby-secret", forHTTPHeaderField: "X-Emby-Token")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.allowsCellularAccess = false
+
+        // Darwin's custom URLProtocol bridge does not reliably expose upload bytes through
+        // URLProtocol.request.httpBody, even though URLSession still sends them. Verify body
+        // preservation at the policy boundary; keep the protocol capture for the request
+        // properties that Foundation exposes consistently end to end.
+        let transportRequest = SideAssetTransportPolicy.nonpersistentRequest(request)
+        XCTAssertEqual(transportRequest.httpBody, Data("body-secret".utf8))
+
+        let coordinator = SideAssetFetchCoordinator(clock: AdvancingSideAssetClock().dependency)
+        let data = try await coordinator.fetch(
+            request: request,
+            owner: SideAssetOwner(rawValue: "chapter-owner"),
+            session: session
+        )
+
+        XCTAssertEqual(data, Data([4, 2]))
+        let observed = try XCTUnwrap(captured.value)
+        XCTAssertEqual(observed.url, url)
+        XCTAssertEqual(observed.httpMethod, "POST")
+        XCTAssertEqual(observed.value(forHTTPHeaderField: "Authorization"),
+                       "Bearer header-secret")
+        XCTAssertEqual(observed.value(forHTTPHeaderField: "X-Emby-Token"), "emby-secret")
+        XCTAssertEqual(observed.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        XCTAssertEqual(observed.timeoutInterval, 17, accuracy: 0.001)
+        XCTAssertFalse(observed.allowsCellularAccess)
+        XCTAssertEqual(observed.cachePolicy, .reloadIgnoringLocalAndRemoteCacheData)
+    }
+
+    func testCredentialBearingRequestIdentityIsHashedAndIdentifierReflectionIsRedacted() throws {
+        var request = URLRequest(url: try XCTUnwrap(URL(
+            string: "https://plex.example/photo?X-Plex-Token=query-secret")))
+        request.setValue("Bearer header-secret", forHTTPHeaderField: "Authorization")
+        request.httpBody = Data("body-secret".utf8)
+
+        let key = SideAssetRequestKey.authenticatedRequest(request)
+        let origin = SideAssetOrigin(rawValue: "https://private-server.example:443")
+        let owner = SideAssetOwner(rawValue: "private-rating-key\u{0}private-attempt")
+        var reflected = ""
+        dump((key: key, origin: origin, owner: owner), to: &reflected)
+        reflected += String(reflecting: key)
+        reflected += String(reflecting: origin)
+        reflected += String(reflecting: owner)
+
+        for secret in ["query-secret", "header-secret", "body-secret",
+                       "private-server", "private-rating-key", "private-attempt"] {
+            XCTAssertFalse(key.rawValue.contains(secret))
+            XCTAssertFalse(reflected.contains(secret))
+        }
+        XCTAssertEqual(key, SideAssetRequestKey.authenticatedRequest(request))
+    }
+
+    func testDefaultTransportNormalizesCredentialBearingURLError() async throws {
+        let secretURL = try XCTUnwrap(URL(
+            string: "https://plex.example/photo?X-Plex-Token=must-not-escape"))
+        let stub = TestURLProtocolStub { _ in
+            throw NSError(
+                domain: NSURLErrorDomain,
+                code: URLError.cannotConnectToHost.rawValue,
+                userInfo: [NSURLErrorFailingURLErrorKey: secretURL]
+            )
+        }
+        let session = URLSession(configuration: stub.configuration)
+        defer { session.invalidateAndCancel() }
+        let coordinator = SideAssetFetchCoordinator(clock: AdvancingSideAssetClock().dependency)
+
+        do {
+            _ = try await coordinator.fetch(
+                request: URLRequest(url: secretURL),
+                owner: SideAssetOwner(rawValue: "chapter-owner"),
+                session: session
+            )
+            XCTFail("expected transport failure")
+        } catch let error as SideAssetFetchError {
+            XCTAssertEqual(error, .transportFailure(code: URLError.cannotConnectToHost.rawValue))
+            XCTAssertFalse(String(reflecting: error).contains("must-not-escape"))
+        }
+    }
+
+    func testCancellingLastRequestWaiterCancelsURLSessionTask() async throws {
+        let started = expectation(description: "URLProtocol request started")
+        let stopped = expectation(description: "URLProtocol request cancelled")
+        SideAssetCancellationURLProtocol.install(started: started, stopped: stopped)
+        defer { SideAssetCancellationURLProtocol.reset() }
+        let configuration = SideAssetTransportPolicy.nonpersistentConfiguration(
+            protocolClasses: [SideAssetCancellationURLProtocol.self])
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let coordinator = SideAssetFetchCoordinator(clock: AdvancingSideAssetClock().dependency)
+        let request = URLRequest(url: URL(string: "https://side-asset-cancel.example/chapter")!)
+        let task = Task {
+            try await coordinator.fetch(
+                request: request,
+                owner: SideAssetOwner(rawValue: "chapter-owner"),
+                session: session
+            )
+        }
+
+        await fulfillment(of: [started], timeout: 2)
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("expected cancellation")
+        } catch is CancellationError {
+            // Expected.
+        }
+        await fulfillment(of: [stopped], timeout: 2)
+    }
+
     func testRequestGatewayPacesPlayerChapterBurstByOrigin() async throws {
         let clock = AdvancingSideAssetClock()
         let recorder = SideAssetStartRecorder(clock: clock)
@@ -430,6 +571,45 @@ private actor SideAssetGate {
 private actor SideAssetCounter {
     private(set) var value = 0
     func increment() { value += 1 }
+}
+
+private final class SideAssetCancellationURLProtocol: URLProtocol, @unchecked Sendable {
+    private struct State {
+        var startedExpectation: XCTestExpectation?
+        var stoppedExpectation: XCTestExpectation?
+    }
+    private static let state = TestLockedBox(State())
+
+    static func install(started: XCTestExpectation, stopped: XCTestExpectation) {
+        state.withValue {
+            $0.startedExpectation = started
+            $0.stoppedExpectation = stopped
+        }
+    }
+
+    static func reset() { state.withValue { $0 = State() } }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "side-asset-cancel.example"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let expectation = Self.state.withValue { state in
+            defer { state.startedExpectation = nil }
+            return state.startedExpectation
+        }
+        expectation?.fulfill()
+    }
+
+    override func stopLoading() {
+        let expectation = Self.state.withValue { state in
+            defer { state.stoppedExpectation = nil }
+            return state.stoppedExpectation
+        }
+        expectation?.fulfill()
+    }
 }
 
 final class CompletedRowSideAssetRehydrateBudgetTests: XCTestCase {

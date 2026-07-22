@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import PMSKit
 
@@ -12,63 +13,94 @@ import PMSKit
 /// card) resolve artwork through here so there is a single, consistent construction.
 @MainActor
 enum MediaArtwork {
-    /// Build an authenticated image request for `path`, sized to the given pixels.
-    /// Returns nil when the path is empty/unresolvable or the matching backend lane is
-    /// not configured.
-    static func imageRequest(path: String?,
-                             appModel: AppModel,
-                             pixelWidth: Int,
-                             pixelHeight: Int) -> URLRequest? {
-        guard let path, !path.isEmpty else { return nil }
-
-        let scheme = URL(string: path)?.scheme
-
-        if scheme == EmbyFlavor.syntheticScheme {
-            guard let base = appModel.embyServerBaseURL,
-                  let token = appModel.embyAccessToken,
-                  let userId = appModel.embyUserID else { return nil }
-            return (try? EmbyLibrary.posterRequest(syntheticRef: path,
-                                                   server: base,
-                                                   token: token,
-                                                   identity: appModel.identity.emby,
-                                                   userId: userId,
-                                                   width: pixelWidth,
-                                                   height: pixelHeight)) ?? nil
+    /// Resolve point-space presentation into the exact server/decode pixel contract. Ordinary
+    /// posters follow the real screen scale (including 3x phones); explicitly inexpensive
+    /// decorative art may retain its existing 1x override.
+    static func pixelDimensions(width: CGFloat,
+                                height: CGFloat,
+                                displayScale: CGFloat,
+                                requestScale: CGFloat?) -> (width: Int, height: Int) {
+        let candidate = requestScale ?? displayScale
+        let scale = candidate.isFinite && candidate > 0 ? candidate : 1
+        func pixels(_ points: CGFloat) -> Int {
+            let value = points * scale
+            guard value.isFinite, value > 0, value <= CGFloat(Int.max) else { return 1 }
+            return max(1, Int(ceil(value)))
         }
+        return (pixels(width), pixels(height))
+    }
 
-        if scheme == JellyfinFlavor.syntheticScheme {
-            guard let base = appModel.jellyfinServerBaseURL,
-                  let token = appModel.jellyfinAccessToken else { return nil }
-            return (try? JellyfinLibrary.posterRequest(syntheticRef: path,
-                                                       server: base,
-                                                       token: token,
-                                                       identity: appModel.identity.jellyfin,
-                                                       width: pixelWidth,
-                                                       height: pixelHeight)) ?? nil
-        }
-
-        if let url = plexTranscodeURL(path: path, appModel: appModel,
-                                      pixelWidth: pixelWidth, pixelHeight: pixelHeight) {
-            return URLRequest(url: url)
-        }
-        return nil
+    /// Resolve one ordinary UI artwork source against the backend lane that owns it.
+    ///
+    /// Synthetic Jellyfin/Emby refs deliberately ignore `activeBackend`: search and other
+    /// cross-backend surfaces may keep an item from an inactive, still-authenticated lane. The
+    /// exact opaque browse authority is captured in the task identity so same-path re-auth or
+    /// server changes restart the SwiftUI task without exposing credentials.
+    static func descriptor(path: String?,
+                           appModel: AppModel,
+                           purpose: ArtworkPurpose = .poster,
+                           pixelWidth: Int,
+                           pixelHeight: Int) -> ArtworkRequestDescriptor? {
+        guard let path, !path.isEmpty,
+              pixelWidth > 0, pixelHeight > 0 else { return nil }
+        let backend = owningBackend(for: path)
+        guard let context = appModel.authenticatedBrowseSession(for: backend),
+              let request = request(path: path,
+                                    context: context,
+                                    pixelWidth: pixelWidth,
+                                    pixelHeight: pixelHeight) else { return nil }
+        let digest = Data(SHA256.hash(data: Data(path.utf8)))
+        let identity = ArtworkTaskIdentity(backend: backend,
+                                           authority: .authenticated(context.authority),
+                                           purpose: purpose,
+                                           sourceDigest: digest,
+                                           pixelWidth: pixelWidth,
+                                           pixelHeight: pixelHeight)
+        return ArtworkRequestDescriptor(taskIdentity: identity, request: request)
     }
 
     /// Which backend an artwork `path` resolves against — used only for instrumentation
     /// labels, so it inspects the ref scheme without needing live credentials.
     static func backendLabel(for path: String?) -> String {
-        if URL(string: path ?? "")?.scheme == EmbyFlavor.syntheticScheme { return "Emby" }
-        if URL(string: path ?? "")?.scheme == JellyfinFlavor.syntheticScheme { return "Jellyfin" }
-        return "Plex"
+        owningBackend(for: path ?? "").displayName
     }
 
-    /// Plex `/photo/:/transcode` resizer URL via the shared `PlexPhotoTranscode` builder.
-    private static func plexTranscodeURL(path: String,
-                                         appModel: AppModel,
-                                         pixelWidth: Int,
-                                         pixelHeight: Int) -> URL? {
-        guard let base = appModel.serverBaseURL, let token = appModel.serverToken else { return nil }
-        return PlexPhotoTranscode.url(server: base, token: token, imagePath: path,
-                                      width: pixelWidth, height: pixelHeight)
+    private static func owningBackend(for path: String) -> MediaBackendKind {
+        switch URL(string: path)?.scheme {
+        case EmbyFlavor.syntheticScheme: .emby
+        case JellyfinFlavor.syntheticScheme: .jellyfin
+        default: .plex
+        }
+    }
+
+    private static func request(path: String,
+                                context: AuthenticatedBrowseSessionContext,
+                                pixelWidth: Int,
+                                pixelHeight: Int) -> URLRequest? {
+        switch context.backend {
+        case .emby:
+            guard let userID = context.session.userID else { return nil }
+            return (try? EmbyLibrary.posterRequest(syntheticRef: path,
+                                                   server: context.session.baseURL,
+                                                   token: context.session.token,
+                                                   identity: context.clientIdentity.emby,
+                                                   userId: userID,
+                                                   width: pixelWidth,
+                                                   height: pixelHeight)) ?? nil
+        case .jellyfin:
+            return (try? JellyfinLibrary.posterRequest(syntheticRef: path,
+                                                       server: context.session.baseURL,
+                                                       token: context.session.token,
+                                                       identity: context.clientIdentity.jellyfin,
+                                                       width: pixelWidth,
+                                                       height: pixelHeight)) ?? nil
+        case .plex:
+            guard let url = PlexPhotoTranscode.url(server: context.session.baseURL,
+                                                   token: context.session.token,
+                                                   imagePath: path,
+                                                   width: pixelWidth,
+                                                   height: pixelHeight) else { return nil }
+            return URLRequest(url: url)
+        }
     }
 }

@@ -59,8 +59,36 @@ The MediaBrowser layer currently shares:
   playback quality math, progress-event mapping, and neutral playback-result carriers.
 
 In the app target, `MediaBrowserBrowseCore` is the browse-only execution/decode/map core
-behind the thin `JellyfinBrowseService` and `EmbyBrowseService` facades. It does not own
-PlaybackInfo, device profiles, active-encoding cleanup, authentication, or downloads.
+behind the thin `JellyfinBrowseService` and `EmbyBrowseService` facades. Those MainActor facades
+capture immutable credentials, client identity, and transport configuration; the Sendable core
+then performs request execution, JSON decoding, and DTO mapping off the main actor. It does not
+own PlaybackInfo, device profiles, active-encoding cleanup, authentication, or downloads.
+Per-library MediaBrowser search and video/music alphabet probes use the app's shared ordered
+bounded fan-out with at most four active requests. Search remains all-or-error; individual failed
+alphabet probes remain omitted/zero-degraded rather than sinking the listing.
+`LibraryCatalogLoader` maps one native Plex section or Jellyfin/Emby view enumeration into ordered
+descriptors. The app-lifetime `LibraryCatalogRepository` caches and coalesces only within the exact
+backend plus opaque authenticated authority; failures are retryable, force refresh is serialized,
+and stale authority work cannot publish or start after replacement. Libraries, Home, Search, Music,
+the Mac sidebar, visibility editing, system-entry matching, and Watch Together share that native
+enumeration, but their query, visibility, ordering, Home-rail, and destination policies remain
+outside the repository.
+
+Jellyfin/Emby Home is not a single combined backend endpoint. One canonical plan schedules resume,
+next-up, and per-library latest requests under a four-request ceiling, publishes available rails
+progressively in stable plan order, and performs one failed-key-only retry without refetching
+successful or empty-success rails. Plex Home remains the native server-composed `/hubs` path.
+
+All three backends page playlist entries through their native range parameters. The app's
+positional playlist model appends rows without sorting or identifier de-duplication, so a repeated
+track and server order survive page boundaries. Reported totals, clamped server pages, retry,
+cancellation, and authority replacement decide when the list is complete; queue actions remain
+disabled until then.
+
+Jellyfin/Emby field selection uses intent-bearing metadata profiles for grid, search, Home,
+playlist, generic item hydration, related media, and Music. They are currently byte-identical
+aliases of the established grid/full field contracts; separate routing exists so later measured
+trimming cannot silently change an unrelated surface.
 
 It is not a complete backend service. `JellyfinLibrary`/`EmbyLibrary` and
 `JellyfinPlayback`/`EmbyPlayback` still construct native requests and return native result
@@ -76,9 +104,16 @@ rules, server capabilities, and download guarantees remain distinct. In particul
 
 Plex remains a separate request family. Pure native browse builders now live in
 `PlexBrowseRequest`; the app's `PlexBrowseService` pins an immutable Plex session and owns
-browse execution/decoding. Other Plex request descriptors, canonical response DTOs,
+browse execution. Its transport callback retains the existing MainActor isolation, while a
+Sendable executor performs JSON decoding and response normalization off the main actor with
+cancellation fences. Other Plex request descriptors, canonical response DTOs,
 timeline, optimizer, and universal-transcode APIs remain spread across the root PMSKit
 folders rather than a `Plex/` directory.
+
+For Emby Home artwork, synthetic season/series Primary sources are treated as portrait posters;
+Thumb and Backdrop fallbacks retain 16:9 request and presentation geometry. Automated policy,
+request, mapping, and hosted checks cover this fix, but GitHub issue #245 still requires its
+physical-iPhone Emby regression check before comment/closure.
 
 ## Package boundary
 

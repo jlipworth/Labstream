@@ -151,6 +151,7 @@ extension DownloadManager {
                                                     optimizeQueueTitle: queueTitle,
                                                     session: session)
             optimizeMetadata.posterRelativePath = existingMetadata?.posterRelativePath
+            optimizeMetadata.posterGeneration = existingMetadata?.posterGeneration ?? 0
             optimizeMetadata.plexBIFRelativePath = existingMetadata?.plexBIFRelativePath
             // #88: carry forward already-cached chapter images so an optimize re-fetch doesn't drop
             // the offline Chapters rail thumbnails.

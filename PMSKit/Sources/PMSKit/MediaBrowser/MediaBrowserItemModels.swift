@@ -264,14 +264,17 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         let ownLogo = imageTags[MediaBrowserImageType.logo.rawValue]
 
         // Parent/series fallback for the poster: an episode with no own Primary should
-        // resolve to its season thumb, then the series poster; a season with no own
-        // Primary to the series poster (#86). Each fallback is minted against the OWNING
-        // item id (season/series), not this item's id — the image lives on that item.
+        // resolve to its season Primary, then its landscape season Thumb, then the series
+        // poster. Home's image-type-aware policy can therefore preserve portrait cards,
+        // while `resolvedThumb` below still prefers an available episode/parent landscape
+        // Thumb for ordinary episode rails. A season with no own Primary resolves to the
+        // series poster (#86). Each fallback is minted against the OWNING item id.
         let ownPrimaryPath = syntheticImagePath(type: .primary, tag: ownPrimary)
         let primaryThumb: String? = {
             switch mappedType {
             case "episode":
-                return ownPrimaryPath ?? parentThumbPath ?? seriesPrimaryPath
+                return ownPrimaryPath ?? parentPrimaryPath ?? parentLandscapeThumbPath
+                    ?? seriesPrimaryPath
             case "season":
                 return ownPrimaryPath ?? seriesPrimaryPath
             case "track":
@@ -294,7 +297,10 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         // and violate #86's "movies unaffected" acceptance.
         let resolvedThumb: String? = {
             guard mappedType == "episode" else { return primaryThumb }
-            return syntheticImagePath(type: .thumb, tag: ownThumb) ?? primaryThumb
+            return syntheticImagePath(type: .thumb, tag: ownThumb)
+                ?? ownPrimaryPath
+                ?? parentLandscapeThumbPath
+                ?? primaryThumb
         }()
 
         let cast = people.filter { ($0.type ?? "") == "Actor" }
@@ -336,7 +342,8 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
             parentTitle: mappedType == "season" ? seriesName
                 : (mappedType == "track" ? album : (mappedType == "album" ? albumArtist : nil)),
             parentRatingKey: mappedType == "track" ? (albumId ?? parentId) : parentId,
-            parentThumb: parentThumbPath ?? albumPrimaryPath ?? seriesPrimaryPath,
+            parentThumb: parentPrimaryPath ?? parentLandscapeThumbPath
+                ?? albumPrimaryPath ?? seriesPrimaryPath,
             parentIndex: parentIndexNumber,
             index: indexNumber,
             // A playlist's `ChildCount` is its track count, surfaced for the "N tracks"
@@ -353,14 +360,19 @@ public struct MediaBrowserBaseItemDto<Flavor: MediaBrowserFlavor>: Decodable, Se
         return syntheticImagePath(type: .primary, tag: tag, ownerId: owner)
     }
 
-    /// Season-thumb fallback: prefer the `ParentThumb*` companion (owning id + tag), else
-    /// the season's own primary via `seasonId`/`ParentPrimaryImage*`.
-    private var parentThumbPath: String? {
-        if let tag = parentThumbImageTag, let owner = parentThumbItemId ?? seasonId ?? parentId {
-            return syntheticImagePath(type: .thumb, tag: tag, ownerId: owner)
-        }
+    /// Season's own portrait Primary via `ParentPrimaryImage*`.
+    private var parentPrimaryPath: String? {
         if let tag = parentPrimaryImageTag, let owner = parentPrimaryImageItemId ?? parentId {
             return syntheticImagePath(type: .primary, tag: tag, ownerId: owner)
+        }
+        return nil
+    }
+
+    /// Landscape `ParentThumb*` companion. Keep this distinct from the season Primary so
+    /// standard episode rails can retain a still-like fallback while Home chooses a poster.
+    private var parentLandscapeThumbPath: String? {
+        if let tag = parentThumbImageTag, let owner = parentThumbItemId ?? seasonId ?? parentId {
+            return syntheticImagePath(type: .thumb, tag: tag, ownerId: owner)
         }
         return nil
     }

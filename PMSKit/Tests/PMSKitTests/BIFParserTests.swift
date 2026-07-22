@@ -73,6 +73,25 @@ final class BIFParserTests: XCTestCase {
         }
     }
 
+    func testRejectsBIFTimestampMultiplicationOverflow() {
+        let data = makeBIF(intervalMs: UInt32.max,
+                           frames: [
+                               (timestamp: UInt32.max - 1, payload: Data("frame".utf8)),
+                           ])
+
+        XCTAssertThrowsError(try BIFParser.parse(data)) { error in
+            XCTAssertEqual(error as? BIFParserError, .timestampOverflow)
+        }
+    }
+
+    func testRejectsBIFSentinelFallbackMultiplicationOverflow() {
+        XCTAssertThrowsError(try BIFParser.timestampMilliseconds(timestamp: UInt32.max,
+                                                                 frameIndex: 2,
+                                                                 intervalMs: Int.max)) { error in
+            XCTAssertEqual(error as? BIFParserError, .timestampOverflow)
+        }
+    }
+
     func testPlexBIFRequestUsesPartIndexesEndpointWithoutTokenHeader() {
         let identity = ClientIdentity(clientIdentifier: "client-id",
                                       product: "Labstream",
@@ -148,6 +167,94 @@ final class BIFParserTests: XCTestCase {
         XCTAssertEqual(JellyfinTrickPlayOfflineCachePlanner.estimatedTileBytes(durationMs: nil), 0)
         XCTAssertEqual(JellyfinTrickPlayOfflineCachePlanner.estimatedTileBytes(durationMs: 500_000), 300_000)
         XCTAssertEqual(JellyfinTrickPlayOfflineCachePlanner.estimatedTileBytes(durationMs: 1_500_000), 600_000)
+    }
+
+    func testJellyfinPlaylistRejectsNonfiniteNegativeAndAbsurdDurations() {
+        for duration in ["nan", "inf", "-1", "1000000000"] {
+            let playlist = """
+            #EXTM3U
+            #EXTINF:\(duration),
+            #EXT-X-TILES:RESOLUTION=320x180,LAYOUT=10x10,DURATION=10
+            tile.jpg
+            """
+            XCTAssertThrowsError(try JellyfinTrickPlayPlaylistParser.parse(playlist)) { error in
+                XCTAssertEqual(error as? JellyfinTrickPlayPlaylistParserError, .invalidMetadata)
+            }
+        }
+
+        for tileDuration in ["nan", "inf", "-1", "1000000000"] {
+            let invalidTileDuration = """
+            #EXTM3U
+            #EXTINF:1000,
+            #EXT-X-TILES:RESOLUTION=320x180,LAYOUT=10x10,DURATION=\(tileDuration)
+            tile.jpg
+            """
+            XCTAssertThrowsError(try JellyfinTrickPlayPlaylistParser.parse(invalidTileDuration)) { error in
+                XCTAssertEqual(error as? JellyfinTrickPlayPlaylistParserError, .invalidMetadata)
+            }
+        }
+    }
+
+    func testJellyfinPlaylistRejectsInvalidResolutionAndLayout() {
+        let invalidMetadata = [
+            "#EXT-X-TILES:RESOLUTION=-1x180,LAYOUT=10x10,DURATION=10",
+            "#EXT-X-TILES:RESOLUTION=999999x180,LAYOUT=10x10,DURATION=10",
+            "#EXT-X-TILES:RESOLUTION=320xBADx180,LAYOUT=10x10,DURATION=10",
+            "#EXT-X-TILES:RESOLUTION=320x180,LAYOUT=-1x10,DURATION=10",
+            "#EXT-X-TILES:RESOLUTION=320x180,LAYOUT=1000x1000,DURATION=10",
+            "#EXT-X-TILES:RESOLUTION=320x180,LAYOUT=10xBADx10,DURATION=10",
+        ]
+        for tileMetadata in invalidMetadata {
+            let playlist = """
+            #EXTM3U
+            #EXTINF:1000,
+            \(tileMetadata)
+            tile.jpg
+            """
+            XCTAssertThrowsError(try JellyfinTrickPlayPlaylistParser.parse(playlist)) { error in
+                XCTAssertEqual(error as? JellyfinTrickPlayPlaylistParserError, .invalidMetadata)
+            }
+        }
+    }
+
+    func testJellyfinPlaylistRejectsMetadataMultiplicationOverflow() {
+        let playlist = """
+        #EXTM3U
+        #EXTINF:1000,
+        #EXT-X-TILES:RESOLUTION=320x180,LAYOUT=\(Int.max)x2,DURATION=10
+        tile.jpg
+        """
+
+        XCTAssertThrowsError(try JellyfinTrickPlayPlaylistParser.parse(playlist)) { error in
+            XCTAssertEqual(error as? JellyfinTrickPlayPlaylistParserError, .arithmeticOverflow)
+        }
+    }
+
+    func testJellyfinPlaylistRejectsAbsurdCumulativeTimeline() {
+        let segment = """
+        #EXTINF:604800,
+        #EXT-X-TILES:RESOLUTION=320x180,LAYOUT=10x10,DURATION=10
+        """
+        let playlist = "#EXTM3U\n" + (0..<5).map { "\(segment)tile-\($0).jpg\n" }.joined()
+
+        XCTAssertThrowsError(try JellyfinTrickPlayPlaylistParser.parse(playlist)) { error in
+            XCTAssertEqual(error as? JellyfinTrickPlayPlaylistParserError, .invalidMetadata)
+        }
+    }
+
+    func testJellyfinTileModelMathDoesNotTrapOnExtremeInputs() {
+        let tile = JellyfinTrickPlayTile(uri: "tile.jpg",
+                                        startMs: Int.max,
+                                        durationMs: Int.max,
+                                        tileDurationMs: Int.max,
+                                        tileWidth: Int.max,
+                                        tileHeight: Int.max,
+                                        columns: Int.max,
+                                        rows: Int.max)
+
+        XCTAssertLessThanOrEqual(tile.frameCapacity, 100_000)
+        XCTAssertEqual(tile.frameIndex(nearMs: Int.min), 0)
+        XCTAssertLessThanOrEqual(tile.frameTimeMs(frameIndex: Int.max), tile.startMs + tile.durationMs - 1)
     }
 
 }

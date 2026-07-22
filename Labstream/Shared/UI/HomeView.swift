@@ -1,9 +1,14 @@
 import SwiftUI
 import PMSKit
 
+/// Compatibility name retained for the Home-specific state and tests that introduced this seam.
+typealias MediaBrowserHomeLoadIdentity = AuthenticatedBrowseLoadIdentity
+
 /// Home tab: the server's hubs (`GET /hubs`) rendered as horizontal poster rails,
 /// Swiftfin-style. Each rail is one `Hub`; tapping a poster opens `DetailView`.
 struct HomeView: View {
+    let catalogRepository: LibraryCatalogRepository
+
     @Environment(AppModel.self) private var appModel
     @Environment(\.labstreamCompactWidth) private var compactWidth
     @Environment(\.labstreamHomeUsesDenseSectionSpacing) private var denseSectionSpacing
@@ -14,7 +19,7 @@ struct HomeView: View {
     @State private var loadState: BrowseLoadState = .idle
     /// Server/backend identity the current hubs were loaded from (pop-back no-op guard).
     /// Includes selected Plex server id because multiple servers can resolve through the same URL.
-    @State private var loadedIdentity: String?
+    @State private var loadedIdentity: MediaBrowserHomeLoadIdentity?
     @State private var loadGeneration = 0
 
 
@@ -135,8 +140,8 @@ struct HomeView: View {
         }
     }
 
-    private var loadIdentity: String {
-        appModel.activeBrowseSessionKey
+    private var loadIdentity: MediaBrowserHomeLoadIdentity {
+        MediaBrowserHomeLoadIdentity(appModel: appModel)
     }
 
     /// First rail's id as the `HubRail` sees it (mediaBrowser rails wrap into a
@@ -220,27 +225,32 @@ struct HomeView: View {
                 // deferred — see #104.)
                 // The backend can change while an earlier Home task is unwinding. A Plex task uses
                 // native hubs and must never enter the Jellyfin/Emby provider.
-                guard let provider = MediaBrowserHomeProvider(appModel: appModel) else { return }
-                let content = try await provider.loadHome()
+                guard let provider = MediaBrowserHomeProvider(appModel: appModel,
+                                                              catalogRepository: catalogRepository) else { return }
+                let content = try await provider.loadHome(forceRefresh: force) { snapshot in
+                    guard generation == loadGeneration,
+                          loadIdentity == activeIdentity,
+                          !Task.isCancelled else { return }
+                    mediaBrowserLibraries = snapshot.libraries
+                    mediaBrowserRails = snapshot.rails
+                    loadedIdentity = MediaBrowserHomePublicationPolicy.shouldPin(snapshot)
+                        ? activeIdentity : nil
+                    loadState = MediaBrowserHomePublicationPolicy.shouldShowLoadedState(snapshot)
+                        ? .loaded : .loading
+                }
                 guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
-                mediaBrowserLibraries = content.libraries
-                mediaBrowserRails = content.rails
                 if let session = appModel.backendSession(for: appModel.activeBackend.downloadBackendKind) {
                     SpotlightIndexer.index(content.rails.flatMap(\.items),
                                            backend: appModel.activeBackend,
                                            server: session.baseURL)
                     LabstreamShortcuts.updateAppShortcutParameters()
                 }
-                // Only pin the loaded identity for a clean load. A degraded load (some rails
-                // errored) is shown but left unpinned so pop-back / the next `.task` re-fetches
-                // and can recover the missing rails without a manual pull-to-refresh (#93).
-                loadedIdentity = content.isDegraded ? nil : activeIdentity
-                loadState = .loaded
                 span.end(fields: [
                     "view_count": content.libraries.count,
                     "rail_count": mediaBrowserRails.count,
                     "item_count": mediaBrowserRails.reduce(0) { $0 + $1.items.count },
                     "degraded": content.isDegraded ? 1 : 0,
+                    "pending_rail_count": content.pendingRailKeys.count,
                 ])
             } catch {
                 guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
@@ -459,7 +469,7 @@ struct RailMediaCell: View {
         case .poster:
             PosterCell(item: item,
                        artworkPath: selection.path,
-                       aspectOverride: MediaItem.defaultPosterAspect)
+                       aspectOverride: selection.presentation.aspectRatio)
         case .landscape:
             EpisodeRailCell(item: item, artworkPath: selection.path)
         }
@@ -481,7 +491,8 @@ private enum HomeRailCellMetrics {
         #endif
     }
     static func episodeImageHeight(compact: Bool) -> CGFloat {
-        episodeWidth(compact: compact) * 9.0 / 16.0
+        episodeWidth(compact: compact)
+            / CGFloat(HomeRailArtworkPolicy.Presentation.landscape.aspectRatio)
     }
     #if os(tvOS)
     static let titleBlockHeight: CGFloat = 60

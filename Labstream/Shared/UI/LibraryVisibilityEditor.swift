@@ -259,6 +259,8 @@ private struct LibraryVisibilityMacRow: View {
 /// to `LibraryVisibilityStore`. Re-fetches the current library list on appear so newly-added
 /// server libraries surface (and default visible).
 struct LibraryVisibilityEditor: View {
+    let catalogRepository: LibraryCatalogRepository
+
     @Environment(AppModel.self) private var appModel
 
     @State private var candidates: [LibraryVisibility.Candidate] = []
@@ -319,41 +321,43 @@ struct LibraryVisibilityEditor: View {
     }
 
     private func load() async {
+        let capturedSession = appModel.activeAuthenticatedBrowseSession
         appModel.migrateLibraryVisibilityKeysIfNeeded(store: store)
         let backendKey = appModel.libraryVisibilityBackendKey
         guard backendKey != nil else { loadState = .unavailable; return }
-        hidden = store.hiddenIDs(forBackendKey: backendKey)
+        let nextHidden = store.hiddenIDs(forBackendKey: backendKey)
         do {
-            candidates = try await fetchCandidates()
+            let nextCandidates = try await fetchCandidates()
+            guard capturedSession?.backend == appModel.activeAuthenticatedBrowseSession?.backend,
+                  capturedSession?.authority == appModel.activeAuthenticatedBrowseSession?.authority,
+                  !Task.isCancelled else { return }
+            hidden = nextHidden
+            candidates = nextCandidates
             loadState = .loaded
         } catch {
+            guard capturedSession?.backend == appModel.activeAuthenticatedBrowseSession?.backend,
+                  capturedSession?.authority == appModel.activeAuthenticatedBrowseSession?.authority,
+                  !Task.isCancelled else { return }
             loadState = .failed(friendlyMessage(error))
         }
     }
 
     private func fetchCandidates() async throws -> [LibraryVisibility.Candidate] {
-        switch appModel.activeBackend {
-        case .plex:
-            guard let service = try? PlexBrowseService(appModel: appModel) else {
-                throw LibraryVisibilityEditorError.noServer
-            }
-            return try await service.libraries()
-                .filter { !$0.isMusic }
-                .map { LibraryVisibility.Candidate(id: $0.key, title: $0.title,
-                                                   kind: LibrarySectionKind(plexType: $0.type).visibilityKindToken) }
-        case .jellyfin:
-            return try await JellyfinBrowseService(appModel: appModel).userViewLinks()
-                .map { LibraryVisibility.Candidate(id: $0.id, title: $0.title,
-                                                   kind: LibrarySectionKind(collectionType: $0.collectionType).visibilityKindToken) }
-        case .emby:
-            return try await EmbyBrowseService(appModel: appModel).userViewLinks()
-                .map { LibraryVisibility.Candidate(id: $0.id, title: $0.title,
-                                                   kind: LibrarySectionKind(collectionType: $0.collectionType).visibilityKindToken) }
+        // Opening the editor has always been the explicit server refresh which discovers newly
+        // added libraries. Preserve that behavior while replacing the repository's exact-
+        // authority value for the other catalog consumers.
+        let snapshot = try await catalogRepository.catalog(appModel: appModel,
+                                                           forceRefresh: true)
+        let editable = snapshot.backend == .plex
+            ? snapshot.descriptors.filter { $0.kind != .music }
+            : snapshot.descriptors
+        return editable.map {
+            LibraryVisibility.Candidate(id: $0.sourceID,
+                                        title: $0.title,
+                                        kind: $0.kind.visibilityKindToken)
         }
     }
 }
-
-private enum LibraryVisibilityEditorError: Error { case noServer }
 
 /// Convenience init so the picker/editor can recover a `LibrarySectionKind` from a stored token.
 extension LibrarySectionKind {

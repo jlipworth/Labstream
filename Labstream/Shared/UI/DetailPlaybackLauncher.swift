@@ -11,9 +11,22 @@ enum DetailPlaybackLauncher {
 
     static func metadataItem(ratingKey: String,
                              fallback: MediaItem,
+                             trustedDetailSnapshot: MetadataSnapshot? = nil,
+                             metadataRepository: MetadataRepository? = nil,
                              context: MediaBrowserPlaybackContext,
                              appModel: AppModel,
                              resumeRewindSeconds: Int) async -> MediaItem {
+        if let trustedDetailSnapshot,
+           metadataRepository?.mayAuthorizeAction(trustedDetailSnapshot,
+                                                   appModel: appModel,
+                                                   backend: context.backend,
+                                                   itemID: ratingKey)
+            ?? trustedDetailSnapshot.mayAuthorizeAction(in: appModel,
+                                                        backend: context.backend,
+                                                        itemID: ratingKey) {
+            return itemWithResumeRewind(trustedDetailSnapshot.item,
+                                        resumeRewindSeconds: resumeRewindSeconds)
+        }
         let fetched: MediaItem?
         switch context.backend {
         case .plex:

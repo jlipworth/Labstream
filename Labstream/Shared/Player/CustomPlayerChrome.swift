@@ -111,7 +111,7 @@ struct CustomPlayerChrome: View {
     @State private var selectedMenu: CustomPlayerMenuKind?
     @State private var menuState: PlayerMenuState
     @State private var trickPlayPreviewTask: Task<Void, Never>?
-    @State private var trickPlayPreviewImage: UIImage?
+    @State private var trickPlayPreviewImage: DecodedImage?
     @State private var trickPlayPreviewTimeMs: Int?
     @State private var trickPlayPreviewCaptureTimeMs: Int?
     @State private var trickPlayPreviewLoading = false
@@ -1597,7 +1597,7 @@ struct CustomPlayerChrome: View {
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
                         .fill(.regularMaterial)
                     if let trickPlayPreviewImage {
-                        Image(uiImage: trickPlayPreviewImage)
+                        Image(decodedImage: trickPlayPreviewImage)
                             .resizable()
                             .aspectRatio(contentMode: .fill)
                             .transition(.opacity)
@@ -2105,7 +2105,7 @@ struct CustomPlayerChrome: View {
             }
             let thumbnail = await provider.thumbnail(nearMs: targetMs)
             guard !Task.isCancelled else { return }
-            let decoded = thumbnail.flatMap { UIImage(data: $0.imageData) }
+            let decoded = thumbnail.flatMap { DecodedImage(data: $0.imageData) }
             await MainActor.run {
                 if trickPlayInFlightTargetMs == targetMs {
                     trickPlayInFlightTargetMs = nil

@@ -117,8 +117,10 @@ final class WatchTogetherCoordinator {
     @ObservationIgnored private var playbackCoordinatorDelegate: WatchTogetherPlaybackCoordinatorDelegate?
     @ObservationIgnored private var candidateLookup: (@MainActor (String) async -> [MediaItem])?
 
-    func configure(appModel: AppModel) {
-        let lookup = WatchTogetherMediaLookup(appModel: appModel)
+    func configure(appModel: AppModel,
+                   catalogRepository: LibraryCatalogRepository) {
+        let lookup = WatchTogetherMediaLookup(appModel: appModel,
+                                              catalogRepository: catalogRepository)
         candidateLookup = { query in await lookup.candidates(matching: query) }
     }
 

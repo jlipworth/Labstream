@@ -11,15 +11,34 @@ final class LibraryPagingModel {
     private(set) var total = 0
     private(set) var pageSize = LibraryPagingSource.defaultPageSize
 
-    @ObservationIgnored private var loadingPages: Set<Int> = []
+    @ObservationIgnored private var pageFlights: [Int: PageFlight] = [:]
     @ObservationIgnored private var loadedIdentity: String?
     @ObservationIgnored private var activeIdentity: String?
     @ObservationIgnored private var activeLoadGeneration = 0
     /// Movie-version de-dup state (#108), present only when the source opts in
-    /// (`collapsesMovieVersions`). An append-only accumulator of all loaded pages; the grid
-    /// renders its dense, complete `collapsedItems()` directly. `nil` for sources that show
-    /// items verbatim (Plex, TV, etc.), which keep the lazy sparse-window paging below.
+    /// (`collapsesMovieVersions`). It incrementally groups new page items and maintains a dense
+    /// first-seen projection; `nil` for sources that show items verbatim (Plex, TV, etc.), which
+    /// keep the lazy sparse-window paging below.
     @ObservationIgnored private var collapser: MovieVersionCollapser?
+
+    /// One model-owned task per sparse page. Callers register as independent waiters, so cancelling
+    /// a prefetching cell cannot cancel a rail jump (or another cell) awaiting the same fetch.
+    private struct PageWaiter {
+        let continuation: CheckedContinuation<Void, Never>
+        let requestsRetryIfSlotRemainsEmpty: Bool
+        let requestedIndex: Int
+    }
+
+    private struct PageFlight {
+        let id: UUID
+        var task: Task<Void, Never>
+        var waiters: [UUID: PageWaiter] = [:]
+    }
+
+    private enum PageFlightAttemptOutcome {
+        case success(LibraryPagingPage)
+        case failure(Error)
+    }
 
     func load(source: LibraryPagingSource,
               force: Bool = false,
@@ -30,11 +49,11 @@ final class LibraryPagingModel {
         activeIdentity = identity
         activeLoadGeneration += 1
         let generation = activeLoadGeneration
+        cancelPageFlights()
         pageSize = source.pageSize
         loadState = .loading
         slots = []
         total = 0
-        loadingPages = []
         alphabetBuckets = []
         collapser = source.collapsesMovieVersions ? MovieVersionCollapser() : nil
 
@@ -131,8 +150,7 @@ final class LibraryPagingModel {
                 span.end(result: "stale")
                 return
             }
-            collapser?.ingest(first.items)
-            projectCollapsed()
+            ingestCollapsed(first.items)
             // Show the grid immediately after the first page; keep loading the rest below.
             loadedIdentity = (source.cacheEmptyFirstPage || !first.items.isEmpty) ? identity : nil
             loadState = .loaded
@@ -148,8 +166,7 @@ final class LibraryPagingModel {
                     span.end(result: "stale")
                     return
                 }
-                collapser?.ingest(page.items)
-                projectCollapsed()
+                ingestCollapsed(page.items)
                 loadedPages += 1
                 lastPageWasEmpty = page.items.isEmpty
                 // The server total can only be trusted to grow; never let a later page's
@@ -188,19 +205,28 @@ final class LibraryPagingModel {
         }
     }
 
-    /// Re-derive the displayed `slots`/`total` from the collapser's complete deduped list
-    /// (#108). Dense — there are NO `nil` placeholders, so a tile never lingers as permanent
-    /// shimmer (F2) and `total` reflects exactly the distinct movies known so far, growing
-    /// monotonically as pages load (F3).
-    private func projectCollapsed() {
-        guard let collapser else { return }
-        slots = collapser.collapsedItems().map(Optional.init)
-        total = slots.count
+    /// Apply only the projection positions changed by the newly fetched page. The collapser
+    /// owns stable first-seen indices, so existing representatives update in place and new
+    /// representatives append densely. `total` therefore grows monotonically and no page
+    /// re-collapses or re-publishes unrelated history.
+    private func ingestCollapsed(_ items: [MediaItem]) {
+        // Mutate the optional's wrapped value in place. Copying it to a local before mutation
+        // would trigger copy-on-write of the accumulated groups and recreate the per-page
+        // history cost this path is designed to remove.
+        guard let delta = collapser?.ingest(items) else { return }
+
+        if slots.count < delta.count {
+            slots.append(contentsOf: repeatElement(nil, count: delta.count - slots.count))
+        }
+        for update in delta.updates {
+            slots[update.index] = update.item
+        }
+        total = delta.count
     }
 
     func prefetch(containing index: Int,
                   source: LibraryPagingSource,
-                  isCurrent: @MainActor () -> Bool) async {
+                  isCurrent: @escaping @MainActor () -> Bool) async {
         await loadPage(containing: index, source: source, isCurrent: isCurrent)
     }
 
@@ -212,7 +238,7 @@ final class LibraryPagingModel {
 
     func loadPage(containing index: Int,
                   source: LibraryPagingSource,
-                  isCurrent: @MainActor () -> Bool) async {
+                  isCurrent: @escaping @MainActor () -> Bool) async {
         // Collapsing sources load every page up front (#108): everything is already in
         // `slots`, there are no placeholders to fill, and the projected index is NOT a server
         // offset — so scroll-prefetch and rail-jump page loads are no-ops here. This removes
@@ -232,60 +258,242 @@ final class LibraryPagingModel {
         guard let page = window.page(containing: index),
               let start = window.startOffset(forPage: page) else { return }
 
-        // A rail jump can target a page whose placeholder `onAppear` already kicked off a
-        // prefetch. Previously that made the jump return immediately and scroll to still-nil
-        // slots; if the in-flight prefetch was then cancelled or failed, those placeholders
-        // could remain stranded until the user forced them to reappear. Wait for the existing
-        // page load, then retry once if the requested slot is still empty.
-        if loadingPages.contains(page) {
-            while loadingPages.contains(page),
-                  isCurrent(),
-                  activeIdentity == source.identity,
-                  activeLoadGeneration == generation {
-                do {
-                    try await Task.sleep(for: .milliseconds(50))
-                } catch {
-                    return
-                }
-            }
-            guard !Task.isCancelled,
-                  isCurrent(),
-                  activeIdentity == source.identity,
-                  activeLoadGeneration == generation else { return }
-            if slots.indices.contains(index), slots[index] != nil { return }
+        if let flight = pageFlights[page] {
+            await waitForPageFlight(page: page,
+                                    flightID: flight.id,
+                                    requestsRetryIfSlotRemainsEmpty: true,
+                                    requestedIndex: index)
+            return
         }
 
-        guard !loadingPages.contains(page) else { return }
-        loadingPages.insert(page)
-        defer { loadingPages.remove(page) }
+        let flightID = UUID()
+        let task = makePageFlightTask(page: page,
+                                      start: start,
+                                      flightID: flightID,
+                                      attempt: 0,
+                                      source: source,
+                                      identity: source.identity,
+                                      generation: generation,
+                                      isCurrent: isCurrent)
+        pageFlights[page] = PageFlight(id: flightID, task: task)
+        await waitForPageFlight(page: page,
+                                flightID: flightID,
+                                requestsRetryIfSlotRemainsEmpty: false,
+                                requestedIndex: index)
+    }
 
-        let span = PerformanceInstrumentation.begin(.libraryGridPage,
-                                                     backend: source.backendLabel,
-                                                     fields: ["page": page, "page_size": source.pageSize])
-        do {
-            let pageResult = try await source.fetchPage(start, source.pageSize)
-            guard !Task.isCancelled,
-                  isCurrent(),
-                  activeIdentity == source.identity,
-                  activeLoadGeneration == generation else {
-                span.end(result: Task.isCancelled ? "cancelled" : "stale")
+    /// The fetch task weakly captures the model and does not promote that reference until after
+    /// the transport returns. Removing the last waiter can therefore cancel/drop the flight
+    /// without a model -> task -> model retain cycle, even if the transport ignores cancellation.
+    private func makePageFlightTask(
+        page: Int,
+        start: Int,
+        flightID: UUID,
+        attempt: Int,
+        source: LibraryPagingSource,
+        identity: String,
+        generation: Int,
+        isCurrent: @escaping @MainActor () -> Bool
+    ) -> Task<Void, Never> {
+        Task { @MainActor [weak self] in
+            let span = PerformanceInstrumentation.begin(
+                .libraryGridPage,
+                backend: source.backendLabel,
+                fields: ["page": page, "page_size": source.pageSize, "attempt": attempt + 1]
+            )
+            let outcome: PageFlightAttemptOutcome
+            do {
+                outcome = .success(try await source.fetchPage(start, source.pageSize))
+            } catch {
+                outcome = .failure(error)
+            }
+
+            let wasCancelled = Task.isCancelled
+            guard let self else {
+                span.end(result: wasCancelled ? "cancelled" : "orphaned")
                 return
             }
-            PagingPageWindow.insert(pageResult.items, into: &slots, at: start)
-            span.end(fields: ["item_count": pageResult.items.count])
-        } catch {
-            if Task.isCancelled {
-                span.end(result: "cancelled")
-                return
-            }
-            guard isCurrent(), activeIdentity == source.identity, activeLoadGeneration == generation else {
-                span.end(result: "stale")
-                return
-            }
-            span.end(result: "failure", fields: ["error": performanceErrorLabel(error)])
-            // Non-fatal: removing the in-flight mark lets the placeholder retry when it reappears.
+            self.completePageFlightAttempt(outcome,
+                                           wasCancelled: wasCancelled,
+                                           span: span,
+                                           page: page,
+                                           start: start,
+                                           flightID: flightID,
+                                           attempt: attempt,
+                                           source: source,
+                                           identity: identity,
+                                           generation: generation,
+                                           isCurrent: isCurrent)
         }
     }
+
+    private func completePageFlightAttempt(
+        _ outcome: PageFlightAttemptOutcome,
+        wasCancelled: Bool,
+        span: PerformanceSpan,
+        page: Int,
+        start: Int,
+        flightID: UUID,
+        attempt: Int,
+        source: LibraryPagingSource,
+        identity: String,
+        generation: Int,
+        isCurrent: @escaping @MainActor () -> Bool
+    ) {
+        guard let flight = pageFlights[page], flight.id == flightID else {
+            span.end(result: wasCancelled ? "cancelled" : "stale")
+            return
+        }
+        guard !wasCancelled else {
+            span.end(result: "cancelled")
+            finishPageFlight(page: page, flightID: flightID)
+            return
+        }
+        guard isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else {
+            span.end(result: "stale")
+            finishPageFlight(page: page, flightID: flightID)
+            return
+        }
+
+        switch outcome {
+        case .success(let pageResult):
+            PagingPageWindow.insert(pageResult.items, into: &slots, at: start)
+            span.end(fields: ["item_count": pageResult.items.count])
+            if retryPageFlightIfNeeded(flight: flight,
+                                        page: page,
+                                        start: start,
+                                        flightID: flightID,
+                                        attempt: attempt,
+                                        source: source,
+                                        identity: identity,
+                                        generation: generation,
+                                        isCurrent: isCurrent) {
+                return
+            }
+            finishPageFlight(page: page, flightID: flightID)
+
+        case .failure(let error):
+            span.end(result: "failure", fields: ["error": performanceErrorLabel(error)])
+
+            if retryPageFlightIfNeeded(flight: flight,
+                                        page: page,
+                                        start: start,
+                                        flightID: flightID,
+                                        attempt: attempt,
+                                        source: source,
+                                        identity: identity,
+                                        generation: generation,
+                                        isCurrent: isCurrent) {
+                return
+            }
+            finishPageFlight(page: page, flightID: flightID)
+        }
+    }
+
+    /// Preserve the old rail-jump contract: a caller that joined a prefetching page gets one
+    /// immediate retry while its requested slot is still empty. This applies to fetch failures
+    /// and short successful pages. Keeping the retry inside the same flight makes any number of
+    /// joiners collectively request at most one retry without a post-completion creation race.
+    private func retryPageFlightIfNeeded(
+        flight: PageFlight,
+        page: Int,
+        start: Int,
+        flightID: UUID,
+        attempt: Int,
+        source: LibraryPagingSource,
+        identity: String,
+        generation: Int,
+        isCurrent: @escaping @MainActor () -> Bool
+    ) -> Bool {
+        let hasStrandedJoiner = flight.waiters.values.contains { waiter in
+            waiter.requestsRetryIfSlotRemainsEmpty
+                && slots.indices.contains(waiter.requestedIndex)
+                && slots[waiter.requestedIndex] == nil
+        }
+        guard attempt == 0,
+              hasStrandedJoiner,
+              var current = pageFlights[page],
+              current.id == flightID else { return false }
+
+        current.task = makePageFlightTask(page: page,
+                                          start: start,
+                                          flightID: flightID,
+                                          attempt: attempt + 1,
+                                          source: source,
+                                          identity: identity,
+                                          generation: generation,
+                                          isCurrent: isCurrent)
+        pageFlights[page] = current
+        return true
+    }
+
+    /// Await one shared flight without transferring cancellation ownership to the caller. A
+    /// cancelled waiter resumes immediately; the model-owned task continues for other waiters.
+    private func waitForPageFlight(
+        page: Int,
+        flightID: UUID,
+        requestsRetryIfSlotRemainsEmpty: Bool,
+        requestedIndex: Int
+    ) async {
+        let waiterID = UUID()
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled,
+                      var flight = pageFlights[page],
+                      flight.id == flightID else {
+                    continuation.resume()
+                    return
+                }
+                flight.waiters[waiterID] = PageWaiter(
+                    continuation: continuation,
+                    requestsRetryIfSlotRemainsEmpty: requestsRetryIfSlotRemainsEmpty,
+                    requestedIndex: requestedIndex
+                )
+                pageFlights[page] = flight
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.cancelPageWaiter(page: page, flightID: flightID, waiterID: waiterID)
+            }
+        }
+    }
+
+    private func cancelPageWaiter(page: Int, flightID: UUID, waiterID: UUID) {
+        guard var flight = pageFlights[page], flight.id == flightID,
+              let waiter = flight.waiters.removeValue(forKey: waiterID) else { return }
+        waiter.continuation.resume()
+
+        if flight.waiters.isEmpty {
+            // Remove before cancelling so a transport that ignores cancellation cannot commit
+            // into, or delete, a replacement flight for the same page.
+            pageFlights.removeValue(forKey: page)
+            flight.task.cancel()
+        } else {
+            pageFlights[page] = flight
+        }
+    }
+
+    private func finishPageFlight(page: Int, flightID: UUID) {
+        guard let flight = pageFlights[page], flight.id == flightID else { return }
+        pageFlights.removeValue(forKey: page)
+        for waiter in flight.waiters.values { waiter.continuation.resume() }
+    }
+
+    private func cancelPageFlights() {
+        let flights = Array(pageFlights.values)
+        pageFlights.removeAll()
+        for flight in flights {
+            flight.task.cancel()
+            for waiter in flight.waiters.values { waiter.continuation.resume() }
+        }
+    }
+
+#if DEBUG
+    /// Deterministic hosted-test seam for awaiting a reset flight after its waiter has detached.
+    func pageFlightTaskForTesting(page: Int) -> Task<Void, Never>? {
+        pageFlights[page]?.task
+    }
+#endif
 
     private func applyInitialPage(_ page: LibraryPagingPage,
                                   alphabetBuckets: [AlphabetBucket],

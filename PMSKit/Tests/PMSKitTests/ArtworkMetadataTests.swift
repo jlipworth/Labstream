@@ -150,6 +150,26 @@ struct ArtworkMetadataTests {
         #expect(item.grandparentThumb == "emby://item/series-1/Primary?tag=series-poster-tag")
     }
 
+    @Test func embyEpisodePrefersSeasonPrimaryOverLandscapeSeasonThumb() throws {
+        let dto = try JSONDecoder().decode(EmbyBaseItemDto.self, from: Data(#"""
+        {
+          "Id": "episode-primary", "Name": "Episode", "Type": "Episode",
+          "SeriesId": "series-1", "SeasonId": "season-1", "ParentId": "season-1",
+          "ImageTags": {},
+          "ParentThumbItemId": "season-1", "ParentThumbImageTag": "season-thumb-tag",
+          "ParentPrimaryImageItemId": "season-1", "ParentPrimaryImageTag": "season-primary-tag",
+          "SeriesPrimaryImageTag": "series-poster-tag"
+        }
+        """#.utf8))
+        let item = try #require(dto.toMediaItem())
+
+        // Ordinary episode rails retain the available 16:9 parent Thumb.
+        #expect(item.thumb == "emby://item/season-1/Thumb?tag=season-thumb-tag")
+        // Home reads the contextual parent artwork and can preserve a portrait card.
+        #expect(item.parentThumb == "emby://item/season-1/Primary?tag=season-primary-tag")
+        #expect(item.grandparentThumb == "emby://item/series-1/Primary?tag=series-poster-tag")
+    }
+
     // MARK: - #76 — episode-still Thumb preferred over poster for the still slot
 
     @Test func episodeStillThumbPreferredWhenPresent() throws {
