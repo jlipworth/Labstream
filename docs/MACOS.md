@@ -22,6 +22,9 @@ The app owns exactly one reusable browse/player window plus the singleton system
 Closing the main window hides it instead of dismantling its SwiftUI graph: Dock reopen, system
 entries, and menu commands reactivate that same window deterministically, while active playback,
 music, and background downloads continue until the user explicitly stops them or quits the app.
+The scene remains a command-suppressed `WindowGroup` so Finder, Dock, and direct executable launches
+all create the initial window reliably; the retained-window controller, hidden-close behavior, and
+removed New Window command prevent a second browse/navigation stack.
 
 The Mac root uses a native source-list split view. Home is followed by the active server's visible
 non-music libraries, an optional Music section whose child routes share an explicit selected-library

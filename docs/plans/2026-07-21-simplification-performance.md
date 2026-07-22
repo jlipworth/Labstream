@@ -1,6 +1,6 @@
 # Cross-platform simplification and performance program
 
-Status: **Waves 0–4 implemented and validated; the independent Wave 6 simplification pass is complete; Wave 5 measurement prerequisites are next**
+Status: **Waves 0–4 implemented and validated; the independent Wave 6 simplification pass is complete; Wave 5 paired Mac Home capture is operational and full sampling is next**
 
 Audit baseline: `b3045bc0` (`Record tvOS merge checkpoint`) on
 `codex/audit-simplification-performance`
@@ -1252,7 +1252,7 @@ policy:
     only `network_decode`; cached/joined/local artwork comparisons require a structurally compatible
     control rather than invented provenance. No browse evidence captured from earlier control
     `ead62213` is comparable to this slice.
-12. The next bounded Wave 5 slice adds only an external deterministic Emby-compatible loopback
+12. The next bounded Wave 5 slice added an external deterministic Emby-compatible loopback
     fixture server. Its fixed synthetic corpus covers Home (`Views`, Resume, Next Up, Latest),
     Search/library paging (`Items`), alphabet probes, and primary artwork. Routes and query names
     are closed; bounded one-shot delay/failure injection and reset are loopback control operations;
@@ -1267,9 +1267,31 @@ policy:
     remains outside this slice and cannot be claimed from the initial-login support.
     The script lives under `scripts/`, outside every Xcode synchronized production root, with a
     source-topology test preventing accidental target membership. This does not alter app code,
-    URLSession, transport, cache behavior, or production fixtures. No XCUITest workload driver or
-    paired capture exists yet; control `0a5307a3` and candidate must use the same external server and
-    later identical driver before any evidence is comparable.
+    URLSession, transport, cache behavior, or production fixtures.
+13. The Mac browse lane is now end-to-end operational. Symmetric macOS-only semantic selectors are
+    committed on control `7d372925` and candidate `01856cf5`; the external AX driver and paired
+    runner are at `834ca770`, and the exact candidate app artifact is `52067e2e`. The driver launches
+    each app with no arguments or environment, activates and attaches to the exact PID, uses no
+    coordinates, tolerates only transient invalid SwiftUI subtree snapshots, and requires exact
+    terminal Home, catalog, or Search milestones. The runner descriptor-resets the dedicated
+    sandbox, seeds the fixture-scoped first-run preference, resets the closed Keychain account set
+    including the per-arm routing identifier, and binds fixture, driver, workload, and client-state
+    hashes in the manifest. A full raw log preserves cancelled lifecycle attempts; a separately
+    checksummed selector artifact retains the capture binding plus exactly one successful target
+    span for strict comparison, while duplicate successes or non-cancellation failures invalidate
+    the sample. Stable three-read zero-in-flight ledger proof, process-stop proof, post-stop ledger
+    equality, and post-stop Keychain reset remain mandatory.
+
+    A real adjacent Home smoke against control `7d372925` and candidate `52067e2e` produced two
+    contract-valid manifests, strict `home.load` summaries, and a comparator-valid pair under
+    external power, nominal thermal state, a 6.067-second pair gap, and bounded storage drift. The
+    smoke also exposed and fixed a Mac cold/direct-launch regression: the retained main scene now
+    uses a command-suppressed `WindowGroup`, hides instead of destroys its sole window, and deletes
+    the unused reopen closure machinery. The single pair is deliberately `insufficient_data`; its
+    observed durations are smoke evidence, not a performance verdict. Catalog and Search are
+    admission-capable but still need live smoke/full paired sampling. Artwork remains blocked until
+    a precise loaded-artwork milestone and comparable cardinality exist. The focused retained-window
+    lifecycle suite passed all four tests after the launch correction.
 
 ### Wave 6 — Optimize measured bottlenecks
 

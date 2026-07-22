@@ -21,8 +21,8 @@ would become stale as implementations move.
   the window and Cinema.
 - `Labstream/Platforms/Mobile/App/LabstreamMobile.swift` is the universal iPhone/iPad entry point.
 - `Labstream/Platforms/macOS/App/LabstreamMac.swift` is the native macOS entry point and declares the
-  unique reusable main window, singleton Mac Settings scene, deterministic window reactivation,
-  and menu commands.
+  one retained main-window group, removes the New Window command, owns the singleton Mac Settings
+  scene, and supplies deterministic window reactivation and menu commands.
 - `Labstream/Shared/App/ContentView.swift` registers system routing, runs the one-time restore,
   and switches between restore, login, and browse states.
 - `Labstream/Capabilities/Downloads/App/AppDelegate.swift` bridges iOS/visionOS background URLSession relaunch
