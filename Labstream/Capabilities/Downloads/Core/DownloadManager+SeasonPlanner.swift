@@ -16,10 +16,6 @@ struct SeasonEpisodeDownloadPlan {
         DownloadRecordIdentity.recordKey(for: item.ratingKey, backend: backend)
     }
 
-    var admissionLane: SeasonDownloadAdmissionLane {
-        SeasonDownloadAdmissionPolicy.lane(
-            backend: backend, downloadLane: DownloadChoicePolicy.downloadLane(for: choice))
-    }
 }
 
 /// The complete immutable result of season review. Keeping new rows and retry intents together

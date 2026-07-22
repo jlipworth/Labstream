@@ -1415,30 +1415,6 @@ final class AuthManager {
         return nil
     }
 
-    /// One-shot reachability check of the CURRENTLY selected connection, for the Settings
-    /// connection-status row (#26). Same `<uri>/identity` probe as `firstReachable`, but
-    /// against the single resolved `serverBaseURL` — no re-discovery, no state changes.
-    func probeSelectedServer() async -> Bool {
-        guard let base = appModel.serverBaseURL, let token = appModel.serverToken else {
-            return false
-        }
-        var req = URLRequest(url: base.appendingPathComponent("identity"))
-        req.setValue(token, forHTTPHeaderField: "X-Plex-Token")
-        req.setValue("application/json", forHTTPHeaderField: "Accept")
-        do {
-            let (data, resp) = try await Self.probeSession.data(for: req)
-            guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-                return false
-            }
-            guard let expectedMachineIdentifier = appModel.selectedServer?.clientIdentifier else {
-                return true
-            }
-            return Self.plexMachineIdentifier(in: data) == expectedMachineIdentifier
-        } catch {
-            return false
-        }
-    }
-
     /// One-shot reachability check for a discovered Plex server. Used by the Settings picker
     /// to show healthy/unreachable state without exposing candidate connection URLs.
     func probePlexServer(id serverID: String) async -> Bool {

@@ -184,7 +184,6 @@ final class PlaybackController {
 
     private let qualityDefaultsKey: String
     var qualityPreferenceDefaultsKey: String { qualityDefaultsKey }
-    var activeQualityBitrateKbps: Int { maxVideoBitrateKbps }
 
     /// Per-playback transcode session id (also reused as the timeline session).
     let sessionID = "visionplay-" + UUID().uuidString

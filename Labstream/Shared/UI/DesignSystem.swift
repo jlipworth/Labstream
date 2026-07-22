@@ -16,7 +16,6 @@ enum DS {
     enum Brand {
         static let blue = Color(red: 0.00, green: 0.64, blue: 1.00)
         static let amber = Color(red: 1.00, green: 0.72, blue: 0.20)
-        static let coral = Color(red: 1.00, green: 0.27, blue: 0.29)
         static let deepTeal = Color(red: 0.03, green: 0.28, blue: 0.34)
         static let midnight = Color(red: 0.02, green: 0.09, blue: 0.13)
 
