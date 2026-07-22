@@ -31,6 +31,17 @@ struct AppRuntime {
 
     static func make(keychain providedKeychain: KeychainStore? = nil,
                      bootstrap: SessionBootstrap = SessionBootstrap()) -> AppRuntime? {
+        #if os(tvOS)
+        let downloadsCapable = 0
+        #else
+        let downloadsCapable = 1
+        #endif
+        let compositionSpan = PerformanceInstrumentation.begin(.runtimeComposition,
+                                                                backend: "App")
+        defer {
+            compositionSpan.end(fields: ["downloads_capable": downloadsCapable])
+        }
+
         let keychain = providedKeychain ?? AppKeychainService.makeStore()
         // The client identifier is routing metadata, not a credential. If secure storage is
         // temporarily unavailable, use a process-local identity so the app can still finish

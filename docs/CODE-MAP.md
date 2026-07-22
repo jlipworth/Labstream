@@ -363,8 +363,10 @@ background.
   user-generated feedback; it does not upload them.
 - `PerformanceInstrumentation.swift` is real signpost instrumentation in Debug and an
   API-compatible no-op in Release. Its terminal gate emits at most one end/signpost record per
-  span even when cancellation and completion race; `scripts/perf_evidence_schema.py` is the closed
-  allowlist for every emitted terminal field.
+  span even when cancellation and completion race. Launch evidence includes app-wide runtime
+  composition (`downloads_capable=0|1`) and selected-backend session restore (`restored=0|1`),
+  without identities, URLs, or credentials; `scripts/perf_evidence_schema.py` is the closed
+  allowlist for every emitted terminal field and phase/backend pairing.
 - `PMSKit/Sources/PMSKit/Diagnostics/` owns typed fields, redaction, the bounded event
   store, report rendering, and MetricKit summary models.
 
