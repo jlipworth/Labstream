@@ -262,7 +262,7 @@ def validate_manifest(data: Any, run_dir: pathlib.Path, verify_files: bool = Tru
 
     state = exact_keys(manifest["state"], "manifest.state", {"install_state", "container_state", "cache_reset"})
     enum_value(state["install_state"], "manifest.state.install_state",
-               {"fresh_install", "upgrade", "reinstall_same_artifact"})
+               {"fresh_install", "upgrade", "reinstall_same_artifact", "direct_staged_artifact"})
     enum_value(state["container_state"], "manifest.state.container_state",
                {"fresh", "preserved", "restored_fixture"})
     cache = exact_keys(state["cache_reset"], "manifest.state.cache_reset", {"command_id", "result"})

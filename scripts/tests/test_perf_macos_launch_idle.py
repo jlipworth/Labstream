@@ -16,6 +16,11 @@ spec = importlib.util.spec_from_file_location("perf_macos_launch_idle", SCRIPT)
 runner = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = runner
 spec.loader.exec_module(runner)
+COMPARE = SCRIPT.parent / "perf-compare.py"
+compare_spec = importlib.util.spec_from_file_location("perf_compare_for_macos_runner", COMPARE)
+compare = importlib.util.module_from_spec(compare_spec)
+sys.modules[compare_spec.name] = compare
+compare_spec.loader.exec_module(compare)
 
 
 class Process:
@@ -39,12 +44,30 @@ class FakeExecutor:
             shutil.rmtree(argv[2], ignore_errors=True)
         elif argv[:2] == ["/bin/mkdir", "-p"]:
             pathlib.Path(argv[2]).mkdir(parents=True, exist_ok=True)
+        elif str(runner.SUMMARY) in argv or (str(runner.CONTRACT) in argv and "manifest" in argv):
+            subprocess.run(argv, check=True, stdout=stdout, stderr=subprocess.STDOUT)
+        elif argv[:3] == ["/usr/bin/log", "show", "--style"]:
+            stdout.write(b"perf.span phase=runtime.composition backend=App result=success "
+                         b"duration_ms=4 downloads_capable=1\n")
 
     def output(self, argv):
         self.actions.append(("output", argv))
         if "xctrace" in argv:
             return "System Trace\n"
+        if argv[:2] == ["/usr/bin/sw_vers", "-buildVersion"]:
+            return "25A123\n"
+        if argv[:2] == ["/usr/bin/xcodebuild", "-version"]:
+            return "Xcode 27.0\nBuild version 17A456\n"
+        if argv[:3] == ["/usr/bin/pmset", "-g", "batt"]:
+            return "Now drawing from 'AC Power'\n -InternalBattery-0 100%; charged\n"
+        if argv[:3] == ["/usr/bin/pmset", "-g", "therm"]:
+            return ("Note: No thermal warning level has been recorded\n"
+                    "Note: No performance warning level has been recorded\n")
         return ""
+
+    def disk_free(self, path):
+        self.actions.append(("disk_free", str(path)))
+        return 1_000_000_000
 
     def spawn(self, argv, *, stdout=-3):
         self.next_pid += 1
@@ -104,20 +127,37 @@ class RunnerTests(unittest.TestCase):
             "109c196b8a013bc4ca80a3de58b26981571817011021e92eb0dbcd35827906e1",
         )
 
+    def test_bundle_digest_tracks_entry_boundaries_and_modes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            app = self.make_app(temporary, "A.app")
+            resource = app / "Contents/Resources/value"
+            resource.parent.mkdir()
+            resource.write_bytes(b"payload")
+            initial = runner.bundle_sha256(app)
+            resource.chmod(0o700)
+            self.assertNotEqual(runner.bundle_sha256(app), initial)
+            resource.chmod(0o600)
+            resource.rename(resource.with_name("renamed"))
+            self.assertNotEqual(runner.bundle_sha256(app), initial)
+
     def test_default_schedules_are_adjacent_balanced_pairs(self):
         launch = runner.schedule("launch", 3, 20, 7)
         idle = runner.schedule("idle", 1, 5, 7)
         self.assertEqual(len(launch), 46)
         self.assertEqual(len(idle), 12)
         for rows in (launch, idle):
-            first_roles = []
             for offset in range(0, len(rows), 2):
                 pair = rows[offset:offset + 2]
                 self.assertEqual({r["role"] for r in pair}, {"control", "candidate"})
                 self.assertEqual(pair[0]["sample_index"], pair[1]["sample_index"])
                 self.assertEqual([r["pair_order"] for r in pair], [1, 2])
-                first_roles.append(pair[0]["role"])
-            self.assertTrue(all(a != b for a, b in zip(first_roles, first_roles[1:])))
+                order_seed = runner.opaque("seed", 7, length=16)
+                expected = ("control" if __import__("hashlib").sha256(
+                    f'{order_seed}:{pair[0]["sample_kind"]}:{pair[0]["sample_index"]}'.encode()
+                ).digest()[0] & 1 == 0 else "candidate")
+                self.assertEqual(pair[0]["role"], expected)
+            self.assertEqual(sorted({r["sample_index"] for r in rows if r["sample_kind"] == "measured"}),
+                             list(range(20 if rows is launch else 5)))
         self.assertEqual(launch, runner.schedule("launch", 3, 20, 7))
 
     def test_app_validation_rejects_production_mismatch_and_symlinks(self):
@@ -199,6 +239,9 @@ class RunnerTests(unittest.TestCase):
             with contextlib.redirect_stdout(stdout):
                 result = runner.main([
                     "--control-app", str(control), "--candidate-app", str(candidate),
+                    "--control-commit", "a" * 40, "--candidate-commit", "b" * 40,
+                    "--device-label", "local-device-01",
+                    "--retention-deadline", "2099-01-01T00:00:00Z",
                     "--scenario", "idle", "--plan",
                 ], executor=fake)
             document = json.loads(stdout.getvalue())
@@ -264,6 +307,37 @@ class RunnerTests(unittest.TestCase):
             terminated = [a[1] for a in fake.actions if a[0] == "terminate"]
             self.assertEqual(sorted(spawned), sorted(terminated))
             self.assertTrue(str(pathlib.Path(plan["container"])).startswith(str(root)))
+
+    def test_launch_capture_emits_contract_valid_manifest_and_strict_summary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            apps = (runner.validate_app("control", self.make_app(root, "A.app")),
+                    runner.validate_app("candidate", self.make_app(root, "B.app")))
+            plan = runner.command_plan(apps, "launch", 0, 1, 1, 9, root / "result.json",
+                                       containers_root=root / "Containers",
+                                       control_commit="a" * 40, candidate_commit="b" * 40,
+                                       device_label="local-device-07")
+            result = runner.capture(plan, apps, FakeExecutor())
+            loaded = {"control": [], "candidate": []}
+            for record in result["records"]:
+                self.assertEqual(record["status"], "success")
+                manifest_path = pathlib.Path(record["manifest"])
+                manifest = json.loads(manifest_path.read_text())
+                self.assertEqual(manifest["scenario"]["backend_kind"], "none")
+                self.assertEqual(manifest["product"]["commit"],
+                                 ("a" if record["role"] == "control" else "b") * 40)
+                summary = json.loads((manifest_path.parent / "summary/redacted.json").read_text())
+                self.assertEqual(summary["workload"]["phase"], "runtime.composition")
+                self.assertEqual(summary["rows"][0]["backend"], "App")
+                raw = (manifest_path.parent / "raw/artifact-0001.log").read_text()
+                self.assertEqual(raw.count("perf.capture "), 1)
+                sample = compare.load_sample(manifest_path, record["role"])
+                self.assertEqual(sample.index, 0)
+                loaded[record["role"]].append(sample)
+            covariates = compare._validate_pairing(loaded["control"], loaded["candidate"],
+                                                   max_storage_drift=0,
+                                                   max_pair_gap_seconds=120)
+            self.assertEqual(covariates[("measured", 0)]["thermal_state"], "nominal")
 
 
 if __name__ == "__main__":

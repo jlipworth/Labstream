@@ -1208,11 +1208,12 @@ policy:
    and legacy inactive-backend hydration remains behaviorally intact but outside the selected-backend
    restore span so it cannot bias paired timings. The control passed 85 Python tooling tests, 24
    focused Mac tests, generic visionOS/iOS builds, tvOS build-for-testing, and adversarial review.
-9. The Mac runtime pre-manifest capture foundation now includes an external paired launch/idle runner. It accepts
+9. The Mac runtime capture foundation now includes an external paired launch/idle runner. It accepts
    only two real `PerformanceAudit` apps with the same dedicated
    `com.jlipworth.Labstream.perf.*` bundle identity,
    validates both binaries through the closed contract, and limits reset/seed work to the exact
-   corresponding sandbox container. The deterministic schedule is adjacent alternating A/B: launch
+   corresponding sandbox container. The deterministic schedule uses adjacent A/B pairs in the exact
+   seeded role order enforced by the comparator: launch
    defaults to 3 warmups plus 20 measured samples; idle defaults to 1 plus 5 at 120 seconds. Plan
    mode is side-effect-free JSON, the app receives no arguments or environment, bounded post-run
    unified-log extraction and System Trace capture bind to the exact launched PID. The log interval
@@ -1220,11 +1221,14 @@ policy:
    readiness/settle interval. Process preflight rejects the same bundle identity even when an older
    staged copy runs from a different executable path, and
    termination is proved after bounded TERM/KILL escalation. Failures remain explicit records.
-   The result is raw capture, not an admissible evidence manifest or strict summary: it remains
-   `insufficient_data` and cannot enter the strict comparator until per-run manifest/covariate
-   binding lands. The manifest's backendless `none` identity now maps explicitly to the
-   `runtime.composition` span's `App` label so that later strict composition summaries have a
-   closed, comparable binding. No expensive capture was started by this tooling slice.
+   Successful launch samples bind exact distinct commits, bundle-tree checksums, host covariates,
+   canonical fixture state, and deterministic zero-based comparison/order identities into an
+   atomically published validated manifest plus raw capture and strict `runtime.composition`
+   summary. The backendless `none` manifest identity maps to the span's `App` label, making these
+   samples consumable by the strict comparator, although the runner itself claims no paired verdict.
+   Failed/incomplete samples publish no manifest and make capture nonzero. Idle traces remain
+   pre-manifest and `insufficient_data` until trace packaging/extraction lands. No expensive capture
+   was started by this tooling slice.
 
 ### Wave 6 — Optimize measured bottlenecks
 

@@ -186,7 +186,8 @@
           "enum": [
             "fresh_install",
             "upgrade",
-            "reinstall_same_artifact"
+            "reinstall_same_artifact",
+            "direct_staged_artifact"
           ]
         },
         "container_state": {

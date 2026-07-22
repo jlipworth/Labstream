@@ -113,6 +113,13 @@ class PerformanceAuditContractTests(unittest.TestCase):
             root = pathlib.Path(temporary)
             contract.validate_manifest(self.manifest(root), root)
 
+    def test_manifest_accepts_direct_staged_artifact_install_state(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            manifest = self.manifest(root)
+            manifest["state"]["install_state"] = "direct_staged_artifact"
+            contract.validate_manifest(manifest, root)
+
     def test_manifest_rejects_unreviewed_publishable_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
