@@ -205,10 +205,11 @@ are backend-scoped and cross-backend.
 - `Labstream/Platforms/Mobile/Player/MobilePlayerSystemCoordinator.swift` and
   `MobilePlayerOrientationCoordinator.swift` add iOS/iPadOS PiP, AirPlay, system media,
   and orientation behavior.
-- `Labstream/Platforms/macOS/Player/MacPlayerSystemCoordinator.swift` and
-  `MacPlayerPresentation.swift` add native Mac system-media and presentation behavior.
+- `Labstream/Platforms/macOS/Player/MacPlayerPresentation.swift` adds native Mac player
+  presentation behavior.
 - `Labstream/Shared/Player/VideoNowPlayingCore.swift` is the iOS/iPadOS and macOS video adapter
-  for the shared process-wide `SystemMediaSessionCoordinator` lease.
+  for the shared process-wide `SystemMediaSessionCoordinator` lease. The mobile coordinator wraps
+  it alongside PiP/AirPlay, while the Mac player owns it directly.
 - `Labstream/Platforms/visionOS/Player/VideoNowPlayingCoordinator.swift` is the separate visionOS video
   system-media owner. It creates a scoped `MPNowPlayingSession`, publishes metadata on each
   `AVPlayerItem`, and routes session commands back to `PlaybackController`.

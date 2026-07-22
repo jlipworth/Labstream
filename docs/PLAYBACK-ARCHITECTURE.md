@@ -257,8 +257,9 @@ tile-sheet peak-RSS validation remains a Phase 5 measurement gate.
 Those paths use `DecodedImage` at their image boundary, but that conversion is not shared-pipeline
 migration.
 
-iOS/iPadOS and macOS use a separate process-wide lease model. Their platform coordinators wrap
-`VideoNowPlayingCore`, which acquires an identity-guarded video lease on the app-lifetime
+iOS/iPadOS and macOS use a separate process-wide lease model. The mobile platform coordinator wraps
+`VideoNowPlayingCore` alongside PiP/AirPlay behavior, while the Mac player owns the core directly.
+The core acquires an identity-guarded video lease on the app-lifetime
 `SystemMediaSessionCoordinator` owned by `MusicPlayerController`. Video temporarily supersedes
 music's Now Playing and remote commands; releasing video restores the most recent surviving music
 owner, and stale artwork or teardown cannot clear a newer owner. visionOS video does not use this

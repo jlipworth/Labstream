@@ -121,7 +121,6 @@ class SourceTopologyTests(unittest.TestCase):
                 "Player/MacPlayerChrome.swift",
                 "Player/MacPlayerInputRouter.swift",
                 "Player/MacPlayerPresentation.swift",
-                "Player/MacPlayerSystemCoordinator.swift",
                 "UI/MacRootShell.swift",
                 "UI/MacSidebarPolicy.swift",
             ),
