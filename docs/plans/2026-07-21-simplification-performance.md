@@ -1243,8 +1243,11 @@ policy:
     in-flight join, or local file. These are closed privacy-safe fields only: the slice does not
     alter browse scheduling, request construction, URLSession, cache limits/eviction, retry policy,
     or UI behavior. Publication count remains diagnostic rather than a correctness field because
-    concurrent completion order is nondeterministic. A deterministic external server and UI workload
-    driver remain separate follow-up work. Control `ead62213` must receive this same instrumentation
+    concurrent completion order is nondeterministic. Home first-content correctness signs only the
+    shared `content_present` invariant: control publishes its non-progressive final result while the
+    candidate may publish an earlier progressive snapshot, so diagnostic rail/item counts need not
+    match. A deterministic external server and UI workload driver remain separate follow-up work.
+    Control `ead62213` must receive this same instrumentation
     symmetrically before any control/candidate capture; no evidence captured before that is comparable.
 
 ### Wave 6 — Optimize measured bottlenecks

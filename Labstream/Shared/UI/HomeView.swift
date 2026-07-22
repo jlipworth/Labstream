@@ -254,6 +254,7 @@ struct HomeView: View {
                         firstContentSpan.end(
                             result: BrowsePerformanceMeasurementPolicy.firstContentResult(itemCount: itemCount),
                             fields: [
+                            "content_present": 1,
                             "rail_count": snapshot.rails.count,
                             "item_count": itemCount,
                             "publication_count": publicationCount,
@@ -287,6 +288,7 @@ struct HomeView: View {
                 firstContentSpan.end(
                     result: BrowsePerformanceMeasurementPolicy.firstContentResult(itemCount: terminalItemCount),
                     fields: [
+                    "content_present": terminalItemCount > 0 ? 1 : 0,
                     "rail_count": mediaBrowserRails.count,
                     "item_count": terminalItemCount,
                     "publication_count": publicationCount,
@@ -341,6 +343,7 @@ struct HomeView: View {
             firstContentSpan.end(
                 result: BrowsePerformanceMeasurementPolicy.firstContentResult(itemCount: itemCount),
                 fields: [
+                "content_present": itemCount > 0 ? 1 : 0,
                 "rail_count": hubs.count,
                 "item_count": itemCount,
                 "publication_count": publicationCount,
