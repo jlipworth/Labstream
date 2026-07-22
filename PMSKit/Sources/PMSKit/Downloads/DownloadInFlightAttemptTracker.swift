@@ -25,9 +25,4 @@ public struct DownloadInFlightAttemptTracker: Sendable, Equatable {
         ownerByRatingKey.removeValue(forKey: key.ratingKey)
         return true
     }
-
-    @discardableResult
-    public mutating func repairUnownedState(forRatingKey ratingKey: String) -> DownloadAttemptKey? {
-        ownerByRatingKey.removeValue(forKey: ratingKey)
-    }
 }

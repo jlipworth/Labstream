@@ -28,10 +28,6 @@ public enum DownloadRecordIdentity {
         return .plex
     }
 
-    public static func isRecordKey(_ recordKey: String, for backend: DownloadBackendKind) -> Bool {
-        backendKind(forRecordKey: recordKey) == backend
-    }
-
     public static func isJellyfinRecordKey(_ recordKey: String) -> Bool {
         recordKey.hasPrefix(jellyfinPrefix)
     }
