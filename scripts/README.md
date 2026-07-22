@@ -126,9 +126,11 @@ scripts/perf-compare.py compare \
   products with `performance-audit-contract.py`, resets only that exact sandbox container, seeds the
   canonical empty download index, and records adjacent A/B launch logs or exact-PID 120-second
   System Trace captures after a bounded 10-second readiness/settle interval. Unified-log bounds
-  still begin before launch. Start with `--plan`. Output is explicitly pre-manifest raw capture:
-  it cannot enter `perf-compare.py` until per-run manifest/covariate binding and strict summaries
-  land, and therefore always reports `insufficient_data` rather than a performance verdict.
+  still begin before launch. Start with `--plan` and supply exact distinct artifact commits, an
+  opaque device label, and retention deadline. Successful launch samples atomically publish a
+  validated manifest, raw log, and strict `runtime.composition` summary consumable by
+  `perf-compare.py`; failures publish no manifest and make the runner nonzero. Idle traces remain
+  explicitly pre-manifest and `insufficient_data` until trace extraction lands.
 
 There is no macOS simulator lane. See [`docs/MACOS.md`](../docs/MACOS.md).
 
