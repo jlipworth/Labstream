@@ -1186,7 +1186,7 @@ policy:
    proxy bodies; unowned proxy connection tasks; redundant playback/diagnostics/Cinema clocks; HDR
    probe overlap; ungated download-health temp scans; main-actor row/task refresh; full-index fsync;
    and large side-asset/finalizer memory and I/O.
-5. No admissible paired runtime or five-sample compile artifact exists yet. The first implementation
+5. No statistically admissible paired runtime result or five-sample compile artifact exists yet. The first implementation
    slices are measurement-only: exact-once/schema-compatible spans, deterministic fixture/counter
    contracts, a paired seeded compile runner with five samples and PMSKit incremental coverage, and
    explicit test-tier timing/failure taxonomy. Expensive captures remain serialized with cooling,
@@ -1230,6 +1230,13 @@ policy:
    Failed/incomplete samples publish no manifest and make capture nonzero. Idle traces remain
    pre-manifest and `insufficient_data` until trace packaging/extraction lands. No expensive capture
    was started by this tooling slice.
+10. A real two-sample Mac launch smoke now proves the external path end to end against control
+    `ead62213` and candidate app artifact `e7d90e64`: both exact-PID captures produced contract-valid
+    manifests and loaded through the strict comparator. The smoke also hardened three live-only
+    boundaries before any expensive run: preserve the containermanagerd-owned `Data` root and clear
+    children through no-follow directory descriptors, use `log show`'s supported outward-rounded
+    epoch bounds, and request Info-level newline JSON so only complete `eventMessage` records reach
+    the strict parser. Its single pair remains `insufficient_data` and is not a performance verdict.
 
 ### Wave 6 — Optimize measured bottlenecks
 
