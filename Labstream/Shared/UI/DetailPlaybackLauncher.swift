@@ -50,7 +50,7 @@ enum DetailPlaybackLauncher {
     static func context(backend: MediaBackendKind,
                         appModel: AppModel) throws -> MediaBrowserPlaybackContext {
         guard backend != .plex,
-              let session = appModel.backendSession(for: backend.downloadBackendKind) else {
+              let session = appModel.backendSession(for: backend) else {
             throw backend == .plex ? OpenError.unsupportedBackend : OpenError.sessionUnavailable
         }
         return MediaBrowserPlaybackContext(
@@ -324,7 +324,7 @@ struct MediaBrowserPlaybackContext: Equatable, Sendable {
 
     @MainActor
     func isCurrent(in appModel: AppModel) -> Bool {
-        appModel.backendSession(for: backend.downloadBackendKind) == session
+        appModel.backendSession(for: backend) == session
             && appModel.authSessionRevision(for: backend) == authRevision
             && appModel.identity == identity
     }

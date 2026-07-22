@@ -113,7 +113,7 @@ enum SpotlightIndexer {
         }
         return MediaSearchIdentifier.make(ratingKey: item.ratingKey,
                                           server: server,
-                                          backend: backend.backendChoice)
+                                          backend: backend)
     }
 
     private static func contentType(for item: MediaItem) -> UTType {

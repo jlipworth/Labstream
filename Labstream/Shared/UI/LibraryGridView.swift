@@ -303,7 +303,7 @@ struct LibraryRootItem: Identifiable, Hashable {
 
     init(catalog descriptor: LibraryCatalogDescriptor) {
         id = descriptor.id
-        backend = descriptor.backend.backendChoice
+        backend = descriptor.backend
         title = descriptor.title
         kind = descriptor.kind
         switch descriptor.backend {

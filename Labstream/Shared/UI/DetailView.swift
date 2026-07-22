@@ -140,9 +140,8 @@ struct DetailView: View {
     /// to the live active backend when no origin was captured.
     private var actionBackend: MediaBackendKind {
         guard let originBackend else { return appModel.activeBackend }
-        return MediaBackendKind(
-            PlaybackBackendResolver.backend(forItemOrigin: originBackend.backendChoice,
-                                            currentActive: appModel.activeBackend.backendChoice))
+        return PlaybackBackendResolver.backend(forItemOrigin: originBackend,
+                                               currentActive: appModel.activeBackend)
     }
 
     /// The collapsed movie versions for this item (#108), when the grid attached more than one.
@@ -589,7 +588,7 @@ struct DetailView: View {
         .sheet(isPresented: $showDownloadOptions) {
             DownloadOptionsSheet(item: downloadOptionsItem ?? detailed,
                                  mediaIndex: selectedMediaIndex,
-                                 backend: actionBackend.downloadBackendKind)
+                                 backend: actionBackend)
         }
         .onChange(of: isMacPlayerPresented) { _, _ in
             syncMacPlayerPresentation()
@@ -621,7 +620,7 @@ struct DetailView: View {
         .sheet(isPresented: $showDownloadOptions) {
             DownloadOptionsSheet(item: downloadOptionsItem ?? detailed,
                                  mediaIndex: selectedMediaIndex,
-                                 backend: actionBackend.downloadBackendKind)
+                                 backend: actionBackend)
         }
         #endif
         #endif
@@ -1594,7 +1593,7 @@ struct DetailView: View {
 
     #if !os(tvOS)
     private var downloadRecordKey: String {
-        DownloadRecordIdentity.recordKey(for: detailed.ratingKey, backend: actionBackend.downloadBackendKind)
+        DownloadRecordIdentity.recordKey(for: detailed.ratingKey, backend: actionBackend)
     }
 
     private var localURL: URL? {

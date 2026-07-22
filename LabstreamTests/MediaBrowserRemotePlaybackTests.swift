@@ -134,7 +134,7 @@ struct MediaBrowserRemotePlaybackTests {
         let baseURL = try #require(URL(string: "https://media.example.test"))
         return MediaBrowserPlaybackContext(
             backend: backend,
-            session: BackendSession(kind: backend.downloadBackendKind,
+            session: BackendSession(kind: backend,
                                     baseURL: baseURL,
                                     token: "token-A",
                                     userID: "user-1",

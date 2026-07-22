@@ -40,7 +40,7 @@ struct DownloadOptionsSheet: View {
     }
 
     private var sheetBackend: DownloadBackendKind {
-        backend ?? appModel.activeBackend.downloadBackendKind
+        backend ?? appModel.activeBackend
     }
 
     private var selectedDownloadAudioTrack: DownloadAudioTrackSelection? {

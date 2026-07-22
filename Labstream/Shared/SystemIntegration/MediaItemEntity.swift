@@ -39,7 +39,7 @@ struct MediaItemEntity: AppEntity {
     init(item: MediaItem, backend: MediaBackendKind, server: URL) {
         self.id = MediaSearchIdentifier.make(ratingKey: item.ratingKey,
                                              server: server,
-                                             backend: backend.backendChoice)
+                                             backend: backend)
         let fields = Self.displayFields(for: item)
         self.type = fields.type
         self.title = fields.title
@@ -74,7 +74,7 @@ struct MediaItemEntityQuery: EntityStringQuery {
         var found: [MediaItemEntity] = []
         for identifier in identifiers {
             let routeKey = MediaSearchIdentifier.routeKey(from: identifier)
-            guard routeKey.backend == ctx.backend.backendChoice else { continue }
+            guard routeKey.backend == ctx.backend else { continue }
             if let namespace = routeKey.serverNamespace,
                namespace != BackendScopedMediaID.serverNamespace(ctx.server) {
                 continue
