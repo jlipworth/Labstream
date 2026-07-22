@@ -47,8 +47,13 @@ class FakeExecutor:
         elif str(runner.SUMMARY) in argv or (str(runner.CONTRACT) in argv and "manifest" in argv):
             subprocess.run(argv, check=True, stdout=stdout, stderr=subprocess.STDOUT)
         elif argv[:4] == ["/usr/bin/log", "show", "--info", "--style"]:
+            self.assert_ndjson(argv)
             stdout.write(b"perf.span phase=runtime.composition backend=App result=success "
                          b"duration_ms=4 downloads_capable=1\n")
+
+    def assert_ndjson(self, argv):
+        if argv[4] != "ndjson":
+            raise AssertionError("unified-log capture must be one JSON event per line")
 
     def output(self, argv):
         self.actions.append(("output", argv))
@@ -339,6 +344,7 @@ class RunnerTests(unittest.TestCase):
             self.assertIn(("sleep", 10), fake.actions[:trace_action_index])
             log_show = next(a for a in fake.actions if a[0] == "run" and a[1][:4] ==
                             ["/usr/bin/log", "show", "--info", "--style"])
+            self.assertEqual(log_show[1][4], "ndjson")
             self.assertEqual(log_show[1][-1], str(app_spawn[2]))
             self.assertIn(("terminate", app_spawn[2]), fake.actions)
             self.assertEqual(result["verdict"]["status"], "insufficient_data")

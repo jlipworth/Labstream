@@ -254,7 +254,7 @@ def command_plan(apps: tuple[App, App], scenario: str, warmups: int, measured: i
             "app_arguments": [],
             "app_environment": {},
             "settle": {"seconds": settle, "health_check": "exact_pid_alive"},
-            "log": ["/usr/bin/log", "show", "--info", "--style", "json", "--start", "{start_epoch_floor}",
+            "log": ["/usr/bin/log", "show", "--info", "--style", "ndjson", "--start", "{start_epoch_floor}",
                     "--end", "{end_epoch_ceil}", "--process", "{exact_pid}"],
             "idle_trace": (["/usr/bin/xcrun", "xctrace", "record", "--template",
                             "System Trace", "--attach", "{exact_pid}", "--time-limit",
@@ -466,7 +466,7 @@ def capture(plan: dict[str, Any], apps: tuple[App, App], executor: Executor) -> 
             executor.sleep(plan["duration_seconds"])
             end_utc = executor.now().replace("+00:00", "Z")
             with log_path.open("ab" if facts is not None else "wb") as output:
-                executor.run(["/usr/bin/log", "show", "--info", "--style", "json", "--start",
+                executor.run(["/usr/bin/log", "show", "--info", "--style", "ndjson", "--start",
                               log_time_bound(start_utc), "--end", log_time_bound(end_utc, end=True),
                               "--process", str(pid)], stdout=output)
             returncode = executor.poll(process)
