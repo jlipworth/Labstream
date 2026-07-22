@@ -1,8 +1,7 @@
 /// Pure relaunch-adoption decision for static byte-range URLSession tasks.
 ///
 /// Only open-ended `bytes=<durableOffset>-` remainder tasks from the #227+ architecture are
-/// adoptable. Legacy closed ranges are deliberately dropped in #231 so late delegate callbacks
-/// cannot append stale closed-range temps.
+/// adoptable. Unowned closed ranges are rejected so late delegate callbacks cannot append bytes.
 public enum StaticRangeReattachDisposition: Sendable, Equatable {
     case rejectUnownedRange(requestedOffset: Int?, durableBytes: Int, rangeRequestShape: StaticRangeRequestShape)
     case rejectOffsetMismatch(requestedOffset: Int, durableBytes: Int)
@@ -29,13 +28,12 @@ public enum StaticRangeReattachPolicy {
     /// - Parameters:
     ///   - taskMarker: the task's `taskDescription`. When it decodes (via
     ///     `StaticRangeSegmentMarker.parse`) to an offset matching `requestedOffset` on a
-    ///     `.closed` shape AND carries a v2 attempt token equal to `rowAttemptID`, the task is one
+    ///     `.closed` shape AND carries a current attempt token equal to `rowAttemptID`, the task is one
     ///     WE pre-queued for the CURRENT attempt and flows through the normal
-    ///     adopt/suppress/replace machinery instead of `.rejectUnownedRange`. A v1 marker (no token)
-    ///     is legacy and dropped; any token that mismatches the row's attempt — on any request
+    ///     adopt/suppress/replace machinery instead of `.rejectUnownedRange`. Any token that
+    ///     mismatches the row's attempt — on any request
     ///     shape — is `.rejectAttemptMismatch` (a prior attempt/life of the same key).
-    ///   - rowAttemptID: the row's current persisted download-attempt token. `nil` (legacy row)
-    ///     means no marked segment can be adopted.
+    ///   - rowAttemptID: the row's current persisted download-attempt token.
     public static func plan(taskIdentifier: Int,
                             downloadID: String,
                             durableBytes: Int,
@@ -44,31 +42,7 @@ public enum StaticRangeReattachPolicy {
                             bodyBytesWritten: Int,
                             existingTasks: [StaticRangeTaskSnapshot],
                             taskMarker: String? = nil,
-                            rowAttemptID: String? = nil) -> StaticRangeReattachPlan {
-        planTyped(
-            taskIdentifier: taskIdentifier,
-            downloadID: downloadID,
-            durableBytes: durableBytes,
-            requestedOffset: requestedOffset,
-            rangeRequestShape: rangeRequestShape,
-            bodyBytesWritten: bodyBytesWritten,
-            existingTasks: existingTasks,
-            taskMarker: taskMarker,
-            rowAttemptID: rowAttemptID.flatMap(DownloadAttemptID.init(rawValue:))
-        )
-    }
-
-    /// Typed schema-v3 entry point. Kept separately named until the app migration removes the
-    /// source-compatible String overload, avoiding overload ambiguity for legacy `nil` callers.
-    public static func planTyped(taskIdentifier: Int,
-                                 downloadID: String,
-                                 durableBytes: Int,
-                                 requestedOffset: Int?,
-                                 rangeRequestShape: StaticRangeRequestShape,
-                                 bodyBytesWritten: Int,
-                                 existingTasks: [StaticRangeTaskSnapshot],
-                                 taskMarker: String? = nil,
-                                 rowAttemptID: DownloadAttemptID?) -> StaticRangeReattachPlan {
+                            rowAttemptID: DownloadAttemptID? = nil) -> StaticRangeReattachPlan {
         let markedOffset = StaticRangeSegmentMarker.parse(taskMarker)
         let taskAttemptID = BackgroundDownloadTaskIdentity.attemptIdentity(taskDescription: taskMarker)
         if let taskAttemptID, taskAttemptID != rowAttemptID {
@@ -111,7 +85,7 @@ public enum StaticRangeReattachPolicy {
             // A marked segment ahead of the durable checkpoint is adoptable regardless of grid
             // alignment: the attempt token above already proves this attempt planned it, and the
             // planner anchors its grid at the durable bytes of the moment it planned — a train
-            // planned from a mid-file checkpoint (legacy open-ended partial, crash-mid-append) is
+            // planned from a mid-file checkpoint (for example, crash-mid-append) is
             // legitimately off any absolute grid. Requiring `requestedOffset % segmentBytes == 0`
             // (anchored at 0) dropped every off-head background segment of such trains on each
             // relaunch. Behind-durable segments stay rejected: their bytes are already durable.

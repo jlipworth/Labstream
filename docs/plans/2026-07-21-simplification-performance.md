@@ -1,6 +1,6 @@
 # Cross-platform simplification and performance program
 
-Status: **Waves 0–3 committed through `7ae9fd64`; Wave 4 durable-state foundation implemented in the current checkpoint, with coordinator decomposition still in progress**
+Status: **Waves 0–3 committed through `7ae9fd64`; Wave 4 current-only durable-state cleanup implemented in the current checkpoint, with coordinator decomposition still in progress**
 
 Audit baseline: `b3045bc0` (`Record tvOS merge checkpoint`) on
 `codex/audit-simplification-performance`
@@ -1109,6 +1109,10 @@ policy:
    schema-v4 root; unreadable/current-malformed data fails closed. Cleanup authority lives outside
    the versioned root, quarantine reclamation is resumable by durable name, and task adoption accepts
    only current exact-attempt markers. The app-owned checkpoint/range engine remains unchanged.
+   Residual per-row reset/migration APIs, ownerless mutation/removal paths, legacy index decoding,
+   string attempt-ID projections, and URL/old-marker task adoption have now been deleted. Current
+   malformed rows remain fail-closed and unsupported top-level schemas still take the whole-root
+   destructive-reset path.
 2. `DownloadItemPlanner` uses an injected nonpersistent executor instead of `URLSession.shared`;
    credential-bearing redirects are restricted to same-origin semantics-preserving 307/308 hops.
 3. Side-asset repair is off-main, payload-validating, complete across poster/subtitle/chapter/BIF/
@@ -1120,14 +1124,15 @@ policy:
 5. Launch restores the selected auth lane first and demand-hydrates only inactive backends with
    durable active work. One global attempt authority fences stale auth publication, Plex publishes a
    usable connection before optional profile metadata, and Release refuses Mac development-file
-   credential storage/import.
+   credential storage/import. `AuthorizationPollingCoordinator` now separately owns the one live
+   backend polling task and rejects stale exact-owner finish/cancel requests.
 6. Aggregate lifecycle recovery is typed while preserving the 500 ms scene-handoff grace.
    Preferences use typed keys without changing shipped raw keys/defaults, diagnostics use a bounded
    serial buffer, and durability tiers explicitly separate barriers, recoverable checkpoints,
    best-effort state, and ephemeral state.
 
-Still required before Wave 4 is complete: delete the residual per-row legacy compatibility surface;
-decompose `BackgroundDownloadSession`, `DownloadManager`, `DownloadStore`, and backend auth flows into
+Still required before Wave 4 is complete: decompose `BackgroundDownloadSession`, `DownloadManager`,
+`DownloadStore`, and backend auth flows into
 real state owners without widening mutable visibility; then run the complete serial target/test and
 runtime validation matrix. This checkpoint makes no measured performance claim.
 

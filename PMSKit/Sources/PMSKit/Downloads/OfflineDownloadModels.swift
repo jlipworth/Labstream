@@ -29,16 +29,6 @@ public enum DownloadStatus: String, Codable, Sendable, Equatable {
     // on the row, so libraries persisted before this case keep loading.
     case paused        // interrupted but resumable from persisted resume data
 
-    /// Default lifecycle status for a row persisted BEFORE D2, which lacked an
-    /// explicit `status` field (completion was inferred from `progress >= 1.0`).
-    ///
-    /// A finished-looking row maps to `.complete`, anything else to `.queued`
-    /// (launch reconciliation then re-checks it against disk). Decoders should call
-    /// this only when no `status` is present on the row.
-    public static func migratedStatus(forLegacyProgress progress: Double) -> DownloadStatus {
-        progress >= 1.0 ? .complete : .queued
-    }
-
     /// True while this row represents work the app/server is still doing.
     ///
     /// `.preparing` is intentionally active: Emby convert-then-download has no URLSession task yet,
@@ -1145,8 +1135,7 @@ public struct DownloadRecord: Identifiable, Codable, Sendable, Equatable {
         localURL = try c.decode(URL.self, forKey: .localURL)
         bytes = try c.decodeIfPresent(Int.self, forKey: .bytes) ?? 0
         progress = try c.decodeIfPresent(Double.self, forKey: .progress) ?? 0
-        status = try c.decodeIfPresent(DownloadStatus.self, forKey: .status)
-            ?? DownloadStatus.migratedStatus(forLegacyProgress: progress)
+        status = try c.decode(DownloadStatus.self, forKey: .status)
         metadata = try c.decodeIfPresent(OfflineMetadata.self, forKey: .metadata)
         posterURL = try c.decodeIfPresent(URL.self, forKey: .posterURL)
         plexBIFURL = try c.decodeIfPresent(URL.self, forKey: .plexBIFURL)

@@ -6,7 +6,7 @@ public enum BackgroundRangeRequestReason: String, Sendable, Equatable {
     case requestRebuildNeeded
     /// A legacy closed-Range task was dropped on reattach; rebuild an authenticated open-ended
     /// remainder from the durable partial.
-    case legacyClosedRangeDropped
+    case unownedRangeRejected
     /// The pinned HTTP validator changed. The stale partial was discarded and the manager/backend
     /// layer must rebuild an authenticated request to restart from byte 0.
     case validatorChanged

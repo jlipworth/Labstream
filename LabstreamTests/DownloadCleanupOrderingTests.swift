@@ -149,7 +149,7 @@ struct DownloadCleanupOrderingTests {
         }
     }
 
-    @Test func legacyRatingKeyRemovalCannotBypassDeletionReservation() throws {
+    @Test func exactRemovalCannotBypassDeletionReservation() throws {
         try withDirectory { directory in
             let key = attemptKey("attempt-A")
             let store = DownloadStore(baseDirectory: directory)
@@ -159,7 +159,7 @@ struct DownloadCleanupOrderingTests {
             let candidate = try intent(key: key, session: "session-A")
             #expect(store.markDeletionPending(for: key, cleanupIntents: [candidate]) == .applied)
 
-            store.remove(ratingKey: key.ratingKey)
+            _ = store.remove(for: key)
 
             #expect(store.isDeletionPending(for: key))
             #expect(store.deletionPendingCleanupIntents(for: key) == [candidate])

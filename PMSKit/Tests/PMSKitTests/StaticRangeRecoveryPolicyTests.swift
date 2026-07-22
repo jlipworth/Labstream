@@ -122,7 +122,7 @@ struct StaticRangeRecoveryPolicyTests {
         #expect(StaticRangeRecoveryPolicy.shouldPreserveRangeRestartCounters(reason: "validatorChanged"))
         #expect(StaticRangeRecoveryPolicy.shouldPreserveRangeRestartCounters(reason: "requestRebuildNeeded"))
         #expect(StaticRangeRecoveryPolicy.shouldPreserveRangeRestartCounters(reason: "serverAuthorizationRejected"))
-        #expect(!StaticRangeRecoveryPolicy.shouldPreserveRangeRestartCounters(reason: "legacyClosedRangeDropped"))
+        #expect(!StaticRangeRecoveryPolicy.shouldPreserveRangeRestartCounters(reason: "unownedRangeRejected"))
         #expect(!StaticRangeRecoveryPolicy.shouldPreserveRangeRestartCounters(reason: "backend_ready"))
     }
 }

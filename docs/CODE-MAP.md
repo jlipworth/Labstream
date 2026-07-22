@@ -46,6 +46,9 @@ vary presentation.
   Emby credentials/Connect PIN, selected-lane-first restore, and demand-driven download hydration.
 - `Labstream/Shared/Auth/AuthAttemptAuthority.swift` owns the one global authorization generation
   used to reject cancellation and stale publication across all backend operations.
+- `Labstream/Shared/Auth/AuthorizationPollingCoordinator.swift` owns the single live Plex PIN,
+  Jellyfin Quick Connect, or Emby Connect polling task plus its exact attempt/PIN metadata. Its
+  narrow exact-owner finish/cancel API prevents stale poll cleanup from clearing a replacement.
 - `Labstream/Shared/Auth/KeychainStore.swift` stores secrets and the stable client identifier.
   Do not put tokens in UserDefaults, diagnostics, URLs that do not require them, or
   Codable profile indexes.

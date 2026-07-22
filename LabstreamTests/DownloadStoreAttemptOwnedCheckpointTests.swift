@@ -411,43 +411,6 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             #expect(store.deferredHeldRangeBodyDeletionRelativePaths(for: owner)?.isEmpty == true)
         }
     }
-
-    @Test func ownerlessLegacyHeldCleanupStagesAfterOwnershipMigration() throws {
-        try withStore { _, directory in
-            let ratingKey = "plex:legacy-held-ownerless"
-            let bodyName = "legacy-held-ownerless.body"
-            try Data([9]).write(to: directory.appendingPathComponent(bodyName))
-            let object: [String: Any] = [
-                "schemaVersion": 2,
-                "rows": [[
-                    "ratingKey": ratingKey,
-                    "title": "Legacy",
-                    "relativePath": "legacy.mp4",
-                    "bytes": 0,
-                    "progress": 0,
-                    "status": "downloading",
-                    "metadata": [
-                        "ratingKey": ratingKey, "title": "Legacy", "type": "movie",
-                        "resumeMode": "staticByteRange",
-                    ],
-                    "heldRangeBodyDeletionIntents": [bodyName],
-                ]],
-            ]
-            try JSONSerialization.data(withJSONObject: object).write(
-                to: directory.appendingPathComponent("index.json"), options: .atomic)
-            let store = DownloadStore(baseDirectory: directory)
-            #expect(FileManager.default.fileExists(
-                atPath: directory.appendingPathComponent(bodyName).path))
-            guard case .committed = store.commitLegacyAttemptOwnershipMigration() else {
-                Issue.record("ownership migration failed"); return
-            }
-            store.stageLegacyHeldBodyDeletionJobs()
-            _ = store.resolveArtifactSynchronouslyForTests(
-                through: store.currentArtifactLifecycleWatermark())
-            #expect(!FileManager.default.fileExists(
-                atPath: directory.appendingPathComponent(bodyName).path))
-        }
-    }
     @Test func staleAttemptCannotReadOrMutateReplacementCheckpointState() throws {
         try withStore { store, directory in
             let a = key("plex:checkpoint", "attempt-a")
@@ -924,52 +887,6 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             #expect(DownloadStore(baseDirectory: directory).record(for: owner)?.bytes == 99)
             #expect(store.setRangeValidator(for: owner, "retry") == .applied)
             #expect(DownloadStore(baseDirectory: directory).record(for: owner)?.bytes == 2)
-        }
-    }
-
-    @Test func legacyResetBarrierRejectsCheckpointOwnership() throws {
-        try withStore { _, directory in
-            let ratingKey = "plex:reset-pending"
-            let attemptID = "legacy-attempt"
-            let object: [String: Any] = [
-                "schemaVersion": 2,
-                "rows": [[
-                    "ratingKey": ratingKey,
-                    "title": "Legacy",
-                    "relativePath": "legacy.mp4",
-                    "bytes": 4,
-                    "progress": 0.5,
-                    "status": "downloading",
-                    "metadata": [
-                        "ratingKey": ratingKey,
-                        "title": "Legacy",
-                        "type": "movie",
-                        "downloadAttemptID": attemptID,
-                        "resumeMode": "staticByteRange",
-                        "rangeValidator": "legacy-etag",
-                        "sourcePartSize": 8,
-                    ],
-                ]],
-            ]
-            try JSONSerialization.data(withJSONObject: object).write(
-                to: directory.appendingPathComponent("index.json"), options: .atomic)
-            let store = DownloadStore(baseDirectory: directory)
-            guard case .committed(let plan) = store.commitLegacyAttemptOwnershipMigration(),
-                  let pending = plan.taskCancellationAndReset.first else {
-                Issue.record("Expected a pending legacy reset owner")
-                return
-            }
-
-            #expect(store.setResumeData(for: pending, Data([1])) == .staleOrMissing)
-            #expect(store.clearResumeData(for: pending) == .staleOrMissing)
-            #expect(store.setRangeValidator(for: pending, "new") == .staleOrMissing)
-            #expect(store.setSourcePartSize(for: pending, 9) == .staleOrMissing)
-            #expect(store.takeHeldRangeSegments(for: pending) == .staleOrMissing)
-            #expect(store.resetStaticRangeProgressToDurableCheckpoint(for: pending)
-                    == .staleOrMissing)
-            #expect(store.rangeValidator(for: pending) == nil)
-            #expect(store.sourcePartSize(for: pending) == nil)
-            #expect(store.staticRangeRecoveryEvidence(for: pending) == nil)
         }
     }
 

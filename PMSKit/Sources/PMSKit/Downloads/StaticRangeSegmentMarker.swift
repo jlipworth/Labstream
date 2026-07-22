@@ -3,8 +3,7 @@ import Foundation
 /// Marker embedded in a background `URLSessionTask.taskDescription` for closed-range segment
 /// tasks that the range-segments queueing lane (Task A1/A2) deliberately created.
 ///
-/// Reattach (Task A3) uses this to distinguish OUR pre-queued closed-range segments from
-/// pre-#231 legacy closed-range tasks, which must still be dropped on relaunch.
+/// Reattach uses this to identify our exact-attempt pre-queued closed-range segments.
 ///
 /// Current v3 markers carry the row's download-attempt token
 /// (`lbs-segment:v3:<offset>:<attemptID>`). Task identity used to be ratingKey-only, which let a
@@ -36,11 +35,6 @@ public enum StaticRangeSegmentMarker {
         parseTokened(taskDescription)?.attemptID
     }
 
-    /// Source-compatibility projection for the app while the atomic migration stack is unmerged.
-    public static func attemptID(_ taskDescription: String?) -> String? {
-        attemptIdentity(taskDescription)?.rawValue
-    }
-
     public static func version(_ taskDescription: String?) -> Version? {
         guard let taskDescription else { return nil }
         guard taskDescription.range(of: prefixV3) != nil else { return nil }
@@ -61,21 +55,12 @@ public enum StaticRangeSegmentMarker {
         return (offset, attemptID)
     }
 
-    /// String convenience emits the current marker; old formats have no builder/parser.
-    public static func value(offset: Int, attemptID: String) -> String {
-        "\(prefixV3)\(offset):\(attemptID)"
-    }
-
     public static func value(offset: Int, attemptID: DownloadAttemptID) -> String {
         "\(prefixV3)\(offset):\(attemptID.rawValue)"
     }
 
     /// `taskDescription` for a marked segment: the row key (needed to reverse-map Plex
     /// `/library/parts/...` tasks on relaunch) followed by the current segment marker.
-    public static func taskDescription(ratingKey: String, offset: Int, attemptID: String) -> String {
-        "\(ratingKey)\(separator)\(value(offset: offset, attemptID: attemptID))"
-    }
-
     public static func taskDescription(
         ratingKey: String,
         offset: Int,
@@ -85,7 +70,7 @@ public enum StaticRangeSegmentMarker {
     }
 
     /// Recover the row key from a current combined segment `taskDescription`. Returns the
-    /// whole string unchanged when no marker is present (a plain ratingKey description).
+    /// whole string unchanged when no current marker is present.
     public static func ratingKey(fromTaskDescription description: String) -> String {
         let markerRange = description.range(of: prefixV3)
         guard let r = markerRange else { return description }
@@ -96,12 +81,9 @@ public enum StaticRangeSegmentMarker {
 }
 
 /// Attempt-token stamp for NON-segment background tasks (the opaque forward-only lane and
-/// open-ended range remainders), whose `taskDescription` used to be the bare ratingKey.
+/// open-ended range remainders), each stamped with exact current-attempt ownership.
 ///
-/// Format: `<ratingKey>\u{1F}lbs-attempt:v2:<attemptID>`. A bare-ratingKey description (no
-/// stamp) still resolves to its row for progress/routing, but adoption paths that could splice
-/// or replace file bytes require a token match — a prior-attempt/prior-life task must never be
-/// adopted into the current attempt.
+/// Format: `<ratingKey>\u{1F}lbs-attempt:v2:<attemptID>`.
 public enum DownloadAttemptMarker {
     public enum Version: Sendable, Equatable {
         case currentV2
@@ -110,17 +92,8 @@ public enum DownloadAttemptMarker {
     public static let prefixV2 = "lbs-attempt:v2:"
     private static let separator = "\u{1F}"
 
-    public static func taskDescription(ratingKey: String, attemptID: String) -> String {
-        "\(ratingKey)\(separator)\(prefixV2)\(attemptID)"
-    }
-
     public static func taskDescription(ratingKey: String, attemptID: DownloadAttemptID) -> String {
         "\(ratingKey)\(separator)\(prefixV2)\(attemptID.rawValue)"
-    }
-
-    /// Parse the attempt token. `nil` for unstamped (legacy bare-ratingKey) descriptions.
-    public static func attemptID(fromTaskDescription description: String?) -> String? {
-        attemptIdentity(fromTaskDescription: description)?.rawValue
     }
 
     public static func attemptIdentity(
