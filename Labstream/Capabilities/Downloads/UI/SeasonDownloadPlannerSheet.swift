@@ -24,7 +24,7 @@ struct SeasonDownloadPlannerSheet: View {
     @State private var commitError: String?
     @State private var planningTask: Task<Void, Never>?
 
-    private var backend: DownloadBackendKind { appModel.activeBackend.downloadBackendKind }
+    private var backend: DownloadBackendKind { appModel.activeBackend }
     private var watchedSummary: SeasonDownloadSelectionSummary {
         SeasonDownloadSelectionPolicy.select(
             states: episodes.map { SeasonEpisodeWatchedState(viewCount: $0.viewCount, backend: backend) },

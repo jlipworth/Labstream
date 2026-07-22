@@ -549,7 +549,7 @@ struct LibraryCatalogRepositoryTests {
     private func makeDetachedContext(backend: MediaBackendKind) -> AuthenticatedBrowseSessionContext {
         AuthenticatedBrowseSessionContext(
             backend: backend,
-            session: BackendSession(kind: backend.downloadBackendKind,
+            session: BackendSession(kind: backend,
                                     baseURL: URL(string: "https://catalog.example.test")!,
                                     token: "token",
                                     userID: backend == .plex ? nil : "user",

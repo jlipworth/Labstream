@@ -127,7 +127,7 @@ final class SystemEntryRouter {
 
     var browseContext: BrowseContext? {
         guard let appModel,
-              let session = appModel.backendSession(for: appModel.activeBackend.downloadBackendKind) else {
+              let session = appModel.backendSession(for: appModel.activeBackend) else {
             return nil
         }
         return BrowseContext(backend: appModel.activeBackend,

@@ -1664,7 +1664,7 @@ public final class DownloadManager {
             guard record.status.isActiveWork else { return false }
             let rowBackend = record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
                 ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
-            return rowBackend == backend.downloadBackendKind
+            return rowBackend == backend
         }
         guard !candidates.isEmpty else { return }
 
@@ -1757,13 +1757,6 @@ public final class DownloadManager {
                 _ = downloadWorkRegistry.cancelRevalidationFinalizer(for: key)
             }
         }
-    }
-
-    /// Test/source compatibility for the previous string edge. Production lifecycle routing is
-    /// typed through `RuntimeLifecycleCoordinator`.
-    func noteAppScenePhase(_ phase: String) {
-        noteAppSceneRecovery(
-            phase == "active" ? .aggregateSceneBecameActive : .aggregateSceneBecameInactive)
     }
 
     /// Start the UI-rate lifecycle boundary independently of task recovery readiness. On a cold
@@ -3461,7 +3454,7 @@ public final class DownloadManager {
         // Resolve the backend explicitly when the caller is on a specific lane (the download
         // pipeline always passes it); the default falls back to `activeBackend` for the UI sheet,
         // which is on the active backend.
-        let resolvedBackend = backend ?? appModel.activeBackend.downloadBackendKind
+        let resolvedBackend = backend ?? appModel.activeBackend
         return DownloadStorageEstimatePolicy.estimatedTotalBytes(for: item,
                                                                  choice: choice,
                                                                  backend: resolvedBackend,

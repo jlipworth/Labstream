@@ -185,10 +185,10 @@ final class RootNavigationCoordinator {
       case .item(let given):
         item = given
       case .routeKey(let routeKey):
-        let routeBackend = MediaBackendKind(routeKey.backend)
+        let routeBackend = routeKey.backend
         guard runtime.appModel.activeBackend == routeBackend,
           let session = runtime.appModel.backendSession(
-            for: routeBackend.downloadBackendKind)
+            for: routeBackend)
         else {
           return
         }

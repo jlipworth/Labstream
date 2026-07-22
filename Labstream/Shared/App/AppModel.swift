@@ -39,7 +39,6 @@ struct AuthenticatedBrowseLoadIdentity: Hashable {
         authority = appModel.activeAuthenticatedBrowseSession?.authority
     }
 }
-
 /// Central app state, observed by SwiftUI.
 ///
 /// Holds the stable client identity, the current auth token, the selected server
@@ -316,7 +315,7 @@ final class AppModel {
     /// The returned authority changes on credential, server, base-URL, authenticated-user, or
     /// client-identity replacement. Changing another backend lane does not disturb it.
     func authenticatedBrowseSession(for kind: MediaBackendKind) -> AuthenticatedBrowseSessionContext? {
-        guard let session = backendSession(for: kind.downloadBackendKind) else { return nil }
+        guard let session = backendSession(for: kind) else { return nil }
         return AuthenticatedBrowseSessionContext(
             backend: kind,
             session: session,
@@ -435,7 +434,7 @@ final class AppModel {
 
     func stableServerUserKey(for kind: MediaBackendKind) -> String? {
         let input = sessionIdentityInput(for: kind)
-        return SessionIdentity.stableServerUserKey(backend: kind.backendChoice,
+        return SessionIdentity.stableServerUserKey(backend: kind,
                                                    serverID: input.serverID,
                                                    baseURL: input.baseURL,
                                                    userID: input.userID)
@@ -443,7 +442,7 @@ final class AppModel {
 
     func browseSessionKey(for kind: MediaBackendKind) -> String {
         let input = sessionIdentityInput(for: kind)
-        return SessionIdentity.browseSessionKey(backend: kind.backendChoice,
+        return SessionIdentity.browseSessionKey(backend: kind,
                                                 serverID: input.serverID,
                                                 baseURL: input.baseURL,
                                                 userID: input.userID,
@@ -517,20 +516,5 @@ final class AppModel {
                     embyUserID,
                     embyAuthSessionRevision)
         }
-    }
-}
-
-extension MediaBackendKind {
-    var downloadBackendKind: DownloadBackendKind {
-        self
-    }
-
-    /// Bridge to PMSKit's backend enum (used by the pure backend-resolution helpers, #100).
-    var backendChoice: MediaBackendChoice {
-        self
-    }
-
-    init(_ choice: MediaBackendChoice) {
-        self = choice
     }
 }

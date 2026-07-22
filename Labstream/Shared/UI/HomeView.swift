@@ -269,7 +269,7 @@ struct HomeView: View {
                     span.end(result: Task.isCancelled ? "cancelled" : "superseded")
                     return
                 }
-                if let session = appModel.backendSession(for: appModel.activeBackend.downloadBackendKind) {
+                if let session = appModel.backendSession(for: appModel.activeBackend) {
                     SpotlightIndexer.index(content.rails.flatMap(\.items),
                                            backend: appModel.activeBackend,
                                            server: session.baseURL)

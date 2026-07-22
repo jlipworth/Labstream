@@ -135,8 +135,8 @@ final class AuthManager {
     }
 
     func switchBackend(_ backend: MediaBackendKind) async {
-        let resolution = MediaBackendSwitch.resolve(active: appModel.activeBackend.switchChoice,
-                                                    target: backend.switchChoice,
+        let resolution = MediaBackendSwitch.resolve(active: appModel.activeBackend,
+                                                    target: backend,
                                                     credentials: keychain.mediaBackendCredentialSnapshot)
         guard resolution != .alreadyActive else { return }
 
@@ -201,7 +201,7 @@ final class AuthManager {
         finishAuthAttempt(attemptID)
         let performanceOutcome = SessionRestorePerformanceOutcome.resolve(
             reportedRestored: selectedRestored,
-            hasUsableSession: appModel.backendSession(for: selected.downloadBackendKind) != nil
+            hasUsableSession: appModel.backendSession(for: selected) != nil
         )
         restoreSpan.end(result: performanceOutcome.result,
                         fields: ["restored": performanceOutcome.restoredField])
@@ -233,10 +233,10 @@ final class AuthManager {
         guard AuthBackendHydrationPolicy.shouldHydrateInactiveBackend(
             backend, selected: selected, downloadsAvailable: true
         ) else {
-            return appModel.backendSession(for: backend.downloadBackendKind) != nil
+            return appModel.backendSession(for: backend) != nil
         }
         guard authAttemptAuthority.isIdle else { return false }
-        if appModel.backendSession(for: backend.downloadBackendKind) != nil { return true }
+        if appModel.backendSession(for: backend) != nil { return true }
 
         let workID = UUID()
         let task = Task { [weak self] in
@@ -257,7 +257,7 @@ final class AuthManager {
         // Recheck after the coalescing task obtains the main actor: an interactive operation
         // may have started between admission and execution.
         guard authAttemptAuthority.isIdle else { return false }
-        if appModel.backendSession(for: backend.downloadBackendKind) != nil { return true }
+        if appModel.backendSession(for: backend) != nil { return true }
         let attemptID = beginAuthAttempt(.downloadSessionHydration(backend))
         defer { cleanupCancelledAuthAttempt(attemptID) }
         let restored: Bool
@@ -275,7 +275,7 @@ final class AuthManager {
         }
         guard isCurrentAuthAttempt(attemptID) else { return false }
         finishAuthAttempt(attemptID)
-        return restored && appModel.backendSession(for: backend.downloadBackendKind) != nil
+        return restored && appModel.backendSession(for: backend) != nil
     }
     #endif
 
@@ -1646,12 +1646,6 @@ enum EmbyAuthError: Error {
     case http(Int)
     case missingCredentials
     case secureStorageFailed
-}
-
-private extension MediaBackendKind {
-    var switchChoice: MediaBackendChoice {
-        self
-    }
 }
 
 private extension KeychainStore {

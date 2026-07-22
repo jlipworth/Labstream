@@ -844,15 +844,15 @@ struct UnverifiedRevalidationLifecycleTests {
 
         // Both calls run in one MainActor turn. The session claim is synchronous, while its broker
         // registration is queued; inactive must win without allowing the queued probe to start.
-        manager.noteAppScenePhase("active")
-        manager.noteAppScenePhase("inactive")
+        manager.noteAppSceneRecovery(.aggregateSceneBecameActive)
+        manager.noteAppSceneRecovery(.aggregateSceneBecameInactive)
         for _ in 0..<20 { await Task.yield() }
         #expect(await validator.attemptCount == 0)
         #expect(store.record(for: key)?.status == .unverified)
         #expect(session.diagnosticSnapshot().finalizingRatingKeyCount == 0)
         #expect(manager.unverifiedRevalidationSnapshotForTesting().desired.contains(key))
 
-        manager.noteAppScenePhase("active")
+        manager.noteAppSceneRecovery(.aggregateSceneBecameActive)
         #expect(await validator.waitForAttempts(1))
         for _ in 0..<200 where store.record(for: key)?.status != .complete {
             try await Task.sleep(for: .milliseconds(10))
@@ -889,11 +889,11 @@ struct UnverifiedRevalidationLifecycleTests {
         let publishingToken = manager.downloadWorkRegistry.register(
             publishingTask, for: key, kind: .finalizer)
 
-        manager.noteAppScenePhase("active")
+        manager.noteAppSceneRecovery(.aggregateSceneBecameActive)
         #expect(await validator.waitForAttempts(1))
         #expect(store.record(for: key)?.status == .unverified)
 
-        manager.noteAppScenePhase("inactive")
+        manager.noteAppSceneRecovery(.aggregateSceneBecameInactive)
         #expect(await validator.waitForCancellations(1))
         for _ in 0..<100 where session.diagnosticSnapshot().finalizingRatingKeyCount != 0 {
             try await Task.sleep(for: .milliseconds(10))
@@ -908,7 +908,7 @@ struct UnverifiedRevalidationLifecycleTests {
         #expect(parked.desired.contains(key))
 
         await validator.allowSuccess()
-        manager.noteAppScenePhase("active")
+        manager.noteAppSceneRecovery(.aggregateSceneBecameActive)
         #expect(await validator.waitForAttempts(2))
         for _ in 0..<200 where store.record(for: key)?.status != .complete {
             try await Task.sleep(for: .milliseconds(10))
@@ -933,7 +933,7 @@ struct UnverifiedRevalidationLifecycleTests {
             appModel: AppModel(identity: PlatformClientIdentity.make(
                 clientIdentifier: "inactive-revalidation-test")),
             store: store, session: session, registerForBackgroundEvents: false)
-        manager.noteAppScenePhase("inactive")
+        manager.noteAppSceneRecovery(.aggregateSceneBecameInactive)
 
         // This is the same callback that used to start a real AVFoundation finalizer after the
         // background gate had drained, even though the headset scene remained inactive.
