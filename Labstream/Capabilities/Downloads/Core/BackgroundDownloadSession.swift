@@ -488,13 +488,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             || rangeInflight.values.contains { $0.ratingKey == ratingKey }
     }
 
-    func cleanupOrphanedNetworkTemps() {
-        guard isStartupAdmissionActive else { return }
-        urlSession.getAllTasks { [weak self] tasks in
-            self?.sweepOrphanedNetworkTemps(liveTaskCount: tasks.count, context: .manualScan)
-        }
-    }
-
     func diagnosticSnapshot() -> BackgroundDownloadSessionDiagnosticSnapshot {
         lock.lock()
         let opaqueInflightCount = inflight.count
@@ -4298,28 +4291,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // The caller must stop this synchronous drain pass; a later range event/retry observes the
         // terminally-cleared map. Returning true would append/delete ahead of lifecycle durability.
         return false
-    }
-
-    private func recordUncommittedHeldManifestRemoval(
-        ratingKey: String,
-        operation: String,
-        persistence: DownloadStore.PersistenceFlushResult
-    ) {
-        let outcome: String
-        switch persistence {
-        case .committed:
-            outcome = "revision_mismatch"
-        case .failed(_, let stage, _):
-            outcome = "failed_\(stage)"
-        case .timedOut:
-            outcome = "timed_out"
-        }
-        AppDiagnostics.record(.downloads, "downloads.range_held_manifest_remove_uncommitted", fields: [
-            "download_id": .identifier(ratingKey),
-            "operation": .label(operation),
-            "outcome": .label(outcome),
-            "body_disposition": .label("retained_for_durable_retry"),
-        ])
     }
 
     /// Fold any held out-of-order segments that are now contiguous with the durable checkpoint.

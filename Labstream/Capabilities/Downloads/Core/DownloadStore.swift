@@ -5273,45 +5273,6 @@ final class DownloadStore: @unchecked Sendable {
         }
     }
 
-    /// Relaunch recovery for the second half of the held-manifest/body transaction. A persisted
-    /// intent proves the corresponding manifest-removal snapshot committed before the prior
-    /// process died. Deletion is idempotent; failures keep the path in the row for the next launch.
-    private func recoverDeferredHeldRangeBodyDeletions() {
-        lock.lock()
-        var changed = false
-        let globallyReferenced = heldRangeManifestRelativePathsLocked()
-        for (ratingKey, original) in rows {
-            guard !original.heldRangeBodyDeletionIntents.isEmpty else { continue }
-            var row = original
-            var completed = Set<String>()
-            for relativePath in row.heldRangeBodyDeletionIntents {
-                guard Self.isSafeOneLevelRelativePath(relativePath) else { continue }
-                if globallyReferenced.contains(relativePath) {
-                    // Another durable manifest owns this shared/pathological reference now. Clear
-                    // A's deletion claim without touching the body; the manifest remains authority.
-                    completed.insert(relativePath)
-                    continue
-                }
-                let url = baseDirectory.appendingPathComponent(relativePath)
-                do {
-                    if fileManager.fileExists(atPath: url.path) {
-                        try fileManager.removeItem(at: url)
-                    }
-                    completed.insert(relativePath)
-                } catch {}
-            }
-            guard !completed.isEmpty else { continue }
-            row.heldRangeBodyDeletionIntents.removeAll { completed.contains($0) }
-            rows[ratingKey] = row
-            changed = true
-        }
-        guard changed else { lock.unlock(); return }
-        let ticket = enqueuePersistenceLocked()
-        lock.unlock()
-        // If clearing the already-executed intents fails, the next launch safely replays them.
-        _ = waitForPersistence(through: ticket)
-    }
-
     /// Must be called with `lock` held. Cross-row protection is deliberate: malformed/imported
     /// indexes can share a relative path, and exact attempt A must never delete a body still named
     /// by any current manifest (including a different rating key).
