@@ -1,6 +1,6 @@
 # Cross-platform simplification and performance program
 
-Status: **Waves 0–4 implemented and validated; the independent Wave 6 simplification pass is complete; Wave 5 Mac Home/catalog/Search smoke capture is operational, while statistically admissible full sampling awaits control-only MDE calibration tooling**
+Status: **Waves 0–4 implemented and validated; the independent Wave 6 simplification pass is complete; Wave 5 Mac Home/catalog/Search smoke plus control-only MDE calibration/resume tooling are operational, and full sampling is the next runtime gate**
 
 Audit baseline: `b3045bc0` (`Record tvOS merge checkpoint`) on
 `codex/audit-simplification-performance`
@@ -1308,10 +1308,35 @@ policy:
     These one-pair results remain `insufficient_data` smoke evidence only. A later session could not
     repeat the UI step because macOS denied foreground activation while another app was frontmost;
     those failed attempts are not evidence and the earlier valid artifacts are not promoted into a
-    verdict. Full 3-warmup/20-measured sampling must not start until the runner can first capture a
-    control-only calibration set and freeze the MDE without exposing the candidate. Resumable sample
-    capture and explicit cooldown are the same preflight slice. Artwork remains separately blocked
-    on its loaded-cardinality milestone.
+    verdict. The control-only freeze, resumable sampling, and cooldown prerequisites are closed by
+    the following checkpoint. Artwork remains separately blocked on its loaded-cardinality milestone.
+15. Commits `fac9b923` and `7e4adafa` close the statistical-admission and recoverability blockers.
+    The opt-in integrated run executes exactly three warmups plus 20 measured control-only samples,
+    requires stable external power/battery/nominal-or-fair thermal state and an explicit storage-drift
+    tolerance, atomically publishes and reload-validates the frozen MDE, and only then permits the
+    seeded paired schedule to launch a candidate. Calibration and pairs reuse one exact fixture port,
+    compiled AX driver, workload specification, scenario/workload/order identities, and automation
+    environment; calibration retains a distinct comparison/run namespace. Cooling occurs between
+    calibration samples, at the freeze-to-pair boundary, and between complete pairs, never between
+    the two arms of one pair.
+
+    Fixed-port runs now retain a checksummed driver plus private atomic plan/state. Every calibration
+    sample is tree-fsynced and checkpointed; paired evidence is published and checkpointed only as a
+    complete two-arm directory. Resume revalidates exact apps, source/driver/spec/seed hashes, commits,
+    schedules, output paths, manifests, raw/summary contracts, global run/nonces, frozen artifacts,
+    OS/Xcode/display/fixture/automation identity, covariates, and strict chronology before skipping
+    accepted work. It retries only the exact next abandoned slot and repeats an interrupted cooldown.
+    A fixture parent watchdog removes a hard-crash orphan; an app checkpoint records pre-launch,
+    exact PID/path/bundle, and microsecond libproc start identity. Bound app orphans are safely cleaned
+    on resume, while an unbound late LaunchServices arrival is detected through the full final-boundary
+    grace window and deliberately requires operator cleanup rather than risking an unrelated signal.
+    The final adversarial reviews found no remaining P0-P2 issue, and the 104-test browse/fixture/
+    launch/contract/comparator matrix plus Ruff, Python compilation, and diff checks passed.
+
+    No full run has started: the last live retry was denied foreground activation by the current
+    macOS session. Full Home, Catalog, and Search runs are next when the staged app can be activated;
+    each integrated short-policy scenario is 23 control-only calibration arms plus 46 paired arms,
+    not the earlier two-arm smoke. The one-pair smoke artifacts remain insufficient data.
 
 ### Wave 6 — Optimize measured bottlenecks
 
