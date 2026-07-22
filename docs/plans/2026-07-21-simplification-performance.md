@@ -1,6 +1,6 @@
 # Cross-platform simplification and performance program
 
-Status: **Waves 0–3 committed through `7ae9fd64`; Wave 4 current-only durable-state cleanup implemented in the current checkpoint, with coordinator decomposition still in progress**
+Status: **Waves 0–4 implemented and validated; Wave 5 re-baselining is next**
 
 Audit baseline: `b3045bc0` (`Record tvOS merge checkpoint`) on
 `codex/audit-simplification-performance`
@@ -1144,10 +1144,17 @@ policy:
     server resolution, and exchange. `AuthManager` retains global attempt/publication authority and
     the sole polling-task coordinator; cancellation is rechecked before every follow-up network hop
     and secure runtime commit.
-
-Still required before Wave 4 is complete: remove the current-schema dead range-resume branches and
-ignored destination parameters identified by the ownership audit, then run the complete serial
-target/test and runtime validation matrix. This checkpoint makes no measured performance claim.
+11. The background session no longer accepts ignored caller destinations: every transfer resolves
+    its exact-attempt working file from the store. The dead compile-time static-range regime and
+    unsafe closed-segment resume-blob retry/adoption branches are gone; known totals always use the
+    bounded train and unknown totals keep the open-ended durable-checkpoint fallback. Closed trains
+    also skip the obsolete pause-watermark aggregation because no segment blob is persisted.
+12. The final serial automated gate passed: 1,643 PMSKit tests / 202 suites, focused Mac download
+    coordinator/startup tests, generic visionOS and iOS arm64 builds, tvOS arm64 build-for-testing,
+    and repository hygiene/documentation checks. Download-only coordinator tests are explicitly
+    excluded from the tvOS test lane alongside the production capability. Physical-device and
+    suspension/relaunch runtime acceptance remain later explicit gates; no measured performance
+    claim is made by Wave 4.
 
 ### Wave 5 — Re-baseline the simplified app
 

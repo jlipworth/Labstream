@@ -399,7 +399,6 @@ extension DownloadManager {
             }
             try session.start(ratingKey: ratingKey,
                               with: request,
-                              to: destination,
                               expectedBytes: expectedBytes,
                               byteRangeCheckpoint: transferRoute.usesByteRangeCheckpoint,
                               resetRangeRestartCounters: !consumeRangeRestartCounterPreservation(ratingKey: ratingKey))

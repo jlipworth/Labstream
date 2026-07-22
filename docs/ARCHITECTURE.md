@@ -291,9 +291,9 @@ The download pipeline has five layers:
 
 Device builds use a background URLSession that can relaunch the app. Simulator builds
 normally substitute a foreground session because the visionOS simulator background
-daemon is unreliable. Both visionOS and non-visionOS currently use the closed-segment
-static range train; the conditional in `StaticRangeTransferRegime` is a future escape
-hatch, not a current platform difference.
+daemon is unreliable. Every downloads-capable platform uses the same static-range planner: known totals use
+the bounded closed-segment train, while unknown totals retain one open-ended request from
+the attempt-owned durable checkpoint.
 
 ## System integration and diagnostics
 

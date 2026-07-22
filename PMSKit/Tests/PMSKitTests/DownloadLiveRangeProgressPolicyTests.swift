@@ -80,7 +80,7 @@ struct DownloadLiveRangeProgressPolicyTests {
         #expect(DownloadLiveRangeProgressPolicy.aggregatedLiveBytes(
             durableBytes: 1_000,
             liveSegmentBodyBytes: [500, 300, 200]) == 2_000)
-        // Single-segment (openEndedRemainder) case: durableBytes == baseOffset by construction, so
+        // Unknown-total open-ended fallback: durableBytes == baseOffset by construction, so
         // this must equal the historical `baseOffset + bodyBytesWritten` total exactly.
         #expect(DownloadLiveRangeProgressPolicy.aggregatedLiveBytes(
             durableBytes: 100_000,

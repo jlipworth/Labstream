@@ -369,7 +369,7 @@ extension DownloadManager {
             // can still be finalizing/serving it as it writes, so mark it transcode-sourced and
             // let `isDownloadTranscodeLimited` decide from the live rate.
             transcodeSourcedDownloads.insert(attemptKey)
-            try session.start(ratingKey: ratingKey, from: url, to: destination,
+            try session.start(ratingKey: ratingKey, from: url,
                               expectedBytes: part.size,
                               byteRangeCheckpoint: true,
                               resetRangeRestartCounters: !consumeRangeRestartCounterPreservation(ratingKey: ratingKey))

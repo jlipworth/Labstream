@@ -51,8 +51,8 @@ struct DownloadsPhase4CompositionTests {
         }
     }
 
-    @Test("Train retry composes current identity, reattach, and segment-local blob adoption")
-    func trainBlobRetryComposition() {
+    @Test("Train retry composes current identity, reattach, and closed-range blob rejection")
+    func trainRetryComposition() {
         let ratingKey = "jellyfin:phase4"
         let attemptID = DownloadAttemptID(rawValue: "attempt-current")!
         let segmentOffset = 1_024
@@ -60,7 +60,10 @@ struct DownloadsPhase4CompositionTests {
             ratingKey: ratingKey, offset: segmentOffset, attemptID: attemptID)
 
         #expect(StaticRangeResumeDataPolicy.failureResumeDecision(
-            errorCode: -1, hasResumeData: true, currentBlobResumeCount: 2) == .resume(nextAttempt: 3))
+            errorCode: -1,
+            hasResumeData: true,
+            currentBlobResumeCount: 2,
+            isClosedRange: true) == .reject(.closedRange))
 
         let plan = StaticRangeReattachPolicy.plan(
             taskIdentifier: 7,
@@ -74,14 +77,13 @@ struct DownloadsPhase4CompositionTests {
             rowAttemptID: attemptID)
         #expect(plan.candidateBaseOffset == segmentOffset)
         #expect(plan.disposition == .adopt)
-        #expect(StaticRangeResumeDataPolicy.adoptionDecision(
-            blobRangeOffset: segmentOffset,
-            durableBytes: 0,
-            segmentBaseOffset: plan.candidateBaseOffset) == .adopt(baseOffset: segmentOffset))
+        #expect(!StaticRangeResumeDataPolicy.shouldAdoptBlob(hasClosedRangeEnd: true))
 
         #expect(StaticRangeResumeDataPolicy.failureResumeDecision(
-            errorCode: -1, hasResumeData: true, currentBlobResumeCount: 3)
-                == .reject(.budgetExhausted(nextAttempt: 4, maxResumes: 3)))
+            errorCode: -1,
+            hasResumeData: true,
+            currentBlobResumeCount: 3,
+            isClosedRange: true) == .reject(.closedRange))
 
         let priorAttempt = StaticRangeReattachPolicy.plan(
             taskIdentifier: 8,
@@ -98,10 +100,9 @@ struct DownloadsPhase4CompositionTests {
             taskAttemptID: DownloadAttemptID(rawValue: "attempt-old")!,
             rowAttemptID: attemptID))
         #expect(StaticRangeResumeDataPolicy.adoptionDecision(
-            blobRangeOffset: segmentOffset + 1,
-            durableBytes: 0,
-            segmentBaseOffset: segmentOffset)
-                == .rejectStale(blobOffset: segmentOffset + 1, durableBytes: 0))
+            blobRangeOffset: 1,
+            durableBytes: 0)
+                == .rejectStale(blobOffset: 1, durableBytes: 0))
     }
 
     @Test("Response classes stay safe at head, middle, and tail train positions")

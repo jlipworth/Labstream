@@ -273,7 +273,7 @@ extension DownloadManager {
             expectedBytes: part.size,
             releaseInFlightOnFailure: false
         )) {
-            try session.start(ratingKey: ratingKey, from: url, to: destination,
+            try session.start(ratingKey: ratingKey, from: url,
                               expectedBytes: part.size, byteRangeCheckpoint: true,
                               resetRangeRestartCounters: !consumeRangeRestartCounterPreservation(ratingKey: ratingKey))
         }

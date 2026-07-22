@@ -3,6 +3,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
+#if !os(tvOS)
 @Suite("Download keepalive coordinator")
 struct DownloadKeepaliveCoordinatorTests {
     @Test @MainActor
@@ -136,3 +137,4 @@ private final class HeldKeepaliveTask: @unchecked Sendable {
         }
     }
 }
+#endif

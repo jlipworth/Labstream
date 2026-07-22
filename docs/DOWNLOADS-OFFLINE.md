@@ -118,7 +118,7 @@ sequenceDiagram
 ```
 
 - **A pre-queued train of closed-range segment tasks for known-size static files.** The
-  current compile-time regime is `.segmentTrain` on visionOS, iOS/iPadOS, and macOS.
+  same segment-train engine runs on visionOS, iOS/iPadOS, and macOS.
   Static Plex/Jellyfin/Emby file routes enqueue up to `maxQueuedSegments` (currently 2) background
   `URLSessionDownloadTask`s ahead of the durable checkpoint, each a closed
   `Range: bytes=<offset>-<offset+segmentBytes-1>` request of `segmentBytes` (512 MiB) —
@@ -130,11 +130,9 @@ sequenceDiagram
   depth. When the expected total size is unknown, the planner falls back to a single
   open-ended `Range: bytes=<durableOffset>-` plan — the same shape used before segmentation,
   so that fallback is a zero-regression path rather than a special case.
-  `StaticRangeTransferRegime` (`Labstream/Capabilities/Downloads/Core/StaticRangeTransferRegime.swift`) is a
-  compile-time switch between `.segmentTrain` (current, all platforms) and
-  `.openEndedRemainder` (the prior single-task shipping behavior); flipping a platform back
-  is a one-line change, and both regimes recover from the same durable-partial checkpoint,
-  so switching regimes across launches is safe.
+  `StaticRangeTransferConfiguration` owns only the segment size and queue-depth constants;
+  transfer shape remains planner-owned so the unknown-total open-ended fallback follows the
+  same attempt and durable-checkpoint rules as the closed train.
 - **Segments are attempt-marked and stashed, then assembled in order.** Each new segment
   task's `taskDescription` combines the rating key and current
   `lbs-segment:v3:<offset>:<attemptID>` marker with a U+001F separator. Relaunch/reattach

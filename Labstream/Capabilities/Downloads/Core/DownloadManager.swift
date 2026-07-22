@@ -2293,11 +2293,10 @@ public final class DownloadManager {
                 resumed = session.resumeRange(
                     ratingKey: ratingKey,
                     resumeData: resumeData,
-                    to: record.localURL,
                     expectedBytes: BackgroundDownloadProgressPolicy.derivedExpectedBytes(record)
                 )
             case .opaque:
-                resumed = session.resume(ratingKey: ratingKey, resumeData: resumeData, to: record.localURL)
+                resumed = session.resume(ratingKey: ratingKey, resumeData: resumeData)
             }
             if resumed {
                 activeJobs.insert(ratingKey)
