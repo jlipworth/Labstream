@@ -1,6 +1,6 @@
 # Cross-platform simplification and performance program
 
-Status: **Waves 0–4 implemented and validated; the independent Wave 6 simplification pass is complete; Wave 5 paired Mac Home capture is operational and full sampling is next**
+Status: **Waves 0–4 implemented and validated; the independent Wave 6 simplification pass is complete; Wave 5 Mac Home/catalog/Search smoke capture is operational, while statistically admissible full sampling awaits control-only MDE calibration tooling**
 
 Audit baseline: `b3045bc0` (`Record tvOS merge checkpoint`) on
 `codex/audit-simplification-performance`
@@ -1288,10 +1288,30 @@ policy:
     smoke also exposed and fixed a Mac cold/direct-launch regression: the retained main scene now
     uses a command-suppressed `WindowGroup`, hides instead of destroys its sole window, and deletes
     the unused reopen closure machinery. The single pair is deliberately `insufficient_data`; its
-    observed durations are smoke evidence, not a performance verdict. Catalog and Search are
-    admission-capable but still need live smoke/full paired sampling. Artwork remains blocked until
+    observed durations are smoke evidence, not a performance verdict. Artwork remains blocked until
     a precise loaded-artwork milestone and comparable cardinality exist. The focused retained-window
     lifecycle suite passed all four tests after the launch correction.
+14. Commit `24693e94` hardens the browse lane after live Catalog and Search admission. Staged apps
+    now launch through LaunchServices while the runner binds exactly one newly observed executable
+    path and revalidates that identity immediately before TERM or KILL, so a disappeared or reused
+    PID cannot be signaled. Timeout cleanup includes a post-grace exact-path snapshot for a child
+    published on the final boundary. The AX driver selects the exact privacy-safe Fixture Movies
+    label, climbs to its actionable source-list row, and changes that row's selected state rather
+    than assuming the label itself is pressable. Catalog completion may supersede an earlier
+    terminal attempt and Search may cancel or supersede one, but the retained selector artifact
+    still requires exactly one successful target span and rejects every undeclared terminal result.
+
+    `mac-emby-catalog-smoke-20260722-v5` and `mac-emby-search-smoke-20260722` each produced one
+    control/candidate pair with contract-valid manifests and valid comparator pairing. Both ran on
+    external power while charging at nominal thermal state; Catalog recorded a 6.032-second pair
+    gap and 6,340,608-byte storage drift, while Search recorded 5.196 seconds and 5,771,264 bytes.
+    These one-pair results remain `insufficient_data` smoke evidence only. A later session could not
+    repeat the UI step because macOS denied foreground activation while another app was frontmost;
+    those failed attempts are not evidence and the earlier valid artifacts are not promoted into a
+    verdict. Full 3-warmup/20-measured sampling must not start until the runner can first capture a
+    control-only calibration set and freeze the MDE without exposing the candidate. Resumable sample
+    capture and explicit cooldown are the same preflight slice. Artwork remains separately blocked
+    on its loaded-cardinality milestone.
 
 ### Wave 6 — Optimize measured bottlenecks
 
