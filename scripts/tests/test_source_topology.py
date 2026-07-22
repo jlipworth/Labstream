@@ -179,6 +179,14 @@ class SourceTopologyTests(unittest.TestCase):
         matrix = json.loads((ROOT / "scripts" / "native-test-matrix.json").read_text())
         self.assertEqual(matrix["lanes"]["visionos-hosted"]["status"], "planned")
 
+    def test_external_performance_fixture_cannot_enter_app_compile_roots(self) -> None:
+        fixture = ROOT / "scripts" / "perf-emby-browse-fixture.py"
+        self.assertTrue(fixture.is_file())
+        self.assertFalse(fixture.is_relative_to(SOURCE_ROOT))
+        self.assertNotIn(fixture.name, self.project)
+        for _name, (_identifier, relative) in self.root_records.items():
+            self.assertFalse(fixture.is_relative_to((ROOT / relative).resolve()))
+
 
 if __name__ == "__main__":
     unittest.main()

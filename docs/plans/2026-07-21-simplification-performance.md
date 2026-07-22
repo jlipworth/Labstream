@@ -1252,6 +1252,24 @@ policy:
     only `network_decode`; cached/joined/local artwork comparisons require a structurally compatible
     control rather than invented provenance. No browse evidence captured from earlier control
     `ead62213` is comparable to this slice.
+12. The next bounded Wave 5 slice adds only an external deterministic Emby-compatible loopback
+    fixture server. Its fixed synthetic corpus covers Home (`Views`, Resume, Next Up, Latest),
+    Search/library paging (`Items`), alphabet probes, and primary artwork. Routes and query names
+    are closed; bounded one-shot delay/failure injection and reset are loopback control operations;
+    the ledger retains only aggregate route/status/concurrency counts, saturating declared/committed
+    response-body bytes, write-failure/client-disconnect counts, and the stable corpus identity.
+    Public, wildcard, hostname, credential-bearing, and secret-bearing configuration is rejected.
+    Active request handlers are bounded, accepted sockets have a fixed timeout, and overload returns
+    a deterministic aggregate-counted 503. Production-shaped `System/Info/Public` and
+    `Users/AuthenticateByName` use fixed published synthetic credentials/token, so the normal
+    first-run Emby username/password setup is supported only while their focused contract tests pass;
+    no request body or auth header enters the ledger or logs. Saved-session `GET /Users/<id>` restore
+    remains outside this slice and cannot be claimed from the initial-login support.
+    The script lives under `scripts/`, outside every Xcode synchronized production root, with a
+    source-topology test preventing accidental target membership. This does not alter app code,
+    URLSession, transport, cache behavior, or production fixtures. No XCUITest workload driver or
+    paired capture exists yet; control `0a5307a3` and candidate must use the same external server and
+    later identical driver before any evidence is comparable.
 
 ### Wave 6 — Optimize measured bottlenecks
 
