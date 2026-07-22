@@ -256,7 +256,8 @@ def command_plan(apps: tuple[App, App], scenario: str, warmups: int, measured: i
         }
     return {
         "schema_version": 1,
-        "artifact_status": "pre_manifest_raw_capture",
+        "artifact_status": ("planned_admissible_per_run_manifests" if scenario == "launch"
+                            else "pre_manifest_raw_capture"),
         "mode": "capture",
         "scenario": scenario,
         "bundle_id": apps[0].bundle_id,

@@ -248,6 +248,7 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(result, 0)
             self.assertEqual(fake.actions, [])
             self.assertEqual(document["mode"], "plan")
+            self.assertEqual(document["artifact_status"], "pre_manifest_raw_capture")
             self.assertEqual((document["warmups"], document["measured"],
                               document["duration_seconds"]), (1, 5, 120))
             self.assertEqual(document["settle_seconds"], 10)
@@ -317,6 +318,7 @@ class RunnerTests(unittest.TestCase):
                                        containers_root=root / "Containers",
                                        control_commit="a" * 40, candidate_commit="b" * 40,
                                        device_label="local-device-07")
+            self.assertEqual(plan["artifact_status"], "planned_admissible_per_run_manifests")
             result = runner.capture(plan, apps, FakeExecutor())
             loaded = {"control": [], "candidate": []}
             for record in result["records"]:
