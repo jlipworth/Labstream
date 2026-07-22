@@ -33,7 +33,6 @@ extension LibraryPagingSource {
                                           appModel: appModel),
             backendLabel: appModel.activeBackend.performanceLabel,
             cacheEmptyFirstPage: false,
-            awaitAlphabetBeforeInitialLoad: false,
             fetchPage: { start, limit in
                 let provider = appModel.musicProvider
                 let page: MusicPage

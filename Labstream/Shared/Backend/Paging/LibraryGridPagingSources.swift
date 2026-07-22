@@ -31,7 +31,6 @@ extension LibraryPagingSource {
             // Plex's first-character endpoint can be noticeably slower than page 0 on a
             // physical device. Publish the grid as soon as page 0 arrives, then attach the
             // rail when the independent alphabet request completes.
-            awaitAlphabetBeforeInitialLoad: false,
             supportsAlphabetRail: query.supportsAlphabetRail,
             fetchPage: { start, limit in
                 guard let service = try? PlexBrowseService(appModel: appModel) else {
@@ -62,7 +61,6 @@ extension LibraryPagingSource {
             identity: "\(libraryPagingIdentity(libraryID: section.key, sessionKey: appModel.browseSessionKey(for: .plex))):collections",
             backendLabel: "Plex",
             cacheEmptyFirstPage: true,
-            awaitAlphabetBeforeInitialLoad: false,
             supportsAlphabetRail: false,
             fetchPage: { start, limit in
                 guard let server = appModel.serverBaseURL,
@@ -107,7 +105,6 @@ extension LibraryPagingSource {
                                             query: query),
             backendLabel: backend.displayName,
             cacheEmptyFirstPage: false,
-            awaitAlphabetBeforeInitialLoad: false,
             collapsesMovieVersions: MediaBrowserLibraryGridPolicy.collapsesMovieVersions(collectionType: view.collectionType),
             supportsAlphabetRail: query.supportsAlphabetRail,
             fetchPage: { start, limit in
