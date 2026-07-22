@@ -25,7 +25,7 @@ CONTRACT = ROOT / "scripts" / "performance-audit-contract.py"
 EVIDENCE_SCHEMA_PATH = ROOT / "scripts" / "perf_evidence_schema.py"
 SCENARIOS = ("home", "catalog", "search", "artwork")
 AUTH_ACCOUNTS = (
-    "token", "selectedBackend", "selectedPlexServerID",
+    "token", "clientIdentifier", "selectedBackend", "selectedPlexServerID",
     "jellyfinServerURL", "jellyfinAccessToken", "jellyfinUserID", "jellyfinServerID",
     "embyServerURL", "embyAccessToken", "embyUserID", "embyServerID",
 )

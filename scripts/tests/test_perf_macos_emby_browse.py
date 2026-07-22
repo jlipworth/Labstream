@@ -204,7 +204,7 @@ class BrowseRunnerTests(unittest.TestCase):
                                       "-s", service, "-a", account])
             self.assertEqual(find, ["/usr/bin/security", "find-generic-password",
                                     "-s", service, "-a", account])
-        self.assertNotIn("clientIdentifier", " ".join(" ".join(row) for row in fake.actions))
+        self.assertIn("clientIdentifier", " ".join(" ".join(row) for row in fake.actions))
 
     def test_keychain_reset_fails_closed_for_unproved_absence(self):
         with self.assertRaisesRegex(runner.RunnerError, "could not prove"):
@@ -419,7 +419,7 @@ class BrowseRunnerTests(unittest.TestCase):
             keychain_deletes = [action for action in fake.actions if isinstance(action, list)
                                 and action[:2] == ["/usr/bin/security", "delete-generic-password"]]
             self.assertEqual(len(keychain_deletes), 4 * len(runner.AUTH_ACCOUNTS))
-            self.assertNotIn("clientIdentifier", " ".join(" ".join(row) for row in keychain_deletes))
+            self.assertIn("clientIdentifier", " ".join(" ".join(row) for row in keychain_deletes))
             for app_pid in sorted(pid for pid in fake.processes if pid != fixture_spawns[0][2]):
                 stop_index = fake.actions.index(("terminate", app_pid))
                 self.assertTrue(any(action[:2] == ("fixture", "GET")

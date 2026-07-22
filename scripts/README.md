@@ -170,7 +170,8 @@ scripts/perf-compare.py compare \
   explicitly pre-manifest and `insufficient_data` until trace extraction lands.
 - `perf-macos-emby-browse.py` — paired external Home, catalog, and Search runner for the same
   dedicated Mac `PerformanceAudit` artifacts. It launches the loopback-only Emby fixture, resets
-  only that performance identity's closed Keychain account set and mutable sandbox data, compiles
+  that performance identity's closed Keychain account set (including per-arm routing identity) and
+  mutable sandbox data, compiles
   `perf-macos-ax-driver.swift` once before capture, and drives the exact app PID through semantic
   accessibility selectors without coordinates or app arguments/environment. Each successful arm
   waits for its exact terminal span, validates the aggregate fixture ledger, and publishes a
