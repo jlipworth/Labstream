@@ -221,6 +221,21 @@ class BrowseRunnerTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 runner.write_private_json(path, {"schema_version": 1})
 
+    def test_browse_preference_seed_is_closed_private_and_fixture_scoped(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            service = "com.jlipworth.Labstream.perf.browse"
+            container = pathlib.Path(temporary) / service
+            (container / "Data/Library").mkdir(parents=True)
+            digest = runner.seed_browse_preferences(container, service)
+            path = container / f"Data/Library/Preferences/{service}.plist"
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(plistlib.loads(path.read_bytes()), {
+                runner.VISIBILITY_PROMPT_KEY: True,
+            })
+            self.assertEqual(len(digest), 64)
+            with self.assertRaisesRegex(runner.RunnerError, "incomplete or unsafe"):
+                runner.seed_browse_preferences(container, service)
+
     def test_driver_result_must_prove_exact_pid_scenario_and_success(self):
         valid = {
             "schema_version": 1,
@@ -238,6 +253,26 @@ class BrowseRunnerTests(unittest.TestCase):
             path.write_text(json.dumps(valid))
             with self.assertRaisesRegex(runner.RunnerError, "exact-PID"):
                 runner.validate_driver_result(path, pid=123, scenario="search")
+
+    def test_success_selector_preserves_binding_and_excludes_cancelled_attempt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            source = root / "full.log"
+            selected = root / "selected.log"
+            source.write_text(
+                "perf.capture run_id=run-123456789abc workload_id=workload-123456789abc "
+                "launch_nonce=nonce-1234567890abcdef\n"
+                '{"eventMessage":"perf.span phase=home.load backend=Emby result=cancelled '
+                'duration_ms=3"}\n'
+                '{"eventMessage":"perf.span phase=home.load backend=Emby result=success '
+                'duration_ms=10 view_count=2 rail_count=3 item_count=4 degraded=0"}\n'
+            )
+            runner.write_success_selector_artifact(source, selected, "home.load")
+            payload = selected.read_text()
+            self.assertIn("perf.capture", payload)
+            self.assertIn("result=success", payload)
+            self.assertNotIn("result=cancelled", payload)
+            self.assertEqual(selected.stat().st_mode & 0o777, 0o600)
 
     def test_driver_result_rejects_nonterminal_stage_for_every_scenario(self):
         expected = {
@@ -309,7 +344,7 @@ class BrowseRunnerTests(unittest.TestCase):
                     return self.span_line() * 2
                 return super().output(argv)
 
-        with self.assertRaisesRegex(runner.RunnerError, "multiple terminal"):
+        with self.assertRaisesRegex(runner.RunnerError, "multiple successful"):
             runner.wait_for_terminal_span(
                 777, "2026-07-22T00:00:00.000Z", "home", Duplicate())
 
@@ -398,6 +433,7 @@ class BrowseRunnerTests(unittest.TestCase):
                 manifest = json.loads((run_dir / "manifest.json").read_text())
                 self.assertEqual(len(manifest["automation"]["fixture_implementation_sha256"]), 64)
                 self.assertEqual(len(manifest["automation"]["workload_spec_sha256"]), 64)
+                self.assertEqual(len(manifest["automation"]["client_state_seed_sha256"]), 64)
                 self.assertEqual(manifest["scenario"]["backend_kind"], "emby")
                 self.assertEqual(json.loads((run_dir / "summary/redacted.json").read_text())
                                  ["workload"]["phase"], "home.load")

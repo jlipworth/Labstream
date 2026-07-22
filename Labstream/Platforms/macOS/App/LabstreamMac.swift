@@ -36,6 +36,10 @@ struct LabstreamMac: App {
             }
         }
         .defaultSize(width: 1180, height: 760)
+        // A unique Window remembers that it was hidden. Always present the one retained scene on
+        // a fresh process launch, including direct PerformanceAudit executable launches that do
+        // not arrive through a Finder/Dock reopen event.
+        .defaultLaunchBehavior(.presented)
         .commands {
             if let runtime {
                 CommandMenu("Navigate") {

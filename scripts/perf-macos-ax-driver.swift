@@ -207,10 +207,16 @@ private final class AccessibilityDriver {
     private(set) var completedStage = "attached"
 
     init(pid: pid_t, timeout: TimeInterval) throws {
-        guard kill(pid, 0) == 0,
-              let application = NSRunningApplication(processIdentifier: pid) else {
+        guard kill(pid, 0) == 0 else {
             throw DriverError.processUnavailable
         }
+        let registrationDeadline = Date().addingTimeInterval(min(timeout, 5))
+        var registeredApplication: NSRunningApplication?
+        repeat {
+            registeredApplication = NSRunningApplication(processIdentifier: pid)
+            if registeredApplication == nil { usleep(50_000) }
+        } while registeredApplication == nil && Date() < registrationDeadline && kill(pid, 0) == 0
+        guard let application = registeredApplication else { throw DriverError.processUnavailable }
         let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
         guard AXIsProcessTrustedWithOptions([promptKey: false] as CFDictionary) else {
             throw DriverError.accessibilityNotTrusted

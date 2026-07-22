@@ -113,6 +113,7 @@ class PerfMacOSAXDriverTests(unittest.TestCase):
         self.assertIn("elementAmbiguous", source)
         self.assertIn("postToPid(pid)", source)
         self.assertIn("activate(options: [.activateAllWindows])", source)
+        self.assertIn("registrationDeadline", source)
         self.assertIn("attribute: .description, values: [\"Emby\"]", source)
         self.assertIn("encodeNil(forKey: .errorCode)", source)
 
