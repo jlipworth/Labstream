@@ -10,11 +10,12 @@ server; a small set of reusable infrastructure is intentionally effectful.
 flowchart TD
   accTitle: App and package composition
   accDescr: Platform entry points create long-lived app services used by SwiftUI. App-owned playback, downloads, music, and SharePlay use PMSKit policies and requests while retaining their own framework and persistence effects.
-  Entry[Platform App entry point] --> Services[AppServices]
-  Services --> Model[AppModel]
-  Services --> Auth[AuthManager]
-  Services --> Downloads[DownloadManager]
-  Services --> Music[MusicPlayerController]
+  Entry[Platform App entry point] --> Runtime[AppRuntime]
+  Runtime --> Model[AppModel]
+  Runtime --> Auth[AuthManager]
+  Runtime --> Downloads[DownloadManager except tvOS]
+  Runtime --> Music[MusicPlayerController]
+  Runtime --> Bootstrap[SessionBootstrap]
   Entry --> SharePlay[visionOS live WatchTogetherCoordinator]
 
   UI[SwiftUI UI] --> Model
@@ -39,54 +40,56 @@ flowchart TD
 
 ## Native targets and release trains
 
-The repository contains three native application targets. Vision Pro and mobile are the
-supported product paths; the native Mac target is a local-build development preview. All three share the
-file-system-synchronized `Labstream/` source tree and select platform behavior with
-Swift **conditional compilation**.
+The repository contains four native application targets. Vision Pro and mobile are the
+supported product paths; the native Mac target is a local-build development preview. All four
+attach the file-system-synchronized `Labstream/Shared/` root plus exactly one root under
+`Labstream/Platforms/`. Vision Pro, mobile, and Mac additionally attach the non-overlapping
+`Labstream/Capabilities/Downloads/` root; tvOS cannot compile or construct that capability.
 
 | Target / scheme | Entry point | Platform | Current marketing version |
 | --- | --- | --- | --- |
-| `Labstream` | `Labstream/App/Labstream.swift` | visionOS | 1.5.0 |
-| `LabstreamMobile` | `Labstream/App/LabstreamMobile.swift` | iOS and iPadOS | 1.4.0 |
-| `LabstreamMac` | `Labstream/App/LabstreamMac.swift` | native macOS, not Catalyst | 1.0.0 |
+| `Labstream` | `Labstream/Platforms/visionOS/App/Labstream.swift` | visionOS | 1.5.0 |
+| `LabstreamMobile` | `Labstream/Platforms/Mobile/App/LabstreamMobile.swift` | iOS and iPadOS | 1.4.0 |
+| `LabstreamMac` | `Labstream/Platforms/macOS/App/LabstreamMac.swift` | native macOS, not Catalyst | 1.0.0 |
+| `LabstreamTV` | `Labstream/Platforms/tvOS/App/LabstreamTV.swift` | tvOS | 1.0.0 |
 
-The three marketing versions are intentionally independent release trains. The Xcode
+The marketing versions are intentionally independent release trains. The Xcode
 project is the source of truth for current version and deployment settings.
 
-Platform-specific code uses `#if os(visionOS)`, `#if os(iOS)`, and
-`#if os(macOS)`. Capability and build variants also use `#if canImport(...)`,
-`#if targetEnvironment(simulator)`, and `#if DEBUG`. These are compile-time
-conditions, not runtime feature flags. The densest shared-platform branches are in
-`Labstream/Player/CustomPlayerChrome.swift`,
-`Labstream/Player/CustomPlayerView.swift`, `Labstream/UI/RootView.swift`, and the
+Shared files still use conditional compilation for genuinely inline framework and presentation
+differences. Capability and build variants also use `#if canImport(...)`,
+`#if targetEnvironment(simulator)`, and `#if DEBUG`; these are compile-time conditions, not
+runtime feature flags. Whole-platform entrypoints/adapters instead rely on exclusive target
+membership and contain no redundant whole-file platform guard. The densest shared-platform branches are in
+`Labstream/Shared/Player/CustomPlayerChrome.swift`,
+`Labstream/Shared/Player/CustomPlayerView.swift`, `Labstream/Shared/UI/RootView.swift`, and the
 shared login/detail UI. Whole-platform adapters remain in small files where possible.
 
 ## App-lifetime composition
 
-Every target guards the optional result of `AppServices.make()` in its `App` initializer
+Every target guards the optional result of `AppRuntime.make()` in its `App` initializer
 and has a `SecureStorageUnavailableView` fallback. The current factory returns a service
-bundle even when the durable client identifier cannot be read by using a process-local
-identifier for that launch; credentials themselves still fail closed. `AppServices`
-constructs the same four long-lived services:
+graph even when the durable client identifier cannot be read by using a process-local
+identifier for that launch; credentials themselves still fail closed. `AppRuntime`
+constructs the common long-lived services and the one launch bootstrap:
 
 - `AppModel`: active backend and the three live server/session lanes.
 - `AuthManager`: authentication, restore, backend switching, and Keychain writes.
-- `DownloadManager`: the cross-backend offline queue and transfer orchestration.
+- `DownloadManager`: the cross-backend offline queue and transfer orchestration, absent on tvOS.
 - `MusicPlayerController`: the app-lifetime audio queue and player.
+- `SessionBootstrap`: one-time restore and browse-gate state shared across scene recreation.
 
-Each platform `App` also owns `SessionBootstrap`, `CustomCinemaSessionStore`,
-`RealityTheaterSessionStore`, and the `WatchTogetherCoordinator` required by the shared root
-initializers. Only the visionOS entry point configures that coordinator from the app model,
-starts `GroupSession` observation, and injects the same live instance into the main window and
-Custom Cinema; the iOS/iPadOS and macOS compatibility instances remain unconfigured and never
-start session observation. Keeping the live visionOS objects above the main window matters
+Only the visionOS entry point additionally owns the real `CustomCinemaSessionStore` and
+`WatchTogetherCoordinator`; it injects the same live instances into the main window and Custom
+Cinema. Non-vision products construct neither capability. Keeping the live visionOS objects above the main window matters
 because entering Cinema can dismiss the window while the authenticated session, active player,
 and SharePlay coordination must survive until it reopens.
 
-`ContentView` is the launch gate. It registers system-entry routing, restores saved
+`ContentView` receives the exact `AppRuntime` and is the launch gate. It registers system-entry routing, restores saved
 sessions once, presents restore/login/browse UI, and starts download reconciliation.
-`RootView` is the authenticated navigation shell and injects the app model, download
-manager, music player, and shared coordinator dependencies into the view environment.
+`RootView` receives the same runtime as the authenticated navigation shell and injects the app
+model, supported download manager, and music player into the view environment. Its visionOS-only SharePlay consumers read
+the coordinator inherited from the visionOS scene environment.
 
 ## Session and backend model
 
@@ -146,15 +149,15 @@ details remain explicit.
 ## Browse, search, and music
 
 - Pure Plex browse requests are built by `PlexBrowseRequest` in PMSKit (through the small
-  app facade in `Labstream/Backend/PlexBrowseAPI.swift`). `PlexBrowseService` pins one
+  app facade in `Labstream/Shared/Backend/PlexBrowseAPI.swift`). `PlexBrowseService` pins one
   immutable backend session, executes through the shared `PlexClient`, decodes responses,
   and is the app-facing browse boundary.
-- Jellyfin and Emby retain concrete facades under `Labstream/Backend/Jellyfin/` and
-  `Labstream/Backend/Emby/`, backed by `MediaBrowserBrowseCore` only for their genuinely
+- Jellyfin and Emby retain concrete facades under `Labstream/Shared/Backend/Jellyfin/` and
+  `Labstream/Shared/Backend/Emby/`, backed by `MediaBrowserBrowseCore` only for their genuinely
   shared browse execution/decode/map behavior.
-- Backend-neutral paging models live in `Labstream/Backend/Paging/`. The grouped,
+- Backend-neutral paging models live in `Labstream/Shared/Backend/Paging/`. The grouped,
   deduplicated search-result model lives in
-  `PMSKit/Sources/PMSKit/Search/SearchResults.swift`, while `Labstream/UI/SearchView.swift`
+  `PMSKit/Sources/PMSKit/Search/SearchResults.swift`, while `Labstream/Shared/UI/SearchView.swift`
   executes the active backend search, renders the sections, and routes music versus standard
   results.
 - `MusicProvider` is the backend-neutral music boundary. Plex supplies richer native
@@ -181,10 +184,7 @@ controller-scoped `MPNowPlayingSession` and routes its commands directly back to
 See [Playback architecture](PLAYBACK-ARCHITECTURE.md) for lifecycle and cleanup invariants.
 
 The visionOS **Custom Cinema** immersive space is the user-visible app-owned Cinema
-path and reuses the same controller and chrome. The separate RealityKit theater in
-`Labstream/Theater/` is a hidden prototype: its scene and tuning model compile, but its
-shipping and device-testing entry-point gates are currently false. Documentation and
-UI should not present that prototype as a supported theater mode.
+path and reuses the same controller and chrome.
 
 ## Downloads and offline ownership
 

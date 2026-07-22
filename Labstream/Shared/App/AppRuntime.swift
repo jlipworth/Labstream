@@ -1,0 +1,152 @@
+import Foundation
+import SwiftUI
+
+/// Shared app-lifetime runtime used by every shipping entrypoint.
+///
+/// Keep this intentionally narrow: tvOS receives only its streaming services, while the
+/// platforms that ship Offline also receive a download manager. Platform-specific
+/// capabilities, scenes, and lifecycle hooks remain in their app entrypoint files.
+@MainActor
+struct AppRuntime {
+    let appModel: AppModel
+    let authManager: AuthManager
+    #if !os(tvOS)
+    let downloadManager: DownloadManager
+    let sceneActivity: AppSceneActivity
+    #endif
+    let musicPlayer: MusicPlayerController
+    /// One launch bootstrap shared by every window/scene that presents this runtime. In
+    /// particular, dismissing and reopening the visionOS main window for Cinema must never
+    /// re-run session restore or flash the sign-in UI over an already-restored session.
+    let bootstrap: SessionBootstrap
+
+    static func make(keychain providedKeychain: KeychainStore? = nil,
+                     bootstrap: SessionBootstrap = SessionBootstrap()) -> AppRuntime? {
+        let keychain = providedKeychain ?? AppKeychainService.makeStore()
+        // The client identifier is routing metadata, not a credential. If secure storage is
+        // temporarily unavailable, use a process-local identity so the app can still finish
+        // launching (most importantly on download-capable platforms, so background URLSession
+        // events can be drained). A later launch retries the durable identifier; credentials
+        // themselves remain fail-closed.
+        let clientIdentifier = keychain.clientIdentifier() ?? UUID().uuidString
+        let identity = PlatformClientIdentity.make(clientIdentifier: clientIdentifier)
+        let model = AppModel(identity: identity, activeBackend: keychain.selectedBackend)
+        let authManager = AuthManager(appModel: model, keychain: keychain)
+
+        #if os(tvOS)
+        // Downloads are not a TV product. Keep the capability absent from the tvOS service
+        // graph: do not create a manager, store, migration/recovery coordinator, or background
+        // URLSession merely to satisfy a shared initializer.
+        return AppRuntime(
+            appModel: model,
+            authManager: authManager,
+            musicPlayer: MusicPlayerController(appModel: model),
+            bootstrap: bootstrap
+        )
+        #else
+        let downloadManager = DownloadManager(
+            appModel: model,
+            registerForBackgroundEvents: true)
+        // Sign-out is the one lifecycle edge where an already-open URLSession request can retain
+        // a just-revoked authorization header. Pause that backend's work before AuthManager
+        // clears its runtime session; weak capture keeps the service graph acyclic.
+        authManager.onBackendWillSignOut = { [weak downloadManager] backend in
+            downloadManager?.pauseDownloadsForBackendSignOut(backend)
+        }
+        let sceneActivity = AppSceneActivity { [weak downloadManager] isActive in
+            guard let downloadManager else { return }
+            AppStartup.recordAggregateSceneActivity(isActive,
+                                                    downloadManager: downloadManager)
+        }
+        return AppRuntime(
+            appModel: model,
+            authManager: authManager,
+            downloadManager: downloadManager,
+            sceneActivity: sceneActivity,
+            musicPlayer: MusicPlayerController(appModel: model),
+            bootstrap: bootstrap
+        )
+        #endif
+    }
+}
+
+/// App-lifetime launch bootstrap state. It lives in `AppRuntime`, above any window, so
+/// entering/leaving Cinema or opening Mac Settings never retriggers the one-time restore.
+@MainActor
+@Observable
+final class SessionBootstrap {
+    /// True until the launch-time `restoreSession()` finishes.
+    var isRestoring = true
+    /// Set once the restore has been kicked off, so a recreated window skips it.
+    var didStartRestore = false
+    /// True once browse UI has mounted in this process. This keeps an already-ready UI mounted
+    /// through a backend switch instead of bouncing through the restore splash.
+    var hasEverBeenBrowseReady = false
+}
+
+struct SecureStorageUnavailableView: View {
+    var body: some View {
+        ContentUnavailableView("Secure Storage Unavailable",
+                               systemImage: "lock.trianglebadge.exclamationmark",
+                               description: Text("Labstream couldn’t access secure storage. Quit and reopen the app, then try again."))
+    }
+}
+
+private enum AppKeychainService {
+    static func makeStore() -> KeychainStore {
+        #if os(macOS)
+        if let service = Bundle.main.object(forInfoDictionaryKey: "LabstreamKeychainService") as? String,
+           !service.isEmpty,
+           !service.contains("$(") {
+            // Per-worktree macOS dev identities intentionally isolate credentials. Do not
+            // attempt iCloud-synchronizable Plex-token writes for those ad-hoc/sandboxed
+            // host apps; they can fail with missing app-identifier/keychain entitlements
+            // and they would also defeat worktree isolation. The canonical service keeps
+            // the existing cross-device sync policy for production/App Store-style builds.
+            let isCanonicalService = service == "com.visionplay.app"
+            return KeychainStore(service: service,
+                                 synchronizesPlexToken: isCanonicalService,
+                                 usesDevelopmentFileStorage: !isCanonicalService)
+        }
+        #endif
+        return KeychainStore()
+    }
+}
+
+enum AppLaunchMode {
+    static var isUnitTestHost: Bool {
+        #if DEBUG
+        ProcessInfo.processInfo.environment["LABSTREAM_UNIT_TEST_HOST"] == "1"
+        #else
+        false
+        #endif
+    }
+}
+
+@MainActor
+enum AppStartup {
+    /// One process-start hook shared by the app entrypoints. Registration is safe to call
+    /// exactly once per process and deliberately avoids logging credentials or server details.
+    static func prepareForLaunch() {
+        #if !os(tvOS)
+        LabstreamShortcuts.updateAppShortcutParameters()
+        MetricKitDiagnostics.shared.register()
+        #endif
+        AppDiagnostics.record(.downloads, "app.process_launch", fields: [
+            "launch_source": .label("process_start"),
+        ])
+    }
+
+    #if !os(tvOS)
+    static func recordAggregateSceneActivity(_ isActive: Bool,
+                                             downloadManager: DownloadManager) {
+        let label = isActive ? "active" : "inactive"
+        AppDiagnostics.record(.downloads, "app.scene_phase", fields: [
+            "phase": .label(label),
+        ])
+        if PlatformFeaturePolicy.supportsDownloads {
+            downloadManager.noteAppScenePhase(label)
+        }
+    }
+    #endif
+}

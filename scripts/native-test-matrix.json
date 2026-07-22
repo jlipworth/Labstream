@@ -154,6 +154,14 @@
       "lanes": ["tvos-build", "tvos-ui-smoke"]
     },
     {
+      "patterns": ["Labstream/Capabilities/Downloads/**"],
+      "lanes": [
+        "visionos-build", "visionos-hosted", "mobile-build", "mobile-hosted",
+        "macos-build", "macos-hosted"
+      ],
+      "exclusive": true
+    },
+    {
       "patterns": ["Labstream/Platforms/visionOS/**"],
       "lanes": ["visionos-build", "visionos-hosted"],
       "exclusive": true

@@ -22,6 +22,10 @@ owns the post-July-21 platform simplification and measured whole-app performance
 file remains authoritative for its completed remediation history and still-open physical
 acceptance gates; the successor must not silently reopen or weaken them.
 
+**Source-relocation note:** dated journal entries retain their audited paths. In the current
+tree, their equivalents are `Labstream/Shared/UI`, `Labstream/Shared/Backend/Paging`,
+`Labstream/Shared/SystemIntegration`, and `Labstream/Shared/Music`.
+
 ## Implementation checkpoint — 2026-07-11 after the downloads audit
 
 ### 2026-07-12 rebase onto the continued download-state-machine work

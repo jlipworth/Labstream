@@ -29,17 +29,33 @@ struct AuthSecureStorageTests {
         #expect(model.backendSession(for: .plex) == nil)
     }
 
-    @Test func clientIdentityWriteFailureStillBuildsServicesForBackgroundDrain() throws {
+    @Test func clientIdentityWriteFailureStillBuildsRuntimeForBackgroundDrain() throws {
         let store = KeychainStore(
             service: "com.visionplay.tests.identity.\(UUID().uuidString)",
             synchronizesPlexToken: false,
             writeInterceptor: { account, _ in
                 account == KeychainStore.clientIdentifierKey ? false : nil
             })
+        let bootstrap = SessionBootstrap()
 
         #expect(store.clientIdentifier() == nil)
-        let services = try #require(AppServices.make(keychain: store))
-        #expect(!services.appModel.identity.clientIdentifier.isEmpty)
+        let runtime = try #require(AppRuntime.make(keychain: store, bootstrap: bootstrap))
+        #expect(!runtime.appModel.identity.clientIdentifier.isEmpty)
+        #if !os(tvOS)
+        #expect(runtime.downloadManager.appModel === runtime.appModel)
+        #expect(runtime.authManager.onBackendWillSignOut != nil)
+        #else
+        #expect(runtime.authManager.onBackendWillSignOut == nil)
+        #endif
+        #expect(runtime.bootstrap === bootstrap)
+        #expect(runtime.bootstrap.isRestoring)
+        #expect(!runtime.bootstrap.didStartRestore)
+
+        // Both recreated launch roots retain the exact app-owned runtime/bootstrap rather than
+        // minting window-local restore state.
+        let firstRoot = ContentView(runtime: runtime)
+        let recreatedRoot = ContentView(runtime: runtime)
+        #expect(firstRoot.runtime.bootstrap === recreatedRoot.runtime.bootstrap)
     }
 
     @Test func backendSelectionDoesNotPublishWhenSecureWriteFails() {

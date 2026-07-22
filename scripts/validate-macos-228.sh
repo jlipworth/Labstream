@@ -34,7 +34,7 @@ import struct
 import sys
 from pathlib import Path
 
-root = Path("Labstream/Assets.xcassets/MacAppIcon.appiconset")
+root = Path("Labstream/Shared/Resources/Assets.xcassets/MacAppIcon.appiconset")
 contents_path = root / "Contents.json"
 expected = {
     ("16x16", "1x"): (16, 16),
@@ -97,10 +97,10 @@ checks = [
     ("scripts/deploy-macos-to-host.sh",
      ["PRODUCT_BUNDLE_IDENTIFIER=\"$EFFECTIVE_BUNDLE_ID\"", "LABSTREAM_KEYCHAIN_SERVICE=\"$KEYCHAIN_SERVICE\""],
      "Mac host deploy must override bundle id and keychain service together"),
-    ("Labstream/Downloads/BackgroundDownloadSession.swift",
+    ("Labstream/Capabilities/Downloads/Core/BackgroundDownloadSession.swift",
      ["#if os(macOS)", "Bundle.main.bundleIdentifier", ".downloads.background"],
      "Mac background download session id must derive from effective bundle id"),
-    ("Labstream/UI/SettingsView.swift",
+    ("Labstream/Shared/UI/SettingsView.swift",
      ["backgroundDownloadSessionIdentifier: BackgroundDownloadSession.identifier", "keychainService: Self.keychainService", "sandboxContainerIdentifier: Self.sandboxContainerIdentifier"],
      "Mac diagnostics must include keychain/container/background-session context"),
 ]

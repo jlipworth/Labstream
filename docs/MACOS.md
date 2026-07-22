@@ -17,6 +17,11 @@ playback, music, downloads/offline, settings, diagnostics, and backend flows for
 Mac-specific code supplies window commands, keyboard navigation, fullscreen/player presentation,
 and system media integration while backend wire behavior and pure policies remain shared.
 
+The app owns exactly one reusable browse/player window plus the singleton system Settings window.
+Closing the main window hides it instead of dismantling its SwiftUI graph: Dock reopen, system
+entries, and menu commands reactivate that same window deterministically, while active playback,
+music, and background downloads continue until the user explicitly stops them or quits the app.
+
 The Mac root uses a native source-list split view. Home is followed by the active server's visible
 non-music libraries, an optional Music section whose child routes share an explicit selected-library
 context, and a standalone Offline destination. Search lives in the native toolbar: Command-F

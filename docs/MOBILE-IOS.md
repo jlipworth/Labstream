@@ -27,7 +27,7 @@ adaptive mobile shell. The public mobile support floor is iOS/iPadOS 26.1+.
   player controls collapse vertically/horizontally rather than assuming an iPad canvas;
   regular-width iPad detail keeps a readable metadata column.
 - Controls that float over media use Liquid Glass on iOS via the `labstream*` helpers in
-  `Labstream/UI/DesignSystem.swift`; visionOS keeps its proven
+  `Labstream/Shared/UI/DesignSystem.swift`; visionOS keeps its proven
   `glassBackgroundEffect`/material look.
 - The custom AVFoundation video player exposes mobile system hooks for Picture in Picture,
   AirPlay route picking, video Now Playing metadata, and remote play/pause/seek commands.

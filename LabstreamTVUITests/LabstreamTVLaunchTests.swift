@@ -14,6 +14,30 @@ final class LabstreamTVLaunchTests: XCTestCase {
         XCTAssertTrue(app.buttons["Sign in with Plex"].waitForExistence(timeout: 5))
     }
 
+    func testLaunchUsesStreamingOnlyComposition() throws {
+        let app = makeApp()
+        app.launchArguments.append("--ui-testing-download-composition-evidence")
+        app.launch()
+
+        XCTAssertTrue(app.staticTexts["tv.download-subsystem.absent"].waitForExistence(timeout: 5),
+                      "tvOS must reach first render with DownloadManager's independent construction count still zero")
+        XCTAssertFalse(app.staticTexts["tv.download-subsystem.present"].exists,
+                       "the download subsystem must never be constructed by tvOS composition")
+    }
+
+    func testSeasonSurfaceHasNoDownloadAction() throws {
+        let app = makeApp(backend: "plex", fixture: "season")
+        app.launch()
+
+        XCTAssertTrue(app.staticTexts["container.episode.title.tv-season-surface-e1"]
+            .waitForExistence(timeout: 5),
+                      "the real season browser must load before checking its available actions")
+        XCTAssertFalse(app.buttons["Download Season"].exists,
+                       "tvOS season browsing is streaming-only and must not offer an unusable planner")
+        XCTAssertFalse(app.staticTexts["Download Season"].exists,
+                       "the season download planner must not be present on tvOS")
+    }
+
     func testRemoteChoosesEveryBackendSignInSurface() throws {
         let app = makeApp()
         app.launch()

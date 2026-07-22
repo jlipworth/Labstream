@@ -5,6 +5,10 @@
 > handoff/open-work sections are superseded by those later updates. Current subsystem
 > behavior belongs in [`docs/DOWNLOADS-OFFLINE.md`](../../DOWNLOADS-OFFLINE.md). Remaining
 > physical-device evidence is an acceptance gate, not unfinished audit implementation.
+> Historical paths below retain the audit snapshot: current locations are
+> `Labstream/Capabilities/Downloads/Core/` (download engine),
+> `Labstream/Capabilities/Downloads/UI/` (download UI),
+> `Labstream/Shared/Player/`, and `Labstream/Shared/Diagnostics/`.
 
 Systematic audit plan for the entire downloads subsystem, produced after a full read of
 `Labstream/Downloads/BackgroundDownloadSession.swift` (4409 lines), `DownloadManager.swift`

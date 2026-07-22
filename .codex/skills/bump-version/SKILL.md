@@ -70,7 +70,7 @@ Do **not** blindly sync `PMSKit.version` during a mobile-only or visionOS-only b
 
 ## Do NOT touch
 
-- `Labstream/App/Labstream.swift`, `Labstream/App/LabstreamMobile.swift`, `Labstream/App/PlatformClientIdentity.swift`, or player code just to change versions; they read bundle versions automatically.
+- `Labstream/Platforms/visionOS/App/Labstream.swift`, `Labstream/Platforms/Mobile/App/LabstreamMobile.swift`, `Labstream/Shared/App/PlatformClientIdentity.swift`, or player code just to change versions; they read bundle versions automatically.
 - Test fixtures that hardcode arbitrary `ClientIdentity(... version: "…")` values; those are local inputs, not the app version.
 - `pyproject.toml` / `uv.lock`; that is separate Python tooling.
 

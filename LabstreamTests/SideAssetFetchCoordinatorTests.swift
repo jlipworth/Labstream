@@ -255,16 +255,20 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
         let calls = SideAssetCounter()
         let coordinator = SideAssetFetchCoordinator(clock: clock.dependency)
         let owner = SideAssetOwner(rawValue: "owner")
+        let origin = SideAssetOrigin(rawValue: "origin")
+        let resumeRequest = SideAssetRequestKey(rawValue: "resume")
         await coordinator.setParked(true, for: owner)
         let resumed = Task {
             try await coordinator.fetch(
-                origin: .init(rawValue: "origin"), owner: owner, requestKey: .init(rawValue: "resume")
+                origin: origin, owner: owner, requestKey: resumeRequest
             ) {
                 await calls.increment()
                 return Data([1])
             }
         }
-        await Task.yield()
+        await waitUntil {
+            await coordinator.waiterCountForTesting(origin: origin, requestKey: resumeRequest) == 1
+        }
         let countWhileParked = await calls.value
         XCTAssertEqual(countWhileParked, 0)
         await coordinator.setParked(false, for: owner)
@@ -272,12 +276,18 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
         XCTAssertEqual(resumedData, Data([1]))
 
         await coordinator.setParked(true, for: owner)
+        let cancelRequest = SideAssetRequestKey(rawValue: "cancel")
         let cancelled = Task {
             try await coordinator.fetch(
-                origin: .init(rawValue: "origin"), owner: owner, requestKey: .init(rawValue: "cancel")
+                origin: origin, owner: owner, requestKey: cancelRequest
             ) { XCTFail("cancelled queued work must not start"); return Data() }
         }
-        await Task.yield()
+        // Task.yield() does not order the unstructured task's actor enqueue before cancel(owner:).
+        // Wait for the queued waiter so this test exercises cancellation of existing owner work,
+        // rather than the distinct case where cancellation reaches an empty coordinator first.
+        await waitUntil {
+            await coordinator.waiterCountForTesting(origin: origin, requestKey: cancelRequest) == 1
+        }
         await coordinator.cancel(owner: owner)
         do {
             _ = try await cancelled.value

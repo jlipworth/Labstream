@@ -4,6 +4,9 @@ Status: **implementation complete; generated-preview real-server proof accepted,
 
 Baseline: 2026-07-20 at repository commit `7fc0cc63`. This document is both the implementation plan and durable acceptance journal. Promote proven behavior into current architecture/testing documentation as needed, then archive this plan only after every gate below is complete or explicitly transferred to a linked follow-up.
 
+**Source-relocation note:** the audited baseline path `Labstream/Player/TrickPlayThumbnailProviders.swift`
+is now `Labstream/Shared/Player/TrickPlayThumbnailProviders.swift`.
+
 ## Goal
 
 Give every current shared-player platform fine-grained Emby seek previews without changing seek semantics. Online playback must prefer the selected source's authenticated BIF when Emby advertises preview thumbnails, use bounded/coalesced per-position thumbnail images when BIF is unavailable or malformed, and retain chapter images as the final fallback. Offline downloads must best-effort cache the selected source's parseable BIF through the existing side-asset lifecycle, prefer it during playback, and retain cached chapter images as fallback.
