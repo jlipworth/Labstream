@@ -93,8 +93,10 @@ scripts/perf-compare.py compare \
   --max-free-storage-drift-bytes 1073741824 --max-pair-gap-seconds 120 \
   --json-out result.json --csv-out pairs.csv
 ```
-- `compile-audit.py` — opt-in, isolated arm64 compile-cost baseline for PMSKit and all app schemes;
-  see [`docs/COMPILE-PERFORMANCE.md`](../docs/COMPILE-PERFORMANCE.md).
+- `compile-audit.py` — opt-in, isolated, paired arm64 compile-cost comparison for explicit control
+  and candidate commits across PMSKit and all app schemes; it enforces at least five alternating
+  same-index repetitions and records integrity/covariate metadata. See
+  [`docs/COMPILE-PERFORMANCE.md`](../docs/COMPILE-PERFORMANCE.md).
 - `tests/test_compile_audit.py`, `tests/test_docs_mermaid.py`,
   `tests/test_perf_log_summary.py`, `tests/test_perf_compare.py`, and
   `tests/test_tooling_hardening.py` —
