@@ -46,7 +46,7 @@ class FakeExecutor:
             pathlib.Path(argv[2]).mkdir(parents=True, exist_ok=True)
         elif str(runner.SUMMARY) in argv or (str(runner.CONTRACT) in argv and "manifest" in argv):
             subprocess.run(argv, check=True, stdout=stdout, stderr=subprocess.STDOUT)
-        elif argv[:3] == ["/usr/bin/log", "show", "--style"]:
+        elif argv[:4] == ["/usr/bin/log", "show", "--info", "--style"]:
             stdout.write(b"perf.span phase=runtime.composition backend=App result=success "
                          b"duration_ms=4 downloads_capable=1\n")
 
@@ -337,8 +337,8 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(trace_spawn[1][trace_spawn[1].index("--attach") + 1], str(app_spawn[2]))
             trace_action_index = fake.actions.index(trace_spawn)
             self.assertIn(("sleep", 10), fake.actions[:trace_action_index])
-            log_show = next(a for a in fake.actions if a[0] == "run" and a[1][:3] ==
-                            ["/usr/bin/log", "show", "--style"])
+            log_show = next(a for a in fake.actions if a[0] == "run" and a[1][:4] ==
+                            ["/usr/bin/log", "show", "--info", "--style"])
             self.assertEqual(log_show[1][-1], str(app_spawn[2]))
             self.assertIn(("terminate", app_spawn[2]), fake.actions)
             self.assertEqual(result["verdict"]["status"], "insufficient_data")
