@@ -695,7 +695,7 @@ struct CustomPlayerChrome: View {
             }
 
             HStack(spacing: 16) {
-                #if !os(iOS)
+                #if os(visionOS)
                 playPauseButton
                 #endif
 
@@ -777,7 +777,7 @@ struct CustomPlayerChrome: View {
             }
 
             HStack(spacing: 12) {
-                #if !os(iOS)
+                #if os(visionOS)
                 playPauseButton
                 #endif
 
@@ -822,64 +822,23 @@ struct CustomPlayerChrome: View {
         }
     }
 
+    #if os(visionOS)
     var playPauseButton: some View {
         Button(action: {
             revealChrome()
             controller.togglePlayback()
             scheduleChromeHideIfNeeded()
         }) {
-            playPauseButtonLabel
+            Image(systemName: controller.transport.showsPausedControl ? "play.fill" : "pause.fill")
+                .font(.title2.weight(.semibold))
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
         }
-        #if os(visionOS)
         .buttonStyle(.borderedProminent)
-        #elseif os(tvOS)
-        .buttonStyle(.borderedProminent)
-        .controlSize(.small)
-        #else
-        // Neutral symbol on the glass platter, like the system player's
-        // transport controls — the accent stays reserved for real CTAs.
-        .buttonStyle(.plain)
-        .foregroundStyle(.primary)
-        #endif
-        #if os(tvOS)
-        .focused($tvPlayerFocus, equals: .playPause)
-        #endif
         .accessibilityLabel(controller.transport.showsPausedControl ? "Play" : "Pause")
         .accessibilityHint("Toggles playback")
     }
-
-
-    @ViewBuilder
-    var playPauseButtonLabel: some View {
-        #if os(iOS)
-        ZStack {
-            Circle()
-                .fill(.white.opacity(isCompactMobileChrome ? 0.16 : 0.12))
-            Image(systemName: controller.transport.showsPausedControl ? "play.fill" : "pause.fill")
-                .font((isCompactMobileChrome ? Font.title2 : Font.title3).weight(.semibold))
-        }
-        .frame(width: playPauseButtonSide, height: playPauseButtonSide)
-        .contentShape(Circle())
-        #elseif os(tvOS)
-        Image(systemName: controller.transport.showsPausedControl ? "play.fill" : "pause.fill")
-            .font(.title3.weight(.semibold))
-            .frame(width: 40, height: 40)
-            .contentShape(Circle())
-        #else
-        Image(systemName: controller.transport.showsPausedControl ? "play.fill" : "pause.fill")
-            .font(.title2.weight(.semibold))
-            .frame(width: 44, height: 44)
-            .contentShape(Circle())
-        #endif
-    }
-
-    var playPauseButtonSide: CGFloat {
-        #if os(iOS)
-        isPhoneLandscapeChrome ? 46 : (isCompactMobileChrome ? 56 : 44)
-        #else
-        44
-        #endif
-    }
+    #endif
 
 
     @ViewBuilder var trickPlayPreview: some View {

@@ -6,9 +6,6 @@ import SwiftUI
 /// Explicit focus ownership keeps a hidden player surface in the remote responder chain, then
 /// restores focus to real chrome controls when any directional command reveals them.
 enum TVPlayerFocus: Hashable {
-    /// Kept for the cross-platform `playPauseButton`'s tvOS `.focused` modifier; the tvOS
-    /// layout itself no longer places that button (the remote is the transport).
-    case playPause
     case menu(CustomPlayerMenuKind)
     /// The remote-driven timeline scrubber (its own full-width row, so Left/Right have no
     /// horizontal focus candidates and the scrub handler is the only actor for those presses).
