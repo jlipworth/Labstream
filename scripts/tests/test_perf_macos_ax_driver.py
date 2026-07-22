@@ -112,6 +112,9 @@ class PerfMacOSAXDriverTests(unittest.TestCase):
         self.assertIn("AXUIElementCreateApplication(pid)", source)
         self.assertIn("elementAmbiguous", source)
         self.assertIn("postToPid(pid)", source)
+        self.assertIn("activate(options: [.activateAllWindows])", source)
+        self.assertIn("attribute: .description, values: [\"Emby\"]", source)
+        self.assertIn("encodeNil(forKey: .errorCode)", source)
 
 
 if __name__ == "__main__":

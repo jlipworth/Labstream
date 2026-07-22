@@ -70,6 +70,23 @@ private struct DriverResult: Codable {
         case elapsedMilliseconds = "elapsed_milliseconds"
         case errorCode = "error_code"
     }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(tool, forKey: .tool)
+        try container.encode(pid, forKey: .pid)
+        try container.encode(scenario, forKey: .scenario)
+        try container.encode(status, forKey: .status)
+        try container.encode(completedStage, forKey: .completedStage)
+        try container.encode(actionCount, forKey: .actionCount)
+        try container.encode(elapsedMilliseconds, forKey: .elapsedMilliseconds)
+        if let errorCode {
+            try container.encode(errorCode, forKey: .errorCode)
+        } else {
+            try container.encodeNil(forKey: .errorCode)
+        }
+    }
 }
 
 private struct Arguments {
@@ -190,12 +207,16 @@ private final class AccessibilityDriver {
     private(set) var completedStage = "attached"
 
     init(pid: pid_t, timeout: TimeInterval) throws {
-        guard kill(pid, 0) == 0, NSRunningApplication(processIdentifier: pid) != nil else {
+        guard kill(pid, 0) == 0,
+              let application = NSRunningApplication(processIdentifier: pid) else {
             throw DriverError.processUnavailable
         }
         let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
         guard AXIsProcessTrustedWithOptions([promptKey: false] as CFDictionary) else {
             throw DriverError.accessibilityNotTrusted
+        }
+        guard application.activate(options: [.activateAllWindows]) else {
+            throw DriverError.accessibilityActionFailed
         }
         self.pid = pid
         self.root = AXUIElementCreateApplication(pid)
@@ -221,7 +242,10 @@ private final class AccessibilityDriver {
 
     private func authenticate(_ spec: WorkloadSpec) throws {
         try press(Query(roles: [kAXRadioButtonRole as String, kAXButtonRole as String],
-                        attribute: .title, values: ["Emby"]), stage: "backend_selected")
+                        attribute: .description, values: ["Emby"]),
+                  fallback: Query(roles: [kAXRadioButtonRole as String, kAXButtonRole as String],
+                                  attribute: .title, values: ["Emby"]),
+                  stage: "backend_selected")
         try press(Query(roles: [kAXButtonRole as String], attribute: .identifier,
                         values: ["performance.login.emby.server-url-method"]),
                   fallback: Query(roles: [kAXButtonRole as String], attribute: .title,
@@ -251,6 +275,7 @@ private final class AccessibilityDriver {
 
         // The first-login library visibility sheet is allowed, but never required. More than
         // one exact match is a hard ambiguity just like every required selector.
+        completedStage = "awaiting_visibility_or_home"
         try dismissVisibilityOrWaitForHome()
         try waitForHome(stage: "authenticated")
     }
@@ -289,14 +314,15 @@ private final class AccessibilityDriver {
     private let fixedSearchQuery = "Z Fixture"
 
     private var homeMilestoneQuery: Query {
-        Query(roles: [kAXStaticTextRole as String, kAXButtonRole as String, kAXGroupRole as String,
-                      kAXRowRole as String], attribute: .identifier,
+        // SwiftUI propagates a composite rail's identifier to its title, View All button,
+        // and horizontal scroll area. The scroll area is the single structural owner.
+        Query(roles: [kAXScrollAreaRole as String], attribute: .identifier,
               values: ["performance.mac.home.first-rail"], requiresEnabled: false)
     }
 
     private var homeTitleFallback: Query {
-        Query(roles: [kAXStaticTextRole as String, kAXButtonRole as String, kAXGroupRole as String],
-              attribute: .title, values: ["Continue Watching"], requiresEnabled: false)
+        Query(roles: [kAXStaticTextRole as String], attribute: .value,
+              values: ["Continue Watching"], requiresEnabled: false)
     }
 
     private func waitForHome(stage: String) throws {
@@ -319,7 +345,10 @@ private final class AccessibilityDriver {
                     actionCount += 1
                     return
                 }
-                if matches.count > 1 { throw DriverError.elementAmbiguous }
+                if matches.count > 1 {
+                    completedStage = "visibility_ambiguous"
+                    throw DriverError.elementAmbiguous
+                }
             }
             // The browse hierarchy can already exist behind the first-run sheet. Only accept
             // Home after a bounded absence window proves the modal did not arrive just after
@@ -328,7 +357,10 @@ private final class AccessibilityDriver {
             for query in [homeMilestoneQuery, homeTitleFallback] {
                 let matches = try matching(query)
                 if matches.count == 1 { foundHome = true; break }
-                if matches.count > 1 { throw DriverError.elementAmbiguous }
+                if matches.count > 1 {
+                    completedStage = "home_ambiguous"
+                    throw DriverError.elementAmbiguous
+                }
             }
             if foundHome {
                 let firstSeen = homeFirstSeen ?? Date()
