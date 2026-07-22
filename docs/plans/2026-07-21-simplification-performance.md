@@ -1,6 +1,6 @@
 # Cross-platform simplification and performance program
 
-Status: **Waves 0–4 implemented and validated; the independent Wave 6 simplification pass is complete; Wave 5 Mac Home/catalog/Search smoke plus control-only MDE calibration/resume tooling are operational, and full sampling is the next runtime gate**
+Status: **Waves 0–4 implemented and validated; the independent Wave 6 simplification pass is complete; Wave 5 Mac browse and launch calibration/resume tooling plus the typed idle evidence foundation are operational, and full sampling/runtime integration are the next gates**
 
 Audit baseline: `b3045bc0` (`Record tvOS merge checkpoint`) on
 `codex/audit-simplification-performance`
@@ -1337,6 +1337,33 @@ policy:
     macOS session. Full Home, Catalog, and Search runs are next when the staged app can be activated;
     each integrated short-policy scenario is 23 control-only calibration arms plus 46 paired arms,
     not the earlier two-arm smoke. The one-pair smoke artifacts remain insufficient data.
+16. The next Wave 5 checkpoint gives the Mac launch lane the same statistical and interruption
+    guarantees required of the browse lane without coupling the two runners. Its opt-in integrated
+    mode executes 3 warmup plus 20 measured control-only calibration arms, durably publishes and
+    reload-validates a frozen MDE, then executes 3 plus 20 complete adjacent control/candidate pairs.
+    Explicit cooldown occurs between calibration samples, after the freeze, and between pairs but
+    never between pair arms. Cross-process resume revalidates the exact plan, apps, source/settings,
+    manifests, evidence checksums, output inventory, chronology, identities, covariates, and frozen
+    artifact; it checkpoints individual calibration arms and whole pairs only. Direct-launch recovery
+    records executable, bundle, PID, and libproc start identity before it may signal an orphan, while
+    ambiguous unbound state remains operator-gated. Two adversarial passes closed cross-pair clock,
+    symlink-ancestor, and post-capture calibration-covariate gaps with no remaining reviewed P0-P2.
+
+17. Idle evidence now has an honest typed foundation rather than pretending CPU or wakeup data is a
+    latency span. A strict xctrace XML extractor binds one exact PID and capture window to
+    `cpu_running_ns` and `wakeups_count`, rejecting table, column, unit, Xcode, PID, window, XML, and
+    output drift. The manifest contract accepts only a bounded, fully streamed and CRC-validated
+    `.trace.zip` with one top-level trace bundle plus the selected XML and typed extraction, and binds
+    that chain to a local, non-publishable redacted summary. Metadata-only validation and JSON Schema
+    both enforce that idle evidence cannot be publishable. Atomic runner packaging and typed paired
+    comparison remain follow-ups; one short real System Trace compatibility smoke must lock the
+    current Xcode export shape before the expensive 1-warmup/5-measured paired idle sequence.
+
+    A fresh Home admission retry (`mac-emby-home-smoke-20260722-v13`) again failed inside the AX
+    workload before producing admissible evidence, with no app, fixture, build, or simulator process
+    left running. It is retained only as failure diagnostics and does not change the earlier
+    one-pair `insufficient_data` result. The validated full Home plan remains 69 serialized arms; it
+    must not start until a fresh two-arm admission smoke succeeds in the current foreground session.
 
 ### Wave 6 — Optimize measured bottlenecks
 

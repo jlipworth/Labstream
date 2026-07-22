@@ -2,7 +2,6 @@ import contextlib
 import importlib.util
 import io
 import json
-import os
 import pathlib
 import plistlib
 import subprocess
@@ -10,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "perf-macos-launch-idle.py"
 spec = importlib.util.spec_from_file_location("perf_macos_launch_idle", SCRIPT)
@@ -111,6 +111,9 @@ class FakeExecutor:
         self.actions.append(("now", value))
         return value
 
+    def process_start_identity(self, pid):
+        return f"start:{pid}"
+
 
 class RunnerTests(unittest.TestCase):
     def make_app(self, root, name, bundle="com.jlipworth.Labstream.perf.audit"):
@@ -168,7 +171,8 @@ class RunnerTests(unittest.TestCase):
             root = pathlib.Path(temporary)
             container = root / "com.jlipworth.Labstream.perf.audit"
             target = root / "outside"
-            container.mkdir(); target.mkdir()
+            container.mkdir()
+            target.mkdir()
             (container / ".com.apple.containermanagerd.metadata.plist").write_bytes(b"fixture")
             (target / "sentinel").write_text("keep")
             (container / "Data").symlink_to(target, target_is_directory=True)
@@ -400,6 +404,263 @@ class RunnerTests(unittest.TestCase):
                                                    max_storage_drift=0,
                                                    max_pair_gap_seconds=120)
             self.assertEqual(covariates[("measured", 0)]["thermal_state"], "nominal")
+
+    def integrated_fixture(self, root, *, cooldown=3):
+        root = pathlib.Path(root).resolve()
+        apps = (runner.validate_app("control", self.make_app(root, "A.app")),
+                runner.validate_app("candidate", self.make_app(root, "B.app")))
+        output = root / "paired.json"
+        plan = runner.command_plan(
+            apps, "launch", 0, 1, 1, 7, output, containers_root=root / "Containers",
+            control_commit="a" * 40, candidate_commit="b" * 40,
+            device_label="local-device-07", cooldown_seconds=cooldown)
+        calibration_output = root / "calibration.json"
+        calibration = runner.calibration_plan_for(plan, calibration_output, 0)
+        # Orchestration tests stay fast; the separate plan test proves the fixed 3+20 cardinality.
+        calibration["samples"] = calibration["samples"][:2]
+        calibration["warmups"] = 2
+        calibration["measured"] = 0
+        self.prepare_container(plan)
+        return apps, plan, calibration, calibration_output, root / "frozen.json"
+
+    @staticmethod
+    def fake_frozen(_plan, records):
+        return {"test": "frozen", "records": len(records)}
+
+    def test_integrated_plan_has_control_only_3_plus_20_before_3_plus_20_pairs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            apps = (runner.validate_app("control", self.make_app(root, "A.app")),
+                    runner.validate_app("candidate", self.make_app(root, "B.app")))
+            plan = runner.command_plan(
+                apps, "launch", 3, 20, 30, 9, root / "paired.json",
+                containers_root=root / "Containers", control_commit="a" * 40,
+                candidate_commit="b" * 40, cooldown_seconds=10)
+            calibration = runner.calibration_plan_for(plan, root / "calibration.json", 1024)
+            self.assertEqual(len(calibration["samples"]), 23)
+            self.assertEqual(len(plan["samples"]), 46)
+            self.assertEqual({sample["role"] for sample in calibration["samples"]}, {"control"})
+            self.assertEqual((calibration["warmups"], calibration["measured"]), (3, 20))
+            self.assertNotEqual(calibration["identities"]["comparison_id"],
+                                plan["identities"]["comparison_id"])
+            self.assertEqual(calibration["identities"]["order_seed"],
+                             plan["identities"]["order_seed"])
+            self.assertEqual(calibration["identities"]["workload_id"],
+                             plan["identities"]["workload_id"])
+
+    def test_integrated_capture_cools_at_safe_boundaries_and_completion_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            apps, plan, calibration, calibration_output, frozen = self.integrated_fixture(root)
+            fake = FakeExecutor()
+            with mock.patch.object(runner, "validate_integrated_plan"), \
+                    mock.patch.object(runner, "calibration_artifact", side_effect=self.fake_frozen), \
+                    mock.patch.object(runner.compare, "load_frozen", return_value={"ok": True}):
+                result = runner.capture_integrated(
+                    plan, calibration, apps, fake, calibration_output=calibration_output,
+                    frozen_output=frozen, resume=False, max_pair_gap_seconds=120)
+                launches = [action for action in fake.actions if action[0] == "spawn"]
+                self.assertEqual(len(launches), 4)
+                self.assertEqual([action for action in fake.actions if action == ("sleep", 3)],
+                                 [("sleep", 3), ("sleep", 3)])
+                before = len(launches)
+                resumed = runner.capture_integrated(
+                    plan, calibration, apps, fake, calibration_output=calibration_output,
+                    frozen_output=frozen, resume=True, max_pair_gap_seconds=120)
+            self.assertEqual(result, resumed)
+            self.assertEqual(len([action for action in fake.actions if action[0] == "spawn"]), before)
+            self.assertEqual(len(result["records"]), 2)
+            self.assertTrue((root / "paired.json").is_file())
+
+    def test_freeze_failure_blocks_every_candidate_launch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            apps, plan, calibration, calibration_output, frozen = self.integrated_fixture(root)
+            calibration["samples"] = calibration["samples"][:1]
+            fake = FakeExecutor()
+            with mock.patch.object(runner, "validate_integrated_plan"), \
+                    mock.patch.object(runner, "calibration_artifact",
+                                   side_effect=runner.RunnerError("freeze rejected")):
+                with self.assertRaisesRegex(runner.RunnerError, "freeze rejected"):
+                    runner.capture_integrated(
+                        plan, calibration, apps, fake, calibration_output=calibration_output,
+                        frozen_output=frozen, resume=False, max_pair_gap_seconds=120)
+            launched_paths = [action[1][0] for action in fake.actions if action[0] == "spawn"]
+            self.assertEqual(launched_paths, [str(apps[0].executable)])
+            self.assertFalse(frozen.exists())
+
+    def test_interrupted_pair_resume_discards_half_pair_and_retries_both_arms(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            apps, plan, calibration, calibration_output, frozen = self.integrated_fixture(
+                root, cooldown=0)
+            fake = FakeExecutor()
+            real_capture = runner.capture_launch_sample
+            interrupted = False
+
+            def crash_candidate(active_plan, sample, app, run_dir, executor, active_path):
+                nonlocal interrupted
+                if sample["role"] == "candidate" and not interrupted:
+                    interrupted = True
+                    raise KeyboardInterrupt()
+                return real_capture(active_plan, sample, app, run_dir, executor, active_path)
+
+            with mock.patch.object(runner, "validate_integrated_plan"), \
+                    mock.patch.object(runner, "calibration_artifact", side_effect=self.fake_frozen), \
+                    mock.patch.object(runner.compare, "load_frozen", return_value={"ok": True}), \
+                    mock.patch.object(runner, "capture_launch_sample", side_effect=crash_candidate):
+                with self.assertRaises(KeyboardInterrupt):
+                    runner.capture_integrated(
+                        plan, calibration, apps, fake, calibration_output=calibration_output,
+                        frozen_output=frozen, resume=False, max_pair_gap_seconds=120)
+            paired_root = root / "paired-logs"
+            self.assertEqual(list(paired_root.glob("pair-*")), [])
+            self.assertEqual(len(list(paired_root.glob(".pending-pair-*"))), 1)
+            with mock.patch.object(runner, "validate_integrated_plan"), \
+                    mock.patch.object(runner, "calibration_artifact", side_effect=self.fake_frozen), \
+                    mock.patch.object(runner.compare, "load_frozen", return_value={"ok": True}):
+                result = runner.capture_integrated(
+                    plan, calibration, apps, fake, calibration_output=calibration_output,
+                    frozen_output=frozen, resume=True, max_pair_gap_seconds=120)
+            self.assertEqual(len(result["records"]), 2)
+            self.assertEqual(len(list(paired_root.glob("pair-*"))), 1)
+            self.assertEqual(list(paired_root.glob(".pending-pair-*")), [])
+
+    def test_resume_rejects_tampered_retained_manifest(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            apps, plan, calibration, calibration_output, frozen = self.integrated_fixture(
+                root, cooldown=0)
+            fake = FakeExecutor()
+            with mock.patch.object(runner, "validate_integrated_plan"), \
+                    mock.patch.object(runner, "calibration_artifact", side_effect=self.fake_frozen), \
+                    mock.patch.object(runner.compare, "load_frozen", return_value={"ok": True}):
+                runner.capture_integrated(
+                    plan, calibration, apps, fake, calibration_output=calibration_output,
+                    frozen_output=frozen, resume=False, max_pair_gap_seconds=120)
+                manifest = next((root / "calibration-logs").glob("sample-*/manifest.json"))
+                manifest.write_text(manifest.read_text() + " ")
+                with self.assertRaisesRegex(runner.RunnerError, "checksum drift"):
+                    runner.capture_integrated(
+                        plan, calibration, apps, fake, calibration_output=calibration_output,
+                        frozen_output=frozen, resume=True, max_pair_gap_seconds=120)
+
+    def test_integrated_capture_rejects_symlinked_output_ancestor_before_mutation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            apps, plan, calibration, _calibration_output, _frozen = self.integrated_fixture(root)
+            outside = root / "outside"
+            outside.mkdir()
+            linked = root / "linked"
+            linked.symlink_to(outside, target_is_directory=True)
+            plan["output"] = str(linked / "paired.json")
+            calibration_output = linked / "calibration.json"
+            calibration["output"] = str(calibration_output)
+            with mock.patch.object(runner, "validate_integrated_plan"):
+                with self.assertRaisesRegex(runner.RunnerError, "unsafe directory ancestor"):
+                    runner.capture_integrated(
+                        plan, calibration, apps, FakeExecutor(),
+                        calibration_output=calibration_output,
+                        frozen_output=linked / "frozen.json", resume=False,
+                        max_pair_gap_seconds=120)
+            self.assertEqual(list(outside.iterdir()), [])
+
+    def test_integrated_capture_rejects_cross_pair_timestamp_regression_before_publication(self):
+        class RegressingClockExecutor(FakeExecutor):
+            def __init__(self):
+                super().__init__()
+                self.now_calls = 0
+
+            def now(self):
+                if self.now_calls == 4:
+                    self.clock = datetime(2026, 7, 22, tzinfo=timezone.utc)
+                self.now_calls += 1
+                return super().now()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            apps, plan, calibration, calibration_output, frozen = self.integrated_fixture(
+                root, cooldown=0)
+            with mock.patch.object(runner, "validate_integrated_plan"), \
+                    mock.patch.object(runner, "calibration_artifact", side_effect=self.fake_frozen), \
+                    mock.patch.object(runner.compare, "load_frozen", return_value={"ok": True}):
+                with self.assertRaisesRegex(runner.RunnerError, "retained evidence chronologically"):
+                    runner.capture_integrated(
+                        plan, calibration, apps, RegressingClockExecutor(),
+                        calibration_output=calibration_output, frozen_output=frozen,
+                        resume=False, max_pair_gap_seconds=120)
+            self.assertEqual(list((root / "paired-logs").glob("pair-*")), [])
+
+    def test_every_arm_must_match_frozen_covariates_not_only_its_pair(self):
+        class DriftingPairExecutor(FakeExecutor):
+            def __init__(self):
+                super().__init__()
+                self.storage_reads = 0
+
+            def disk_free(self, path):
+                self.storage_reads += 1
+                # Two calibration arms and the immediate pre-pair check are stable. Both pair
+                # arms then drift together, so pair-mutual equality alone would incorrectly pass.
+                return 1_000_000_000 if self.storage_reads <= 3 else 1_000_000_010
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            apps, plan, calibration, calibration_output, frozen = self.integrated_fixture(
+                root, cooldown=0)
+            with mock.patch.object(runner, "validate_integrated_plan"), \
+                    mock.patch.object(runner, "calibration_artifact", side_effect=self.fake_frozen), \
+                    mock.patch.object(runner.compare, "load_frozen", return_value={"ok": True}):
+                with self.assertRaisesRegex(runner.RunnerError, "captured arm covariates"):
+                    runner.capture_integrated(
+                        plan, calibration, apps, DriftingPairExecutor(),
+                        calibration_output=calibration_output, frozen_output=frozen,
+                        resume=False, max_pair_gap_seconds=120)
+            self.assertEqual(list((root / "paired-logs").glob("pair-*")), [])
+
+    def test_bound_pid_recovery_signals_only_matching_start_identity(self):
+        class RecoveryExecutor(FakeExecutor):
+            def __init__(self, app, matching=True):
+                super().__init__()
+                self.app = app
+                self.matching = matching
+                self.alive = True
+
+            def output(self, argv):
+                if argv[:3] == ["/bin/ps", "-axo", "pid=,comm="] and self.alive:
+                    return f"777 {self.app.executable}\n"
+                return super().output(argv)
+
+            def process_start_identity(self, pid):
+                return "start:777" if self.matching else "different"
+
+            def terminate(self, pid):
+                self.actions.append(("terminate", pid))
+                self.alive = False
+
+            def wait(self, process, timeout):
+                process.returncode = -15
+                return -15
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            app = runner.validate_app("control", self.make_app(root, "A.app"))
+            checkpoint = root / "active.json"
+            runner.write_private_json_atomic(checkpoint, {
+                "schema_version": 1, "status": "active", "pid": 777, "role": "control",
+                "executable": str(app.executable), "bundle_id": app.bundle_id,
+                "start_identity": "start:777"})
+            matching = RecoveryExecutor(app)
+            runner.cleanup_checkpointed_active_app(checkpoint, (app, app), matching)
+            self.assertIn(("terminate", 777), matching.actions)
+            self.assertEqual(runner.read_private_json(checkpoint), runner.cleared_active_app())
+
+            runner.write_private_json_atomic(checkpoint, {
+                "schema_version": 1, "status": "active", "pid": 777, "role": "control",
+                "executable": str(app.executable), "bundle_id": app.bundle_id,
+                "start_identity": "start:777"})
+            reused = RecoveryExecutor(app, matching=False)
+            runner.cleanup_checkpointed_active_app(checkpoint, (app, app), reused)
+            self.assertNotIn(("terminate", 777), reused.actions)
 
 
 if __name__ == "__main__":
