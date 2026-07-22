@@ -3,10 +3,13 @@ import contextlib
 import io
 import importlib.util
 import json
+import os
 import pathlib
 import socket
 import struct
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -61,6 +64,28 @@ class PerfEmbyBrowseFixtureTests(unittest.TestCase):
             "token": "must-never-be-configurable",
         })
         self.assertEqual((status, payload), (400, {"error": "invalid_control"}))
+
+    def test_parent_watchdog_stops_orphaned_fixture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            ready = pathlib.Path(temporary) / "ready.json"
+            code = (
+                "import os,subprocess,sys; "
+                "p=subprocess.Popen([sys.executable,sys.argv[1],'--ready-file',sys.argv[2],"
+                "'--parent-pid',str(os.getpid())],stdout=subprocess.DEVNULL,"
+                "stderr=subprocess.DEVNULL); print(p.pid,flush=True)"
+            )
+            pid = int(subprocess.check_output(
+                [sys.executable, "-c", code, str(SCRIPT), str(ready)], text=True).strip())
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                os.kill(pid, 9)
+                self.fail("orphaned fixture did not stop after its parent exited")
         self.assertEqual(self.json_request(f"/Users/{FIXTURE.USER_ID}/Items", method="DELETE")[0], 405)
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit):
