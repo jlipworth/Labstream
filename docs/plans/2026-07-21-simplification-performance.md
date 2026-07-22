@@ -1277,6 +1277,11 @@ policy:
 - Require paired baseline/candidate data and behavior gates.
 - Remove ABR if evidence supports deletion.
 - Do not optimize paths that remain below noise or outside product impact.
+- Include an explicit opportunistic deletion/consolidation pass after the measured slices: remove
+  obsolete adapters, duplicated orchestration, superseded helpers, and instrumentation scaffolding
+  that is not required for repeatable evidence. A smaller net production diff is desirable but is
+  **not** an acceptance gate; no platform capability, Cinema behavior, download durability,
+  backend distinction, or proven safety invariant may be traded merely for line-count reduction.
 
 ### Wave 7 — Acceptance and closeout
 
@@ -1286,6 +1291,9 @@ policy:
 - Archive superseded plans/evidence without rewriting historical records.
 - Close only gates actually proven; mark unavailable physical/SharePlay evidence
   hardware-blocked.
+- Report the final net diff for production sources separately from tests, performance tooling,
+  documentation, assets, and configuration. Explain any remaining production net addition so the
+  architectural simplification is not incorrectly presented as raw LOC reduction.
 
 ## Pull request / commit slicing
 
