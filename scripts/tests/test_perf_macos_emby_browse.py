@@ -169,6 +169,202 @@ class BrowseRunnerTests(unittest.TestCase):
         binary.chmod(0o755)
         return app
 
+    def integrated_fixture(self, root, *, cooldown=0):
+        root = pathlib.Path(root)
+        apps, service = runner.validate_inputs(
+            self.make_app(root, "Control.app"), self.make_app(root, "Candidate.app"))
+        paired = runner.plan_for(
+            apps, service, "home", 0, 1, 3, root / "paired.json",
+            "a" * 40, "b" * 40, "local-device-01", "2099-01-01T00:00:00Z",
+            cooldown)
+        calibration = runner.calibration_plan_for(paired, root / "calibration.json")
+        container = root / "Containers" / service
+        (container / "Data").mkdir(parents=True)
+        (container / ".com.apple.containermanagerd.metadata.plist").write_text("fixture")
+        paired["container"] = calibration["container"] = str(container)
+        ready = {"fixture_id": "fixture-123456789abc", "fixture_sha256": "a" * 64}
+        ledger = {
+            "schema_version": 1, **ready, "total": 6,
+            "by_route": {route: 1 for route in
+                         ("authenticate", "views", "resume", "next_up", "latest")},
+            "by_status": {"200": 6}, "delayed": 0, "faulted": 0, "in_flight": 0,
+            "max_in_flight": 2, "declared_response_bytes": {},
+            "committed_response_bytes": {}, "write_failures": 0,
+            "client_disconnects": 0,
+        }
+
+        def fixture_request(_url, _path, *, method="GET"):
+            return {"reset": True} if method == "POST" else ledger
+
+        return apps, paired, calibration, fixture_request
+
+    def test_integrated_calibration_freezes_durably_before_candidate_and_reuses_processes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            apps, paired, calibration, fixture_request = self.integrated_fixture(
+                root, cooldown=2.5)
+            fake = CaptureExecutor()
+            validated_at = []
+            real_load_frozen = runner.compare.load_frozen
+
+            def observe_validation(path, digest):
+                self.assertTrue(path.is_file())
+                candidate = str(apps[1].path)
+                self.assertFalse(any(
+                    action[0] == "run" and action[1][:3] == ["/usr/bin/open", "-n", "-a"]
+                    and action[1][3] == candidate
+                    for action in fake.actions if isinstance(action, tuple)))
+                validated_at.append(len(fake.actions))
+                return real_load_frozen(path, digest)
+
+            with mock.patch.object(runner, "request_fixture", side_effect=fixture_request), \
+                    mock.patch.object(runner.compare, "load_frozen",
+                                      side_effect=observe_validation):
+                result = runner.capture(
+                    paired, apps, fake, calibration_plan=calibration,
+                    calibration_output=root / "calibration.json",
+                    frozen_mde_output=root / "frozen-mde.json")
+
+            self.assertEqual(result["capture_status"], "success")
+            self.assertEqual(len(validated_at), 1)
+            frozen = real_load_frozen(
+                root / "frozen-mde.json", result["calibration"]["frozen_mde_sha256"])
+            self.assertEqual(len(frozen["control"]["evidence_manifests"]), 23)
+            self.assertNotEqual(frozen["control"]["comparison_id"],
+                                paired["identities"]["comparison_id"])
+            self.assertEqual(frozen["control"]["order_seed"],
+                             paired["identities"]["order_seed"])
+            self.assertEqual(frozen["workload"]["id"], paired["identities"]["workload_id"])
+            compile_runs = [action for action in fake.actions if action[0] == "run"
+                            and action[1][:2] == ["/usr/bin/xcrun", "swiftc"]]
+            fixture_spawns = [action for action in fake.actions if action[0] == "spawn"
+                              and str(runner.FIXTURE) in action[1]]
+            self.assertEqual((len(compile_runs), len(fixture_spawns)), (1, 1))
+            self.assertEqual(sum(action == ("sleep", 2.5) for action in fake.actions), 24)
+            calibration_manifests = [
+                compare.load_sample(pathlib.Path(record["manifest"]), "control")
+                for record in json.loads((root / "calibration.json").read_text())["records"]]
+            paired_sample = compare.load_sample(
+                pathlib.Path(result["records"][0]["manifest"]), result["records"][0]["role"])
+            hashes = {json.dumps(sample.manifest["automation"], sort_keys=True)
+                      for sample in [*calibration_manifests, paired_sample]}
+            self.assertEqual(len(hashes), 1)
+            paired_control = [compare.load_sample(pathlib.Path(record["manifest"]), "control")
+                              for record in result["records"] if record["role"] == "control"]
+            self.assertGreater(compare._validate_frozen(
+                frozen, paired_control, paired_control[0].workload, "short"), 0)
+
+    def test_freeze_failure_blocks_every_candidate_launch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            apps, paired, calibration, fixture_request = self.integrated_fixture(root)
+            fake = CaptureExecutor()
+            with mock.patch.object(runner, "request_fixture", side_effect=fixture_request), \
+                    mock.patch.object(runner.compare, "freeze_control",
+                                      side_effect=runner.compare.CompareError("freeze rejected")):
+                with self.assertRaisesRegex(runner.RunnerError, "freeze rejected"):
+                    runner.capture(
+                        paired, apps, fake, calibration_plan=calibration,
+                        calibration_output=root / "calibration.json",
+                        frozen_mde_output=root / "frozen-mde.json")
+            candidate = str(apps[1].path)
+            self.assertFalse(any(
+                action[0] == "run" and action[1][:3] == ["/usr/bin/open", "-n", "-a"]
+                and action[1][3] == candidate
+                for action in fake.actions if isinstance(action, tuple)))
+            self.assertTrue((root / "calibration.json").is_file())
+            self.assertFalse((root / "frozen-mde.json").exists())
+
+    def test_post_publication_freeze_validation_failure_leaves_fail_closed_artifact(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            apps, paired, calibration, fixture_request = self.integrated_fixture(root)
+            fake = CaptureExecutor()
+            with mock.patch.object(runner, "request_fixture", side_effect=fixture_request), \
+                    mock.patch.object(runner.compare, "load_frozen",
+                                      side_effect=runner.compare.CompareError("reload rejected")):
+                with self.assertRaisesRegex(runner.RunnerError, "reload rejected"):
+                    runner.capture(
+                        paired, apps, fake, calibration_plan=calibration,
+                        calibration_output=root / "calibration.json",
+                        frozen_mde_output=root / "frozen-mde.json")
+            # Once atomically published, evidence is never pathname-unlinked on an error: doing so
+            # could delete a racing replacement. The failed run reports no checksum and requires
+            # explicit operator cleanup before a retry.
+            self.assertTrue((root / "frozen-mde.json").is_file())
+            self.assertEqual(list(root.glob(".frozen-mde.json.*.tmp")), [])
+
+    def test_exclusive_publication_never_deletes_a_racing_destination(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = pathlib.Path(temporary) / "frozen.json"
+            real_link = runner.os.link
+
+            def collide(source, target, *, follow_symlinks=False):
+                pathlib.Path(target).write_text("sentinel")
+                return real_link(source, target, follow_symlinks=follow_symlinks)
+
+            with mock.patch.object(runner.os, "link", side_effect=collide):
+                with self.assertRaises(FileExistsError):
+                    runner.write_durable_json_exclusive(destination, {"not": "published"})
+            self.assertEqual(destination.read_text(), "sentinel")
+
+    def test_calibration_covariates_require_stable_supported_environment(self):
+        device = {
+            "power_source": "external", "battery_state": "charged",
+            "thermal_state": "nominal", "free_storage_bytes": 10_000,
+        }
+        samples = [mock.Mock(manifest={"device": {**device, "free_storage_bytes": value}})
+                   for value in (10_000, 9_900)]
+        runner.validate_calibration_covariates(samples, 100)
+        samples[1].manifest["device"]["thermal_state"] = "serious"
+        with self.assertRaisesRegex(runner.RunnerError, "thermal"):
+            runner.validate_calibration_covariates(samples, 100)
+        samples[1].manifest["device"]["thermal_state"] = "nominal"
+        with self.assertRaisesRegex(runner.RunnerError, "storage"):
+            runner.validate_calibration_covariates(samples, 99)
+
+    def test_paired_failure_preserves_valid_frozen_artifact(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            apps, paired, calibration, fixture_request = self.integrated_fixture(root)
+            fake = CaptureExecutor()
+            real_launch = runner.launch_app
+
+            def fail_after_freeze(app, executor):
+                if (root / "frozen-mde.json").exists():
+                    raise runner.RunnerError("paired launch rejected")
+                return real_launch(app, executor)
+
+            with mock.patch.object(runner, "request_fixture", side_effect=fixture_request), \
+                    mock.patch.object(runner, "launch_app", side_effect=fail_after_freeze):
+                result = runner.capture(
+                    paired, apps, fake, calibration_plan=calibration,
+                    calibration_output=root / "calibration.json",
+                    frozen_mde_output=root / "frozen-mde.json")
+            self.assertEqual(result["capture_status"], "failure")
+            self.assertIn("paired launch rejected", result["records"][0]["error"])
+            digest = result["calibration"]["frozen_mde_sha256"]
+            self.assertEqual(runner.compare.load_frozen(root / "frozen-mde.json", digest)
+                             ["control"]["commit"], "a" * 40)
+
+    def test_integrated_outputs_reject_existing_aliases_and_symlinks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            existing = root / "existing.json"
+            existing.write_text("do not replace")
+            with self.assertRaisesRegex(runner.RunnerError, "already exists"):
+                runner.validate_integrated_outputs([
+                    existing, root / "calibration.json", root / "frozen.json"])
+            alias = root / "alias.json"
+            alias.symlink_to(existing)
+            with self.assertRaisesRegex(runner.RunnerError, "distinct|already exists"):
+                runner.validate_integrated_outputs([
+                    root / "paired.json", alias, root / "frozen.json"])
+            with self.assertRaisesRegex(runner.RunnerError, "outside raw evidence"):
+                runner.validate_integrated_outputs([
+                    root / "paired.json", root / "calibration.json",
+                    root / "paired-raw/frozen.json"])
+
     def test_plan_is_side_effect_free_adjacent_and_contains_no_credentials(self):
         with tempfile.TemporaryDirectory() as temporary:
             control = self.make_app(temporary, "Control.app")
