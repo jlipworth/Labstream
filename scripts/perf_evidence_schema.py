@@ -19,9 +19,11 @@ NONCE_RE = re.compile(r"^nonce-[a-f0-9]{16}$")
 MAX_DURATION_MS = 86_400_000
 
 KNOWN_RESULTS = {"success", "failure", "cancelled", "stale", "partial", "timeout", "superseded", "orphaned"}
-KNOWN_BACKENDS = {"Plex", "Jellyfin", "Emby"}
+KNOWN_BACKENDS = {"App", "Plex", "Jellyfin", "Emby"}
 BACKEND_LABELS = {"plex": "Plex", "jellyfin": "Jellyfin", "emby": "Emby"}
 PHASE_FIELDS: dict[str, set[str]] = {
+    "runtime.composition": {"downloads_capable"},
+    "session.restore": {"restored"},
     "home.load": {
         "view_count", "rail_count", "pending_rail_count", "item_count", "degraded", "hub_count", "error",
     },
@@ -34,7 +36,16 @@ PHASE_FIELDS: dict[str, set[str]] = {
     "playback.item_load": {"path_mode", "duration_seconds"},
     "artwork.load": {"attempts", "bytes", "status", "width", "height", "pixel_width", "pixel_height"},
 }
+MEDIA_BACKENDS = {"Plex", "Jellyfin", "Emby"}
+PHASE_BACKENDS: dict[str, set[str]] = {
+    phase: ({"App"} if phase == "runtime.composition" else MEDIA_BACKENDS)
+    for phase in PHASE_FIELDS
+}
 REQUIRED_CORRECTNESS_FIELDS: dict[tuple[str, str], tuple[str, ...]] = {
+    ("runtime.composition", "App"): ("downloads_capable",),
+    ("session.restore", "Plex"): ("restored",),
+    ("session.restore", "Jellyfin"): ("restored",),
+    ("session.restore", "Emby"): ("restored",),
     ("home.load", "Plex"): ("hub_count", "item_count"),
     ("home.load", "Jellyfin"): ("view_count", "rail_count", "item_count", "degraded"),
     ("home.load", "Emby"): ("view_count", "rail_count", "item_count", "degraded"),
@@ -72,7 +83,7 @@ INTEGER_FIELDS = {
     "alphabet_count", "page_count", "media_count", "duration_seconds", "attempts", "bytes",
     "status", "width", "height", "pixel_width", "pixel_height",
 }
-BOOLEAN_FIELDS = {"degraded", "swr_refresh"}
+BOOLEAN_FIELDS = {"downloads_capable", "restored", "degraded", "swr_refresh"}
 ENUM_FIELDS = {
     "path_mode": {"local_file", "remote_stream", "plex_stream"},
     "play_method": {"directPlay", "directStream", "transcode"},
@@ -209,6 +220,8 @@ def parse_span_line_diagnostic(line: str) -> tuple[SpanRecord | None, str | None
         return None, "unknown_phase"
     if backend not in KNOWN_BACKENDS:
         return None, "unknown_backend"
+    if backend not in PHASE_BACKENDS[phase]:
+        return None, "unexpected_phase_backend"
     if result not in KNOWN_RESULTS:
         return None, "unknown_result"
     try:

@@ -1190,6 +1190,17 @@ policy:
    explicit test-tier timing/failure taxonomy. Expensive captures remain serialized with cooling,
    stable power/thermal/storage covariates, raw artifacts local, and physical-only cells reported as
    hardware-blocked rather than inferred from simulators.
+6. The measurement foundation now closes stale Home/Libraries/Detail spans exactly once and admits
+   their existing terminal fields through the strict schema. The compile runner now snapshots two
+   explicit commits, measures at least five same-index scenario-adjacent A/B pairs, includes PMSKit
+   incremental coverage, sanitizes live-probe environment, invalidates dependent/restoration failures,
+   checksums the private artifact set, and records exact runner provenance. The expensive paired
+   compile capture has not started while runtime workload instrumentation is still being established.
+7. Launch measurement now separates synchronous app-runtime composition from selected-backend
+   restore. Composition records only whether the platform owns Downloads; restore uses the actual
+   usable backend session as authority, classifying credential-retained-but-unavailable lanes as
+   partial rather than successful. Both phases have closed backend/field correctness profiles and
+   pass Mac hosted tests plus visionOS, iOS arm64, and tvOS arm64 build gates.
 
 ### Wave 6 — Optimize measured bottlenecks
 

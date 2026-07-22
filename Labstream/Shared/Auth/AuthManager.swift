@@ -2,6 +2,27 @@ import Foundation
 import Observation
 import PMSKit
 
+enum SessionRestorePerformanceOutcome: Equatable {
+    case usable
+    case credentialRetainedButUnavailable
+    case unavailable
+
+    static func resolve(reportedRestored: Bool, hasUsableSession: Bool) -> Self {
+        if hasUsableSession { return .usable }
+        return reportedRestored ? .credentialRetainedButUnavailable : .unavailable
+    }
+
+    var result: String {
+        switch self {
+        case .usable: "success"
+        case .credentialRetainedButUnavailable: "partial"
+        case .unavailable: "failure"
+        }
+    }
+
+    var restoredField: Int { self == .usable ? 1 : 0 }
+}
+
 /// Drives the Plex PIN-OAuth login flow and persists the result.
 ///
 /// Flow:
@@ -154,6 +175,8 @@ final class AuthManager {
         let attemptID = beginAuthAttempt(.sessionRestore)
         defer { cleanupCancelledAuthAttempt(attemptID) }
         let selected = keychain.selectedBackend
+        let restoreSpan = PerformanceInstrumentation.begin(.sessionRestore,
+                                                            backend: selected.performanceLabel)
         appModel.activeBackend = selected
 
         let selectedRestored: Bool
@@ -170,8 +193,18 @@ final class AuthManager {
                                                         attemptID: attemptID)
         }
 
-        guard isCurrentAuthAttempt(attemptID) else { return false }
+        guard isCurrentAuthAttempt(attemptID) else {
+            restoreSpan.end(result: Task.isCancelled ? "cancelled" : "superseded",
+                            fields: ["restored": 0])
+            return false
+        }
         finishAuthAttempt(attemptID)
+        let performanceOutcome = SessionRestorePerformanceOutcome.resolve(
+            reportedRestored: selectedRestored,
+            hasUsableSession: appModel.backendSession(for: selected.downloadBackendKind) != nil
+        )
+        restoreSpan.end(result: performanceOutcome.result,
+                        fields: ["restored": performanceOutcome.restoredField])
         return selectedRestored
     }
 

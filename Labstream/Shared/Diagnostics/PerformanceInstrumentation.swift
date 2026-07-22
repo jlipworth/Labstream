@@ -9,6 +9,8 @@ import os
 /// URLs, account names, tokens, client identifiers, or local paths.
 enum PerformanceInstrumentation {
     enum Phase: String {
+        case runtimeComposition = "runtime.composition"
+        case sessionRestore = "session.restore"
         case homeLoad = "home.load"
         case librariesLoad = "libraries.load"
         case libraryGridInitialPage = "library_grid.initial_page"
@@ -21,6 +23,8 @@ enum PerformanceInstrumentation {
 
         var signpostName: StaticString {
             switch self {
+            case .runtimeComposition: return "runtime.composition"
+            case .sessionRestore: return "session.restore"
             case .homeLoad: return "home.load"
             case .librariesLoad: return "libraries.load"
             case .libraryGridInitialPage: return "library_grid.initial_page"
@@ -35,6 +39,8 @@ enum PerformanceInstrumentation {
 
         var osLog: OSLog {
             switch self {
+            case .runtimeComposition, .sessionRestore:
+                return Self.launchLog
             case .homeLoad:
                 return Self.homeLog
             case .librariesLoad, .libraryGridInitialPage, .libraryGridPage, .detailMetadata:
@@ -46,6 +52,8 @@ enum PerformanceInstrumentation {
             }
         }
 
+        private static let launchLog = OSLog(subsystem: PerformanceInstrumentation.subsystem,
+                                             category: "Launch")
         private static let homeLog = OSLog(subsystem: PerformanceInstrumentation.subsystem,
                                            category: "Home")
         private static let libraryLog = OSLog(subsystem: PerformanceInstrumentation.subsystem,
@@ -171,6 +179,8 @@ import Foundation
 /// emit profiling logs or pay signpost/logging overhead.
 enum PerformanceInstrumentation {
     enum Phase: String {
+        case runtimeComposition = "runtime.composition"
+        case sessionRestore = "session.restore"
         case homeLoad = "home.load"
         case librariesLoad = "libraries.load"
         case libraryGridInitialPage = "library_grid.initial_page"

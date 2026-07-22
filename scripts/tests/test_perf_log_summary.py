@@ -53,6 +53,42 @@ class PerfLogSummaryTests(unittest.TestCase):
             "media_count=2 swr_refresh=true"
         )[1], "invalid_boolean_field")
 
+    def test_launch_spans_use_closed_backend_and_correctness_fields(self):
+        composition = perf.parse_span_line(
+            "perf.span phase=runtime.composition backend=App result=success duration_ms=4 "
+            "downloads_capable=1"
+        )
+        restore = perf.parse_span_line(
+            "perf.span phase=session.restore backend=Emby result=partial duration_ms=7 "
+            "restored=0"
+        )
+        cancelled = perf.parse_span_line(
+            "perf.span phase=session.restore backend=Plex result=cancelled duration_ms=3 restored=0"
+        )
+
+        self.assertEqual(composition.fields, {"downloads_capable": "1"})
+        self.assertEqual(restore.fields, {"restored": "0"})
+        self.assertEqual(cancelled.result, "cancelled")
+        self.assertEqual(
+            perf.evidence_schema.validate_correctness_fields(
+                "runtime.composition", "App", ["downloads_capable"]
+            ),
+            ("downloads_capable",),
+        )
+        self.assertEqual(
+            perf.evidence_schema.validate_correctness_fields(
+                "session.restore", "Emby", ["restored"]
+            ),
+            ("restored",),
+        )
+        self.assertEqual(perf.parse_span_line_diagnostic(
+            "perf.span phase=runtime.composition backend=Plex result=success duration_ms=4 "
+            "downloads_capable=1"
+        )[1], "unexpected_phase_backend")
+        self.assertEqual(perf.parse_span_line_diagnostic(
+            "perf.span phase=session.restore backend=Emby result=success duration_ms=7 restored=2"
+        )[1], "invalid_boolean_field")
+
     def test_error_values_are_closed_categories_not_copied(self):
         span = perf.parse_span_line(
             "perf.span phase=home.load backend=Plex result=failure duration_ms=1 error=Nas.Home.Internal"
