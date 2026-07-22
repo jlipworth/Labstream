@@ -79,6 +79,8 @@ constructs the common long-lived services and the one launch bootstrap:
 
 - `AppModel`: active backend and the three live server/session lanes.
 - `AuthManager`: authentication, restore, backend switching, and Keychain writes.
+- `EmbyConnectAuthFlow`: secret-bearing pending Connect state and Emby server exchange/commit;
+  global attempt admission and polling-task lifetime remain in `AuthManager`.
 - `AuthorizationPollingCoordinator`: exact-attempt ownership and cancellation of the one live
   Plex PIN, Jellyfin Quick Connect, or Emby Connect polling task.
 - `DownloadManager`: the cross-backend offline queue and transfer orchestration, absent on tvOS.
@@ -272,15 +274,17 @@ path and reuses the same controller and chrome.
 
 ## Downloads and offline ownership
 
-The download pipeline has four layers:
+The download pipeline has five layers:
 
 1. backend-specific `DownloadManager` extensions select a source and perform any Plex
    optimize, Jellyfin transcode/remux, or Emby Convert preparation;
 2. `DownloadManager` owns queue policy, retries, storage limits, diagnostics, the
    observable Offline snapshot, and attempt-scoped work/cleanup coordination;
-3. `BackgroundDownloadSession` owns background URLSession work and durable static
+3. `DownloadKeepaliveCoordinator` privately owns exact-attempt Jellyfin/Emby control-plane
+   keepalive tasks and credential-generation quarantine;
+4. `BackgroundDownloadSession` owns background URLSession work and durable static
    byte-range recovery, with every adoptable task stamped by its exact download attempt;
-4. `DownloadStore` owns the locked relative-path JSON index and transactional artifact
+5. `DownloadStore` owns the locked relative-path JSON index and transactional artifact
    state in Application Support. `DownloadArtifactLifecycleCoordinator` orders filesystem
    work with index persistence, while `DownloadCleanupIntentJournal` independently keeps
    credential-free server cleanup durable across deletion and process death.

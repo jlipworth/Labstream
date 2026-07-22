@@ -9,6 +9,67 @@ struct EmbyCleanupTombstonePersistenceTests {
             ".\(root.lastPathComponent)-download-authority", isDirectory: true)
     }
 
+    @Test func journalIODoesNotHoldTheDownloadIndexLock() throws {
+        try withTemporaryDirectory { directory in
+            let readEntered = DispatchSemaphore(value: 0)
+            let releaseRead = DispatchSemaphore(value: 0)
+            let loadFinished = DispatchSemaphore(value: 0)
+            let indexReadFinished = DispatchSemaphore(value: 0)
+            let store = DownloadStore(
+                baseDirectory: directory,
+                embyCleanupPersistence: .init(
+                    read: { _ in
+                        readEntered.signal()
+                        releaseRead.wait()
+                        return nil
+                    },
+                    encode: { try JSONEncoder().encode($0) },
+                    atomicWrite: { data, url in try data.write(to: url, options: .atomic) }
+                )
+            )
+
+            DispatchQueue.global().async {
+                _ = store.loadEmbyConvertCleanupTombstones()
+                loadFinished.signal()
+            }
+            defer { releaseRead.signal() }
+            guard readEntered.wait(timeout: .now() + 2) == .success else {
+                Issue.record("Expected the injected cleanup-journal read to begin")
+                return
+            }
+
+            DispatchQueue.global().async {
+                _ = store.contains(ratingKey: "unrelated-index-row")
+                indexReadFinished.signal()
+            }
+            #expect(indexReadFinished.wait(timeout: .now() + 2) == .success)
+            releaseRead.signal()
+            #expect(loadFinished.wait(timeout: .now() + 2) == .success)
+        }
+    }
+
+    @Test func concurrentAddsRemainOneSerializedReadModifyWriteQueue() throws {
+        try withTemporaryDirectory { directory in
+            let store = DownloadStore(baseDirectory: directory)
+            let tombstones = (0..<16).map { index in
+                DownloadStore.EmbyConvertCleanupTombstone(
+                    id: UUID(),
+                    ratingKey: "emby:concurrent:\(index)",
+                    metadata: OfflineMetadata(
+                        ratingKey: "emby:concurrent:\(index)",
+                        title: "\(index)",
+                        type: "movie"))
+            }
+
+            DispatchQueue.concurrentPerform(iterations: tombstones.count) { index in
+                _ = store.addEmbyConvertCleanupTombstone(tombstones[index])
+            }
+
+            let persistedIDs = Set(try loaded(store).map(\.id))
+            #expect(persistedIDs == Set(tombstones.map(\.id)))
+        }
+    }
+
     @Test func missingQueueLoadsEmptyAndValidMutationsPreserveSiblings() throws {
         try withTemporaryDirectory { directory in
             let store = DownloadStore(baseDirectory: directory)

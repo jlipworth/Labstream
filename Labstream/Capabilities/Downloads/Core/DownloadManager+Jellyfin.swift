@@ -346,13 +346,13 @@ extension DownloadManager {
             }
             if let mediaSourceID = resolvedJellyfinMediaSourceID,
                let userID = backendSession.userID, !userID.isEmpty {
-                startJellyfinDownloadKeepalive(attemptKey: attemptKey,
-                                               itemId: itemId,
-                                               mediaSourceId: mediaSourceID,
-                                               playSessionId: mintedPlaySessionId,
-                                               session: backendSession,
-                                               userId: userID,
-                                               durationMs: item.duration)
+                startJellyfinDownloadKeepalive(
+                    attemptKey: attemptKey,
+                    itemId: itemId,
+                    mediaSourceId: mediaSourceID,
+                    playSessionId: mintedPlaySessionId,
+                    userId: userID,
+                    durationMs: item.duration)
             }
         }
         if let resolvedJellyfinMediaSourceID,

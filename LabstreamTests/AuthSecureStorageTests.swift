@@ -642,19 +642,45 @@ struct AuthSecureStorageTests {
         #expect(model.plexAccountProfile == nil)
     }
 
-    @Test func staleSameServerSelectionCleanupCannotClearNewAttempt() throws {
-        var tracker = EmbyConnectServerSelectionTracker()
-        let attemptA = UUID()
-        let attemptB = UUID()
-        let maybeWorkA = tracker.begin(attemptID: attemptA, serverID: "same-server")
-        let workA = try #require(maybeWorkA)
-        tracker.cancel()
-        let maybeWorkB = tracker.begin(attemptID: attemptB, serverID: "same-server")
-        let workB = try #require(maybeWorkB)
+    @Test func embyConnectResetDiscardsPendingSecretSelectionState() async throws {
+        let store = KeychainStore(
+            service: "com.visionplay.tests.emby-connect-owner.\(UUID().uuidString)",
+            synchronizesPlexToken: false,
+            writeInterceptor: { _, _ in true })
+        let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "connect-owner"))
+        let loader = EmbyConnectMultiServerLoader()
+        let flow = EmbyConnectAuthFlow(appModel: model, keychain: store,
+                                       dataLoader: { request in try await loader.load(request) })
 
-        tracker.finish(workA)
+        let completion = try await flow.completeConfirmedPIN("ABCD", isCurrent: { true })
+        guard case .serverSelectionRequired(let choices) = completion else {
+            Issue.record("Expected linked-server selection")
+            return
+        }
+        #expect(choices.count == 2)
 
-        #expect(tracker.active == workB)
+        flow.reset()
+        let result = try await flow.selectServer(id: choices[0].id,
+                                                 attemptID: UUID(),
+                                                 isCurrent: { true })
+        guard case .stale = result else {
+            Issue.record("Reset retained secret-bearing server selection state")
+            return
+        }
+        #expect(await loader.requestCount == 2)
+    }
+
+    @Test func staleEmbyConnectSelectionFinishCannotClearReplacement() throws {
+        var authority = EmbyConnectAuthFlow.SelectionAuthority()
+        let maybeFirst = authority.begin(attemptID: UUID(), serverID: "same-server")
+        let first = try #require(maybeFirst)
+        authority.cancel()
+        let maybeReplacement = authority.begin(attemptID: UUID(), serverID: "same-server")
+        let replacement = try #require(maybeReplacement)
+
+        authority.finish(first)
+
+        #expect(authority.active == replacement)
     }
 
     private func makeDevelopmentStore(faults: StorageFaults) -> KeychainStore {
@@ -773,6 +799,32 @@ private actor EmbyConnectLoaderGate {
     }
 
     private func response(for request: URLRequest, json: String) -> (Data, URLResponse) {
+        let response = HTTPURLResponse(url: request.url!, statusCode: 200,
+                                       httpVersion: nil, headerFields: nil)!
+        return (Data(json.utf8), response)
+    }
+}
+
+private actor EmbyConnectMultiServerLoader {
+    private(set) var requestCount = 0
+
+    func load(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        requestCount += 1
+        let json: String
+        switch requestCount {
+        case 1:
+            json = #"{"UserId":"connect-user","AccessToken":"connect-token"}"#
+        case 2:
+            json = #"""
+            [
+              {"Id":"one","SystemId":"system-one","Name":"One","Url":"https://one.invalid","AccessKey":"secret-one"},
+              {"Id":"two","SystemId":"system-two","Name":"Two","Url":"https://two.invalid","AccessKey":"secret-two"}
+            ]
+            """#
+        default:
+            Issue.record("Pending Connect state issued an unexpected request")
+            json = "{}"
+        }
         let response = HTTPURLResponse(url: request.url!, statusCode: 200,
                                        httpVersion: nil, headerFields: nil)!
         return (Data(json.utf8), response)

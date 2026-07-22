@@ -44,6 +44,9 @@ vary presentation.
 - `Labstream/Shared/Auth/AuthManager.swift` owns sign-in, restore, server selection, backend
   switching, and sign-out. It covers Plex PIN auth, Jellyfin credentials/Quick Connect,
   Emby credentials/Connect PIN, selected-lane-first restore, and demand-driven download hydration.
+- `Labstream/Shared/Auth/EmbyConnectAuthFlow.swift` privately owns pending Emby Connect secrets,
+  exact server-selection state, backend exchange, and session commit. It never owns a polling task
+  or authorization generation; `AuthManager` fences every follow-up through the global authority.
 - `Labstream/Shared/Auth/AuthAttemptAuthority.swift` owns the one global authorization generation
   used to reject cancellation and stale publication across all backend operations.
 - `Labstream/Shared/Auth/AuthorizationPollingCoordinator.swift` owns the single live Plex PIN,
@@ -240,6 +243,8 @@ upstream connection rotation used by `PlaybackController`.
 - `Labstream/Capabilities/Downloads/Core/DownloadManager.swift` owns queue policy, observable records and
   snapshots, retry/resume, storage limits, server-prep polling, validation, and encoder
   cleanup.
+- `DownloadKeepaliveCoordinator.swift` privately owns exact-attempt Jellyfin/Emby
+  keepalive tasks and credential-generation quarantine; the manager only forwards start/reconcile and exact-cancellation requests.
 - `DownloadManager+Plex.swift` and `DownloadManager+PlexOptimize.swift` own Plex source
   and optimizer behavior.
 - `DownloadManager+Jellyfin.swift` owns Jellyfin original/transcode/remux behavior.
@@ -255,8 +260,10 @@ upstream connection rotation used by `PlaybackController`.
   drafts and exact retry attempts before one atomic Store transaction.
 - `DownloadTransferStartPlan.swift` is the common backend-to-transfer handoff contract.
 - `Labstream/Capabilities/Downloads/Core/BackgroundDownloadSession.swift` owns URLSession delegates,
-  reattachment, progress, validation, completion gating, and durable static byte-range
-  recovery.
+  reattachment, progress, validation, background-wake release effects, and durable static
+  byte-range recovery.
+- `BackgroundDownloadWakeCoordinator.swift` owns the locked background-completion gate,
+  atomic deferred-revalidation drain, and range-rebuild grace generations.
 - `Labstream/Capabilities/Downloads/Core/BackgroundDownloadCompletionRegistry.swift` joins system relaunch
   callbacks to the live/recreated background session.
 - `Labstream/Capabilities/Downloads/Core/DownloadStore.swift` owns the locked relative-path index and files
@@ -271,6 +278,8 @@ upstream connection rotation used by `PlaybackController`.
 - `DownloadWorkRegistry.swift` tracks attempt-scoped side-cache and encoder work.
   `DownloadCleanupIntentJournal.swift` persists credential-free Jellyfin/Emby cleanup
   independently so deleting a row cannot discard required server cleanup.
+  `EmbyConvertCleanupJournal.swift` owns the compatibility Emby Convert tombstone file and
+  serializes that queue independently of the `DownloadStore` index lock.
 - `Labstream/Capabilities/Downloads/Core/OfflineLibraryView.swift` owns the cross-backend offline UI and
   local playback launch. Its snapshot is lightweight and actions re-resolve exact attempt identity.
 - `PMSKit/.../DownloadStorageSnapshot.swift` owns provenance-aware known/unknown/not-applicable

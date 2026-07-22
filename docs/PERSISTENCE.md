@@ -93,6 +93,9 @@ credential-free server identity, and cleanup operation. The journal deliberately
 share the versioned Downloads root: it lives in a protected sibling authority directory, so row
 deletion or destructive schema reset cannot erase the only cleanup authority. Quarantined unsupported
 roots are reclaimed on a utility queue after the new current root is durable and again on relaunch.
+The compatibility `emby-convert-cleanup.json` queue has its own
+`EmbyConvertCleanupJournal` persistence owner and private lock in that same authority directory;
+its read-modify-write file I/O does not run while the broader `DownloadStore` index lock is held.
 
 Persistence consumers name their contract explicitly: download/background-completion barriers,
 recoverable checkpoints, best-effort buffered diagnostics, or ephemeral state. The diagnostic JSONL
