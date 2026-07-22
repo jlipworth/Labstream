@@ -21,6 +21,95 @@ struct MediaBrowserBrowsePage: Sendable {
     let total: Int?
 }
 
+/// Shared app-facing forwards for the Jellyfin and Emby browse facades.
+///
+/// Authentication, request construction, playback, cleanup, and mutable-session resolution stay
+/// in each concrete facade. Only operations already expressed entirely by the backend-typed browse
+/// core belong here.
+@MainActor
+protocol MediaBrowserBrowseFacade {
+    associatedtype Adapter: MediaBrowserBrowseCoreAdapter
+
+    func browseCore() throws -> MediaBrowserBrowseCore<Adapter>
+}
+
+extension MediaBrowserBrowseFacade {
+    func userViewLinks() async throws -> [MediaBrowserLibraryLink] {
+        try await browseCore().userViewLinks()
+    }
+
+    /// Tag-aggregated album artists for a music library via `/Artists/AlbumArtists`.
+    func albumArtistsPage(parentId: String?,
+                          startIndex: Int? = nil,
+                          limit: Int? = nil,
+                          nameStartsWith: String? = nil,
+                          sortBy: String = "SortName",
+                          sortOrder: String = "Ascending") async throws -> (items: [MediaItem], total: Int?) {
+        let page = try await browseCore().albumArtistsPage(
+            parentID: parentId, startIndex: startIndex, limit: limit,
+            nameStartsWith: nameStartsWith, sortBy: sortBy, sortOrder: sortOrder
+        )
+        return (page.items, page.total)
+    }
+
+    /// Ordered tracks of an audio playlist. The backend endpoint preserves playlist order, so the
+    /// caller must not re-sort.
+    func playlistItems(playlistId: String) async throws -> [MediaItem] {
+        try await browseCore().playlistItems(playlistID: playlistId)
+    }
+
+    func playlistItemsPage(playlistId: String,
+                           startIndex: Int,
+                           limit: Int) async throws -> (items: [MediaItem], total: Int?) {
+        let page = try await browseCore().playlistItemsPage(
+            playlistID: playlistId, startIndex: startIndex, limit: limit)
+        return (page.items, page.total)
+    }
+
+    func searchResults(query: String,
+                       views: [MediaBrowserLibraryLink],
+                       limitPerLibrary: Int = 50) async throws -> SearchResults {
+        try await browseCore().searchResults(query: query,
+                                             limitPerLibrary: limitPerLibrary,
+                                             views: views)
+    }
+
+    func resumeItems(parentId: String? = nil, limit: Int = 20) async throws -> [MediaItem] {
+        try await resumeItemsPage(parentId: parentId, startIndex: 0, limit: limit).items
+    }
+
+    func resumeItemsPage(parentId: String? = nil,
+                         startIndex: Int,
+                         limit: Int) async throws -> (items: [MediaItem], total: Int?) {
+        let page = try await browseCore().resumeItemsPage(
+            parentID: parentId, startIndex: startIndex, limit: limit)
+        return (page.items, page.total)
+    }
+
+    func nextUp(parentId: String? = nil, limit: Int = 20) async throws -> [MediaItem] {
+        try await nextUpPage(parentId: parentId, startIndex: 0, limit: limit).items
+    }
+
+    func nextUpPage(parentId: String? = nil,
+                    startIndex: Int,
+                    limit: Int) async throws -> (items: [MediaItem], total: Int?) {
+        let page = try await browseCore().nextUpPage(
+            parentID: parentId, startIndex: startIndex, limit: limit)
+        return (page.items, page.total)
+    }
+
+    func latestItems(parentId: String?,
+                     includeItemTypes: String = "Movie,Episode,Video",
+                     limit: Int = 20,
+                     metadataProfile: MediaBrowserMetadataFieldProfile =
+                         MediaBrowserMetadataFieldProfiles.home) async throws -> [MediaItem] {
+        try await browseCore().latestItems(parentID: parentId,
+                                           includeItemTypes: includeItemTypes,
+                                           limit: limit,
+                                           metadataProfile: metadataProfile)
+    }
+}
+
 /// An immutable Jellyfin/Emby browse lane captured in the same MainActor turn as a catalog
 /// request. Catalog-derived view ids must never be sent through a facade that can re-read a
 /// newer `AppModel` session after the catalog await; this value binds the opaque authority and
