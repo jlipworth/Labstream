@@ -114,6 +114,7 @@ class PerfMacOSAXDriverTests(unittest.TestCase):
         self.assertIn("postToPid(pid)", source)
         self.assertIn("activate(options: [.activateAllWindows])", source)
         self.assertIn("registrationDeadline", source)
+        self.assertIn("error == .cannotComplete || error == .invalidUIElement", source)
         self.assertIn("attribute: .description, values: [\"Emby\"]", source)
         self.assertIn("encodeNil(forKey: .errorCode)", source)
 
