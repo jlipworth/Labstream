@@ -1288,10 +1288,10 @@ policy:
 
 #### Wave 6 deletion checkpoint journal
 
-1. Commits `78f2df3a` through `30327d9c` remove **651 net production LOC** and **109
+1. Commits `78f2df3a` through `0bd3da68` remove **917 net production LOC** and **207
    net test LOC**; the only configuration change is one stale Xcode test-membership exception.
-   Production accounting is `+151/-802` across `Labstream/` and `PMSKit/Sources/`; tests are
-   `+30/-139`. This is an opportunistic simplification checkpoint, not a performance result.
+   Production accounting is `+174/-1091` across `Labstream/` and `PMSKit/Sources/`; tests are
+   `+82/-289`. This is an opportunistic simplification checkpoint, not a performance result.
 2. The first slices delete an orphan held-range ownership policy, backend identity adapters, a
    test-only string lifecycle bridge, and a blocking alphabet-load mode that no production caller
    enabled. The retained paging path still publishes page zero before its alphabet rail completes.
@@ -1325,7 +1325,14 @@ policy:
    seven unused compatibility aliases/helpers and its unused no-op trick-play provider; the local
    source package retains its canonical classifiers, attempt ownership, generic DTOs, and optional
    `nil` representation for unavailable previews.
-10. Independent read-only reviews passed every slice. Focused validation passed the initial 50-test
+10. Residual unused auth, season-plan, diagnostics, quality, and palette declarations are gone; the
+    observed-bitrate false-positive rationale now documents the live adaptation accessor. Download
+    source-size mutation exposes only the live lifecycle-submission APIs plus its exact-attempt test
+    seam. The Jellyfin/Emby playback services now return the neutral carrier directly: backend wire
+    requests, session facts, encoding cleanup, progress payloads, and authenticated live-probe
+    contracts remain distinct, while backend-name aliases, forwarding resolvers, and copy bridges
+    are deleted.
+11. Independent read-only reviews passed every slice. Focused validation passed the initial 50-test
    hosted deletion set, 23 catalog/search tests, 28 attempt-owned recovery tests, 4 PMSKit temp-policy
    tests, 37 repository-waiter tests, 45 cache tests, 3 typed-restart tests, 3 PMSKit buffering tests,
    8 system-media tests, all 149 script tests, the 8-test topology suite, and repeated clean Debug
@@ -1334,10 +1341,14 @@ policy:
    acceptance gate rather than a build claim.
    The later declaration-only slices passed 63 auth/download tests, 14 hosted trick-play tests,
    21 BIF tests, 4 preview-resolution tests, and the full 1,640-test non-live PMSKit suite.
+   Residual declaration/source-size slices passed 36 hosted policy/auth/diagnostics tests, 9 PMSKit
+   season-planning tests, and 28 attempt-owned checkpoint tests. The neutral playback-carrier slice
+   passed the resulting 1,636-test non-live PMSKit suite and another clean four-platform compile
+   matrix; authenticated live probes were compile-gated and preserved but not run against servers.
    A pre-existing `DownloadStorePersistenceTests` order/isolation failure still reproduces when its
    class runs as a group (`57/58` pass) but the named failing test passes alone; track that harness
    defect separately rather than attributing it to definition-only deletion.
-11. No measured optimization has landed. Wave 5 still lacks the identical external UI workload and
+12. No measured optimization has landed. Wave 5 still lacks the identical external UI workload and
    statistically eligible paired samples needed for launch, browse, artwork, playback, download,
    memory, energy, or compile-time claims.
 
