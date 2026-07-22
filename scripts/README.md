@@ -27,6 +27,34 @@ media details out of commits and public issues.
   produces strict, raw-artifact-bound comparison summaries.
 - `perf-compare.py` — freezes a control-only minimum detectable effect, then validates and compares
   seeded paired control/candidate runs with correctness, provenance, failure, and covariate gates.
+- `perf-emby-browse-fixture.py` — external deterministic Emby-compatible browse/artwork fixture for
+  paired performance workloads. It binds only to literal `127.0.0.1` (ephemeral port by default),
+  accepts no token/password/public-bind configuration, and is outside every Xcode synchronized
+  source root. Its closed routes are `System/Info/Public`, `Users/AuthenticateByName`,
+  `Users/fixture-user/{Views,Items,Items/Resume,Items/Latest}`, `Shows/NextUp`, and
+  `Items/<synthetic-item-id>/Images/Primary`; the corpus contains only synthetic IDs/titles and
+  has a stable `fixture_id` plus SHA-256. The normal first-run Emby username/password UI can use
+  the fixed public test values `benchmark-user` / `benchmark-pass-v1`; successful authentication
+  returns the fixed non-secret `benchmark-access-v1` token. These are corpus constants, not secrets
+  or configurable credentials. The focused contract tests for both production auth request/decoder
+  shapes must pass before a UI driver may claim normal setup support. Saved-session relaunch probing
+  through `GET /Users/<id>` remains outside this first fixture slice and must not be inferred.
+
+  ```sh
+  scripts/perf-emby-browse-fixture.py --ready-file /tmp/labstream-emby-fixture.json
+  # The ready file contains the ephemeral loopback base URL, fixed fixture user ID, and corpus hash.
+  ```
+
+  The loopback-only control surface is intentionally narrow: `POST /__fixture__/configure` accepts
+  exactly `route`, `delay_ms`, `status`, and `remaining` (`status: null` means delay-only);
+  `POST /__fixture__/reset` clears faults, delays, and counters; and `GET /__fixture__/ledger`
+  returns only aggregate route/status/concurrency counts. The server never retains or echoes raw
+  request paths, query values, headers, bodies, or credentials. It caps active handlers, applies a
+  timeout to every accepted socket, and returns a deterministic aggregate-counted 503 on overload.
+  The ledger includes saturating declared/committed response-body bytes per closed route plus
+  write-failure/client-disconnect counts; those counters are implemented, not deferred. This slice
+  is server tooling only: it does not configure or drive the app, and it is not permission to start
+  a paired capture.
 - `performance-audit-contract.py` — validates Release-parity `PerformanceAudit` build
   settings, scans a built app for Debug-only fixture/probe/evidence contracts, and validates
   version-1 local evidence manifests plus their checksums. The closed JSON schema lives at
