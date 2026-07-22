@@ -20,7 +20,7 @@ MAX_DURATION_MS = 86_400_000
 
 KNOWN_RESULTS = {"success", "failure", "cancelled", "stale", "partial", "timeout", "superseded", "orphaned"}
 KNOWN_BACKENDS = {"App", "Plex", "Jellyfin", "Emby"}
-BACKEND_LABELS = {"plex": "Plex", "jellyfin": "Jellyfin", "emby": "Emby"}
+BACKEND_LABELS = {"plex": "Plex", "jellyfin": "Jellyfin", "emby": "Emby", "none": "App"}
 PHASE_FIELDS: dict[str, set[str]] = {
     "runtime.composition": {"downloads_capable"},
     "session.restore": {"restored"},
