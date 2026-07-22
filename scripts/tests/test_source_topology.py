@@ -101,21 +101,28 @@ class SourceTopologyTests(unittest.TestCase):
                 "Player/CinemaAppRouting.swift",
                 "Player/CustomCinemaMode.swift",
                 "Player/VideoNowPlayingCoordinator.swift",
+                "Player/VisionPlayerChrome.swift",
                 "SharePlay/WatchTogetherActivity.swift",
                 "SharePlay/WatchTogetherCoordinator.swift",
                 "SharePlay/WatchTogetherJoinView.swift",
                 "SharePlay/WatchTogetherMediaLookup.swift",
+                "UI/VisionRootShell.swift",
             ),
             "Mobile": (
                 "App/LabstreamMobile.swift",
+                "Player/MobilePlayerChrome.swift",
                 "Player/MobilePlayerOrientationCoordinator.swift",
                 "Player/MobilePlayerSystemCoordinator.swift",
+                "UI/MobileRootShell.swift",
             ),
             "macOS": (
                 "App/LabstreamMac.swift",
                 "App/MacAppDelegate.swift",
+                "Player/MacPlayerChrome.swift",
+                "Player/MacPlayerInputRouter.swift",
                 "Player/MacPlayerPresentation.swift",
                 "Player/MacPlayerSystemCoordinator.swift",
+                "UI/MacRootShell.swift",
                 "UI/MacSidebarPolicy.swift",
             ),
             "tvOS": (
@@ -124,6 +131,8 @@ class SourceTopologyTests(unittest.TestCase):
                 "Debug/TVPlayerFixture.swift",
                 "Debug/TVUIFixtureCatalog.swift",
                 "Debug/TVUITestLaunchConfiguration.swift",
+                "Player/TVPlayerChrome.swift",
+                "UI/TVRootShell.swift",
             ),
         }
         for owner, paths in expected.items():

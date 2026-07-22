@@ -18,10 +18,12 @@ final class VideoNowPlayingCore {
     private var mediaLease: SystemMediaSessionCoordinator.Lease?
     private var artworkImage: DecodedImage?
     private var artworkTask: Task<Void, Never>?
-    private let defaultSkipIntervalSeconds: Double
+    private var metadataObserverToken: VideoNowPlayingMetadataObserverRegistry.Token?
+    private let commandProfile: VideoNowPlayingCommandProfile
 
-    init(defaultSkipIntervalSeconds: Double, mediaSession: SystemMediaSessionCoordinator) {
-        self.defaultSkipIntervalSeconds = defaultSkipIntervalSeconds
+    init(commandProfile: VideoNowPlayingCommandProfile,
+         mediaSession: SystemMediaSessionCoordinator) {
+        self.commandProfile = commandProfile
         self.mediaSession = mediaSession
     }
 
@@ -32,35 +34,52 @@ final class VideoNowPlayingCore {
         teardown()
         self.controller = controller
         self.item = item
+        metadataObserverToken = controller.observeVideoNowPlayingMetadata { [weak self] update in
+            self?.updateNowPlayingInfo(
+                elapsedMillisecondsOverride: update.elapsedMillisecondsOverride,
+                playbackRateOverride: update.playbackRateOverride)
+        }
         mediaLease = mediaSession.acquire(owner: .video, commands: commandConfiguration())
         updateNowPlayingInfo()
         loadArtwork(from: artworkDescriptor, pipeline: artworkPipeline)
     }
 
-    func updateNowPlayingInfo() {
+    func updateNowPlayingInfo(elapsedMillisecondsOverride: Int? = nil,
+                              playbackRateOverride: Double? = nil) {
         guard let controller, let item, let mediaLease else { return }
-        let elapsedSeconds = max(0, Double(controller.currentResumeMs) / 1000.0)
+        let durationMilliseconds = durationMilliseconds(for: controller)
+        let paused = playbackRateOverride == 0 || controller.transport.showsPausedControl
+        let snapshot = VideoNowPlayingSnapshot(
+            mediaItem: item,
+            durationMilliseconds: durationMilliseconds,
+            elapsedMilliseconds: elapsedMillisecondsOverride ?? controller.currentResumeMs,
+            playbackRate: playbackRateOverride ?? (paused ? 0 : Double(controller.player.rate)),
+            defaultPlaybackRate: Double(controller.player.defaultRate))
         var info: [String: Any] = [
-            MPMediaItemPropertyTitle: item.title,
+            MPMediaItemPropertyTitle: snapshot.title,
             MPMediaItemPropertyMediaType: MPMediaType.movie.rawValue,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: elapsedSeconds,
-            MPNowPlayingInfoPropertyPlaybackRate: controller.transport.showsPausedControl ? 0.0 : Double(controller.player.rate),
-            MPNowPlayingInfoPropertyDefaultPlaybackRate: Double(controller.player.defaultRate),
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: Double(snapshot.elapsedMilliseconds) / 1000.0,
+            MPNowPlayingInfoPropertyPlaybackRate: snapshot.playbackRate,
+            MPNowPlayingInfoPropertyDefaultPlaybackRate: snapshot.defaultPlaybackRate,
         ]
-        if let durationSeconds = durationSeconds(for: controller) {
-            info[MPMediaItemPropertyPlaybackDuration] = durationSeconds
+        if let durationMilliseconds = snapshot.durationMilliseconds {
+            info[MPMediaItemPropertyPlaybackDuration] = Double(durationMilliseconds) / 1000.0
         }
-        if let subtitle = subtitle(for: item) {
-            info[MPMediaItemPropertyAlbumTitle] = subtitle
+        if let context = snapshot.context {
+            info[MPMediaItemPropertyAlbumTitle] = context
         }
         if let artworkImage {
             info[MPMediaItemPropertyArtwork] = NowPlayingArtwork.make(artworkImage)
         }
         mediaLease.publish(nowPlayingInfo: info,
-                           playbackState: controller.transport.showsPausedControl ? .paused : .playing)
+                           playbackState: paused ? .paused : .playing)
     }
 
     func teardown() {
+        if let controller, let metadataObserverToken {
+            controller.removeVideoNowPlayingMetadataObserver(metadataObserverToken)
+        }
+        metadataObserverToken = nil
         artworkTask?.cancel()
         artworkTask = nil
         artworkImage = nil
@@ -72,24 +91,20 @@ final class VideoNowPlayingCore {
     }
 
     private func commandConfiguration() -> SystemMediaSessionCoordinator.CommandConfiguration {
-        let skipIntervals: [NSNumber] = [10, 30]
         return .init(handlers: [
             .play: { [weak self] _ in
-                guard let self, let controller = self.controller else { return .noActionableItem }
+                guard let controller = self?.controller else { return .noActionableItem }
                 controller.requestPlay()
-                self.updateNowPlayingInfo()
                 return .success
             },
             .pause: { [weak self] _ in
-                guard let self, let controller = self.controller else { return .noActionableItem }
+                guard let controller = self?.controller else { return .noActionableItem }
                 controller.requestPause()
-                self.updateNowPlayingInfo()
                 return .success
             },
             .togglePlayPause: { [weak self] _ in
-                guard let self, let controller = self.controller else { return .noActionableItem }
+                guard let controller = self?.controller else { return .noActionableItem }
                 controller.togglePlayback()
-                self.updateNowPlayingInfo()
                 return .success
             },
             .changePlaybackPosition: { [weak self] event in
@@ -99,23 +114,24 @@ final class VideoNowPlayingCore {
                         positionTime: event.positionTime,
                         durationMilliseconds: self.controller?.videoNowPlayingDurationMilliseconds))
             },
-            .skipForward: { [weak self, defaultSkipIntervalSeconds] event in
+            .skipForward: { [weak self, commandProfile] event in
                 guard let self else { return .noActionableItem }
                 return self.performRemoteCommand(
                     VideoNowPlayingCommandPolicy.skipIntent(
                         interval: event.skipInterval,
-                        fallbackSeconds: defaultSkipIntervalSeconds,
+                        fallbackSeconds: commandProfile.forwardFallbackSeconds,
                         direction: .forward))
             },
-            .skipBackward: { [weak self, defaultSkipIntervalSeconds] event in
+            .skipBackward: { [weak self, commandProfile] event in
                 guard let self else { return .noActionableItem }
                 return self.performRemoteCommand(
                     VideoNowPlayingCommandPolicy.skipIntent(
                         interval: event.skipInterval,
-                        fallbackSeconds: defaultSkipIntervalSeconds,
+                        fallbackSeconds: commandProfile.backwardFallbackSeconds,
                         direction: .backward))
             },
-        ], skipForwardIntervals: skipIntervals, skipBackwardIntervals: skipIntervals,
+        ], skipForwardIntervals: commandProfile.advertisedForwardIntervals.map { NSNumber(value: $0) },
+           skipBackwardIntervals: commandProfile.advertisedBackwardIntervals.map { NSNumber(value: $0) },
            didBecomeCurrent: { [weak self] _ in
                Task { @MainActor [weak self] in self?.updateNowPlayingInfo() }
            })
@@ -145,19 +161,13 @@ final class VideoNowPlayingCore {
         }
     }
 
-    private func durationSeconds(for controller: PlaybackController) -> Double? {
+    private func durationMilliseconds(for controller: PlaybackController) -> Int? {
         if let duration = controller.player.currentItem?.duration.seconds,
-           duration.isFinite, duration > 0 { return duration }
-        if let durationMs = item?.duration, durationMs > 0 { return Double(durationMs) / 1000.0 }
-        return nil
-    }
-
-    private func subtitle(for item: MediaItem) -> String? {
-        if item.kind == .episode {
-            let parts = [item.grandparentTitle, item.seasonEpisodeCode].compactMap { $0 }
-            return parts.isEmpty ? nil : parts.joined(separator: " · ")
+           duration.isFinite, duration > 0,
+           duration * 1000 < Double(Int.max) {
+            return Int((duration * 1000).rounded())
         }
-        return item.year.map(String.init)
+        return nil
     }
 
     private func performRemoteCommand(_ intent: VideoNowPlayingCommandPolicy.Intent?)
@@ -165,7 +175,6 @@ final class VideoNowPlayingCore {
         guard let controller else { return .noActionableItem }
         guard let intent else { return .failed }
         controller.performVideoNowPlayingCommand(intent)
-        updateNowPlayingInfo()
         return .success
     }
 }

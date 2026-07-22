@@ -82,7 +82,7 @@ struct LiveBIFIndexProbeTests {
                                                     quality: "sd")
             let (bifData, bifStatus) = try await send(req)
             let parsed = try? BIFParser.parse(bifData)
-            print(">>> BIF [fetch] part=\(part.id) HTTP \(bifStatus), \(bifData.count) bytes, parsedFrames=\(parsed?.frames.count ?? -1)")
+            print(">>> BIF [fetch] part=\(part.id) HTTP \(bifStatus), \(bifData.count) bytes, parsedFrames=\(parsed?.frameCount ?? -1)")
         }
     }
 }

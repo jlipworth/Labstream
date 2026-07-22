@@ -15,8 +15,11 @@ final class BIFParserTests: XCTestCase {
 
         XCTAssertEqual(index.version, 0)
         XCTAssertEqual(index.frameIntervalMs, 10_000)
-        XCTAssertEqual(index.frames.map(\.timeMs), [0, 10_000, 20_000])
-        XCTAssertEqual(index.frames.map { String(data: $0.data, encoding: .utf8) }, ["frame-0", "frame-1", "frame-2"])
+        XCTAssertEqual(index.frameCount, 3)
+        XCTAssertEqual(index.frameTimesMs, [0, 10_000, 20_000])
+        XCTAssertEqual(String(data: try XCTUnwrap(index.frame(nearMs: 0)?.data), encoding: .utf8), "frame-0")
+        XCTAssertEqual(String(data: try XCTUnwrap(index.frame(nearMs: 10_000)?.data), encoding: .utf8), "frame-1")
+        XCTAssertEqual(String(data: try XCTUnwrap(index.frame(nearMs: 20_000)?.data), encoding: .utf8), "frame-2")
         XCTAssertEqual(index.frame(nearMs: 14_900)?.timeMs, 10_000)
         XCTAssertEqual(index.frame(nearMs: 15_100)?.timeMs, 20_000)
         XCTAssertEqual(index.frame(nearMs: -1)?.timeMs, 0)
@@ -40,10 +43,88 @@ final class BIFParserTests: XCTestCase {
         // timestamp rows 0, 2, 4... for two-second frame spacing. Treat zero interval as the
         // BIF default 1000ms multiplier so timestamps remain seconds, not raw milliseconds.
         XCTAssertEqual(index.frameIntervalMs, 1_000)
-        XCTAssertEqual(index.frames.map(\.timeMs), [0, 2_000, 4_000])
+        XCTAssertEqual(index.frameTimesMs, [0, 2_000, 4_000])
         XCTAssertEqual(index.frame(nearMs: 2_600)?.timeMs, 2_000)
         XCTAssertEqual(index.frame(nearMs: 3_600)?.timeMs, 4_000)
-        XCTAssertEqual(index.frames.first?.data.prefix(4), Data([0xff, 0xd8, 0xff, 0xe0]))
+        XCTAssertEqual(index.frame(nearMs: 0)?.data.prefix(4), Data([0xff, 0xd8, 0xff, 0xe0]))
+    }
+
+    func testRetainsOneBackingPayloadAndMaterializesOnlySelectedFrame() throws {
+        let frames = (0..<128).map { index in
+            (timestamp: UInt32(index), payload: Data(repeating: UInt8(index), count: 4_096))
+        }
+        let data = makeBIF(intervalMs: 1_000, frames: frames)
+
+        let index = try BIFParser.parse(data)
+
+        XCTAssertEqual(index.backingByteCount, data.count)
+        XCTAssertEqual(index.frameCount, frames.count)
+        let selected = try XCTUnwrap(index.frame(nearMs: 64_000))
+        XCTAssertEqual(selected.timeMs, 64_000)
+        XCTAssertEqual(selected.data, frames[64].payload)
+        XCTAssertEqual(selected.data.count, 4_096)
+    }
+
+    func testDescriptorIndexPreservesSortedTimeLookupWithoutReorderingBackingBytes() throws {
+        let data = makeBIF(intervalMs: 1_000,
+                           frames: [
+                            (timestamp: 2, payload: Data("later".utf8)),
+                            (timestamp: 0, payload: Data("first".utf8)),
+                            (timestamp: 1, payload: Data("middle".utf8)),
+                           ])
+
+        let index = try BIFParser.parse(data)
+
+        XCTAssertEqual(index.frameTimesMs, [0, 1_000, 2_000])
+        XCTAssertEqual(index.frame(nearMs: 0)?.data, Data("first".utf8))
+        XCTAssertEqual(index.frame(nearMs: 1_000)?.data, Data("middle".utf8))
+        XCTAssertEqual(index.frame(nearMs: 2_000)?.data, Data("later".utf8))
+    }
+
+    func testSemanticEqualityIgnoresBackingLayoutWithoutMaterializingStoredFrames() throws {
+        let frames = [
+            BIFIndex.Frame(timeMs: 0, data: Data("first".utf8)),
+            BIFIndex.Frame(timeMs: 1_000, data: Data("second".utf8)),
+        ]
+        let parsed = try BIFParser.parse(makeBIF(intervalMs: 1_000, frames: [
+            (timestamp: 0, payload: frames[0].data),
+            (timestamp: 1, payload: frames[1].data),
+        ]))
+        let constructed = BIFIndex(version: 0, frameIntervalMs: 1_000, frames: frames)
+
+        XCTAssertEqual(parsed, constructed)
+        XCTAssertNotEqual(parsed, BIFIndex(version: 0, frameIntervalMs: 1_000, frames: [
+            frames[0],
+            BIFIndex.Frame(timeMs: 1_000, data: Data("different".utf8)),
+        ]))
+        XCTAssertEqual(constructed.frames, frames)
+    }
+
+    func testPublicInitializerPreservesEmptyFramePayloadAndRetrievalCount() throws {
+        let index = BIFIndex(version: 0, frameIntervalMs: 1_000, frames: [
+            BIFIndex.Frame(timeMs: 0, data: Data()),
+            BIFIndex.Frame(timeMs: 1_000, data: Data("next".utf8)),
+        ])
+
+        XCTAssertEqual(index.frameCount, 2)
+        XCTAssertEqual(index.frames.count, 2)
+        XCTAssertEqual(index.frame(nearMs: 0), BIFIndex.Frame(timeMs: 0, data: Data()))
+        XCTAssertEqual(index.frame(nearMs: 1_000)?.data, Data("next".utf8))
+    }
+
+    func testParsesMemoryMappedOfflineBIF() throws {
+        let data = makeBIF(intervalMs: 1_000,
+                           frames: [(timestamp: 0, payload: Data("mapped-frame".utf8))])
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString).bif")
+        try data.write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let index = try BIFParser.parse(contentsOf: url)
+
+        XCTAssertEqual(index.backingByteCount, data.count)
+        XCTAssertEqual(index.frameCount, 1)
+        XCTAssertEqual(index.frame(nearMs: 0)?.data, Data("mapped-frame".utf8))
     }
 
     func testRejectsTruncatedIndexTable() {

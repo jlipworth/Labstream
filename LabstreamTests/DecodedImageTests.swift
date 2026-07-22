@@ -124,6 +124,46 @@ final class DecodedImageTests: XCTestCase {
         XCTAssertNil(DecodedImage(data: Data("not-an-image".utf8)))
     }
 
+    @MainActor
+    func testEagerDecodeUsesDetachedQueueAndPreservesImageFacts() async throws {
+        let sourceImage = try makeTwoColorImage(width: 3, height: 2)
+        let encoded = try XCTUnwrap(encode(sourceImage,
+                                           type: "public.png" as CFString,
+                                           orientation: .right))
+
+        let executorProbe = LockedDecodeExecutorProbe()
+        let result = await DecodedImage.decodeEagerlyOffMain(
+            data: encoded,
+            scale: 2,
+            executorProbe: {
+                dispatchPrecondition(condition: .notOnQueue(.main))
+                executorProbe.recordExecution()
+            }
+        )
+        XCTAssertTrue(executorProbe.didExecute)
+        let decoded = try XCTUnwrap(result)
+
+        XCTAssertEqual(decoded.pixelWidth, 3)
+        XCTAssertEqual(decoded.pixelHeight, 2)
+        XCTAssertEqual(decoded.orientation, .right)
+        XCTAssertEqual(decoded.scale, 2)
+        XCTAssertGreaterThan(decoded.cgImage.bytesPerRow * decoded.cgImage.height, 0)
+    }
+
+    func testCancelledEagerDecodeDoesNotPublishImage() async throws {
+        let encoded = try XCTUnwrap(encode(try makeTwoColorImage(width: 3, height: 2),
+                                           type: "public.png" as CFString,
+                                           orientation: .up))
+        let task = Task {
+            await Task.yield()
+            return await DecodedImage.decodeEagerlyOffMain(data: encoded)
+        }
+        task.cancel()
+
+        let result = await task.value
+        XCTAssertNil(result)
+    }
+
     private func makeTwoColorImage(width: Int,
                                    height: Int,
                                    colorSpace: CGColorSpace = CGColorSpaceCreateDeviceRGB()) throws -> CGImage {
@@ -205,5 +245,18 @@ final class DecodedImageTests: XCTestCase {
             kCGImagePropertyOrientation: orientation.rawValue,
         ] as CFDictionary)
         return CGImageDestinationFinalize(destination) ? output as Data : nil
+    }
+}
+
+private final class LockedDecodeExecutorProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var executed = false
+
+    var didExecute: Bool {
+        lock.withLock { executed }
+    }
+
+    func recordExecution() {
+        lock.withLock { executed = true }
     }
 }

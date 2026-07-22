@@ -45,6 +45,28 @@ a separate migration plan.
 
 User activities follow the same routing path as App Intents and Spotlight. Add new external-entry behavior to the router first, then connect the system surface to that route.
 
+## System media publishing
+
+Video Now Playing content is built once as a platform-neutral `VideoNowPlayingSnapshot`: title,
+episode/movie context, release year, duration, playhead, and rates. Native publication remains
+deliberately split. iOS/iPadOS and macOS publish through the process-wide
+`SystemMediaSessionCoordinator`, whose identity-guarded leases let video temporarily supersede
+music and restore it safely. visionOS publishes through a playback-scoped `MPNowPlayingSession`
+and attaches metadata to the active `AVPlayerItem`; it must not be routed through the global lease.
+
+Both publishers use the same validated `VideoNowPlayingCommandPolicy` intents and shared artwork
+boundary, but retain their existing platform command intervals and MediaPlayer key mappings. This
+separation is an ownership requirement, not duplicated product policy: stale artwork and teardown
+must remain generation/lease fenced, and native system-surface behavior still requires validation
+on each physical platform.
+
+Publication is event-driven rather than tied to the player chrome's 500 ms scrubber clock.
+Controller events publish at session start, item replacement/readiness, play/pause and rate changes,
+seek intent, restart, failure, end/advance, and stop. MediaPlayer extrapolates the playhead between
+those authoritative elapsed-time/rate snapshots. The process-wide observer is token-fenced so a
+late coordinator teardown cannot unregister a newer video owner; artwork completion retains its
+independent lease/generation fence.
+
 ## SharePlay / Watch Together
 
 Watch Together is currently a visionOS GroupActivity surface. Its app-generated cross-device

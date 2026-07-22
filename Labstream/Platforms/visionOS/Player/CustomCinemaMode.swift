@@ -174,11 +174,11 @@ extension EnvironmentValues {
 @Observable
 @MainActor
 final class CustomCinemaSessionStore {
-    enum PresentationState: Equatable {
-        case closed
-        case inTransition
-        case open
-    }
+    typealias PresentationState = CinemaPresentationState
+
+    /// The only mutable owner of Cinema presentation transitions. The session store retains media
+    /// and geometry; it exposes this read-only projection solely for existing chrome visibility.
+    let transitionCoordinator: CinemaTransitionCoordinator
 
     var title: String?
     /// The item being played, kept so Exit Cinema can route back to its detail page (the "content
@@ -199,15 +199,16 @@ final class CustomCinemaSessionStore {
     var geometry: CustomCinemaGeometry = .default
     var screenAdjustment: CustomCinemaScreenAdjustment = .load()
     var trickPlayProvider: (any TrickPlayThumbnailProviding)?
-    var presentationState: PresentationState = .closed
-    var pendingReturnItem: MediaItem?
-    var pendingReturnAutoPlay = false
-    /// True when the pending exit is an Up Next advance to a DIFFERENT online item (not a plain
-    /// close/playback-ended), so the exit router can special-case autoplay vs. the offline fallback.
-    var pendingAdvancingToNext = false
+    private var pendingReturnItem: MediaItem?
+
+    var presentationState: PresentationState { transitionCoordinator.presentationState }
 
     var player: AVPlayer? { controller?.player }
     var hasActivePlayer: Bool { controller != nil }
+
+    init(transitionCoordinator: CinemaTransitionCoordinator = CinemaTransitionCoordinator()) {
+        self.transitionCoordinator = transitionCoordinator
+    }
 
     func activate(title: String,
                   item: MediaItem,
@@ -226,15 +227,26 @@ final class CustomCinemaSessionStore {
         self.geometry = geometry.applying(screenAdjustment)
         self.trickPlayProvider = trickPlayProvider
         pendingReturnItem = nil
-        pendingReturnAutoPlay = false
-        pendingAdvancingToNext = false
     }
 
-    func prepareExit(returningTo item: MediaItem?, autoPlay: Bool, advancingToNext: Bool) {
+    func stageReturnItem(_ item: MediaItem?) {
         pendingReturnItem = item
-        pendingReturnAutoPlay = autoPlay
-        pendingAdvancingToNext = advancingToNext
-        presentationState = .inTransition
+    }
+
+    func returnItem(for selection: CinemaReturnSelection) -> MediaItem? {
+        switch selection {
+        case .none:
+            nil
+        case .currentItem:
+            item
+        case .nextItem:
+            pendingReturnItem
+        }
+    }
+
+    func handoffGeneration(for candidate: PlaybackController?) -> CinemaTransitionGeneration? {
+        guard controller === candidate else { return nil }
+        return transitionCoordinator.activeGeneration
     }
 
     func updateScreenAdjustment(_ adjustment: CustomCinemaScreenAdjustment) {
@@ -277,7 +289,6 @@ final class CustomCinemaSessionStore {
         title = nil
         controller = nil
         trickPlayProvider = nil
-        presentationState = .inTransition
         activeController?.stop()
     }
 
@@ -291,9 +302,11 @@ final class CustomCinemaSessionStore {
         geometry = .default.applying(screenAdjustment)
         trickPlayProvider = nil
         pendingReturnItem = nil
-        pendingReturnAutoPlay = false
-        pendingAdvancingToNext = false
-        presentationState = .closed
+    }
+
+    func clear(ifOwnedBy candidate: PlaybackController?) {
+        guard controller === candidate else { return }
+        clear()
     }
 }
 
@@ -324,6 +337,10 @@ struct CustomCinemaScaffoldView: View {
     /// has laid the attachment out (and thus reports a real intrinsic size to calibrate against).
     @State private var entityBox = EntityBox()
 
+    /// Captured when this immersive scene instance is composed. All callbacks from this instance
+    /// retain that generation even if a newer player session starts before a late callback lands.
+    let generation: CinemaTransitionGeneration
+
     private static let screenAttachmentID = "custom-cinema-screen"
 
     /// Authoring resolution (in points) of the screen attachment. Higher is crisper at cinema
@@ -334,27 +351,33 @@ struct CustomCinemaScaffoldView: View {
 
     var body: some View {
         RealityView { content, attachments in
+            guard session.transitionCoordinator.ownsScaffold(generation: generation) else { return }
             if let screen = attachments.entity(for: Self.screenAttachmentID) {
                 entityBox.entity = screen
                 Self.place(screen, geometry: session.geometry)
                 content.add(screen)
             }
         } update: { _, attachments in
+            guard session.transitionCoordinator.ownsScaffold(generation: generation) else { return }
             if let screen = attachments.entity(for: Self.screenAttachmentID) {
                 entityBox.entity = screen
                 Self.place(screen, geometry: session.geometry)
             }
         } attachments: {
             Attachment(id: Self.screenAttachmentID) {
-                CustomCinemaScreen(session: session,
-                                   scrubState: $scrubState,
-                                   onRetry: { session.controller?.retry() },
-                                   widthPoints: Self.attachmentWidthPoints)
+                if session.transitionCoordinator.ownsScaffold(generation: generation) {
+                    CustomCinemaScreen(session: session,
+                                       scrubState: $scrubState,
+                                       onRetry: { session.controller?.retry() },
+                                       widthPoints: Self.attachmentWidthPoints)
+                }
             }
         }
         .preferredSurroundingsEffect(.ultraDark)
         .onAppear {
-            session.presentationState = .open
+            guard session.transitionCoordinator.immersiveDidAppear(generation: generation) else {
+                return
+            }
             bindCinemaCallbacks()
             startWatchTogetherAttachMaintenance()
         }
@@ -375,78 +398,106 @@ struct CustomCinemaScaffoldView: View {
 
     @MainActor
     private func startWatchTogetherAttachMaintenance() {
+        guard session.transitionCoordinator.ownsActiveScaffold(generation: generation) else {
+            return
+        }
         guard let controller = session.controller, let item = session.item else { return }
         watchTogetherAttachTask?.cancel()
         let launchEpoch = session.watchTogetherLaunchEpoch
         watchTogetherAttachTask = Task { @MainActor in
+            guard session.transitionCoordinator.ownsActiveScaffold(generation: generation) else {
+                return
+            }
             await maintainWatchTogetherAttachment(coordinator: watchTogetherCoordinator,
                                                   controller: controller,
                                                   item: item,
                                                   launchEpoch: launchEpoch) {
-                session.controller === controller && session.presentationState != .closed
+                session.controller === controller &&
+                    session.transitionCoordinator.ownsActiveScaffold(generation: generation)
             }
         }
     }
 
     @MainActor
     private func bindCinemaCallbacks() {
+        guard session.transitionCoordinator.ownsActiveScaffold(generation: generation) else {
+            return
+        }
         guard let controller = session.controller else { return }
         controller.onAdvanceToNext = { next in
             Task { @MainActor in
-                await requestCinemaExit(returningTo: next, autoPlay: true, advancingToNext: true)
+                guard session.controller === controller else { return }
+                await requestCinemaExit(
+                    request: .upNext(origin: session.origin, hasNextItem: true),
+                    returningTo: next)
             }
         }
         controller.onPlaybackEnded = {
             Task { @MainActor in
-                await requestCinemaExit(returningTo: session.item, autoPlay: false, advancingToNext: false)
+                guard session.controller === controller else { return }
+                await requestCinemaExit(
+                    request: .playbackEnded(origin: session.origin,
+                                            hasCurrentItem: session.item != nil),
+                    returningTo: session.item)
             }
         }
     }
 
     @MainActor
-    private func requestCinemaExit(returningTo item: MediaItem?, autoPlay: Bool, advancingToNext: Bool) async {
-        guard session.presentationState != .inTransition else { return }
-        session.prepareExit(returningTo: item ?? session.item, autoPlay: autoPlay,
-                            advancingToNext: advancingToNext)
-        await dismissImmersiveSpace()
+    private func requestCinemaExit(request: CinemaExitRequest, returningTo item: MediaItem?) async {
+        guard session.transitionCoordinator.ownsActiveScaffold(generation: generation) else {
+            return
+        }
+        await session.transitionCoordinator.requestExit(
+            generation: generation,
+            request: request,
+            stageReturn: { session.stageReturnItem(item) },
+            dismissImmersiveSpace: { await dismissImmersiveSpace() })
     }
 
     @MainActor
     private func finishCinemaDismissal() {
-        let returnItem = session.pendingReturnItem ?? session.item
-        if let sharedItem = session.item {
-            // Leaving the immersive player ends this single-item Watch Together participation.
-            // This runs only on Cinema exit, never during the window-to-Cinema handoff.
-            watchTogetherCoordinator.leaveIfPlaying(sharedItem,
-                                                    playerLaunchEpoch: session.watchTogetherLaunchEpoch)
-        }
-        let destination = CinemaExitRouting.resolve(origin: session.origin,
-                                                    hasReturnItem: returnItem != nil,
-                                                    autoPlay: session.pendingReturnAutoPlay,
-                                                    advancingToNext: session.pendingAdvancingToNext)
-        session.stopAndClearForImmersiveExit()
-        // Offline never touches the online router (that path is Home + server-fetch only); online
-        // origins return to their own tab; system entries keep the legacy Home-detail behavior.
-        // Keep the final app composition in a deterministic adapter rather than hiding it in this
-        // ImmersiveSpace callback, while PMSKit remains the authority for the routing decision.
-        CinemaAppRouting.dispatch(
-            destination,
-            returnItem: returnItem,
-            openOnlineTabItem: { item, autoPlay, tab in
-                SystemEntryRouter.shared.open(item: item, autoPlay: autoPlay, onTab: tab)
+        let sharedItem = session.item
+        let launchEpoch = session.watchTogetherLaunchEpoch
+        session.transitionCoordinator.immersiveDidDisappear(
+            generation: generation,
+            systemRequest: .system(origin: session.origin,
+                                   hasCurrentItem: session.item != nil),
+            leaveSharedPlayback: {
+                if let sharedItem {
+                    // Leaving the immersive player ends this single-item Watch Together
+                    // participation. Window-to-Cinema handoff never executes this finalizer.
+                    watchTogetherCoordinator.leaveIfPlaying(
+                        sharedItem, playerLaunchEpoch: launchEpoch)
+                }
             },
-            openSystemEntryItem: { item, autoPlay in
-                SystemEntryRouter.shared.open(item: item, autoPlay: autoPlay)
+            stopPlayback: { session.stopAndClearForImmersiveExit() },
+            route: { request, destination in
+                let returnItem = session.returnItem(for: request.returnSelection)
+                // Offline never touches the online router; online origins return to their own tab;
+                // system entries retain the legacy Home-detail behavior.
+                CinemaAppRouting.dispatch(
+                    destination,
+                    returnItem: returnItem,
+                    openOnlineTabItem: { item, autoPlay, tab in
+                        SystemEntryRouter.shared.open(item: item, autoPlay: autoPlay, onTab: tab)
+                    },
+                    openSystemEntryItem: { item, autoPlay in
+                        SystemEntryRouter.shared.open(item: item, autoPlay: autoPlay)
+                    },
+                    openOfflineDownload: { ratingKey in
+                        SystemEntryRouter.shared.openOffline(ratingKey: ratingKey)
+                    })
             },
-            openOfflineDownload: { ratingKey in
-                SystemEntryRouter.shared.openOffline(ratingKey: ratingKey)
-            })
-        openWindow(id: CustomCinemaMode.mainWindowID)
-        session.clear()
+            openMainWindow: { openWindow(id: CustomCinemaMode.mainWindowID) },
+            clearSession: { session.clear() })
     }
 
     @MainActor
     private func tick() {
+        guard session.transitionCoordinator.ownsActiveScaffold(generation: generation) else {
+            return
+        }
         // Re-run placement each tick until the attachment has a valid laid-out size; `place` is
         // idempotent once calibrated (it measures intrinsic size, which is independent of the scale
         // it sets), so this also self-heals if RealityKit lays the attachment out late.

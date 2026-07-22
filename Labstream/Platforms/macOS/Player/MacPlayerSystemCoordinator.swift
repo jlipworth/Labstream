@@ -14,7 +14,8 @@ final class MacPlayerSystemCoordinator {
     private let core: VideoNowPlayingCore
 
     init(mediaSession: SystemMediaSessionCoordinator) {
-        core = VideoNowPlayingCore(defaultSkipIntervalSeconds: 30, mediaSession: mediaSession)
+        core = VideoNowPlayingCore(commandProfile: .processWide(fallbackSeconds: 30),
+                                   mediaSession: mediaSession)
     }
 
     func configure(controller: PlaybackController,
@@ -25,10 +26,6 @@ final class MacPlayerSystemCoordinator {
                        item: item,
                        artworkDescriptor: artworkDescriptor,
                        artworkPipeline: artworkPipeline)
-    }
-
-    func updateNowPlayingInfo() {
-        core.updateNowPlayingInfo()
     }
 
     func teardown() {

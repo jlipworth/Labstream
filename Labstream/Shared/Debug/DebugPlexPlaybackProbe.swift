@@ -70,14 +70,15 @@ enum DebugPlexPlaybackProbe {
             log.notice("probe.item_resolved type=\(item.type, privacy: .public) duration_ms=\(item.duration ?? 0, privacy: .public)")
 
             let playback = PlaybackController(item: item,
-                                              server: server,
-                                              token: token,
+                                              sessionSource: .plex(PlexPlaybackSession(
+                                                server: server,
+                                                token: token,
+                                                machineIdentifier: appModel.selectedServer?.clientIdentifier)),
                                               identity: appModel.identity,
                                               client: appModel.client,
                                               maxVideoBitrateKbps: bitrateKbps,
                                               qualityDefaultsKey: appModel.activeStreamingQualityDefaultsKey,
-                                              mediaIndex: 0,
-                                              machineIdentifier: appModel.selectedServer?.clientIdentifier)
+                                              mediaIndex: 0)
             controller = playback
             playback.start()
 

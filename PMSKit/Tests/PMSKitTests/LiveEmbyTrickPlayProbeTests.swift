@@ -115,7 +115,7 @@ struct LiveEmbyTrickPlayProbeTests {
         if bifResponse.status == 200 {
             do {
                 let index = try BIFParser.parse(bifResponse.data)
-                print(">>> EMBY-TRICKPLAY [index.bif] HTTP 200 parseable=true frame_count=\(index.frames.count) response_bytes=\(bifResponse.data.count)")
+                print(">>> EMBY-TRICKPLAY [index.bif] HTTP 200 parseable=true frame_count=\(index.frameCount) response_bytes=\(bifResponse.data.count)")
             } catch {
                 print(">>> EMBY-TRICKPLAY [index.bif] HTTP 200 parseable=false response_bytes=\(bifResponse.data.count) fallback=per_position")
             }

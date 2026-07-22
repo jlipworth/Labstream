@@ -66,8 +66,9 @@ struct TVPlayerFixtureView: View {
             let client = PlexClient(identity: identity)
             CustomPlayerView(item: item,
                              controllerFactory: {
-                                 let controller = PlaybackController(localFile: url,
-                                                                     item: item,
+                                 let controller = PlaybackController(item: item,
+                                                                     sessionSource: .offline(
+                                                                        OfflinePlaybackSession(fileURL: url)),
                                                                      identity: identity,
                                                                      client: client)
                                  holdBufferingStatus(on: controller)

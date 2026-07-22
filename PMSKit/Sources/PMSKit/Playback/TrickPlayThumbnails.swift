@@ -319,7 +319,12 @@ public enum TrickPlayRequest {
     }
 }
 
-/// Parsed BIF index with frame byte ranges inside the original BIF payload.
+/// Parsed BIF index backed by one original BIF payload.
+///
+/// Parsing records compact timestamp/range descriptors without copying every encoded frame. A
+/// caller pays for one selected-frame copy only when `frame(nearMs:)` is requested. For an offline
+/// file the backing `Data` can therefore remain memory mapped instead of expanding the complete BIF
+/// into hundreds or thousands of separately allocated `Data` values.
 public struct BIFIndex: Equatable, Sendable {
     public struct Frame: Equatable, Sendable {
         public let timeMs: Int
@@ -333,31 +338,116 @@ public struct BIFIndex: Equatable, Sendable {
 
     public let version: UInt32
     public let frameIntervalMs: Int
-    public let frames: [Frame]
+    private let backingData: Data
+    fileprivate let descriptors: [Descriptor]
+
+    fileprivate struct Descriptor: Equatable, Sendable {
+        let timeMs: Int
+        let byteRange: Range<Int>
+    }
 
     public init(version: UInt32, frameIntervalMs: Int, frames: [Frame]) {
         self.version = version
         self.frameIntervalMs = max(1, frameIntervalMs)
-        self.frames = frames.sorted { $0.timeMs < $1.timeMs }
+        var payload = Data()
+        var descriptors: [Descriptor] = []
+        let sortedFrames = frames.sorted { $0.timeMs < $1.timeMs }
+        var expectedBytes = 0
+        var capacityOverflow = false
+        for frame in sortedFrames {
+            let (next, overflow) = expectedBytes.addingReportingOverflow(frame.data.count)
+            if overflow {
+                capacityOverflow = true
+                break
+            }
+            expectedBytes = next
+        }
+        if !capacityOverflow { payload.reserveCapacity(expectedBytes) }
+        descriptors.reserveCapacity(sortedFrames.count)
+        for frame in sortedFrames {
+            let start = payload.count
+            payload.append(frame.data)
+            descriptors.append(Descriptor(timeMs: frame.timeMs,
+                                          byteRange: start..<payload.count))
+        }
+        self.backingData = payload
+        self.descriptors = descriptors
     }
 
+    fileprivate init(version: UInt32,
+                     frameIntervalMs: Int,
+                     backingData: Data,
+                     descriptors: [Descriptor]) {
+        self.version = version
+        self.frameIntervalMs = max(1, frameIntervalMs)
+        self.backingData = backingData
+        self.descriptors = descriptors
+    }
+
+    /// Number of indexed frames without materializing their encoded payloads.
+    public var frameCount: Int { descriptors.count }
+
+    /// Source-compatible frame access. Payloads are materialized only when this property is read;
+    /// normal seek lookup should prefer `frame(nearMs:)` so it copies just one encoded image.
+    public var frames: [Frame] { descriptors.compactMap(materialize) }
+
+    /// Indexed capture times without materializing frame payloads.
+    public var frameTimesMs: [Int] { descriptors.map(\.timeMs) }
+
+    /// Bytes retained by the one backing BIF payload, including its header and index table.
+    public var backingByteCount: Int { backingData.count }
+
     public func frame(nearMs targetMs: Int) -> Frame? {
-        guard !frames.isEmpty else { return nil }
+        guard !descriptors.isEmpty else { return nil }
         let clamped = max(0, targetMs)
         var low = 0
-        var high = frames.count - 1
+        var high = descriptors.count - 1
         while low < high {
             let mid = (low + high) / 2
-            if frames[mid].timeMs < clamped {
+            if descriptors[mid].timeMs < clamped {
                 low = mid + 1
             } else {
                 high = mid
             }
         }
-        if low == 0 { return frames[0] }
-        let before = frames[low - 1]
-        let after = frames[low]
-        return abs(after.timeMs - clamped) < abs(clamped - before.timeMs) ? after : before
+        if low == 0 { return materialize(descriptors[0]) }
+        let before = descriptors[low - 1]
+        let after = descriptors[low]
+        return materialize(abs(after.timeMs - clamped) < abs(clamped - before.timeMs) ? after : before)
+    }
+
+    /// Equality retains the original public value semantics: version, interval, ordered capture
+    /// times, and every encoded frame byte must match. Comparing backing storage directly would
+    /// incorrectly make a parsed BIF unequal to a public-init index containing the same frames,
+    /// because parsed storage also contains the BIF header/index table. Byte slices are compared
+    /// in place so equality does not materialize an array of frame payloads.
+    public static func == (lhs: BIFIndex, rhs: BIFIndex) -> Bool {
+        guard lhs.version == rhs.version,
+              lhs.frameIntervalMs == rhs.frameIntervalMs,
+              lhs.descriptors.count == rhs.descriptors.count else { return false }
+        return zip(lhs.descriptors, rhs.descriptors).allSatisfy { left, right in
+            left.timeMs == right.timeMs && lhs.payload(left).elementsEqual(rhs.payload(right))
+        }
+    }
+
+    private func materialize(_ descriptor: Descriptor) -> Frame? {
+        guard descriptor.byteRange.lowerBound >= 0,
+              descriptor.byteRange.upperBound <= backingData.count else { return nil }
+        let start = backingData.index(backingData.startIndex,
+                                      offsetBy: descriptor.byteRange.lowerBound)
+        let end = backingData.index(backingData.startIndex,
+                                    offsetBy: descriptor.byteRange.upperBound)
+        // `subdata` intentionally copies only the requested encoded image. A Data slice can retain
+        // the complete mapped BIF after the index itself is released.
+        return Frame(timeMs: descriptor.timeMs, data: backingData.subdata(in: start..<end))
+    }
+
+    private func payload(_ descriptor: Descriptor) -> Data.SubSequence {
+        let start = backingData.index(backingData.startIndex,
+                                      offsetBy: descriptor.byteRange.lowerBound)
+        let end = backingData.index(backingData.startIndex,
+                                    offsetBy: descriptor.byteRange.upperBound)
+        return backingData[start..<end]
     }
 }
 
@@ -406,8 +496,8 @@ public enum BIFParser {
                          offset: data.readLittleEndianUInt32(at: rowStart + 4)))
         }
 
-        var frames: [BIFIndex.Frame] = []
-        frames.reserveCapacity(Int(count))
+        var descriptors: [BIFIndex.Descriptor] = []
+        descriptors.reserveCapacity(Int(count))
         for index in 0..<Int(count) {
             let start = Int(rows[index].offset)
             let end = Int(rows[index + 1].offset)
@@ -421,11 +511,23 @@ public enum BIFParser {
             let timeMs = try timestampMilliseconds(timestamp: timestamp,
                                                    frameIndex: index,
                                                    intervalMs: intervalMs)
-            frames.append(BIFIndex.Frame(timeMs: timeMs, data: data.subdata(in: range)))
+            descriptors.append(BIFIndex.Descriptor(timeMs: timeMs, byteRange: range))
         }
 
-        guard !frames.isEmpty else { throw BIFParserError.noFrames }
-        return BIFIndex(version: version, frameIntervalMs: intervalMs, frames: frames)
+        guard !descriptors.isEmpty else { throw BIFParserError.noFrames }
+        descriptors.sort { $0.timeMs < $1.timeMs }
+        return BIFIndex(version: version,
+                        frameIntervalMs: intervalMs,
+                        backingData: data,
+                        descriptors: descriptors)
+    }
+
+    /// Parses an offline BIF while allowing Foundation to retain a safe file mapping as the index's
+    /// single backing payload. The default still falls back to an ordinary read when mapping is not
+    /// supported by the filesystem.
+    public static func parse(contentsOf url: URL,
+                             options: Data.ReadingOptions = .mappedIfSafe) throws -> BIFIndex {
+        try parse(Data(contentsOf: url, options: options))
     }
 
     static func timestampMilliseconds(timestamp: UInt32,

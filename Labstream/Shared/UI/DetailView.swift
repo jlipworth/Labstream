@@ -1210,14 +1210,15 @@ struct DetailView: View {
                 CustomPlayerView(item: playing,
                                  controllerFactory: {
                                      PlaybackController(item: playing,
-                                                        server: server,
-                                                        token: token,
+                                                        sessionSource: .plex(PlexPlaybackSession(
+                                                            server: server,
+                                                            token: token,
+                                                            machineIdentifier: machineIdentifier)),
                                                         identity: appModel.identity,
                                                         client: appModel.client,
                                                         maxVideoBitrateKbps: activeMaxVideoBitrateKbps,
                                                         qualityDefaultsKey: appModel.activeStreamingQualityDefaultsKey,
-                                                        mediaIndex: mediaIndex,
-                                                        machineIdentifier: machineIdentifier)
+                                                        mediaIndex: mediaIndex)
                                  },
                                  trickPlayProvider: PlexBIFTrickPlayThumbnailProvider(item: playing,
                                                                                       mediaIndex: mediaIndex,
