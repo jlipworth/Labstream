@@ -5031,7 +5031,7 @@ final class PlaybackController {
         if sessionSource.kind == .mediaBrowser {
             reopenRemoteStream(offsetMs: offsetMs,
                                bitrateKbps: bitrateKbps,
-                               preferShortRemoteHLSBuffer: plan.remoteBuffering.prefersShortBuffer)
+                               preferShortRemoteHLSBuffer: false)
         } else {
             if plan.plexControlClient == .refreshForRecovery {
                 switchToRecoveryControlClient()
