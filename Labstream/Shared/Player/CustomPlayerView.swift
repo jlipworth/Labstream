@@ -48,7 +48,7 @@ struct CustomPlayerView: View {
     private var mobileVideoDisplayModeRaw = MobileVideoDisplayMode.fit.rawValue
     #endif
     #if os(macOS)
-    @State private var macSystemCoordinator: MacPlayerSystemCoordinator?
+    @State private var macSystemCoordinator: VideoNowPlayingCore?
     #endif
     #if os(visionOS)
     @State private var watchTogetherAttachTask: Task<Void, Never>?
@@ -275,7 +275,8 @@ struct CustomPlayerView: View {
                                         artworkPipeline: artworkPipeline)
             #endif
             #if os(macOS)
-            let systemCoordinator = MacPlayerSystemCoordinator(
+            let systemCoordinator = VideoNowPlayingCore(
+                commandProfile: .processWide(fallbackSeconds: 30),
                 mediaSession: musicPlayer.systemMediaSessionCoordinator)
             macSystemCoordinator = systemCoordinator
             systemCoordinator.configure(controller: playback,
