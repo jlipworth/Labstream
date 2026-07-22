@@ -200,7 +200,9 @@ final class PlaybackDiagnostics {
 
     /// Observed throughput value that is safe for adaptation logic. Stale/idle samples are
     /// intentionally treated as missing: a full buffer is healthy, not evidence that bandwidth is
-    /// too low to upshift.
+    /// too low to upshift. This adaptation-only accessor returns active samples so they can gate
+    /// healthy-playback upshifts. AVFoundation can report paced segment delivery or partial startup
+    /// throughput, so these samples must not produce user-facing "cannot sustain" warnings.
     var currentObservedBitrateForAdaptationKbps: Double {
         observedBitrateState == .active ? observedBitrateKbps : 0
     }
@@ -218,18 +220,6 @@ final class PlaybackDiagnostics {
             guard observedBitrateKbps > 0 else { return "idle" }
             return "idle (last \(Self.bitrateLabel(observedBitrateKbps)))"
         }
-    }
-
-    /// Message for the #32 presentation-only bandwidth toast.
-    ///
-    /// Disabled intentionally: AVFoundation's `observedBitrate` is useful as a diagnostic value
-    /// in Stats for Nerds, but during Plex transcoded HLS startup/stalls it can report the
-    /// paced segment delivery rate (or a partial early sample), not the actual network capacity.
-    /// That produced false "0.1 Mbps cannot sustain 3 Mbps" warnings while playback was in fact
-    /// advancing. ABR/failure handling should continue to use concrete playback symptoms
-    /// (stalls, buffer progress, and server segment success), not this presentation-only toast.
-    var bandwidthMismatchMessage: String? {
-        nil
     }
 
     // MARK: Updates
