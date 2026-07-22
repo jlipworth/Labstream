@@ -79,7 +79,6 @@
 				DownloadStorePersistenceTests.swift,
 				DownloadWorkRegistryTests.swift,
 				EmbyCleanupTombstonePersistenceTests.swift,
-				HeldRangeBodyOwnershipPolicyTests.swift,
 				RevisionedPersistenceWriterTests.swift,
 				SideAssetFetchCoordinatorTests.swift,
 			);
