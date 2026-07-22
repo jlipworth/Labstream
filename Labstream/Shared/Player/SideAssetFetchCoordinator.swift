@@ -128,6 +128,7 @@ actor SideAssetFetchCoordinator {
     static let shared = SideAssetFetchCoordinator()
 
     typealias FetchOperation = @Sendable () async throws -> Data
+    typealias TransportAdmission = @Sendable () async throws -> Void
 
     private struct JobKey: Hashable, Sendable {
         let origin: SideAssetOrigin
@@ -137,6 +138,7 @@ actor SideAssetFetchCoordinator {
     private struct Waiter {
         let id: UUID
         let owner: SideAssetOwner
+        let admission: TransportAdmission?
         let continuation: CheckedContinuation<Data, any Error>
     }
 
@@ -150,6 +152,11 @@ actor SideAssetFetchCoordinator {
         var queueOwner: SideAssetOwner
         var task: Task<Void, Never>?
         var requeueIfCancelled = false
+    }
+
+    private struct AdmissionCandidate: Sendable {
+        let waiterID: UUID
+        let admission: TransportAdmission?
     }
 
     private struct OriginState {
@@ -195,6 +202,7 @@ actor SideAssetFetchCoordinator {
         owner: SideAssetOwner,
         requestKey: SideAssetRequestKey,
         existingFile: URL? = nil,
+        onTransportAdmission: TransportAdmission? = nil,
         operation: @escaping FetchOperation
     ) async throws -> Data {
         try Task.checkCancellation()
@@ -215,6 +223,7 @@ actor SideAssetFetchCoordinator {
                         origin: origin,
                         owner: owner,
                         requestKey: requestKey,
+                        admission: onTransportAdmission,
                         operation: operation,
                         isCancelled: Task.isCancelled,
                         continuation: continuation
@@ -246,7 +255,34 @@ actor SideAssetFetchCoordinator {
                owner: SideAssetOwner,
                existingFile: URL? = nil,
                session: URLSession = SideAssetTransportPolicy.sharedSession,
-               operation injectedOperation: FetchOperation? = nil) async throws -> Data {
+               onTransportAdmission: TransportAdmission? = nil) async throws -> Data {
+        try await fetchRequest(
+            request, owner: owner, existingFile: existingFile, session: session,
+            onTransportAdmission: onTransportAdmission, injectedOperation: nil)
+    }
+
+    /// Injection overload keeps the operation as the required final closure so existing test and
+    /// probe call sites cannot accidentally bind a data-producing closure as a discardable
+    /// transport-admission callback and fall through to the real network.
+    func fetch(request: URLRequest,
+               owner: SideAssetOwner,
+               existingFile: URL? = nil,
+               session: URLSession = SideAssetTransportPolicy.sharedSession,
+               onTransportAdmission: TransportAdmission? = nil,
+               operation: @escaping FetchOperation) async throws -> Data {
+        try await fetchRequest(
+            request, owner: owner, existingFile: existingFile, session: session,
+            onTransportAdmission: onTransportAdmission, injectedOperation: operation)
+    }
+
+    private func fetchRequest(
+        _ request: URLRequest,
+        owner: SideAssetOwner,
+        existingFile: URL?,
+        session: URLSession,
+        onTransportAdmission: TransportAdmission?,
+        injectedOperation: FetchOperation?
+    ) async throws -> Data {
         let transportRequest = SideAssetTransportPolicy.nonpersistentRequest(request)
         guard let url = transportRequest.url,
               let scheme = url.scheme?.lowercased(),
@@ -256,7 +292,7 @@ actor SideAssetFetchCoordinator {
 
         let requestKey = SideAssetRequestKey.authenticatedRequest(transportRequest)
 
-        let operation: FetchOperation = injectedOperation ?? {
+        let transport: FetchOperation = injectedOperation ?? {
             let data: Data
             let response: URLResponse
             do {
@@ -283,7 +319,8 @@ actor SideAssetFetchCoordinator {
                                owner: owner,
                                requestKey: requestKey,
                                existingFile: existingFile,
-                               operation: operation)
+                               onTransportAdmission: onTransportAdmission,
+                               operation: transport)
     }
 
     /// Parked work retains its place. In-flight work is cooperatively cancelled and
@@ -319,6 +356,10 @@ actor SideAssetFetchCoordinator {
             }
             if job.waiters.isEmpty {
                 if job.status == .running {
+                    // Keep the cancelled shell until its task acknowledges cancellation. A new
+                    // identical waiter can arrive in that window and must be requeued rather than
+                    // inheriting the dying transport's CancellationError.
+                    job.requeueIfCancelled = true
                     job.task?.cancel()
                     jobs[key] = job
                 } else {
@@ -334,6 +375,10 @@ actor SideAssetFetchCoordinator {
     }
 
 #if DEBUG
+    func activeCountForTesting(origin: SideAssetOrigin) -> Int {
+        origins[origin]?.activeCount ?? 0
+    }
+
     func waiterCountForTesting(origin: SideAssetOrigin,
                                requestKey: SideAssetRequestKey) -> Int {
         jobs[JobKey(origin: origin, request: requestKey)]?.waiters.count ?? 0
@@ -353,6 +398,7 @@ actor SideAssetFetchCoordinator {
         origin: SideAssetOrigin,
         owner: SideAssetOwner,
         requestKey: SideAssetRequestKey,
+        admission: TransportAdmission?,
         operation: @escaping FetchOperation,
         isCancelled: Bool,
         continuation: CheckedContinuation<Data, any Error>
@@ -366,7 +412,8 @@ actor SideAssetFetchCoordinator {
         }
 
         let key = JobKey(origin: origin, request: requestKey)
-        let waiter = Waiter(id: waiterID, owner: owner, continuation: continuation)
+        let waiter = Waiter(
+            id: waiterID, owner: owner, admission: admission, continuation: continuation)
         waiterJobs[waiterID] = key
         if var job = jobs[key] {
             job.waiters[waiterID] = waiter
@@ -430,7 +477,15 @@ actor SideAssetFetchCoordinator {
         let operation = job.operation
         job.task = Task {
             let completion: Completion
-            do { completion = .success(try await operation()) }
+            do {
+                guard await self.admitEligibleWaiter(for: key) else {
+                    // Rejected admissions already resume their own waiters with the exact error.
+                    // No eligible waiter is job cancellation, allowing a waiter that joins this
+                    // dying job before completion to be requeued rather than failed spuriously.
+                    throw CancellationError()
+                }
+                completion = .success(try await operation())
+            }
             catch { completion = .failure(error) }
             self.complete(key, with: completion)
         }
@@ -439,6 +494,47 @@ actor SideAssetFetchCoordinator {
         // A zero-duration test policy can fill the cap synchronously; production pacing
         // normally schedules the next admission through the clock wake-up above.
         schedule(origin)
+    }
+
+    /// Admission belongs to a waiter, not the coalesced request job. A stale-source or exhausted
+    /// waiter is failed independently; another exact owner can then fund the one shared transport.
+    /// Only the admission that succeeds is followed by `operation`, so handoff never double-starts.
+    private func admitEligibleWaiter(for key: JobKey) async -> Bool {
+        while let candidate = nextAdmissionCandidate(for: key) {
+            do {
+                try await candidate.admission?()
+                // Admission funds this one request transport, not only the waiter whose
+                // closure performed the check. That waiter can be cancelled while its async
+                // admission is suspended; if a coalesced waiter still exists, starting the
+                // shared transport avoids charging a second exact owner for the same request.
+                return jobs[key]?.waiters.isEmpty == false
+            } catch {
+                rejectAdmission(candidate, for: key, error: error)
+            }
+        }
+        return false
+    }
+
+    private func nextAdmissionCandidate(for key: JobKey) -> AdmissionCandidate? {
+        guard let job = jobs[key], !job.waiters.isEmpty else { return nil }
+        let waiter = job.waiters.values.first(where: { $0.owner == job.queueOwner })
+            ?? job.waiters.values.first(where: { !parkedOwners.contains($0.owner) })
+            ?? job.waiters.values.first
+        return waiter.map { AdmissionCandidate(waiterID: $0.id, admission: $0.admission) }
+    }
+
+    private func rejectAdmission(_ candidate: AdmissionCandidate,
+                                 for key: JobKey,
+                                 error: any Error) {
+        guard var job = jobs[key],
+              let waiter = job.waiters.removeValue(forKey: candidate.waiterID) else { return }
+        waiterJobs.removeValue(forKey: candidate.waiterID)
+        waiter.continuation.resume(throwing: error)
+        if let next = job.waiters.values.first(where: { !parkedOwners.contains($0.owner) })
+            ?? job.waiters.values.first {
+            job.queueOwner = next.owner
+        }
+        jobs[key] = job
     }
 
     private func wake(_ origin: SideAssetOrigin) {
@@ -504,6 +600,7 @@ actor SideAssetFetchCoordinator {
         waiter.continuation.resume(throwing: CancellationError())
         if job.waiters.isEmpty {
             if job.status == .running {
+                job.requeueIfCancelled = true
                 job.task?.cancel()
                 jobs[key] = job
             } else {
@@ -522,7 +619,9 @@ actor SideAssetFetchCoordinator {
     }
 
     private func reassignQueueOwnerIfNeeded(_ job: inout Job) {
-        guard job.status == .queued, parkedOwners.contains(job.queueOwner),
+        let ownerHasWaiter = job.waiters.values.contains { $0.owner == job.queueOwner }
+        guard job.status == .queued,
+              !ownerHasWaiter || parkedOwners.contains(job.queueOwner),
               let activeOwner = job.waiters.values.first(where: { !parkedOwners.contains($0.owner) })?.owner else { return }
         job.queueOwner = activeOwner
         append(job.key, to: activeOwner, at: job.key.origin)
@@ -569,6 +668,7 @@ enum SideAssetFetchError: Error, Equatable, Sendable {
     case invalidOrigin
     case httpStatus(Int)
     case emptyResponse
+    case retryBudgetExhausted
     /// Token-free Foundation transport category. The original error is intentionally discarded
     /// because its userInfo can retain a credential-bearing request URL.
     case transportFailure(code: Int?)
@@ -585,12 +685,28 @@ extension DownloadManager {
     /// It is deliberately never logged or persisted because Plex URLs and MediaBrowser headers can
     /// carry credentials.
     func fetchOptionalSideAsset(_ request: URLRequest,
-                                for key: DownloadAttemptKey) async throws -> Data {
+                                for key: DownloadAttemptKey,
+                                source: OfflineSideAssetSourceIdentity,
+                                kind: DownloadSideAssetKind,
+                                resource: String? = nil) async throws -> Data {
         let owner = Self.sideAssetOwner(for: key)
         if isQueuePaused { await sideAssetFetchCoordinator.setParked(true, for: owner) }
 
         let policyRequest = Self.sideAssetRequest(applyingCellularPolicy: request)
-        return try await sideAssetFetchCoordinator.fetch(request: policyRequest, owner: owner)
+        return try await sideAssetFetchCoordinator.fetch(
+            request: policyRequest,
+            owner: owner,
+            onTransportAdmission: { [weak self] in
+                guard let self else { throw SideAssetFetchError.retryBudgetExhausted }
+                let admitted = await MainActor.run {
+                    self.store.sideAssetSourceIdentity(for: key) == source
+                        && self.chargeOptionalSideAssetDispatch(
+                            for: key, source: source, kind: kind, resource: resource)
+                }
+                guard admitted else {
+                    throw SideAssetFetchError.retryBudgetExhausted
+                }
+            })
     }
 
     func setOptionalSideAssetHydrationParked(_ parked: Bool, for key: DownloadAttemptKey) {

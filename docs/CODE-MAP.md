@@ -43,7 +43,9 @@ vary presentation.
   authorities, immutable authenticated browse contexts, and the shared `PlexClient`.
 - `Labstream/Shared/Auth/AuthManager.swift` owns sign-in, restore, server selection, backend
   switching, and sign-out. It covers Plex PIN auth, Jellyfin credentials/Quick Connect,
-  and Emby credentials/Connect PIN.
+  Emby credentials/Connect PIN, selected-lane-first restore, and demand-driven download hydration.
+- `Labstream/Shared/Auth/AuthAttemptAuthority.swift` owns the one global authorization generation
+  used to reject cancellation and stale publication across all backend operations.
 - `Labstream/Shared/Auth/KeychainStore.swift` stores secrets and the stable client identifier.
   Do not put tokens in UserDefaults, diagnostics, URLs that do not require them, or
   Codable profile indexes.
@@ -241,7 +243,13 @@ upstream connection rotation used by `PlaybackController`.
 - `DownloadManager+Emby.swift` and `DownloadManager+EmbyConvert.swift` own Emby source,
   remux, and Convert behavior.
 - `DownloadManager+SideCache.swift` caches posters, subtitles, chapters, Plex BIF, and
-  Jellyfin trick-play assets.
+  Jellyfin trick-play assets through `DownloadSideAssetService.swift`, which owns validated
+  off-main repair inventory/preparation and exact resource admission.
+- `DownloadPlanningRequestExecutor.swift` is the injected nonpersistent request boundary for
+  `DownloadItemPlanner`; same-origin 307/308 redirects preserve method/body/headers and every other
+  redirect is rejected.
+- `DownloadOptionsModel.swift` owns typed option resolution; season planning captures immutable
+  drafts and exact retry attempts before one atomic Store transaction.
 - `DownloadTransferStartPlan.swift` is the common backend-to-transfer handoff contract.
 - `Labstream/Capabilities/Downloads/Core/BackgroundDownloadSession.swift` owns URLSession delegates,
   reattachment, progress, validation, completion gating, and durable static byte-range
@@ -261,7 +269,9 @@ upstream connection rotation used by `PlaybackController`.
   `DownloadCleanupIntentJournal.swift` persists credential-free Jellyfin/Emby cleanup
   independently so deleting a row cannot discard required server cleanup.
 - `Labstream/Capabilities/Downloads/Core/OfflineLibraryView.swift` owns the cross-backend offline UI and
-  local playback launch.
+  local playback launch. Its snapshot is lightweight and actions re-resolve exact attempt identity.
+- `PMSKit/.../DownloadStorageSnapshot.swift` owns provenance-aware known/unknown/not-applicable
+  storage presentation.
 - `PMSKit/Sources/PMSKit/Downloads/` contains pure route, status, retry, display, storage,
   identity, and range-transfer policies and offline models.
 

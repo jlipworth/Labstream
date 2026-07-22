@@ -7,20 +7,25 @@ struct OfflineLibrarySnapshotBuilderTests {
     private func record(_ key: String,
                         status: DownloadStatus,
                         bytes: Int = 0,
-                        sideAssetBytes: Int = 0) -> DownloadRecord {
+                        sideAssetBytes: Int = 0,
+                        attemptID: DownloadAttemptID? = nil,
+                        metadata: OfflineMetadata? = nil) -> DownloadRecord {
         DownloadRecord(ratingKey: key,
+                       attemptID: attemptID,
                        title: key,
                        localURL: URL(fileURLWithPath: "/tmp/\(key).mp4"),
                        bytes: bytes,
                        progress: 0.25,
                        status: status,
+                       metadata: metadata,
                        sideAssetBytes: sideAssetBytes)
     }
 
     @Test("builder derives mixed-backend rows, queue action, aggregate stats, and overlays")
     func builderDerivesRowsAndGlobalState() throws {
         let records = [
-            record("plex-1", status: .downloading, bytes: 120, sideAssetBytes: 5),
+            record("plex-1", status: .downloading, bytes: 120, sideAssetBytes: 5,
+                   attemptID: DownloadAttemptID(rawValue: "attempt-a")),
             record("emby:2", status: .failed, bytes: 30),
         ]
 
@@ -49,6 +54,13 @@ struct OfflineLibrarySnapshotBuilderTests {
         #expect(plexRow.statusCaption == "Plex:downloading")
         #expect(plexRow.errorMessage == nil)
         #expect(plexRow.isRetrying == false)
+        #expect(plexRow.id == "plex-1")
+        #expect(plexRow.attemptID?.rawValue == "attempt-a")
+        #expect(plexRow.actionIdentity == OfflineDownloadRowActionIdentity(
+            ratingKey: "plex-1", attemptID: DownloadAttemptID(rawValue: "attempt-a")))
+        #expect(plexRow.title == "plex-1")
+        #expect(plexRow.status == .downloading)
+        #expect(plexRow.routeBadge == .original)
 
         let embyRow = try #require(snapshot.rows.last)
         #expect(embyRow.showBackendBadge)
@@ -56,6 +68,23 @@ struct OfflineLibrarySnapshotBuilderTests {
         #expect(embyRow.errorMessage == "boom")
         #expect(embyRow.statusCaption == "Emby:failed")
         #expect(embyRow.isRetrying)
+    }
+
+    @Test("episode title is derived from lightweight persisted scalars")
+    func episodeTitleUsesPersistedScalars() throws {
+        let metadata = OfflineMetadata(
+            ratingKey: "episode-1", title: "Pilot", type: "episode",
+            grandparentTitle: "Example Show", parentIndex: 2, index: 3)
+        let snapshot = OfflineLibrarySnapshotBuilder.make(
+            records: [record("fallback", status: .complete, metadata: metadata)],
+            isQueuePaused: false,
+            downloadSpeed: [:],
+            errorMessage: { _ in nil },
+            displayProgress: { _ in nil },
+            statusCaption: { _, _ in "Downloaded" },
+            isRetrying: { _ in false })
+
+        #expect(try #require(snapshot.rows.first).title == "Example Show · S2E3 · Pilot")
     }
 
     @Test("snapshot aggregate uses paused resumable display bytes")

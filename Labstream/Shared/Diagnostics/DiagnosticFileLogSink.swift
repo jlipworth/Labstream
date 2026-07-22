@@ -9,44 +9,89 @@ import PMSKit
 /// them after a repro. Rotation is intentionally tiny and local: diagnostics are a permanent feature,
 /// so the file must never grow without bound.
 final class DiagnosticFileLogSink: @unchecked Sendable {
-    private let lock = NSLock()
+    private let queue: DispatchQueue
     private let fileManager: FileManager
     private let directoryURL: URL
     private let fileURL: URL
     private let maxBytes: UInt64
     private let archiveCount: Int
+    private let flushInterval: TimeInterval
+    private let flushByteThreshold: Int
+    private var bufferedLines: [Data] = []
+    private var bufferedBytes = 0
+    private var flushGeneration: UInt64 = 0
+    private var isFlushScheduled = false
 
     init(fileManager: FileManager = .default,
          maxBytes: UInt64 = 1_000_000,
-         archiveCount: Int = 3) {
+         archiveCount: Int = 3,
+         flushInterval: TimeInterval = 0.5,
+         flushByteThreshold: Int = 32_768,
+         directoryURL providedDirectoryURL: URL? = nil,
+         queue: DispatchQueue? = nil) {
         self.fileManager = fileManager
         self.maxBytes = max(64_000, maxBytes)
         self.archiveCount = max(0, archiveCount)
+        self.flushInterval = max(0, flushInterval)
+        self.flushByteThreshold = max(1, flushByteThreshold)
         let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)
             .first ?? fileManager.temporaryDirectory
-        self.directoryURL = support
+        self.directoryURL = providedDirectoryURL ?? support
             .appendingPathComponent("Labstream", isDirectory: true)
             .appendingPathComponent("Diagnostics", isDirectory: true)
         self.fileURL = directoryURL.appendingPathComponent("app-diagnostics.jsonl")
+        self.queue = queue ?? DispatchQueue(label: "com.jlipworth.Labstream.diagnostics.file")
     }
 
     var diagnosticsDirectory: URL { directoryURL }
 
-    func append(_ event: DiagnosticEvent) {
-        lock.lock()
-        defer { lock.unlock() }
+    func append(_ event: DiagnosticEvent,
+                durability: PersistenceDurabilityTier = .bestEffort) {
+        precondition(durability == .bestEffort || durability == .ephemeral,
+                     "Diagnostics cannot satisfy recovery or durable-barrier contracts")
+        guard durability == .bestEffort,
+              let data = (event.jsonLine() + "\n").data(using: .utf8) else { return }
+        queue.async { [self] in
+            bufferedLines.append(data)
+            bufferedBytes += data.count
+            if bufferedBytes >= flushByteThreshold {
+                flushBufferedLines()
+            } else {
+                scheduleFlushIfNeeded()
+            }
+        }
+    }
+
+    /// Serial barrier used at real process inactivity. The normal crash-loss window is at most the
+    /// configured interval or byte threshold; a lifecycle flush reduces that window to zero.
+    func flush() {
+        queue.sync { flushBufferedLines() }
+    }
+
+    private func flushBufferedLines() {
+        guard !bufferedLines.isEmpty else {
+            isFlushScheduled = false
+            return
+        }
+        let lines = bufferedLines
+        bufferedLines.removeAll(keepingCapacity: true)
+        bufferedBytes = 0
+        isFlushScheduled = false
         do {
             try fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-            rotateIfNeeded()
-            let line = event.jsonLine() + "\n"
-            guard let data = line.data(using: .utf8) else { return }
-            if !fileManager.fileExists(atPath: fileURL.path) {
-                fileManager.createFile(atPath: fileURL.path, contents: nil)
+            for line in lines {
+                // One pathological event must not defeat the file bound. Diagnostics are
+                // best-effort, so discard an oversized JSONL record rather than corrupting it.
+                guard UInt64(line.count) <= maxBytes else { continue }
+                rotateIfNeeded(incomingBytes: UInt64(line.count))
+                if !fileManager.fileExists(atPath: fileURL.path) {
+                    fileManager.createFile(atPath: fileURL.path, contents: nil)
+                }
+                let handle = try FileHandle(forWritingTo: fileURL)
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                try handle.write(contentsOf: line)
             }
-            let handle = try FileHandle(forWritingTo: fileURL)
-            defer { try? handle.close() }
-            try handle.seekToEnd()
-            try handle.write(contentsOf: data)
         } catch {
             // Diagnostics must never perturb the app. Keep failure silent; the in-memory report and
             // unified log still receive the event.
@@ -54,16 +99,32 @@ final class DiagnosticFileLogSink: @unchecked Sendable {
     }
 
     func clear() {
-        lock.lock()
-        defer { lock.unlock() }
-        try? fileManager.removeItem(at: fileURL)
-        for index in 1...max(archiveCount, 1) {
-            try? fileManager.removeItem(at: archiveURL(index))
+        queue.sync {
+            flushGeneration &+= 1
+            bufferedLines.removeAll(keepingCapacity: false)
+            bufferedBytes = 0
+            isFlushScheduled = false
+            try? fileManager.removeItem(at: fileURL)
+            for index in 1...max(archiveCount, 1) {
+                try? fileManager.removeItem(at: archiveURL(index))
+            }
         }
     }
 
-    private func rotateIfNeeded() {
-        guard fileSize(fileURL) >= maxBytes else { return }
+    private func scheduleFlushIfNeeded() {
+        guard !isFlushScheduled else { return }
+        isFlushScheduled = true
+        let generation = flushGeneration
+        queue.asyncAfter(deadline: .now() + flushInterval) { [weak self] in
+            guard let self, self.flushGeneration == generation else { return }
+            self.flushBufferedLines()
+        }
+    }
+
+    private func rotateIfNeeded(incomingBytes: UInt64) {
+        let existingBytes = fileSize(fileURL)
+        guard existingBytes >= maxBytes
+                || incomingBytes > maxBytes - min(existingBytes, maxBytes) else { return }
         guard archiveCount > 0 else {
             try? fileManager.removeItem(at: fileURL)
             return

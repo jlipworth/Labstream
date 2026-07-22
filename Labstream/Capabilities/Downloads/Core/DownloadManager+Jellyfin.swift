@@ -442,7 +442,7 @@ extension DownloadManager {
         let store = self.store
         guard let sourceIdentity = store.sideAssetSourceIdentity(for: attemptKey) else { return }
         downloadWorkRegistry.startIfAbsent(for: attemptKey, kind: .sideCache(.jellyfinTrickPlay)) { [weak self] in
-            guard !Task.isCancelled else { return }
+            guard let self, !Task.isCancelled else { return }
             do {
                 let playlistReq = try JellyfinLibrary.trickPlayPlaylistRequest(server: server,
                                                                                token: token,
@@ -450,11 +450,13 @@ extension DownloadManager {
                                                                                itemId: itemId,
                                                                                mediaSourceId: mediaSourceId,
                                                                                width: width)
-                let playlistData = try await self?.fetchOptionalSideAsset(playlistReq, for: attemptKey)
-                guard let playlistData,
-                      let playlistText = String(data: playlistData, encoding: .utf8),
+                let playlistData = try await self.fetchOptionalSideAsset(
+                    playlistReq, for: attemptKey, source: sourceIdentity,
+                    kind: .jellyfinTrickPlay, resource: "playlist")
+                guard let parsed = await DownloadSideAssetService.parseJellyfinPlaylist(playlistData),
                       !Task.isCancelled else { return }
-                let playlist = try JellyfinTrickPlayPlaylistParser.parse(playlistText)
+                let playlistText = parsed.text
+                let playlist = parsed.playlist
                 var tileRelativeByIndex: [Int: String] = [:]
                 var tileFilenamesByURI: [String: String] = [:]
                 var missing: [(index: Int, uri: String, request: URLRequest, destination: URL)] = []
@@ -478,7 +480,9 @@ extension DownloadManager {
                         group.addTask { [weak self] in
                             guard let self,
                                   let data = try? await self.fetchOptionalSideAsset(
-                                    entry.request, for: attemptKey) else { return nil }
+                                    entry.request, for: attemptKey, source: sourceIdentity,
+                                    kind: .jellyfinTrickPlay,
+                                    resource: entry.destination.lastPathComponent) else { return nil }
                             return (entry.index, entry.uri, entry.destination, data)
                         }
                     }
@@ -488,19 +492,14 @@ extension DownloadManager {
                               let staging = store.attemptStagingURL(
                                 for: attemptKey, stableURL: destination) else { continue }
                         defer { try? FileManager.default.removeItem(at: staging) }
-                        guard (try? data.write(to: staging, options: .atomic)) != nil,
+                        guard await DownloadSideAssetService.prepare(
+                                data, as: .image, at: staging),
                               Self.promoteSideAsset(store: store, key: attemptKey,
                                                     expectedSource: sourceIdentity,
                                                     stagingURL: staging, stableURL: destination) else { continue }
                         let relative = destination.lastPathComponent
                         tileRelativeByIndex[index] = relative
                         tileFilenamesByURI[uri] = relative
-                        _ = store.updateMetadata(
-                            for: attemptKey, expectedSideAssetSource: sourceIdentity) {
-                            var merged = $0.jellyfinTrickPlayTileRelativePaths ?? []
-                            if !merged.contains(relative) { merged.append(relative) }
-                            $0.jellyfinTrickPlayTileRelativePaths = merged
-                        }
                     }
                 }
                 let tileRelatives = tileRelativeByIndex.sorted { $0.key < $1.key }.map(\.value)
@@ -512,22 +511,22 @@ extension DownloadManager {
                 guard let playlistStaging = store.attemptStagingURL(
                     for: attemptKey, stableURL: playlistURL) else { return }
                 defer { try? FileManager.default.removeItem(at: playlistStaging) }
-                try sanitized.data(using: .utf8)?.write(to: playlistStaging, options: .atomic)
-                guard Self.promoteSideAsset(store: store, key: attemptKey,
+                guard let sanitizedData = sanitized.data(using: .utf8),
+                      await DownloadSideAssetService.prepare(
+                        sanitizedData, as: .jellyfinPlaylist, at: playlistStaging),
+                      Self.promoteSideAsset(store: store, key: attemptKey,
                                             expectedSource: sourceIdentity,
                                             stagingURL: playlistStaging,
                                             stableURL: playlistURL) else { return }
+                let batch = DownloadSideAssetPublicationBatch(
+                    jellyfinTiles: tileRelatives,
+                    jellyfinPlaylist: playlistURL.lastPathComponent)
                 await MainActor.run {
                     let result = store.updateMetadata(
                         for: attemptKey, expectedSideAssetSource: sourceIdentity) {
-                        $0.jellyfinTrickPlayPlaylistRelativePath = playlistURL.lastPathComponent
-                        var merged = $0.jellyfinTrickPlayTileRelativePaths ?? []
-                        for relative in tileRelatives where !merged.contains(relative) {
-                            merged.append(relative)
-                        }
-                        $0.jellyfinTrickPlayTileRelativePaths = merged
+                        batch.apply(to: &$0)
                     }
-                    if result == .applied || result == .noChange { self?.refreshRecords() }
+                    if result == .applied || result == .noChange { self.refreshRecords() }
                 }
             } catch {
                 // Optional asset cache. Never log token-bearing playlist/tile URLs.

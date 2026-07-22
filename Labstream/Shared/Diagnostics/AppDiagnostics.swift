@@ -18,7 +18,7 @@ enum AppDiagnostics {
     private static let processIdentifier = Int(ProcessInfo.processInfo.processIdentifier)
     private static let store = DiagnosticLogStore(
         capacity: 300,
-        enabled: UserDefaults.standard.bool(forKey: enabledDefaultsKey)
+        enabled: TypedPreferenceStore().value(for: .bool(enabledDefaultsKey, default: false))
     )
     private static let fileSink = DiagnosticFileLogSink()
 
@@ -31,7 +31,7 @@ enum AppDiagnostics {
     /// Single writer of the persisted `enabledDefaultsKey` flag and the in-memory store.
     static func setEnabled(_ enabled: Bool) {
         if enabled {
-            UserDefaults.standard.set(true, forKey: enabledDefaultsKey)
+            TypedPreferenceStore().set(true, for: .bool(enabledDefaultsKey, default: false))
             store.setEnabled(true)
             record(.settingsUI, "diagnostics.enabled", fields: ["enabled": .bool(true)])
         } else {
@@ -40,7 +40,7 @@ enum AppDiagnostics {
             // "simplify" by recording after disabling — the event would be dropped.
             store.setEnabled(true)
             record(.settingsUI, "diagnostics.disabled", fields: ["enabled": .bool(false)])
-            UserDefaults.standard.set(false, forKey: enabledDefaultsKey)
+            TypedPreferenceStore().set(false, for: .bool(enabledDefaultsKey, default: false))
             store.setEnabled(false)
         }
     }
@@ -48,6 +48,14 @@ enum AppDiagnostics {
     static func clear() {
         store.clear()
         fileSink.clear()
+    }
+
+    /// Flush the serial file buffer at a lifecycle boundary. Diagnostics are never download
+    /// recovery authority, so callers cannot promote them to the exact `.barrier` contract.
+    static func flush(durability: PersistenceDurabilityTier = .bestEffort) {
+        precondition(durability == .bestEffort || durability == .ephemeral)
+        guard durability == .bestEffort else { return }
+        fileSink.flush()
     }
 
     @discardableResult
@@ -61,7 +69,7 @@ enum AppDiagnostics {
             return nil
         }
         logger(for: category).debug("\(event.summaryLine, privacy: .public)")
-        fileSink.append(event)
+        fileSink.append(event, durability: .bestEffort)
         return event
     }
 

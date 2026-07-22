@@ -139,10 +139,10 @@ sequenceDiagram
   task's `taskDescription` combines the rating key and current
   `lbs-segment:v3:<offset>:<attemptID>` marker with a U+001F separator. Relaunch/reattach
   therefore requires both the row and exact attempt, not merely a reused rating key.
-  V1 markers have no attempt identity and V2 markers use the older string marker version;
-  both are parseable for migration/diagnostics but are not current adoptable authority.
-  `StaticRangeReattachPolicy` adopts only a current, offset-matching task for the row's
-  exact attempt; unmarked, legacy, stale-attempt, or mismatched tasks are purged/rebuilt.
+  Old V1/V2 segment markers, V1 opaque markers, bare descriptions, and URL-derived identity are
+  no longer parsed or adopted. `StaticRangeReattachPolicy` accepts only a current,
+  offset-matching task for the row's exact attempt; every unmarked, malformed, stale-attempt, or
+  mismatched task is cancelled.
   When a segment task
   finishes, its body is stashed by offset; `StaticRangeSegmentAssemblyPolicy` — a pure
   assembler — decides, given the durable offset and the set of stashed finished bodies,
@@ -243,17 +243,24 @@ On launch, Labstream compares the offline index, files on disk, active transfers
 artifact reservations, and durable cleanup intents. Current reconciliation:
 
 - adopts only current task markers whose exact attempt matches the durable row;
-- rebuilds legacy or ownerless active rows under a newly persisted attempt before work starts;
+- keeps current malformed/ownerless active rows fail-closed rather than guessing ownership;
 - resumes/retries recoverable transfers and surfaces terminal failures in the row;
 - replays required server cleanup from the independent journal when the matching backend
   session is available;
-- repairs missing poster and chapter-image files for completed rows when a matching backend
-  session is available and the row/kind still has retry budget, without re-downloading the playable
-  file or side assets already on disk. Across completed-row scans, a missing `(row, asset kind)` can
-  be offered for rehydrate at most five times during the current process lifetime. A scan consumes
-  an offer before backend-session resolution, so repeated scans while the matching backend is
-  unavailable can exhaust that process's budget without issuing a request. Poster and
-  chapter-image-kind budgets are independent, as are different rows; all chapter images for one row
-  share the chapter-image-kind budget. The in-memory counts reset on the next launch so transient
-  misses receive another chance while permanently unavailable kinds eventually stop re-arming;
+- inventories and repairs missing posters, subtitles, chapters, Plex/Emby BIF, and Jellyfin
+  trick-play playlists/tiles for completed rows without re-downloading playable media. Work runs
+  off-main, validates image/BIF/text payloads before promotion, and batches metadata publication.
+  Retry authority is exact attempt + source + resource kind and is charged only when an eligible
+  waiter actually admits transport; coalesced cancellation or a stale waiter hands authority to the
+  next eligible waiter. Playlist repair audits every locally referenced tile. Successful promotion,
+  including a same-path replacement, advances the side-asset generation so byte accounting and
+  storage-cap snapshots cannot retain stale cache values;
 - keeps completed media available without requiring the source server to be reachable.
+
+Season confirmation captures one immutable draft containing new rows and exact retry attempts. The
+Store validates every owner and commits insertions plus retry admission markers in one schema-v4
+snapshot before any lane starts; stale ownership, a normal persistence failure, and an indeterminate
+atomic-write outcome remain distinct, with the last case pausing download admission. Offline list
+snapshots contain scalar presentation/action identity only; full records resolve at exact-attempt
+action or playback edges. Storage presentation separates known, unknown, and not-applicable bytes
+instead of turning unknown side assets or reservations into false zeroes.

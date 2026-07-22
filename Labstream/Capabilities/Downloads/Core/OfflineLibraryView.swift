@@ -217,14 +217,18 @@ public struct OfflineLibraryView: View {
     fileprivate static let rowActionControlSize: CGFloat = 56
 
     private struct PendingOfflineDeletion: Identifiable {
+        struct Entry {
+            let ratingKey: String
+            let attemptID: DownloadAttemptID?
+        }
         let id = UUID()
-        let ratingKeys: [String]
+        let entries: [Entry]
         let title: String?
 
-        var isMultiple: Bool { ratingKeys.count > 1 }
+        var isMultiple: Bool { entries.count > 1 }
 
         var dialogTitle: String {
-            isMultiple ? "Delete \(ratingKeys.count) downloads?" : "Delete download?"
+            isMultiple ? "Delete \(entries.count) downloads?" : "Delete download?"
         }
 
         var actionTitle: String {
@@ -233,7 +237,7 @@ public struct OfflineLibraryView: View {
 
         var message: String {
             if isMultiple {
-                return "This removes \(ratingKeys.count) downloads from offline storage. You can download them again later."
+                return "This removes \(entries.count) downloads from offline storage. You can download them again later."
             }
             if let title, !title.isEmpty {
                 return "This removes “\(title)” from offline storage. You can download it again later."
@@ -412,37 +416,39 @@ public struct OfflineLibraryView: View {
     private func confirmDelete(rows: [OfflineDownloadRowSnapshot]) {
         let rows = rows.filter { !$0.id.isEmpty }
         guard !rows.isEmpty else { return }
-        let title = rows.count == 1 ? displayTitle(for: rows[0].record) : nil
-        pendingDeletion = PendingOfflineDeletion(ratingKeys: rows.map(\.id),
-                                                title: title)
+        let title = rows.count == 1 ? rows[0].title : nil
+        pendingDeletion = PendingOfflineDeletion(
+            entries: rows.map { .init(ratingKey: $0.id, attemptID: $0.attemptID) },
+            title: title)
     }
 
     private func commitPendingDeletion() {
         guard let pendingDeletion else { return }
-        pendingDeletion.ratingKeys.forEach { manager.delete(ratingKey: $0) }
+        for entry in pendingDeletion.entries {
+            let identity = OfflineDownloadRowActionIdentity(
+                ratingKey: entry.ratingKey, attemptID: entry.attemptID)
+            manager.delete(identity)
+        }
         self.pendingDeletion = nil
     }
 
     @ViewBuilder
     private func row(for rowSnapshot: OfflineDownloadRowSnapshot) -> some View {
-        let record = rowSnapshot.record
         // Drive the row off the explicit, persisted status (D2) instead of inferring
         // completion from `progress >= 1.0` — a stalled job that froze at <100% and a
         // failed-but-100% body are now distinct, observable states.
-        let isComplete = record.isComplete
+        let isComplete = rowSnapshot.isComplete
         let isRetrying = rowSnapshot.isRetrying
-        let isFailed = record.status == .failed && !isRetrying
-        let isUnverified = record.isUnverified
+        let isFailed = rowSnapshot.status == .failed && !isRetrying
+        let isUnverified = rowSnapshot.isUnverified
         // #95: a recoverable interruption is resumable, not failed — show a non-red "will resume"
         // affordance and a Resume control that continues from the saved byte offset.
-        let isPaused = record.status == .paused
+        let isPaused = rowSnapshot.status == .paused
 
         HStack(spacing: 16) {
             // D5: show the locally-cached poster when present (works fully offline);
             // otherwise fall back to a small offline glyph tile.
-            OfflinePosterTile(source: OfflineArtworkSource(fileURL: record.posterURL,
-                                                           metadata: record.metadata,
-                                                           ratingKey: record.ratingKey),
+            OfflinePosterTile(source: rowSnapshot.artwork.flatMap(OfflineArtworkSource.init),
                               isComplete: isComplete,
                               isFailed: isFailed,
                               isUnverified: isUnverified)
@@ -453,22 +459,22 @@ public struct OfflineLibraryView: View {
                 // badges onto their own row beneath a 2-line-truncating title. Regular/visionOS
                 // keep the single-line title-plus-badges HStack.
                 if compactWidth {
-                    Text(displayTitle(for: record)).font(.headline).lineLimit(2)
+                    Text(rowSnapshot.title).font(.headline).lineLimit(2)
                     HStack(spacing: 8) {
-                        titleBadges(for: record, rowSnapshot: rowSnapshot)
+                        titleBadges(for: rowSnapshot)
                     }
                 } else {
                     HStack(spacing: 8) {
-                        Text(displayTitle(for: record)).font(.headline)
-                        titleBadges(for: record, rowSnapshot: rowSnapshot)
+                        Text(rowSnapshot.title).font(.headline)
+                        titleBadges(for: rowSnapshot)
                     }
                 }
-                if let subtitle = subtitle(for: record) {
+                if let subtitle = rowSnapshot.subtitle {
                     Text(subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                if let bitrate = downloadBitrateText(for: record) {
+                if let bitrate = rowSnapshot.qualityText {
                     Text(bitrate)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -526,6 +532,9 @@ public struct OfflineLibraryView: View {
             HStack(spacing: 12) {
                 if isComplete {
                     Button {
+                        guard let record = currentPlayableRecord(for: rowSnapshot.actionIdentity) else {
+                            return
+                        }
                         // Music and video share one audio session — yield music
                         // before launching the offline player (#17).
                         musicPlayer.pauseForVideo()
@@ -538,7 +547,7 @@ public struct OfflineLibraryView: View {
                     .accessibilityLabel("Play offline download")
                 } else if isFailed {
                     Button {
-                        manager.retry(ratingKey: record.ratingKey)
+                        manager.retry(rowSnapshot.actionIdentity)
                     } label: {
                         Image(systemName: "arrow.clockwise.circle.fill")
                     }
@@ -552,7 +561,7 @@ public struct OfflineLibraryView: View {
                     // #95: Resume continues from the saved byte offset (manager.retry resumes a
                     // `.paused` row from persisted resume data).
                     Button {
-                        manager.retry(ratingKey: record.ratingKey)
+                        manager.retry(rowSnapshot.actionIdentity)
                     } label: {
                         Image(systemName: "play.circle.fill")
                     }
@@ -561,7 +570,7 @@ public struct OfflineLibraryView: View {
                     .accessibilityLabel("Resume download")
                 } else {
                     Button {
-                        manager.pause(ratingKey: record.ratingKey)
+                        manager.pause(rowSnapshot.actionIdentity)
                     } label: {
                         Image(systemName: "pause.circle.fill")
                     }
@@ -589,7 +598,7 @@ public struct OfflineLibraryView: View {
         .padding(.vertical, 4)
         #if os(visionOS)
         .background {
-            if highlightedRatingKey == record.ratingKey {
+            if highlightedRatingKey == rowSnapshot.id {
                 RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous)
                     .fill(.tint.opacity(0.16))
             }
@@ -599,11 +608,14 @@ public struct OfflineLibraryView: View {
         .contentShape(Rectangle())
         .onTapGesture {
             if isComplete {
+                guard let record = currentPlayableRecord(for: rowSnapshot.actionIdentity) else {
+                    return
+                }
                 musicPlayer.pauseForVideo()
                 presentOfflinePlayer(record)
             } else if isFailed || isPaused {
                 // #95: tapping a paused row resumes it (manager.retry continues from the offset).
-                manager.retry(ratingKey: record.ratingKey)
+                manager.retry(rowSnapshot.actionIdentity)
             }
         }
     }
@@ -633,20 +645,11 @@ public struct OfflineLibraryView: View {
     }
     #endif
 
-    /// Backend that owns this row, via the single migration fallback on the
-    /// persisted snapshot (#84): a stored `backendKind` wins; pre-#84 rows fall
-    /// back to the ratingKey prefix. Drives the mixed-backend badge below.
-    private func backendKind(for record: DownloadRecord) -> DownloadBackendKind {
-        record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
-            ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
-    }
-
     /// The lane + (mixed-library only) backend capsules that sit with the title. Factored out
     /// so the compact stacked layout and the regular inline HStack share one definition.
     @ViewBuilder
-    private func titleBadges(for record: DownloadRecord,
-                             rowSnapshot: OfflineDownloadRowSnapshot) -> some View {
-        downloadLaneBadge(for: record)
+    private func titleBadges(for rowSnapshot: OfflineDownloadRowSnapshot) -> some View {
+        downloadLaneBadge(rowSnapshot.routeBadge)
         // Only label the backend when the library mixes them, so a
         // simultaneous Plex + Jellyfin/Emby library (#84) stays legible
         // and single-backend libraries carry no visual noise.
@@ -672,8 +675,7 @@ public struct OfflineLibraryView: View {
     /// the server is sending a raw file, a compatible remux, or a live transcode. This is useful
     /// context for resumability and "why is this slower?" without making normal downloads look
     /// like failures.
-    private func downloadLaneBadge(for record: DownloadRecord) -> some View {
-        let badge = DownloadRowDisplayPolicy.routeBadge(for: record)
+    private func downloadLaneBadge(_ badge: DownloadRowDisplayPolicy.RouteBadge) -> some View {
         let label = badge.rawValue
         let systemImage: String
         let tint: Color
@@ -705,31 +707,15 @@ public struct OfflineLibraryView: View {
             .accessibilityLabel("Download route: \(label)")
     }
 
-    /// Keep downloaded episodes self-identifying and sortable by eye even without the server:
-    /// "Show · S1E3 · Episode Title" instead of only the episode title.
-    private func displayTitle(for record: DownloadRecord) -> String {
-        guard let item = record.metadata?.makeMediaItem(), item.kind == .episode else {
-            return record.title
-        }
-        return item.displaySubtitleLine
+    private func currentPlayableRecord(
+        for identity: OfflineDownloadRowActionIdentity
+    ) -> DownloadRecord? {
+        manager.currentRecord(for: identity).flatMap { $0.isComplete ? $0 : nil }
     }
 
-    /// A secondary line built from the persisted snapshot (D5): year + runtime +
-    /// content rating, when available. Returns nil for rows with no metadata.
-    private func subtitle(for record: DownloadRecord) -> String? {
-        guard let meta = record.metadata else { return nil }
-        var parts: [String] = []
-        if let year = meta.year { parts.append(String(year)) }
-        if let duration = meta.duration, duration > 0 {
-            let minutes = max(1, duration / 60_000)
-            parts.append("\(minutes) min")
-        }
-        if let rating = meta.contentRating, !rating.isEmpty { parts.append(rating) }
-        return parts.isEmpty ? nil : parts.joined(separator: " • ")
-    }
-
-    private func downloadBitrateText(for record: DownloadRecord) -> String? {
-        DownloadRowDisplayPolicy.downloadQualityText(for: record)
+    private func backendKind(for record: DownloadRecord) -> DownloadBackendKind {
+        record.metadata?.resolvedBackendKind(ratingKey: record.ratingKey)
+            ?? DownloadBackendKind(ratingKeyPrefix: record.ratingKey)
     }
 
     /// Reconstruct a faithful `MediaItem` from the persisted snapshot (D5) so the

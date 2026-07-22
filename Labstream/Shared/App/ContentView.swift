@@ -92,6 +92,17 @@ struct ContentView: View {
             await authManager.restoreSession()
             bootstrap.isRestoring = false
             #if !os(tvOS)
+            // Restore the selected browse lane first, then hydrate only inactive backends that
+            // currently own durable active work. Paused/failed/completed rows remain cold until
+            // their explicit resume, retry, or side-asset dispatch edge.
+            let inactiveDownloadBackends = Set(
+                downloadManager.records.lazy
+                    .filter { $0.status.isActiveWork }
+                    .map { DownloadJobSnapshot(record: $0).backend }
+            ).subtracting([appModel.activeBackend])
+            for backend in inactiveDownloadBackends.sorted(by: { $0.rawValue < $1.rawValue }) {
+                _ = await authManager.hydrateSavedSessionForDownloads(backend: backend)
+            }
             downloadManager.resumePendingServerPrepDownloads()
             downloadManager.rehydrateMissingOptionalSideAssetsForCompletedRows(
                 reason: "session_restored")

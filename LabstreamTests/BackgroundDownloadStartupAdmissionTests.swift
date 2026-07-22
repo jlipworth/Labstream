@@ -449,62 +449,125 @@ struct BackgroundDownloadStartupAdmissionTests {
         }
     }
 
-    @Test func migratedPausedRowIsDurablyResetBeforeAdmission() async throws {
+    @Test func unsupportedSchemaIsOpaqueUntilTaskDrainThenRootIsQuarantined() async throws {
         try await withTemporaryDirectory { directory in
-            let ratingKey = "plex:legacy-paused"
             let relativePath = "legacy-paused.mp4"
             let partialURL = directory.appendingPathComponent(relativePath)
-            try Data(repeating: 0xA5, count: 4_096).write(to: partialURL)
+            let legacyBytes = Data(repeating: 0xA5, count: 4_096)
+            try legacyBytes.write(to: partialURL)
             try writeV2PausedRow(
-                ratingKey: ratingKey,
+                ratingKey: "plex:legacy-paused",
                 relativePath: relativePath,
-                bytes: 4_096,
+                bytes: legacyBytes.count,
                 directory: directory
             )
+            let originalIndex = try Data(contentsOf: directory.appendingPathComponent("index.json"))
+            let legacyCleanup = Data("legacy-cleanup-authority".utf8)
+            try legacyCleanup.write(to: directory.appendingPathComponent(
+                "download-cleanup-intents.json"))
 
-            let attemptID = DownloadAttemptID(
-                uuid: UUID(uuidString: "B1B1B1B1-B1B1-4B1B-8B1B-B1B1B1B1B1B1")!
-            )
-            let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+            let authority = directory.deletingLastPathComponent().appendingPathComponent(
+                ".\(directory.lastPathComponent)-download-authority", isDirectory: true)
+            try FileManager.default.createDirectory(at: authority, withIntermediateDirectories: true)
+            let cleanupSentinel = authority.appendingPathComponent("cleanup-sentinel")
+            try Data("survive".utf8).write(to: cleanupSentinel)
+
             let store = DownloadStore(baseDirectory: directory)
-            let migration = await Task.detached(priority: .utility) {
-                store.commitLegacyAttemptOwnershipMigration { migratedRatingKey in
-                    #expect(migratedRatingKey == ratingKey)
-                    return attemptID
-                }
-            }.value
-            guard case .committed(let plan) = migration else {
-                Issue.record("Expected committed schema-v3 migration, got \(migration)")
-                return
-            }
-            #expect(plan.taskCancellationAndReset == [key])
-            #expect(FileManager.default.fileExists(atPath: partialURL.path))
+            #expect(store.startupIndexProbe == .unsupported(schemaVersion: 2))
+            // Construction is a pure admission probe for an unsupported root.
+            #expect(try Data(contentsOf: partialURL) == legacyBytes)
+            #expect(try Data(contentsOf: directory.appendingPathComponent("index.json")) == originalIndex)
 
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
             defer { session.invalidateInjectedSessionForTesting() }
-            let activation = await activate(session, resetKeys: [key])
-            #expect(activation == .activated(cancelledTaskCount: 0, resetKeyCount: 1))
-
-            let reset = try #require(store.record(for: ratingKey))
-            #expect(reset.attemptID == attemptID)
-            #expect(reset.status == .failed)
-            #expect(reset.bytes == 0)
-            #expect(reset.progress == 0)
-            #expect(!FileManager.default.fileExists(atPath: partialURL.path))
+            let activation = await UnsupportedResetActivationWaiter().wait(session: session)
+            #expect(activation == .activated(cancelledTaskCount: 0, resetKeyCount: 0))
 
             let indexData = try Data(contentsOf: directory.appendingPathComponent("index.json"))
-            let index = try #require(
-                JSONSerialization.jsonObject(with: indexData) as? [String: Any]
-            )
+            let index = try #require(JSONSerialization.jsonObject(with: indexData) as? [String: Any])
             #expect(index["schemaVersion"] as? Int == 4)
+            #expect((index["rows"] as? [Any])?.isEmpty == true)
+            #expect(!FileManager.default.fileExists(atPath: partialURL.path))
+            #expect(try Data(contentsOf: cleanupSentinel) == Data("survive".utf8))
+            #expect(try Data(contentsOf: authority.appendingPathComponent(
+                "download-cleanup-intents.json")) == legacyCleanup)
+
+            let quarantinedRoot = directory.deletingLastPathComponent().appendingPathComponent(
+                ".\(directory.lastPathComponent)-unsupported-reset-pending")
+            for _ in 0..<100 where FileManager.default.fileExists(atPath: quarantinedRoot.path) {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(!FileManager.default.fileExists(atPath: quarantinedRoot.path))
 
             let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(relaunched.startupIndexProbe == .current)
             #expect(relaunched.commitLegacyAttemptOwnershipMigration() == .notRequired)
-            let restored = try #require(relaunched.record(for: ratingKey))
-            #expect(restored.attemptID == attemptID)
-            #expect(restored.status == .failed)
-            #expect(restored.bytes == 0)
-            #expect(restored.progress == 0)
+            #expect(relaunched.records.isEmpty)
+        }
+    }
+
+    @Test func unsupportedResetInstallFailureRestoresOpaqueRootAndLeavesAdmissionDormant() async throws {
+        try await withTemporaryDirectory { directory in
+            try writeV2PausedRow(
+                ratingKey: "plex:legacy-failure", relativePath: "legacy.mp4", bytes: 10,
+                directory: directory)
+            let index = directory.appendingPathComponent("index.json")
+            let original = try Data(contentsOf: index)
+            let store = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init(atomicWrite: { _, _ in
+                    throw CocoaError(.fileWriteOutOfSpace)
+                }))
+            let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+            defer { session.invalidateInjectedSessionForTesting() }
+
+            guard case .failed = await UnsupportedResetActivationWaiter().wait(session: session)
+            else {
+                Issue.record("Expected reset install failure")
+                return
+            }
+            #expect(try Data(contentsOf: index) == original)
+            do {
+                try session.start(
+                    ratingKey: "plex:new",
+                    from: URL(string: "https://example.invalid/media")!,
+                    to: directory.appendingPathComponent("new.mp4"))
+                Issue.record("Failed reset unexpectedly opened session admission")
+            } catch is CancellationError {
+                // expected
+            }
+        }
+    }
+
+    @Test func malformedCurrentRowFailsClosedWithoutLenientTruncation() throws {
+        try withTemporaryDirectory { directory in
+            let index = directory.appendingPathComponent("index.json")
+            let bytes = try JSONSerialization.data(withJSONObject: [
+                "schemaVersion": 4,
+                "rows": ["not-a-download-row"],
+            ])
+            try bytes.write(to: index)
+            let before = try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
+
+            let store = DownloadStore(baseDirectory: directory)
+            #expect(store.startupIndexProbe == .unreadable)
+            #expect(store.submitLegacyAttemptOwnershipMigration() == .immediate(.unreadableIndex))
+            #expect(store.records.isEmpty)
+            #expect(try Data(contentsOf: index) == bytes)
+            #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted() == before)
+        }
+    }
+
+    @Test func unreadableIndexRemainsUntouchedAndCannotRequestDestructiveReset() throws {
+        try withTemporaryDirectory { directory in
+            let index = directory.appendingPathComponent("index.json")
+            let bytes = Data("not-json".utf8)
+            try bytes.write(to: index)
+            let store = DownloadStore(baseDirectory: directory)
+            #expect(store.startupIndexProbe == .unreadable)
+            #expect(store.submitLegacyAttemptOwnershipMigration() == .immediate(.unreadableIndex))
+            #expect(store.replaceUnsupportedRootWithCurrentEmptyStore() == .notRequired)
+            #expect(try Data(contentsOf: index) == bytes)
         }
     }
 
@@ -671,6 +734,17 @@ private final class ActivationWaiter: @unchecked Sendable {
         self.continuation = nil
         lock.unlock()
         continuation?.resume(returning: result)
+    }
+}
+
+private final class UnsupportedResetActivationWaiter: @unchecked Sendable {
+    func wait(session: BackgroundDownloadSession) async
+        -> BackgroundDownloadSession.StartupActivationResult {
+        await withCheckedContinuation { continuation in
+            session.activateAfterResettingUnsupportedStore { result in
+                continuation.resume(returning: result)
+            }
+        }
     }
 }
 

@@ -17,7 +17,7 @@ struct StaticRangeReattachPolicyTests {
 
         #expect(plan == StaticRangeReattachPlan(
             candidateBaseOffset: 64,
-            disposition: .dropLegacyRange(requestedOffset: 64, durableBytes: 128, rangeRequestShape: .closed)
+            disposition: .rejectUnownedRange(requestedOffset: 64, durableBytes: 128, rangeRequestShape: .closed)
         ))
     }
 
@@ -31,7 +31,7 @@ struct StaticRangeReattachPolicyTests {
             rangeRequestShape: .missing,
             bodyBytesWritten: -5,
             existingTasks: []
-        ).disposition == .dropLegacyRange(requestedOffset: nil, durableBytes: 256, rangeRequestShape: .missing))
+        ).disposition == .rejectUnownedRange(requestedOffset: nil, durableBytes: 256, rangeRequestShape: .missing))
 
         #expect(StaticRangeReattachPolicy.plan(
             taskIdentifier: 12,
@@ -41,7 +41,7 @@ struct StaticRangeReattachPolicyTests {
             rangeRequestShape: .invalid,
             bodyBytesWritten: 0,
             existingTasks: []
-        ).disposition == .dropLegacyRange(requestedOffset: nil, durableBytes: 256, rangeRequestShape: .invalid))
+        ).disposition == .rejectUnownedRange(requestedOffset: nil, durableBytes: 256, rangeRequestShape: .invalid))
     }
 
     @Test("Open-ended remainders must start at the durable partial checkpoint")
@@ -53,7 +53,10 @@ struct StaticRangeReattachPolicyTests {
             requestedOffset: 64,
             rangeRequestShape: .openEnded,
             bodyBytesWritten: 10,
-            existingTasks: []
+            existingTasks: [],
+            taskMarker: DownloadAttemptMarker.taskDescription(
+                ratingKey: "plex:item", attemptID: "attempt-A"),
+            rowAttemptID: "attempt-A"
         )
 
         #expect(plan == StaticRangeReattachPlan(
@@ -71,7 +74,10 @@ struct StaticRangeReattachPolicyTests {
             requestedOffset: 512,
             rangeRequestShape: .openEnded,
             bodyBytesWritten: 0,
-            existingTasks: []
+            existingTasks: [],
+            taskMarker: DownloadAttemptMarker.taskDescription(
+                ratingKey: "emby:item", attemptID: "attempt-A"),
+            rowAttemptID: "attempt-A"
         )
 
         #expect(plan == StaticRangeReattachPlan(candidateBaseOffset: 512, disposition: .adopt))
@@ -88,7 +94,10 @@ struct StaticRangeReattachPolicyTests {
             bodyBytesWritten: 64,
             existingTasks: [
                 StaticRangeTaskSnapshot(taskIdentifier: 29, downloadID: "emby:item", baseOffset: 512, bodyBytesWritten: 32),
-            ]
+            ],
+            taskMarker: DownloadAttemptMarker.taskDescription(
+                ratingKey: "emby:item", attemptID: "attempt-A"),
+            rowAttemptID: "attempt-A"
         )
 
         #expect(plan == StaticRangeReattachPlan(
@@ -112,7 +121,7 @@ struct StaticRangeReattachPolicyTests {
 
         #expect(plan == StaticRangeReattachPlan(
             candidateBaseOffset: 0,
-            disposition: .dropLegacyRange(requestedOffset: 0, durableBytes: 0, rangeRequestShape: .closed)
+            disposition: .rejectUnownedRange(requestedOffset: 0, durableBytes: 0, rangeRequestShape: .closed)
         ))
     }
 
@@ -264,13 +273,13 @@ struct StaticRangeReattachPolicyTests {
             rangeRequestShape: .closed,
             bodyBytesWritten: 10,
             existingTasks: [],
-            taskMarker: StaticRangeSegmentMarker.value(offset: 0),
+            taskMarker: "lbs-segment:v1:0",
             rowAttemptID: "attempt-A"
         )
 
         #expect(plan == StaticRangeReattachPlan(
             candidateBaseOffset: 0,
-            disposition: .dropLegacyRange(requestedOffset: 0, durableBytes: 0, rangeRequestShape: .closed)
+            disposition: .rejectUnownedRange(requestedOffset: 0, durableBytes: 0, rangeRequestShape: .closed)
         ))
     }
 
@@ -372,7 +381,7 @@ struct StaticRangeReattachPolicyTests {
 
         #expect(plan == StaticRangeReattachPlan(
             candidateBaseOffset: 0,
-            disposition: .dropLegacyRange(requestedOffset: 0, durableBytes: 0, rangeRequestShape: .closed)
+            disposition: .rejectUnownedRange(requestedOffset: 0, durableBytes: 0, rangeRequestShape: .closed)
         ))
     }
 
@@ -392,7 +401,7 @@ struct StaticRangeReattachPolicyTests {
 
         #expect(plan == StaticRangeReattachPlan(
             candidateBaseOffset: 512,
-            disposition: .dropLegacyRange(requestedOffset: 512, durableBytes: 0, rangeRequestShape: .closed)
+            disposition: .rejectUnownedRange(requestedOffset: 512, durableBytes: 0, rangeRequestShape: .closed)
         ))
     }
 
@@ -420,10 +429,10 @@ struct StaticRangeReattachPolicyTests {
             rangeRequestShape: .closed,
             bodyBytesWritten: 10,
             existingTasks: [],
-            taskMarker: StaticRangeSegmentMarker.value(offset: 0, attemptID: attemptID.rawValue),
+            taskMarker: "lbs-segment:v2:0:\(attemptID.rawValue)",
             rowAttemptID: attemptID
         )
-        #expect(legacy.disposition == .dropLegacyRange(
+        #expect(legacy.disposition == .rejectUnownedRange(
             requestedOffset: 0, durableBytes: 0, rangeRequestShape: .closed))
     }
 }
