@@ -207,14 +207,17 @@ struct LibraryVisibilityPickerSheet: View {
                 Button("Show All") {
                     hidden.removeAll()
                 }
+                .accessibilityIdentifier("performance.library-visibility.show-all")
                 .disabled(hidden.isEmpty)
 
                 Spacer()
 
                 Button("Not Now", role: .cancel) { onCancel() }
+                    .accessibilityIdentifier("performance.library-visibility.not-now")
                     .keyboardShortcut(.cancelAction)
 
                 Button("Done") { onConfirm(hidden) }
+                    .accessibilityIdentifier("performance.library-visibility.done")
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
             }

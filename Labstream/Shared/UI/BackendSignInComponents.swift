@@ -66,6 +66,22 @@ private extension View {
     func backendAuthSupportingTextStyle() -> some View { modifier(BackendAuthSupportingTextStyle()) }
     func compactBackendPickerChrome() -> some View { modifier(CompactBackendPickerChrome()) }
 
+    /// Stable, privacy-safe hooks for the external macOS performance driver. Keep these
+    /// out of the other platform accessibility trees; they are measurement selectors,
+    /// not backend/server/item identities.
+    @ViewBuilder
+    func macPerformanceAccessibilityIdentifier(_ identifier: String?) -> some View {
+        #if os(macOS)
+        if let identifier {
+            accessibilityIdentifier(identifier)
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
+
     /// Compact iPhone flows use the screen's native gutters rather than retaining
     /// the narrow, centered control column that belongs inside the iPad card.
     @ViewBuilder
@@ -152,6 +168,7 @@ struct BackendSelectionPicker: View {
             #if os(macOS)
             .controlSize(.regular)
             #endif
+            .macPerformanceAccessibilityIdentifier("performance.login.backend-picker")
             .backendAuthControlWidth(BackendAuthMetrics.pickerWidth)
             .compactBackendPickerChrome()
     }
@@ -528,6 +545,7 @@ struct EmbySignInFlow: View {
             secondarySystemImage: "server.rack",
             primaryDisabled: isWorking,
             secondaryDisabled: isWorking,
+            secondaryAccessibilityIdentifier: "performance.login.emby.server-url-method",
             footer: "Emby Connect uses a code at emby.media/pin.html — no server address needed.",
             onPrimary: onChooseConnectPin,
             onSecondary: onChooseServerCredentials)
@@ -553,6 +571,7 @@ struct EmbySignInFlow: View {
             password: $password,
             isWorking: isWorking,
             signInTitle: "Sign in with Emby",
+            accessibilityIdentifierPrefix: "performance.login.emby",
             isSignInDisabled: isWorking || !hasServerInput || !hasCredentialInput,
             onSignIn: onSignInWithCredentials,
             onChooseDifferent: onChooseDifferentFromCredentials)
@@ -562,6 +581,15 @@ struct EmbySignInFlow: View {
 struct BackendServerURLField: View {
     let placeholder: String
     @Binding var text: String
+    let accessibilityIdentifier: String?
+
+    init(placeholder: String,
+         text: Binding<String>,
+         accessibilityIdentifier: String? = nil) {
+        self.placeholder = placeholder
+        _text = text
+        self.accessibilityIdentifier = accessibilityIdentifier
+    }
 
     var body: some View {
         #if os(macOS)
@@ -569,6 +597,7 @@ struct BackendServerURLField: View {
             .textFieldStyle(.roundedBorder)
             .controlSize(.regular)
             .frame(maxWidth: BackendAuthMetrics.fieldWidth)
+            .macPerformanceAccessibilityIdentifier(accessibilityIdentifier)
         #elseif os(tvOS)
         TextField(placeholder, text: $text)
             .frame(maxWidth: BackendAuthMetrics.fieldWidth)
@@ -593,6 +622,7 @@ struct BackendSignInMethodChooser: View {
     let secondarySystemImage: String
     let primaryDisabled: Bool
     let secondaryDisabled: Bool
+    let secondaryAccessibilityIdentifier: String?
     let disabledHint: String?
     let footer: String?
     let onPrimary: () -> Void
@@ -609,6 +639,7 @@ struct BackendSignInMethodChooser: View {
          secondarySystemImage: String,
          primaryDisabled: Bool,
          secondaryDisabled: Bool,
+         secondaryAccessibilityIdentifier: String? = nil,
          disabledHint: String? = nil,
          footer: String? = nil,
          onPrimary: @escaping () -> Void,
@@ -620,6 +651,7 @@ struct BackendSignInMethodChooser: View {
         self.secondarySystemImage = secondarySystemImage
         self.primaryDisabled = primaryDisabled
         self.secondaryDisabled = secondaryDisabled
+        self.secondaryAccessibilityIdentifier = secondaryAccessibilityIdentifier
         self.disabledHint = disabledHint
         self.footer = footer
         self.onPrimary = onPrimary
@@ -655,6 +687,7 @@ struct BackendSignInMethodChooser: View {
                 #if os(macOS)
                 .controlSize(.regular)
                 #endif
+                .macPerformanceAccessibilityIdentifier(secondaryAccessibilityIdentifier)
                 .disabled(secondaryDisabled)
             }
             .backendAuthControlWidth(BackendAuthMetrics.buttonWidth)
@@ -724,6 +757,7 @@ struct BackendCredentialsSignInForm: View {
     let password: Binding<String>
     let isWorking: Bool
     let signInTitle: String
+    let accessibilityIdentifierPrefix: String?
     let systemImage: String
     let isSignInDisabled: Bool
     let chooseDifferentTitle: String
@@ -736,6 +770,7 @@ struct BackendCredentialsSignInForm: View {
          password: Binding<String>,
          isWorking: Bool,
          signInTitle: String,
+         accessibilityIdentifierPrefix: String? = nil,
          systemImage: String = "person.crop.circle.badge.checkmark",
          isSignInDisabled: Bool,
          chooseDifferentTitle: String = "Choose a different sign-in method",
@@ -747,6 +782,7 @@ struct BackendCredentialsSignInForm: View {
         self.password = password
         self.isWorking = isWorking
         self.signInTitle = signInTitle
+        self.accessibilityIdentifierPrefix = accessibilityIdentifierPrefix
         self.systemImage = systemImage
         self.isSignInDisabled = isSignInDisabled
         self.chooseDifferentTitle = chooseDifferentTitle
@@ -757,7 +793,10 @@ struct BackendCredentialsSignInForm: View {
     var body: some View {
         VStack(spacing: DS.Space.md) {
             if let serverURLPlaceholder, let serverURLText {
-                BackendServerURLField(placeholder: serverURLPlaceholder, text: serverURLText)
+                BackendServerURLField(
+                    placeholder: serverURLPlaceholder,
+                    text: serverURLText,
+                    accessibilityIdentifier: accessibilityIdentifierPrefix.map { "\($0).server-url" })
             }
 
             #if os(macOS)
@@ -765,11 +804,15 @@ struct BackendCredentialsSignInForm: View {
                 .textFieldStyle(.roundedBorder)
                 .controlSize(.regular)
                 .frame(maxWidth: BackendAuthMetrics.fieldWidth)
+                .macPerformanceAccessibilityIdentifier(
+                    accessibilityIdentifierPrefix.map { "\($0).username" })
 
             SecureField("Password", text: password)
                 .textFieldStyle(.roundedBorder)
                 .controlSize(.regular)
                 .frame(maxWidth: BackendAuthMetrics.fieldWidth)
+                .macPerformanceAccessibilityIdentifier(
+                    accessibilityIdentifierPrefix.map { "\($0).password" })
             #elseif os(tvOS)
             TextField("Username", text: username)
                 .backendAuthControlWidth(BackendAuthMetrics.fieldWidth)
@@ -812,6 +855,8 @@ struct BackendCredentialsSignInForm: View {
             #endif
             .disabled(!canSubmit)
             .backendAuthControlWidth(BackendAuthMetrics.buttonWidth)
+            .macPerformanceAccessibilityIdentifier(
+                accessibilityIdentifierPrefix.map { "\($0).sign-in" })
 
             Button(chooseDifferentTitle, action: onChooseDifferent)
                 .labstreamGlassButtonStyle()

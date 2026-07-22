@@ -39,6 +39,7 @@ struct PlatformRootShell: View {
           isPresented: $macSearchPresented,
           placement: .toolbar,
           prompt: "Movies, shows, music…")
+        .accessibilityIdentifier("performance.mac.search-field")
 
       if let presentation = macPlayerPresenter.presentation {
         presentation.content
@@ -191,6 +192,7 @@ struct PlatformRootShell: View {
   private var macSidebar: some View {
     List(selection: $macSelection) {
       macSidebarRow(.home, title: "Home", systemImage: "house")
+        .accessibilityIdentifier("performance.mac.sidebar.home")
 
       if !macSidebarModel.catalog.libraries.isEmpty {
         Section("Libraries") {
@@ -362,6 +364,7 @@ struct PlatformRootShell: View {
   private func macLibrarySidebarRow(_ library: MacSidebarLibraryDescriptor) -> some View {
     macSidebarRow(.library(library.id), title: library.title, systemImage: library.kind.systemImage)
       .accessibilityLabel(library.accessibilityTitle)
+      .accessibilityIdentifier("performance.mac.sidebar.library")
   }
 
   private func macMusicSidebarRow(_ pivot: MusicPivot) -> some View {
