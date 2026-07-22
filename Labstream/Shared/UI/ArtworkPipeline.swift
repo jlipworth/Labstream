@@ -241,7 +241,26 @@ struct ArtworkRequestDescriptor: Sendable,
             }
         }
     }
+
+    #if DEBUG || PERFORMANCE_AUDIT
+    fileprivate var uncachedDelivery: ArtworkDeliveryProvenance {
+        switch source {
+        case .remote: .networkDecode
+        case .localFile: .localFile
+        }
+    }
+    #endif
 }
+
+#if DEBUG || PERFORMANCE_AUDIT
+enum ArtworkDeliveryProvenance: String, CaseIterable, Sendable {
+    case networkDecode = "network_decode"
+    case compressedCacheDecode = "compressed_cache_decode"
+    case decodedCache = "decoded_cache"
+    case inFlightJoin = "inflight_join"
+    case localFile = "local_file"
+}
+#endif
 
 struct ArtworkPipelineResponse: Sendable,
                                 CustomStringConvertible,
@@ -254,12 +273,31 @@ struct ArtworkPipelineResponse: Sendable,
     let encodedTypeIdentifier: String?
     let byteCount: Int
     let statusCode: Int
+    #if DEBUG || PERFORMANCE_AUDIT
+    let delivery: ArtworkDeliveryProvenance
+    #endif
 
     var description: String {
+        #if DEBUG || PERFORMANCE_AUDIT
+        "ArtworkPipelineResponse(bytes: \(byteCount), status: \(statusCode), type: \(encodedTypeIdentifier ?? "unknown"), delivery: \(delivery.rawValue), image: <opaque>, encodedData: <redacted>)"
+        #else
         "ArtworkPipelineResponse(bytes: \(byteCount), status: \(statusCode), type: \(encodedTypeIdentifier ?? "unknown"), image: <opaque>, encodedData: <redacted>)"
+        #endif
     }
     var debugDescription: String { description }
     var customMirror: Mirror {
+        #if DEBUG || PERFORMANCE_AUDIT
+        Mirror(self,
+               children: [
+                   "byteCount": byteCount,
+                   "statusCode": statusCode,
+                   "delivery": delivery.rawValue,
+                   "encodedTypeIdentifier": encodedTypeIdentifier ?? "unknown",
+                   "image": "<opaque>",
+                   "encodedData": "<redacted>",
+               ],
+               displayStyle: .struct)
+        #else
         Mirror(self,
                children: [
                    "byteCount": byteCount,
@@ -269,7 +307,19 @@ struct ArtworkPipelineResponse: Sendable,
                    "encodedData": "<redacted>",
                ],
                displayStyle: .struct)
+        #endif
     }
+
+    #if DEBUG || PERFORMANCE_AUDIT
+    fileprivate func withDelivery(_ delivery: ArtworkDeliveryProvenance) -> ArtworkPipelineResponse {
+        ArtworkPipelineResponse(image: image,
+                                encodedData: encodedData,
+                                encodedTypeIdentifier: encodedTypeIdentifier,
+                                byteCount: byteCount,
+                                statusCode: statusCode,
+                                delivery: delivery)
+    }
+    #endif
 }
 
 enum ArtworkPipelineError: Error, Equatable, Sendable {
@@ -385,6 +435,13 @@ private actor ArtworkPipelineCore {
         let cacheEpoch: UInt64
     }
 
+    private struct Waiter {
+        let continuation: CheckedContinuation<ArtworkPipelineResponse, Error>
+        #if DEBUG || PERFORMANCE_AUDIT
+        let delivery: ArtworkDeliveryProvenance
+        #endif
+    }
+
     private final class Flight {
         enum State: Equatable { case queued, running }
 
@@ -398,7 +455,7 @@ private actor ArtworkPipelineCore {
         var priority: ArtworkPriority
         var state: State = .queued
         var operation: Task<Void, Never>?
-        var waiters: [UUID: CheckedContinuation<ArtworkPipelineResponse, Error>] = [:]
+        var waiters: [UUID: Waiter] = [:]
 
         init(descriptor: ArtworkRequestDescriptor,
              priority: ArtworkPriority,
@@ -497,7 +554,11 @@ private actor ArtworkPipelineCore {
 
         let identity = descriptor.taskIdentity
         if let cached = decodedCache.value(for: identity) {
+            #if DEBUG || PERFORMANCE_AUDIT
+            continuation.resume(returning: cached.withDelivery(.decodedCache))
+            #else
             continuation.resume(returning: cached)
+            #endif
             return
         }
 
@@ -511,7 +572,12 @@ private actor ArtworkPipelineCore {
 
         if let flight = flights[flightKey] {
             flight.priority = max(flight.priority, priority)
-            flight.waiters[waiterID] = continuation
+            #if DEBUG || PERFORMANCE_AUDIT
+            flight.waiters[waiterID] = Waiter(continuation: continuation,
+                                              delivery: .inFlightJoin)
+            #else
+            flight.waiters[waiterID] = Waiter(continuation: continuation)
+            #endif
             admit(origin: flight.origin)
             return
         }
@@ -522,15 +588,22 @@ private actor ArtworkPipelineCore {
                             sequence: nextSequence,
                             cacheEpoch: cacheEpoch,
                             compressedSeed: compressedCache.value(for: identity))
-        flight.waiters[waiterID] = continuation
+        #if DEBUG || PERFORMANCE_AUDIT
+        let delivery: ArtworkDeliveryProvenance = flight.compressedSeed == nil
+        ? descriptor.uncachedDelivery
+        : .compressedCacheDecode
+        flight.waiters[waiterID] = Waiter(continuation: continuation, delivery: delivery)
+        #else
+        flight.waiters[waiterID] = Waiter(continuation: continuation)
+        #endif
         flights[flightKey] = flight
         admit(origin: flight.origin)
     }
 
     private func cancelWaiter(_ waiterID: UUID, flightKey: FlightKey) {
         guard let flight = flights[flightKey],
-              let continuation = flight.waiters.removeValue(forKey: waiterID) else { return }
-        continuation.resume(throwing: CancellationError())
+              let waiter = flight.waiters.removeValue(forKey: waiterID) else { return }
+        waiter.continuation.resume(throwing: CancellationError())
         guard flight.waiters.isEmpty else { return }
 
         flights.removeValue(forKey: flightKey)
@@ -610,8 +683,12 @@ private actor ArtworkPipelineCore {
                     cost: Self.decodedCost(loaded.response))
                 negativeCache.removeValue(for: identity)
             }
-            for continuation in flight.waiters.values {
-                continuation.resume(returning: loaded.response)
+            for waiter in flight.waiters.values {
+                #if DEBUG || PERFORMANCE_AUDIT
+                waiter.continuation.resume(returning: loaded.response.withDelivery(waiter.delivery))
+                #else
+                waiter.continuation.resume(returning: loaded.response)
+                #endif
             }
 
         case let .failure(error):
@@ -627,13 +704,13 @@ private actor ArtworkPipelineCore {
                                      for: identity,
                                      cost: 1)
             }
-            for continuation in flight.waiters.values {
-                continuation.resume(throwing: error)
+            for waiter in flight.waiters.values {
+                waiter.continuation.resume(throwing: error)
             }
 
         case .cancelled:
-            for continuation in flight.waiters.values {
-                continuation.resume(throwing: CancellationError())
+            for waiter in flight.waiters.values {
+                waiter.continuation.resume(throwing: CancellationError())
             }
         }
 
@@ -678,11 +755,21 @@ private actor ArtworkPipelineCore {
             throw ArtworkPipelineError.invalidImage
         }
         try Task.checkCancellation()
-        return Loaded(response: ArtworkPipelineResponse(image: decoded.image,
-                                                        encodedData: data,
-                                                        encodedTypeIdentifier: decoded.typeIdentifier,
-                                                        byteCount: data.count,
-                                                        statusCode: 200),
+        #if DEBUG || PERFORMANCE_AUDIT
+        let response = ArtworkPipelineResponse(image: decoded.image,
+                                               encodedData: data,
+                                               encodedTypeIdentifier: decoded.typeIdentifier,
+                                               byteCount: data.count,
+                                               statusCode: 200,
+                                               delivery: descriptor.uncachedDelivery)
+        #else
+        let response = ArtworkPipelineResponse(image: decoded.image,
+                                               encodedData: data,
+                                               encodedTypeIdentifier: decoded.typeIdentifier,
+                                               byteCount: data.count,
+                                               statusCode: 200)
+        #endif
+        return Loaded(response: response,
                       compressedData: data)
     }
 

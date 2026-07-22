@@ -53,6 +53,47 @@ class PerfLogSummaryTests(unittest.TestCase):
             "media_count=2 swr_refresh=true"
         )[1], "invalid_boolean_field")
 
+    def test_browse_and_artwork_measurement_fields_are_closed(self):
+        records = (
+            ("perf.span phase=home.first_content backend=Emby result=success duration_ms=4 "
+             "rail_count=1 item_count=8 publication_count=1", "home.first_content"),
+            ("perf.span phase=search.load backend=Plex result=success duration_ms=5 "
+             "group_count=2 item_count=9 publication_count=1", "search.load"),
+            ("perf.span phase=library_grid.first_content backend=Jellyfin result=success duration_ms=6 "
+             "item_count=200 total_count=10000 page_count=1 publication_count=1 collapse_mode=collapsed",
+             "library_grid.first_content"),
+            ("perf.span phase=library_grid.complete backend=Jellyfin result=success duration_ms=20 "
+             "item_count=9500 total_count=10000 page_count=50 publication_count=51 collapse_mode=collapsed",
+             "library_grid.complete"),
+            ("perf.span phase=library_grid.page backend=Plex result=success duration_ms=7 "
+             "item_count=200 page=3 page_size=200 attempt=1", "library_grid.page"),
+            ("perf.span phase=artwork.load backend=Emby result=success duration_ms=8 attempts=1 bytes=100 "
+             "status=200 width=100 height=150 pixel_width=200 pixel_height=300 delivery=inflight_join",
+             "artwork.load"),
+        )
+        for line, phase in records:
+            with self.subTest(phase=phase):
+                parsed = perf.parse_span_line(line)
+                self.assertEqual(parsed.phase, phase)
+
+        self.assertEqual(perf.parse_span_line_diagnostic(
+            "perf.span phase=artwork.load backend=Emby result=success duration_ms=8 "
+            "attempts=1 bytes=100 status=200 width=100 height=150 pixel_width=200 pixel_height=300 "
+            "delivery=memory_magic"
+        )[1], "invalid_enum_field")
+
+        # Publication completion order is diagnostic only and must not be correctness-signed.
+        self.assertEqual(
+            perf.evidence_schema.validate_correctness_fields(
+                "home.load", "Plex", ["hub_count", "item_count"]
+            ),
+            ("hub_count", "item_count"),
+        )
+        with self.assertRaisesRegex(ValueError, "correctness_fields_must_match"):
+            perf.evidence_schema.validate_correctness_fields(
+                "home.load", "Plex", ["hub_count", "item_count", "publication_count"]
+            )
+
     def test_launch_spans_use_closed_backend_and_correctness_fields(self):
         composition = perf.parse_span_line(
             "perf.span phase=runtime.composition backend=App result=success duration_ms=4 "
@@ -191,7 +232,7 @@ class PerfLogSummaryTests(unittest.TestCase):
                 ]), 0)
             raw.write_text(marker.getvalue()
                            + "perf.span phase=home.load backend=Plex result=success duration_ms=10 "
-                           "hub_count=1 item_count=2\n")
+                           "hub_count=1 item_count=2 publication_count=1\n")
             manifest_data["evidence"]["artifacts"] = [{
                 "path": "raw/artifact-0001.log", "sha256": hashlib.sha256(raw.read_bytes()).hexdigest(),
             }]

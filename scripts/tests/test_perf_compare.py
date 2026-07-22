@@ -45,7 +45,7 @@ class PerfCompareTests(unittest.TestCase):
         raw.write_text(
             f"perf.capture run_id={run_id} workload_id=workload-0123456789ab launch_nonce={launch_nonce}\n"
             f"perf.span phase=home.load backend=Plex result={result} duration_ms={duration} "
-            f"hub_count=10 item_count={item_count}\n"
+            f"hub_count=10 item_count={item_count} publication_count=1\n"
         )
         manifest = {
             "schema_version": 1,
@@ -101,7 +101,8 @@ class PerfCompareTests(unittest.TestCase):
             "source_artifact": raw_pointer, "workload": workload,
             "spans": [{"phase": "home.load", "backend": "Plex", "result": result,
                        "duration_ms": duration,
-                       "fields": {"hub_count": "10", "item_count": str(item_count)}}],
+                       "fields": {"hub_count": "10", "item_count": str(item_count),
+                                  "publication_count": "1"}}],
             "rows": [], "diagnostics": {"rejected_span_count": 0, "rejection_reasons": {}},
         }
         if mutate:
@@ -366,7 +367,8 @@ class PerfCompareTests(unittest.TestCase):
         frozen_path = self.root / "frozen.json"
         argv = ["freeze", "--control-manifest", *map(str, freeze_paths), "--phase", "home.load",
                 "--backend", "Plex", "--correctness-field", "hub_count",
-                "--correctness-field", "item_count", "--out", str(frozen_path)]
+                "--correctness-field", "item_count",
+                "--out", str(frozen_path)]
         self.assertEqual(compare.main(argv), 0)
         digest = hashlib.sha256(frozen_path.read_bytes()).hexdigest()
         controls, candidates = self.paired_set(factor=1.2)
@@ -396,7 +398,8 @@ class PerfCompareTests(unittest.TestCase):
         paths = self.freeze_set()
         argv = ["freeze", "--control-manifest", *map(str, paths), "--phase", "home.load",
                 "--backend", "Plex", "--correctness-field", "hub_count",
-                "--correctness-field", "item_count", "--out", str(paths[0])]
+                "--correctness-field", "item_count",
+                "--out", str(paths[0])]
         self.assertEqual(compare.main(argv), 1)
 
 

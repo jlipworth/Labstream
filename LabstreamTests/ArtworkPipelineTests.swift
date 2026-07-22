@@ -265,6 +265,7 @@ struct ArtworkPipelineTests {
         }
         let result = try await pipeline.fetch(first)
         #expect(remoteCalls.value == 0)
+        #expect(result.delivery == .localFile)
         #expect(result.encodedData == Self.validPNG)
         #expect(result.encodedTypeIdentifier == "public.png")
 
@@ -420,6 +421,43 @@ struct ArtworkPipelineTests {
         _ = try await pipeline.fetch(descriptor)
         _ = try await pipeline.fetch(descriptor)
         #expect(calls.value == 2)
+    }
+
+    @Test func deliveryProvenanceDistinguishesWireDecodedCompressedAndJoinedReaders() async throws {
+        let descriptor = try makePlexDescriptor(path: "/delivery", pixels: 80)
+
+        let decodedCalls = TestLockedBox(0)
+        let decodedPipeline = ArtworkPipeline { _ in
+            decodedCalls.withValue { $0 += 1 }
+            return (Self.squarePNG, Self.response(status: 200))
+        }
+        let network = try await decodedPipeline.fetch(descriptor)
+        let decoded = try await decodedPipeline.fetch(descriptor)
+        #expect(network.delivery == .networkDecode)
+        #expect(decoded.delivery == .decodedCache)
+        #expect(decodedCalls.value == 1)
+
+        var compressedConfiguration = ArtworkPipelineConfiguration()
+        compressedConfiguration.decodedCostLimit = 0
+        let compressedCalls = TestLockedBox(0)
+        let compressedPipeline = ArtworkPipeline(configuration: compressedConfiguration) { _ in
+            compressedCalls.withValue { $0 += 1 }
+            return (Self.squarePNG, Self.response(status: 200))
+        }
+        #expect(try await compressedPipeline.fetch(descriptor).delivery == .networkDecode)
+        #expect(try await compressedPipeline.fetch(descriptor).delivery == .compressedCacheDecode)
+        #expect(compressedCalls.value == 1)
+
+        let probe = ControlledArtworkTransport()
+        let joinedPipeline = ArtworkPipeline { descriptor in try await probe.fetch(descriptor) }
+        let owner = Task { try await joinedPipeline.fetch(descriptor) }
+        try await probe.waitUntilStarted(count: 1)
+        let joiner = Task { try await joinedPipeline.fetch(descriptor) }
+        try await waitForWaiters(2, descriptor: descriptor, pipeline: joinedPipeline)
+        await probe.succeed(at: 0, data: Self.squarePNG)
+        #expect(try await owner.value.delivery == .networkDecode)
+        #expect(try await joiner.value.delivery == .inFlightJoin)
+        #expect(await probe.startedCount == 1)
     }
 
     @Test func pipelineRedactsTransportErrorsAndRejectsNonHTTPResponses() async throws {

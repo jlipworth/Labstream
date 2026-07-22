@@ -231,6 +231,8 @@ struct SearchView: View {
         guard SearchRequestAuthority.accepts(capturedKey: searchKey,
                                              currentKey: currentSearchAuthorityKey,
                                              isCancelled: Task.isCancelled) else { return }
+        let span = PerformanceInstrumentation.begin(.searchLoad,
+                                                     backend: appModel.activeBackend.performanceLabel)
 
         if appModel.activeBackend == .jellyfin {
             loadState = .loading
@@ -245,14 +247,23 @@ struct SearchView: View {
                 let searchResults = try await client.searchResults(query: trimmed, views: views)
                 guard SearchRequestAuthority.accepts(capturedKey: searchKey,
                                                      currentKey: currentSearchAuthorityKey,
-                                                     isCancelled: Task.isCancelled) else { return }
+                                                     isCancelled: Task.isCancelled) else {
+                    span.end(result: Task.isCancelled ? "cancelled" : "superseded")
+                    return
+                }
                 results = searchResults
                 loadedQuery = searchKey
                 loadState = .loaded
+                span.end(fields: searchPerformanceFields(searchResults))
             } catch {
                 guard SearchRequestAuthority.accepts(capturedKey: searchKey,
                                                      currentKey: currentSearchAuthorityKey,
-                                                     isCancelled: Task.isCancelled) else { return }
+                                                     isCancelled: Task.isCancelled) else {
+                    span.end(result: Task.isCancelled ? "cancelled" : "superseded")
+                    return
+                }
+                span.end(result: "failure",
+                         fields: ["error": PerformanceInstrumentation.errorLabel(error)])
                 loadState = .failed(friendlyMessage(error))
             }
             return
@@ -271,20 +282,30 @@ struct SearchView: View {
                 let searchResults = try await client.searchResults(query: trimmed, views: views)
                 guard SearchRequestAuthority.accepts(capturedKey: searchKey,
                                                      currentKey: currentSearchAuthorityKey,
-                                                     isCancelled: Task.isCancelled) else { return }
+                                                     isCancelled: Task.isCancelled) else {
+                    span.end(result: Task.isCancelled ? "cancelled" : "superseded")
+                    return
+                }
                 results = searchResults
                 loadedQuery = searchKey
                 loadState = .loaded
+                span.end(fields: searchPerformanceFields(searchResults))
             } catch {
                 guard SearchRequestAuthority.accepts(capturedKey: searchKey,
                                                      currentKey: currentSearchAuthorityKey,
-                                                     isCancelled: Task.isCancelled) else { return }
+                                                     isCancelled: Task.isCancelled) else {
+                    span.end(result: Task.isCancelled ? "cancelled" : "superseded")
+                    return
+                }
+                span.end(result: "failure",
+                         fields: ["error": PerformanceInstrumentation.errorLabel(error)])
                 loadState = .failed(friendlyMessage(error))
             }
             return
         }
 
         guard let service = try? PlexBrowseService(appModel: appModel) else {
+            span.end(result: "failure", fields: ["error": "missing_plex_server"])
             loadState = .failed("No server selected.")
             return
         }
@@ -304,16 +325,37 @@ struct SearchView: View {
             )
             guard SearchRequestAuthority.accepts(capturedKey: searchKey,
                                                  currentKey: currentSearchAuthorityKey,
-                                                 isCancelled: Task.isCancelled) else { return }
+                                                 isCancelled: Task.isCancelled) else {
+                span.end(result: Task.isCancelled ? "cancelled" : "superseded")
+                return
+            }
             results = combined
             loadedQuery = searchKey
             loadState = .loaded
+            span.end(fields: searchPerformanceFields(combined))
         } catch {
             guard SearchRequestAuthority.accepts(capturedKey: searchKey,
                                                  currentKey: currentSearchAuthorityKey,
-                                                 isCancelled: Task.isCancelled) else { return }
+                                                 isCancelled: Task.isCancelled) else {
+                span.end(result: Task.isCancelled ? "cancelled" : "superseded")
+                return
+            }
+            span.end(result: "failure",
+                     fields: ["error": PerformanceInstrumentation.errorLabel(error)])
             loadState = .failed(friendlyMessage(error))
         }
+    }
+
+    private func searchPerformanceFields(_ searchResults: SearchResults) -> [String: Any] {
+        let counts = BrowsePerformanceMeasurementPolicy.aggregateCounts(
+            searchResults.groups.map { group in
+                group.hubs.reduce(0) { $0 + $1.metadata.count }
+            })
+        return [
+            "group_count": counts.containerCount,
+            "item_count": counts.itemCount,
+            "publication_count": 1,
+        ]
     }
 }
 

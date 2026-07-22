@@ -1237,6 +1237,15 @@ policy:
     children through no-follow directory descriptors, use `log show`'s supported outward-rounded
     epoch bounds, and request Info-level newline JSON so only complete `eventMessage` records reach
     the strict parser. Its single pair remains `insufficient_data` and is not a performance verdict.
+11. The first P2 measurement-only slice distinguishes Home and library-grid first-content from
+    terminal completion, records exact publication/page counts, adds a post-debounce Search span,
+    and labels artwork delivery as network decode, compressed-cache decode, decoded-cache hit,
+    in-flight join, or local file. These are closed privacy-safe fields only: the slice does not
+    alter browse scheduling, request construction, URLSession, cache limits/eviction, retry policy,
+    or UI behavior. Publication count remains diagnostic rather than a correctness field because
+    concurrent completion order is nondeterministic. A deterministic external server and UI workload
+    driver remain separate follow-up work. Control `ead62213` must receive this same instrumentation
+    symmetrically before any control/candidate capture; no evidence captured before that is comparable.
 
 ### Wave 6 — Optimize measured bottlenecks
 

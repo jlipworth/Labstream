@@ -216,6 +216,12 @@ struct HomeView: View {
         let span = PerformanceInstrumentation.begin(.homeLoad,
                                                      backend: appModel.activeBackend.performanceLabel,
                                                      fields: ["force": force ? 1 : 0])
+        let firstContentSpan = PerformanceInstrumentation.begin(
+            .homeFirstContent,
+            backend: appModel.activeBackend.performanceLabel)
+        #if DEBUG || PERFORMANCE_AUDIT
+        var publicationCount = 0
+        #endif
         if appModel.activeBackend.isMediaBrowser {
             loadState = .loading
             do {
@@ -227,6 +233,7 @@ struct HomeView: View {
                 // native hubs and must never enter the Jellyfin/Emby provider.
                 guard let provider = MediaBrowserHomeProvider(appModel: appModel,
                                                               catalogRepository: catalogRepository) else {
+                    firstContentSpan.end(result: "superseded")
                     span.end(result: "superseded")
                     return
                 }
@@ -240,10 +247,24 @@ struct HomeView: View {
                         ? activeIdentity : nil
                     loadState = MediaBrowserHomePublicationPolicy.shouldShowLoadedState(snapshot)
                         ? .loaded : .loading
+                    #if DEBUG || PERFORMANCE_AUDIT
+                    publicationCount += 1
+                    let itemCount = snapshot.rails.reduce(0) { $0 + $1.items.count }
+                    if itemCount > 0 {
+                        firstContentSpan.end(
+                            result: BrowsePerformanceMeasurementPolicy.firstContentResult(itemCount: itemCount),
+                            fields: [
+                            "rail_count": snapshot.rails.count,
+                            "item_count": itemCount,
+                            "publication_count": publicationCount,
+                        ])
+                    }
+                    #endif
                 }
                 guard generation == loadGeneration,
                       loadIdentity == activeIdentity,
                       !Task.isCancelled else {
+                    firstContentSpan.end(result: Task.isCancelled ? "cancelled" : "superseded")
                     span.end(result: Task.isCancelled ? "cancelled" : "superseded")
                     return
                 }
@@ -253,6 +274,24 @@ struct HomeView: View {
                                            server: session.baseURL)
                     LabstreamShortcuts.updateAppShortcutParameters()
                 }
+                #if DEBUG || PERFORMANCE_AUDIT
+                span.end(fields: [
+                    "view_count": content.libraries.count,
+                    "rail_count": mediaBrowserRails.count,
+                    "item_count": mediaBrowserRails.reduce(0) { $0 + $1.items.count },
+                    "degraded": content.isDegraded ? 1 : 0,
+                    "pending_rail_count": content.pendingRailKeys.count,
+                    "publication_count": publicationCount,
+                ])
+                let terminalItemCount = mediaBrowserRails.reduce(0) { $0 + $1.items.count }
+                firstContentSpan.end(
+                    result: BrowsePerformanceMeasurementPolicy.firstContentResult(itemCount: terminalItemCount),
+                    fields: [
+                    "rail_count": mediaBrowserRails.count,
+                    "item_count": terminalItemCount,
+                    "publication_count": publicationCount,
+                ])
+                #else
                 span.end(fields: [
                     "view_count": content.libraries.count,
                     "rail_count": mediaBrowserRails.count,
@@ -260,13 +299,17 @@ struct HomeView: View {
                     "degraded": content.isDegraded ? 1 : 0,
                     "pending_rail_count": content.pendingRailKeys.count,
                 ])
+                #endif
             } catch {
                 guard generation == loadGeneration,
                       loadIdentity == activeIdentity,
                       !Task.isCancelled else {
+                    firstContentSpan.end(result: Task.isCancelled ? "cancelled" : "superseded")
                     span.end(result: Task.isCancelled ? "cancelled" : "superseded")
                     return
                 }
+                firstContentSpan.end(result: "failure",
+                                     fields: ["error": PerformanceInstrumentation.errorLabel(error)])
                 span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
                 loadState = .failed(friendlyMessage(error))
             }
@@ -274,6 +317,7 @@ struct HomeView: View {
         }
 
         guard let service = try? PlexBrowseService(appModel: appModel) else {
+            firstContentSpan.end(result: "failure", fields: ["error": "missing_plex_server"])
             span.end(result: "failure", fields: ["error": "missing_plex_server"])
             loadState = .failed("No reachable Plex server selected.")
             return
@@ -282,18 +326,36 @@ struct HomeView: View {
         do {
             let loadedHubs = try await service.hubs()
             guard generation == loadGeneration,
-                  loadIdentity == activeIdentity,
-                  !Task.isCancelled else {
+                      loadIdentity == activeIdentity,
+                      !Task.isCancelled else {
+                firstContentSpan.end(result: Task.isCancelled ? "cancelled" : "superseded")
                 span.end(result: Task.isCancelled ? "cancelled" : "superseded")
                 return
             }
             hubs = loadedHubs
             loadedIdentity = activeIdentity
             loadState = .loaded
+            #if DEBUG || PERFORMANCE_AUDIT
+            publicationCount = 1
+            let itemCount = hubs.reduce(0) { $0 + $1.metadata.count }
+            firstContentSpan.end(
+                result: BrowsePerformanceMeasurementPolicy.firstContentResult(itemCount: itemCount),
+                fields: [
+                "rail_count": hubs.count,
+                "item_count": itemCount,
+                "publication_count": publicationCount,
+            ])
+            span.end(fields: [
+                "hub_count": hubs.count,
+                "item_count": hubs.reduce(0) { $0 + $1.metadata.count },
+                "publication_count": publicationCount,
+            ])
+            #else
             span.end(fields: [
                 "hub_count": hubs.count,
                 "item_count": hubs.reduce(0) { $0 + $1.metadata.count },
             ])
+            #endif
             // System integration (#24): make the just-browsed items findable in
             // Spotlight, and refresh the "Play <title> on Labstream" Siri phrase
             // vocabulary (drawn from the entity query's suggestions).
@@ -303,9 +365,12 @@ struct HomeView: View {
             guard generation == loadGeneration,
                   loadIdentity == activeIdentity,
                   !Task.isCancelled else {
+                firstContentSpan.end(result: Task.isCancelled ? "cancelled" : "superseded")
                 span.end(result: Task.isCancelled ? "cancelled" : "superseded")
                 return
             }
+            firstContentSpan.end(result: "failure",
+                                 fields: ["error": PerformanceInstrumentation.errorLabel(error)])
             span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
             loadState = .failed(friendlyMessage(error))
         }

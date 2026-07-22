@@ -11,10 +11,14 @@ enum PerformanceInstrumentation {
     enum Phase: String {
         case runtimeComposition = "runtime.composition"
         case sessionRestore = "session.restore"
+        case homeFirstContent = "home.first_content"
         case homeLoad = "home.load"
         case librariesLoad = "libraries.load"
+        case libraryGridFirstContent = "library_grid.first_content"
+        case libraryGridComplete = "library_grid.complete"
         case libraryGridInitialPage = "library_grid.initial_page"
         case libraryGridPage = "library_grid.page"
+        case searchLoad = "search.load"
         case detailMetadata = "detail.metadata"
         case playbackResolve = "playback.resolve"
         case playbackStartup = "playback.startup"
@@ -25,10 +29,14 @@ enum PerformanceInstrumentation {
             switch self {
             case .runtimeComposition: return "runtime.composition"
             case .sessionRestore: return "session.restore"
+            case .homeFirstContent: return "home.first_content"
             case .homeLoad: return "home.load"
             case .librariesLoad: return "libraries.load"
+            case .libraryGridFirstContent: return "library_grid.first_content"
+            case .libraryGridComplete: return "library_grid.complete"
             case .libraryGridInitialPage: return "library_grid.initial_page"
             case .libraryGridPage: return "library_grid.page"
+            case .searchLoad: return "search.load"
             case .detailMetadata: return "detail.metadata"
             case .playbackResolve: return "playback.resolve"
             case .playbackStartup: return "playback.startup"
@@ -41,9 +49,10 @@ enum PerformanceInstrumentation {
             switch self {
             case .runtimeComposition, .sessionRestore:
                 return Self.launchLog
-            case .homeLoad:
+            case .homeFirstContent, .homeLoad:
                 return Self.homeLog
-            case .librariesLoad, .libraryGridInitialPage, .libraryGridPage, .detailMetadata:
+            case .librariesLoad, .libraryGridFirstContent, .libraryGridComplete,
+                    .libraryGridInitialPage, .libraryGridPage, .detailMetadata, .searchLoad:
                 return Self.libraryLog
             case .playbackResolve, .playbackStartup, .playbackItemLoad:
                 return Self.playbackLog
@@ -156,13 +165,14 @@ struct PerformanceSpan {
     let startedAt: CFAbsoluteTime
     private let endGate = PerformanceSpanEndGate()
 
-    func end(result: String = "success",
+    func end(result: @autoclosure () -> String = "success",
              fields: @autoclosure () -> [String: Any] = [:]) {
         guard endGate.claim() else { return }
+        let terminalResult = result()
         let durationMs = max(0, Int((CFAbsoluteTimeGetCurrent() - startedAt) * 1000.0))
         os_signpost(.end, log: log, name: phase.signpostName, signpostID: signpostID)
         PerformanceInstrumentation.logEnd(self,
-                                          result: result,
+                                          result: terminalResult,
                                           durationMs: durationMs,
                                           fields: fields())
     }
@@ -181,10 +191,14 @@ enum PerformanceInstrumentation {
     enum Phase: String {
         case runtimeComposition = "runtime.composition"
         case sessionRestore = "session.restore"
+        case homeFirstContent = "home.first_content"
         case homeLoad = "home.load"
         case librariesLoad = "libraries.load"
+        case libraryGridFirstContent = "library_grid.first_content"
+        case libraryGridComplete = "library_grid.complete"
         case libraryGridInitialPage = "library_grid.initial_page"
         case libraryGridPage = "library_grid.page"
+        case searchLoad = "search.load"
         case detailMetadata = "detail.metadata"
         case playbackResolve = "playback.resolve"
         case playbackStartup = "playback.startup"
@@ -209,7 +223,8 @@ enum PerformanceInstrumentation {
 }
 
 struct PerformanceSpan {
-    func end(result: String = "success", fields: @autoclosure () -> [String: Any] = [:]) {}
+    func end(result: @autoclosure () -> String = "success",
+             fields: @autoclosure () -> [String: Any] = [:]) {}
 }
 
 extension MediaBackendKind {
@@ -217,3 +232,22 @@ extension MediaBackendKind {
 }
 
 #endif
+
+/// Pure measurement semantics shared by Home and Library instrumentation. This deliberately
+/// decides only span outcomes; callers retain their existing UI-state and error behavior.
+enum BrowsePerformanceMeasurementPolicy {
+    static func aggregateCounts(_ itemCounts: [Int]) -> (containerCount: Int, itemCount: Int) {
+        (itemCounts.count, itemCounts.reduce(0, +))
+    }
+
+    static func firstContentResult(itemCount: Int) -> String {
+        itemCount > 0 ? "success" : "partial"
+    }
+
+    static func caughtErrorResult(isCurrentIdentity: Bool,
+                                  taskIsCancelled: Bool,
+                                  errorIsCancellation: Bool) -> String {
+        if taskIsCancelled || errorIsCancellation { return "cancelled" }
+        return isCurrentIdentity ? "failure" : "superseded"
+    }
+}
