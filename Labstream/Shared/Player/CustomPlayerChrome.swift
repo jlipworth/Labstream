@@ -1,10 +1,6 @@
-import AVFoundation
-import AVKit
 import PMSKit
 import SwiftUI
-#if os(macOS)
-import AppKit
-#elseif canImport(UIKit)
+#if canImport(UIKit)
 import UIKit
 #endif
 

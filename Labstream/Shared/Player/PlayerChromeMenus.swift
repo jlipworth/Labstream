@@ -1,4 +1,3 @@
-import PMSKit
 import SwiftUI
 
 enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
@@ -104,10 +103,9 @@ enum CustomPlayerMenuKind: String, CaseIterable, Identifiable {
     var popoverAlignment: Alignment {
         switch self {
         case .quality, .subtitles, .audio, .chapters: .center
-        #if os(visionOS)
-        case .screen, .speed, .stats: .trailing
-        #else
         case .speed, .stats: .trailing
+        #if os(visionOS)
+        case .screen: .trailing
         #endif
         }
     }
