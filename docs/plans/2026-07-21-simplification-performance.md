@@ -1,6 +1,6 @@
 # Cross-platform simplification and performance program
 
-Status: **Waves 0–4 implemented and validated; Wave 5 measurement prerequisites are in progress**
+Status: **Waves 0–4 implemented and validated; Wave 5 measurement prerequisites and the Wave 6 deletion pass are in progress**
 
 Audit baseline: `b3045bc0` (`Record tvOS merge checkpoint`) on
 `codex/audit-simplification-performance`
@@ -1277,11 +1277,44 @@ policy:
 - Require paired baseline/candidate data and behavior gates.
 - Remove ABR if evidence supports deletion.
 - Do not optimize paths that remain below noise or outside product impact.
-- Include an explicit opportunistic deletion/consolidation pass after the measured slices: remove
+- Include an explicit opportunistic deletion/consolidation pass: remove
   obsolete adapters, duplicated orchestration, superseded helpers, and instrumentation scaffolding
   that is not required for repeatable evidence. A smaller net production diff is desirable but is
   **not** an acceptance gate; no platform capability, Cinema behavior, download durability,
   backend distinction, or proven safety invariant may be traded merely for line-count reduction.
+- The deletion-only pass may proceed while the paired measurement driver is incomplete because it
+  makes no runtime-performance claim. Measured optimizations remain blocked on comparable paired
+  evidence and must not be smuggled into deletion slices.
+
+#### Wave 6 deletion checkpoint journal
+
+1. Commits `78f2df3a` through `c6314877` remove **362 net production LOC** and **124
+   net test LOC**; the only configuration change is one stale Xcode test-membership exception.
+   Production accounting is `+78/-440` across `Labstream/` and `PMSKit/Sources/`; tests are
+   `+10/-134`. This is an opportunistic simplification checkpoint, not a performance result.
+2. The first slices delete an orphan held-range ownership policy, backend identity adapters, a
+   test-only string lifecycle bridge, and a blocking alphabet-load mode that no production caller
+   enabled. The retained paging path still publishes page zero before its alphabet rail completes.
+3. Jellyfin and Emby Search now share their byte-identical media-browser flow while retaining the
+   backend-frozen client, catalog authority checks, cancellation checks, result assignment, and
+   performance span fields. Plex remains on its distinct search path.
+4. Three superseded download helpers are gone: the active held-body recovery remains the
+   lifecycle-ticket worker, and the active startup reattach sweep is unchanged. The subsequent
+   CFNetwork slice removes the now-unreachable manual deletion policy and replaces the inert
+   reattach sweep with diagnostic-only observation; the #220 rule is now structural because no
+   CFNetwork-temp deletion path remains, while the skip event and health-snapshot bytes remain.
+5. iPhone landscape player chrome now renders its six available menu pills directly. The deleted
+   More menu was unreachable because its overflow set was empty for every iOS menu case; ordering,
+   filtering, selection styling, hit targets, accessibility, and menu actions are unchanged.
+6. Independent read-only reviews passed every slice. Focused validation passed the initial 50-test
+   hosted deletion set, 23 catalog/search tests, 28 attempt-owned recovery tests, 4 PMSKit temp-policy
+   tests, all 149 script tests, and clean Debug compile gates for macOS, visionOS, iOS, and tvOS.
+   A pre-existing `DownloadStorePersistenceTests` order/isolation failure still reproduces when its
+   class runs as a group (`57/58` pass) but the named failing test passes alone; track that harness
+   defect separately rather than attributing it to definition-only deletion.
+7. No measured optimization has landed. Wave 5 still lacks the identical external UI workload and
+   statistically eligible paired samples needed for launch, browse, artwork, playback, download,
+   memory, energy, or compile-time claims.
 
 ### Wave 7 — Acceptance and closeout
 
