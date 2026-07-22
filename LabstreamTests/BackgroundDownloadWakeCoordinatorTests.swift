@@ -3,6 +3,7 @@ import PMSKit
 import Testing
 @testable import Labstream
 
+#if !os(tvOS)
 @Suite("Background download wake coordinator")
 struct BackgroundDownloadWakeCoordinatorTests {
     @Test("Pending-handler observation and exact-key deferral drain atomically once")
@@ -119,3 +120,4 @@ struct BackgroundDownloadWakeCoordinatorTests {
         BackgroundDownloadCompletionReleaseBatch(identifier: identifier, tokens: [token])
     }
 }
+#endif

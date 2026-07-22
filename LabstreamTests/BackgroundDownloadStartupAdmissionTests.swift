@@ -32,8 +32,7 @@ struct BackgroundDownloadStartupAdmissionTests {
             do {
                 try session.start(
                     ratingKey: ratingKey,
-                    from: URL(string: "https://example.invalid/media.mp4")!,
-                    to: directory.appendingPathComponent("dormant.mp4")
+                    from: URL(string: "https://example.invalid/media.mp4")!
                 )
                 Issue.record("A dormant download session unexpectedly admitted new work")
             } catch is CancellationError {
@@ -88,7 +87,6 @@ struct BackgroundDownloadStartupAdmissionTests {
             try session.start(
                 ratingKey: ratingKey,
                 from: URL(string: "https://example.invalid/media.mp4")!,
-                to: stable,
                 expectedBytes: 1_024,
                 byteRangeCheckpoint: true)
 
@@ -143,7 +141,6 @@ struct BackgroundDownloadStartupAdmissionTests {
             try session.start(
                 ratingKey: key.ratingKey,
                 from: URL(string: "https://example.invalid/pending-range.mp4")!,
-                to: stable,
                 expectedBytes: 100,
                 byteRangeCheckpoint: true)
             #expect(await gate.waitUntilStarted())
@@ -523,8 +520,7 @@ struct BackgroundDownloadStartupAdmissionTests {
             do {
                 try session.start(
                     ratingKey: "plex:new",
-                    from: URL(string: "https://example.invalid/media")!,
-                    to: directory.appendingPathComponent("new.mp4"))
+                    from: URL(string: "https://example.invalid/media")!)
                 Issue.record("Failed reset unexpectedly opened session admission")
             } catch is CancellationError {
                 // expected

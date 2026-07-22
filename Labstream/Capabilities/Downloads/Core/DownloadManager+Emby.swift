@@ -434,7 +434,6 @@ extension DownloadManager {
             }
             try session.start(ratingKey: ratingKey,
                               with: request,
-                              to: destination,
                               expectedBytes: expectedBytes,
                               byteRangeCheckpoint: EmbyDownloadRoutePlan.usesByteRangeCheckpoint(for: route),
                               resetRangeRestartCounters: !consumeRangeRestartCounterPreservation(ratingKey: ratingKey))

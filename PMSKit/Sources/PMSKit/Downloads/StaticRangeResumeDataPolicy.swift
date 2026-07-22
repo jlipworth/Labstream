@@ -93,24 +93,6 @@ public enum StaticRangeResumeDataPolicy {
         !hasClosedRangeEnd
     }
 
-    /// In-process failure retry of a LIVE train segment: the failed entry is known, so the blob is
-    /// authoritative iff it resumes that segment's own closed request — its Range offset must equal
-    /// the SEGMENT's base offset. Judging it against the durable partial (which belongs to the head)
-    /// wrongly rejects every non-head retry blob and discards its temp bytes (observed live: tens to
-    /// hundreds of MB per starved-tail failure). `segmentBaseOffset == nil` (open-ended remainder or
-    /// persisted-blob adoption, where no live entry exists) keeps the durable-offset rule.
-    public static func adoptionDecision(blobRangeOffset: Int?,
-                                        durableBytes: Int,
-                                        segmentBaseOffset: Int?) -> AdoptionDecision {
-        guard let segmentBaseOffset else {
-            return adoptionDecision(blobRangeOffset: blobRangeOffset, durableBytes: durableBytes)
-        }
-        guard let blobRangeOffset, blobRangeOffset == segmentBaseOffset else {
-            return .rejectStale(blobOffset: blobRangeOffset, durableBytes: durableBytes)
-        }
-        return .adopt(baseOffset: blobRangeOffset)
-    }
-
     /// URLSession resume data is the first recovery path for continuous remainders, but if the OS
     /// says the blob cannot be resumed (commonly because its temp file vanished) the safe fallback is
     /// to discard the blob and restart from the durable partial with a fresh open-ended Range.
@@ -143,16 +125,4 @@ public enum StaticRangeResumeDataPolicy {
         hasResumeData && !resumeDataWasRejected
     }
 
-    /// Closed Range segments never persist URLSession resume data, including the head segment.
-    /// The resume blob retains the original request for inspection but CFNetwork is free to rebuild
-    /// its wire request; on visionOS 27 a paused `bytes=start-end` task resumed past `end`, downloaded
-    /// gigabytes of duplicate data, and falsely drove the row to 100%. The safe recovery authority is
-    /// the app-owned durable checkpoint plus completed held segments. An unfinished closed segment is
-    /// refetched exactly on Resume. Open-ended remainders use the separate blob policy above.
-    public static func shouldPersistSegmentBlobOnPause(segmentBaseOffset: Int,
-                                                       durableBytes: Int) -> Bool {
-        _ = segmentBaseOffset
-        _ = durableBytes
-        return false
-    }
 }

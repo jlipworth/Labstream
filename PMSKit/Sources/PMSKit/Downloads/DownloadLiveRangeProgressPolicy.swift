@@ -78,7 +78,7 @@ public enum DownloadLiveRangeProgressPolicy {
     /// since its own `baseOffset`; segments are disjoint byte ranges by construction, so summing their
     /// bodies alongside the shared destination file's durable size never double-counts.
     ///
-    /// For the historical single-continuous-remainder case (`.openEndedRemainder`, exactly one live
+    /// For the unknown-total single-continuous-remainder fallback (exactly one live
     /// segment) the destination file is untouched until the task finishes, so `durableBytes` stays
     /// exactly equal to that segment's `baseOffset` for the task's whole life — this reduces to the
     /// pre-existing `baseOffset + bodyBytesWritten` total byte-for-byte.
