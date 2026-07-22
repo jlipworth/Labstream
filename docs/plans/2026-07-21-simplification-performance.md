@@ -1247,8 +1247,11 @@ policy:
     shared `content_present` invariant: control publishes its non-progressive final result while the
     candidate may publish an earlier progressive snapshot, so diagnostic rail/item counts need not
     match. A deterministic external server and UI workload driver remain separate follow-up work.
-    Control `ead62213` must receive this same instrumentation
-    symmetrically before any control/candidate capture; no evidence captured before that is comparable.
+    Control `0a5307a3` now carries the symmetric schema/phases and the older execution-shape
+    adaptations required for paired browse capture. Its pre-pipeline artwork path can truthfully emit
+    only `network_decode`; cached/joined/local artwork comparisons require a structurally compatible
+    control rather than invented provenance. No browse evidence captured from earlier control
+    `ead62213` is comparable to this slice.
 
 ### Wave 6 — Optimize measured bottlenecks
 
