@@ -20,7 +20,7 @@ struct LabstreamMac: App {
         // reliable cold/direct-executable launch; the New Window command is removed below, and the
         // close button is intercepted by MacMainWindowController so the only scene is hidden and
         // reused rather than destroyed or duplicated.
-        WindowGroup("Labstream", id: MacMainWindowController.mainWindowID) {
+        WindowGroup {
             if let runtime {
                 ContentView(runtime: runtime)
                     // The source list can collapse natively at compact widths; 760 keeps the

@@ -65,16 +65,9 @@ final class MacMainWindowController: NSObject {
 
     @ObservationIgnored
     private(set) weak var mainWindow: NSWindow?
-    @ObservationIgnored
-    private var reopenMainWindow: (() -> Void)?
-
     /// Retained until RootView acknowledges each request. Commands therefore cannot disappear in
     /// the brief interval while the main scene is being restored or its task observers remount.
     private(set) var pendingCommands: [CommandRequest] = []
-
-    func registerReopenAction(_ reopen: @escaping () -> Void) {
-        reopenMainWindow = reopen
-    }
 
     func register(_ window: NSWindow) {
         mainWindow = window
@@ -93,7 +86,7 @@ final class MacMainWindowController: NSObject {
     @discardableResult
     func activateMainWindow() -> Bool {
         // The SwiftUI registration view is the normal path. During the narrow launch interval
-        // before that bridge mounts (or during state restoration), recover only the Window scene
+        // before that bridge mounts (or during state restoration), recover only the main scene
         // with our explicit identifier/title; never pick an arbitrary visible window such as
         // Settings.
         if mainWindow == nil,
@@ -108,17 +101,7 @@ final class MacMainWindowController: NSObject {
             return true
         }
 
-        guard let reopenMainWindow else { return false }
-        NSApp.activate(ignoringOtherApps: true)
-        reopenMainWindow()
-        // `openWindow` mounts asynchronously. Registration normally focuses it as part of scene
-        // creation; this follow-up covers frameworks that first create the NSWindow ordered out.
-        Task { @MainActor [weak self] in
-            await Task.yield()
-            guard let self, let mainWindow = self.mainWindow else { return }
-            mainWindow.makeKeyAndOrderFront(nil)
-        }
-        return true
+        return false
     }
 
     func issue(_ command: Command) {
@@ -137,26 +120,14 @@ final class MacMainWindowController: NSObject {
     }
 }
 
-/// Captures the NSWindow created by SwiftUI's unique `Window` scene without making AppKit own
-/// the content hierarchy.
+/// Captures the one retained NSWindow without making AppKit own the SwiftUI content hierarchy.
 struct MacMainWindowRegistrationView: NSViewRepresentable {
-    @Environment(\.openWindow) private var openWindow
-
     func makeNSView(context: Context) -> MacMainWindowRegistrationHostView {
-        registerReopenAction()
         return MacMainWindowRegistrationHostView()
     }
 
     func updateNSView(_ nsView: MacMainWindowRegistrationHostView, context: Context) {
-        registerReopenAction()
         nsView.registerWindowIfAvailable()
-    }
-
-    private func registerReopenAction() {
-        let openWindow = openWindow
-        MacMainWindowController.shared.registerReopenAction {
-            openWindow(id: MacMainWindowController.mainWindowID)
-        }
     }
 }
 
