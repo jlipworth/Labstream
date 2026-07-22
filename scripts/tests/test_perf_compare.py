@@ -118,8 +118,9 @@ class PerfCompareTests(unittest.TestCase):
             }]
         summary = root / "summary" / "redacted.json"
         summary.write_text(json.dumps(summary_document))
-        pointer = lambda path: {"path": path.relative_to(root).as_posix(),
-                                "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+        def pointer(path):
+            return {"path": path.relative_to(root).as_posix(),
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
         manifest["evidence"]["artifacts"] = [raw_pointer]
         manifest["evidence"]["redacted_summary"] = pointer(summary)
         path = root / "manifest.json"
@@ -160,8 +161,10 @@ class PerfCompareTests(unittest.TestCase):
             for index in indexes:
                 first = compare._expected_first_role("seed-0123456789abcdef", kind, index)
                 second = "candidate" if first == "control" else "control"
-                self.set_time(by_key[(kind, index, first)], ordinal); ordinal += 1
-                self.set_time(by_key[(kind, index, second)], ordinal); ordinal += 1
+                self.set_time(by_key[(kind, index, first)], ordinal)
+                ordinal += 1
+                self.set_time(by_key[(kind, index, second)], ordinal)
+                ordinal += 1
 
     def paired_set(self, factor=0.8, measured=20, candidate_failure=None, warmup_failure=None,
                    candidate_item_count=100):
@@ -187,7 +190,8 @@ class PerfCompareTests(unittest.TestCase):
             for index in range(count):
                 path = self.make_sample("control", kind, index, 100 + index % 3,
                                         comparison_id="comparison-fedcba987654")
-                self.set_time(path, ordinal, day=20); ordinal += 1
+                self.set_time(path, ordinal, day=20)
+                ordinal += 1
                 paths.append(path)
         return paths
 
@@ -322,13 +326,15 @@ class PerfCompareTests(unittest.TestCase):
 
         controls, candidates = self.paired_set()
         for path in (controls[3], candidates[3]):
-            manifest = json.loads(path.read_text()); manifest["device"]["thermal_state"] = "serious"
+            manifest = json.loads(path.read_text())
+            manifest["device"]["thermal_state"] = "serious"
             path.write_text(json.dumps(manifest))
         with self.assertRaisesRegex(compare.CompareError, "unsupported thermal"):
             self.result(controls, candidates)
 
         controls, candidates = self.paired_set()
-        manifest = json.loads(candidates[3].read_text()); manifest["device"]["free_storage_bytes"] += 2048
+        manifest = json.loads(candidates[3].read_text())
+        manifest["device"]["free_storage_bytes"] += 2048
         candidates[3].write_text(json.dumps(manifest))
         with self.assertRaisesRegex(compare.CompareError, "storage drift"):
             self.result(controls, candidates, tolerance=1024)
@@ -339,6 +345,7 @@ class PerfCompareTests(unittest.TestCase):
             "fixture_implementation_sha256": "d" * 64,
             "driver_sha256": "e" * 64,
             "workload_spec_sha256": "f" * 64,
+            "client_state_seed_sha256": "a" * 64,
             "fixture_protocol_version": 1,
             "driver_protocol_version": 1,
         }

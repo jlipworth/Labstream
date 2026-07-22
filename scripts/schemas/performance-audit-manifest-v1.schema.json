@@ -556,6 +556,7 @@
         "fixture_implementation_sha256",
         "driver_sha256",
         "workload_spec_sha256",
+        "client_state_seed_sha256",
         "fixture_protocol_version",
         "driver_protocol_version"
       ],
@@ -567,6 +568,9 @@
           "$ref": "#/$defs/sha256"
         },
         "workload_spec_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "client_state_seed_sha256": {
           "$ref": "#/$defs/sha256"
         },
         "fixture_protocol_version": {

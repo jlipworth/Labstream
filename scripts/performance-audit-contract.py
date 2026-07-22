@@ -316,9 +316,10 @@ def validate_manifest(data: Any, run_dir: pathlib.Path, verify_files: bool = Tru
     if "automation" in manifest:
         automation = exact_keys(manifest["automation"], "manifest.automation", {
             "fixture_implementation_sha256", "driver_sha256", "workload_spec_sha256",
-            "fixture_protocol_version", "driver_protocol_version",
+            "client_state_seed_sha256", "fixture_protocol_version", "driver_protocol_version",
         })
-        for field in ("fixture_implementation_sha256", "driver_sha256", "workload_spec_sha256"):
+        for field in ("fixture_implementation_sha256", "driver_sha256", "workload_spec_sha256",
+                      "client_state_seed_sha256"):
             require(isinstance(automation[field], str)
                     and SHA256_RE.fullmatch(automation[field]) is not None,
                     f"manifest.automation.{field} must be a lowercase SHA-256 digest")

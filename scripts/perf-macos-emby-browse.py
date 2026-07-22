@@ -31,6 +31,10 @@ AUTH_ACCOUNTS = (
 )
 FIXTURE_USERNAME = "benchmark-user"
 FIXTURE_PASSWORD = "benchmark-pass-v1"
+VISIBILITY_PROMPT_KEY = (
+    "libraryVisibility.promptShown."
+    "emby:sid#970ebee6faf3b564:user#75ca7eeedfa213cf"
+)
 
 
 def _load_base() -> Any:
@@ -113,6 +117,61 @@ def reset_performance_keychain(service: str, executor: Any) -> None:
         ])
         if remaining != 44:
             fail(f"dedicated Keychain reset could not prove account {account} absent")
+
+
+def preference_seed(service: str) -> bytes:
+    if not base.BUNDLE_ID_RE.fullmatch(service):
+        fail("refusing to seed preferences for a non-performance service")
+    return plistlib.dumps({VISIBILITY_PROMPT_KEY: True}, fmt=plistlib.FMT_BINARY,
+                          sort_keys=True)
+
+
+def seed_browse_preferences(container: pathlib.Path, service: str) -> str:
+    """Seed the fixture user's first-run prompt flag through anchored sandbox descriptors."""
+    payload = preference_seed(service)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    root_fd = os.open(container, flags)
+    try:
+        data_fd = os.open("Data", flags, dir_fd=root_fd)
+        try:
+            library_fd = os.open("Library", flags, dir_fd=data_fd)
+            try:
+                try:
+                    os.mkdir("Preferences", mode=0o700, dir_fd=library_fd)
+                except FileExistsError:
+                    pass
+                preferences_fd = os.open("Preferences", flags, dir_fd=library_fd)
+                try:
+                    name = f"{service}.plist"
+                    output_fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                        0o600, dir_fd=preferences_fd)
+                    try:
+                        view = memoryview(payload)
+                        while view:
+                            view = view[os.write(output_fd, view):]
+                        os.fsync(output_fd)
+                    finally:
+                        os.close(output_fd)
+                    input_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=preferences_fd)
+                    try:
+                        seeded = b""
+                        while chunk := os.read(input_fd, 4096):
+                            seeded += chunk
+                    finally:
+                        os.close(input_fd)
+                    if seeded != payload:
+                        fail("browse preference seed verification failed")
+                finally:
+                    os.close(preferences_fd)
+            finally:
+                os.close(library_fd)
+        finally:
+            os.close(data_fd)
+    except (FileNotFoundError, FileExistsError, NotADirectoryError, OSError) as error:
+        fail(f"dedicated browse preference seed is incomplete or unsafe: {error}")
+    finally:
+        os.close(root_fd)
+    return hashlib.sha256(payload).hexdigest()
 
 
 def request_fixture(base_url: str, path: str, *, method: str = "GET") -> dict[str, Any]:
@@ -204,17 +263,56 @@ def wait_for_terminal_span(pid: int, start: str, scenario: str, executor: Any) -
             "--start", base.log_time_bound(start), "--end", base.log_time_bound(end, end=True),
             "--process", str(pid),
         ])
-        matches = []
+        successes = []
         for line in document.splitlines():
             span, _reason = evidence_schema.parse_span_line_diagnostic(line)
             if span is not None and span.phase == phase and span.backend == "Emby":
-                matches.append(span)
-        if len(matches) > 1:
-            fail(f"multiple terminal {phase} spans observed for exact app PID")
-        if len(matches) == 1:
+                if span.result == "success":
+                    successes.append(span)
+                elif span.result != "cancelled":
+                    fail(f"non-success terminal {phase} span observed for exact app PID")
+        if len(successes) > 1:
+            fail(f"multiple successful {phase} spans observed for exact app PID")
+        if len(successes) == 1:
             return
         executor.sleep(0.1)
     fail(f"terminal {phase} span deadline exceeded for exact app PID")
+
+
+def write_success_selector_artifact(source: pathlib.Path, destination: pathlib.Path,
+                                    phase: str) -> None:
+    """Retain the capture binding and one successful target span; preserve the full log separately."""
+    selected: list[str] = []
+    binding_count = 0
+    success_count = 0
+    for line in source.read_text().splitlines(keepends=True):
+        binding, binding_reason = evidence_schema.parse_capture_line_diagnostic(line)
+        if binding_reason is not None:
+            fail("full capture contains a malformed capture binding")
+        if binding is not None:
+            binding_count += 1
+            selected.append(line)
+        span, span_reason = evidence_schema.parse_span_line_diagnostic(line)
+        if span_reason is not None:
+            fail("full capture contains a malformed performance span")
+        if span is not None and span.phase == phase and span.backend == "Emby":
+            if span.result == "success":
+                success_count += 1
+                selected.append(line)
+            elif span.result != "cancelled":
+                fail("full capture contains a non-success target span")
+    if binding_count != 1 or success_count != 1:
+        fail("success selector requires one capture binding and one successful target span")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    fd = os.open(destination, flags, 0o600)
+    try:
+        payload = "".join(selected).encode()
+        view = memoryview(payload)
+        while view:
+            view = view[os.write(fd, view):]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def plan_for(apps: tuple[Any, Any], service: str, scenario: str, warmups: int, measured: int,
@@ -232,6 +330,10 @@ def plan_for(apps: tuple[Any, Any], service: str, scenario: str, warmups: int, m
         sample["commands"] = {
             "container_reset": foundation["samples"][ordinal - 1]["commands"]["reset"],
             "keychain_reset": {"service": service, "accounts": list(AUTH_ACCOUNTS)},
+            "preference_seed": {
+                "relative_path": f"Data/Library/Preferences/{service}.plist",
+                "sha256": hashlib.sha256(preference_seed(service)).hexdigest(),
+            },
             "fixture_reset": "POST /__fixture__/reset",
             "launch": [str(app.executable)], "app_arguments": [], "app_environment": {},
             "driver": ["{precompiled_private_ax_driver}", "--pid", "{exact_pid}",
@@ -341,6 +443,7 @@ def browse_manifest(plan: dict[str, Any], sample: dict[str, Any], app: Any,
         {"path": "raw/artifact-0001.log", "sha256": "0" * 64},
         {"path": "raw/artifact-0002.json", "sha256": "0" * 64},
         {"path": "raw/artifact-0003.json", "sha256": "0" * 64},
+        {"path": "raw/artifact-0004.log", "sha256": "0" * 64},
     ]
     return {
         "schema_version": 1,
@@ -437,6 +540,8 @@ def capture(plan: dict[str, Any], apps: tuple[Any, Any], executor: Any) -> dict[
             post_reset_done = False
             try:
                 base.seed_container(pathlib.Path(plan["container"]), executor)
+                preference_seed_sha256 = seed_browse_preferences(
+                    pathlib.Path(plan["container"]), plan["keychain_service"])
                 reset_performance_keychain(plan["keychain_service"], executor)
                 reset = request_fixture(ready["base_url"], "/__fixture__/reset", method="POST")
                 if reset != {"reset": True}:
@@ -454,6 +559,7 @@ def capture(plan: dict[str, Any], apps: tuple[Any, Any], executor: Any) -> dict[
                     "fixture_implementation_sha256": fixture_source_sha256,
                     "driver_sha256": driver_binary_sha256,
                     "workload_spec_sha256": workload_spec_sha256,
+                    "client_state_seed_sha256": preference_seed_sha256,
                     "fixture_protocol_version": int(ready["schema_version"]),
                     "driver_protocol_version": 1,
                 }
@@ -500,13 +606,15 @@ def capture(plan: dict[str, Any], apps: tuple[Any, Any], executor: Any) -> dict[
                 post_reset_done = True
                 ledger_path = raw_dir / "artifact-0003.json"
                 ledger_path.write_text(json.dumps(ledger, indent=2, sort_keys=True) + "\n")
+                phase = SCENARIO_PHASES[plan["scenario"]]
+                selected_log = raw_dir / "artifact-0004.log"
+                write_success_selector_artifact(raw_log, selected_log, phase)
                 update_pointer_checksums(manifest, run_dir)
                 write_manifest(manifest_path, manifest)
-                phase = SCENARIO_PHASES[plan["scenario"]]
                 correctness = evidence_schema.REQUIRED_CORRECTNESS_FIELDS[(phase, "Emby")]
                 summary_path = summary_dir / "redacted.json"
                 summary_command = [sys.executable, str(SUMMARY), "--json", "--strict",
-                                   "--manifest", str(manifest_path), "--raw-artifact", str(raw_log),
+                                   "--manifest", str(manifest_path), "--raw-artifact", str(selected_log),
                                    "--workload-id", plan["identities"]["workload_id"],
                                    "--phase", phase, "--backend", "Emby",
                                    "--expected-span-count", "1"]

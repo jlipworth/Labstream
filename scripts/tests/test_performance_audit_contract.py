@@ -128,6 +128,7 @@ class PerformanceAuditContractTests(unittest.TestCase):
                 "fixture_implementation_sha256": "d" * 64,
                 "driver_sha256": "e" * 64,
                 "workload_spec_sha256": "f" * 64,
+                "client_state_seed_sha256": "a" * 64,
                 "fixture_protocol_version": 1,
                 "driver_protocol_version": 1,
             }
@@ -141,6 +142,7 @@ class PerformanceAuditContractTests(unittest.TestCase):
                 "fixture_implementation_sha256": "d" * 64,
                 "driver_sha256": "e" * 64,
                 "workload_spec_sha256": "f" * 64,
+                "client_state_seed_sha256": "a" * 64,
                 "fixture_protocol_version": 0,
                 "driver_protocol_version": 1,
             }
