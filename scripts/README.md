@@ -168,6 +168,15 @@ scripts/perf-compare.py compare \
   validated manifest, raw log, and strict `runtime.composition` summary consumable by
   `perf-compare.py`; failures publish no manifest and make the runner nonzero. Idle traces remain
   explicitly pre-manifest and `insufficient_data` until trace extraction lands.
+- `perf-macos-emby-browse.py` — paired external Home, catalog, and Search runner for the same
+  dedicated Mac `PerformanceAudit` artifacts. It launches the loopback-only Emby fixture, resets
+  only that performance identity's closed Keychain account set and mutable sandbox data, compiles
+  `perf-macos-ax-driver.swift` once before capture, and drives the exact app PID through semantic
+  accessibility selectors without coordinates or app arguments/environment. Each successful arm
+  waits for its exact terminal span, validates the aggregate fixture ledger, and publishes a
+  contract-validated manifest plus strict summary whose automation hashes bind the fixture,
+  compiled driver, and private workload spec. Begin with `--plan`; `artwork` is intentionally
+  rejected until a precise loaded-artwork milestone and comparable cardinality exist.
 
 There is no macOS simulator lane. See [`docs/MACOS.md`](../docs/MACOS.md).
 

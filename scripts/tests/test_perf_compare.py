@@ -333,6 +333,25 @@ class PerfCompareTests(unittest.TestCase):
         with self.assertRaisesRegex(compare.CompareError, "storage drift"):
             self.result(controls, candidates, tolerance=1024)
 
+    def test_pairing_rejects_external_automation_provenance_drift(self):
+        controls, candidates = self.paired_set()
+        common = {
+            "fixture_implementation_sha256": "d" * 64,
+            "driver_sha256": "e" * 64,
+            "workload_spec_sha256": "f" * 64,
+            "fixture_protocol_version": 1,
+            "driver_protocol_version": 1,
+        }
+        for path in controls + candidates:
+            manifest = json.loads(path.read_text())
+            manifest["automation"] = dict(common)
+            path.write_text(json.dumps(manifest))
+        candidate = json.loads(candidates[-1].read_text())
+        candidate["automation"]["driver_sha256"] = "a" * 64
+        candidates[-1].write_text(json.dumps(candidate))
+        with self.assertRaisesRegex(compare.CompareError, "environment metadata"):
+            self.result(controls, candidates)
+
     def test_correctness_work_fields_must_match_before_latency_classification(self):
         controls, candidates = self.paired_set(factor=0.5, candidate_item_count=1)
         with self.assertRaisesRegex(compare.CompareError, "correctness/work"):

@@ -128,6 +128,16 @@ def exact_keys(value: Any, path: str, required: set[str]) -> dict[str, Any]:
     return value
 
 
+def closed_keys(value: Any, path: str, required: set[str], optional: set[str]) -> dict[str, Any]:
+    require(isinstance(value, dict), f"{path} must be an object")
+    actual = set(value)
+    missing = sorted(required - actual)
+    extra = sorted(actual - required - optional)
+    require(not missing, f"{path} missing fields: {', '.join(missing)}")
+    require(not extra, f"{path} has unsupported fields: {', '.join(extra)}")
+    return value
+
+
 def enum_value(value: Any, path: str, allowed: set[str]) -> str:
     require(isinstance(value, str) and value in allowed,
             f"{path} must be one of: {', '.join(sorted(allowed))}")
@@ -198,10 +208,10 @@ def reject_private_strings(value: Any, path: str = "manifest") -> None:
 
 
 def validate_manifest(data: Any, run_dir: pathlib.Path, verify_files: bool = True) -> None:
-    manifest = exact_keys(data, "manifest", {
+    manifest = closed_keys(data, "manifest", {
         "schema_version", "tool", "run", "product", "device", "state", "scenario",
         "launch_contract", "evidence",
-    })
+    }, {"automation"})
     reject_private_strings(manifest)
     require(type(manifest["schema_version"]) is int and manifest["schema_version"] == 1,
             "manifest.schema_version must equal 1")
@@ -302,6 +312,19 @@ def validate_manifest(data: Any, run_dir: pathlib.Path, verify_files: bool = Tru
                 "manifest.scenario.server_version must be version-shaped, never a host label")
     enum_value(scenario["backend_kind"], "manifest.scenario.backend_kind", {"plex", "jellyfin", "emby", "none"})
     enum_value(scenario["cache_state"], "manifest.scenario.cache_state", {"cold", "warm", "declared_seed"})
+
+    if "automation" in manifest:
+        automation = exact_keys(manifest["automation"], "manifest.automation", {
+            "fixture_implementation_sha256", "driver_sha256", "workload_spec_sha256",
+            "fixture_protocol_version", "driver_protocol_version",
+        })
+        for field in ("fixture_implementation_sha256", "driver_sha256", "workload_spec_sha256"):
+            require(isinstance(automation[field], str)
+                    and SHA256_RE.fullmatch(automation[field]) is not None,
+                    f"manifest.automation.{field} must be a lowercase SHA-256 digest")
+        for field in ("fixture_protocol_version", "driver_protocol_version"):
+            require(type(automation[field]) is int and 1 <= automation[field] <= 1_000,
+                    f"manifest.automation.{field} must be a bounded positive integer")
 
     launch = exact_keys(manifest["launch_contract"], "manifest.launch_contract", {
         "arguments", "environment_keys", "ui_test_fixture", "live_probe", "tv_event_swizzle",

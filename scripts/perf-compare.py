@@ -305,6 +305,7 @@ def _environment_fingerprint(sample: Sample) -> dict[str, Any]:
         )},
         "device": {"label": device["label"], "display_mode": device["display_mode"]},
         "state": manifest["state"], "scenario": manifest["scenario"],
+        "automation": manifest.get("automation"),
         "launch_contract": manifest["launch_contract"],
     }
 
