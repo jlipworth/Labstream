@@ -24,7 +24,7 @@ BACKEND_LABELS = {"plex": "Plex", "jellyfin": "Jellyfin", "emby": "Emby", "none"
 PHASE_FIELDS: dict[str, set[str]] = {
     "runtime.composition": {"downloads_capable"},
     "session.restore": {"restored"},
-    "home.first_content": {"rail_count", "item_count", "publication_count", "error"},
+    "home.first_content": {"content_present", "rail_count", "item_count", "publication_count", "error"},
     "home.load": {
         "view_count", "rail_count", "pending_rail_count", "item_count", "degraded", "hub_count",
         "publication_count", "error",
@@ -57,9 +57,9 @@ REQUIRED_CORRECTNESS_FIELDS: dict[tuple[str, str], tuple[str, ...]] = {
     ("session.restore", "Plex"): ("restored",),
     ("session.restore", "Jellyfin"): ("restored",),
     ("session.restore", "Emby"): ("restored",),
-    ("home.first_content", "Plex"): ("rail_count", "item_count"),
-    ("home.first_content", "Jellyfin"): ("rail_count", "item_count"),
-    ("home.first_content", "Emby"): ("rail_count", "item_count"),
+    ("home.first_content", "Plex"): ("content_present",),
+    ("home.first_content", "Jellyfin"): ("content_present",),
+    ("home.first_content", "Emby"): ("content_present",),
     ("home.load", "Plex"): ("hub_count", "item_count"),
     ("home.load", "Jellyfin"): ("view_count", "rail_count", "item_count", "degraded"),
     ("home.load", "Emby"): ("view_count", "rail_count", "item_count", "degraded"),
@@ -107,7 +107,7 @@ INTEGER_FIELDS = {
     "alphabet_count", "page_count", "media_count", "duration_seconds", "attempts", "bytes",
     "status", "width", "height", "pixel_width", "pixel_height",
 }
-BOOLEAN_FIELDS = {"downloads_capable", "restored", "degraded", "swr_refresh"}
+BOOLEAN_FIELDS = {"content_present", "downloads_capable", "restored", "degraded", "swr_refresh"}
 ENUM_FIELDS = {
     "path_mode": {"local_file", "remote_stream", "plex_stream"},
     "play_method": {"directPlay", "directStream", "transcode"},

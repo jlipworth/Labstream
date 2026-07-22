@@ -56,7 +56,7 @@ class PerfLogSummaryTests(unittest.TestCase):
     def test_browse_and_artwork_measurement_fields_are_closed(self):
         records = (
             ("perf.span phase=home.first_content backend=Emby result=success duration_ms=4 "
-             "rail_count=1 item_count=8 publication_count=1", "home.first_content"),
+             "content_present=1 rail_count=1 item_count=8 publication_count=1", "home.first_content"),
             ("perf.span phase=search.load backend=Plex result=success duration_ms=5 "
              "group_count=2 item_count=9 publication_count=1", "search.load"),
             ("perf.span phase=library_grid.first_content backend=Jellyfin result=success duration_ms=6 "
@@ -93,6 +93,16 @@ class PerfLogSummaryTests(unittest.TestCase):
             perf.evidence_schema.validate_correctness_fields(
                 "home.load", "Plex", ["hub_count", "item_count", "publication_count"]
             )
+        self.assertEqual(
+            perf.evidence_schema.validate_correctness_fields(
+                "home.first_content", "Emby", ["content_present"]
+            ),
+            ("content_present",),
+        )
+        self.assertEqual(perf.parse_span_line_diagnostic(
+            "perf.span phase=home.first_content backend=Emby result=success duration_ms=4 "
+            "content_present=2 rail_count=1 item_count=8 publication_count=1"
+        )[1], "invalid_boolean_field")
 
     def test_launch_spans_use_closed_backend_and_correctness_fields(self):
         composition = perf.parse_span_line(
