@@ -877,16 +877,11 @@ public typealias EmbyImageType = MediaBrowserImageType
 public typealias EmbyUserViewsResponse = MediaBrowserUserViewsResponse<EmbyFlavor>
 public typealias EmbyItemsResponse = MediaBrowserItemsResponse<EmbyFlavor>
 public typealias EmbyBaseItemDto = MediaBrowserBaseItemDto<EmbyFlavor>
-public typealias EmbyChapterDto = MediaBrowserChapterDto<EmbyFlavor>
 public typealias EmbyItemMediaSourceDto = MediaBrowserItemMediaSourceDto<EmbyFlavor>
 public typealias EmbyItemMediaStreamDto = MediaBrowserItemMediaStreamDto
-public typealias EmbyUserDataDto = MediaBrowserUserDataDto
 
 public typealias JellyfinImageType = MediaBrowserImageType
 public typealias JellyfinUserViewsResponse = MediaBrowserUserViewsResponse<JellyfinFlavor>
 public typealias JellyfinItemsResponse = MediaBrowserItemsResponse<JellyfinFlavor>
 public typealias JellyfinBaseItemDto = MediaBrowserBaseItemDto<JellyfinFlavor>
-public typealias JellyfinChapterDto = MediaBrowserChapterDto<JellyfinFlavor>
-public typealias JellyfinItemMediaSourceDto = MediaBrowserItemMediaSourceDto<JellyfinFlavor>
 public typealias JellyfinItemMediaStreamDto = MediaBrowserItemMediaStreamDto
-public typealias JellyfinUserDataDto = MediaBrowserUserDataDto
