@@ -18,6 +18,19 @@ struct DownloadIndexCodingTests {
 
     private func data(_ json: String) -> Data { Data(json.utf8) }
 
+    @Test func startupProbeSeparatesMissingCurrentUnsupportedAndUnreadable() throws {
+        #expect(DownloadIndexCoding.startupProbe(data: nil) == .missing)
+        #expect(DownloadIndexCoding.startupProbe(data: try DownloadIndexCoding.encode([StubRow]())) == .current)
+        #expect(DownloadIndexCoding.startupProbe(data: data("[]")) == .unsupported(schemaVersion: 1))
+        #expect(DownloadIndexCoding.startupProbe(
+            data: data(#"{"schemaVersion":2,"rows":[]}"#)) == .unsupported(schemaVersion: 2))
+        #expect(DownloadIndexCoding.startupProbe(
+            data: data(#"{"schemaVersion":99,"rows":[]}"#)) == .unsupported(schemaVersion: 99))
+        #expect(DownloadIndexCoding.startupProbe(data: data("not-json")) == .unreadable)
+        #expect(DownloadIndexCoding.startupProbe(
+            data: data(#"{"schemaVersion":4,"rows":"wrong"}"#)) == .unreadable)
+    }
+
     // MARK: - Round trip + envelope
 
     @Test func encodeProducesVersionedEnvelope() throws {

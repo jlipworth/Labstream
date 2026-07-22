@@ -18,6 +18,8 @@ import PMSKit
 /// is the only writer and drives it from the `@MainActor`, but the background
 /// `URLSession` delegate can call in from a delegate queue, so writes are locked.
 final class DownloadStore: @unchecked Sendable {
+    private static let unsupportedRootCleanupQueue = DispatchQueue(
+        label: "com.jlipworth.Labstream.download-unsupported-root-cleanup", qos: .utility)
 
     struct IndexPersistence: Sendable {
         let atomicWrite: @Sendable (Data, URL) throws -> Void
@@ -62,6 +64,11 @@ final class DownloadStore: @unchecked Sendable {
 
     enum AttemptOwnershipMigrationResult: Sendable, Equatable {
         case notRequired
+        /// The on-disk root belongs to a non-current schema. It is intentionally not decoded or
+        /// mutated; startup must first drain every OS task, then replace the root as one unit.
+        case requiresDestructiveReset(schemaVersion: Int?)
+        /// Unknown/corrupt bytes are not assumed to be legacy. Keep them for diagnosis and stop.
+        case unreadableIndex
         case committed(LegacyAttemptMigrationPlan)
         case failed(LegacyAttemptMigrationPlan, PersistenceFlushResult)
         /// A v3 active/cleanup-bearing row without top-level ownership is malformed. Never repair
@@ -518,6 +525,9 @@ final class DownloadStore: @unchecked Sendable {
         /// Ordered, exact-attempt filesystem mutations. Optional/defaulted schema-v4 additions:
         /// old rows decode unchanged, while a hard kill can replay the durable prepared phase.
         var artifactGeneration: UInt64
+        /// In-process/persisted revision for exact side-asset bytes. Every successful atomic
+        /// side-asset promotion advances it, including same-path repair replacements.
+        var sideAssetGeneration: UInt64
         var pendingArtifactIntents: [ArtifactIntent]
         /// Decode-only evidence used to distinguish a valid v3 owner from the nested v2 fallback.
         /// This field is deliberately absent from CodingKeys.
@@ -534,6 +544,7 @@ final class DownloadStore: @unchecked Sendable {
             case deletionPendingCleanupIntents
             case heldRangeBodyDeletionIntents
             case artifactGeneration
+            case sideAssetGeneration
             case pendingArtifactIntents
         }
 
@@ -569,6 +580,8 @@ final class DownloadStore: @unchecked Sendable {
                 [String].self, forKey: .heldRangeBodyDeletionIntents) ?? []
             artifactGeneration = try c.decodeIfPresent(
                 UInt64.self, forKey: .artifactGeneration) ?? 0
+            sideAssetGeneration = try c.decodeIfPresent(
+                UInt64.self, forKey: .sideAssetGeneration) ?? 0
             pendingArtifactIntents = try c.decodeIfPresent(
                 [ArtifactIntent].self, forKey: .pendingArtifactIntents) ?? []
             decodedTopLevelAttemptIDPresent = topLevelAttemptID != nil
@@ -589,6 +602,7 @@ final class DownloadStore: @unchecked Sendable {
              deletionPendingCleanupIntents: [DurableDownloadCleanupIntent] = [],
              heldRangeBodyDeletionIntents: [String] = [],
              artifactGeneration: UInt64 = 0,
+             sideAssetGeneration: UInt64 = 0,
              pendingArtifactIntents: [ArtifactIntent] = []) {
             self.ratingKey = ratingKey
             self.attemptID = attemptID
@@ -606,6 +620,7 @@ final class DownloadStore: @unchecked Sendable {
             self.deletionPendingCleanupIntents = deletionPendingCleanupIntents
             self.heldRangeBodyDeletionIntents = heldRangeBodyDeletionIntents
             self.artifactGeneration = artifactGeneration
+            self.sideAssetGeneration = sideAssetGeneration
             self.pendingArtifactIntents = pendingArtifactIntents
             self.decodedTopLevelAttemptIDPresent = attemptID != nil
             self.decodedAttemptIdentityDisagrees = false
@@ -639,6 +654,9 @@ final class DownloadStore: @unchecked Sendable {
             if artifactGeneration > 0 {
                 try c.encode(artifactGeneration, forKey: .artifactGeneration)
             }
+            if sideAssetGeneration > 0 {
+                try c.encode(sideAssetGeneration, forKey: .sideAssetGeneration)
+            }
             if !pendingArtifactIntents.isEmpty {
                 try c.encode(pendingArtifactIntents, forKey: .pendingArtifactIntents)
             }
@@ -650,6 +668,9 @@ final class DownloadStore: @unchecked Sendable {
 
     private let lock = NSLock()
     private struct HydratedSideAssets {
+        let attemptID: DownloadAttemptID?
+        let source: OfflineSideAssetSourceIdentity?
+        let generation: UInt64
         var posterURL: URL?
         var plexBIFURL: URL?
         var embyBIFURL: URL?
@@ -665,12 +686,14 @@ final class DownloadStore: @unchecked Sendable {
     /// A sweep may race side-cache writers which create their attempt-private file before the
     /// corresponding metadata mutation. Only files inventoried at Store initialization can be
     /// startup orphans; a later launch can collect newly-born files if no row ever adopts them.
-    private let startupStagingInventory: Set<String>
+    private var startupStagingInventory: Set<String>
     private let indexURL: URL                        // baseDirectory/index.json
     private let embyCleanupURL: URL                  // durable orphan-prevention queue
+    private let cleanupAuthorityDirectory: URL       // survives destructive Downloads-root reset
     private let fileManager: FileManager
     private let embyCleanupPersistence: EmbyCleanupPersistence
     private let indexWriter: RevisionedPersistenceWriter<[Row]>
+    private let rootIndexPersistence: IndexPersistence
     private let artifactFilesystem: DownloadArtifactFilesystem
     private let checkpointFilesystem: DownloadStaticCheckpointFilesystem
     private let promotionFilesystem: DownloadPromotionFilesystem
@@ -679,6 +702,7 @@ final class DownloadStore: @unchecked Sendable {
         label: "com.visionplay.download-artifact-lifecycle", qos: .utility)
     private var nextPersistenceRevision: UInt64 = 0 // guarded by `lock`
     private var loadedSchemaVersion = DownloadIndexCoding.currentSchemaVersion // guarded by `lock`
+    private var startupSchemaProbe: DownloadIndexCoding.StartupProbe // guarded by `lock`
     private var pendingLegacyAttemptResetKeys: Set<DownloadAttemptKey> = [] // guarded by `lock`
     private var activeArtifactIntentIDs: Set<UUID> = [] // guarded by `lock`
     private var pendingResumeArtifactData: [UUID: Data] = [:] // guarded by `lock`
@@ -726,6 +750,7 @@ final class DownloadStore: @unchecked Sendable {
         self.artifactFilesystem = artifactFilesystem
         self.checkpointFilesystem = checkpointFilesystem
         self.promotionFilesystem = promotionFilesystem
+        self.rootIndexPersistence = indexPersistence
         let appSupport = (try? fileManager.url(for: .applicationSupportDirectory,
                                                 in: .userDomainMask,
                                                 appropriateFor: nil,
@@ -735,12 +760,44 @@ final class DownloadStore: @unchecked Sendable {
             .appendingPathComponent("Labstream", isDirectory: true)
             .appendingPathComponent("Downloads", isDirectory: true)
         self.baseDirectory = dir
-        self.startupStagingInventory = Set(
-            ((try? fileManager.contentsOfDirectory(atPath: dir.path)) ?? [])
-                .filter(Self.isAttemptStagingRelativePath))
         let indexURL = dir.appendingPathComponent("index.json")
+        let pendingQuarantine = dir.deletingLastPathComponent().appendingPathComponent(
+            ".\(dir.lastPathComponent)-unsupported-reset-pending", isDirectory: true)
+        var startupProbe: DownloadIndexCoding.StartupProbe
+        var startupIndexData: Data?
+        if fileManager.fileExists(atPath: indexURL.path) {
+            do {
+                let data = try Data(contentsOf: indexURL)
+                startupIndexData = data
+                startupProbe = DownloadIndexCoding.startupProbe(data: data)
+            } catch {
+                startupProbe = .unreadable
+            }
+        } else if fileManager.fileExists(atPath: pendingQuarantine.path) {
+            // A prior rollback was interrupted after the opaque root was quarantined. Never
+            // classify the absent live root as a new empty library; retry from the durable pending
+            // quarantine after task drainage.
+            startupProbe = .unsupported(schemaVersion: nil)
+        } else {
+            startupProbe = .missing
+        }
+        if startupProbe == .current, let startupIndexData {
+            let decoded = DownloadIndexCoding.decode(Row.self, from: startupIndexData)
+            let keys = decoded.rows.map(\.ratingKey)
+            if decoded.skippedRowCount > 0 || Set(keys).count != keys.count {
+                startupProbe = .unreadable
+            }
+        }
+        self.startupSchemaProbe = startupProbe
+        self.startupStagingInventory = Set(
+            ((startupProbe == .missing || startupProbe == .current)
+                ? ((try? fileManager.contentsOfDirectory(atPath: dir.path)) ?? []) : [])
+                .filter(Self.isAttemptStagingRelativePath))
         self.indexURL = indexURL
-        self.embyCleanupURL = dir.appendingPathComponent("emby-convert-cleanup.json")
+        let authority = dir.deletingLastPathComponent().appendingPathComponent(
+            ".\(dir.lastPathComponent)-download-authority", isDirectory: true)
+        self.cleanupAuthorityDirectory = authority
+        self.embyCleanupURL = authority.appendingPathComponent("emby-convert-cleanup.json")
         self.indexWriter = RevisionedPersistenceWriter<[Row]>(
             encode: { rows in try DownloadIndexCoding.encode(rows) },
             commit: { data in try indexPersistence.atomicWrite(data, indexURL) },
@@ -751,7 +808,18 @@ final class DownloadStore: @unchecked Sendable {
                       failure.errorType)
             }
         )
-        try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+        // Probe above is deliberately the first filesystem interaction that can affect admission.
+        // Unsupported/unreadable roots remain byte-for-byte untouched until the session drain.
+        guard startupProbe == .missing || startupProbe == .current else { return }
+        do {
+            try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: authority, withIntermediateDirectories: true)
+            try Self.syncDirectory(dir.deletingLastPathComponent())
+            try moveCleanupAuthorityFilesOutOfVersionedRoot()
+        } catch {
+            startupSchemaProbe = .unreadable
+            return
+        }
         // Exclude the offline cache from iCloud/device backups and give newly-created
         // auth-adjacent artifacts a protected parent directory.
         try? CredentialArtifactStorage.applyProtectionAndBackupExclusion(
@@ -769,6 +837,160 @@ final class DownloadStore: @unchecked Sendable {
             rows.values.flatMap { $0.pendingArtifactIntents.map(\.id) })
         stageLegacyHeldBodyDeletionJobs()
         recoverPendingArtifactIntents()
+        Self.scheduleUnsupportedRootReclamation(
+            parent: dir.deletingLastPathComponent(),
+            rootName: dir.lastPathComponent,
+            fileManager: fileManager)
+    }
+
+    var startupIndexProbe: DownloadIndexCoding.StartupProbe {
+        lock.withLock { startupSchemaProbe }
+    }
+
+    /// Server-cleanup intent must not share the versioned media root. A destructive schema reset
+    /// quarantines `directory`, while this sibling durability domain remains addressable.
+    var durableCleanupAuthorityDirectory: URL { cleanupAuthorityDirectory }
+
+    enum UnsupportedRootResetResult: Sendable, Equatable {
+        case reset(quarantineName: String)
+        case notRequired
+        case failed(stage: String, errorType: String)
+    }
+
+    /// Called only after the background session has reached an empty task-list fixed point.
+    /// The old tree is never traversed: rename quarantines it atomically, parent fsync makes that
+    /// namespace transition durable, and an independently durable empty v4 envelope is installed.
+    func replaceUnsupportedRootWithCurrentEmptyStore() -> UnsupportedRootResetResult {
+        guard case .unsupported = lock.withLock({ startupSchemaProbe }) else {
+            return .notRequired
+        }
+        let parent = baseDirectory.deletingLastPathComponent()
+        let quarantine = parent.appendingPathComponent(
+            ".\(baseDirectory.lastPathComponent)-unsupported-reset-pending", isDirectory: true)
+        var quarantined = false
+        do {
+            try fileManager.createDirectory(
+                at: cleanupAuthorityDirectory, withIntermediateDirectories: true)
+            try Self.syncDirectory(parent)
+            try moveCleanupAuthorityFilesOutOfVersionedRoot()
+            if fileManager.fileExists(atPath: baseDirectory.path) {
+                if fileManager.fileExists(atPath: quarantine.path) {
+                    let archived = parent.appendingPathComponent(
+                        ".\(baseDirectory.lastPathComponent)-legacy-\(UUID().uuidString)",
+                        isDirectory: true)
+                    try fileManager.moveItem(at: quarantine, to: archived)
+                    try Self.syncDirectory(parent)
+                }
+                try fileManager.moveItem(at: baseDirectory, to: quarantine)
+            } else {
+                guard fileManager.fileExists(atPath: quarantine.path) else {
+                    throw CocoaError(.fileNoSuchFile)
+                }
+            }
+            quarantined = true
+            try Self.syncDirectory(parent)
+            try fileManager.createDirectory(at: baseDirectory, withIntermediateDirectories: false)
+            try CredentialArtifactStorage.applyProtectionAndBackupExclusion(
+                to: baseDirectory,
+                protection: CredentialArtifactStorage.authArtifactProtection,
+                fileManager: fileManager)
+            try rootIndexPersistence.atomicWrite(DownloadIndexCoding.encode([Row]()), indexURL)
+            try Self.syncDirectory(parent)
+            lock.withLock {
+                rows.removeAll()
+                sideAssetHydrationCache.removeAll()
+                startupStagingInventory.removeAll()
+                loadedSchemaVersion = DownloadIndexCoding.currentSchemaVersion
+                startupSchemaProbe = .current
+            }
+            Self.scheduleUnsupportedRootReclamation(
+                parent: parent, rootName: baseDirectory.lastPathComponent,
+                fileManager: fileManager)
+            return .reset(quarantineName: quarantine.lastPathComponent)
+        } catch {
+            var rollbackFailed = false
+            if quarantined {
+                do {
+                    if fileManager.fileExists(atPath: baseDirectory.path) {
+                        try fileManager.removeItem(at: baseDirectory)
+                    }
+                    try fileManager.moveItem(at: quarantine, to: baseDirectory)
+                    try Self.syncDirectory(parent)
+                } catch {
+                    // The deterministic pending path is retained. A relaunched Store recognizes
+                    // it and retries instead of treating the absent live root as empty.
+                    rollbackFailed = true
+                }
+            }
+            return .failed(
+                stage: rollbackFailed ? "rollback_to_pending_quarantine"
+                    : (quarantined ? "install_current_root" : "quarantine_root"),
+                errorType: String(reflecting: type(of: error)))
+        }
+    }
+
+    private static func syncDirectory(_ directory: URL) throws {
+        let descriptor = Darwin.open(directory.path, O_RDONLY)
+        guard descriptor >= 0 else { throw CocoaError(.fileWriteUnknown) }
+        defer { _ = Darwin.close(descriptor) }
+        guard Darwin.fsync(descriptor) == 0 else { throw CocoaError(.fileWriteUnknown) }
+    }
+
+    /// Quarantine names are themselves the durable reclamation journal. They are created only
+    /// after every old OS task has drained, and are eligible for recursive deletion only while a
+    /// separately validated current root exists. Relaunch repeats the sweep after an interrupted
+    /// removal, so old multi-gigabyte roots cannot remain invisible forever.
+    private static func scheduleUnsupportedRootReclamation(
+        parent: URL,
+        rootName: String,
+        fileManager: FileManager
+    ) {
+        let pendingName = ".\(rootName)-unsupported-reset-pending"
+        let archivePrefix = ".\(rootName)-legacy-"
+        unsupportedRootCleanupQueue.async {
+            guard fileManager.fileExists(
+                atPath: parent.appendingPathComponent(rootName, isDirectory: true).path),
+                  let candidates = try? fileManager.contentsOfDirectory(
+                    at: parent, includingPropertiesForKeys: nil)
+                    .filter({ $0.lastPathComponent == pendingName
+                        || $0.lastPathComponent.hasPrefix(archivePrefix) }) else { return }
+            var removedAny = false
+            for candidate in candidates {
+                do {
+                    try fileManager.removeItem(at: candidate)
+                    removedAny = true
+                } catch {
+                    // The durable quarantine name remains for the next launch/sweep.
+                }
+            }
+            if removedAny { try? syncDirectory(parent) }
+        }
+    }
+
+    /// These queues have independent server-cleanup authority and must survive replacement of the
+    /// versioned media root. Migration is exact-file only and runs before root quarantine (and,
+    /// for a current root, before either queue is opened). Conflicting durable bytes fail closed.
+    private func moveCleanupAuthorityFilesOutOfVersionedRoot() throws {
+        for name in ["download-cleanup-intents.json", "emby-convert-cleanup.json"] {
+            let source = baseDirectory.appendingPathComponent(name)
+            guard fileManager.fileExists(atPath: source.path) else { continue }
+            let destination = cleanupAuthorityDirectory.appendingPathComponent(name)
+            if fileManager.fileExists(atPath: destination.path) {
+                guard try Data(contentsOf: source) == Data(contentsOf: destination) else {
+                    throw CocoaError(.fileWriteFileExists)
+                }
+                try fileManager.removeItem(at: source)
+            } else {
+                try fileManager.moveItem(at: source, to: destination)
+                try CredentialArtifactStorage.applyProtectionAndBackupExclusion(
+                    to: destination,
+                    protection: CredentialArtifactStorage.authArtifactProtection,
+                    fileManager: fileManager)
+            }
+            try Self.syncDirectory(baseDirectory)
+            try Self.syncDirectory(cleanupAuthorityDirectory)
+            try Self.syncDirectory(baseDirectory.deletingLastPathComponent())
+        }
     }
 
     /// Missing means an empty queue. Read/decode failures remain distinct so no later mutation can
@@ -1259,7 +1481,7 @@ final class DownloadStore: @unchecked Sendable {
         for key: DownloadAttemptKey
     ) -> AttemptValidatedPromotionResult {
         lock.lock()
-        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else {
+        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID else {
             lock.unlock(); return .staleOrMissingOwner
         }
         guard !row.legacyResetPending else {
@@ -1357,7 +1579,7 @@ final class DownloadStore: @unchecked Sendable {
             return .invalidPath
         }
         lock.lock(); defer { lock.unlock() }
-        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else {
+        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID else {
             return .staleOrMissingOwner
         }
         if let expectedSideAssetSource,
@@ -1377,6 +1599,11 @@ final class DownloadStore: @unchecked Sendable {
         }
         guard result == 0 else {
             return .failed(errorType: String(reflecting: POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)))
+        }
+        if expectedSideAssetSource != nil {
+            row.sideAssetGeneration &+= 1
+            rows[key.ratingKey] = row
+            sideAssetHydrationCache.removeValue(forKey: key.ratingKey)
         }
         return .promoted
     }
@@ -2382,7 +2609,7 @@ final class DownloadStore: @unchecked Sendable {
     }
 
     private func hydratedRecord(_ row: Row) -> DownloadRecord {
-        let sideAssets = hydratedSideAssets(ratingKey: row.ratingKey, metadata: row.metadata)
+        let sideAssets = hydratedSideAssets(for: row)
         return DownloadRecord(ratingKey: row.ratingKey,
                               attemptID: row.attemptID,
                               title: row.title,
@@ -2541,9 +2768,17 @@ final class DownloadStore: @unchecked Sendable {
         }
     }
 
-    private func hydratedSideAssets(ratingKey: String, metadata: OfflineMetadata?) -> HydratedSideAssets {
+    private func hydratedSideAssets(for row: Row) -> HydratedSideAssets {
+        let ratingKey = row.ratingKey
+        let metadata = row.metadata
+        let attemptID = row.attemptID
+        let source = metadata?.sideAssetSourceIdentity
+        let generation = row.sideAssetGeneration
         lock.lock()
-        if let cached = sideAssetHydrationCache[ratingKey] {
+        if let cached = sideAssetHydrationCache[ratingKey],
+           cached.attemptID == attemptID,
+           cached.source == source,
+           cached.generation == generation {
             lock.unlock()
             return cached
         }
@@ -2556,6 +2791,9 @@ final class DownloadStore: @unchecked Sendable {
             return total + ((attrs?[.size] as? NSNumber)?.intValue ?? 0)
         }
         let hydrated = HydratedSideAssets(
+            attemptID: attemptID,
+            source: source,
+            generation: generation,
             posterURL: fastResolvedDownloadAssetURL(metadata?.posterRelativePath),
             plexBIFURL: fastResolvedDownloadAssetURL(metadata?.plexBIFRelativePath),
             embyBIFURL: fastResolvedDownloadAssetURL(metadata?.embyBIFRelativePath),
@@ -2565,7 +2803,12 @@ final class DownloadStore: @unchecked Sendable {
             sideAssetBytes: sideAssetBytes
         )
         lock.lock()
-        sideAssetHydrationCache[ratingKey] = hydrated
+        if let current = rows[ratingKey],
+           current.attemptID == attemptID,
+           current.metadata?.sideAssetSourceIdentity == source,
+           current.sideAssetGeneration == generation {
+            sideAssetHydrationCache[ratingKey] = hydrated
+        }
         lock.unlock()
         return hydrated
     }
@@ -2730,7 +2973,8 @@ final class DownloadStore: @unchecked Sendable {
                                      metadata: metadata,
                                      legacyResetPending: existing?.legacyResetPending ?? false,
                                      legacyResetArtifactRelativePaths: existing?.legacyResetArtifactRelativePaths,
-                                     heldRangeBodyDeletionIntents: existing?.heldRangeBodyDeletionIntents ?? [])
+                                     heldRangeBodyDeletionIntents: existing?.heldRangeBodyDeletionIntents ?? [],
+                                     sideAssetGeneration: existing?.sideAssetGeneration ?? 0)
         sideAssetHydrationCache.removeValue(forKey: record.ratingKey)
         lock.unlock()
         let persistence = persist()
@@ -2742,25 +2986,46 @@ final class DownloadStore: @unchecked Sendable {
         }
     }
 
-    /// Atomically publish a set of brand-new, ordinary queued rows for one season-plan action.
-    /// One full-snapshot persistence revision contains every row; callers admit no network/server
-    /// work unless this returns true. Existing identities fail closed instead of being overwritten.
-    func createSeasonPlannedRecordsAtomically(_ records: [DownloadRecord]) -> Bool {
-        guard !records.isEmpty else { return true }
+    enum SeasonPlanStoreApplyResult: Sendable, Equatable {
+        case applied(inserted: Int, retried: Int)
+        case staleInput
+        case persistenceFailed
+        case persistenceIndeterminate
+    }
+
+    /// Atomically publish new rows and mark exact failed attempts for retry in one schema-v4
+    /// snapshot. No row becomes visible to admission unless the complete plan is durable.
+    func applySeasonPlanAtomically(
+        newRecords records: [DownloadRecord],
+        retryAttempts: [DownloadAttemptKey]
+    ) -> SeasonPlanStoreApplyResult {
+        guard !records.isEmpty || !retryAttempts.isEmpty else {
+            return .applied(inserted: 0, retried: 0)
+        }
         lock.lock()
         let keys = records.map(\.ratingKey)
+        let retryKeys = retryAttempts.map(\.ratingKey)
         guard Set(keys).count == keys.count,
-              records.allSatisfy({ $0.attemptID != nil && rows[$0.ratingKey] == nil }) else {
+              Set(retryKeys).count == retryKeys.count,
+              Set(keys).isDisjoint(with: Set(retryKeys)),
+              records.allSatisfy({ $0.attemptID != nil && rows[$0.ratingKey] == nil }),
+              retryAttempts.allSatisfy({ key in
+                  guard let row = rows[key.ratingKey] else { return false }
+                  return row.attemptID == key.attemptID
+                      && row.status == .failed
+                      && row.metadata != nil
+              }) else {
             lock.unlock()
-            return false
+            return .staleInput
         }
-        let previous = rows
+        var candidateRows = rows
+        var candidateHydrationCache = sideAssetHydrationCache
         for record in records {
             guard let attemptID = record.attemptID else { continue }
             let relativePath = record.localURL.lastPathComponent
             var metadata = record.metadata
             metadata?.downloadAttemptID = attemptID.rawValue
-            rows[record.ratingKey] = Row(
+            candidateRows[record.ratingKey] = Row(
                 ratingKey: record.ratingKey,
                 attemptID: attemptID,
                 title: record.title,
@@ -2775,19 +3040,83 @@ final class DownloadStore: @unchecked Sendable {
                 legacyResetPending: false,
                 legacyResetArtifactRelativePaths: nil,
                 heldRangeBodyDeletionIntents: [])
-            sideAssetHydrationCache.removeValue(forKey: record.ratingKey)
+            candidateHydrationCache.removeValue(forKey: record.ratingKey)
         }
-        let ticket = enqueuePersistenceLocked()
-        lock.unlock()
-        let attempt = waitForPersistence(through: ticket)
-        guard attempt.result.committed(through: ticket) else {
-            lock.lock()
-            rows = previous
-            let rollback = enqueuePersistenceLocked()
+        for key in retryAttempts {
+            guard var row = candidateRows[key.ratingKey], var metadata = row.metadata else { continue }
+            metadata.seasonPlannerPendingAdmission = true
+            row.metadata = metadata
+            candidateRows[key.ratingKey] = row
+        }
+        // Submit the candidate snapshot without publishing it in memory. Holding the Store lock
+        // through the writer outcome makes validation + persistence + publication one transaction;
+        // no concurrent mutation can observe or build on rows that have not committed.
+        let oldIndexData = try? Data(contentsOf: indexURL)
+        let oldIndexWasMissing = oldIndexData == nil && !fileManager.fileExists(atPath: indexURL.path)
+        let candidateSnapshot = Array(candidateRows.values)
+        guard let candidateData = try? DownloadIndexCoding.encode(candidateSnapshot) else {
             lock.unlock()
-            _ = waitForPersistence(through: rollback)
-            return false
+            return .persistenceFailed
         }
+        nextPersistenceRevision += 1
+        let ticket = PersistenceTicket(revision: nextPersistenceRevision)
+        indexWriter.submit(revision: ticket.revision, snapshot: candidateSnapshot)
+        let writerResult = indexWriter.waitSynchronouslyForOutcome(through: ticket.revision)
+        let persistenceResult = Self.mapPersistenceResult(writerResult)
+        guard persistenceResult.committed(through: ticket) else {
+            // Atomic replacement can succeed and then surface an error. If the exact candidate is
+            // already durable, publish it rather than letting a later old-memory snapshot erase it.
+            if (try? Data(contentsOf: indexURL)) == candidateData {
+                rows = candidateRows
+                sideAssetHydrationCache = candidateHydrationCache
+                lock.unlock()
+                return .applied(inserted: records.count, retried: retryAttempts.count)
+            }
+            // Supersede the writer's dirty candidate with the unchanged authoritative rows. Even
+            // if this compensating write fails, any future writer flush now retries old authority,
+            // not an unreported season plan.
+            nextPersistenceRevision += 1
+            let rollbackTicket = PersistenceTicket(revision: nextPersistenceRevision)
+            indexWriter.submit(revision: rollbackTicket.revision, snapshot: Array(rows.values))
+            let rollbackResult = indexWriter.waitSynchronouslyForOutcome(
+                through: rollbackTicket.revision)
+            if Self.mapPersistenceResult(rollbackResult).committed(through: rollbackTicket) {
+                lock.unlock()
+                return .persistenceFailed
+            }
+            let durableBytes = try? Data(contentsOf: indexURL)
+            if durableBytes == candidateData {
+                // Make the candidate the writer's newest dirty authority as well as memory/disk
+                // authority, so a later flush cannot replay the failed rollback over it.
+                nextPersistenceRevision += 1
+                indexWriter.submit(
+                    revision: nextPersistenceRevision, snapshot: candidateSnapshot)
+                rows = candidateRows
+                sideAssetHydrationCache = candidateHydrationCache
+                lock.unlock()
+                return .applied(inserted: records.count, retried: retryAttempts.count)
+            }
+            if durableBytes == oldIndexData
+                || (oldIndexWasMissing && !fileManager.fileExists(atPath: indexURL.path)) {
+                lock.unlock()
+                return .persistenceFailed
+            }
+            // Neither authority can be proven. Mark startup admission unreadable so the manager
+            // can stop the queue rather than report an ordinary save failure and continue.
+            startupSchemaProbe = .unreadable
+            lock.unlock()
+            return .persistenceIndeterminate
+        }
+        rows = candidateRows
+        sideAssetHydrationCache = candidateHydrationCache
+        lock.unlock()
+        return .applied(inserted: records.count, retried: retryAttempts.count)
+    }
+
+    /// Compatibility wrapper for callers that only create new rows.
+    func createSeasonPlannedRecordsAtomically(_ records: [DownloadRecord]) -> Bool {
+        guard case .applied = applySeasonPlanAtomically(
+            newRecords: records, retryAttempts: []) else { return false }
         return true
     }
 
@@ -4024,146 +4353,37 @@ final class DownloadStore: @unchecked Sendable {
     func submitLegacyAttemptOwnershipMigration(
         idFactory: (String) -> DownloadAttemptID = { _ in .generated() }
     ) -> AttemptOwnershipMigrationSubmission {
+        _ = idFactory // retained temporarily for source compatibility with older focused tests
         lock.lock()
-        let shadowDisagreements = rows.values
-            .filter(\.decodedAttemptIdentityDisagrees)
-            .map(\.ratingKey)
-            .sorted()
-        if !shadowDisagreements.isEmpty {
-            lock.unlock()
-            return .immediate(.malformedV3Rows(shadowDisagreements))
-        }
-        if loadedSchemaVersion >= DownloadIndexCoding.currentSchemaVersion {
-            // `reconcile` may legitimately demote a legacy ownerless terminal row after its stable
-            // file disappears. That produces an ownerless `.failed` v4 row; treating it as generic
-            // corruption globally wedges every download forever. Adopt only truly ownerless rows
-            // (no top-level or nested token), then run the same fail-safe artifact reset barrier as
-            // a pre-v4 partial. Rows carrying ambiguous/mismatched identity still fail closed below.
-            var adoptedReset: [DownloadAttemptKey] = []
-            var adoptedCleanupOnly: [DownloadAttemptKey] = []
-            for ratingKey in rows.keys.sorted() {
-                guard var row = rows[ratingKey],
-                      Self.requiresAttemptOwnership(row),
-                      row.attemptID == nil,
-                      !row.decodedTopLevelAttemptIDPresent else { continue }
-                let attemptID = idFactory(ratingKey)
-                row.attemptID = attemptID
-                row.decodedTopLevelAttemptIDPresent = true
-                row.metadata?.downloadAttemptID = attemptID.rawValue
-                let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
-                if row.status == .complete || row.status == .unverified {
-                    adoptedCleanupOnly.append(key)
-                } else {
-                    row.attemptWorkingRelativePath = Self.attemptStagingRelativePath(
-                        for: key, stableRelativePath: row.relativePath)
-                    row.legacyResetPending = true
-                    adoptedReset.append(key)
-                }
-                rows[ratingKey] = row
-            }
-            if !adoptedReset.isEmpty || !adoptedCleanupOnly.isEmpty {
-                let plan = LegacyAttemptMigrationPlan(
-                    taskCancellationAndReset: adoptedReset,
-                    cleanupOnly: adoptedCleanupOnly)
-                let ticket = enqueueAttemptPersistenceLocked()
-                lock.unlock()
-                return .accepted(
-                    plan: plan, ticket: ticket,
-                    pendingResetKeys: adoptedReset, advancesSchema: false)
-            }
-            let malformed = rows.values
-                .filter {
-                    guard Self.requiresAttemptOwnership($0) else { return false }
-                    guard $0.decodedTopLevelAttemptIDPresent else { return true }
-                    guard $0.status != .complete && $0.status != .unverified else { return false }
-                    guard let attemptID = $0.attemptID else { return true }
-                    return $0.attemptWorkingRelativePath != Self.attemptStagingRelativePath(
-                        for: DownloadAttemptKey(ratingKey: $0.ratingKey, attemptID: attemptID),
-                        stableRelativePath: $0.relativePath)
-                }
-                .map(\.ratingKey)
-                .sorted()
-            let pending = rows.values.compactMap { row -> DownloadAttemptKey? in
-                guard row.legacyResetPending, let attemptID = row.attemptID else { return nil }
-                return DownloadAttemptKey(ratingKey: row.ratingKey, attemptID: attemptID)
-            }.sorted { $0.ratingKey < $1.ratingKey }
-            let cleanupOnly = rows.values.compactMap { row -> DownloadAttemptKey? in
-                guard (row.status == .complete || row.status == .unverified),
-                      Self.hasAsyncCleanupEvidence(row),
-                      let attemptID = row.attemptID else { return nil }
-                return DownloadAttemptKey(ratingKey: row.ratingKey, attemptID: attemptID)
-            }.sorted { $0.ratingKey < $1.ratingKey }
-            if !malformed.isEmpty {
-                lock.unlock()
-                return .immediate(.malformedV3Rows(malformed))
-            }
-            if !pending.isEmpty || !cleanupOnly.isEmpty {
-                let plan = LegacyAttemptMigrationPlan(
-                    taskCancellationAndReset: pending,
-                    cleanupOnly: cleanupOnly
-                )
-                // A prior v4 ownerless-adoption attempt may have timed out after mutating memory.
-                // Those rows now look fully adopted, but cancellation/reset admission must still
-                // prove the dirty snapshot. Resubmit the current full state and carry a new exact
-                // ticket rather than blessing in-memory identity as durable.
-                let writerState = indexWriter.state
-                if writerState.dirtyRevision != nil
-                    || writerState.committedRevision < nextPersistenceRevision {
-                    let ticket = enqueueAttemptPersistenceLocked()
-                    lock.unlock()
-                    return .accepted(
-                        plan: plan, ticket: ticket,
-                        pendingResetKeys: pending, advancesSchema: false)
-                }
-                pendingLegacyAttemptResetKeys.formUnion(pending)
-                lock.unlock()
-                return .immediate(.committed(plan))
-            }
-            lock.unlock()
+        defer { lock.unlock() }
+        switch startupSchemaProbe {
+        case .unsupported(let schemaVersion):
+            return .immediate(.requiresDestructiveReset(schemaVersion: schemaVersion))
+        case .unreadable:
+            return .immediate(.unreadableIndex)
+        case .missing:
             return .immediate(.notRequired)
+        case .current:
+            break
         }
 
-        var reset: [DownloadAttemptKey] = []
-        var cleanupOnly: [DownloadAttemptKey] = []
-        for ratingKey in rows.keys.sorted() {
-            guard var row = rows[ratingKey], Self.requiresAttemptOwnership(row) else { continue }
-            if row.attemptID == nil { row.attemptID = idFactory(ratingKey) }
-            guard let attemptID = row.attemptID else { continue }
-            row.decodedTopLevelAttemptIDPresent = true
-            // Mirror only during migration for safe rollback/dual-read. Top-level authority lives
-            // in `Row.attemptID` and later mutations must compare that typed value.
-            if row.metadata?.downloadAttemptID == nil {
-                row.metadata?.downloadAttemptID = attemptID.rawValue
+        // Current schema is validated, never repaired by guessing. Old per-row ownership adoption
+        // is gone; a malformed v4 row remains available for diagnosis while session admission is
+        // closed. Exact terminal rows without asynchronous cleanup evidence may remain ownerless.
+        let malformed = rows.values.filter { row in
+            if row.decodedAttemptIdentityDisagrees || row.legacyResetPending { return true }
+            guard Self.requiresAttemptOwnership(row) else { return false }
+            guard row.decodedTopLevelAttemptIDPresent, let attemptID = row.attemptID else {
+                return true
             }
-            // Schema v4 makes the private media body durable and addressable without trusting a
-            // callback-supplied URL. It is written in the same migration barrier that closes
-            // admission for every nonterminal schema-v3 partial.
-            if row.status != .complete && row.status != .unverified {
-                row.attemptWorkingRelativePath = Self.attemptStagingRelativePath(
-                    for: DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID),
-                    stableRelativePath: row.relativePath)
-            }
-            rows[ratingKey] = row
-            let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
-            if row.status == .complete || row.status == .unverified {
-                cleanupOnly.append(key)
-            } else {
-                row.legacyResetPending = true
-                rows[ratingKey] = row
-                reset.append(key)
-            }
-        }
-        let plan = LegacyAttemptMigrationPlan(
-            taskCancellationAndReset: reset,
-            cleanupOnly: cleanupOnly
-        )
-        // Even an empty plan must commit the v4 envelope. Otherwise a completed-only old library
-        // would be reclassified as legacy on every launch.
-        let ticket = enqueueAttemptPersistenceLocked()
-        lock.unlock()
-        return .accepted(
-            plan: plan, ticket: ticket,
-            pendingResetKeys: reset, advancesSchema: true)
+            guard row.status != .complete && row.status != .unverified else { return false }
+            return row.attemptWorkingRelativePath != Self.attemptStagingRelativePath(
+                for: DownloadAttemptKey(ratingKey: row.ratingKey, attemptID: attemptID),
+                stableRelativePath: row.relativePath)
+        }.map(\.ratingKey).sorted()
+        return malformed.isEmpty
+            ? .immediate(.notRequired)
+            : .immediate(.malformedV3Rows(malformed))
     }
 
     func resolveSynchronously(

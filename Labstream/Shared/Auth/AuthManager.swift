@@ -68,13 +68,14 @@ final class AuthManager {
     /// PIN (its long code backs the on-device web-auth URL). Whichever the
     /// user completes authorizes first; both clear when the attempt ends.
     private var activePinIDs: Set<Int> = []
-    private var activeAuthAttempt: AuthAttempt?
+    private var authAttemptAuthority = AuthAttemptAuthority()
     private var plexSessionGeneration = UUID()
     /// Current Emby Connect attempt and the cloud session it produced. `pendingEmbyConnect`
     /// holds the Connect user id + linked-server list (incl. per-server access keys) while the
     /// user picks a server; it is in-memory only and cleared when the attempt ends.
     private var embyConnectServerSelections = EmbyConnectServerSelectionTracker()
     private var pendingEmbyConnect: PendingEmbyConnect?
+    private var downloadHydrationTasks: [MediaBackendKind: DownloadAuthHydrationWork] = [:]
 
     init(appModel: AppModel,
          keychain: KeychainStore = KeychainStore(),
@@ -146,13 +147,8 @@ final class AuthManager {
         }
     }
 
-    /// Restore saved sessions at launch/switch time.
-    ///
-    /// The selected backend is still restored as the user-facing lane (and drives `state`), but
-    /// download orchestration can now need credentials for OTHER saved lanes at the same time
-    /// (#84: e.g. a Plex optimize row plus a Jellyfin transcode row after relaunch). Hydrate those
-    /// inactive lanes too so `AppModel.backendSession(for:)` is not limited to the currently
-    /// selected backend.
+    /// Restore the selected session at launch/switch time. This user-facing restore always
+    /// finishes before any download-owned inactive lane can be admitted.
     @discardableResult
     func restoreSession() async -> Bool {
         cancelPendingLogin()
@@ -166,13 +162,15 @@ final class AuthManager {
         case .plex:
             selectedRestored = await restorePlexSession(updateState: true, attemptID: attemptID)
         case .jellyfin:
-            selectedRestored = await restoreJellyfinSession(validateReachability: true, updateState: true, attemptID: attemptID)
+            selectedRestored = await restoreJellyfinSession(validateReachability: true,
+                                                             updateState: true,
+                                                             attemptID: attemptID)
         case .emby:
-            selectedRestored = await restoreEmbySession(validateReachability: true, updateState: true, attemptID: attemptID)
+            selectedRestored = await restoreEmbySession(validateReachability: true,
+                                                        updateState: true,
+                                                        attemptID: attemptID)
         }
 
-        guard isCurrentAuthAttempt(attemptID) else { return false }
-        await restoreInactiveBackendSessions(excluding: selected, attemptID: attemptID)
         guard isCurrentAuthAttempt(attemptID) else { return false }
         finishAuthAttempt(attemptID)
         return selectedRestored
@@ -184,33 +182,70 @@ final class AuthManager {
     /// can keep waiting for it. A non-nil value is the admitted restore's ordinary success result.
     @discardableResult
     func restoreSessionIfNoAuthorizationInProgress() async -> Bool? {
-        guard activeAuthAttempt == nil else { return nil }
+        guard authAttemptAuthority.isIdle else { return nil }
         return await restoreSession()
     }
 
-    /// Hydrate non-selected backend lanes for downloads without taking over the UI state. Jellyfin
-    /// and Emby can restore directly from their saved base URL + token + user id; Plex still needs
-    /// discovery to recover the current PMS connection and server-scoped token.
-    private func restoreInactiveBackendSessions(excluding selected: MediaBackendKind,
-                                                attemptID: AuthAttemptID) async {
-        for backend in MediaBackendKind.allCases where backend != selected {
-            guard isCurrentAuthAttempt(attemptID) else { return }
-            switch backend {
-            case .plex:
-                // Plex hydration is expensive (resource enumeration + per-connection probing).
-                // `restoreSession()` runs on every backend switch, so re-discovering PMS each time
-                // the user toggles Jellyfin↔Emby is wasted work. The Plex lane stays live for the
-                // app's lifetime once hydrated, so only discover when it isn't already connected.
-                if appModel.selectedServer == nil || appModel.serverBaseURL == nil {
-                    _ = await restorePlexSession(updateState: false, attemptID: attemptID)
-                }
-            case .jellyfin:
-                _ = await restoreJellyfinSession(validateReachability: false, updateState: false, attemptID: attemptID)
-            case .emby:
-                _ = await restoreEmbySession(validateReachability: false, updateState: false, attemptID: attemptID)
-            }
+    /// Demand-driven inactive session hydration for download orchestration. It never changes
+    /// the selected backend or UI state, and it refuses to steal authority from an interactive
+    /// login/restore. The caller should retry after the current authorization finishes.
+    @discardableResult
+    func hydrateSavedSessionForDownloads(backend: MediaBackendKind) async -> Bool {
+        #if os(tvOS)
+        return false
+        #else
+        if let existing = downloadHydrationTasks[backend] {
+            return await existing.task.value
         }
+        let selected = keychain.selectedBackend
+        guard AuthBackendHydrationPolicy.shouldHydrateInactiveBackend(
+            backend, selected: selected, downloadsAvailable: true
+        ) else {
+            return appModel.backendSession(for: backend.downloadBackendKind) != nil
+        }
+        guard authAttemptAuthority.isIdle else { return false }
+        if appModel.backendSession(for: backend.downloadBackendKind) != nil { return true }
+
+        let workID = UUID()
+        let task = Task { [weak self] in
+            guard let self else { return false }
+            return await self.performDownloadSessionHydration(backend: backend)
+        }
+        downloadHydrationTasks[backend] = DownloadAuthHydrationWork(id: workID, task: task)
+        let result = await task.value
+        if downloadHydrationTasks[backend]?.id == workID {
+            downloadHydrationTasks[backend] = nil
+        }
+        return result
+        #endif
     }
+
+    #if !os(tvOS)
+    private func performDownloadSessionHydration(backend: MediaBackendKind) async -> Bool {
+        // Recheck after the coalescing task obtains the main actor: an interactive operation
+        // may have started between admission and execution.
+        guard authAttemptAuthority.isIdle else { return false }
+        if appModel.backendSession(for: backend.downloadBackendKind) != nil { return true }
+        let attemptID = beginAuthAttempt(.downloadSessionHydration(backend))
+        defer { cleanupCancelledAuthAttempt(attemptID) }
+        let restored: Bool
+        switch backend {
+        case .plex:
+            restored = await restorePlexSession(updateState: false, attemptID: attemptID)
+        case .jellyfin:
+            restored = await restoreJellyfinSession(validateReachability: false,
+                                                     updateState: false,
+                                                     attemptID: attemptID)
+        case .emby:
+            restored = await restoreEmbySession(validateReachability: false,
+                                                updateState: false,
+                                                attemptID: attemptID)
+        }
+        guard isCurrentAuthAttempt(attemptID) else { return false }
+        finishAuthAttempt(attemptID)
+        return restored && appModel.backendSession(for: backend.downloadBackendKind) != nil
+    }
+    #endif
 
     private func restorePlexSession(updateState: Bool = true, attemptID: AuthAttemptID) async -> Bool {
         let restoreFields: [String: DiagnosticFieldValue] = [
@@ -241,6 +276,7 @@ final class AuthManager {
             }
             applyPlexSession(discovery, token: saved)
             if updateState { state = .authenticated }
+            schedulePlexProfileRefreshIfNeeded(discovery)
             recordAuthDiagnostic("auth.plex.restore.success", fields: restoreFields)
             return true
         } catch PlexError.unauthorized {
@@ -367,6 +403,8 @@ final class AuthManager {
                                           userID: snapshot.userID,
                                           serverID: snapshot.serverID)
     }
+
+
 
     private func restoreEmbySession(validateReachability: Bool = true,
                                     updateState: Bool = true,
@@ -548,6 +586,7 @@ final class AuthManager {
                 recordAuthDiagnostic("auth.plex.login.preferred_server_write_failed")
             }
             applyPlexSession(discovery, token: token)
+            schedulePlexProfileRefreshIfNeeded(discovery)
             activePinIDs = []
             pollTask = nil
             finishAuthAttempt(attemptID)
@@ -1318,6 +1357,7 @@ final class AuthManager {
             throw AuthCoordinationError.secureStorageFailed
         }
         applyPlexSession(discovery, token: accountToken)
+        schedulePlexProfileRefreshIfNeeded(discovery)
     }
 
     /// Clear only the server-scoped portion of Plex runtime state. The account token remains
@@ -1361,15 +1401,12 @@ final class AuthManager {
                                                              expectedMachineIdentifier: server.clientIdentifier) {
                 guard isPlexAuthorityCurrent(attemptID: attemptID, token: accountToken,
                                              sessionGeneration: sessionGeneration) else { throw CancellationError() }
-                let profile = await fetchPlexAccountProfile(token: accountToken)
-                guard isPlexAuthorityCurrent(attemptID: attemptID, token: accountToken,
-                                             sessionGeneration: sessionGeneration) else { throw CancellationError() }
                 return PlexSessionDiscovery(servers: servers,
                                             selectedServer: server,
                                             serverToken: serverToken,
                                             baseURL: connection.url,
                                             isLocal: connection.isLocal,
-                                            accountProfile: profile)
+                                            accountProfile: nil)
             }
         }
         throw PlexError.serverUnreachable
@@ -1394,6 +1431,18 @@ final class AuthManager {
                                         isLocal: discovery.isLocal,
                                         accountProfile: discovery.accountProfile)
         plexSessionGeneration = UUID()
+    }
+
+    /// Account display metadata is explicitly secondary to a usable PMS connection. A slow
+    /// or unavailable plex.tv profile endpoint must never hold browse readiness behind it.
+    private func schedulePlexProfileRefreshIfNeeded(_ discovery: PlexSessionDiscovery) {
+        guard discovery.accountProfile == nil else { return }
+        // A custom discovery seam owns its complete fixture unless it also supplies an
+        // explicit profile seam; do not let focused tests accidentally reach plex.tv.
+        guard plexSessionDiscoverer == nil || plexProfileLoader != nil else { return }
+        Task { [weak self] in
+            await self?.refreshPlexAccountProfile()
+        }
     }
 
     /// Select a Plex server from Settings and persist that server identity for future launches.
@@ -1635,28 +1684,23 @@ final class AuthManager {
         appModel.clearBrowseSession(for: backend)
     }
 
-    /// Starts the single authority generation used by the auth and legacy-session
-    /// restore flows coordinated in this type. Saved-profile restoration adopts the
-    /// same authority when that feature lands.
+    /// Starts the single authority generation shared by Plex, Jellyfin, Emby,
+    /// selected-session restore, and download-demand hydration.
     /// Attempt identities are deliberately ephemeral and never enter Keychain state.
     private func beginAuthAttempt(_ operation: AuthOperation) -> AuthAttemptID {
-        let attempt = AuthAttempt(id: UUID(), operation: operation)
-        activeAuthAttempt = attempt
-        return attempt.id
+        authAttemptAuthority.begin(operation)
     }
 
     private func isCurrentAuthAttempt(_ id: AuthAttemptID) -> Bool {
-        activeAuthAttempt?.id == id && !Task.isCancelled
+        authAttemptAuthority.isCurrent(id, taskIsCancelled: Task.isCancelled)
     }
 
     private func currentAuthAttemptID(for operation: AuthOperation) -> AuthAttemptID? {
-        guard activeAuthAttempt?.operation == operation else { return nil }
-        return activeAuthAttempt?.id
+        authAttemptAuthority.currentID(for: operation)
     }
 
     private func finishAuthAttempt(_ id: AuthAttemptID) {
-        guard activeAuthAttempt?.id == id else { return }
-        activeAuthAttempt = nil
+        authAttemptAuthority.finish(id)
     }
 
     private func isCurrentPlexSession(token: String, generation: UUID) -> Bool {
@@ -1674,8 +1718,7 @@ final class AuthManager {
     }
 
     private func cleanupCancelledAuthAttempt(_ id: AuthAttemptID) {
-        guard Task.isCancelled, activeAuthAttempt?.id == id else { return }
-        activeAuthAttempt = nil
+        guard Task.isCancelled, authAttemptAuthority.cancel(id) else { return }
         activePinIDs = []
         pollTask?.cancel()
         pollTask = nil
@@ -1687,8 +1730,10 @@ final class AuthManager {
     func cancelPendingLogin() {
         pollTask?.cancel()
         pollTask = nil
+        downloadHydrationTasks.values.forEach { $0.task.cancel() }
+        downloadHydrationTasks.removeAll()
         activePinIDs = []
-        activeAuthAttempt = nil
+        authAttemptAuthority.cancelAll()
         embyConnectServerSelections.cancel()
         pendingEmbyConnect = nil
     }
@@ -1701,6 +1746,12 @@ final class AuthManager {
         appModel.identity.emby
     }
 
+
+
+
+
+
+
     private static let mediaBrowserAuthSession: URLSession = {
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 15
@@ -1710,20 +1761,9 @@ final class AuthManager {
     }()
 }
 
-private typealias AuthAttemptID = UUID
-
-private struct AuthAttempt: Equatable {
-    let id: AuthAttemptID
-    let operation: AuthOperation
-}
-
-private enum AuthOperation: Equatable {
-    case plexPIN
-    case jellyfinCredentials
-    case jellyfinQuickConnect
-    case embyCredentials
-    case embyConnect
-    case sessionRestore
+private struct DownloadAuthHydrationWork {
+    let id: UUID
+    let task: Task<Bool, Never>
 }
 
 private enum AuthCoordinationError: Error {

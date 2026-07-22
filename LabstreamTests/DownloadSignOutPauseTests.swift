@@ -5,6 +5,45 @@ import Testing
 
 @MainActor
 struct DownloadSignOutPauseTests {
+    @Test func renderedRowActionsRejectAnOvertakenAttempt() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "download-row-attempt-fence-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = DownloadStore(baseDirectory: directory)
+        let first = try #require(makeRecord(
+            store: store, ratingKey: "plex:item", backend: .plex, attemptSuffix: "first"))
+        #expect(store.createAttemptOwnedRecord(first.record, attemptID: first.key.attemptID)
+                == .committed(first.key))
+
+        let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "row-action-fence"))
+        let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+        let manager = DownloadManager(appModel: model, store: store, session: session,
+                                      registerForBackgroundEvents: false)
+        defer { session.invalidateInjectedSessionForTesting() }
+
+        let replacement = try #require(makeRecord(
+            store: store, ratingKey: "plex:item", backend: .plex, attemptSuffix: "replacement"))
+        #expect(store.createAttemptOwnedRecord(
+            replacement.record, attemptID: replacement.key.attemptID,
+            replacing: first.key.attemptID) == .committed(replacement.key))
+
+        let stale = OfflineDownloadRowActionIdentity(
+            ratingKey: first.key.ratingKey, attemptID: first.key.attemptID)
+        #expect(manager.currentRecord(for: stale) == nil)
+        #expect(!manager.pause(stale))
+        #expect(!manager.retry(stale))
+        #expect(!manager.delete(stale))
+        #expect(store.record(for: replacement.key)?.status == .downloading)
+
+        let current = OfflineDownloadRowActionIdentity(
+            ratingKey: replacement.key.ratingKey, attemptID: replacement.key.attemptID)
+        #expect(manager.currentRecord(for: current)?.attemptID == replacement.key.attemptID)
+        #expect(manager.pause(current))
+        #expect(store.record(for: replacement.key)?.status == .paused)
+    }
+
     @Test func signingOutPausesOnlyActiveRowsOwnedByThatBackend() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
             "download-signout-pause-\(UUID().uuidString)", isDirectory: true)
@@ -38,8 +77,10 @@ struct DownloadSignOutPauseTests {
     }
 
     private func makeRecord(store: DownloadStore, ratingKey: String,
-                            backend: DownloadBackendKind) -> (key: DownloadAttemptKey, record: DownloadRecord)? {
-        guard let attemptID = DownloadAttemptID(rawValue: "attempt-\(ratingKey)") else { return nil }
+                            backend: DownloadBackendKind,
+                            attemptSuffix: String? = nil) -> (key: DownloadAttemptKey, record: DownloadRecord)? {
+        guard let attemptID = DownloadAttemptID(
+            rawValue: "attempt-\(attemptSuffix ?? ratingKey)") else { return nil }
         let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
         let record = DownloadRecord(
             ratingKey: ratingKey,

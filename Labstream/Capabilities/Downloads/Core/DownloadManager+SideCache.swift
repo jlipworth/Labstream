@@ -9,35 +9,6 @@ import os
 // best-effort cache that never fails the media download. (Stage 7 will further unify these into one
 // fetch→write→persist→refresh helper; this is the file-level separation.)
 
-/// Launch-scoped, in-memory bound on how many times a COMPLETED row's optional side-asset rehydrate
-/// re-issues a fetch that never lands. `missingKnownOptionalSideAssetKinds` stays non-empty for the
-/// life of a row whose metadata references an optional asset the server can never produce (a 404'd
-/// poster, a chapter-thumb ref with no generated thumbnail), so without a bound every
-/// foreground/backend-ready/scene-active trigger re-arms the same failing fetch forever. After
-/// `maxAttemptsPerLaunch` rehydrate passes leave a given (row, kind) still missing, stop offering
-/// that kind until the process restarts. Deliberately in-memory and not persisted: a fresh launch
-/// retries once, which is the intended behavior for a genuinely transient (offline) miss.
-struct CompletedRowSideAssetRehydrateBudget {
-    /// The optional-asset kinds the completed-row scan tracks (mirrors the `metadata`-derived refs
-    /// the gate inspects: the poster, generated preview index, and per-chapter thumbnails).
-    enum Kind: Hashable { case poster, embyBIF, chapterImages }
-
-    static let maxAttemptsPerLaunch = 5
-
-    private struct Key: Hashable { let ratingKey: String; let kind: Kind }
-    private var attempts: [Key: Int] = [:]
-
-    /// Whether this (row, kind) still has retry budget this launch.
-    func canOffer(ratingKey: String, kind: Kind) -> Bool {
-        (attempts[Key(ratingKey: ratingKey, kind: kind)] ?? 0) < Self.maxAttemptsPerLaunch
-    }
-
-    /// Record that a rehydrate pass offered this (row, kind) while it was still missing.
-    mutating func recordAttempt(ratingKey: String, kind: Kind) {
-        attempts[Key(ratingKey: ratingKey, kind: kind), default: 0] += 1
-    }
-}
-
 extension DownloadManager {
 
     /// Retry optional side assets that were cancelled or never finished before media completion.
@@ -48,68 +19,79 @@ extension DownloadManager {
     /// first pass and does not redownload assets that already reached durable storage. Completed-row
     /// scans are limited to rows with a known missing poster/chapter file; unsupported optional
     /// assets must not turn every foreground activation into server traffic. A per-launch budget
-    /// (`completedRowSideAssetRehydrateBudget`) stops re-arming a (row, kind) whose asset the server
-    /// can never produce, so a permanently-404'd poster/chapter ref does not re-issue forever.
+    /// (`completedRowSideAssetRetryBudget`) stops re-arming an exact (attempt, source, kind) whose
+    /// asset the server can never produce, so a permanently-404'd ref does not re-issue forever.
     func rehydrateMissingOptionalSideAssetsForCompletedRows(reason: String) {
         guard !isQueuePaused else { return }
         for record in store.records where record.isComplete {
             guard let attemptID = record.attemptID else { continue }
             let key = DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID)
+            guard let source = store.sideAssetSourceIdentity(for: key) else { continue }
             let missing = missingKnownOptionalSideAssetKinds(record: record, attemptKey: key)
-            // Only offer kinds that still have per-launch retry budget. A row whose remaining missing
-            // kinds have all exhausted their budget stops triggering rehydrate entirely, which is the
-            // whole point: `reusableSideAssetRelativePath` never becomes non-nil for an asset the
-            // server can't produce, so the missing state alone would re-arm the fetch forever.
-            let offerable = missing.filter {
-                completedRowSideAssetRehydrateBudget.canOffer(ratingKey: record.ratingKey, kind: $0)
+            let offerable = missing.filter { kind in
+                repairResources(for: kind, record: record, attemptKey: key).contains { resource in
+                    completedRowSideAssetRetryBudget.canDispatch(.init(
+                        attemptKey: key, source: source, kind: kind, resource: resource))
+                }
             }
             guard !offerable.isEmpty else { continue }
-            // Charge the budget only when a fetch was actually dispatched. Rehydrate bails without
-            // issuing work when the row's backend has no live session or a different server is
-            // signed in (routine while another backend is active) — burning the launch budget on
-            // those passes would permanently block the asset from rehydrating once its own backend
-            // comes back, while real dispatched-but-failed fetches still exhaust it as intended.
-            guard rehydrateMissingOptionalSideAssets(record: record, attemptKey: key,
-                                                     reason: reason) else { continue }
-            for kind in offerable {
-                completedRowSideAssetRehydrateBudget.recordAttempt(ratingKey: record.ratingKey, kind: kind)
-            }
+            _ = rehydrateMissingOptionalSideAssets(
+                record: record, attemptKey: key, kinds: offerable, reason: reason)
         }
     }
 
     private func missingKnownOptionalSideAssetKinds(record: DownloadRecord,
                                                     attemptKey: DownloadAttemptKey)
-        -> Set<CompletedRowSideAssetRehydrateBudget.Kind> {
-        guard let metadata = record.metadata else { return [] }
-        let item = metadata.makeMediaItem()
-        var kinds: Set<CompletedRowSideAssetRehydrateBudget.Kind> = []
-        if DownloadSideAssetPolicy.offlinePosterRef(for: item)?.isEmpty == false,
-           store.reusableSideAssetRelativePath(
-            for: attemptKey,
-            destination: store.posterDestinationURL(ratingKey: record.ratingKey)
-           ) == nil {
-            kinds.insert(.poster)
-        }
-        if metadata.resolvedBackendKind(ratingKey: record.ratingKey) == .emby,
-           metadata.mediaSourceID?.isEmpty == false,
-           store.reusableSideAssetRelativePath(
-            for: attemptKey,
-            destination: store.embyBIFDestinationURL(ratingKey: record.ratingKey)
-           ) == nil {
-            kinds.insert(.embyBIF)
-        }
-        for (index, chapter) in (item.chapters ?? []).enumerated()
-            where chapter.thumb?.isEmpty == false {
-            if store.reusableSideAssetRelativePath(
-                for: attemptKey,
-                destination: store.chapterImageDestinationURL(
-                    ratingKey: record.ratingKey, index: index)
-            ) == nil {
-                kinds.insert(.chapterImages)
-                break
-            }
-        }
-        return kinds
+        -> Set<DownloadSideAssetKind> {
+        let sideAssetRoot = store.posterDestinationURL(ratingKey: record.ratingKey)
+            .deletingLastPathComponent()
+        return DownloadSideAssetRepairInventory.missingKinds(
+            record: record,
+            fileExists: { relative in
+                store.reusableSideAssetRelativePath(
+                    for: attemptKey,
+                    destination: sideAssetRoot.appendingPathComponent(relative)) != nil
+            },
+            jellyfinPlaylistTiles: { playlistRelative in
+                let url = sideAssetRoot.appendingPathComponent(playlistRelative)
+                guard let data = try? Data(contentsOf: url),
+                      let text = String(data: data, encoding: .utf8),
+                      let playlist = try? JellyfinTrickPlayPlaylistParser.parse(text) else {
+                    return nil
+                }
+                return playlist.tiles.map { tile in
+                    URL(fileURLWithPath: tile.uri).lastPathComponent
+                }
+            })
+    }
+
+    private func repairResources(for kind: DownloadSideAssetKind,
+                                 record: DownloadRecord,
+                                 attemptKey: DownloadAttemptKey) -> [String?] {
+        let root = store.posterDestinationURL(ratingKey: record.ratingKey)
+            .deletingLastPathComponent()
+        return DownloadSideAssetRepairInventory.retryResources(
+            for: kind,
+            record: record,
+            fileExists: { relative in
+                store.reusableSideAssetRelativePath(
+                    for: attemptKey,
+                    destination: root.appendingPathComponent(relative)) != nil
+            },
+            chapterResource: { index in
+                store.chapterImageDestinationURL(
+                    ratingKey: record.ratingKey, index: index).lastPathComponent
+            })
+    }
+
+    /// The only retry charge point: immediately before transport dispatch. This also means a
+    /// registry-coalesced call, missing session, or unbuildable request never consumes budget.
+    func chargeOptionalSideAssetDispatch(for key: DownloadAttemptKey,
+                                         source: OfflineSideAssetSourceIdentity,
+                                         kind: DownloadSideAssetKind,
+                                         resource: String? = nil) -> Bool {
+        completedRowSideAssetRetryBudget.chargeDispatch(.init(
+            attemptKey: key, source: source, kind: kind, resource: resource))
     }
 
     /// Returns whether side-asset work was actually dispatched, so the completed-row scan's
@@ -117,6 +99,7 @@ extension DownloadManager {
     @discardableResult
     func rehydrateMissingOptionalSideAssets(record: DownloadRecord,
                                             attemptKey: DownloadAttemptKey,
+                                            kinds: Set<DownloadSideAssetKind>? = nil,
                                             reason: String) -> Bool {
         guard let metadata = record.metadata,
               let backendSession = appModel.backendSession(for: metadata.resolvedBackendKind(
@@ -135,21 +118,34 @@ extension DownloadManager {
         switch backend {
         case .plex:
             // Poster and chapter refs are present in OfflineMetadata, so restart them immediately.
-            cachePoster(for: attemptKey, thumb: DownloadSideAssetPolicy.offlinePosterRef(for: item),
-                        server: server, token: token)
-            cacheChapterImages(for: attemptKey, item: item, backend: .plex,
-                               server: server, token: token)
+            if kinds?.contains(.poster) != false {
+                cachePoster(for: attemptKey, thumb: DownloadSideAssetPolicy.offlinePosterRef(for: item),
+                            server: server, token: token)
+            }
+            if kinds?.contains(.chapterImages) != false {
+                cacheChapterImages(for: attemptKey, item: item, backend: .plex,
+                                   server: server, token: token)
+            }
 
             // Stream/index detail is intentionally not persisted. Refresh the current Plex item
             // before retrying BIF and text subtitles; ownership/status guards prevent a delayed
             // response from reviving work after Delete, Pause, or another terminal failure.
             let mediaIndex = metadata.mediaIndex ?? 0
             let partIndex = metadata.partIndex ?? 0
-            downloadWorkRegistry.startIfAbsent(
-                for: attemptKey, kind: .sideCache(.sourceMetadataRefresh)
-            ) { [weak self] in
+            if kinds == nil || kinds?.contains(.plexBIF) == true
+                || kinds?.contains(.textSubtitles) == true {
+                let discoveryKind: DownloadSideAssetKind = kinds?.contains(.plexBIF) == true
+                    ? .plexBIF : .textSubtitles
+                downloadWorkRegistry.startIfAbsent(
+                    for: attemptKey, kind: .sideCache(.sourceMetadataRefresh)
+                ) { [weak self] in
                 guard let self,
                       !Task.isCancelled,
+                      self.store.sideAssetSourceIdentity(for: attemptKey)
+                        == metadata.sideAssetSourceIdentity,
+                      self.chargeOptionalSideAssetDispatch(
+                        for: attemptKey, source: metadata.sideAssetSourceIdentity,
+                        kind: discoveryKind, resource: "source-metadata"),
                       let currentItem = await self.fetchCurrentMediaItem(
                         ratingKey: metadata.ratingKey, server: server, token: token,
                         identity: self.appModel.identity),
@@ -157,42 +153,118 @@ extension DownloadManager {
                       let currentRecord = self.store.record(for: attemptKey),
                       currentRecord.status != .failed,
                       currentRecord.status != .paused else { return }
-                self.cachePoster(for: attemptKey,
-                                 thumb: DownloadSideAssetPolicy.offlinePosterRef(for: currentItem),
-                                 server: server, token: token)
-                self.cachePlexBIF(for: attemptKey, item: currentItem, mediaIndex: mediaIndex,
-                                  server: server, token: token)
-                self.cacheChapterImages(for: attemptKey, item: currentItem, backend: .plex,
-                                        server: server, token: token)
-                if let part = currentItem.media?[safe: mediaIndex]?.part[safe: partIndex] {
+                if kinds?.contains(.poster) != false {
+                    self.cachePoster(for: attemptKey,
+                                     thumb: DownloadSideAssetPolicy.offlinePosterRef(for: currentItem),
+                                     server: server, token: token)
+                }
+                if kinds?.contains(.plexBIF) != false {
+                    self.cachePlexBIF(for: attemptKey, item: currentItem, mediaIndex: mediaIndex,
+                                      server: server, token: token)
+                }
+                if kinds?.contains(.chapterImages) != false {
+                    self.cacheChapterImages(for: attemptKey, item: currentItem, backend: .plex,
+                                            server: server, token: token)
+                }
+                if kinds?.contains(.textSubtitles) != false,
+                   let part = currentItem.media?[safe: mediaIndex]?.part[safe: partIndex] {
                     self.cachePlexTextSubtitles(for: attemptKey, part: part,
                                                 server: server, token: token)
+                }
                 }
             }
 
         case .jellyfin:
             let identity = appModel.identity.jellyfin
             let itemID = DownloadRecordIdentity.jellyfinItemID(fromRecordKey: record.ratingKey)
-            cacheJellyfinPoster(for: attemptKey, item: item, server: server,
-                                token: token, identity: identity)
-            cacheChapterImages(for: attemptKey, item: item, backend: .jellyfin,
-                               server: server, token: token)
-            cacheJellyfinTrickPlay(for: attemptKey, itemId: itemID,
-                                   mediaSourceId: metadata.mediaSourceID,
-                                   server: server, token: token, identity: identity)
+            if kinds?.contains(.poster) != false {
+                cacheJellyfinPoster(for: attemptKey, item: item, server: server,
+                                    token: token, identity: identity)
+            }
+            if kinds?.contains(.chapterImages) != false {
+                cacheChapterImages(for: attemptKey, item: item, backend: .jellyfin,
+                                   server: server, token: token)
+            }
+            if kinds?.contains(.jellyfinTrickPlay) != false {
+                cacheJellyfinTrickPlay(for: attemptKey, itemId: itemID,
+                                       mediaSourceId: metadata.mediaSourceID,
+                                       server: server, token: token, identity: identity)
+            }
+            if kinds?.contains(.textSubtitles) != false,
+               let userID = backendSession.userID, !userID.isEmpty {
+                let context = MediaBrowserBrowseContext(
+                    server: server, token: token, userID: userID, identity: identity)
+                let core = MediaBrowserBrowseCore(
+                    context: context, adapter: JellyfinBrowseCoreAdapter(),
+                    send: { [weak self] request in
+                        guard let self else { throw CancellationError() }
+                        return try await self.fetchOptionalSideAsset(
+                            request, for: attemptKey, source: metadata.sideAssetSourceIdentity,
+                            kind: .textSubtitles, resource: "source-metadata")
+                    })
+                downloadWorkRegistry.startIfAbsent(
+                    for: attemptKey, kind: .sideCache(.sourceMetadataRefresh)
+                ) { [weak self] in
+                    guard let self, !Task.isCancelled,
+                          let currentItem = try? await core.metadata(itemID: itemID),
+                          let currentRecord = self.store.record(for: attemptKey),
+                          currentRecord.metadata?.sideAssetSourceIdentity
+                            == metadata.sideAssetSourceIdentity,
+                          let part = currentItem.media?[safe: metadata.mediaIndex ?? 0]?
+                            .part[safe: metadata.partIndex ?? 0] else { return }
+                    self.cacheJellyfinTextSubtitles(
+                        for: attemptKey, itemId: itemID,
+                        mediaSourceId: metadata.mediaSourceID, part: part,
+                        server: server, token: token, identity: identity)
+                }
+            }
 
         case .emby:
             // No usable user id means no request can be built — report no dispatch so the
             // completed-row budget is not charged for a pass that fetched nothing.
             guard let userID = backendSession.userID, !userID.isEmpty else { return false }
-            cacheEmbyPoster(for: attemptKey, item: item, server: server, token: token,
-                            identity: appModel.identity.emby, userId: userID)
-            cacheEmbyBIF(for: attemptKey, itemId: metadata.ratingKey,
-                         mediaSourceId: metadata.mediaSourceID,
-                         server: server, token: token,
-                         identity: appModel.identity.emby, userId: userID)
-            cacheChapterImages(for: attemptKey, item: item, backend: .emby,
-                               server: server, token: token, userID: userID)
+            if kinds?.contains(.poster) != false {
+                cacheEmbyPoster(for: attemptKey, item: item, server: server, token: token,
+                                identity: appModel.identity.emby, userId: userID)
+            }
+            if kinds?.contains(.embyBIF) != false {
+                cacheEmbyBIF(for: attemptKey, itemId: metadata.ratingKey,
+                             mediaSourceId: metadata.mediaSourceID,
+                             server: server, token: token,
+                             identity: appModel.identity.emby, userId: userID)
+            }
+            if kinds?.contains(.chapterImages) != false {
+                cacheChapterImages(for: attemptKey, item: item, backend: .emby,
+                                   server: server, token: token, userID: userID)
+            }
+            if kinds?.contains(.textSubtitles) != false {
+                let identity = appModel.identity.emby
+                let context = MediaBrowserBrowseContext(
+                    server: server, token: token, userID: userID, identity: identity)
+                let core = MediaBrowserBrowseCore(
+                    context: context, adapter: EmbyBrowseCoreAdapter(),
+                    send: { [weak self] request in
+                        guard let self else { throw CancellationError() }
+                        return try await self.fetchOptionalSideAsset(
+                            request, for: attemptKey, source: metadata.sideAssetSourceIdentity,
+                            kind: .textSubtitles, resource: "source-metadata")
+                    })
+                downloadWorkRegistry.startIfAbsent(
+                    for: attemptKey, kind: .sideCache(.sourceMetadataRefresh)
+                ) { [weak self] in
+                    guard let self, !Task.isCancelled,
+                          let currentItem = try? await core.metadata(itemID: metadata.ratingKey),
+                          let currentRecord = self.store.record(for: attemptKey),
+                          currentRecord.metadata?.sideAssetSourceIdentity
+                            == metadata.sideAssetSourceIdentity,
+                          let part = currentItem.media?[safe: metadata.mediaIndex ?? 0]?
+                            .part[safe: metadata.partIndex ?? 0] else { return }
+                    self.cacheEmbyTextSubtitles(
+                        for: attemptKey, itemId: metadata.ratingKey,
+                        mediaSourceId: metadata.mediaSourceID, part: part,
+                        server: server, token: token, identity: identity, userId: userID)
+                }
+            }
         }
         return true
     }
@@ -211,7 +283,6 @@ extension DownloadManager {
     /// Download + cache the item's poster locally so the offline library shows artwork
     /// without the server (D5). Best-effort: any failure leaves the row poster-less and
     /// never fails the download. Fetches via the same `/photo/:/transcode` path the
-    /// online `PosterImage` uses, with the same server + token as the media download.
     func cachePoster(for attemptKey: DownloadAttemptKey, thumb: String?, server: URL, token: String) {
         guard let thumb, !thumb.isEmpty,
               let url = Self.posterTranscodeURL(thumb: thumb, server: server, token: token)
@@ -237,8 +308,10 @@ extension DownloadManager {
         downloadWorkRegistry.startIfAbsent(for: attemptKey, kind: .sideCache(.poster)) { [weak self] in
             guard let self, !Task.isCancelled else { return }
             defer { try? FileManager.default.removeItem(at: stagingURL) }
-            guard let data = try? await self.fetchOptionalSideAsset(request, for: attemptKey),
-                  (try? data.write(to: stagingURL, options: .atomic)) != nil,
+            guard let data = try? await self.fetchOptionalSideAsset(
+                    request, for: attemptKey, source: sourceIdentity, kind: .poster),
+                  await DownloadSideAssetService.prepare(
+                    data, as: .image, at: stagingURL),
                   !Task.isCancelled,
                   Self.promoteSideAsset(store: store, key: attemptKey,
                                         expectedSource: sourceIdentity,
@@ -402,35 +475,24 @@ extension DownloadManager {
                     continue
                 }
                 defer { try? FileManager.default.removeItem(at: item.staging) }
-                guard let data = try? await self.fetchOptionalSideAsset(item.request, for: attemptKey),
-                      Self.validTextSubtitleData(data),
-                      (try? data.write(to: item.staging, options: .atomic)) != nil,
+                guard let data = try? await self.fetchOptionalSideAsset(
+                        item.request, for: attemptKey, source: sourceIdentity,
+                        kind: .textSubtitles, resource: item.destination.lastPathComponent),
+                      await DownloadSideAssetService.prepare(
+                        data, as: .textSubtitle, at: item.staging),
                       !Task.isCancelled,
                       Self.promoteSideAsset(store: store, key: attemptKey,
                                             expectedSource: sourceIdentity,
                                             stagingURL: item.staging, stableURL: item.destination)
                 else { continue }
-                if let track = item.track {
-                    tracks.append(track)
-                    _ = store.updateMetadata(
-                        for: attemptKey, expectedSideAssetSource: sourceIdentity) {
-                        var merged = $0.offlineTextSubtitles ?? []
-                        if !merged.contains(where: { $0.relativePath == track.relativePath }) {
-                            merged.append(track)
-                        }
-                        $0.offlineTextSubtitles = merged
-                    }
-                }
+                if let track = item.track { tracks.append(track) }
             }
             guard !tracks.isEmpty else { return }
+            let batch = DownloadSideAssetPublicationBatch(textSubtitles: tracks)
             await MainActor.run {
                 let result = store.updateMetadata(
                     for: attemptKey, expectedSideAssetSource: sourceIdentity) {
-                    var merged = $0.offlineTextSubtitles ?? []
-                    for track in tracks where !merged.contains(where: { $0.relativePath == track.relativePath }) {
-                        merged.append(track)
-                    }
-                    $0.offlineTextSubtitles = merged
+                    batch.apply(to: &$0)
                 }
                 if result == .applied || result == .noChange { self.refreshRecords() }
             }
@@ -448,11 +510,6 @@ extension DownloadManager {
         }
         PlexURLQueryEncoder.appendQueryItems([.init(name: "X-Plex-Token", value: token)], to: &comps)
         return comps.url
-    }
-
-    private nonisolated static func validTextSubtitleData(_ data: Data) -> Bool {
-        guard let text = String(data: data, encoding: .utf8) else { return false }
-        return !OfflineTextSubtitleParser.parse(text).isEmpty
     }
 
     /// Download + cache Plex's BIF trick-play index for the selected source Part so the
@@ -479,9 +536,9 @@ extension DownloadManager {
             guard let self, !Task.isCancelled else { return }
             defer { try? FileManager.default.removeItem(at: staging) }
             do {
-                let data = try await self.fetchOptionalSideAsset(bifRequest, for: attemptKey)
-                guard !data.isEmpty, (try? BIFParser.parse(data)) != nil else { return }
-                try data.write(to: staging, options: .atomic)
+                let data = try await self.fetchOptionalSideAsset(
+                    bifRequest, for: attemptKey, source: sourceIdentity, kind: .plexBIF)
+                guard await DownloadSideAssetService.prepare(data, as: .bif, at: staging) else { return }
                 guard !Task.isCancelled,
                       Self.promoteSideAsset(store: store, key: attemptKey,
                                             expectedSource: sourceIdentity,
@@ -528,11 +585,10 @@ extension DownloadManager {
             guard let self, !Task.isCancelled else { return }
             defer { try? FileManager.default.removeItem(at: staging) }
             do {
-                let data = try await self.fetchOptionalSideAsset(bifRequest, for: attemptKey)
+                let data = try await self.fetchOptionalSideAsset(
+                    bifRequest, for: attemptKey, source: sourceIdentity, kind: .embyBIF)
                 guard !Task.isCancelled,
-                      !data.isEmpty,
-                      (try? BIFParser.parse(data)) != nil else { return }
-                try data.write(to: staging, options: .atomic)
+                      await DownloadSideAssetService.prepare(data, as: .bif, at: staging) else { return }
                 guard !Task.isCancelled,
                       store.record(for: attemptKey)?.metadata?.mediaSourceID == mediaSourceId,
                       Self.promoteSideAsset(store: store, key: attemptKey,
@@ -637,7 +693,9 @@ extension DownloadManager {
                 for entry in pendingRequests {
                     group.addTask {
                         guard let data = try? await self.fetchOptionalSideAsset(
-                            entry.request, for: attemptKey) else { return nil }
+                            entry.request, for: attemptKey, source: sourceIdentity,
+                            kind: .chapterImages,
+                            resource: entry.destination.lastPathComponent) else { return nil }
                         return (entry.index, entry.destination, data)
                     }
                 }
@@ -654,7 +712,8 @@ extension DownloadManager {
                         continue
                     }
                     defer { try? FileManager.default.removeItem(at: staging) }
-                    guard (try? data.write(to: staging, options: .atomic)) != nil,
+                    guard await DownloadSideAssetService.prepare(
+                            data, as: .image, at: staging),
                           Self.promoteSideAsset(store: store, key: attemptKey,
                                                 expectedSource: sourceIdentity,
                                                 stagingURL: staging, stableURL: destination) else {
@@ -664,12 +723,6 @@ extension DownloadManager {
                     let relative = destination.lastPathComponent
                     downloadedCount += 1
                     relativesByIndex[index] = relative
-                    _ = store.updateMetadata(
-                        for: attemptKey, expectedSideAssetSource: sourceIdentity) {
-                        var merged = $0.chapterImageRelativePaths ?? [:]
-                        merged[index] = relative
-                        $0.chapterImageRelativePaths = merged
-                    }
                 }
             }
             await MainActor.run {
@@ -683,12 +736,11 @@ extension DownloadManager {
                 ])
             }
             guard !relativesByIndex.isEmpty else { return }
+            let batch = DownloadSideAssetPublicationBatch(chapterImages: relativesByIndex)
             await MainActor.run {
                 let result = store.updateMetadata(
                     for: attemptKey, expectedSideAssetSource: sourceIdentity) {
-                    var merged = $0.chapterImageRelativePaths ?? [:]
-                    merged.merge(relativesByIndex) { _, current in current }
-                    $0.chapterImageRelativePaths = merged
+                    batch.apply(to: &$0)
                 }
                 if result == .applied || result == .noChange { self.refreshRecords() }
             }

@@ -4,6 +4,11 @@ import Testing
 @testable import Labstream
 
 struct EmbyCleanupTombstonePersistenceTests {
+    private func cleanupAuthority(for root: URL) -> URL {
+        root.deletingLastPathComponent().appendingPathComponent(
+            ".\(root.lastPathComponent)-download-authority", isDirectory: true)
+    }
+
     @Test func missingQueueLoadsEmptyAndValidMutationsPreserveSiblings() throws {
         try withTemporaryDirectory { directory in
             let store = DownloadStore(baseDirectory: directory)
@@ -26,7 +31,10 @@ struct EmbyCleanupTombstonePersistenceTests {
 
     @Test func malformedQueueFailsClosedWithoutChangingCanonicalBytes() throws {
         try withTemporaryDirectory { directory in
-            let canonical = directory.appendingPathComponent("emby-convert-cleanup.json")
+            let canonical = cleanupAuthority(for: directory)
+                .appendingPathComponent("emby-convert-cleanup.json")
+            try FileManager.default.createDirectory(
+                at: cleanupAuthority(for: directory), withIntermediateDirectories: true)
             let corrupt = Data("not-json".utf8)
             try corrupt.write(to: canonical)
             let store = DownloadStore(baseDirectory: directory)
@@ -100,7 +108,8 @@ struct EmbyCleanupTombstonePersistenceTests {
         try withTemporaryDirectory { directory in
             let initial = DownloadStore(baseDirectory: directory)
             let first = try committedAdd(initial, ratingKey: "emby:first")
-            let canonical = directory.appendingPathComponent("emby-convert-cleanup.json")
+            let canonical = cleanupAuthority(for: directory)
+                .appendingPathComponent("emby-convert-cleanup.json")
             let previous = try Data(contentsOf: canonical)
             let temp = directory.appendingPathComponent("injected-tombstone.tmp")
             let failing = DownloadStore(
@@ -150,7 +159,8 @@ struct EmbyCleanupTombstonePersistenceTests {
             let initial = DownloadStore(baseDirectory: directory)
             let first = try committedAdd(initial, ratingKey: "emby:first")
             let second = try committedAdd(initial, ratingKey: "emby:second")
-            let canonical = directory.appendingPathComponent("emby-convert-cleanup.json")
+            let canonical = cleanupAuthority(for: directory)
+                .appendingPathComponent("emby-convert-cleanup.json")
             let previous = try Data(contentsOf: canonical)
 
             let beforeReplace = DownloadStore(

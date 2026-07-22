@@ -22,6 +22,40 @@ struct SeasonEpisodeDownloadPlan {
     }
 }
 
+/// The complete immutable result of season review. Keeping new rows and retry intents together
+/// prevents the confirmation UI and commit path from independently recomputing different plans.
+struct SeasonPlanDraft {
+    let newPlans: [SeasonEpisodeDownloadPlan]
+    let retryAttempts: [DownloadAttemptKey]
+
+    var storageSummary: SeasonDownloadStorageSummary {
+        SeasonDownloadStoragePolicy.summarize(newPlans.filter(\.shouldStart).map(\.estimatedBytes))
+    }
+}
+
+struct SeasonPlannerRowDisposition {
+    let action: SeasonDownloadExistingRowAction
+    let retryAttempt: DownloadAttemptKey?
+}
+
+@MainActor
+enum SeasonPlanResolutionSequence {
+    /// Sequential planning is intentional because a probe may refresh backend authority. A
+    /// cancelled sheet never starts the next probe or publishes a partial plan.
+    static func map<Element, Output>(indices: [Int], elements: [Element],
+                                     transform: @MainActor (Element) async -> Output) async -> [Output]? {
+        var output: [Output] = []
+        for index in indices where elements.indices.contains(index) {
+            guard !Task.isCancelled else { return nil }
+            let value = await transform(elements[index])
+            guard !Task.isCancelled else { return nil }
+            output.append(value)
+        }
+        guard !Task.isCancelled else { return nil }
+        return output
+    }
+}
+
 struct SeasonPlanCommitResult: Equatable {
     let added: Int
     let retried: Int
@@ -31,18 +65,25 @@ struct SeasonPlanCommitResult: Equatable {
 }
 
 extension DownloadManager {
-    func seasonPlannerRowAction(itemID: String, backend: DownloadBackendKind)
-        -> SeasonDownloadExistingRowAction {
+    func seasonPlannerRowDisposition(itemID: String, backend: DownloadBackendKind)
+        -> SeasonPlannerRowDisposition {
         let key = DownloadRecordIdentity.recordKey(for: itemID, backend: backend)
-        return SeasonDownloadDedupPolicy.action(
-            status: store.status(for: key),
+        let record = store.record(for: key)
+        let action = SeasonDownloadDedupPolicy.action(
+            status: record?.status,
             deletionPending: store.isDeletionPending(ratingKey: key))
+        let retryAttempt = action == .retryFailed
+            ? record?.attemptID.map { DownloadAttemptKey(ratingKey: key, attemptID: $0) }
+            : nil
+        return SeasonPlannerRowDisposition(action: action, retryAttempt: retryAttempt)
     }
 
     /// Persist every new ordinary episode row before admitting any lane. Failed included rows are
     /// durably marked for the same bounded admission worker; paused rows are never passed here.
-    func commitSeasonPlan(new plans: [SeasonEpisodeDownloadPlan], retryKeys: [String])
+    func commitSeasonPlan(_ draft: SeasonPlanDraft)
         -> SeasonPlanCommitResult {
+        let plans = draft.newPlans
+        let retryAttempts = draft.retryAttempts
         guard startupRecoveryState == .ready else {
             return .init(added: 0, retried: 0,
                          failureMessage: "Downloads are paused while recovery is completed.")
@@ -88,24 +129,24 @@ extension DownloadManager {
                 bytes: 0, progress: 0, status: plan.shouldStart ? .queued : .failed,
                 metadata: metadata))
         }
-        guard store.createSeasonPlannedRecordsAtomically(records) else {
-            return .init(added: 0, retried: 0,
-                         failureMessage: "The complete season plan could not be saved safely. Nothing was started.")
-        }
-
-        var markedRetries = 0
-        for key in retryKeys {
-            guard let record = store.record(for: key), record.status == .failed,
-                  let attemptID = record.attemptID else { continue }
-            let result = store.updateMetadata(
-                for: DownloadAttemptKey(ratingKey: key, attemptID: attemptID)) {
-                    $0.seasonPlannerPendingAdmission = true
-                }
-            if result == .applied || result == .noChange { markedRetries += 1 }
+        let applied = store.applySeasonPlanAtomically(
+            newRecords: records, retryAttempts: retryAttempts)
+        guard case .applied(let inserted, let retried) = applied else {
+            let message: String
+            switch applied {
+            case .staleInput:
+                message = "The season plan changed before it could be saved. Review it again."
+            case .persistenceIndeterminate:
+                blockAfterIndeterminateSeasonPersistence()
+                message = "Download storage could not prove the saved plan. Downloads are paused for safety."
+            case .persistenceFailed, .applied:
+                message = "The complete season plan could not be saved safely. Nothing was started."
+            }
+            return .init(added: 0, retried: 0, failureMessage: message)
         }
         refreshRecords()
         scheduleSeasonPlannerAdmission()
-        return .init(added: records.count, retried: markedRetries, failureMessage: nil)
+        return .init(added: inserted, retried: retried, failureMessage: nil)
     }
 
     func scheduleSeasonPlannerAdmission() {

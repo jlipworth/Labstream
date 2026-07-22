@@ -283,7 +283,7 @@ public final class DownloadManager {
     /// asset the server can never produce (a 404'd poster, a chapter-thumb ref with no generated
     /// thumbnail) stops re-arming the same failing fetch on every foreground/scene-active trigger.
     /// See `rehydrateMissingOptionalSideAssetsForCompletedRows`.
-    @ObservationIgnored var completedRowSideAssetRehydrateBudget = CompletedRowSideAssetRehydrateBudget()
+    @ObservationIgnored var completedRowSideAssetRetryBudget = DownloadSideAssetRetryBudget()
     @ObservationIgnored private let staticCheckpointResolutions =
         OrderedAsyncWorkCoordinator<
             DownloadAttemptKey, DownloadStore.AttemptStaticRangeCheckpointResetResult>()
@@ -468,7 +468,7 @@ public final class DownloadManager {
         self.session = injectedSession ?? BackgroundDownloadSession(store: store)
         self.sideAssetFetchCoordinator = injectedSideAssetFetchCoordinator ?? .shared
         self.cleanupIntentJournal = injectedCleanupIntentJournal
-            ?? DownloadCleanupIntentJournal(directory: store.directory)
+            ?? DownloadCleanupIntentJournal(directory: store.durableCleanupAuthorityDirectory)
         self.records = store.records
         self.offlineLibrarySnapshot = makeOfflineLibrarySnapshot(from: self.records)
         // Reattach to any transfers that survived a relaunch + receive progress.
@@ -706,6 +706,14 @@ public final class DownloadManager {
     ) {
         guard !startupRecoveryInFlight else { return }
         switch migrationResult {
+        case .requiresDestructiveReset:
+            activateDownloadsAfterUnsupportedSchemaReset()
+        case .unreadableIndex:
+            blockDownloadStartup(
+                affectedRatingKeys: [],
+                message: "Download recovery data is unreadable. Downloads are paused for safety.",
+                reason: "unreadable_download_index"
+            )
         case .notRequired:
             store.stageLegacyHeldBodyDeletionJobs()
             activateDownloadsAfterMigration(resetKeys: [])
@@ -730,6 +738,32 @@ public final class DownloadManager {
                 message: "Download recovery data is inconsistent. Downloads are paused for safety.",
                 reason: "malformed_v3_ownership"
             )
+        }
+    }
+
+    private func activateDownloadsAfterUnsupportedSchemaReset() {
+        startupRecoveryInFlight = true
+        session.activateAfterResettingUnsupportedStore { [weak self] result in
+            Task { @MainActor in
+                guard let self else { return }
+                switch result {
+                case .activated, .alreadyActive:
+                    self.startupRecoveryInFlight = false
+                    self.startupRecoveryState = .ready
+                    self.records = self.store.records
+                    self.offlineLibrarySnapshot = self.makeOfflineLibrarySnapshot(from: self.records)
+                    self.performInitialStartupReattachIfNeeded()
+                case .alreadyPurging:
+                    self.recordDownloadDiagnostic("downloads.startup_reset_coalesced")
+                case .failed:
+                    self.startupRecoveryInFlight = false
+                    self.blockDownloadStartup(
+                        affectedRatingKeys: [],
+                        message: "Legacy downloads could not be cleared safely. Retry when storage and the system download service are available.",
+                        reason: "unsupported_schema_reset_failed")
+                    self.scheduleTransientStartupRecoveryRetry()
+                }
+            }
         }
     }
 
@@ -787,6 +821,16 @@ public final class DownloadManager {
             ),
             "action": .label("release_handler_and_retry_explicitly"),
         ])
+    }
+
+    /// A season transaction reached an unprovable persistence state. Stop all new/current queue
+    /// admission and reuse the startup safety surface rather than continuing with ambiguous rows.
+    func blockAfterIndeterminateSeasonPersistence() {
+        pauseQueue()
+        blockDownloadStartup(
+            affectedRatingKeys: [],
+            message: "Download storage is inconsistent. Downloads are paused for safety.",
+            reason: "season_plan_persistence_indeterminate")
     }
 
     private static func startupPersistenceFailureLabel(
@@ -1243,9 +1287,14 @@ public final class DownloadManager {
         }
     }
 
-    /// Confirm a persisted encoder handle belongs to the currently-restored backend lane before
-    /// sending `DELETE /Videos/ActiveEncodings`. Prefer stable server ids; fall back to the saved
-    /// base URL for servers that did not provide one.
+    /// Resolve the full durable row only at an action/playback boundary, and only if the rendered
+    /// attempt is still the current owner. Rendering itself remains snapshot-only.
+    public func currentRecord(for identity: OfflineDownloadRowActionIdentity) -> DownloadRecord? {
+        guard let current = store.record(for: identity.ratingKey),
+              current.attemptID == identity.attemptID else { return nil }
+        return current
+    }
+
     /// Absolute local URL for a completed download, if present on disk.
     public func localURL(for ratingKey: String) -> URL? {
         store.localURL(for: ratingKey)
@@ -1597,8 +1646,22 @@ public final class DownloadManager {
     /// when the backend lane supports it; server-prep rows are marked paused so relaunch/refresh
     /// does not auto-poll/retry until the user resumes.
     public func pause(ratingKey: String) {
-        guard let record = records.first(where: { $0.ratingKey == ratingKey }),
-              let releaseKey = attemptKey(for: record) else { return }
+        guard let record = records.first(where: { $0.ratingKey == ratingKey }) else { return }
+        pause(record: record)
+    }
+
+    /// Execute a rendered row's pause only while its exact persisted attempt still owns the key.
+    /// A replacement retry/re-download makes the stale action a no-op.
+    @discardableResult
+    public func pause(_ identity: OfflineDownloadRowActionIdentity) -> Bool {
+        guard let record = currentRecord(for: identity) else { return false }
+        pause(record: record)
+        return true
+    }
+
+    private func pause(record: DownloadRecord) {
+        let ratingKey = record.ratingKey
+        guard let releaseKey = attemptKey(for: record) else { return }
         let pauseAction = DownloadPausePolicy.rowAction(
             status: record.status,
             isStaticRangeRecord: StaticRangeRecoveryPolicy.isStaticRangeRecord(record),
@@ -1721,11 +1784,12 @@ public final class DownloadManager {
         }
     }
 
-    /// App lifecycle hint for UI refresh/finalization work. Static range transfer shape is no
+    /// Typed app-lifecycle hint for UI refresh/finalization work. Static range transfer shape is no
     /// longer scene-dependent.
-    func noteAppScenePhase(_ phase: String) {
-        isAppSceneActive = phase == "active"
-        if phase == "active" {
+    func noteAppSceneRecovery(_ reason: DownloadRecoveryReason) {
+        let isActive = reason == .aggregateSceneBecameActive
+        isAppSceneActive = isActive
+        if isActive {
             beginDownloadRateForegroundRebaseline()
             // #187: headset reattach can deliver a burst of background-session progress and scene
             // activation events while the Offline window is being reconstructed. Coalesce the first
@@ -1745,6 +1809,13 @@ public final class DownloadManager {
                 _ = downloadWorkRegistry.cancelRevalidationFinalizer(for: key)
             }
         }
+    }
+
+    /// Test/source compatibility for the previous string edge. Production lifecycle routing is
+    /// typed through `RuntimeLifecycleCoordinator`.
+    func noteAppScenePhase(_ phase: String) {
+        noteAppSceneRecovery(
+            phase == "active" ? .aggregateSceneBecameActive : .aggregateSceneBecameInactive)
     }
 
     /// Start the UI-rate lifecycle boundary independently of task recovery readiness. On a cold
@@ -2140,14 +2211,31 @@ public final class DownloadManager {
     /// re-run the probe-driven download path — re-probing so a now-compatible file goes
     /// direct. Rows persisted before D5 lack a snapshot, so we fall back to a minimal movie.
     public func retry(ratingKey: String, allowReplacingExistingActiveRow: Bool = false) {
+        guard let record = records.first(where: { $0.ratingKey == ratingKey }) else { return }
+        retry(record: record, allowReplacingExistingActiveRow: allowReplacingExistingActiveRow)
+    }
+
+    /// Execute a rendered row's retry/resume only while its exact persisted attempt still owns
+    /// the key. This fence is checked before any retry trackers or transfer state are mutated.
+    @discardableResult
+    public func retry(
+        _ identity: OfflineDownloadRowActionIdentity,
+        allowReplacingExistingActiveRow: Bool = false
+    ) -> Bool {
+        guard let record = currentRecord(for: identity) else { return false }
+        retry(record: record, allowReplacingExistingActiveRow: allowReplacingExistingActiveRow)
+        return true
+    }
+
+    private func retry(record: DownloadRecord, allowReplacingExistingActiveRow: Bool) {
+        let ratingKey = record.ratingKey
         guard startupRecoveryState == .ready else {
             lastError[ratingKey] = .transferFailed(
                 "Downloads are paused while recovery is completed. Retry recovery first."
             )
             return
         }
-        guard !retryState.isRetrying(ratingKey),
-              let record = records.first(where: { $0.ratingKey == ratingKey }) else { return }
+        guard !retryState.isRetrying(ratingKey) else { return }
         guard let currentKey = attemptKey(for: record),
               !store.isDeletionPending(for: currentKey) else { return }
         setOptionalSideAssetHydrationParked(false, for: currentKey)
@@ -3383,7 +3471,20 @@ public final class DownloadManager {
     }
 
     public var totalDownloadedBytes: Int {
-        records.reduce(0) { $0 + $1.bytes + $1.sideAssetBytes }
+        storageSnapshot.capEnforcementBytes
+    }
+
+    public var storageSnapshot: DownloadStorageSnapshot {
+        let media = records.reduce(0) { $0 + $1.bytes }
+        let sideAssets = records.reduce(0) { $0 + $1.sideAssetBytes }
+        // Background URLSession temporary bodies are not synchronously enumerable here. Preserve
+        // that uncertainty rather than presenting them as durable or as zero-byte reservations.
+        return DownloadStorageSnapshot(
+            durableMediaBytes: media,
+            durableSideAssetBytes: sideAssets,
+            heldOrResumeArtifactBytes: .unknown,
+            liveOSTemporaryBytes: .unknown,
+            expectedReservationBytes: .notApplicable)
     }
 
     public var storageLimitBytes: Int {
@@ -3451,8 +3552,22 @@ public final class DownloadManager {
 
     /// Delete a download and its backing file.
     public func delete(ratingKey: String) {
-        let rowToDelete = store.record(for: ratingKey)
-        let rowAttemptKey = rowToDelete?.attemptID.map {
+        guard let rowToDelete = store.record(for: ratingKey) else { return }
+        delete(record: rowToDelete)
+    }
+
+    /// Delete only the exact attempt represented by a rendered row. The identity remains attached
+    /// through the Store's deletion submission; a newer owner is never re-resolved by rating key.
+    @discardableResult
+    public func delete(_ identity: OfflineDownloadRowActionIdentity) -> Bool {
+        guard let rowToDelete = currentRecord(for: identity) else { return false }
+        delete(record: rowToDelete)
+        return true
+    }
+
+    private func delete(record rowToDelete: DownloadRecord) {
+        let ratingKey = rowToDelete.ratingKey
+        let rowAttemptKey = rowToDelete.attemptID.map {
             DownloadAttemptKey(ratingKey: ratingKey, attemptID: $0)
         }
         let wasDeletionPending = rowAttemptKey.map { store.isDeletionPending(for: $0) } ?? false
@@ -3463,7 +3578,7 @@ public final class DownloadManager {
         // encoder/conversion. That disclosure is ABOUT the deletion succeeding, so it must survive
         // the success path's `lastError = nil` clear below — otherwise the leak goes silent.
         var serverCleanupLeakDisclosure: DownloadError?
-        if cleanupIntentsToExecute.isEmpty, let metadata = rowToDelete?.metadata {
+        if cleanupIntentsToExecute.isEmpty, let metadata = rowToDelete.metadata {
             let backend = metadata.resolvedBackendKind(ratingKey: ratingKey)
             let transientPlaySessionID: String? = switch backend {
             case .emby: rowAttemptKey.flatMap { embyPlaySessionByAttempt[$0] }
@@ -3473,7 +3588,7 @@ public final class DownloadManager {
             if backend != .plex,
                let playSessionID = metadata.playSessionID ?? transientPlaySessionID,
                !playSessionID.isEmpty {
-                if let attemptID = rowToDelete?.attemptID {
+                if let attemptID = rowToDelete.attemptID {
                     let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
                     if let intent = Self.makeActiveEncodingCleanupIntent(
                         attemptKey: key, metadata: metadata, playSessionID: playSessionID
@@ -3484,7 +3599,6 @@ public final class DownloadManager {
                         // undeletable row forever. Delete locally and surface the cleanup gap.
                         serverCleanupLeakDisclosure = .transferFailed(
                             "Downloaded file deleted; server cleanup identity was unavailable.")
-                        lastError[ratingKey] = serverCleanupLeakDisclosure
                     }
                 } else {
                     recordDownloadDiagnostic("downloads.delete_deferred", fields: [
@@ -3494,7 +3608,7 @@ public final class DownloadManager {
                 }
             }
             if Self.hasEmbyConvertCleanupAuthority(metadata) {
-                if let attemptID = rowToDelete?.attemptID {
+                if let attemptID = rowToDelete.attemptID {
                     let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
                     if let intent = Self.makeEmbyConvertCleanupIntent(
                         attemptKey: key, metadata: metadata) {
@@ -3502,7 +3616,6 @@ public final class DownloadManager {
                     } else {
                         serverCleanupLeakDisclosure = .transferFailed(
                             "Downloaded file deleted; server conversion cleanup identity was unavailable.")
-                        lastError[ratingKey] = serverCleanupLeakDisclosure
                     }
                 } else {
                     recordDownloadDiagnostic("downloads.delete_deferred", fields: [
@@ -3555,6 +3668,38 @@ public final class DownloadManager {
                 return
             }
         }
+        let deletedAttemptKey = rowAttemptKey
+        let deletionSubmission: DownloadStore.RowDeletionSubmission
+        if let key = deletedAttemptKey {
+            deletionSubmission = wasDeletionPending
+                ? store.submitCompletePendingDeletion(for: key)
+                : store.submitRemove(for: key)
+        } else {
+            // Deliberate migration compatibility: ownerless terminal rows have no asynchronous
+            // attempt work. Active/reset-pending rows never enter this fallback.
+            guard rowToDelete.status == .complete || rowToDelete.status == .unverified else {
+                return
+            }
+            deletionSubmission = store.submitOwnerlessTerminalRemoval(ratingKey: ratingKey)
+        }
+        // No rating-key runtime/session/server side effect is allowed until the exact Store owner
+        // has installed its deletion barrier. A replacement that won since the rendered action
+        // was captured makes submission stale and leaves the replacement entirely untouched.
+        guard case .accepted = deletionSubmission else {
+            recordDownloadDiagnostic("downloads.delete_deferred", fields: [
+                "download_id": .identifier(ratingKey),
+                "reason": .label("delete_owner_changed"),
+            ])
+            refreshRecords()
+            return
+        }
+        session.cancel(ratingKey: ratingKey)
+        if let deletedAttemptKey {
+            // The durable terminal barrier now rejects every tail publication. Cancel side caches,
+            // finalizers, and other exact cancellable work immediately so they cannot create new
+            // unlisted staging bytes while the off-lock deletion worker is still running.
+            _ = downloadWorkRegistry.cancelCancellableWork(for: deletedAttemptKey)
+        }
         recordDownloadDiagnostic("downloads.cancel_or_delete", fields: [
             "download_id": .identifier(ratingKey),
         ])
@@ -3573,7 +3718,7 @@ public final class DownloadManager {
         // user abandoned. Targeted at THIS row's queue title only; the completed-state guard in
         // `cancellableItemID` keeps finished renders (which other rows may reuse) untouched.
         let plexSession = appModel.backendSession(for: .plex)
-        let plexSessionMatchesDeletedRow = rowToDelete?.metadata.map { metadata in
+        let plexSessionMatchesDeletedRow = rowToDelete.metadata.map { metadata in
             plexSession?.matchesPersistedServer(metadata) == true
         } ?? false
         switch DownloadDeletePolicy.plexOptimizeCancelDecision(
@@ -3598,29 +3743,6 @@ public final class DownloadManager {
                 "download_id": .identifier(ratingKey),
                 "reason": .label(reason),
             ])
-        }
-        let deletedAttemptKey = rowAttemptKey
-        let deletionSubmission: DownloadStore.RowDeletionSubmission
-        if let key = deletedAttemptKey {
-            session.cancel(ratingKey: ratingKey)
-            deletionSubmission = wasDeletionPending
-                ? store.submitCompletePendingDeletion(for: key)
-                : store.submitRemove(for: key)
-        } else {
-            // Deliberate migration compatibility: v1/v2 completed rows without asynchronous
-            // cleanup evidence remain ownerless after the v3 migration and can only be deleted by
-            // this terminal-row fallback. Active/reset-pending rows never enter it.
-            guard rowToDelete?.status == .complete || rowToDelete?.status == .unverified else {
-                return
-            }
-            session.cancel(ratingKey: ratingKey)
-            deletionSubmission = store.submitOwnerlessTerminalRemoval(ratingKey: ratingKey)
-        }
-        if let deletedAttemptKey, case .accepted = deletionSubmission {
-            // The durable terminal barrier now rejects every tail publication. Cancel side caches,
-            // finalizers, and other exact cancellable work immediately so they cannot create new
-            // unlisted staging bytes while the off-lock deletion worker is still running.
-            _ = downloadWorkRegistry.cancelCancellableWork(for: deletedAttemptKey)
         }
         // The prepared row-deletion recipe is submitted synchronously, but filesystem work and
         // terminal persistence run on the artifact worker. Keep the main actor responsive and do

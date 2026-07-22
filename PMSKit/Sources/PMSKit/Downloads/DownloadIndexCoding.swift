@@ -27,6 +27,38 @@ public enum DownloadIndexCoding {
     /// bare-array format that predates the envelope.
     public static let currentSchemaVersion = 4
 
+    /// A mutation-free startup classification. The app must run this before constructing any
+    /// persistence writer, cleaning temporary files, or creating/protecting the Downloads root.
+    /// Only an absent index and an exact current envelope are admissible. Older/forward schemas
+    /// are reset as one opaque root; unreadable data is kept in place and fails closed.
+    public enum StartupProbe: Sendable, Equatable {
+        case missing
+        case current
+        case unsupported(schemaVersion: Int?)
+        case unreadable
+    }
+
+    public static func startupProbe(data: Data?) -> StartupProbe {
+        guard let data else { return .missing }
+        guard let object = try? JSONSerialization.jsonObject(with: data) else {
+            return .unreadable
+        }
+        guard let envelope = object as? [String: Any] else {
+            // The former bare-array schema is deliberately unsupported now.
+            return object is [Any] ? .unsupported(schemaVersion: 1) : .unreadable
+        }
+        guard let rawVersion = envelope["schemaVersion"] else {
+            return .unsupported(schemaVersion: nil)
+        }
+        guard let version = rawVersion as? Int,
+              envelope["rows"] is [Any] else {
+            return .unreadable
+        }
+        return version == currentSchemaVersion
+            ? .current
+            : .unsupported(schemaVersion: version)
+    }
+
     /// Outcome of a resilient load: the rows that decoded, the schema version the
     /// payload was written with (`1` for a legacy bare array), and how many rows were
     /// skipped because they failed to decode. A non-zero `skippedRowCount` is the

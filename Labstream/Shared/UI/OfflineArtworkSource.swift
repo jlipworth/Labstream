@@ -46,6 +46,21 @@ struct OfflineArtworkSource: Hashable,
         generation = metadata.posterGeneration
     }
 
+    init?(_ presentation: OfflineArtworkPresentation) {
+        guard presentation.fileURL.isFileURL,
+              let encodedOwner = try? Self.encode(presentation.owner), !encodedOwner.isEmpty else {
+            return nil
+        }
+        fileURL = presentation.fileURL
+        backend = switch presentation.backend {
+        case .plex: .plex
+        case .jellyfin: .jellyfin
+        case .emby: .emby
+        }
+        ownerData = encodedOwner
+        generation = presentation.generation
+    }
+
     func descriptor(purpose: ArtworkPurpose = .poster,
                     pixelWidth: Int,
                     pixelHeight: Int) -> ArtworkRequestDescriptor? {

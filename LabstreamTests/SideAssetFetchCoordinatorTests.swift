@@ -1,6 +1,7 @@
 import Foundation
 import PMSKit
 import XCTest
+import os
 @testable import Labstream
 
 final class SideAssetFetchCoordinatorTests: XCTestCase {
@@ -284,6 +285,269 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
         XCTAssertEqual(firstData, Data([7]))
         XCTAssertEqual(secondData, Data([7]))
         XCTAssertEqual(callCount, 1)
+    }
+
+    func testTransportAdmissionChargesOnlyTheOperationThatActuallyStarts() async throws {
+        let gate = SideAssetGate()
+        let admissions = SideAssetCounter()
+        let operations = SideAssetCounter()
+        let coordinator = SideAssetFetchCoordinator(clock: AdvancingSideAssetClock().dependency)
+        let request = URLRequest(url: URL(string: "https://assets.example/poster")!)
+        let first = Task {
+            try await coordinator.fetch(
+                request: request, owner: .init(rawValue: "attempt-a"),
+                onTransportAdmission: { await admissions.increment() },
+                operation: {
+                    await operations.increment()
+                    await gate.wait()
+                    return Data([1])
+                })
+        }
+        await waitUntil { await operations.value == 1 }
+        let second = Task {
+            try await coordinator.fetch(
+                request: request, owner: .init(rawValue: "attempt-b"),
+                onTransportAdmission: {
+                    XCTFail("coalesced waiter must not consume retry budget")
+                },
+                operation: {
+                    XCTFail("coalesced operation must not start")
+                    return Data()
+                })
+        }
+        let origin = SideAssetOrigin(rawValue: "https://assets.example:443")
+        let requestKey = SideAssetRequestKey.authenticatedRequest(
+            SideAssetTransportPolicy.nonpersistentRequest(request))
+        await waitUntil {
+            await coordinator.waiterCountForTesting(
+                origin: origin, requestKey: requestKey) == 2
+        }
+        await gate.releaseAll()
+        _ = try await (first.value, second.value)
+        let admissionCount = await admissions.value
+        let operationCount = await operations.value
+        XCTAssertEqual(admissionCount, 1)
+        XCTAssertEqual(operationCount, 1)
+    }
+
+    func testSuccessfulSuspendedAdmissionFundsSurvivorWhenFundingWaiterCancels() async throws {
+        let admissionGate = SideAssetGate()
+        let firstAdmissions = SideAssetCounter()
+        let secondAdmissions = SideAssetCounter()
+        let operations = SideAssetCounter()
+        let coordinator = SideAssetFetchCoordinator(clock: AdvancingSideAssetClock().dependency)
+        let origin = SideAssetOrigin(rawValue: "origin")
+        let request = SideAssetRequestKey(rawValue: "shared-admission")
+
+        let first = Task {
+            try await coordinator.fetch(
+                origin: origin, owner: .init(rawValue: "attempt-a"), requestKey: request,
+                onTransportAdmission: {
+                    await firstAdmissions.increment()
+                    await admissionGate.wait()
+                }) {
+                    await operations.increment()
+                    return Data([7])
+                }
+        }
+        await waitUntil { await firstAdmissions.value == 1 }
+
+        let second = Task {
+            try await coordinator.fetch(
+                origin: origin, owner: .init(rawValue: "attempt-b"), requestKey: request,
+                onTransportAdmission: { await secondAdmissions.increment() }) {
+                    XCTFail("coalesced operation must not start")
+                    return Data()
+                }
+        }
+        await waitUntil {
+            await coordinator.waiterCountForTesting(origin: origin, requestKey: request) == 2
+        }
+
+        first.cancel()
+        await waitUntil {
+            await coordinator.waiterCountForTesting(origin: origin, requestKey: request) == 1
+        }
+        await admissionGate.releaseAll()
+
+        do {
+            _ = try await first.value
+            XCTFail("cancelled funding waiter should observe cancellation")
+        } catch is CancellationError {}
+        let survivorData = try await second.value
+        let firstAdmissionCount = await firstAdmissions.value
+        let secondAdmissionCount = await secondAdmissions.value
+        let operationCount = await operations.value
+        XCTAssertEqual(survivorData, Data([7]))
+        XCTAssertEqual(firstAdmissionCount, 1)
+        XCTAssertEqual(secondAdmissionCount, 0)
+        XCTAssertEqual(operationCount, 1)
+    }
+
+    func testWaiterJoiningCancelledEmptyRunningJobIsReadmittedAndSucceeds() async throws {
+        let cancelledOperationGate = SideAssetGate()
+        let firstAdmissions = SideAssetCounter()
+        let survivorAdmissions = SideAssetCounter()
+        let operationCalls = SideAssetCounter()
+        let coordinator = SideAssetFetchCoordinator(clock: AdvancingSideAssetClock().dependency)
+        let origin = SideAssetOrigin(rawValue: "origin")
+        let request = SideAssetRequestKey(rawValue: "cancelled-running-job")
+
+        let cancelled = Task {
+            try await coordinator.fetch(
+                origin: origin, owner: .init(rawValue: "attempt-a"), requestKey: request,
+                onTransportAdmission: { await firstAdmissions.increment() }) {
+                    await operationCalls.increment()
+                    if await operationCalls.value == 1 {
+                        await cancelledOperationGate.wait()
+                        try Task.checkCancellation()
+                    }
+                    return Data([8])
+                }
+        }
+        await waitUntil { await operationCalls.value == 1 }
+        cancelled.cancel()
+        _ = await cancelled.result
+        await waitUntil {
+            await coordinator.waiterCountForTesting(origin: origin, requestKey: request) == 0
+        }
+
+        let survivor = Task {
+            try await coordinator.fetch(
+                origin: origin, owner: .init(rawValue: "attempt-b"), requestKey: request,
+                onTransportAdmission: { await survivorAdmissions.increment() }) {
+                    XCTFail("requeued request must retain its single canonical operation")
+                    return Data()
+                }
+        }
+        await waitUntil {
+            await coordinator.waiterCountForTesting(origin: origin, requestKey: request) == 1
+        }
+        await cancelledOperationGate.releaseAll()
+
+        let survivorData = try await survivor.value
+        let firstAdmissionCount = await firstAdmissions.value
+        let survivorAdmissionCount = await survivorAdmissions.value
+        let operationCount = await operationCalls.value
+        XCTAssertEqual(survivorData, Data([8]))
+        XCTAssertEqual(firstAdmissionCount, 1)
+        XCTAssertEqual(survivorAdmissionCount, 1)
+        XCTAssertEqual(operationCount, 2)
+    }
+
+    func testQueuedCancellationMovesAdmissionAuthorityToSurvivingOwner() async throws {
+        let gate = SideAssetGate()
+        let coordinator = SideAssetFetchCoordinator(
+            policy: .init(maximumRequestStartsPerSecond: 1_000,
+                          maximumConcurrentRequests: 1),
+            clock: AdvancingSideAssetClock().dependency)
+        let origin = SideAssetOrigin(rawValue: "origin")
+        let blocker = Task {
+            try await coordinator.fetch(
+                origin: origin, owner: .init(rawValue: "blocker"),
+                requestKey: .init(rawValue: "blocker")) {
+                    await gate.wait()
+                    return Data([0])
+                }
+        }
+        await waitUntil { await coordinator.activeCountForTesting(origin: origin) == 1 }
+
+        let staleAdmissions = SideAssetCounter()
+        let survivorAdmissions = SideAssetCounter()
+        let request = SideAssetRequestKey(rawValue: "coalesced")
+        let first = Task {
+            try await coordinator.fetch(
+                origin: origin, owner: .init(rawValue: "attempt-a"), requestKey: request,
+                onTransportAdmission: { await staleAdmissions.increment() }) {
+                    return Data([1])
+                }
+        }
+        let second = Task {
+            try await coordinator.fetch(
+                origin: origin, owner: .init(rawValue: "attempt-b"), requestKey: request,
+                onTransportAdmission: { await survivorAdmissions.increment() }) {
+                    return Data([2])
+                }
+        }
+        await waitUntil {
+            await coordinator.waiterCountForTesting(origin: origin, requestKey: request) == 2
+        }
+        first.cancel()
+        _ = await first.result
+        await waitUntil {
+            await coordinator.waiterCountForTesting(origin: origin, requestKey: request) == 1
+        }
+        await gate.releaseAll()
+        _ = try await blocker.value
+        let survivorData = try await second.value
+        XCTAssertEqual(survivorData, Data([1])) // transport is request-equivalent
+        let staleCount = await staleAdmissions.value
+        let survivorCount = await survivorAdmissions.value
+        XCTAssertEqual(staleCount, 0)
+        XCTAssertEqual(survivorCount, 1)
+    }
+
+    func testRejectedCoalescedAdmissionHandsOffWithoutDoubleCharging() async throws {
+        let gate = SideAssetGate()
+        let coordinator = SideAssetFetchCoordinator(
+            policy: .init(maximumRequestStartsPerSecond: 1_000,
+                          maximumConcurrentRequests: 1),
+            clock: AdvancingSideAssetClock().dependency)
+        let origin = SideAssetOrigin(rawValue: "origin")
+        let blocker = Task {
+            try await coordinator.fetch(
+                origin: origin, owner: .init(rawValue: "blocker"),
+                requestKey: .init(rawValue: "blocker")) {
+                    await gate.wait(); return Data([0])
+                }
+        }
+        await waitUntil { await coordinator.activeCountForTesting(origin: origin) == 1 }
+
+        let rejectedCharges = SideAssetCounter()
+        let acceptedCharges = SideAssetCounter()
+        let operations = SideAssetCounter()
+        let request = SideAssetRequestKey(rawValue: "handoff")
+        let rejected = Task {
+            try await coordinator.fetch(
+                origin: origin, owner: .init(rawValue: "stale"), requestKey: request,
+                onTransportAdmission: {
+                    await rejectedCharges.increment()
+                    throw SideAssetFetchError.retryBudgetExhausted
+                }) {
+                    await operations.increment()
+                    return Data([9])
+                }
+        }
+        await waitUntil {
+            await coordinator.waiterCountForTesting(origin: origin, requestKey: request) == 1
+        }
+        let accepted = Task {
+            try await coordinator.fetch(
+                origin: origin, owner: .init(rawValue: "current"), requestKey: request,
+                onTransportAdmission: { await acceptedCharges.increment() }) {
+                    XCTFail("coalesced transport must retain a single operation")
+                    return Data()
+                }
+        }
+        await waitUntil {
+            await coordinator.waiterCountForTesting(origin: origin, requestKey: request) == 2
+        }
+        await gate.releaseAll()
+        _ = try await blocker.value
+        do {
+            _ = try await rejected.value
+            XCTFail("rejected waiter should receive its admission failure")
+        } catch let error as SideAssetFetchError {
+            XCTAssertEqual(error, .retryBudgetExhausted)
+        }
+        let acceptedData = try await accepted.value
+        let rejectedCount = await rejectedCharges.value
+        let acceptedCount = await acceptedCharges.value
+        let operationCount = await operations.value
+        XCTAssertEqual(acceptedData, Data([9]))
+        XCTAssertEqual(rejectedCount, 1)
+        XCTAssertEqual(acceptedCount, 1)
+        XCTAssertEqual(operationCount, 1)
     }
 
     func testTaskCancellationWinsWhenSuccessfulCompletionRacesCancellation() async {
@@ -612,120 +876,207 @@ private final class SideAssetCancellationURLProtocol: URLProtocol, @unchecked Se
     }
 }
 
-final class CompletedRowSideAssetRehydrateBudgetTests: XCTestCase {
-    func testGivesUpPerRowKindAfterMaxAttemptsPerLaunch() {
-        var budget = CompletedRowSideAssetRehydrateBudget()
-        let max = CompletedRowSideAssetRehydrateBudget.maxAttemptsPerLaunch
+final class DownloadSideAssetRetryBudgetTests: XCTestCase {
+    private let source = OfflineSideAssetSourceIdentity(
+        backendKind: .plex, backendBaseURLString: "https://one.example",
+        backendServerID: "server", mediaSourceID: "source", mediaIndex: 0,
+        partIndex: 0, sourcePartID: 7, downloadLane: .original,
+        serverPreparedVersion: false)
 
-        for _ in 0..<max {
-            XCTAssertTrue(budget.canOffer(ratingKey: "row", kind: .poster))
-            budget.recordAttempt(ratingKey: "row", kind: .poster)
-        }
-        // Exhausted: the permanently-missing poster stops being offered this launch.
-        XCTAssertFalse(budget.canOffer(ratingKey: "row", kind: .poster))
+    private func identity(attempt: String = "attempt-a",
+                          source: OfflineSideAssetSourceIdentity? = nil,
+                          kind: DownloadSideAssetKind = .poster,
+                          resource: String? = nil) -> DownloadSideAssetRetryIdentity {
+        DownloadSideAssetRetryIdentity(
+            attemptKey: DownloadAttemptKey(
+                ratingKey: "row", attemptID: DownloadAttemptID(rawValue: attempt)!),
+            source: source ?? self.source,
+            kind: kind,
+            resource: resource)
     }
 
-    func testGiveUpIsScopedToRowAndKind() {
-        var budget = CompletedRowSideAssetRehydrateBudget()
-        for _ in 0..<CompletedRowSideAssetRehydrateBudget.maxAttemptsPerLaunch {
-            budget.recordAttempt(ratingKey: "row", kind: .poster)
-        }
-        XCTAssertFalse(budget.canOffer(ratingKey: "row", kind: .poster))
-        // A different kind on the same row and the same kind on a different row keep their budget.
-        XCTAssertTrue(budget.canOffer(ratingKey: "row", kind: .chapterImages))
-        XCTAssertTrue(budget.canOffer(ratingKey: "other", kind: .poster))
+    func testChargesOnlyExplicitDispatchAndStopsAtBound() {
+        var budget = DownloadSideAssetRetryBudget()
+        let key = identity()
+        XCTAssertTrue(budget.canDispatch(key, maximum: 2)) // inventory is free
+        XCTAssertTrue(budget.chargeDispatch(key, maximum: 2))
+        XCTAssertTrue(budget.chargeDispatch(key, maximum: 2))
+        XCTAssertFalse(budget.chargeDispatch(key, maximum: 2))
+        XCTAssertFalse(budget.canDispatch(key, maximum: 2))
+    }
+
+    func testBudgetIsExactAttemptSourceAndKindScoped() {
+        var budget = DownloadSideAssetRetryBudget()
+        let exhausted = identity()
+        XCTAssertTrue(budget.chargeDispatch(exhausted, maximum: 1))
+        XCTAssertFalse(budget.canDispatch(exhausted, maximum: 1))
+        XCTAssertTrue(budget.canDispatch(identity(attempt: "attempt-b"), maximum: 1))
+        XCTAssertTrue(budget.canDispatch(identity(kind: .plexBIF), maximum: 1))
+        XCTAssertTrue(budget.canDispatch(identity(resource: "other-poster"), maximum: 1))
+
+        var otherSource = source
+        otherSource.mediaSourceID = "replacement-source"
+        XCTAssertTrue(budget.canDispatch(identity(source: otherSource), maximum: 1))
     }
 }
 
-/// Pins WHEN the completed-row rehydrate scan charges the per-launch budget: only for passes that
-/// actually dispatch fetch work. A trigger while the row's backend has no live session must not
-/// burn the budget (previously each such pass charged every offerable kind while
-/// `rehydrateMissingOptionalSideAssets` early-returned without fetching, so the asset could never
-/// rehydrate once its backend became active again).
-@MainActor
-final class CompletedRowSideAssetRehydrateBudgetChargingTests: XCTestCase {
-    func testTriggersWithoutLiveBackendSessionDoNotConsumeBudget() throws {
-        let harness = try makeHarness()
-        defer { harness.tearDown() }
-
-        // No Plex session configured on the AppModel: rehydrate cannot dispatch anything.
-        for _ in 0..<(CompletedRowSideAssetRehydrateBudget.maxAttemptsPerLaunch * 2) {
-            harness.manager.rehydrateMissingOptionalSideAssetsForCompletedRows(reason: "test_no_session")
-        }
-        XCTAssertTrue(harness.manager.completedRowSideAssetRehydrateBudget.canOffer(
-            ratingKey: harness.ratingKey, kind: .poster))
-    }
-
-    func testDispatchedRehydratePassesStillExhaustBudget() throws {
-        let harness = try makeHarness()
-        defer { harness.tearDown() }
-
-        // A live matching Plex session makes each pass dispatch real (failing) fetch work, so the
-        // bounded-retry intent is preserved: the budget still runs out for a permanently missing asset.
-        harness.model.serverBaseURL = URL(string: "https://media.example.invalid")
-        harness.model.serverToken = "not-a-real-token"
-        for _ in 0..<CompletedRowSideAssetRehydrateBudget.maxAttemptsPerLaunch {
-            XCTAssertTrue(harness.manager.completedRowSideAssetRehydrateBudget.canOffer(
-                ratingKey: harness.ratingKey, kind: .poster))
-            harness.manager.rehydrateMissingOptionalSideAssetsForCompletedRows(reason: "test_failing_fetch")
-        }
-        XCTAssertFalse(harness.manager.completedRowSideAssetRehydrateBudget.canOffer(
-            ratingKey: harness.ratingKey, kind: .poster))
-    }
-
-    private struct Harness {
-        let directory: URL
-        let model: AppModel
-        let manager: DownloadManager
-        let session: BackgroundDownloadSession
-        let ratingKey: String
-
-        func tearDown() {
-            session.invalidateInjectedSessionForTesting()
-            try? FileManager.default.removeItem(at: directory)
-        }
-    }
-
-    /// One completed Plex row whose metadata references a poster that is not on disk, so the scan
-    /// always sees `.poster` as a missing offerable kind.
-    private func makeHarness() throws -> Harness {
+final class DownloadSideAssetServiceTests: XCTestCase {
+    func testPreparationValidatesOffMainBeforeWriting() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
-            "rehydrate-budget-\(UUID().uuidString)", isDirectory: true)
+            "side-asset-service-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
 
-        // The manager reads the persisted queue-paused flag at init; the scan is a no-op while paused.
-        UserDefaults.standard.set(false, forKey: "downloads.queuePaused")
+        let invalidURL = directory.appendingPathComponent("invalid.jpg")
+        let rejected = await DownloadSideAssetService.prepare(
+            Data("server error".utf8), as: .image, at: invalidURL)
+        XCTAssertFalse(rejected)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: invalidURL.path))
 
-        let store = DownloadStore(baseDirectory: directory)
-        let ratingKey = "12345"
-        let attemptID = try XCTUnwrap(DownloadAttemptID(rawValue: "attempt-\(ratingKey)"))
-        let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
+        let validPNG = try XCTUnwrap(Data(base64Encoded:
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="))
+        let validURL = directory.appendingPathComponent("valid.png")
+        let observedMain = OSAllocatedUnfairLock<Bool?>(initialState: nil)
+        let prepared = await DownloadSideAssetService.prepare(
+            validPNG, as: .image, at: validURL,
+            executionProbe: { isMain in observedMain.withLock { $0 = isMain } })
+        XCTAssertTrue(prepared)
+        XCTAssertEqual(observedMain.withLock { $0 }, false)
+        XCTAssertEqual(try Data(contentsOf: validURL), validPNG)
+    }
+
+    func testValidatorsRejectWrongPayloadClass() {
+        let subtitle = Data("WEBVTT\n\n00:00.000 --> 00:01.000\nHello".utf8)
+        XCTAssertTrue(DownloadSideAssetService.validate(subtitle, as: .textSubtitle))
+        XCTAssertFalse(DownloadSideAssetService.validate(subtitle, as: .image))
+        XCTAssertFalse(DownloadSideAssetService.validate(Data("<html>error</html>".utf8), as: .bif))
+    }
+
+    func testRepairInventoryIncludesEveryDerivablePlexPayloadClass() {
+        let attemptID = DownloadAttemptID(rawValue: "attempt")!
+        let metadata = OfflineMetadata(
+            ratingKey: "row", title: "Title", type: "movie", thumb: "/poster",
+            chapters: [OfflineChapter(thumb: "/chapter")],
+            offlineTextSubtitles: [OfflineTextSubtitleTrack(
+                id: 1, displayName: "English", relativePath: "missing.vtt")],
+            backendKind: .plex, mediaSourceID: "source")
         let record = DownloadRecord(
-            ratingKey: ratingKey,
-            attemptID: attemptID,
-            title: "Test item",
-            localURL: store.destinationURL(ratingKey: ratingKey, ext: "mp4"),
-            bytes: 10,
-            progress: 1,
-            status: .complete,
-            metadata: OfflineMetadata(
-                ratingKey: ratingKey,
-                title: "Test item",
-                type: "movie",
-                thumb: "/library/metadata/12345/thumb/1",
-                sourcePartSize: 100,
-                backendKind: .plex,
-                backendBaseURLString: "https://media.example.invalid",
-                backendServerID: nil,
-                backendUserID: nil,
-                resumeMode: .staticByteRange))
-        XCTAssertEqual(store.createAttemptOwnedRecord(record, attemptID: attemptID), .committed(key))
+            ratingKey: "row", attemptID: attemptID, title: "Title",
+            localURL: URL(fileURLWithPath: "/tmp/media.mp4"), bytes: 1,
+            progress: 1, status: .complete, metadata: metadata)
 
-        let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "rehydrate-budget"))
-        let session = BackgroundDownloadSession(store: store, protocolClasses: [])
-        let manager = DownloadManager(appModel: model, store: store, session: session,
-                                      registerForBackgroundEvents: false)
-        return Harness(directory: directory, model: model, manager: manager,
-                       session: session, ratingKey: ratingKey)
+        XCTAssertEqual(DownloadSideAssetRepairInventory.missingKinds(
+            record: record, fileExists: { _ in false }),
+            [.poster, .plexBIF, .chapterImages, .textSubtitles])
+    }
+
+    func testRepairInventoryIncludesMediaBrowserPreviewAndSubtitleDiscovery() {
+        let attemptID = DownloadAttemptID(rawValue: "attempt")!
+        for (backend, expectedPreview) in [
+            (DownloadBackendKind.jellyfin, DownloadSideAssetKind.jellyfinTrickPlay),
+            (.emby, .embyBIF),
+        ] {
+            let metadata = OfflineMetadata(
+                ratingKey: "row", title: "Title", type: "movie",
+                backendKind: backend, mediaSourceID: "selected-source")
+            let record = DownloadRecord(
+                ratingKey: "row", attemptID: attemptID, title: "Title",
+                localURL: URL(fileURLWithPath: "/tmp/media.mp4"), bytes: 1,
+                progress: 1, status: .complete, metadata: metadata)
+            let missing = DownloadSideAssetRepairInventory.missingKinds(
+                record: record, fileExists: { _ in false })
+            XCTAssertTrue(missing.contains(expectedPreview))
+            XCTAssertTrue(missing.contains(.textSubtitles))
+        }
+    }
+
+    func testJellyfinRepairInventoryFindsPlaylistReferencedUnpersistedTile() {
+        let attemptID = DownloadAttemptID(rawValue: "attempt")!
+        let metadata = OfflineMetadata(
+            ratingKey: "jellyfin:row", title: "Title", type: "movie",
+            jellyfinTrickPlayPlaylistRelativePath: "trickplay.m3u8",
+            jellyfinTrickPlayTileRelativePaths: ["tile-0.jpg"],
+            backendKind: .jellyfin, mediaSourceID: "source")
+        let record = DownloadRecord(
+            ratingKey: "jellyfin:row", attemptID: attemptID, title: "Title",
+            localURL: URL(fileURLWithPath: "/tmp/media.mp4"), bytes: 1,
+            progress: 1, status: .complete, metadata: metadata)
+
+        let missing = DownloadSideAssetRepairInventory.missingKinds(
+            record: record,
+            fileExists: { ["trickplay.m3u8", "tile-0.jpg"].contains($0) },
+            jellyfinPlaylistTiles: { _ in ["tile-0.jpg", "tile-1.jpg"] })
+        XCTAssertTrue(missing.contains(.jellyfinTrickPlay))
+
+        let complete = DownloadSideAssetRepairInventory.missingKinds(
+            record: record,
+            fileExists: {
+                ["trickplay.m3u8", "tile-0.jpg", "tile-1.jpg"].contains($0)
+            },
+            jellyfinPlaylistTiles: { _ in ["tile-0.jpg", "tile-1.jpg"] })
+        XCTAssertFalse(complete.contains(.jellyfinTrickPlay))
+
+        let unreadable = DownloadSideAssetRepairInventory.missingKinds(
+            record: record,
+            fileExists: { $0 == "trickplay.m3u8" },
+            jellyfinPlaylistTiles: { _ in nil })
+        XCTAssertTrue(unreadable.contains(.jellyfinTrickPlay))
+
+        let unsafeLoaderCalls = OSAllocatedUnfairLock(initialState: 0)
+        let unowned = DownloadSideAssetRepairInventory.missingKinds(
+            record: record,
+            fileExists: { _ in false },
+            jellyfinPlaylistTiles: { _ in
+                unsafeLoaderCalls.withLock { $0 += 1 }
+                return ["tile-0.jpg"]
+            })
+        XCTAssertTrue(unowned.contains(.jellyfinTrickPlay))
+        XCTAssertEqual(unsafeLoaderCalls.withLock { $0 }, 0)
+    }
+
+    func testRepairRetryResourcesMatchTransportAdmissionDiscriminators() {
+        let attemptID = DownloadAttemptID(rawValue: "attempt")!
+        let metadata = OfflineMetadata(
+            ratingKey: "row", title: "Title", type: "movie",
+            chapters: [OfflineChapter(thumb: "/zero"), OfflineChapter(thumb: "/one")],
+            chapterImageRelativePaths: [0: "chapter-0.jpg"],
+            backendKind: .jellyfin, mediaSourceID: "source")
+        let record = DownloadRecord(
+            ratingKey: "row", attemptID: attemptID, title: "Title",
+            localURL: URL(fileURLWithPath: "/tmp/media.mp4"), bytes: 1,
+            progress: 1, status: .complete, metadata: metadata)
+
+        XCTAssertEqual(DownloadSideAssetRepairInventory.retryResources(
+            for: .textSubtitles, record: record, fileExists: { _ in false },
+            chapterResource: { "chapter-\($0).jpg" }), ["source-metadata"])
+        XCTAssertEqual(DownloadSideAssetRepairInventory.retryResources(
+            for: .plexBIF, record: record, fileExists: { _ in false },
+            chapterResource: { "chapter-\($0).jpg" }), ["source-metadata"])
+        XCTAssertEqual(DownloadSideAssetRepairInventory.retryResources(
+            for: .jellyfinTrickPlay, record: record, fileExists: { _ in false },
+            chapterResource: { "chapter-\($0).jpg" }), ["playlist"])
+        XCTAssertEqual(DownloadSideAssetRepairInventory.retryResources(
+            for: .chapterImages, record: record,
+            fileExists: { $0 == "chapter-0.jpg" },
+            chapterResource: { "chapter-\($0).jpg" }), ["chapter-1.jpg"])
+    }
+
+    func testPublicationBatchMergesAllFilesInOneMutation() {
+        var metadata = OfflineMetadata(ratingKey: "row", title: "Title", type: "movie")
+        let track = OfflineTextSubtitleTrack(
+            id: 1, displayName: "English", relativePath: "one.vtt")
+        let batch = DownloadSideAssetPublicationBatch(
+            chapterImages: [0: "chapter-0.jpg", 2: "chapter-2.jpg"],
+            textSubtitles: [track, track],
+            jellyfinTiles: ["tile-0.jpg", "tile-0.jpg", "tile-1.jpg"],
+            jellyfinPlaylist: "trickplay.m3u8")
+
+        batch.apply(to: &metadata)
+        XCTAssertEqual(metadata.chapterImageRelativePaths,
+                       [0: "chapter-0.jpg", 2: "chapter-2.jpg"])
+        XCTAssertEqual(metadata.offlineTextSubtitles, [track])
+        XCTAssertEqual(metadata.jellyfinTrickPlayTileRelativePaths,
+                       ["tile-0.jpg", "tile-1.jpg"])
+        XCTAssertEqual(metadata.jellyfinTrickPlayPlaylistRelativePath, "trickplay.m3u8")
     }
 }

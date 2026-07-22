@@ -20,45 +20,24 @@ struct DownloadOptionsSheet: View {
 
     @AppStorage(PlaybackPreferences.Keys.defaultDownloadQuality) private var defaultDownloadQuality = PlaybackPreferences.defaultDownloadQuality
 
-    private struct OriginalOption: Equatable {
-        let sizeBytes: Int?
-        let resolution: String?
-    }
+    private typealias OriginalOption = DownloadOptionsModel.OriginalOption
+    private typealias CompatibleRemuxOption = DownloadOptionsModel.CompatibleRemuxOption
+    private typealias DownloadSelection = DownloadOptionsModel.Selection
 
-    /// #83: the "Original quality (compatible)" remux option — offered when the raw container is not
-    /// locally playable but the server can copy the video into an MP4. Carries the codec summary
-    /// for the row caption.
-    private struct CompatibleRemuxOption: Equatable {
-        let codecSummary: String?
-    }
-
-    private enum ProbeState: Equatable {
-        case checking
-        case ready(original: OriginalOption?, compatibleRemux: CompatibleRemuxOption?,
-                   presets: [String], probeFailed: Bool,
-                   originalStreamableButOfflineUnsupported: Bool,
-                   existingVersions: [DownloadExistingVersionOption])
-    }
-
-    private enum DownloadSelection: Equatable {
-        case original
-        case plexOriginalQuality(String)
-        case optimizeCompatible
-        case optimize(String)
-        /// #112: download an existing Plex server version exactly as-is (by `Media` index).
-        case existingVersion(Int)
-        /// #126: download an existing Emby server version (a "Convert Media" copy) byte-for-byte,
-        /// addressed by its PlaybackInfo MediaSource id. `sizeBytes` is the converted source's own
-        /// size for the storage-limit pre-check (the source `Media` index can't supply it).
-        case embyExistingVersion(mediaSourceId: String, sizeBytes: Int?)
-    }
-
-    @State private var probeState: ProbeState = .checking
-    @State private var selectedChoice: DownloadSelection?
+    @State private var optionsModel = DownloadOptionsModel()
     @State private var retryingExistingDownload = false
     @State private var isStartingDownload = false
     @State private var confirmingExistingDownloadRemoval = false
     @State private var confirmingCompatibleRemuxFallback = false
+
+    private var probeState: DownloadOptionsModel.ProbeState {
+        get { optionsModel.probeState }
+        nonmutating set { optionsModel.probeState = newValue }
+    }
+    private var selectedChoice: DownloadSelection? {
+        get { optionsModel.selection }
+        nonmutating set { optionsModel.selection = newValue }
+    }
 
     private var sheetBackend: DownloadBackendKind {
         backend ?? appModel.activeBackend.downloadBackendKind
@@ -770,35 +749,25 @@ struct DownloadOptionsSheet: View {
     }
 
     private var selectedStorageLimitMessage: String? {
-        guard let selectedChoice else { return nil }
+        guard let resolvedSelection else { return nil }
         // #126: an Emby existing version is addressed by MediaSource id, not a `Media` index, so the
         // estimator can't size it — use the converted source's own reported size for the pre-check.
         let addedBytes: Int?
-        if case .embyExistingVersion(_, let sizeBytes) = selectedChoice {
+        switch resolvedSelection.sizing {
+        case .reported(let sizeBytes):
             addedBytes = sizeBytes
-        } else {
-            let intent = managerIntent(for: selectedChoice)
+        case .estimateFromMedia:
             addedBytes = downloadManager.estimatedBytes(
-                for: item, choice: intent.choice,
-                mediaIndex: mediaIndex(for: selectedChoice),
-                partIndex: partIndex(for: selectedChoice))
+                for: item, choice: resolvedSelection.intent.choice,
+                mediaIndex: resolvedSelection.mediaIndex,
+                partIndex: resolvedSelection.partIndex)
         }
         return downloadManager.storageLimitMessage(adding: addedBytes)
     }
 
-    /// The `Media` array index a selection downloads from. An existing-version pick (#112) targets
-    /// that version's own index; every other choice uses the sheet's selected source `mediaIndex`.
-    private func mediaIndex(for selection: DownloadSelection) -> Int {
-        if case .existingVersion(let index) = selection { return index }
-        return mediaIndex
-    }
-
-    /// The `Part` index a selection downloads from. An existing server version is addressed by its
-    /// first (only) rendered part — the version label/size are derived from `part.first` — so it
-    /// always uses part 0, independent of the source's selected `partIndex`.
-    private func partIndex(for selection: DownloadSelection) -> Int {
-        if case .existingVersion = selection { return 0 }
-        return partIndex
+    private var resolvedSelection: DownloadOptionsModel.ResolvedSelection? {
+        optionsModel.resolvedSelection(baseMediaIndex: mediaIndex, basePartIndex: partIndex,
+                                       audioStreamIndex: selectedDownloadAudioStreamIndex)
     }
 
     private func selection(forExistingVersion option: DownloadExistingVersionOption) -> DownloadSelection {
@@ -835,31 +804,6 @@ struct DownloadOptionsSheet: View {
             }
             return .optimize(targetName)
         }
-    }
-
-    private func managerChoice(for selection: DownloadSelection) -> DownloadManager.DownloadChoice {
-        switch selection {
-        case .original: return .original
-        case .plexOriginalQuality(let preset): return .optimize(targetName: preset)
-        case .optimizeCompatible: return .optimizeCompatible
-        case .optimize(let preset): return .optimize(targetName: preset)
-        case .existingVersion: return .existingVersion
-        case .embyExistingVersion: return .existingVersion
-        }
-    }
-
-    private func audioStreamIndex(for selection: DownloadSelection) -> Int? {
-        switch selection {
-        case .original, .existingVersion, .embyExistingVersion, .plexOriginalQuality:
-            return nil
-        case .optimize, .optimizeCompatible:
-            return selectedDownloadAudioStreamIndex
-        }
-    }
-
-    private func managerIntent(for selection: DownloadSelection) -> DownloadIntentRequest {
-        DownloadIntentRequest(choice: managerChoice(for: selection),
-                              audioStreamIndex: audioStreamIndex(for: selection))
     }
 
     // MARK: - Already-downloaded state
@@ -1058,15 +1002,15 @@ struct DownloadOptionsSheet: View {
     }
 
     private func startDownload() {
-        guard !isStartingDownload, existingRecord == nil, let selectedChoice else { return }
+        guard !isStartingDownload, existingRecord == nil, let resolvedSelection else { return }
         isStartingDownload = true
-        let intent = managerIntent(for: selectedChoice)
+        let intent = resolvedSelection.intent
         let choice = intent.choice
         let audioStreamIndex = intent.audioStreamIndex
         // #112: an existing-version pick downloads from THAT version's `Media` index (part 0), not
         // the selected source index. Every other choice resolves to the sheet's media/part index.
-        let downloadMediaIndex = mediaIndex(for: selectedChoice)
-        let downloadPartIndex = partIndex(for: selectedChoice)
+        let downloadMediaIndex = resolvedSelection.mediaIndex
+        let downloadPartIndex = resolvedSelection.partIndex
         // Exhaustive over the backend so a new lane is a compile error here, not a silent
         // fall-through into the Plex download path (which fails quietly on nil Plex creds).
         switch sheetBackend {
@@ -1082,7 +1026,7 @@ struct DownloadOptionsSheet: View {
         case .emby:
             // #126: an existing-version pick addresses a specific converted MediaSource by id; pass
             // it as the override so the lane downloads THAT copy byte-for-byte (no new conversion).
-            if case .embyExistingVersion(let mediaSourceId, _) = selectedChoice {
+            if let mediaSourceId = resolvedSelection.mediaSourceIDOverride {
                 Task { await downloadManager.downloadEmby(item, choice: choice,
                                                           mediaIndex: downloadMediaIndex,
                                                           partIndex: downloadPartIndex,

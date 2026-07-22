@@ -68,8 +68,11 @@ The app container's temporary directory also holds short-lived range-response an
 out-of-order segment stashes. They are transfer intermediates, not durable index state, and
 are consumed or swept rather than relied on across relaunch.
 
-The download index is currently a schema-v4 versioned envelope and retains
-backward-compatible decoding/migration for older row shapes. Active rows carry a typed
+The download index is currently a schema-v4 versioned envelope. Schemas 1–3 are no longer
+migrated: startup probes without mutating the root, drains every old OS task, moves the opaque
+root to a durable quarantine, installs a protected empty schema-v4 root, and only then opens
+admission. Unreadable or malformed current data fails closed rather than being guessed or reset.
+Active rows carry a typed
 `DownloadAttemptID`; asynchronous tasks, artifact reservations, and cleanup compare the
 full rating-key/attempt key so stale work cannot mutate a retry or re-download of the same
 item. Media and side-asset paths are persisted as validated one-level paths
@@ -87,7 +90,14 @@ work is registered before it starts and reaches a terminal index outcome before 
 lifecycle ticket is released. Required Jellyfin/Emby active-encoding or Emby Convert cleanup
 also has an independent `download-cleanup-intents.json` journal containing an exact attempt,
 credential-free server identity, and cleanup operation. The journal deliberately does not
-share the index transaction domain, so row deletion cannot erase the only cleanup authority.
+share the versioned Downloads root: it lives in a protected sibling authority directory, so row
+deletion or destructive schema reset cannot erase the only cleanup authority. Quarantined legacy
+roots are reclaimed on a utility queue after the new current root is durable and again on relaunch.
+
+Persistence consumers name their contract explicitly: download/background-completion barriers,
+recoverable checkpoints, best-effort buffered diagnostics, or ephemeral state. The diagnostic JSONL
+sink batches on one serial queue, flushes on true aggregate inactivity, and rotates before an incoming
+complete line would cross the live-file cap; it never claims checkpoint or barrier durability.
 
 The Downloads directory, resume blobs, and development credential artifacts are excluded
 from backup. PMSKit's `CredentialArtifactStorage` applies appropriate file protection on

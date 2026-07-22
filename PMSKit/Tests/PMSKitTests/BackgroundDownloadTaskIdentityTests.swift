@@ -16,54 +16,20 @@ struct BackgroundDownloadTaskIdentityTests {
         #expect(resolved == "plex:movie")
     }
 
-    @Test("Plex path query resolves the metadata key")
-    func plexPathQueryResolvesBareKey() {
-        let resolved = BackgroundDownloadTaskIdentity.ratingKey(
-            taskDescription: nil,
-            requestURL: URL(string: "https://plex.example/video/:/transcode/universal/start.m3u8?path=%2Flibrary%2Fmetadata%2F1234"),
-            knownKeys: ["1234"]
-        )
-
-        #expect(resolved == "1234")
-    }
-
-    @Test("Plex path query can resolve legacy Jellyfin-prefixed rows")
-    func pathQueryResolvesJellyfinPrefixedKey() {
-        let resolved = BackgroundDownloadTaskIdentity.ratingKey(
-            taskDescription: nil,
-            requestURL: URL(string: "https://media.example/download?path=%2FItems%2Fabcd"),
-            knownKeys: ["jellyfin:abcd"]
-        )
-
-        #expect(resolved == "jellyfin:abcd")
-    }
-
-    @Test("Jellyfin Items path resolves bare and prefixed known keys")
-    func jellyfinItemsPathResolves() {
-        let bare = BackgroundDownloadTaskIdentity.ratingKey(
-            taskDescription: nil,
-            requestURL: URL(string: "https://jellyfin.example/Items/item-1/Download"),
-            knownKeys: ["item-1"]
-        )
-        let prefixed = BackgroundDownloadTaskIdentity.ratingKey(
-            taskDescription: nil,
-            requestURL: URL(string: "https://jellyfin.example/Items/item-2/Download"),
-            knownKeys: ["jellyfin:item-2"]
-        )
-
-        #expect(bare == "item-1")
-        #expect(prefixed == "jellyfin:item-2")
-    }
-
-    @Test("Jellyfin Videos path resolves the video id")
-    func jellyfinVideosPathResolves() {
-        let resolved = BackgroundDownloadTaskIdentity.ratingKey(
-            taskDescription: nil,
-            requestURL: URL(string: "https://jellyfin.example/Videos/video-1/stream.mp4"),
-            knownKeys: ["video-1"]
-        )
-
-        #expect(resolved == "video-1")
+    @Test("Request URLs never mint or recover download ownership")
+    func requestURLCannotResolveOwnership() {
+        let urls = [
+            "https://plex.example/video/:/transcode/universal/start.m3u8?path=%2Flibrary%2Fmetadata%2F1234",
+            "https://jellyfin.example/Items/item-1/Download",
+            "https://emby.example/Videos/video-1/stream.mp4",
+        ]
+        for url in urls {
+            #expect(BackgroundDownloadTaskIdentity.ratingKey(
+                taskDescription: nil,
+                requestURL: URL(string: url),
+                knownKeys: ["1234", "item-1", "video-1", "jellyfin:item-1"]
+            ) == nil)
+        }
     }
 
     @Test("Plex part URLs require task description because source key is absent")
@@ -87,9 +53,7 @@ struct BackgroundDownloadTaskIdentityTests {
     func combinedSegmentDescriptionResolvesPlexPartURL() {
         let resolved = BackgroundDownloadTaskIdentity.ratingKey(
             taskDescription: StaticRangeSegmentMarker.taskDescription(
-                ratingKey: "movie-123",
-                offset: 536870912
-            ),
+                ratingKey: "movie-123", offset: 536870912, attemptID: "attempt-A"),
             requestURL: URL(string: "https://plex.example/library/parts/9876/file.mp4"),
             knownKeys: ["movie-123"]
         )
@@ -121,8 +85,7 @@ struct BackgroundDownloadTaskIdentityTests {
         let attemptID = DownloadAttemptID(rawValue: "attempt-A")!
         let current = DownloadAttemptMarker.taskDescription(
             ratingKey: "plex:item", attemptID: attemptID)
-        let legacy = DownloadAttemptMarker.taskDescription(
-            ratingKey: "plex:item", attemptID: attemptID.rawValue)
+        let legacy = "plex:item\u{1F}lbs-attempt:v1:\(attemptID.rawValue)"
 
         #expect(!BackgroundDownloadTaskIdentity.shouldPurgeBeforeAdmission(
             taskDescription: current,

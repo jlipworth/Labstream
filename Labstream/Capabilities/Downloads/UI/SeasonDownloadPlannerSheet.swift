@@ -20,7 +20,9 @@ struct SeasonDownloadPlannerSheet: View {
     @State private var resolvedOptions: [DownloadItemPlanningOptions] = []
     @State private var useExistingVersions = false
     @State private var showingConfirmation = false
+    @State private var pendingDraft: SeasonPlanDraft?
     @State private var commitError: String?
+    @State private var planningTask: Task<Void, Never>?
 
     private var backend: DownloadBackendKind { appModel.activeBackend.downloadBackendKind }
     private var watchedSummary: SeasonDownloadSelectionSummary {
@@ -71,25 +73,34 @@ struct SeasonDownloadPlannerSheet: View {
             }
             .navigationTitle("Download Season")
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { cancelPlanningAndDismiss() }
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     if resolvedOptions.isEmpty {
-                        Button("Review") { Task { await resolvePlan() } }
+                        Button("Review") { startPlanResolution() }
                             .disabled(loading || resolving || selectedEpisodeIndices.isEmpty)
                     } else {
-                        Button("Download") { showingConfirmation = true }
-                            .disabled(storageBlockMessage != nil || (newPlans.isEmpty && retryKeys.isEmpty))
+                        Button("Download") {
+                            pendingDraft = planDraft
+                            showingConfirmation = true
+                        }
+                            .disabled(storageBlockMessage != nil || (newPlans.isEmpty && retryAttempts.isEmpty))
                     }
                 }
             }
         }
         .task { await refreshSeason() }
+        .onDisappear {
+            planningTask?.cancel()
+            planningTask = nil
+        }
         .confirmationDialog("Start season downloads?", isPresented: $showingConfirmation,
                             titleVisibility: .visible) {
             Button("Add to Offline Queue") { commit() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(confirmationMessage)
+            Text(confirmationMessage(for: pendingDraft ?? planDraft))
         }
     }
 
@@ -147,7 +158,9 @@ struct SeasonDownloadPlannerSheet: View {
             if alreadyAvailableCount > 0 { LabeledContent("Already available", value: "\(alreadyAvailableCount)") }
             if alreadyPlannedCount > 0 { LabeledContent("Already planned", value: "\(alreadyPlannedCount)") }
             if pausedCount > 0 { LabeledContent("Paused (unchanged)", value: "\(pausedCount)") }
-            if !retryKeys.isEmpty { LabeledContent("Failures to retry", value: "\(retryKeys.count)") }
+            if !retryAttempts.isEmpty {
+                LabeledContent("Failures to retry", value: "\(retryAttempts.count)")
+            }
             if unresolvedCount > 0 { LabeledContent("Unsupported rows", value: "\(unresolvedCount) failed") }
             if useExistingVersions {
                 LabeledContent("Existing versions", value: "\(existingVersionCount)")
@@ -167,21 +180,22 @@ struct SeasonDownloadPlannerSheet: View {
     private var selectedEpisodeIndices: [Int] { watchedSummary.selectedIndices }
     private var selectedOptions: [DownloadItemPlanningOptions] { resolvedOptions }
 
-    private var rowActions: [String: SeasonDownloadExistingRowAction] {
+    private var rowDispositions: [String: SeasonPlannerRowDisposition] {
         Dictionary(uniqueKeysWithValues: selectedOptions.map {
-            ($0.item.ratingKey, downloadManager.seasonPlannerRowAction(
+            ($0.item.ratingKey, downloadManager.seasonPlannerRowDisposition(
                 itemID: $0.item.ratingKey, backend: backend))
         })
+    }
+
+    private var rowActions: [String: SeasonDownloadExistingRowAction] {
+        rowDispositions.mapValues(\.action)
     }
 
     private var alreadyAvailableCount: Int { rowActions.values.filter { $0 == .alreadyAvailable }.count }
     private var alreadyPlannedCount: Int { rowActions.values.filter { $0 == .alreadyPlanned }.count }
     private var pausedCount: Int { rowActions.values.filter { $0 == .preservePaused }.count }
-    private var retryKeys: [String] {
-        selectedOptions.compactMap { option in
-            guard rowActions[option.item.ratingKey] == .retryFailed else { return nil }
-            return DownloadRecordIdentity.recordKey(for: option.item.ratingKey, backend: backend)
-        }
+    private var retryAttempts: [DownloadAttemptKey] {
+        retryAttempts(in: rowDispositions)
     }
 
     private var nearestExistingSelections: [String: Int?] {
@@ -200,8 +214,14 @@ struct SeasonDownloadPlannerSheet: View {
     }
 
     private var newPlans: [SeasonEpisodeDownloadPlan] {
+        newPlans(using: rowDispositions)
+    }
+
+    private func newPlans(
+        using dispositions: [String: SeasonPlannerRowDisposition]
+    ) -> [SeasonEpisodeDownloadPlan] {
         selectedOptions.compactMap { option in
-            guard rowActions[option.item.ratingKey] == .add else { return nil }
+            guard dispositions[option.item.ratingKey]?.action == .add else { return nil }
             let preferredLanguage = UserDefaults.standard.string(
                 forKey: PlaybackPreferences.Keys.preferredAudioLanguage)
             let sourceSelection = DownloadMediaSelectionPolicy.selection(
@@ -257,7 +277,19 @@ struct SeasonDownloadPlannerSheet: View {
     }
 
     private var storageSummary: SeasonDownloadStorageSummary {
-        SeasonDownloadStoragePolicy.summarize(newPlans.filter(\.shouldStart).map(\.estimatedBytes))
+        planDraft.storageSummary
+    }
+    private var planDraft: SeasonPlanDraft {
+        let dispositions = rowDispositions
+        return SeasonPlanDraft(
+            newPlans: newPlans(using: dispositions),
+            retryAttempts: retryAttempts(in: dispositions))
+    }
+
+    private func retryAttempts(
+        in dispositions: [String: SeasonPlannerRowDisposition]
+    ) -> [DownloadAttemptKey] {
+        selectedOptions.compactMap { dispositions[$0.item.ratingKey]?.retryAttempt }
     }
     private var storageText: String {
         let known = DownloadStorageLimitPolicy.byteString(storageSummary.knownBytes)
@@ -281,10 +313,14 @@ struct SeasonDownloadPlannerSheet: View {
         }
         return Array(Set(labels)).sorted().joined(separator: " – ")
     }
-    private var confirmationMessage: String {
-        var text = "Add \(newPlans.count) new episode row(s) and retry \(retryKeys.count) included failure(s). "
-            + "Additional storage: \(storageText)."
-        if storageSummary.unknownCount > 0 {
+    private func confirmationMessage(for draft: SeasonPlanDraft) -> String {
+        let summary = draft.storageSummary
+        let known = DownloadStorageLimitPolicy.byteString(summary.knownBytes)
+        let storage = summary.unknownCount == 0
+            ? known : "\(known) known + \(summary.unknownCount) unknown"
+        var text = "Add \(draft.newPlans.count) new episode row(s) and retry \(draft.retryAttempts.count) included failure(s). "
+            + "Additional storage: \(storage)."
+        if summary.unknownCount > 0 {
             text += " Unknown sizes are not counted as zero; continuing explicitly accepts that uncertainty."
         }
         text += " Transfers may continue in the background, but may stall during sleep or Vision Pro off-head/deep standby and resume when active."
@@ -325,32 +361,48 @@ struct SeasonDownloadPlannerSheet: View {
         loading = false
     }
 
+    private func startPlanResolution() {
+        planningTask?.cancel()
+        planningTask = Task { @MainActor in await resolvePlan() }
+    }
+
     private func resolvePlan() async {
         resolving = true
+        defer {
+            resolving = false
+            planningTask = nil
+        }
         commitError = nil
         resolvedOptions = []
         let planner = DownloadItemPlanner(appModel: appModel, downloadManager: downloadManager)
         let preferred = UserDefaults.standard.string(
             forKey: PlaybackPreferences.Keys.preferredAudioLanguage)
-        var results: [DownloadItemPlanningOptions] = []
         // Deliberately bounded at one: probing may mint/refresh backend state, while actual work is
         // admitted later by the separate lane-aware window.
-        for index in selectedEpisodeIndices where episodes.indices.contains(index) {
-            let child = episodes[index]
+        let results = await SeasonPlanResolutionSequence.map(
+            indices: selectedEpisodeIndices, elements: episodes) { child in
             let item = (try? await planner.refreshedItem(child, backend: backend)) ?? child
-            results.append(await planner.options(
-                for: item, preferredAudioLanguage: preferred, backend: backend))
+            return await planner.options(
+                for: item, preferredAudioLanguage: preferred, backend: backend)
         }
+        guard let results, !Task.isCancelled else { return }
         resolvedOptions = results
         useExistingVersions = false
-        resolving = false
+    }
+
+    private func cancelPlanningAndDismiss() {
+        planningTask?.cancel()
+        planningTask = nil
+        dismiss()
     }
 
     private func commit() {
-        let result = downloadManager.commitSeasonPlan(new: newPlans, retryKeys: retryKeys)
+        guard let pendingDraft else { return }
+        let result = downloadManager.commitSeasonPlan(pendingDraft)
         if let error = result.failureMessage {
             commitError = error
         } else {
+            self.pendingDraft = nil
             dismiss()
         }
     }

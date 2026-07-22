@@ -72,7 +72,13 @@ final class KeychainStore {
         self.synchronizesPlexToken = synchronizesPlexToken
         self.fallbackPolicy = fallbackPolicy
         self.fileManager = fileManager
+        #if DEBUG && os(macOS)
         self.usesDevelopmentFileStorage = usesDevelopmentFileStorage
+        #else
+        // File-backed credentials are a local Mac development affordance only. A Release
+        // binary fails closed on Keychain errors even if a caller accidentally requests it.
+        self.usesDevelopmentFileStorage = false
+        #endif
         self.writeInterceptor = writeInterceptor
         self.deleteInterceptor = deleteInterceptor
     }
@@ -300,7 +306,11 @@ final class KeychainStore {
     private func readFallbackForMigrationOrDevelopment(_ account: String,
                                                        keychainStatus: OSStatus) -> String? {
         let canUseDevelopmentFallback = fallbackPolicy.allowsSecretFileFallback
-        let canAttemptMigration = keychainStatus == errSecItemNotFound
+        // Release must not even discover/import a credential file left behind by a Debug
+        // development build. Legacy fallback migration is a Debug-only bridge; shipping
+        // binaries fail closed when Keychain has no item.
+        let canAttemptMigration = fallbackPolicy.buildConfiguration == .debug
+            && keychainStatus == errSecItemNotFound
         guard canUseDevelopmentFallback || canAttemptMigration else { return nil }
 
         let url = fallbackURL(for: account)

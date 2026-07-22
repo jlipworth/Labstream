@@ -65,20 +65,16 @@ enum PlaybackPreferences {
     static let defaultSystemMediaSuggestionsEnabled = true
 
     static func systemMediaSuggestionsEnabled(defaults: UserDefaults = .standard) -> Bool {
-        guard defaults.object(forKey: Keys.systemMediaSuggestionsEnabled) != nil else {
-            return defaultSystemMediaSuggestionsEnabled
-        }
-        return defaults.bool(forKey: Keys.systemMediaSuggestionsEnabled)
+        TypedPreferenceStore(defaults: defaults).value(for: .bool(
+            Keys.systemMediaSuggestionsEnabled, default: defaultSystemMediaSuggestionsEnabled))
     }
 
     /// Whether a newly-enqueued optimize job should jump ahead of pending conversions (but never
     /// the one currently transcoding). When false, the server's queue order is respected and no
     /// reorder PUT is issued.
     static func prioritizeQuickDownloads(defaults: UserDefaults = .standard) -> Bool {
-        guard defaults.object(forKey: Keys.prioritizeQuickDownloads) != nil else {
-            return defaultPrioritizeQuickDownloads
-        }
-        return defaults.bool(forKey: Keys.prioritizeQuickDownloads)
+        TypedPreferenceStore(defaults: defaults).value(for: .bool(
+            Keys.prioritizeQuickDownloads, default: defaultPrioritizeQuickDownloads))
     }
 
     /// Whether new background/download URLSession tasks may use cellular data.
@@ -86,18 +82,19 @@ enum PlaybackPreferences {
     /// Existing active/resume-data tasks keep the policy archived when they were created;
     /// `BackgroundDownloadSession` stamps this setting onto each fresh URLRequest task.
     static func allowsCellularDownloads(defaults: UserDefaults = .standard) -> Bool {
-        guard defaults.object(forKey: Keys.allowCellularDownloads) != nil else {
-            return defaultAllowCellularDownloads
-        }
-        return defaults.bool(forKey: Keys.allowCellularDownloads)
+        TypedPreferenceStore(defaults: defaults).value(for: .bool(
+            Keys.allowCellularDownloads, default: defaultAllowCellularDownloads))
     }
 
     static func qualityKbps(forDefaultsKey key: String, defaults: UserDefaults = .standard) -> Int {
-        if defaults.object(forKey: key) != nil { return defaults.integer(forKey: key) }
+        let store = TypedPreferenceStore(defaults: defaults)
+        let fallback = key == Keys.homeQualityKbps ? defaultHomeQualityKbps : defaultRemoteQualityKbps
+        let typedKey = PreferenceKey<Int>.integer(key, default: fallback)
+        if store.contains(typedKey) { return store.value(for: typedKey) }
         if key == Keys.remoteQualityKbps, defaults.object(forKey: Keys.legacyQualityKbps) != nil {
             return defaults.integer(forKey: Keys.legacyQualityKbps)
         }
-        return key == Keys.homeQualityKbps ? defaultHomeQualityKbps : defaultRemoteQualityKbps
+        return fallback
     }
 
     static func setQualityKbps(_ kbps: Int, forDefaultsKey key: String, defaults: UserDefaults = .standard) {
@@ -118,33 +115,25 @@ enum PlaybackPreferences {
     }
 
     static func adaptiveBitrateEnabled(defaults: UserDefaults = .standard) -> Bool {
-        guard defaults.object(forKey: Keys.adaptiveBitrateEnabled) != nil else {
-            return defaultAdaptiveBitrateEnabled
-        }
-        return defaults.bool(forKey: Keys.adaptiveBitrateEnabled)
+        TypedPreferenceStore(defaults: defaults).value(for: .bool(
+            Keys.adaptiveBitrateEnabled, default: defaultAdaptiveBitrateEnabled))
     }
 
     /// Download storage cap in bytes; `DownloadStorageLimit.unlimited` (0) when unset.
     static func downloadStorageLimitBytes(defaults: UserDefaults = .standard) -> Int {
-        guard defaults.object(forKey: Keys.downloadStorageLimitBytes) != nil else {
-            return defaultStorageLimitBytes
-        }
-        return defaults.integer(forKey: Keys.downloadStorageLimitBytes)
+        TypedPreferenceStore(defaults: defaults).value(for: .integer(
+            Keys.downloadStorageLimitBytes, default: defaultStorageLimitBytes))
     }
 
     /// Countdown (seconds) shown on the Up Next card before it autoplays the next item.
     static func upNextCountdownSeconds(defaults: UserDefaults = .standard) -> Int {
-        guard defaults.object(forKey: Keys.upNextCountdownSeconds) != nil else {
-            return defaultUpNextCountdownSeconds
-        }
-        return defaults.integer(forKey: Keys.upNextCountdownSeconds)
+        TypedPreferenceStore(defaults: defaults).value(for: .integer(
+            Keys.upNextCountdownSeconds, default: defaultUpNextCountdownSeconds))
     }
 
     static func autoPlayUpNext(defaults: UserDefaults = .standard) -> Bool {
-        guard defaults.object(forKey: Keys.autoPlayUpNext) != nil else {
-            return defaultAutoPlayUpNext
-        }
-        return defaults.bool(forKey: Keys.autoPlayUpNext)
+        TypedPreferenceStore(defaults: defaults).value(for: .bool(
+            Keys.autoPlayUpNext, default: defaultAutoPlayUpNext))
     }
 
     /// Skip behavior for an intro or credits marker. `intro == true` reads the intro key,

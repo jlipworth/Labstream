@@ -105,9 +105,11 @@ the coordinator inherited from the visionOS scene environment.
 
 `AppModel` keeps separate Plex, Jellyfin, and Emby session state. Switching the active
 backend does not overwrite another backend's credentials. At launch,
-`AuthManager.restoreSession()` runs under one generation-scoped authorization attempt,
-restores the selected user-facing lane, and then hydrates saved inactive lanes so an
-offline job can continue against its own backend while a different backend is active.
+`AuthManager.restoreSession()` runs under one global generation-scoped authorization authority and
+restores only the selected user-facing lane. After that completes, launch derives the distinct
+inactive backends that own durable active download rows and demand-hydrates only those lanes before
+download reconcile. Paused, failed, and completed rows stay cold until their explicit action edge;
+tvOS has neither downloads nor inactive-download hydration.
 Login, Quick Connect/Connect, restore, and server selection cannot publish stale results
 from an older authorization attempt. System-entry fallback restore uses
 `restoreSessionIfNoAuthorizationInProgress()` rather than taking authority from a login the
@@ -299,7 +301,9 @@ privacy and authenticated local-resolution boundary is canonical in
 Structured app diagnostics are local, bounded, redacted, and opt-in. MetricKit is a
 separate passive crash/hang channel: it keeps at most five redacted summaries, uploads
 nothing, and includes them only in a user-generated feedback report. Debug performance
-signposts compile to no-op implementations in Release.
+signposts compile to no-op implementations in Release. `RuntimeLifecycleCoordinator` consumes the
+existing aggregate-scene 500 ms handoff grace and emits typed active/inactive recovery reasons;
+best-effort diagnostic flushing happens only on genuine aggregate inactivity.
 
 ## Documentation rule
 

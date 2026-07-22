@@ -65,10 +65,19 @@ struct AppRuntime {
         authManager.onBackendWillSignOut = { [weak downloadManager] backend in
             downloadManager?.pauseDownloadsForBackendSignOut(backend)
         }
-        let sceneActivity = AppSceneActivity { [weak downloadManager] isActive in
-            guard let downloadManager else { return }
-            AppStartup.recordAggregateSceneActivity(isActive,
-                                                    downloadManager: downloadManager)
+        let lifecycleCoordinator = RuntimeLifecycleCoordinator(
+            requestDownloadRecovery: { [weak downloadManager] reason in
+                guard PlatformFeaturePolicy.supportsDownloads else { return }
+                downloadManager?.noteAppSceneRecovery(reason)
+            },
+            flushBestEffortState: {
+                AppDiagnostics.flush(durability: .bestEffort)
+            }
+        )
+        // The activity reporter retains the coordinator through this closure for the runtime's
+        // lifetime. The coordinator does not retain the reporter, so no cycle is formed.
+        let sceneActivity = AppSceneActivity { isActive in
+            lifecycleCoordinator.aggregateSceneActivityChanged(isActive: isActive)
         }
         return AppRuntime(
             appModel: model,
@@ -120,10 +129,21 @@ private enum AppKeychainService {
             let isCanonicalService = service == "com.visionplay.app"
             return KeychainStore(service: service,
                                  synchronizesPlexToken: isCanonicalService,
-                                 usesDevelopmentFileStorage: !isCanonicalService)
+                                 usesDevelopmentFileStorage: DevelopmentCredentialStoragePolicy
+                                    .allowsFileStorage(isCanonicalService: isCanonicalService))
         }
         #endif
         return KeychainStore()
+    }
+}
+
+enum DevelopmentCredentialStoragePolicy {
+    static func allowsFileStorage(isCanonicalService: Bool) -> Bool {
+        #if DEBUG && os(macOS)
+        !isCanonicalService
+        #else
+        false
+        #endif
     }
 }
 
@@ -151,16 +171,4 @@ enum AppStartup {
         ])
     }
 
-    #if !os(tvOS)
-    static func recordAggregateSceneActivity(_ isActive: Bool,
-                                             downloadManager: DownloadManager) {
-        let label = isActive ? "active" : "inactive"
-        AppDiagnostics.record(.downloads, "app.scene_phase", fields: [
-            "phase": .label(label),
-        ])
-        if PlatformFeaturePolicy.supportsDownloads {
-            downloadManager.noteAppScenePhase(label)
-        }
-    }
-    #endif
 }

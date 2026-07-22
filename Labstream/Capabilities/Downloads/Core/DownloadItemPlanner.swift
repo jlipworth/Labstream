@@ -26,6 +26,15 @@ struct DownloadItemPlanningOptions {
 struct DownloadItemPlanner {
     let appModel: AppModel
     let downloadManager: DownloadManager
+    let requestExecutor: DownloadPlanningRequestExecutor
+
+    init(appModel: AppModel,
+         downloadManager: DownloadManager,
+         requestExecutor: DownloadPlanningRequestExecutor = .authenticatedEphemeral) {
+        self.appModel = appModel
+        self.downloadManager = downloadManager
+        self.requestExecutor = requestExecutor
+    }
 
     func refreshedItem(_ item: MediaItem, backend: DownloadBackendKind) async throws -> MediaItem {
         switch backend {
@@ -124,7 +133,7 @@ struct DownloadItemPlanner {
                         itemId: item.ratingKey, userId: userID,
                         mediaSourceId: selection.mediaSourceID, maxStaticBitrate: 200_000_000,
                         audioStreamIndex: audioStreamIndex)
-                    let (data, response) = try await URLSession.shared.data(for: request)
+                    let (data, response) = try await requestExecutor.data(for: request)
                     try Self.requireSuccess(response)
                     let info = try JellyfinPlaybackInfoResponse.decode(from: data)
                     let decision = try JellyfinPlayback.downloadDecision(
@@ -179,7 +188,7 @@ struct DownloadItemPlanner {
                 server: session.baseURL, token: session.token, identity: identity,
                 userId: userID, itemId: item.ratingKey, mediaSourceId: selection.mediaSourceID,
                 maxStaticBitrate: 200_000_000, audioStreamIndex: audioStreamIndex)
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await requestExecutor.data(for: request)
             try Self.requireSuccess(response)
             let decision = try EmbyPlayback.downloadDecision(
                 response: EmbyPlaybackInfoResponse.decode(from: data))
@@ -202,7 +211,7 @@ struct DownloadItemPlanner {
                     server: session.baseURL, token: session.token, identity: identity,
                     userId: userID, itemId: item.ratingKey, mediaSourceId: selection.mediaSourceID,
                     maxStaticBitrate: 200_000_000, audioStreamIndex: audioStreamIndex)
-                let (data, response) = try await URLSession.shared.data(for: request)
+                let (data, response) = try await requestExecutor.data(for: request)
                 try Self.requireSuccess(response)
                 let decision = try EmbyPlayback.downloadDecision(
                     response: EmbyPlaybackInfoResponse.decode(from: data),
@@ -235,7 +244,7 @@ struct DownloadItemPlanner {
                 server: session.baseURL, token: session.token, identity: identity,
                 userId: userID, itemId: item.ratingKey, mediaSourceId: nil,
                 maxStaticBitrate: 200_000_000)
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await requestExecutor.data(for: request)
             try Self.requireSuccess(response)
             let info = try EmbyPlaybackInfoResponse.decode(from: data)
             let primary = selectedMediaSourceID
@@ -249,7 +258,7 @@ struct DownloadItemPlanner {
         let refresh = try EmbyConvertRequest.itemRefreshRequest(
             server: session.baseURL, token: session.token, identity: identity,
             userId: userID, itemId: item.ratingKey)
-        let (_, response) = try await URLSession.shared.data(for: refresh)
+        let (_, response) = try await requestExecutor.data(for: refresh)
         try Self.requireSuccess(response)
         for attempt in 0..<2 {
             let versions = try await fetch()

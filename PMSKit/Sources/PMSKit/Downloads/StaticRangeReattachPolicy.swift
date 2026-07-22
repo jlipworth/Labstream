@@ -4,7 +4,7 @@
 /// adoptable. Legacy closed ranges are deliberately dropped in #231 so late delegate callbacks
 /// cannot append stale closed-range temps.
 public enum StaticRangeReattachDisposition: Sendable, Equatable {
-    case dropLegacyRange(requestedOffset: Int?, durableBytes: Int, rangeRequestShape: StaticRangeRequestShape)
+    case rejectUnownedRange(requestedOffset: Int?, durableBytes: Int, rangeRequestShape: StaticRangeRequestShape)
     case rejectOffsetMismatch(requestedOffset: Int, durableBytes: Int)
     /// The task carries a download-attempt token that does not match the row's current attempt:
     /// it belongs to a prior attempt/life of the same ratingKey (cancelled, failed, or replaced
@@ -31,7 +31,7 @@ public enum StaticRangeReattachPolicy {
     ///     `StaticRangeSegmentMarker.parse`) to an offset matching `requestedOffset` on a
     ///     `.closed` shape AND carries a v2 attempt token equal to `rowAttemptID`, the task is one
     ///     WE pre-queued for the CURRENT attempt and flows through the normal
-    ///     adopt/suppress/replace machinery instead of `.dropLegacyRange`. A v1 marker (no token)
+    ///     adopt/suppress/replace machinery instead of `.rejectUnownedRange`. A v1 marker (no token)
     ///     is legacy and dropped; any token that mismatches the row's attempt — on any request
     ///     shape — is `.rejectAttemptMismatch` (a prior attempt/life of the same key).
     ///   - rowAttemptID: the row's current persisted download-attempt token. `nil` (legacy row)
@@ -54,8 +54,7 @@ public enum StaticRangeReattachPolicy {
             bodyBytesWritten: bodyBytesWritten,
             existingTasks: existingTasks,
             taskMarker: taskMarker,
-            rowAttemptID: rowAttemptID.flatMap(DownloadAttemptID.init(rawValue:)),
-            requiresCurrentMarker: false
+            rowAttemptID: rowAttemptID.flatMap(DownloadAttemptID.init(rawValue:))
         )
     }
 
@@ -69,8 +68,7 @@ public enum StaticRangeReattachPolicy {
                                  bodyBytesWritten: Int,
                                  existingTasks: [StaticRangeTaskSnapshot],
                                  taskMarker: String? = nil,
-                                 rowAttemptID: DownloadAttemptID?,
-                                 requiresCurrentMarker: Bool = true) -> StaticRangeReattachPlan {
+                                 rowAttemptID: DownloadAttemptID?) -> StaticRangeReattachPlan {
         let markedOffset = StaticRangeSegmentMarker.parse(taskMarker)
         let taskAttemptID = BackgroundDownloadTaskIdentity.attemptIdentity(taskDescription: taskMarker)
         if let taskAttemptID, taskAttemptID != rowAttemptID {
@@ -80,14 +78,12 @@ public enum StaticRangeReattachPolicy {
                                                     rowAttemptID: rowAttemptID)
             )
         }
-        // A schema-v3 row never adopts a pre-migration task merely because its legacy nested token
-        // happens to equal the promoted top-level ID. Old formats are parseable only so reattach can
-        // identify and cancel them deterministically during the one-time upgrade.
-        guard !requiresCurrentMarker
-                || BackgroundDownloadTaskIdentity.markerVersion(taskDescription: taskMarker).isCurrent else {
+        // No compatibility entry point may adopt bare or old-format identity.
+        guard BackgroundDownloadTaskIdentity.markerVersion(
+            taskDescription: taskMarker).isCurrent else {
             return StaticRangeReattachPlan(
                 candidateBaseOffset: requestedOffset ?? durableBytes,
-                disposition: .dropLegacyRange(
+                disposition: .rejectUnownedRange(
                     requestedOffset: requestedOffset,
                     durableBytes: durableBytes,
                     rangeRequestShape: rangeRequestShape
@@ -103,7 +99,7 @@ public enum StaticRangeReattachPolicy {
         guard rangeRequestShape == .openEnded || isAdoptableMarkedSegment else {
             return StaticRangeReattachPlan(
                 candidateBaseOffset: requestedOffset ?? durableBytes,
-                disposition: .dropLegacyRange(
+                disposition: .rejectUnownedRange(
                     requestedOffset: requestedOffset,
                     durableBytes: durableBytes,
                     rangeRequestShape: rangeRequestShape

@@ -5,6 +5,112 @@ import Testing
 
 @MainActor
 struct AuthSecureStorageTests {
+    @Test func launchRestoreCompletesSelectedBackendWithoutHydratingInactiveCredentials() async throws {
+        let store = KeychainStore(
+            service: "com.visionplay.tests.selected-first.\(UUID().uuidString)",
+            synchronizesPlexToken: false,
+            usesDevelopmentFileStorage: true)
+        #expect(store.saveSelectedBackend(.plex))
+        #expect(store.saveToken("plex-account"))
+        #expect(store.saveJellyfinSession(serverURLString: "https://jellyfin.invalid",
+                                          accessToken: "jf-token", userID: "jf-user",
+                                          serverID: "jf-server"))
+        let server = PlexDevice(name: "Plex", clientIdentifier: "plex-server",
+                                provides: "server", connections: [])
+        let discovery = PlexSessionDiscovery(
+            servers: [server], selectedServer: server, serverToken: "plex-server-token",
+            baseURL: URL(string: "https://plex.invalid")!, isLocal: false,
+            accountProfile: nil)
+        let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "selected-first"))
+        let manager = AuthManager(appModel: model, keychain: store,
+                                  plexSessionDiscoverer: { _ in discovery })
+
+        #expect(await manager.restoreSession())
+        #expect(model.backendSession(for: .plex) != nil)
+        #expect(model.backendSession(for: .jellyfin) == nil)
+
+        #if os(tvOS)
+        #expect(await manager.hydrateSavedSessionForDownloads(backend: .jellyfin) == false)
+        #expect(model.backendSession(for: .jellyfin) == nil)
+        #else
+        #expect(await manager.hydrateSavedSessionForDownloads(backend: .jellyfin))
+        #expect(model.backendSession(for: .jellyfin) != nil)
+        #expect(model.activeBackend == .plex)
+        #expect(manager.state == .authenticated)
+        #endif
+        cleanupBackendKeys(store)
+    }
+
+    @Test func inactiveHydrationPolicyRequiresDownloadCapabilityAndDifferentBackend() {
+        #expect(AuthBackendHydrationPolicy.shouldHydrateInactiveBackend(
+            .jellyfin, selected: .plex, downloadsAvailable: true))
+        #expect(!AuthBackendHydrationPolicy.shouldHydrateInactiveBackend(
+            .plex, selected: .plex, downloadsAvailable: true))
+        #expect(!AuthBackendHydrationPolicy.shouldHydrateInactiveBackend(
+            .jellyfin, selected: .plex, downloadsAvailable: false))
+    }
+
+    @Test func inactivePlexHydrationRequiresAUsableDiscoveredSession() async {
+        #if !os(tvOS)
+        let store = KeychainStore(
+            service: "com.visionplay.tests.plex-hydration-failure.\(UUID().uuidString)",
+            synchronizesPlexToken: false,
+            usesDevelopmentFileStorage: true)
+        #expect(store.saveSelectedBackend(.jellyfin))
+        #expect(store.saveToken("plex-account"))
+        let model = AppModel(
+            identity: PlatformClientIdentity.make(clientIdentifier: "plex-hydration-failure"),
+            activeBackend: .jellyfin)
+        let manager = AuthManager(appModel: model, keychain: store,
+                                  plexSessionDiscoverer: { _ in throw PlexError.serverUnreachable })
+
+        #expect(await manager.hydrateSavedSessionForDownloads(backend: .plex) == false)
+        #expect(model.backendSession(for: .plex) == nil)
+        cleanupBackendKeys(store)
+        #endif
+    }
+
+    @Test func globalAttemptAuthorityRejectsStaleFinishAcrossBackendOwners() {
+        var authority = AuthAttemptAuthority()
+        let plex = authority.begin(.plexPIN)
+        let emby = authority.begin(.embyCredentials)
+
+        authority.finish(plex)
+
+        #expect(!authority.isCurrent(plex, taskIsCancelled: false))
+        #expect(authority.isCurrent(emby, taskIsCancelled: false))
+        #expect(!authority.isCurrent(emby, taskIsCancelled: true))
+        authority.finish(emby)
+        #expect(authority.isIdle)
+    }
+
+    @Test func developmentCredentialFilesAreDebugMacOnly() {
+        #if DEBUG && os(macOS)
+        #expect(DevelopmentCredentialStoragePolicy.allowsFileStorage(isCanonicalService: false))
+        #else
+        #expect(!DevelopmentCredentialStoragePolicy.allowsFileStorage(isCanonicalService: false))
+        #endif
+        #expect(!DevelopmentCredentialStoragePolicy.allowsFileStorage(isCanonicalService: true))
+    }
+
+    @Test func releasePolicyDoesNotImportDebugDevelopmentCredentialFile() {
+        #if DEBUG && os(macOS)
+        let service = "com.visionplay.tests.release-file-closed.\(UUID().uuidString)"
+        let debugStore = KeychainStore(service: service,
+                                       synchronizesPlexToken: false,
+                                       usesDevelopmentFileStorage: true)
+        #expect(debugStore.saveToken("debug-only-token"))
+
+        let releaseStore = KeychainStore(
+            service: service,
+            synchronizesPlexToken: false,
+            fallbackPolicy: SecretFileFallbackPolicy(buildConfiguration: .release,
+                                                     runtimeEnvironment: .device))
+        #expect(releaseStore.token == nil)
+        #expect(debugStore.delete(KeychainStore.tokenKey))
+        #endif
+    }
+
     @Test func signOutNotifiesDownloadHandoffBeforeClearingRuntimeSession() throws {
         let store = KeychainStore(
             service: "com.visionplay.tests.signout-handoff.\(UUID().uuidString)",
@@ -259,6 +365,39 @@ struct AuthSecureStorageTests {
         #expect(await manager.restoreSession())
         #expect(model.isBrowseReady)
         #expect(manager.state == .authenticated)
+        cleanupBackendKeys(store)
+    }
+
+    @Test func plexConnectionBecomesUsableBeforeOptionalProfileMetadataReturns() async throws {
+        let service = "com.visionplay.tests.plex-milestones.\(UUID().uuidString)"
+        let store = KeychainStore(service: service, synchronizesPlexToken: false,
+                                  usesDevelopmentFileStorage: true)
+        #expect(store.saveToken("saved-token"))
+        #expect(store.saveSelectedBackend(.plex))
+        let server = PlexDevice(name: "Server", clientIdentifier: "server-id",
+                                provides: "server", connections: [])
+        let discovery = PlexSessionDiscovery(
+            servers: [server], selectedServer: server, serverToken: "server-token",
+            baseURL: URL(string: "https://server.invalid")!, isLocal: false,
+            accountProfile: nil)
+        let profileGate = PlexProfileGate()
+        let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "plex-milestones"))
+        let manager = AuthManager(appModel: model, keychain: store,
+                                  plexSessionDiscoverer: { _ in discovery },
+                                  plexProfileLoader: { _ in await profileGate.hold() })
+
+        #expect(await manager.restoreSession())
+        #expect(model.isBrowseReady)
+        #expect(manager.state == .authenticated)
+        #expect(model.plexAccountProfile == nil)
+
+        await profileGate.waitUntilHeld()
+        await profileGate.release()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while model.plexAccountProfile == nil, ContinuousClock.now < deadline {
+            await Task.yield()
+        }
+        #expect(model.plexAccountProfile?.username == "stale")
         cleanupBackendKeys(store)
     }
 
