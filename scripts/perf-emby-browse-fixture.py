@@ -13,6 +13,7 @@ import base64
 import hashlib
 import ipaddress
 import json
+import os
 import signal
 import socket
 import threading
@@ -595,12 +596,16 @@ def parser() -> argparse.ArgumentParser:
     result = SafeArgumentParser(description=__doc__)
     result.add_argument("--bind", default=BIND)
     result.add_argument("--port", type=int, default=0)
+    result.add_argument("--parent-pid", type=int)
     result.add_argument("--ready-file", type=Path)
     return result
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
+    if (args.parent_pid is not None
+            and (args.parent_pid <= 1 or os.getppid() != args.parent_pid)):
+        parser().error("invalid parent process")
     try:
         server = FixtureServer(args.bind, args.port)
     except FixtureConfigurationError as error:
@@ -625,7 +630,8 @@ def main(argv: list[str] | None = None) -> int:
     thread.start()
     try:
         while not stopping.wait(0.2):
-            pass
+            if args.parent_pid is not None and os.getppid() != args.parent_pid:
+                break
     finally:
         server.shutdown()
         server.server_close()
