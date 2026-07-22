@@ -67,6 +67,11 @@ SCENARIO_PHASES = {
     "catalog": "library_grid.complete",
     "search": "search.load",
 }
+ALLOWED_TRANSIENT_RESULTS = {
+    "home.load": {"cancelled"},
+    "library_grid.complete": {"cancelled", "superseded"},
+    "search.load": {"cancelled", "superseded"},
+}
 
 
 class Executor(base.Executor):
@@ -74,9 +79,139 @@ class Executor(base.Executor):
         return subprocess.run(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                               env={}).returncode
 
+    def poll(self, process: Any) -> int | None:
+        if not isinstance(process, DetachedAppProcess):
+            return super().poll(process)
+        if process.returncode is not None:
+            return process.returncode
+        if process.pid in exact_executable_pids(process.executable, self):
+            return None
+        process.returncode = 0
+        return process.returncode
+
+    def wait(self, process: Any, timeout: int) -> int:
+        if not isinstance(process, DetachedAppProcess):
+            return super().wait(process, timeout)
+        for _ in range(max(1, timeout * 10)):
+            status = self.poll(process)
+            if status is not None:
+                return status
+            self.sleep(0.1)
+        raise subprocess.TimeoutExpired(str(process.executable), timeout)
+
+
+class DetachedAppProcess:
+    """An exact LaunchServices child represented without a parent Popen handle."""
+
+    def __init__(self, pid: int, executable: pathlib.Path):
+        self.pid = pid
+        self.executable = executable
+        self.returncode: int | None = None
+
 
 def fail(message: str) -> None:
     raise RunnerError(message)
+
+
+def process_rows(executor: Any) -> list[tuple[int, str]]:
+    """Return unambiguous PID/comm rows from one bounded process-table snapshot."""
+    rows: list[tuple[int, str]] = []
+    for line in executor.output(["/bin/ps", "-axo", "pid=,comm="]).splitlines():
+        fields = line.strip().split(maxsplit=1)
+        if len(fields) != 2:
+            continue
+        try:
+            pid = int(fields[0])
+        except ValueError:
+            continue
+        rows.append((pid, fields[1]))
+    return rows
+
+
+def exact_executable_pids(executable: pathlib.Path, executor: Any) -> set[int]:
+    expected = str(executable)
+    return {pid for pid, command in process_rows(executor) if command == expected}
+
+
+def stop_app_and_prove_gone(process: Any, executor: Any) -> str | None:
+    """Stop a child or detached exact-path app without ever signaling a reused PID."""
+    if not isinstance(process, DetachedAppProcess):
+        return base.stop_and_prove_gone(process, executor)
+
+    pid = int(process.pid)
+
+    def still_exact() -> bool:
+        return pid in exact_executable_pids(process.executable, executor)
+
+    if not still_exact():
+        process.returncode = 0
+        return None
+    try:
+        # Revalidate immediately before each signal. A disappeared or reused PID is already proof
+        # that the exact measured process is gone and must never be signaled.
+        if not still_exact():
+            process.returncode = 0
+            return None
+        executor.terminate(pid)
+        try:
+            executor.wait(process, 5)
+        except subprocess.TimeoutExpired:
+            if not still_exact():
+                process.returncode = 0
+                return None
+            executor.kill(pid)
+            try:
+                executor.wait(process, 5)
+            except subprocess.TimeoutExpired:
+                return f"PID {pid} exceeded both TERM and KILL cleanup deadlines"
+        if executor.poll(process) is None:
+            return f"PID {pid} remained alive after SIGTERM/SIGKILL cleanup"
+    except (OSError, ProcessLookupError):
+        if still_exact():
+            return f"could not prove exact app PID {pid} terminated"
+        process.returncode = 0
+    return None
+
+
+def launch_app(app: Any, executor: Any) -> DetachedAppProcess:
+    """Launch an exact staged bundle through LaunchServices and bind its sole new PID."""
+    # Repeat the collision check at every sample boundary. This both protects PID discovery and
+    # refuses to silently attach to an app left behind by a previous capture.
+    base.preflight_no_existing_app((app, app), executor)
+    before = exact_executable_pids(app.executable, executor)
+    if before:
+        fail(f"refusing LaunchServices launch with existing exact app PIDs: {sorted(before)}")
+    executor.run(["/usr/bin/open", "-n", "-a", str(app.path)])
+    for _ in range(100):
+        new_pids = exact_executable_pids(app.executable, executor) - before
+        if len(new_pids) == 1:
+            return DetachedAppProcess(new_pids.pop(), app.executable)
+        if len(new_pids) > 1:
+            cleanup_errors = []
+            for pid in sorted(new_pids):
+                error = stop_app_and_prove_gone(
+                    DetachedAppProcess(pid, app.executable), executor)
+                if error:
+                    cleanup_errors.append(error)
+            suffix = f"; cleanup: {'; '.join(cleanup_errors)}" if cleanup_errors else ""
+            fail(f"LaunchServices created ambiguous exact app PIDs: {sorted(new_pids)}{suffix}")
+        executor.sleep(0.05)
+    # LaunchServices may publish the child just beyond the primary discovery deadline. Observe a
+    # bounded grace window and clean every exact-path late arrival before failing the capture.
+    late_pids: set[int] = set()
+    for _ in range(20):
+        late_pids.update(exact_executable_pids(app.executable, executor) - before)
+        executor.sleep(0.05)
+    # Cover the final sleep boundary too: a child published during that last interval must not
+    # outlive a failed capture merely because no subsequent loop iteration observes it.
+    late_pids.update(exact_executable_pids(app.executable, executor) - before)
+    cleanup_errors = []
+    for pid in sorted(late_pids):
+        error = stop_app_and_prove_gone(DetachedAppProcess(pid, app.executable), executor)
+        if error:
+            cleanup_errors.append(error)
+    suffix = f"; cleanup: {'; '.join(cleanup_errors)}" if cleanup_errors else ""
+    fail(f"LaunchServices exact app PID discovery deadline exceeded{suffix}")
 
 
 def keychain_service(app: Any) -> str:
@@ -269,7 +404,7 @@ def wait_for_terminal_span(pid: int, start: str, scenario: str, executor: Any) -
             if span is not None and span.phase == phase and span.backend == "Emby":
                 if span.result == "success":
                     successes.append(span)
-                elif span.result != "cancelled":
+                elif span.result not in ALLOWED_TRANSIENT_RESULTS[phase]:
                     fail(f"non-success terminal {phase} span observed for exact app PID")
         if len(successes) > 1:
             fail(f"multiple successful {phase} spans observed for exact app PID")
@@ -299,7 +434,7 @@ def write_success_selector_artifact(source: pathlib.Path, destination: pathlib.P
             if span.result == "success":
                 success_count += 1
                 selected.append(line)
-            elif span.result != "cancelled":
+            elif span.result not in ALLOWED_TRANSIENT_RESULTS[phase]:
                 fail("full capture contains a non-success target span")
     if binding_count != 1 or success_count != 1:
         fail("success selector requires one capture binding and one successful target span")
@@ -335,7 +470,8 @@ def plan_for(apps: tuple[Any, Any], service: str, scenario: str, warmups: int, m
                 "sha256": hashlib.sha256(preference_seed(service)).hexdigest(),
             },
             "fixture_reset": "POST /__fixture__/reset",
-            "launch": [str(app.executable)], "app_arguments": [], "app_environment": {},
+            "launch": ["/usr/bin/open", "-n", "-a", str(app.path)],
+            "app_arguments": [], "app_environment": {},
             "driver": ["{precompiled_private_ax_driver}", "--pid", "{exact_pid}",
                        "--workload-spec", "{private_0600_spec}", "--output", "{driver_output}"],
             "fixture_ledger": "GET /__fixture__/ledger",
@@ -573,7 +709,7 @@ def capture(plan: dict[str, Any], apps: tuple[Any, Any], executor: Any) -> dict[
                                   "--manifest", str(manifest_path), "--workload-id",
                                   plan["identities"]["workload_id"], "--launch-nonce", nonce],
                                  stdout=output)
-                app_process = executor.spawn([str(app.executable)])
+                app_process = launch_app(app, executor)
                 pid = int(app_process.pid)
                 record["pid"] = pid
                 if executor.poll(app_process) is not None:
@@ -592,7 +728,7 @@ def capture(plan: dict[str, Any], apps: tuple[Any, Any], executor: Any) -> dict[
                     executor.run(["/usr/bin/log", "show", "--info", "--style", "ndjson",
                                   "--start", base.log_time_bound(start), "--end",
                                   base.log_time_bound(end, end=True), "--process", str(pid)], stdout=log)
-                cleanup = base.stop_and_prove_gone(app_process, executor)
+                cleanup = stop_app_and_prove_gone(app_process, executor)
                 if cleanup:
                     fail(cleanup)
                 app_process = None
@@ -640,7 +776,7 @@ def capture(plan: dict[str, Any], apps: tuple[Any, Any], executor: Any) -> dict[
                 except FileNotFoundError:
                     pass
                 if app_process is not None:
-                    cleanup = base.stop_and_prove_gone(app_process, executor)
+                    cleanup = stop_app_and_prove_gone(app_process, executor)
                     if cleanup:
                         add_record_error(record, cleanup)
                 if not post_reset_done:

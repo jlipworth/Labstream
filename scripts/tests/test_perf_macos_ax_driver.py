@@ -114,9 +114,22 @@ class PerfMacOSAXDriverTests(unittest.TestCase):
         self.assertIn("postToPid(pid)", source)
         self.assertIn("activate(options: [.activateAllWindows])", source)
         self.assertIn("registrationDeadline", source)
+        self.assertIn("activationDeadline", source)
         self.assertIn("error == .cannotComplete || error == .invalidUIElement", source)
         self.assertIn("attribute: .description, values: [\"Emby\"]", source)
         self.assertIn("encodeNil(forKey: .errorCode)", source)
+
+    def test_catalog_selector_matches_live_static_text_identifier_and_value_shape(self):
+        source = SCRIPT.read_text()
+        catalog = source[source.index("private func openCatalog()"):
+                         source.index("private func openSearch()")]
+        self.assertIn("kAXStaticTextRole", catalog)
+        self.assertIn('.identifier: ["performance.mac.sidebar.library"]', catalog)
+        self.assertIn('.value: ["Fixture Movies"]', catalog)
+        self.assertIn('strings:', catalog)
+        self.assertNotIn('.description:', catalog)
+        self.assertIn('copy(.parent, from: candidate)', catalog)
+        self.assertIn('Attribute.selected.rawValue', catalog)
 
 
 if __name__ == "__main__":
