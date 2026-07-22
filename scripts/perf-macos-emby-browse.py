@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import pathlib
 import plistlib
 import re
 import subprocess
 import sys
+import tempfile
 import urllib.request
 from typing import Any
 from urllib.parse import urlsplit
@@ -23,6 +26,7 @@ DRIVER = ROOT / "scripts" / "perf-macos-ax-driver.swift"
 SUMMARY = ROOT / "scripts" / "perf-log-summary.py"
 CONTRACT = ROOT / "scripts" / "performance-audit-contract.py"
 EVIDENCE_SCHEMA_PATH = ROOT / "scripts" / "perf_evidence_schema.py"
+COMPARE_PATH = ROOT / "scripts" / "perf-compare.py"
 SCENARIOS = ("home", "catalog", "search", "artwork")
 AUTH_ACCOUNTS = (
     "token", "clientIdentifier", "selectedBackend", "selectedPlexServerID",
@@ -62,6 +66,19 @@ def _load_evidence_schema() -> Any:
 
 
 evidence_schema = _load_evidence_schema()
+
+
+def _load_compare() -> Any:
+    spec = importlib.util.spec_from_file_location("perf_compare_for_browse", COMPARE_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("could not load performance comparator")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+compare = _load_compare()
 SCENARIO_PHASES = {
     "home": "home.load",
     "catalog": "library_grid.complete",
@@ -452,7 +469,8 @@ def write_success_selector_artifact(source: pathlib.Path, destination: pathlib.P
 
 def plan_for(apps: tuple[Any, Any], service: str, scenario: str, warmups: int, measured: int,
              seed: int, output: pathlib.Path, control_commit: str, candidate_commit: str,
-             device_label: str, retention_deadline: str) -> dict[str, Any]:
+             device_label: str, retention_deadline: str,
+             cooldown_seconds: float = 0) -> dict[str, Any]:
     foundation = base.command_plan(
         apps, "launch", warmups, measured, 1, seed, output,
         control_commit=control_commit, candidate_commit=candidate_commit,
@@ -490,6 +508,7 @@ def plan_for(apps: tuple[Any, Any], service: str, scenario: str, warmups: int, m
                    "preflight_compile": ["/usr/bin/xcrun", "swiftc", str(DRIVER),
                                          "-o", "{precompiled_private_ax_driver}"]},
         "warmups": warmups, "measured": measured, "seed": seed,
+        "cooldown_seconds": cooldown_seconds,
         "commits": foundation["commits"], "device_label": device_label,
         "identities": {
             "comparison_id": base.opaque("comparison", seed, control_commit, candidate_commit),
@@ -503,6 +522,39 @@ def plan_for(apps: tuple[Any, Any], service: str, scenario: str, warmups: int, m
         "container": foundation["container"],
         "configuration_contract_commands": foundation["configuration_contract_commands"],
         "samples": samples,
+    }
+
+
+def calibration_plan_for(plan: dict[str, Any], output: pathlib.Path,
+                         max_storage_drift_bytes: int = 0) -> dict[str, Any]:
+    """Build the fixed short-policy control-only collection that precedes paired capture."""
+    calibration = copy.deepcopy(plan)
+    calibration["mode"] = "calibration_capture"
+    calibration["artifact_status"] = "planned_control_only_calibration_manifests"
+    calibration["warmups"] = 3
+    calibration["measured"] = 20
+    calibration["max_free_storage_drift_bytes"] = max_storage_drift_bytes
+    calibration["output"] = str(output.absolute())
+    calibration["samples"] = [
+        sample for sample in base.schedule(plan["scenario"], 3, 20, plan["seed"])
+        if sample["role"] == "control"
+    ]
+    control_commands = next(sample["commands"] for sample in plan["samples"]
+                            if sample["role"] == "control")
+    for sample in calibration["samples"]:
+        sample["commands"] = copy.deepcopy(control_commands)
+    calibration["identities"]["comparison_id"] = base.opaque(
+        "comparison", "calibration", plan["identities"]["comparison_id"])
+    return calibration
+
+
+def freeze_selector(plan: dict[str, Any]) -> dict[str, Any]:
+    phase = SCENARIO_PHASES[plan["scenario"]]
+    return {
+        "id": plan["identities"]["workload_id"], "phase": phase, "backend": "Emby",
+        "fields": {},
+        "correctness_fields": list(evidence_schema.REQUIRED_CORRECTNESS_FIELDS[(phase, "Emby")]),
+        "expected_span_count": 1, "aggregation": "median",
     }
 
 
@@ -625,15 +677,90 @@ def write_manifest(path: pathlib.Path, manifest: dict[str, Any]) -> None:
     path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
 
-def capture(plan: dict[str, Any], apps: tuple[Any, Any], executor: Any) -> dict[str, Any]:
+def write_durable_json_exclusive(path: pathlib.Path, value: Any) -> tuple[int, int]:
+    """Atomically publish durable JSON without following links or replacing prior evidence."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary = pathlib.Path(temporary_name)
+    published_identity: tuple[int, int] | None = None
+    try:
+        payload = (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
+        view = memoryview(payload)
+        while view:
+            view = view[os.write(fd, view):]
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        # Link publication is atomic and fails if another file or symlink appeared after
+        # preflight; os.replace() would silently overwrite that newly created evidence.
+        os.link(temporary, path, follow_symlinks=False)
+        observed = path.stat(follow_symlinks=False)
+        published_identity = (observed.st_dev, observed.st_ino)
+        temporary.unlink()
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        temporary.unlink(missing_ok=True)
+    assert published_identity is not None
+    return published_identity
+
+
+def validate_calibration_covariates(samples: list[Any], max_storage_drift_bytes: int) -> None:
+    devices = [sample.manifest["device"] for sample in samples]
+    if {device["power_source"] for device in devices} != {"external"}:
+        fail("control-only calibration requires stable external power")
+    if len({device["battery_state"] for device in devices}) != 1:
+        fail("control-only calibration requires a stable battery state")
+    thermal_states = {device["thermal_state"] for device in devices}
+    if len(thermal_states) != 1 or not thermal_states <= {"nominal", "fair"}:
+        fail("control-only calibration requires one stable supported thermal state")
+    storage = [device["free_storage_bytes"] for device in devices]
+    if max(storage) - min(storage) > max_storage_drift_bytes:
+        fail("control-only calibration exceeds its free-storage drift tolerance")
+
+
+def freeze_calibration(plan: dict[str, Any], records: list[dict[str, Any]],
+                       destination: pathlib.Path) -> str:
+    try:
+        manifests = [pathlib.Path(record["manifest"]) for record in records]
+        samples = [compare.load_sample(path, "control") for path in manifests]
+        validate_calibration_covariates(
+            samples, plan["max_free_storage_drift_bytes"])
+        artifact = compare.freeze_control(
+            samples, selector=freeze_selector(plan), sample_policy="short")
+        write_durable_json_exclusive(destination, artifact)
+        digest = hashlib.sha256(destination.read_bytes()).hexdigest()
+        compare.load_frozen(destination, digest)
+        return digest
+    except (compare.CompareError, OSError) as error:
+        fail(f"control-only MDE freeze failed: {error}")
+
+
+def capture(plan: dict[str, Any], apps: tuple[Any, Any], executor: Any,
+            *, calibration_plan: dict[str, Any] | None = None,
+            calibration_output: pathlib.Path | None = None,
+            frozen_mde_output: pathlib.Path | None = None) -> dict[str, Any]:
     if plan["scenario"] == "artwork":
         fail("artwork capture is pre-manifest until an exact loaded-artwork milestone exists")
     base.preflight_no_existing_app(apps, executor)
     for command in plan["configuration_contract_commands"]:
         executor.run(command)
-    output = pathlib.Path(plan["output"])
-    raw_root = output.parent / f"{output.stem}-raw"
-    raw_root.mkdir(parents=True, exist_ok=True)
+    stages = ([calibration_plan, plan] if calibration_plan is not None else [plan])
+    if calibration_plan is not None and (calibration_output is None or frozen_mde_output is None):
+        fail("integrated calibration requires calibration and frozen-MDE output paths")
+    raw_roots = []
+    for stage in stages:
+        output = pathlib.Path(stage["output"])
+        raw_root = output.parent / f"{output.stem}-raw"
+        raw_root.mkdir(parents=True, exist_ok=calibration_plan is None)
+        raw_roots.append(raw_root)
+    raw_root = raw_roots[-1]
     driver_binary = raw_root / ".perf-macos-ax-driver"
     if driver_binary.exists() or driver_binary.is_symlink():
         fail("private AX driver output already exists")
@@ -656,16 +783,23 @@ def capture(plan: dict[str, Any], apps: tuple[Any, Any], executor: Any) -> dict[
         driver_binary.unlink(missing_ok=True)
         raise
     fixture_error = None
-    records: list[dict[str, Any]] = []
+    records_by_stage: list[list[dict[str, Any]]] = [[] for _stage in stages]
+    frozen_mde_sha256: str | None = None
     try:
         ready = wait_ready(ready_path, fixture, executor)
         by_role = {app.role: app for app in apps}
-        for ordinal, sample in enumerate(plan["samples"], 1):
+        work_items = [
+            (stage_index, stage, raw_roots[stage_index], ordinal, sample)
+            for stage_index, stage in enumerate(stages)
+            for ordinal, sample in enumerate(stage["samples"], 1)
+        ]
+        for work_index, (stage_index, active_plan, active_raw_root, ordinal, sample) in enumerate(
+                work_items):
             app = by_role[sample["role"]]
             record = {key: sample[key] for key in
                       ("scenario", "sample_kind", "sample_index", "pair_order", "role")}
             app_process = None
-            run_dir = raw_root / f"sample-{ordinal:04d}"
+            run_dir = active_raw_root / f"sample-{ordinal:04d}"
             run_dir.mkdir(mode=0o700)
             spec_path = run_dir / ".workload-spec.json"
             raw_dir = run_dir / "raw"
@@ -675,17 +809,17 @@ def capture(plan: dict[str, Any], apps: tuple[Any, Any], executor: Any) -> dict[
             manifest_path = run_dir / "manifest.json"
             post_reset_done = False
             try:
-                base.seed_container(pathlib.Path(plan["container"]), executor)
+                base.seed_container(pathlib.Path(active_plan["container"]), executor)
                 preference_seed_sha256 = seed_browse_preferences(
-                    pathlib.Path(plan["container"]), plan["keychain_service"])
-                reset_performance_keychain(plan["keychain_service"], executor)
+                    pathlib.Path(active_plan["container"]), active_plan["keychain_service"])
+                reset_performance_keychain(active_plan["keychain_service"], executor)
                 reset = request_fixture(ready["base_url"], "/__fixture__/reset", method="POST")
                 if reset != {"reset": True}:
                     fail("fixture reset was not acknowledged")
-                facts = base.host_facts(executor, pathlib.Path(plan["container"]).parent)
+                facts = base.host_facts(executor, pathlib.Path(active_plan["container"]).parent)
                 start = executor.now().replace("+00:00", "Z")
                 workload_spec = {
-                    "schema_version": 1, "scenario": plan["scenario"],
+                    "schema_version": 1, "scenario": active_plan["scenario"],
                     "base_url": ready["base_url"], "username": FIXTURE_USERNAME,
                     "password": FIXTURE_PASSWORD, "timeout_seconds": 30,
                 }
@@ -699,15 +833,15 @@ def capture(plan: dict[str, Any], apps: tuple[Any, Any], executor: Any) -> dict[
                     "fixture_protocol_version": int(ready["schema_version"]),
                     "driver_protocol_version": 1,
                 }
-                manifest = browse_manifest(plan, sample, app, facts, ready, start, automation)
+                manifest = browse_manifest(active_plan, sample, app, facts, ready, start, automation)
                 write_manifest(manifest_path, manifest)
                 raw_log = raw_dir / "artifact-0001.log"
                 nonce = base.opaque("nonce", manifest["run"]["id"],
-                                    plan["identities"]["workload_id"], length=16)
+                                    active_plan["identities"]["workload_id"], length=16)
                 with raw_log.open("wb") as output:
                     executor.run([sys.executable, str(SUMMARY), "--emit-capture-marker",
                                   "--manifest", str(manifest_path), "--workload-id",
-                                  plan["identities"]["workload_id"], "--launch-nonce", nonce],
+                                  active_plan["identities"]["workload_id"], "--launch-nonce", nonce],
                                  stdout=output)
                 app_process = launch_app(app, executor)
                 pid = int(app_process.pid)
@@ -717,12 +851,12 @@ def capture(plan: dict[str, Any], apps: tuple[Any, Any], executor: Any) -> dict[
                 driver_output = raw_dir / "artifact-0002.json"
                 executor.run([str(driver_binary), "--pid", str(pid),
                               "--workload-spec", str(spec_path), "--output", str(driver_output)])
-                validate_driver_result(driver_output, pid=pid, scenario=plan["scenario"])
+                validate_driver_result(driver_output, pid=pid, scenario=active_plan["scenario"])
                 if executor.poll(app_process) is not None:
                     fail(f"app PID {pid} exited during AX workload")
-                wait_for_terminal_span(pid, start, plan["scenario"], executor)
+                wait_for_terminal_span(pid, start, active_plan["scenario"], executor)
                 stable_ledger = wait_for_stable_zero_ledger(
-                    ready["base_url"], ready, plan["scenario"], executor)
+                    ready["base_url"], ready, active_plan["scenario"], executor)
                 end = executor.now().replace("+00:00", "Z")
                 with raw_log.open("ab") as log:
                     executor.run(["/usr/bin/log", "show", "--info", "--style", "ndjson",
@@ -735,14 +869,14 @@ def capture(plan: dict[str, Any], apps: tuple[Any, Any], executor: Any) -> dict[
                 # The process boundary closes the workload. Persist only the ledger observed
                 # after that boundary, and reject any request that escaped the stable-zero window.
                 ledger = request_fixture(ready["base_url"], "/__fixture__/ledger")
-                validate_ledger(ledger, ready, plan["scenario"])
+                validate_ledger(ledger, ready, active_plan["scenario"])
                 if ledger != stable_ledger:
                     fail("fixture ledger changed after the stable-zero process boundary")
-                reset_performance_keychain(plan["keychain_service"], executor)
+                reset_performance_keychain(active_plan["keychain_service"], executor)
                 post_reset_done = True
                 ledger_path = raw_dir / "artifact-0003.json"
                 ledger_path.write_text(json.dumps(ledger, indent=2, sort_keys=True) + "\n")
-                phase = SCENARIO_PHASES[plan["scenario"]]
+                phase = SCENARIO_PHASES[active_plan["scenario"]]
                 selected_log = raw_dir / "artifact-0004.log"
                 write_success_selector_artifact(raw_log, selected_log, phase)
                 update_pointer_checksums(manifest, run_dir)
@@ -751,7 +885,7 @@ def capture(plan: dict[str, Any], apps: tuple[Any, Any], executor: Any) -> dict[
                 summary_path = summary_dir / "redacted.json"
                 summary_command = [sys.executable, str(SUMMARY), "--json", "--strict",
                                    "--manifest", str(manifest_path), "--raw-artifact", str(selected_log),
-                                   "--workload-id", plan["identities"]["workload_id"],
+                                   "--workload-id", active_plan["identities"]["workload_id"],
                                    "--phase", phase, "--backend", "Emby",
                                    "--expected-span-count", "1"]
                 for field in correctness:
@@ -781,12 +915,32 @@ def capture(plan: dict[str, Any], apps: tuple[Any, Any], executor: Any) -> dict[
                         add_record_error(record, cleanup)
                 if not post_reset_done:
                     try:
-                        reset_performance_keychain(plan["keychain_service"], executor)
+                        reset_performance_keychain(active_plan["keychain_service"], executor)
                     except Exception as error:
                         add_record_error(record, f"post-stop Keychain reset failed: {error}")
-                records.append(record)
+                records_by_stage[stage_index].append(record)
             if record["status"] != "success":
                 break
+            stage_finished = ordinal == len(active_plan["samples"])
+            if calibration_plan is not None and stage_index == 0 and stage_finished:
+                base.preflight_no_existing_app(apps, executor)
+                calibration_result = {
+                    "schema_version": 1, "capture_status": "success",
+                    "artifact_status": "admissible_control_only_calibration_manifests",
+                    "scenario": active_plan["scenario"],
+                    "fixture_lifecycle": "shared_with_paired_capture",
+                    "cooldown_seconds": active_plan["cooldown_seconds"],
+                    "max_free_storage_drift_bytes":
+                        active_plan["max_free_storage_drift_bytes"],
+                    "records": records_by_stage[0],
+                }
+                write_durable_json_exclusive(calibration_output, calibration_result)
+                frozen_mde_sha256 = freeze_calibration(
+                    active_plan, records_by_stage[0], frozen_mde_output)
+                # Validation and the directory fsync above complete before the first paired arm.
+                base.preflight_no_existing_app(apps, executor)
+            if work_index + 1 < len(work_items) and active_plan["cooldown_seconds"] > 0:
+                executor.sleep(active_plan["cooldown_seconds"])
     finally:
         try:
             ready_path.unlink()
@@ -797,11 +951,20 @@ def capture(plan: dict[str, Any], apps: tuple[Any, Any], executor: Any) -> dict[
             driver_binary.unlink()
         except FileNotFoundError:
             pass
+    records = records_by_stage[-1]
     status = "success" if records and len(records) == len(plan["samples"]) and all(
         row["status"] == "success" for row in records) and fixture_error is None else "failure"
-    return {"schema_version": 1, "capture_status": status,
+    result = {"schema_version": 1, "capture_status": status,
             "artifact_status": "admissible_per_run_manifests", "scenario": plan["scenario"],
+            "cooldown_seconds": plan["cooldown_seconds"],
             "fixture_cleanup_error": fixture_error, "records": records}
+    if calibration_plan is not None:
+        result["calibration"] = {
+            "capture_output": str(calibration_output),
+            "frozen_mde": str(frozen_mde_output),
+            "frozen_mde_sha256": frozen_mde_sha256,
+        }
+    return result
 
 
 def parser() -> argparse.ArgumentParser:
@@ -817,24 +980,74 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--seed", type=int, default=1)
     result.add_argument("--device-label", default="local-device-01")
     result.add_argument("--retention-deadline", default="2099-01-01T00:00:00Z")
+    result.add_argument("--cooldown-seconds", type=float, default=0)
+    result.add_argument("--calibrate-and-capture", action="store_true")
+    result.add_argument("--calibration-output", type=pathlib.Path)
+    result.add_argument("--frozen-mde-output", type=pathlib.Path)
+    result.add_argument("--max-calibration-free-storage-drift-bytes", type=int)
     result.add_argument("--plan", action="store_true")
     return result
+
+
+def validate_integrated_outputs(paths: list[pathlib.Path]) -> None:
+    resolved = [path.absolute() for path in paths]
+    raw_roots = [path.parent / f"{path.stem}-raw" for path in paths[:2]]
+    all_paths = [*resolved, *raw_roots]
+    if len({path.resolve() for path in all_paths}) != len(all_paths):
+        fail("integrated calibration output paths must be distinct")
+    for output in resolved:
+        if any(output.resolve().is_relative_to(root.resolve()) for root in raw_roots):
+            fail("integrated calibration outputs must remain outside raw evidence roots")
+    for path in all_paths:
+        if path.exists() or path.is_symlink():
+            fail(f"integrated calibration output already exists: {path}")
 
 
 def main(argv: list[str] | None = None, executor: Any | None = None) -> int:
     args = parser().parse_args(argv)
     if args.warmups < 0 or args.measured < 1:
         fail("warmups must be nonnegative and measured must be positive")
+    if (isinstance(args.cooldown_seconds, bool) or not math.isfinite(args.cooldown_seconds)
+            or args.cooldown_seconds < 0):
+        fail("cooldown seconds must be a finite nonnegative number")
+    if args.calibrate_and_capture != bool(
+            args.calibration_output is not None and args.frozen_mde_output is not None):
+        fail("--calibrate-and-capture requires both calibration output paths")
+    if not args.calibrate_and_capture and (
+            args.calibration_output is not None or args.frozen_mde_output is not None
+            or args.max_calibration_free_storage_drift_bytes is not None):
+        fail("calibration output paths require --calibrate-and-capture")
+    if args.calibrate_and_capture and (
+            args.max_calibration_free_storage_drift_bytes is None
+            or args.max_calibration_free_storage_drift_bytes < 0):
+        fail("integrated calibration requires a nonnegative storage-drift tolerance")
     apps, service = validate_inputs(args.control_app, args.candidate_app)
     plan = plan_for(apps, service, args.scenario, args.warmups, args.measured, args.seed,
                     args.output, args.control_commit, args.candidate_commit, args.device_label,
-                    args.retention_deadline)
+                    args.retention_deadline, args.cooldown_seconds)
+    calibration_plan = (calibration_plan_for(
+        plan, args.calibration_output, args.max_calibration_free_storage_drift_bytes)
+                        if args.calibrate_and_capture else None)
     if args.plan:
-        print(json.dumps({**plan, "mode": "plan"}, indent=2, sort_keys=True))
+        document = {**plan, "mode": "plan"}
+        if calibration_plan is not None:
+            document["calibration"] = {
+                **calibration_plan, "mode": "calibration_plan",
+                "frozen_mde_output": str(args.frozen_mde_output.absolute()),
+            }
+        print(json.dumps(document, indent=2, sort_keys=True))
         return 0
-    result = capture(plan, apps, executor or Executor())
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+    if calibration_plan is not None:
+        validate_integrated_outputs([
+            args.output, args.calibration_output, args.frozen_mde_output])
+    result = capture(
+        plan, apps, executor or Executor(), calibration_plan=calibration_plan,
+        calibration_output=args.calibration_output, frozen_mde_output=args.frozen_mde_output)
+    if calibration_plan is not None:
+        write_durable_json_exclusive(args.output, result)
+    else:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     return 0 if result["capture_status"] == "success" else 1
 
 
