@@ -1208,6 +1208,21 @@ policy:
    and legacy inactive-backend hydration remains behaviorally intact but outside the selected-backend
    restore span so it cannot bias paired timings. The control passed 85 Python tooling tests, 24
    focused Mac tests, generic visionOS/iOS builds, tvOS build-for-testing, and adversarial review.
+9. The Mac runtime pre-manifest capture foundation now includes an external paired launch/idle runner. It accepts
+   only two real `PerformanceAudit` apps with the same dedicated
+   `com.jlipworth.Labstream.perf.*` bundle identity,
+   validates both binaries through the closed contract, and limits reset/seed work to the exact
+   corresponding sandbox container. The deterministic schedule is adjacent alternating A/B: launch
+   defaults to 3 warmups plus 20 measured samples; idle defaults to 1 plus 5 at 120 seconds. Plan
+   mode is side-effect-free JSON, the app receives no arguments or environment, bounded post-run
+   unified-log extraction and System Trace capture bind to the exact launched PID. The log interval
+   begins before launch, while idle tracing begins only after an explicit bounded 10-second
+   readiness/settle interval. Process preflight rejects the same bundle identity even when an older
+   staged copy runs from a different executable path, and
+   termination is proved after bounded TERM/KILL escalation. Failures remain explicit records.
+   The result is raw capture, not an admissible evidence manifest or strict summary: it remains
+   `insufficient_data` and cannot enter the strict comparator until per-run manifest/covariate
+   binding lands. No expensive capture was started by this tooling slice.
 
 ### Wave 6 — Optimize measured bottlenecks
 
