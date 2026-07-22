@@ -230,11 +230,4 @@ struct MediaBrowserHDRCarrierTests {
         #expect(hdr.format == .hdr10)
         #expect(metadata.audioProfile == "Dolby TrueHD + Dolby Atmos")
     }
-
-    @Test func mediaBrowserCarrierBridgesHDR() throws {
-        let jf = try jellyfinSource().playbackSourceMetadata()
-        let bridged = MediaBrowserPlaybackSourceMetadata(jf)
-        #expect(bridged.hdr?.format == .hdr10)
-        #expect(bridged.audioProfile == "Dolby TrueHD + Dolby Atmos")
-    }
 }

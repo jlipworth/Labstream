@@ -91,9 +91,10 @@ aliases of the established grid/full field contracts; separate routing exists so
 trimming cannot silently change an unrelated surface.
 
 It is not a complete backend service. `JellyfinLibrary`/`EmbyLibrary` and
-`JellyfinPlayback`/`EmbyPlayback` still construct native requests and return native result
-types. Their path spelling, query casing, auth headers, PlaybackInfo bodies, stream URL
-rules, server capabilities, and download guarantees remain distinct. In particular:
+`JellyfinPlayback`/`EmbyPlayback` still construct backend-native requests, then publish the shared
+`MediaBrowserPlaybackOpenResult` carrier. Their path spelling, query casing, auth headers,
+PlaybackInfo bodies, stream URL rules, server capabilities, and download guarantees remain
+distinct. In particular:
 
 - Jellyfin uses the `MediaBrowser` authorization scheme and offers Quick Connect and
   trick-play tile playlists.

@@ -180,7 +180,7 @@ struct LiveJellyfinBrowseTimelineProbeTests {
     }
 
     private func negotiatePlayback(_ cfg: Config,
-                                   startTimeTicks: Int) async throws -> JellyfinPlaybackOpenResult {
+                                   startTimeTicks: Int) async throws -> MediaBrowserPlaybackOpenResult {
         let request = try JellyfinPlayback.playbackInfoRequest(
             server: cfg.server,
             token: cfg.token,
@@ -196,17 +196,18 @@ struct LiveJellyfinBrowseTimelineProbeTests {
         #expect(succeeded, "Jellyfin PlaybackInfo expected 2xx")
         guard succeeded else { throw ProbeFailure.badHTTP }
         let response = try JellyfinPlaybackInfoResponse.decode(from: data)
-        return try JellyfinPlayback.resolveStream(response: response,
-                                                   server: cfg.server,
-                                                   identity: cfg.identity,
-                                                   token: cfg.token,
-                                                   itemId: cfg.itemID,
-                                                   startTimeTicks: startTimeTicks,
-                                                   maxVideoBitrate: 200_000_000)
+        return try JellyfinPlayback.resolveMediaBrowserStream(
+            response: response,
+            server: cfg.server,
+            identity: cfg.identity,
+            token: cfg.token,
+            itemId: cfg.itemID,
+            startTimeTicks: startTimeTicks,
+            maxVideoBitrate: 200_000_000)
     }
 
     private func reportTimeline(positionTicks: Int,
-                                playback: JellyfinPlaybackOpenResult,
+                                playback: MediaBrowserPlaybackOpenResult,
                                 cfg: Config,
                                 label: String = "timeline") async throws {
         let requests = try [
@@ -260,7 +261,7 @@ struct LiveJellyfinBrowseTimelineProbeTests {
     /// If a target sequence got far enough to establish Playing but did not confirm Stopped,
     /// close that exact real PlaybackInfo session before attempting resume restoration.
     private func stopFailedTargetSession(positionTicks: Int,
-                                         playback: JellyfinPlaybackOpenResult,
+                                         playback: MediaBrowserPlaybackOpenResult,
                                          cfg: Config) async throws {
         let request = try JellyfinPlayback.stoppedRequest(
             server: cfg.server,

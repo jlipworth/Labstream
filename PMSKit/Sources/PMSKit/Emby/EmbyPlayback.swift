@@ -3,53 +3,6 @@ import Foundation
 import FoundationNetworking
 #endif
 
-// Source-compatible backend spellings. Playback resolution now produces the neutral carriers
-// directly while retaining Emby's explicit `usesServerEncoding` cleanup fact.
-public typealias EmbyPlayMethod = MediaBrowserPlayMethod
-public typealias EmbyPlaybackSourceMetadata = MediaBrowserPlaybackSourceMetadata
-
-/// Source-compatible Emby spelling retained while app callers migrate to
-/// `resolveMediaBrowserStream`. The explicit encoding-cleanup fact is never inferred away.
-public struct EmbyPlaybackOpenResult: Sendable, Equatable {
-    public let url: URL
-    public let playSessionId: String
-    public let mediaSourceId: String
-    public let playMethod: EmbyPlayMethod
-    public let requiredHTTPHeaders: [String: String]
-    public let sourceMetadata: EmbyPlaybackSourceMetadata
-    public let usesServerEncoding: Bool
-    public let transcodeReasons: [String]
-
-    public init(url: URL,
-                playSessionId: String,
-                mediaSourceId: String,
-                playMethod: EmbyPlayMethod,
-                requiredHTTPHeaders: [String: String] = [:],
-                sourceMetadata: EmbyPlaybackSourceMetadata = .empty,
-                usesServerEncoding: Bool = false,
-                transcodeReasons: [String] = []) {
-        self.url = url
-        self.playSessionId = playSessionId
-        self.mediaSourceId = mediaSourceId
-        self.playMethod = playMethod
-        self.requiredHTTPHeaders = requiredHTTPHeaders
-        self.sourceMetadata = sourceMetadata
-        self.usesServerEncoding = usesServerEncoding
-        self.transcodeReasons = transcodeReasons
-    }
-
-    init(_ result: MediaBrowserPlaybackOpenResult) {
-        self.init(url: result.url,
-                  playSessionId: result.playSessionId,
-                  mediaSourceId: result.mediaSourceId,
-                  playMethod: result.playMethod,
-                  requiredHTTPHeaders: result.requiredHTTPHeaders,
-                  sourceMetadata: result.sourceMetadata,
-                  usesServerEncoding: result.usesServerEncoding,
-                  transcodeReasons: result.transcodeReasons)
-    }
-}
-
 public struct EmbyPlaybackInfoResponse: Decodable, Sendable, Equatable {
     public let playSessionId: String?
     public let mediaSources: [EmbyMediaSourceInfo]
@@ -164,12 +117,12 @@ public struct EmbyMediaSourceInfo: Decodable, Sendable, Equatable {
         mediaStreams = try c.decodeIfPresent([EmbyItemMediaStreamDto].self, forKey: .mediaStreams) ?? []
     }
 
-    func playbackSourceMetadata(audioStreamIndex: Int? = nil) -> EmbyPlaybackSourceMetadata {
+    func playbackSourceMetadata(audioStreamIndex: Int? = nil) -> MediaBrowserPlaybackSourceMetadata {
         let video = mediaStreams.first { $0.type == "Video" }
         let audio = audioStreamIndex.flatMap { index in
             mediaStreams.first { $0.type == "Audio" && $0.index == index }
         } ?? mediaStreams.first { $0.type == "Audio" }
-        return EmbyPlaybackSourceMetadata(
+        return MediaBrowserPlaybackSourceMetadata(
             container: container?.split(separator: ",").first.map(String.init),
             width: width ?? video?.width,
             height: height ?? video?.height,
@@ -180,7 +133,7 @@ public struct EmbyMediaSourceInfo: Decodable, Sendable, Equatable {
             audioProfile: audio?.profile)
     }
 
-    var playbackSourceMetadata: EmbyPlaybackSourceMetadata {
+    var playbackSourceMetadata: MediaBrowserPlaybackSourceMetadata {
         playbackSourceMetadata()
     }
 
@@ -584,38 +537,6 @@ public enum EmbyPlayback {
             transcodeReasons: source.transcodeReasons)
     }
 
-    /// Source-compatible wrapper. New app-facing code should consume the neutral resolver above.
-    public static func resolveStream(response: EmbyPlaybackInfoResponse,
-                                     server: URL,
-                                     identity: EmbyClientIdentity,
-                                     token: String,
-                                     userId: String,
-                                     itemId: String,
-                                     preferredMediaSourceId: String? = nil,
-                                     startTimeTicks: Int? = nil,
-                                     maxVideoBitrate: Int? = nil,
-                                     maxWidth: Int? = nil,
-                                     maxHeight: Int? = nil,
-                                     audioBitrate: Int? = nil,
-                                     audioStreamIndex: Int? = nil,
-                                     subtitleStreamIndex: Int? = nil) throws -> EmbyPlaybackOpenResult {
-        EmbyPlaybackOpenResult(try resolveMediaBrowserStream(
-            response: response,
-            server: server,
-            identity: identity,
-            token: token,
-            userId: userId,
-            itemId: itemId,
-            preferredMediaSourceId: preferredMediaSourceId,
-            startTimeTicks: startTimeTicks,
-            maxVideoBitrate: maxVideoBitrate,
-            maxWidth: maxWidth,
-            maxHeight: maxHeight,
-            audioBitrate: audioBitrate,
-            audioStreamIndex: audioStreamIndex,
-            subtitleStreamIndex: subtitleStreamIndex))
-    }
-
     static func chooseSource(_ sources: [EmbyMediaSourceInfo],
                              preferredMediaSourceId: String?) -> EmbyMediaSourceInfo? {
         if let preferredMediaSourceId,
@@ -665,7 +586,7 @@ public enum EmbyPlayback {
                                       itemId: String,
                                       mediaSourceId: String,
                                       playSessionId: String,
-                                      playMethod: EmbyPlayMethod,
+                                      playMethod: MediaBrowserPlayMethod,
                                       positionTicks: Int = 0) throws -> URLRequest {
         try progressBody(server: server, token: token, identity: identity, userId: userId,
                          event: .playing,
@@ -682,7 +603,7 @@ public enum EmbyPlayback {
                                        itemId: String,
                                        mediaSourceId: String,
                                        playSessionId: String,
-                                       playMethod: EmbyPlayMethod,
+                                       playMethod: MediaBrowserPlayMethod,
                                        positionTicks: Int,
                                        isPaused: Bool) throws -> URLRequest {
         try progressBody(server: server, token: token, identity: identity, userId: userId,
@@ -700,7 +621,7 @@ public enum EmbyPlayback {
                                       itemId: String,
                                       mediaSourceId: String,
                                       playSessionId: String,
-                                      playMethod: EmbyPlayMethod,
+                                      playMethod: MediaBrowserPlayMethod,
                                       positionTicks: Int) throws -> URLRequest {
         try progressBody(server: server, token: token, identity: identity, userId: userId,
                          event: .stopped,
@@ -733,7 +654,7 @@ public enum EmbyPlayback {
                                      itemId: String,
                                      mediaSourceId: String,
                                      playSessionId: String,
-                                     playMethod: EmbyPlayMethod,
+                                     playMethod: MediaBrowserPlayMethod,
                                      positionTicks: Int) throws -> URLRequest {
         let url = try embyURL(server: server, path: event.endpoint.rawValue)
         return try MediaBrowserPlaybackProgressRequestPlan(
@@ -745,7 +666,7 @@ public enum EmbyPlayback {
                 itemId: itemId,
                 mediaSourceId: mediaSourceId,
                 playSessionId: playSessionId,
-                playMethod: MediaBrowserPlayMethod(playMethod),
+                playMethod: playMethod,
                 positionTicks: positionTicks
             )
         ).request(token: token)

@@ -157,7 +157,7 @@ struct JellyfinPlaybackTests {
         }
         """#.utf8))
 
-        let result = try JellyfinPlayback.resolveStream(
+        let result = try JellyfinPlayback.resolveMediaBrowserStream(
             response: response,
             server: server,
             identity: identity,
@@ -212,7 +212,7 @@ struct JellyfinPlaybackTests {
         #expect(result.sourceMetadata.bitrate == 8200)
     }
 
-    @Test func resolveStreamRejectsCrossOriginTranscodingURLBeforeAuthHeaders() throws {
+    @Test func resolveMediaBrowserStreamRejectsCrossOriginTranscodingURLBeforeAuthHeaders() throws {
         let response = try JellyfinPlaybackInfoResponse.decode(from: Data(#"""
         {
           "PlaySessionId": "play-evil",
@@ -228,7 +228,7 @@ struct JellyfinPlaybackTests {
         """#.utf8))
 
         #expect(throws: JellyfinPlaybackError.invalidURL) {
-            _ = try JellyfinPlayback.resolveStream(
+            _ = try JellyfinPlayback.resolveMediaBrowserStream(
                 response: response,
                 server: server,
                 identity: identity,
@@ -259,7 +259,7 @@ struct JellyfinPlaybackTests {
         }
         """#.utf8))
 
-        let result = try JellyfinPlayback.resolveStream(
+        let result = try JellyfinPlayback.resolveMediaBrowserStream(
             response: response,
             server: server,
             identity: identity,
@@ -294,7 +294,7 @@ struct JellyfinPlaybackTests {
         }
         """#.utf8))
 
-        let result = try JellyfinPlayback.resolveStream(
+        let result = try JellyfinPlayback.resolveMediaBrowserStream(
             response: response,
             server: server,
             identity: identity,
@@ -319,7 +319,7 @@ struct JellyfinPlaybackTests {
         }
         """#.utf8))
 
-        let result = try JellyfinPlayback.resolveStream(
+        let result = try JellyfinPlayback.resolveMediaBrowserStream(
             response: response,
             server: server,
             identity: identity,

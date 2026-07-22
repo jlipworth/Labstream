@@ -808,7 +808,7 @@ extension [MediaBrowserItemMediaStreamDto] {
     /// cheaply/reliably encode from — or nil when the current (default/first) track is already
     /// low-risk, or when no low-risk alternate exists. Prefers a same-language alternate and
     /// skips commentary/descriptive tracks when possible. Shared by the Jellyfin and Emby
-    /// `resolveStream` paths so the steering logic can't diverge between the backends.
+    /// `resolveMediaBrowserStream` paths so the steering logic can't diverge between the backends.
     func preferredCompatibleAudioStreamIndexForCappedTranscode() -> Int? {
         let audioStreams = filter { $0.type == "Audio" }
         guard !audioStreams.isEmpty else { return nil }

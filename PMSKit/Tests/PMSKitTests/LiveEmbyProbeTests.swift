@@ -17,7 +17,7 @@ import FoundationNetworking
 /// uses. So decoding the responses here proves the PMSKit Emby decoders match the live wire.
 ///
 /// The point is to confirm the Emby decoders (`EmbyServerInfo`, `EmbyBaseItemDto`,
-/// `EmbyPlaybackInfoResponse`) parse the REAL server bodies and that `resolveStream` produces a
+/// `EmbyPlaybackInfoResponse`) parse the REAL server bodies and that `resolveMediaBrowserStream` produces a
 /// playable URL — the live body is the source of truth, and the decoders are fixed against it.
 ///
 /// Run it (creds live in a gitignored env file — see scripts/emby-live.env):
@@ -85,7 +85,7 @@ struct LiveEmbyProbeTests {
     // its default credential-key set already covers `api_key`.
     private let transport = LiveProbeTransport()
 
-    private func stopActiveEncodingIfNeeded(_ result: EmbyPlaybackOpenResult,
+    private func stopActiveEncodingIfNeeded(_ result: MediaBrowserPlaybackOpenResult,
                                             cfg: LiveConfig,
                                             label: String) async throws {
         guard result.usesServerEncoding else { return }
@@ -148,7 +148,7 @@ struct LiveEmbyProbeTests {
             }
         }
 
-        // (c) POST /Items/{itemId}/PlaybackInfo — decode and resolveStream.
+        // (c) POST /Items/{itemId}/PlaybackInfo — decode and resolveMediaBrowserStream.
         do {
             let req = try EmbyPlayback.playbackInfoRequest(
                 server: cfg.server,
@@ -168,7 +168,7 @@ struct LiveEmbyProbeTests {
                 print(">>> LIVE [playbackInfo] source[\(i)]: id=\(src.id != nil ? "<set>" : "nil") container=\(src.container ?? "nil") directPlay=\(src.supportsDirectPlay) directStream=\(src.supportsDirectStream) transcode=\(src.supportsTranscoding) hasTranscodingUrl=\(src.transcodingURL != nil) hasDirectStreamUrl=\(src.directStreamURL != nil) subProtocol=\(src.transcodingSubProtocol ?? "nil") transcodeContainer=\(src.transcodingContainer ?? "nil") addApiKey=\(src.addApiKeyToDirectStreamURL.map(String.init) ?? "nil") liveStreamId=\(src.liveStreamID != nil ? "<set>" : "nil")")
             }
 
-            let resolved = try EmbyPlayback.resolveStream(
+            let resolved = try EmbyPlayback.resolveMediaBrowserStream(
                 response: response,
                 server: cfg.server,
                 identity: cfg.identity,
@@ -177,8 +177,8 @@ struct LiveEmbyProbeTests {
                 itemId: cfg.itemId)
             // Redact api_key / token before printing the resolved URL.
             let safeURL = LiveProbeConfig.redact(resolved.url.absoluteString, token: cfg.token, server: cfg.server)
-            print(">>> LIVE [resolveStream] playMethod=\(resolved.playMethod) usesServerEncoding=\(resolved.usesServerEncoding) headerKeys=\(resolved.requiredHTTPHeaders.keys.sorted()) url=\(safeURL)")
-            print(">>> LIVE [resolveStream] sourceMeta: container=\(resolved.sourceMetadata.container ?? "nil") \(resolved.sourceMetadata.width.map(String.init) ?? "?")x\(resolved.sourceMetadata.height.map(String.init) ?? "?") bitrateKbps=\(resolved.sourceMetadata.bitrate.map(String.init) ?? "nil") video=\(resolved.sourceMetadata.videoCodec ?? "nil") audio=\(resolved.sourceMetadata.audioCodec ?? "nil")")
+            print(">>> LIVE [resolveMediaBrowserStream] playMethod=\(resolved.playMethod) usesServerEncoding=\(resolved.usesServerEncoding) headerKeys=\(resolved.requiredHTTPHeaders.keys.sorted()) url=\(safeURL)")
+            print(">>> LIVE [resolveMediaBrowserStream] sourceMeta: container=\(resolved.sourceMetadata.container ?? "nil") \(resolved.sourceMetadata.width.map(String.init) ?? "?")x\(resolved.sourceMetadata.height.map(String.init) ?? "?") bitrateKbps=\(resolved.sourceMetadata.bitrate.map(String.init) ?? "nil") video=\(resolved.sourceMetadata.videoCodec ?? "nil") audio=\(resolved.sourceMetadata.audioCodec ?? "nil")")
             #expect(resolved.url.scheme != nil, "resolved stream URL should be absolute")
             #expect(!resolved.playSessionId.isEmpty, "resolved result should carry a PlaySessionId")
         }
@@ -223,7 +223,7 @@ struct LiveEmbyProbeTests {
             #expect(subStatus == 200, "subtitle playbackInfo expected HTTP 200, got \(subStatus)")
             let subResponse = try EmbyPlaybackInfoResponse.decode(from: subData)
 
-            let resolvedSub = try EmbyPlayback.resolveStream(
+            let resolvedSub = try EmbyPlayback.resolveMediaBrowserStream(
                 response: subResponse,
                 server: cfg.server,
                 identity: cfg.identity,
@@ -375,7 +375,7 @@ struct LiveEmbyProbeTests {
     }
 
     private func negotiateTimelinePlayback(_ cfg: LiveConfig,
-                                           startTimeTicks: Int) async throws -> EmbyPlaybackOpenResult {
+                                           startTimeTicks: Int) async throws -> MediaBrowserPlaybackOpenResult {
         let request = try EmbyPlayback.playbackInfoRequest(server: cfg.server,
                                                            token: cfg.token,
                                                            identity: cfg.identity,
@@ -389,18 +389,19 @@ struct LiveEmbyProbeTests {
         #expect(succeeded, "Emby PlaybackInfo expected 2xx")
         guard succeeded else { throw URLError(.badServerResponse) }
         let response = try EmbyPlaybackInfoResponse.decode(from: data)
-        return try EmbyPlayback.resolveStream(response: response,
-                                              server: cfg.server,
-                                              identity: cfg.identity,
-                                              token: cfg.token,
-                                              userId: cfg.userId,
-                                              itemId: cfg.itemId,
-                                              startTimeTicks: startTimeTicks,
-                                              maxVideoBitrate: cfg.maxStreamingBitrate)
+        return try EmbyPlayback.resolveMediaBrowserStream(
+            response: response,
+            server: cfg.server,
+            identity: cfg.identity,
+            token: cfg.token,
+            userId: cfg.userId,
+            itemId: cfg.itemId,
+            startTimeTicks: startTimeTicks,
+            maxVideoBitrate: cfg.maxStreamingBitrate)
     }
 
     private func reportTimeline(positionTicks: Int,
-                                playback: EmbyPlaybackOpenResult,
+                                playback: MediaBrowserPlaybackOpenResult,
                                 cfg: LiveConfig,
                                 label: String = "timeline") async throws {
         let requests = try [
@@ -454,7 +455,7 @@ struct LiveEmbyProbeTests {
     /// Close the exact target PlaybackInfo session when Playing succeeded but the sequence could
     /// not confirm Stopped. Failure remains observable and prevents an acceptance PASS.
     private func stopFailedTargetSession(positionTicks: Int,
-                                         playback: EmbyPlaybackOpenResult,
+                                         playback: MediaBrowserPlaybackOpenResult,
                                          cfg: LiveConfig) async throws {
         let request = try EmbyPlayback.stoppedRequest(
             server: cfg.server,
