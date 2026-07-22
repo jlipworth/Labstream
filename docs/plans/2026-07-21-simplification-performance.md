@@ -1222,7 +1222,9 @@ policy:
    termination is proved after bounded TERM/KILL escalation. Failures remain explicit records.
    The result is raw capture, not an admissible evidence manifest or strict summary: it remains
    `insufficient_data` and cannot enter the strict comparator until per-run manifest/covariate
-   binding lands. No expensive capture was started by this tooling slice.
+   binding lands. The manifest's backendless `none` identity now maps explicitly to the
+   `runtime.composition` span's `App` label so that later strict composition summaries have a
+   closed, comparable binding. No expensive capture was started by this tooling slice.
 
 ### Wave 6 — Optimize measured bottlenecks
 

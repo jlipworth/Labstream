@@ -30,6 +30,9 @@ class PerfCompareTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
+    def test_runtime_composition_uses_backendless_manifest_identity(self):
+        self.assertEqual(compare.BACKEND_LABELS["none"], "App")
+
     def make_sample(self, role, kind, index, duration, *, result="success", item_count=100, mutate=None,
                     comparison_id="comparison-0123456789ab", order_seed="seed-0123456789abcdef"):
         self.sequence += 1
