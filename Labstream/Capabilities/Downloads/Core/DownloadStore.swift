@@ -44,15 +44,6 @@ final class DownloadStore: @unchecked Sendable {
         }
     }
 
-    struct LegacyAttemptMigrationPlan: Sendable, Equatable {
-        /// Pre-v3 rows that may still have an OS task or partial artifacts. The coordinator must
-        /// cancel legacy tasks before invoking `resetLegacyAttemptAfterTaskCancellation`.
-        let taskCancellationAndReset: [DownloadAttemptKey]
-        /// Completed/unverified rows retain their media. An ID is assigned only when durable
-        /// cleanup evidence means asynchronous ownership can still exist.
-        let cleanupOnly: [DownloadAttemptKey]
-    }
-
     /// Durable file layout for the media body owned by one download attempt. `stableURL` is the
     /// URL published by `DownloadRecord`; transfer callbacks must write/checkpoint `workingURL`
     /// and promote it only after re-validating exact ownership.
@@ -62,28 +53,14 @@ final class DownloadStore: @unchecked Sendable {
         let workingURL: URL
     }
 
-    enum AttemptOwnershipMigrationResult: Sendable, Equatable {
-        case notRequired
+    enum StartupIndexAdmission: Sendable, Equatable {
+        case current
         /// The on-disk root belongs to a non-current schema. It is intentionally not decoded or
         /// mutated; startup must first drain every OS task, then replace the root as one unit.
         case requiresDestructiveReset(schemaVersion: Int?)
         /// Unknown/corrupt bytes are not assumed to be legacy. Keep them for diagnosis and stop.
         case unreadableIndex
-        case committed(LegacyAttemptMigrationPlan)
-        case failed(LegacyAttemptMigrationPlan, PersistenceFlushResult)
-        /// A v3 active/cleanup-bearing row without top-level ownership is malformed. Never repair
-        /// this as though it were legacy: doing so could bless an unrelated live task.
-        case malformedV3Rows([String])
-    }
-
-    enum AttemptOwnershipMigrationSubmission: Sendable, Equatable {
-        case immediate(AttemptOwnershipMigrationResult)
-        case accepted(
-            plan: LegacyAttemptMigrationPlan,
-            ticket: PersistenceTicket,
-            pendingResetKeys: [DownloadAttemptKey],
-            advancesSchema: Bool
-        )
+        case malformedCurrentRows([String])
     }
 
     enum AttemptRecordCreateResult: Sendable, Equatable {
@@ -99,7 +76,6 @@ final class DownloadStore: @unchecked Sendable {
     enum AttemptRecordCreateRejection: String, Sendable, Equatable {
         case missingExpectedOwner
         case ownerMismatch
-        case legacyResetPending
         case validatedPromotionPending
         case deletionPending
         case heldBodyDeletionPending
@@ -169,19 +145,6 @@ final class DownloadStore: @unchecked Sendable {
     struct AttemptStagingSweepResult: Sendable, Equatable {
         let removedRelativePaths: [String]
         let failedRelativePaths: [String]
-    }
-
-    enum LegacyAttemptResetResult: Sendable, Equatable {
-        case committed(DownloadAttemptKey, cleanupFailureCount: Int)
-        case cleanupFailed(DownloadAttemptKey, cleanupFailureCount: Int)
-        case staleOrMissing
-        case notPending
-        case failed(DownloadAttemptKey, PersistenceFlushResult)
-    }
-
-    enum LegacyAttemptResetSubmission: Sendable, Equatable {
-        case accepted(ticket: DownloadArtifactLifecycleCoordinator.Ticket)
-        case immediate(LegacyAttemptResetResult)
     }
 
     enum RowDeletionResult: Sendable, Equatable {
@@ -474,11 +437,10 @@ final class DownloadStore: @unchecked Sendable {
                 terminalStatus: DownloadStatus,
                 sourceBytes: Int?
             )
-            case legacyResetDeletion(relativePaths: [String])
             case rowDeletion(
                 relativePaths: [String],
                 requiresDeletionPending: Bool,
-                adoptedOwnerlessTerminal: Bool
+                persistedOwnershipFlag: Bool
             )
         }
 
@@ -507,10 +469,6 @@ final class DownloadStore: @unchecked Sendable {
         // D5: snapshot of the source item + the locally-cached poster path. Both are
         // optional and decoded with `decodeIfPresent` so rows written before D5 load.
         var metadata: OfflineMetadata?
-        /// Durable migration barrier. While true, legacy OS tasks must be cancelled and this row's
-        /// partial artifacts reset before background callback admission may open.
-        var legacyResetPending: Bool
-        var legacyResetArtifactRelativePaths: [String]?
         /// A user requested deletion while required server-cleanup authority could not move into
         /// the independent journal. The row and its exact metadata remain the durable fallback
         /// until a later retry journals every operation and completes destructive deletion.
@@ -529,8 +487,8 @@ final class DownloadStore: @unchecked Sendable {
         /// side-asset promotion advances it, including same-path repair replacements.
         var sideAssetGeneration: UInt64
         var pendingArtifactIntents: [ArtifactIntent]
-        /// Decode-only evidence used to distinguish a valid v3 owner from the nested v2 fallback.
-        /// This field is deliberately absent from CodingKeys.
+        /// Decode-only evidence used to require the current top-level owner and reject any
+        /// disagreement with metadata's redundant exact-attempt shadow. Absent from CodingKeys.
         var decodedTopLevelAttemptIDPresent: Bool
         var decodedAttemptIdentityDisagrees: Bool
 
@@ -538,8 +496,6 @@ final class DownloadStore: @unchecked Sendable {
             case ratingKey, attemptID, title, relativePath, attemptWorkingRelativePath
             case pendingValidatedPromotionStatus
             case bytes, progress, status, metadata
-            case legacyResetPending
-            case legacyResetArtifactRelativePaths
             case deletionPending
             case deletionPendingCleanupIntents
             case heldRangeBodyDeletionIntents
@@ -548,10 +504,8 @@ final class DownloadStore: @unchecked Sendable {
             case pendingArtifactIntents
         }
 
-        // Backward-compatible decoding: rows written before D2 lack `status`.
-        // Infer it from the old progress signal so existing libraries keep
-        // working — a finished-looking row maps to `.complete`, anything else
-        // to `.queued` (launch reconciliation then re-checks it against disk).
+        // Current-schema rows require an explicit lifecycle state. Missing status is malformed;
+        // startup admission then retains the canonical bytes and fails closed.
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             ratingKey = try c.decode(String.self, forKey: .ratingKey)
@@ -564,14 +518,10 @@ final class DownloadStore: @unchecked Sendable {
                 DownloadStatus.self, forKey: .pendingValidatedPromotionStatus)
             bytes = try c.decode(Int.self, forKey: .bytes)
             progress = try c.decode(Double.self, forKey: .progress)
-            status = try c.decodeIfPresent(DownloadStatus.self, forKey: .status)
-                ?? DownloadStatus.migratedStatus(forLegacyProgress: progress)
+            status = try c.decode(DownloadStatus.self, forKey: .status)
             metadata = try c.decodeIfPresent(OfflineMetadata.self, forKey: .metadata)
             let nestedAttemptID = metadata?.downloadAttemptID.flatMap(DownloadAttemptID.init(rawValue:))
-            attemptID = topLevelAttemptID ?? nestedAttemptID
-            legacyResetPending = try c.decodeIfPresent(Bool.self, forKey: .legacyResetPending) ?? false
-            legacyResetArtifactRelativePaths = try c.decodeIfPresent(
-                [String].self, forKey: .legacyResetArtifactRelativePaths)
+            attemptID = topLevelAttemptID
             deletionPending = try c.decodeIfPresent(Bool.self, forKey: .deletionPending) ?? false
             deletionPendingCleanupIntents = try c.decodeIfPresent(
                 [DurableDownloadCleanupIntent].self,
@@ -596,8 +546,6 @@ final class DownloadStore: @unchecked Sendable {
              pendingValidatedPromotionStatus: DownloadStatus? = nil,
              bytes: Int, progress: Double, status: DownloadStatus,
              metadata: OfflineMetadata? = nil,
-             legacyResetPending: Bool = false,
-             legacyResetArtifactRelativePaths: [String]? = nil,
              deletionPending: Bool = false,
              deletionPendingCleanupIntents: [DurableDownloadCleanupIntent] = [],
              heldRangeBodyDeletionIntents: [String] = [],
@@ -614,8 +562,6 @@ final class DownloadStore: @unchecked Sendable {
             self.progress = progress
             self.status = status
             self.metadata = metadata
-            self.legacyResetPending = legacyResetPending
-            self.legacyResetArtifactRelativePaths = legacyResetArtifactRelativePaths
             self.deletionPending = deletionPending
             self.deletionPendingCleanupIntents = deletionPendingCleanupIntents
             self.heldRangeBodyDeletionIntents = heldRangeBodyDeletionIntents
@@ -639,9 +585,6 @@ final class DownloadStore: @unchecked Sendable {
             try c.encode(progress, forKey: .progress)
             try c.encode(status, forKey: .status)
             try c.encodeIfPresent(metadata, forKey: .metadata)
-            if legacyResetPending { try c.encode(true, forKey: .legacyResetPending) }
-            try c.encodeIfPresent(legacyResetArtifactRelativePaths,
-                                  forKey: .legacyResetArtifactRelativePaths)
             if deletionPending { try c.encode(true, forKey: .deletionPending) }
             if !deletionPendingCleanupIntents.isEmpty {
                 try c.encode(
@@ -701,9 +644,7 @@ final class DownloadStore: @unchecked Sendable {
     private let artifactWorkerQueue = DispatchQueue(
         label: "com.visionplay.download-artifact-lifecycle", qos: .utility)
     private var nextPersistenceRevision: UInt64 = 0 // guarded by `lock`
-    private var loadedSchemaVersion = DownloadIndexCoding.currentSchemaVersion // guarded by `lock`
     private var startupSchemaProbe: DownloadIndexCoding.StartupProbe // guarded by `lock`
-    private var pendingLegacyAttemptResetKeys: Set<DownloadAttemptKey> = [] // guarded by `lock`
     private var activeArtifactIntentIDs: Set<UUID> = [] // guarded by `lock`
     private var pendingResumeArtifactData: [UUID: Data] = [:] // guarded by `lock`
     private var artifactLifecycleTickets: [UUID: DownloadArtifactLifecycleCoordinator.Ticket] = [:]
@@ -720,8 +661,6 @@ final class DownloadStore: @unchecked Sendable {
     private var staticCheckpointAwaitingResultIDs: Set<UUID> = []
     private var promotionOutcomes: [UUID: AttemptValidatedPromotionResult] = [:]
     private var promotionAwaitingResultIDs: Set<UUID> = []
-    private var legacyResetOutcomes: [UUID: LegacyAttemptResetResult] = [:]
-    private var legacyResetAwaitingResultIDs: Set<UUID> = []
     private struct RowDeletionTicketEpoch: Hashable {
         let intentID: UUID
         let preparedRevision: UInt64
@@ -835,7 +774,7 @@ final class DownloadStore: @unchecked Sendable {
         load()
         startupArtifactCleanupIntentIDs = Set(
             rows.values.flatMap { $0.pendingArtifactIntents.map(\.id) })
-        stageLegacyHeldBodyDeletionJobs()
+        stageHeldBodyDeletionJobs()
         recoverPendingArtifactIntents()
         Self.scheduleUnsupportedRootReclamation(
             parent: dir.deletingLastPathComponent(),
@@ -876,7 +815,7 @@ final class DownloadStore: @unchecked Sendable {
             if fileManager.fileExists(atPath: baseDirectory.path) {
                 if fileManager.fileExists(atPath: quarantine.path) {
                     let archived = parent.appendingPathComponent(
-                        ".\(baseDirectory.lastPathComponent)-legacy-\(UUID().uuidString)",
+                        ".\(baseDirectory.lastPathComponent)-retired-\(UUID().uuidString)",
                         isDirectory: true)
                     try fileManager.moveItem(at: quarantine, to: archived)
                     try Self.syncDirectory(parent)
@@ -900,7 +839,6 @@ final class DownloadStore: @unchecked Sendable {
                 rows.removeAll()
                 sideAssetHydrationCache.removeAll()
                 startupStagingInventory.removeAll()
-                loadedSchemaVersion = DownloadIndexCoding.currentSchemaVersion
                 startupSchemaProbe = .current
             }
             Self.scheduleUnsupportedRootReclamation(
@@ -946,7 +884,7 @@ final class DownloadStore: @unchecked Sendable {
         fileManager: FileManager
     ) {
         let pendingName = ".\(rootName)-unsupported-reset-pending"
-        let archivePrefix = ".\(rootName)-legacy-"
+        let archivePrefix = ".\(rootName)-retired-"
         unsupportedRootCleanupQueue.async {
             guard fileManager.fileExists(
                 atPath: parent.appendingPathComponent(rootName, isDirectory: true).path),
@@ -1154,7 +1092,6 @@ final class DownloadStore: @unchecked Sendable {
     func attemptWorkingFileLayout(for key: DownloadAttemptKey) -> AttemptWorkingFileLayout? {
         lock.lock(); defer { lock.unlock() }
         guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending,
               !Self.hasPendingRowDeletion(row),
               row.status != .complete, row.status != .unverified,
               let working = row.attemptWorkingRelativePath,
@@ -1194,7 +1131,7 @@ final class DownloadStore: @unchecked Sendable {
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID else {
             lock.unlock(); return .immediate(.staleOrMissingOwner)
         }
-        guard !row.legacyResetPending, !row.deletionPending else {
+        guard !row.deletionPending else {
             lock.unlock(); return .immediate(.resetPending)
         }
         if let head = row.pendingArtifactIntents.first,
@@ -1483,9 +1420,6 @@ final class DownloadStore: @unchecked Sendable {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID else {
             lock.unlock(); return .staleOrMissingOwner
-        }
-        guard !row.legacyResetPending else {
-            lock.unlock(); return .resetPending
         }
         guard let terminalStatus = row.pendingValidatedPromotionStatus,
               terminalStatus == .complete || terminalStatus == .unverified,
@@ -1826,7 +1760,7 @@ final class DownloadStore: @unchecked Sendable {
     ) -> AttemptHeldRangeSegmentPersistResult {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending, !row.deletionPending,
+              !row.deletionPending,
               !Self.hasPendingRowDeletion(row),
               row.pendingValidatedPromotionStatus == nil,
               reservedHeldBodyDeletionPaths[segment.relativePath] == nil,
@@ -1865,7 +1799,7 @@ final class DownloadStore: @unchecked Sendable {
     ) -> AttemptHeldRangeLifecycleSubmissionResult {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending, !row.deletionPending,
+              !row.deletionPending,
               !Self.hasPendingRowDeletion(row),
               row.pendingValidatedPromotionStatus == nil,
               reservedHeldBodyDeletionPaths[segment.relativePath] == nil,
@@ -1905,7 +1839,7 @@ final class DownloadStore: @unchecked Sendable {
     ) -> AttemptHeldRangeLifecycleSubmissionResult {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending, !row.deletionPending,
+              !row.deletionPending,
               !Self.hasPendingRowDeletion(row),
               row.pendingValidatedPromotionStatus == nil,
               var metadata = row.metadata else {
@@ -2007,8 +1941,6 @@ final class DownloadStore: @unchecked Sendable {
                 self.executeStaticCheckpoint(ticket: ticket, intent: intent)
             case .validatedPromotion:
                 self.executeValidatedPromotion(ticket: ticket, intent: intent)
-            case .legacyResetDeletion:
-                self.executeLegacyResetDeletion(ticket: ticket, intent: intent)
             case .rowDeletion:
                 self.executeRowDeletion(ticket: ticket, intent: intent)
             }
@@ -2120,7 +2052,7 @@ final class DownloadStore: @unchecked Sendable {
         completeArtifactLifecycle(ticket)
     }
 
-    func stageLegacyHeldBodyDeletionJobs() {
+    func stageHeldBodyDeletionJobs() {
         lock.lock()
         var staged: [(DownloadAttemptKey, Row.ArtifactIntent, DownloadArtifactLifecycleCoordinator.Ticket)] = []
         for (ratingKey, original) in Array(rows) {
@@ -2209,7 +2141,7 @@ final class DownloadStore: @unchecked Sendable {
         let offsetSet = Set(offsets)
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending, !row.deletionPending,
+              !row.deletionPending,
               !Self.hasPendingRowDeletion(row),
               row.pendingValidatedPromotionStatus == nil,
               var metadata = row.metadata else {
@@ -2275,7 +2207,7 @@ final class DownloadStore: @unchecked Sendable {
     ) -> AttemptHeldRangeSegmentsRemovalResult {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending, !Self.hasPendingRowDeletion(row),
+              !Self.hasPendingRowDeletion(row),
               var metadata = row.metadata else {
             lock.unlock()
             return .staleOrMissing
@@ -2312,8 +2244,7 @@ final class DownloadStore: @unchecked Sendable {
         // First prove the current full snapshot. A prior failed manifest-removal write may have
         // staged intents only in memory; no body may be touched until that snapshot is durable.
         lock.lock()
-        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending else {
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else {
             lock.unlock()
             return .staleOrMissing
         }
@@ -2340,8 +2271,7 @@ final class DownloadStore: @unchecked Sendable {
                 removal: removal, removedRelativePaths: [], failedRelativePaths: []))
         }
         lock.lock()
-        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending else {
+        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID else {
             lock.unlock()
             return .staleOrMissing
         }
@@ -2514,7 +2444,6 @@ final class DownloadStore: @unchecked Sendable {
         }
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending,
               row.pendingValidatedPromotionStatus == nil else {
             lock.unlock()
             return .staleOrMissing
@@ -2549,7 +2478,7 @@ final class DownloadStore: @unchecked Sendable {
                                        destination: URL) -> String? {
         lock.lock(); defer { lock.unlock() }
         guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending, !row.deletionPending else { return nil }
+              !row.deletionPending else { return nil }
         guard let metadata = row.metadata,
               metadata.sideAssetBundleOwner == OfflineSideAssetBundleOwner(
                 attemptID: key.attemptID.rawValue,
@@ -2576,7 +2505,7 @@ final class DownloadStore: @unchecked Sendable {
     ) -> OfflineSideAssetSourceIdentity? {
         lock.lock(); defer { lock.unlock() }
         guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending, !Self.hasPendingRowDeletion(row) else { return nil }
+              !Self.hasPendingRowDeletion(row) else { return nil }
         return row.metadata?.sideAssetSourceIdentity
     }
 
@@ -2876,7 +2805,7 @@ final class DownloadStore: @unchecked Sendable {
         lock.lock()
         let row = rows[key.ratingKey]
         lock.unlock()
-        guard let row, row.attemptID == key.attemptID, !row.legacyResetPending,
+        guard let row, row.attemptID == key.attemptID,
               let metadata = row.metadata,
               metadata.resolvedResumeMode(ratingKey: key.ratingKey) == .staticByteRange,
               let size = metadata.sourcePartSize, size > 0 else { return nil }
@@ -2886,7 +2815,7 @@ final class DownloadStore: @unchecked Sendable {
     func sourcePartSize(for key: DownloadAttemptKey) -> Int? {
         lock.lock(); defer { lock.unlock() }
         guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending, let size = row.metadata?.sourcePartSize,
+              let size = row.metadata?.sourcePartSize,
               size > 0 else { return nil }
         return size
     }
@@ -2971,8 +2900,6 @@ final class DownloadStore: @unchecked Sendable {
                                      progress: record.progress,
                                      status: record.status,
                                      metadata: metadata,
-                                     legacyResetPending: existing?.legacyResetPending ?? false,
-                                     legacyResetArtifactRelativePaths: existing?.legacyResetArtifactRelativePaths,
                                      heldRangeBodyDeletionIntents: existing?.heldRangeBodyDeletionIntents ?? [],
                                      sideAssetGeneration: existing?.sideAssetGeneration ?? 0)
         sideAssetHydrationCache.removeValue(forKey: record.ratingKey)
@@ -3037,8 +2964,6 @@ final class DownloadStore: @unchecked Sendable {
                 progress: 0,
                 status: record.status,
                 metadata: metadata,
-                legacyResetPending: false,
-                legacyResetArtifactRelativePaths: nil,
                 heldRangeBodyDeletionIntents: [])
             candidateHydrationCache.removeValue(forKey: record.ratingKey)
         }
@@ -3151,14 +3076,6 @@ final class DownloadStore: @unchecked Sendable {
                 expectedPreviousOwner: expectedKey,
                 actualOwner: existingKey,
                 reason: .artifactLifecyclePending
-            )
-        }
-        if existing?.legacyResetPending == true {
-            lock.unlock()
-            return .rejectedOwnership(
-                expectedPreviousOwner: expectedKey,
-                actualOwner: existingKey,
-                reason: .legacyResetPending
             )
         }
         if existing?.pendingValidatedPromotionStatus != nil {
@@ -3287,8 +3204,6 @@ final class DownloadStore: @unchecked Sendable {
             progress: effectiveProgress,
             status: record.status,
             metadata: metadata,
-            legacyResetPending: previous?.legacyResetPending ?? false,
-            legacyResetArtifactRelativePaths: previous?.legacyResetArtifactRelativePaths
         )
         sideAssetHydrationCache.removeValue(forKey: record.ratingKey)
         let ticket = enqueueAttemptPersistenceLocked()
@@ -3363,38 +3278,9 @@ final class DownloadStore: @unchecked Sendable {
         }
     }
 
-    /// Compatibility for completed v1/v2 rows that legitimately have no asynchronous owner.
-    /// Active ownerless rows are never eligible: they must pass startup ownership migration first.
-    @discardableResult
-    func setLocalPlaybackPositionForOwnerlessTerminalRow(
-        ratingKey: String,
-        positionMs: Int,
-        durationMs: Int?
-    ) -> Bool {
-        lock.lock()
-        guard var row = rows[ratingKey], row.attemptID == nil,
-              row.status == .complete || row.status == .unverified,
-              var metadata = row.metadata else {
-            lock.unlock()
-            return false
-        }
-        let effectiveDuration = durationMs ?? metadata.duration
-        metadata.localPlaybackPositionMs = OfflinePlaybackPositionPolicy.standard
-            .persistedPositionMs(currentMs: positionMs, durationMs: effectiveDuration)
-        row.metadata = metadata
-        rows[ratingKey] = row
-        let ticket = enqueueAttemptPersistenceLocked()
-        lock.unlock()
-        return waitForPersistence(through: ticket).result.committed(through: ticket)
-    }
-
     /// #84: persist the server-minted `PlaySessionId` for a transcoded JF/Emby (or Plex optimize)
     /// job so a hard app kill can still tear the encoder down on next launch. Status-change-grade:
     /// persists immediately (not throttled). No-op if the row/metadata is gone.
-    func setPlaySessionID(ratingKey: String, _ playSessionID: String) {
-        updateMetadata(ratingKey: ratingKey) { $0.playSessionID = playSessionID }
-    }
-
     @discardableResult
     func setPlaySessionID(
         for key: DownloadAttemptKey,
@@ -3402,12 +3288,6 @@ final class DownloadStore: @unchecked Sendable {
     ) -> AttemptMutationResult {
         guard !playSessionID.isEmpty else { return .noChange }
         return updateMetadata(for: key) { $0.playSessionID = playSessionID }
-    }
-
-    /// #84: clear the persisted `PlaySessionId` after the encoder has been torn down (the launch
-    /// sweep is idempotent — clearing prevents it from firing twice). No-op if the row is gone.
-    func clearPlaySessionID(ratingKey: String) {
-        updateMetadata(ratingKey: ratingKey) { $0.playSessionID = nil }
     }
 
     /// Clear only the exact server encoder handle that a confirmed teardown executed. A delayed
@@ -3420,7 +3300,7 @@ final class DownloadStore: @unchecked Sendable {
     ) -> AttemptCompareClearResult {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending, var metadata = row.metadata else {
+              var metadata = row.metadata else {
             lock.unlock()
             return .staleOrMissing
         }
@@ -3606,7 +3486,7 @@ final class DownloadStore: @unchecked Sendable {
     ) -> AttemptResumeDataSubmission {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending, !row.deletionPending,
+              !row.deletionPending,
               !Self.hasPendingRowDeletion(row),
               row.pendingValidatedPromotionStatus == nil,
               row.metadata != nil else {
@@ -3662,8 +3542,7 @@ final class DownloadStore: @unchecked Sendable {
 
     func resumeData(for key: DownloadAttemptKey) -> Data? {
         lock.lock(); defer { lock.unlock() }
-        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending else { return nil }
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else { return nil }
         let relative = row.metadata?.resumeDataRelativePath
         guard let relative, !relative.isEmpty,
               Self.isSafeOneLevelRelativePath(relative) else { return nil }
@@ -3683,7 +3562,6 @@ final class DownloadStore: @unchecked Sendable {
     func hasResumeData(for key: DownloadAttemptKey) -> Bool {
         lock.lock(); defer { lock.unlock() }
         guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending,
               let relative = row.metadata?.resumeDataRelativePath,
               !relative.isEmpty, Self.isSafeOneLevelRelativePath(relative) else { return false }
         return fileManager.fileExists(
@@ -3717,8 +3595,7 @@ final class DownloadStore: @unchecked Sendable {
 
     func resumeDisplayBytes(for key: DownloadAttemptKey) -> Int? {
         lock.lock(); defer { lock.unlock() }
-        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending else { return nil }
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else { return nil }
         return row.metadata?.resumeDisplayBytes
     }
 
@@ -3770,7 +3647,7 @@ final class DownloadStore: @unchecked Sendable {
     ) -> AttemptArtifactMutationSubmission {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending, !row.deletionPending,
+              !row.deletionPending,
               !Self.hasPendingRowDeletion(row),
               row.pendingValidatedPromotionStatus == nil,
               let metadata = row.metadata else {
@@ -4277,8 +4154,7 @@ final class DownloadStore: @unchecked Sendable {
 
     func rangeValidator(for key: DownloadAttemptKey) -> String? {
         lock.lock(); defer { lock.unlock() }
-        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending else { return nil }
+        guard let row = rows[key.ratingKey], row.attemptID == key.attemptID else { return nil }
         return row.metadata?.rangeValidator
     }
 
@@ -4311,378 +4187,35 @@ final class DownloadStore: @unchecked Sendable {
         updateMetadata(for: key) { $0.rangeValidator = nil }
     }
 
-    /// The row's current download-attempt token (see `OfflineMetadata.downloadAttemptID`).
-    func downloadAttemptID(ratingKey: String) -> String? {
-        lock.lock(); defer { lock.unlock() }
-        return rows[ratingKey]?.attemptID?.rawValue
-    }
-
     func downloadAttemptIdentity(ratingKey: String) -> DownloadAttemptID? {
         lock.lock(); defer { lock.unlock() }
         return rows[ratingKey]?.attemptID
     }
 
-    /// First writer wins: concurrent task-creation paths for one attempt must all end up
-    /// stamping the same token.
-    func mintDownloadAttemptIDIfMissing(ratingKey: String, _ attemptID: String) {
-        guard let typed = DownloadAttemptID(rawValue: attemptID) else { return }
-        lock.lock()
-        guard var row = rows[ratingKey], row.attemptID == nil else { lock.unlock(); return }
-        row.attemptID = typed
-        row.decodedTopLevelAttemptIDPresent = true
-        row.decodedAttemptIdentityDisagrees = false
-        // Retain the nested rollout field until every callback reader has migrated. Top-level is
-        // authoritative in v3; this mirror exists only for downgrade/dual-read compatibility.
-        if row.metadata?.downloadAttemptID == nil { row.metadata?.downloadAttemptID = typed.rawValue }
-        rows[ratingKey] = row
-        lock.unlock()
-        persist()
-    }
-
-    /// Upgrade a pre-v4 index without admitting background callbacks. Existing tokens
-    /// are preserved verbatim; rows that need ownership but have no token receive one. The whole
-    /// snapshot must commit before the returned keys may be used to cancel legacy OS tasks.
-    @discardableResult
-    func commitLegacyAttemptOwnershipMigration(
-        idFactory: (String) -> DownloadAttemptID = { _ in .generated() }
-    ) -> AttemptOwnershipMigrationResult {
-        resolveSynchronously(submitLegacyAttemptOwnershipMigration(idFactory: idFactory))
-    }
-
-    @discardableResult
-    func submitLegacyAttemptOwnershipMigration(
-        idFactory: (String) -> DownloadAttemptID = { _ in .generated() }
-    ) -> AttemptOwnershipMigrationSubmission {
-        _ = idFactory // retained temporarily for source compatibility with older focused tests
-        lock.lock()
-        defer { lock.unlock() }
+    /// Startup accepts only a fully current exact-attempt snapshot. Unsupported schemas are reset
+    /// as one opaque root; malformed current rows are retained byte-for-byte and fail closed.
+    func startupIndexAdmission() -> StartupIndexAdmission {
+        lock.lock(); defer { lock.unlock() }
         switch startupSchemaProbe {
         case .unsupported(let schemaVersion):
-            return .immediate(.requiresDestructiveReset(schemaVersion: schemaVersion))
+            return .requiresDestructiveReset(schemaVersion: schemaVersion)
         case .unreadable:
-            return .immediate(.unreadableIndex)
+            return .unreadableIndex
         case .missing:
-            return .immediate(.notRequired)
+            return .current
         case .current:
             break
         }
-
-        // Current schema is validated, never repaired by guessing. Old per-row ownership adoption
-        // is gone; a malformed v4 row remains available for diagnosis while session admission is
-        // closed. Exact terminal rows without asynchronous cleanup evidence may remain ownerless.
         let malformed = rows.values.filter { row in
-            if row.decodedAttemptIdentityDisagrees || row.legacyResetPending { return true }
-            guard Self.requiresAttemptOwnership(row) else { return false }
-            guard row.decodedTopLevelAttemptIDPresent, let attemptID = row.attemptID else {
-                return true
-            }
+            guard !row.decodedAttemptIdentityDisagrees,
+                  row.decodedTopLevelAttemptIDPresent,
+                  let attemptID = row.attemptID else { return true }
             guard row.status != .complete && row.status != .unverified else { return false }
             return row.attemptWorkingRelativePath != Self.attemptStagingRelativePath(
                 for: DownloadAttemptKey(ratingKey: row.ratingKey, attemptID: attemptID),
                 stableRelativePath: row.relativePath)
         }.map(\.ratingKey).sorted()
-        return malformed.isEmpty
-            ? .immediate(.notRequired)
-            : .immediate(.malformedV3Rows(malformed))
-    }
-
-    func resolveSynchronously(
-        _ submission: AttemptOwnershipMigrationSubmission
-    ) -> AttemptOwnershipMigrationResult {
-        switch submission {
-        case .immediate(let result):
-            return result
-        case .accepted(let plan, let ticket, let pendingResetKeys, let advancesSchema):
-            let persistence = waitForPersistence(through: ticket)
-            guard persistence.result.committed(through: ticket) else {
-                return .failed(plan, persistence.result)
-            }
-            lock.withLock {
-                if advancesSchema { loadedSchemaVersion = DownloadIndexCoding.currentSchemaVersion }
-                pendingLegacyAttemptResetKeys.formUnion(pendingResetKeys)
-            }
-            return .committed(plan)
-        }
-    }
-
-    func resolve(
-        _ submission: AttemptOwnershipMigrationSubmission,
-        timeout: TimeInterval
-    ) async -> AttemptOwnershipMigrationResult {
-        switch submission {
-        case .immediate(let result):
-            return result
-        case .accepted(let plan, let ticket, let pendingResetKeys, let advancesSchema):
-            let persistence = await flushPersistence(through: ticket, timeout: timeout)
-            guard persistence.committed(through: ticket) else {
-                return .failed(plan, persistence)
-            }
-            lock.withLock {
-                if advancesSchema { loadedSchemaVersion = DownloadIndexCoding.currentSchemaVersion }
-                pendingLegacyAttemptResetKeys.formUnion(pendingResetKeys)
-            }
-            return .committed(plan)
-        }
-    }
-
-    /// Complete the approved legacy policy only after the coordinator has cancelled every old
-    /// task. Submission durably records the exact reset + deletion recipe before filesystem work.
-    @discardableResult
-    func resetLegacyAttemptAfterTaskCancellation(
-        _ key: DownloadAttemptKey
-    ) -> LegacyAttemptResetResult {
-        resolveLegacyResetSynchronously(submitLegacyResetAfterTaskCancellation(key))
-    }
-
-    func submitLegacyResetAfterTaskCancellation(
-        _ key: DownloadAttemptKey
-    ) -> LegacyAttemptResetSubmission {
-        lock.lock()
-        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID else {
-            lock.unlock(); return .immediate(.staleOrMissing)
-        }
-        guard row.legacyResetPending else {
-            pendingLegacyAttemptResetKeys.remove(key)
-            lock.unlock(); return .immediate(.notPending)
-        }
-        if let head = row.pendingArtifactIntents.first,
-           case .legacyResetDeletion = head.operation {
-            if activeArtifactIntentIDs.contains(head.id) {
-                if let ticket = artifactLifecycleTickets[head.id] {
-                    legacyResetAwaitingResultIDs.insert(head.id)
-                    lock.unlock(); return .accepted(ticket: ticket)
-                }
-                assertionFailure("active legacy reset intent is missing its lifecycle ticket")
-                // Recover the bookkeeping invariant instead of registering a second coordinator
-                // worker while the intent still appears active.
-                activeArtifactIntentIDs.remove(head.id)
-            }
-            let prepared = enqueueAttemptPersistenceLocked()
-            let ticket = artifactLifecycle.register(
-                key: key, generation: head.generation, intentID: head.id,
-                preparedRevision: prepared)
-            artifactLifecycleTickets[head.id] = ticket
-            legacyResetAwaitingResultIDs.insert(head.id)
-            activeArtifactIntentIDs.insert(head.id)
-            lock.unlock(); scheduleArtifactLifecycle(ticket: ticket, intent: head)
-            return .accepted(ticket: ticket)
-        }
-        guard pendingLegacyAttemptResetKeys.contains(key) else {
-            lock.unlock(); return .immediate(.notPending)
-        }
-        guard row.pendingArtifactIntents.isEmpty else {
-            lock.unlock(); return .immediate(.notPending)
-        }
-        var relative = Set(row.legacyResetArtifactRelativePaths ?? [])
-        relative.insert(row.relativePath)
-        if let working = row.attemptWorkingRelativePath,
-           Self.isAttemptStagingRelativePath(working) { relative.insert(working) }
-        for stable in ([row.relativePath] + sideAssetRelativePaths(for: row.metadata))
-            where Self.isSafeOneLevelRelativePath(stable) {
-            relative.insert(Self.attemptStagingRelativePath(
-                for: key, stableRelativePath: stable))
-        }
-        if let resume = row.metadata?.resumeDataRelativePath,
-           Self.isSafeOneLevelRelativePath(resume) { relative.insert(resume) }
-        for held in row.metadata?.heldRangeSegments ?? []
-            where Self.isSafeOneLevelRelativePath(held.relativePath) { relative.insert(held.relativePath) }
-        let paths = relative.filter(Self.isSafeOneLevelRelativePath).sorted()
-        row.bytes = 0; row.progress = 0; row.status = .failed
-        row.metadata?.resumeDataRelativePath = nil
-        row.metadata?.resumeDisplayBytes = nil
-        row.metadata?.heldRangeSegments = nil
-        row.metadata?.rangeValidator = nil
-        row.legacyResetPending = true
-        row.legacyResetArtifactRelativePaths = paths
-        row.artifactGeneration += 1
-        let intent = Row.ArtifactIntent(
-            id: UUID(), attemptID: key.attemptID, generation: row.artifactGeneration,
-            phase: .prepared, operation: .legacyResetDeletion(relativePaths: paths))
-        row.pendingArtifactIntents.append(intent)
-        rows[key.ratingKey] = row
-        sideAssetHydrationCache.removeValue(forKey: key.ratingKey)
-        let prepared = enqueueAttemptPersistenceLocked()
-        let ticket = artifactLifecycle.register(
-            key: key, generation: intent.generation, intentID: intent.id,
-            preparedRevision: prepared)
-        artifactLifecycleTickets[intent.id] = ticket
-        legacyResetAwaitingResultIDs.insert(intent.id)
-        activeArtifactIntentIDs.insert(intent.id)
-        lock.unlock(); scheduleArtifactLifecycle(ticket: ticket, intent: intent)
-        return .accepted(ticket: ticket)
-    }
-
-    func resolveLegacyResetSynchronously(
-        _ submission: LegacyAttemptResetSubmission
-    ) -> LegacyAttemptResetResult {
-        switch submission {
-        case .immediate(let result): return result
-        case .accepted(let ticket):
-            let lifecycle = artifactLifecycle.waitSynchronously(for: ticket)
-            if let result = lock.withLock({ () -> LegacyAttemptResetResult? in
-                legacyResetAwaitingResultIDs.remove(ticket.intentID)
-                return legacyResetOutcomes.removeValue(forKey: ticket.intentID)
-            }) { return result }
-            switch lifecycle {
-            case .completed: return .staleOrMissing
-            case .failed(.persistence(let failure)): return .failed(ticket.key, failure)
-            case .failed(.artifact): return .cleanupFailed(ticket.key, cleanupFailureCount: 1)
-            case .timedOut: return .staleOrMissing
-            }
-        }
-    }
-
-    func resolveLegacyReset(_ submission: LegacyAttemptResetSubmission) async -> LegacyAttemptResetResult {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async { [self] in
-                continuation.resume(returning: resolveLegacyResetSynchronously(submission))
-            }
-        }
-    }
-
-    /// Every local path for which a row still has durable ownership or lifecycle authority.
-    /// Destructive workers use this for cross-row exclusion; notably this includes paths captured
-    /// only by a pending intent, not just paths currently published in ordinary row metadata.
-    private func artifactPathsReferenced(by row: Row) -> Set<String> {
-        var result: Set<String> = [row.relativePath]
-        if let working = row.attemptWorkingRelativePath { result.insert(working) }
-        result.formUnion(sideAssetRelativePaths(for: row.metadata))
-        if let resume = row.metadata?.resumeDataRelativePath { result.insert(resume) }
-        result.formUnion((row.metadata?.heldRangeSegments ?? []).map(\.relativePath))
-        result.formUnion(row.heldRangeBodyDeletionIntents)
-        result.formUnion(row.legacyResetArtifactRelativePaths ?? [])
-        for intent in row.pendingArtifactIntents {
-            switch intent.operation {
-            case .replaceResumeBlob(let new, let previous, _):
-                result.insert(new)
-                if let previous { result.insert(previous) }
-            case .clearResumeBlob(let relative, _):
-                if let relative { result.insert(relative) }
-            case .heldBodyDeletion(let paths), .legacyResetDeletion(let paths):
-                result.formUnion(paths)
-            case .staticCheckpoint(let working, let stable, let temporary, _, _):
-                result.insert(working)
-                if let stable { result.insert(stable) }
-                if let temporary { result.insert(temporary) }
-            case .validatedPromotion(let working, let stable, _, _):
-                result.insert(working); result.insert(stable)
-            case .rowDeletion(let paths, _, _):
-                result.formUnion(paths)
-            }
-        }
-        return result
-    }
-
-    /// Row deletion is a terminal queue barrier: no successor artifact or newly-referenced path can
-    /// be admitted behind it because successful execution removes the row rather than advancing to
-    /// a successor. Only another deletion submission may join/retry that exact terminal intent.
-    private static func hasPendingRowDeletion(_ row: Row) -> Bool {
-        row.pendingArtifactIntents.contains { intent in
-            if case .rowDeletion = intent.operation { return true }
-            return false
-        }
-    }
-
-    private func executeLegacyResetDeletion(
-        ticket: DownloadArtifactLifecycleCoordinator.Ticket,
-        intent: Row.ArtifactIntent
-    ) {
-        guard case .legacyResetDeletion(let paths) = intent.operation,
-              paths.allSatisfy(Self.isSafeOneLevelRelativePath) else {
-            failArtifactLifecycle(ticket, errorType: "invalidLegacyResetIntent"); return
-        }
-        let prepared = waitForPersistence(through: ticket.preparedRevision)
-        guard prepared.result.committed(through: ticket.preparedRevision) else {
-            failArtifactLifecycle(ticket, prepared.result); return
-        }
-        let candidates = lock.withLock { () -> [String]? in
-            guard let row = rows[ticket.key.ratingKey], row.attemptID == ticket.key.attemptID,
-                  row.pendingArtifactIntents.first?.id == intent.id else { return nil }
-            var result: Set<String> = []
-            for row in rows.values where row.ratingKey != ticket.key.ratingKey {
-                result.formUnion(artifactPathsReferenced(by: row))
-            }
-            let selected = paths.filter { !result.contains($0) }
-            guard selected.allSatisfy({ reservedArtifactDeletionPaths[$0] == nil }) else {
-                return nil
-            }
-            for path in selected { reservedArtifactDeletionPaths[path] = intent.id }
-            return selected
-        }
-        guard let candidates else {
-            failArtifactLifecycle(ticket, errorType: "legacyResetReservationFailed"); return
-        }
-        let releaseReservations = {
-            self.lock.withLock {
-                for path in candidates where self.reservedArtifactDeletionPaths[path] == intent.id {
-                    self.reservedArtifactDeletionPaths.removeValue(forKey: path)
-                }
-            }
-        }
-        var failures = 0
-        for path in candidates {
-            let url = baseDirectory.appendingPathComponent(path)
-            do { try artifactFilesystem.removeItem(url, fileManager) }
-            catch where artifactFilesystem.fileExists(url, fileManager) { failures += 1 }
-            catch {}
-        }
-        if failures == 0, !candidates.isEmpty {
-            do { try artifactFilesystem.syncParentDirectory(
-                baseDirectory.appendingPathComponent(candidates[0])) }
-            catch { failures = 1 }
-        }
-        guard failures == 0 else {
-            lock.withLock {
-                if legacyResetAwaitingResultIDs.contains(intent.id) {
-                    legacyResetOutcomes[intent.id] = .cleanupFailed(
-                        ticket.key, cleanupFailureCount: failures)
-                }
-            }
-            releaseReservations()
-            failArtifactLifecycle(ticket, errorType: "legacyResetCleanupFailed"); return
-        }
-        lock.lock()
-        guard var row = rows[ticket.key.ratingKey], row.attemptID == ticket.key.attemptID,
-              row.pendingArtifactIntents.first?.id == intent.id else {
-            lock.unlock(); releaseReservations(); completeArtifactLifecycle(ticket); return
-        }
-        artifactRetirementKeys.insert(ticket.key)
-        let retiring = row.pendingArtifactIntents.removeFirst()
-        row.legacyResetPending = false
-        row.legacyResetArtifactRelativePaths = nil
-        rows[ticket.key.ratingKey] = row
-        let terminal = enqueueAttemptPersistenceLocked()
-        lock.unlock()
-        let outcome = waitForPersistence(through: terminal)
-        guard outcome.result.committed(through: terminal) else {
-            lock.lock()
-            if var restored = rows[ticket.key.ratingKey], restored.attemptID == ticket.key.attemptID {
-                restored.pendingArtifactIntents.insert(retiring, at: 0)
-                restored.legacyResetPending = true
-                restored.legacyResetArtifactRelativePaths = paths
-                rows[ticket.key.ratingKey] = restored
-                _ = enqueueAttemptPersistenceLocked()
-            }
-            artifactRetirementKeys.remove(ticket.key)
-            if legacyResetAwaitingResultIDs.contains(intent.id) {
-                legacyResetOutcomes[intent.id] = .failed(ticket.key, outcome.result)
-            }
-            lock.unlock(); releaseReservations(); failArtifactLifecycle(ticket, outcome.result); return
-        }
-        lock.withLock {
-            artifactRetirementKeys.remove(ticket.key)
-            pendingLegacyAttemptResetKeys.remove(ticket.key)
-            if legacyResetAwaitingResultIDs.contains(intent.id) {
-                legacyResetOutcomes[intent.id] = .committed(ticket.key, cleanupFailureCount: 0)
-            }
-        }
-        releaseReservations()
-        completeArtifactLifecycle(ticket)
-    }
-
-    private static func requiresAttemptOwnership(_ row: Row) -> Bool {
-        if row.status != .complete && row.status != .unverified { return true }
-        return hasAsyncCleanupEvidence(row)
+        return malformed.isEmpty ? .current : .malformedCurrentRows(malformed)
     }
 
     private static func hasAsyncCleanupEvidence(_ row: Row) -> Bool {
@@ -4758,7 +4291,7 @@ final class DownloadStore: @unchecked Sendable {
     ) -> AttemptStaticCheckpointSubmission {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending, !row.deletionPending,
+              !row.deletionPending,
               !Self.hasPendingRowDeletion(row),
               row.pendingValidatedPromotionStatus == nil else {
             lock.unlock(); return .staleOrMissing
@@ -4966,6 +4499,48 @@ final class DownloadStore: @unchecked Sendable {
         completeArtifactLifecycle(ticket)
     }
 
+    /// Every local path for which a row still has durable ownership or lifecycle authority.
+    /// Destructive workers use this for cross-row exclusion, including paths captured only by a
+    /// pending intent rather than ordinary published metadata.
+    private func artifactPathsReferenced(by row: Row) -> Set<String> {
+        var result: Set<String> = [row.relativePath]
+        if let working = row.attemptWorkingRelativePath { result.insert(working) }
+        result.formUnion(sideAssetRelativePaths(for: row.metadata))
+        if let resume = row.metadata?.resumeDataRelativePath { result.insert(resume) }
+        result.formUnion((row.metadata?.heldRangeSegments ?? []).map(\.relativePath))
+        result.formUnion(row.heldRangeBodyDeletionIntents)
+        for intent in row.pendingArtifactIntents {
+            switch intent.operation {
+            case .replaceResumeBlob(let new, let previous, _):
+                result.insert(new)
+                if let previous { result.insert(previous) }
+            case .clearResumeBlob(let relative, _):
+                if let relative { result.insert(relative) }
+            case .heldBodyDeletion(let paths):
+                result.formUnion(paths)
+            case .staticCheckpoint(let working, let stable, let temporary, _, _):
+                result.insert(working)
+                if let stable { result.insert(stable) }
+                if let temporary { result.insert(temporary) }
+            case .validatedPromotion(let working, let stable, _, _):
+                result.insert(working)
+                result.insert(stable)
+            case .rowDeletion(let paths, _, _):
+                result.formUnion(paths)
+            }
+        }
+        return result
+    }
+
+    /// Row deletion is a terminal queue barrier: no successor artifact or newly-referenced path
+    /// can be admitted behind it because successful execution removes the row.
+    private static func hasPendingRowDeletion(_ row: Row) -> Bool {
+        row.pendingArtifactIntents.contains { intent in
+            if case .rowDeletion = intent.operation { return true }
+            return false
+        }
+    }
+
     func durableStaticRangeCheckpointSize(ratingKey: String) -> Int {
         lock.lock()
         let row = rows[ratingKey]
@@ -4980,7 +4555,6 @@ final class DownloadStore: @unchecked Sendable {
     func durableStaticRangeCheckpointSize(for key: DownloadAttemptKey) -> Int? {
         lock.lock(); defer { lock.unlock() }
         guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending,
               row.metadata?.resolvedResumeMode(ratingKey: row.ratingKey) == .staticByteRange else {
             return nil
         }
@@ -5048,7 +4622,6 @@ final class DownloadStore: @unchecked Sendable {
     ) -> StaticRangeRecoveryEvidence? {
         lock.lock(); defer { lock.unlock() }
         guard let row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending,
               row.metadata?.resolvedResumeMode(ratingKey: row.ratingKey) == .staticByteRange,
               row.status != .complete, row.status != .unverified else { return nil }
         let resumeRelative = row.metadata?.resumeDataRelativePath
@@ -5146,7 +4719,7 @@ final class DownloadStore: @unchecked Sendable {
     ) -> AttemptMutationSubmission {
         lock.lock()
         guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending, !Self.hasPendingRowDeletion(row),
+              !Self.hasPendingRowDeletion(row),
               var metadata = row.metadata else {
             lock.unlock()
             return .staleOrMissing
@@ -5269,8 +4842,7 @@ final class DownloadStore: @unchecked Sendable {
         progress: Double
     ) -> AttemptMutationSubmission {
         lock.lock()
-        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending else {
+        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID else {
             lock.unlock()
             return .staleOrMissing
         }
@@ -5344,8 +4916,7 @@ final class DownloadStore: @unchecked Sendable {
         _ status: DownloadStatus
     ) -> AttemptMutationSubmission {
         lock.lock()
-        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending else {
+        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID else {
             lock.unlock()
             return .staleOrMissing
         }
@@ -5380,8 +4951,7 @@ final class DownloadStore: @unchecked Sendable {
         for key: DownloadAttemptKey
     ) -> AttemptUnverifiedPromotionResult {
         lock.lock()
-        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
-              !row.legacyResetPending else {
+        guard var row = rows[key.ratingKey], row.attemptID == key.attemptID else {
             lock.unlock()
             return .staleOrMissing
         }
@@ -5400,28 +4970,6 @@ final class DownloadStore: @unchecked Sendable {
         let persistence = waitForPersistence(through: ticket)
         return persistence.result.committed(through: persistence.ticket)
             ? .promoted : .persistenceFailed(persistence.result)
-    }
-
-    /// Compatibility for terminal v1/v2 rows that intentionally remained ownerless during the
-    /// schema-v3 migration. The status check and nil-owner proof share the Store lock.
-    @discardableResult
-    func markCompleteIfUnverifiedOwnerlessTerminalRow(ratingKey: String) -> Bool {
-        lock.lock()
-        guard var row = rows[ratingKey], row.attemptID == nil,
-              row.status == .unverified else {
-            lock.unlock()
-            return false
-        }
-        row.status = .complete
-        rows[ratingKey] = row
-        let ticket = enqueueAttemptPersistenceLocked()
-        lock.unlock()
-        AppDiagnostics.record(.downloads, "downloads.unverified_promoted", fields: [
-            "download_id": .identifier(ratingKey),
-            "source": .label("local_playback_legacy"),
-        ])
-        let persistence = waitForPersistence(through: ticket)
-        return persistence.result.committed(through: persistence.ticket)
     }
 
     /// Reconcile persisted rows against disk at launch (D2).
@@ -5576,13 +5124,6 @@ final class DownloadStore: @unchecked Sendable {
         if changed { persist() }
     }
 
-    /// Compatibility deletion for the only rows intentionally left ownerless by migration:
-    /// terminal rows with no asynchronous cleanup authority. The lifecycle adopts a private exact
-    /// owner in the prepared snapshot so crash recovery never relies on rating-key-only authority.
-    func remove(ratingKey: String) {
-        _ = resolveRowDeletionSynchronously(submitOwnerlessTerminalRemoval(ratingKey: ratingKey))
-    }
-
     /// Attempt-conditional removal. A stale finalizer/delete for attempt A cannot remove attempt B
     /// or any of B's files, even when both attempts reuse the same rating key and stable paths.
     @discardableResult
@@ -5619,7 +5160,6 @@ final class DownloadStore: @unchecked Sendable {
     ) -> RowDeletionSubmission {
         lock.lock()
         guard var existing = rows[key.ratingKey], existing.attemptID == key.attemptID,
-              !existing.legacyResetPending,
               existing.pendingValidatedPromotionStatus == nil,
               existing.deletionPending == requiresDeletionPending else {
             lock.unlock()
@@ -5645,52 +5185,11 @@ final class DownloadStore: @unchecked Sendable {
             return .accepted(ticket: ticket)
         }
         return stageRowDeletionLocked(row: &existing, key: key,
-                                      requiresDeletionPending: requiresDeletionPending,
-                                      adoptedOwnerlessTerminal: false)
-    }
-
-    func submitOwnerlessTerminalRemoval(ratingKey: String) -> RowDeletionSubmission {
-        lock.lock()
-        guard var row = rows[ratingKey] else {
-            lock.unlock(); return .immediate(.staleOrMissing)
-        }
-        if let head = row.pendingArtifactIntents.first,
-           case .rowDeletion(_, false, true) = head.operation,
-           let attemptID = row.attemptID, head.attemptID == attemptID {
-            let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
-            if activeArtifactIntentIDs.contains(head.id),
-               let ticket = artifactLifecycleTickets[head.id] {
-                rowDeletionWaiterCounts[RowDeletionTicketEpoch(ticket), default: 0] += 1
-                lock.unlock(); return .accepted(ticket: ticket)
-            }
-            guard !activeArtifactIntentIDs.contains(head.id) else {
-                lock.unlock(); return .immediate(.staleOrMissing)
-            }
-            let prepared = enqueueAttemptPersistenceLocked()
-            let ticket = artifactLifecycle.register(key: key, generation: head.generation,
-                intentID: head.id, preparedRevision: prepared)
-            artifactLifecycleTickets[head.id] = ticket
-            rowDeletionWaiterCounts[RowDeletionTicketEpoch(ticket), default: 0] += 1
-            activeArtifactIntentIDs.insert(head.id)
-            lock.unlock(); scheduleArtifactLifecycle(ticket: ticket, intent: head)
-            return .accepted(ticket: ticket)
-        }
-        guard row.attemptID == nil,
-              row.status == .complete || row.status == .unverified,
-              !Self.hasAsyncCleanupEvidence(row), !row.deletionPending,
-              row.pendingArtifactIntents.isEmpty else {
-            lock.unlock(); return .immediate(.staleOrMissing)
-        }
-        let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: .generated())
-        row.attemptID = key.attemptID
-        row.metadata?.downloadAttemptID = key.attemptID.rawValue
-        return stageRowDeletionLocked(row: &row, key: key, requiresDeletionPending: false,
-                                      adoptedOwnerlessTerminal: true)
+                                      requiresDeletionPending: requiresDeletionPending)
     }
 
     private func stageRowDeletionLocked(row: inout Row, key: DownloadAttemptKey,
-                                        requiresDeletionPending: Bool,
-                                        adoptedOwnerlessTerminal: Bool) -> RowDeletionSubmission {
+                                        requiresDeletionPending: Bool) -> RowDeletionSubmission {
         var paths = artifactPathsReferenced(by: row)
         let stable = [row.relativePath] + sideAssetRelativePaths(for: row.metadata)
         for path in stable where Self.isSafeOneLevelRelativePath(path) {
@@ -5702,7 +5201,7 @@ final class DownloadStore: @unchecked Sendable {
             generation: row.artifactGeneration, phase: .prepared,
             operation: .rowDeletion(relativePaths: safe,
                                     requiresDeletionPending: requiresDeletionPending,
-                                    adoptedOwnerlessTerminal: adoptedOwnerlessTerminal))
+                                    persistedOwnershipFlag: false))
         row.pendingArtifactIntents.append(intent)
         rows[key.ratingKey] = row
         let prepared = enqueueAttemptPersistenceLocked()
@@ -5876,7 +5375,6 @@ final class DownloadStore: @unchecked Sendable {
         // `decode([Row].self)` did exactly that). A non-zero skip is logged rather than
         // swallowed — silent truncation is the failure mode this guards against.
         let result = DownloadIndexCoding.decode(Row.self, from: data)
-        loadedSchemaVersion = result.schemaVersion
         if result.skippedRowCount > 0 {
             NSLog("DownloadStore: skipped %d corrupt offline-index row(s) on load (schemaVersion %d); %d row(s) preserved",
                   result.skippedRowCount, result.schemaVersion, result.rows.count)
@@ -5924,7 +5422,7 @@ final class DownloadStore: @unchecked Sendable {
         // migration has durably closed admission and marked every nonterminal partial for reset.
         // The repaired values are already in memory and ride along with the migration snapshot.
         if normalizedPreparedStaticRows > 0 || fencedSideAssetRows > 0,
-           loadedSchemaVersion >= DownloadIndexCoding.currentSchemaVersion {
+           startupSchemaProbe == .current {
             lock.unlock()
             persist()
             lock.lock()

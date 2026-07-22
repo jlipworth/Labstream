@@ -2,29 +2,20 @@ import Foundation
 
 /// Resilient (de)serialization for the offline download index (`index.json`).
 ///
-/// `DownloadStore` historically persisted a bare JSON array of rows (`[Row]`) and
-/// loaded it with a single `JSONDecoder().decode([Row].self, …)`. That is
-/// all-or-nothing: ONE row that fails to decode (a future field made non-optional,
-/// a hand-corrupted byte, a half-written atomic replace) aborts the whole decode and
-/// silently drops the user's ENTIRE offline library (#135 Stage 6, hazard H8).
-///
-/// This enum hardens that surface with two changes, both kept in PMSKit so they are
-/// unit-testable without an app test target (matching the rationale in
-/// `OfflineDownloadModels`):
+/// Current-schema serialization for the offline download index (`index.json`).
+/// Kept in PMSKit so the envelope and per-row fail-closed behavior are unit-testable.
 ///
 ///   • Per-row decode isolation — the array is decoded element-by-element; a row that
 ///     fails to decode is skipped and counted, and every healthy row still loads.
-///   • Versioned envelope — new writes wrap the rows in `{ schemaVersion, rows }` so a
-///     future on-disk migration can branch on the shape it is reading. Legacy bare-array
-///     payloads still load and are reported as `schemaVersion == 1`.
+///   • Versioned envelope — writes wrap rows in `{ schemaVersion, rows }`; unsupported
+///     top-level shapes are classified by `startupProbe` and never decoded as rows.
 ///
 /// The type is generic over the row so the persistence struct can stay private to
 /// `DownloadStore`; the tests exercise the isolation/versioning with a stand-in row.
 public enum DownloadIndexCoding {
 
     /// Schema version stamped on every new write. Bump when the on-disk row shape
-    /// changes in a way a loader must branch on; `1` is reserved for the legacy
-    /// bare-array format that predates the envelope.
+    /// changes in a way a loader must branch on.
     public static let currentSchemaVersion = 4
 
     /// A mutation-free startup classification. The app must run this before constructing any
@@ -59,8 +50,7 @@ public enum DownloadIndexCoding {
             : .unsupported(schemaVersion: version)
     }
 
-    /// Outcome of a resilient load: the rows that decoded, the schema version the
-    /// payload was written with (`1` for a legacy bare array), and how many rows were
+    /// Outcome of a current-envelope load: the rows that decoded, the schema version, and how many rows were
     /// skipped because they failed to decode. A non-zero `skippedRowCount` is the
     /// caller's cue to log — silent truncation is exactly the failure this guards against.
     public struct DecodeResult<Row> {
@@ -99,24 +89,15 @@ public enum DownloadIndexCoding {
 
     /// Decode the on-disk index, skipping (and counting) any row that fails to decode.
     ///
-    /// Tries the versioned envelope first, then falls back to the legacy bare array —
-    /// both decode their rows leniently. If the top-level JSON itself is unreadable
-    /// (not a valid array or envelope object) there is nothing to recover and the
-    /// result is empty; individual-row recovery is only possible when the array
-    /// structure survives.
+    /// Only the versioned envelope is decoded. Startup probing owns unsupported-shape reset.
     public static func decode<Row: Decodable>(_ type: Row.Type, from data: Data) -> DecodeResult<Row> {
         let decoder = JSONDecoder()
-        if let envelope = try? decoder.decode(DecodeEnvelope<Row>.self, from: data) {
+        if let envelope = try? decoder.decode(DecodeEnvelope<Row>.self, from: data),
+           envelope.schemaVersion == currentSchemaVersion {
             let rows = envelope.rows.compactMap(\.row)
             return DecodeResult(rows: rows,
                                 schemaVersion: envelope.schemaVersion,
                                 skippedRowCount: envelope.rows.count - rows.count)
-        }
-        if let legacy = try? decoder.decode([LenientRow<Row>].self, from: data) {
-            let rows = legacy.compactMap(\.row)
-            return DecodeResult(rows: rows,
-                                schemaVersion: 1,
-                                skippedRowCount: legacy.count - rows.count)
         }
         return DecodeResult(rows: [], schemaVersion: currentSchemaVersion, skippedRowCount: 0)
     }

@@ -208,17 +208,21 @@ struct DownloadStoreFaultInjectionTests {
             try Data([1, 2, 3]).write(to: mediaURL)
             let fileManager = SelectiveRemovalFailureFileManager(blockedPath: mediaURL.path)
             let store = DownloadStore(baseDirectory: directory, fileManager: fileManager)
-            store.upsert(DownloadRecord(
+            let attemptID = try #require(DownloadAttemptID(rawValue: "owned-attempt"))
+            #expect(store.createAttemptOwnedRecord(DownloadRecord(
                 ratingKey: "plex:owned",
+                attemptID: attemptID,
                 title: "Owned",
                 localURL: mediaURL,
                 bytes: 3,
                 progress: 1,
                 status: .complete,
                 metadata: OfflineMetadata(ratingKey: "plex:owned", title: "Owned", type: "movie")
-            ))
+            ), attemptID: attemptID) == .committed(DownloadAttemptKey(
+                ratingKey: "plex:owned", attemptID: attemptID)))
 
-            store.remove(ratingKey: "plex:owned")
+            _ = store.remove(for: DownloadAttemptKey(
+                ratingKey: "plex:owned", attemptID: attemptID))
 
             #expect(FileManager.default.fileExists(atPath: mediaURL.path))
             #expect(store.contains(ratingKey: "plex:owned"))

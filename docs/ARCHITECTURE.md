@@ -79,6 +79,8 @@ constructs the common long-lived services and the one launch bootstrap:
 
 - `AppModel`: active backend and the three live server/session lanes.
 - `AuthManager`: authentication, restore, backend switching, and Keychain writes.
+- `AuthorizationPollingCoordinator`: exact-attempt ownership and cancellation of the one live
+  Plex PIN, Jellyfin Quick Connect, or Emby Connect polling task.
 - `DownloadManager`: the cross-backend offline queue and transfer orchestration, absent on tvOS.
 - `MusicPlayerController`: the app-lifetime audio queue and player.
 - `SessionBootstrap`: one-time restore and browse-gate state shared across scene recreation.
@@ -113,7 +115,9 @@ tvOS has neither downloads nor inactive-download hydration.
 Login, Quick Connect/Connect, restore, and server selection cannot publish stale results
 from an older authorization attempt. System-entry fallback restore uses
 `restoreSessionIfNoAuthorizationInProgress()` rather than taking authority from a login the
-user is completing.
+user is completing. `AuthorizationPollingCoordinator` separately owns polling-task lifetime and
+rejects stale exact-owner finish/cancel requests, while `AuthAttemptAuthority` remains the only
+authority that admits state or credential publication.
 
 Token-free identities serve two different purposes:
 

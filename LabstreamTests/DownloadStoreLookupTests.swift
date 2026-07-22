@@ -88,7 +88,8 @@ struct DownloadStoreLookupTests {
             #expect(!store.contains(ratingKey: "missing"))
             #expect(store.metadata(for: targetKey) == narrow.metadata)
             #expect(store.duration(for: targetKey) == 777_000)
-            #expect(store.downloadAttemptID(ratingKey: targetKey) == "attempt-777")
+            #expect(store.downloadAttemptIdentity(ratingKey: targetKey) ==
+                DownloadAttemptID(rawValue: "attempt-777"))
             #expect(fileManager.observedAttributePaths.isEmpty)
         }
     }
@@ -151,11 +152,13 @@ struct DownloadStoreLookupTests {
         }
     }
 
-    @Test func narrowLookupPreservesLegacyHydrationAndMissingRowSemantics() throws {
+    @Test func narrowLookupPreservesCurrentRowsAndMissingRowSemantics() throws {
         try withTemporaryDirectory { directory in
             let rows = [
-                SeedRow(ratingKey: "legacy", title: "Legacy", relativePath: "legacy.mp4",
-                        bytes: 20, progress: 1, status: nil, metadata: nil),
+                SeedRow(ratingKey: "complete",
+                        attemptID: DownloadAttemptID(rawValue: "attempt-1"),
+                        title: "Complete", relativePath: "complete.mp4",
+                        bytes: 20, progress: 1, status: .complete, metadata: nil),
                 SeedRow(ratingKey: "rich",
                         attemptID: DownloadAttemptID(rawValue: "attempt-2"),
                         title: "Rich", relativePath: "rich.mkv",
@@ -167,8 +170,8 @@ struct DownloadStoreLookupTests {
             )
             let store = DownloadStore(baseDirectory: directory)
 
-            #expect(store.record(for: "legacy") == store.records.first { $0.ratingKey == "legacy" })
-            #expect(store.record(for: "legacy")?.status == .complete)
+            #expect(store.record(for: "complete") == store.records.first { $0.ratingKey == "complete" })
+            #expect(store.record(for: "complete")?.status == .complete)
             #expect(store.record(for: "rich") == store.records.first { $0.ratingKey == "rich" })
             #expect(store.record(for: "missing") == nil)
             #expect(store.metadata(for: "missing") == nil)

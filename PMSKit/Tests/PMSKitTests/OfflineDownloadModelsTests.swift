@@ -4,40 +4,12 @@ import Testing
 
 /// Hermetic tests for the offline-download value types moved out of the app
 /// (`DownloadStore.swift`) into PMSKit. These pin the silent-data-loss-on-upgrade
-/// surface — the pre-D2/pre-D5 migration behaviour and the launch reconciliation
-/// transition table — which had no app test target to cover it.
+/// surface and launch reconciliation transition table, which had no app test target to cover it.
 @Suite("Offline download models")
 struct OfflineDownloadModelsTests {
 
     private func decode<T: Decodable>(_ type: T.Type, from json: String) throws -> T {
         try JSONDecoder().decode(T.self, from: Data(json.utf8))
-    }
-
-    // MARK: - pre-D2: row JSON without an explicit `status`
-
-    @Test("legacy progress 1.0 migrates to .complete")
-    func legacyCompleteProgressMigratesToComplete() {
-        #expect(DownloadStatus.migratedStatus(forLegacyProgress: 1.0) == .complete)
-        #expect(DownloadStatus.migratedStatus(forLegacyProgress: 1.5) == .complete)
-    }
-
-    @Test("legacy partial progress migrates to .queued")
-    func legacyPartialProgressMigratesToQueued() {
-        #expect(DownloadStatus.migratedStatus(forLegacyProgress: 0.4) == .queued)
-        #expect(DownloadStatus.migratedStatus(forLegacyProgress: 0.0) == .queued)
-        #expect(DownloadStatus.migratedStatus(forLegacyProgress: 0.999) == .queued)
-    }
-
-    /// A `DownloadRecord` whose JSON omits `status` would fail to decode under the
-    /// synthesized initializer (status is non-optional); the migration helper is what
-    /// the app applies at the row level. Here we verify the helper produces the same
-    /// defaulting an old finished-vs-partial row relied on.
-    @Test("pre-D2 finished vs partial rows default their status correctly")
-    func preD2RowsDefaultStatusByProgress() {
-        let finishedProgress = 1.0
-        let partialProgress = 0.4
-        #expect(DownloadStatus.migratedStatus(forLegacyProgress: finishedProgress) == .complete)
-        #expect(DownloadStatus.migratedStatus(forLegacyProgress: partialProgress) == .queued)
     }
 
     // MARK: - pre-D5: metadata JSON missing optional fields
@@ -644,14 +616,12 @@ struct OfflineDownloadModelsTests {
 
     // MARK: - #95: .paused (recoverably-interrupted) rows
 
-    @Test("paused round-trips through encode/decode and decodes legacy rows without the case")
-    func pausedRoundTripsAndLegacyDecodes() throws {
+    @Test("paused and unverified statuses round-trip")
+    func pausedAndUnverifiedRoundTrip() throws {
         let data = try JSONEncoder().encode(DownloadStatus.paused)
         #expect(try JSONDecoder().decode(DownloadStatus.self, from: data) == .paused)
         let unverifiedData = try JSONEncoder().encode(DownloadStatus.unverified)
         #expect(try JSONDecoder().decode(DownloadStatus.self, from: unverifiedData) == .unverified)
-        // A row whose JSON omits `status` (pre-this-change) still defaults via the migration.
-        #expect(DownloadStatus.migratedStatus(forLegacyProgress: 0.5) == .queued)
     }
 
     @Test("a paused row stays resumable across relaunch only while its resume blob survives")

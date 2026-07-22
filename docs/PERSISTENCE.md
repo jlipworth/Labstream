@@ -91,7 +91,7 @@ lifecycle ticket is released. Required Jellyfin/Emby active-encoding or Emby Con
 also has an independent `download-cleanup-intents.json` journal containing an exact attempt,
 credential-free server identity, and cleanup operation. The journal deliberately does not
 share the versioned Downloads root: it lives in a protected sibling authority directory, so row
-deletion or destructive schema reset cannot erase the only cleanup authority. Quarantined legacy
+deletion or destructive schema reset cannot erase the only cleanup authority. Quarantined unsupported
 roots are reclaimed on a utility queue after the new current root is durable and again on relaunch.
 
 Persistence consumers name their contract explicitly: download/background-completion barriers,

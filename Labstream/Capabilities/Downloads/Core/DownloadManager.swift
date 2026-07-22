@@ -224,7 +224,6 @@ public final class DownloadManager {
     public private(set) var startupRecoveryState: StartupRecoveryState = .preparing
     @ObservationIgnored private var startupRecoveryInFlight = false
     @ObservationIgnored private var didRunInitialStartupReattach = false
-    @ObservationIgnored private var startupCleanupOnlyKeys: Set<DownloadAttemptKey> = []
     @ObservationIgnored private var startupRecoveryErrorKeys: Set<String> = []
     @ObservationIgnored private var startupRecoveryRetryTask: Task<Void, Never>?
     @ObservationIgnored private var startupRecoveryRetryCount = 0
@@ -463,7 +462,7 @@ public final class DownloadManager {
         let store = injectedStore ?? DownloadStore()
         // Commit typed row ownership before the background session can be constructed/activated.
         // A failure remains explicit and leaves session admission dormant.
-        let migrationSubmission = store.submitLegacyAttemptOwnershipMigration()
+        let startupAdmission = store.startupIndexAdmission()
         self.store = store
         self.session = injectedSession ?? BackgroundDownloadSession(store: store)
         self.sideAssetFetchCoordinator = injectedSideAssetFetchCoordinator ?? .shared
@@ -661,7 +660,7 @@ public final class DownloadManager {
         if registerForBackgroundEvents {
             BackgroundDownloadCompletionRegistry.shared.register(self.session)
         }
-        resolveStartupMigration(migrationSubmission)
+        continueStartupRecovery(with: startupAdmission)
     }
 
     /// Explicit retry hook for a prior persistence/activation failure. It is intentionally not an
@@ -673,7 +672,7 @@ public final class DownloadManager {
         startupRecoveryRetryTask?.cancel()
         startupRecoveryRetryTask = nil
         startupRecoveryState = .preparing
-        resolveStartupMigration(store.submitLegacyAttemptOwnershipMigration())
+        continueStartupRecovery(with: store.startupIndexAdmission())
     }
 
     private func scheduleTransientStartupRecoveryRetry() {
@@ -687,25 +686,15 @@ public final class DownloadManager {
             self.startupRecoveryRetryTask = nil
             guard self.startupRecoveryState != .ready, !self.startupRecoveryInFlight else { return }
             self.startupRecoveryState = .preparing
-            self.resolveStartupMigration(self.store.submitLegacyAttemptOwnershipMigration())
-        }
-    }
-
-    private func resolveStartupMigration(
-        _ submission: DownloadStore.AttemptOwnershipMigrationSubmission
-    ) {
-        Task { [weak self] in
-            guard let self else { return }
-            let result = await self.store.resolve(submission, timeout: 5)
-            self.continueStartupRecovery(with: result)
+            self.continueStartupRecovery(with: self.store.startupIndexAdmission())
         }
     }
 
     private func continueStartupRecovery(
-        with migrationResult: DownloadStore.AttemptOwnershipMigrationResult
+        with admission: DownloadStore.StartupIndexAdmission
     ) {
         guard !startupRecoveryInFlight else { return }
-        switch migrationResult {
+        switch admission {
         case .requiresDestructiveReset:
             activateDownloadsAfterUnsupportedSchemaReset()
         case .unreadableIndex:
@@ -714,29 +703,14 @@ public final class DownloadManager {
                 message: "Download recovery data is unreadable. Downloads are paused for safety.",
                 reason: "unreadable_download_index"
             )
-        case .notRequired:
-            store.stageLegacyHeldBodyDeletionJobs()
-            activateDownloadsAfterMigration(resetKeys: [])
-        case .committed(let plan):
-            startupCleanupOnlyKeys = Set(plan.cleanupOnly)
-            // Ownerless legacy rows could not receive an exact held-cleanup lifecycle job during
-            // Store init. Stage them only after ownership migration is durable, before admission.
-            store.stageLegacyHeldBodyDeletionJobs()
-            activateDownloadsAfterMigration(resetKeys: Set(plan.taskCancellationAndReset))
-        case .failed(let plan, let persistence):
-            startupCleanupOnlyKeys = Set(plan.cleanupOnly)
-            let affected = Set((plan.taskCancellationAndReset + plan.cleanupOnly).map(\.ratingKey))
-            blockDownloadStartup(
-                affectedRatingKeys: affected,
-                message: "Download recovery could not be saved. Free storage if needed, then retry.",
-                reason: Self.startupPersistenceFailureLabel(persistence)
-            )
-            scheduleTransientStartupRecoveryRetry()
-        case .malformedV3Rows(let ratingKeys):
+        case .current:
+            store.stageHeldBodyDeletionJobs()
+            activateDownloadsForCurrentStore()
+        case .malformedCurrentRows(let ratingKeys):
             blockDownloadStartup(
                 affectedRatingKeys: Set(ratingKeys),
                 message: "Download recovery data is inconsistent. Downloads are paused for safety.",
-                reason: "malformed_v3_ownership"
+                reason: "malformed_current_ownership"
             )
         }
     }
@@ -759,7 +733,7 @@ public final class DownloadManager {
                     self.startupRecoveryInFlight = false
                     self.blockDownloadStartup(
                         affectedRatingKeys: [],
-                        message: "Legacy downloads could not be cleared safely. Retry when storage and the system download service are available.",
+                        message: "Unsupported download data could not be reset safely. Retry when storage and the system download service are available.",
                         reason: "unsupported_schema_reset_failed")
                     self.scheduleTransientStartupRecoveryRetry()
                 }
@@ -767,9 +741,9 @@ public final class DownloadManager {
         }
     }
 
-    private func activateDownloadsAfterMigration(resetKeys: Set<DownloadAttemptKey>) {
+    private func activateDownloadsForCurrentStore() {
         startupRecoveryInFlight = true
-        session.activateAfterPurgingLegacyTasks(resetKeys: resetKeys) { [weak self] result in
+        session.activateCurrentStore { [weak self] result in
             Task { @MainActor in
                 guard let self else { return }
                 switch result {
@@ -789,7 +763,7 @@ public final class DownloadManager {
                 case .failed:
                     self.startupRecoveryInFlight = false
                     self.blockDownloadStartup(
-                        affectedRatingKeys: Set(resetKeys.map(\.ratingKey)),
+                        affectedRatingKeys: [],
                         message: "Download recovery did not finish. Retry when storage and the system download service are available.",
                         reason: "activation_failed"
                     )
@@ -979,10 +953,9 @@ public final class DownloadManager {
                 continue
             }
             guard let metadata = record.metadata else { continue }
-            let cleanupOnly = startupCleanupOnlyKeys.contains(key)
             let terminal = record.status == .failed || record.status == .complete
                 || record.status == .unverified
-            guard cleanupOnly || terminal else { continue }
+            guard terminal else { continue }
 
             let backend = metadata.resolvedBackendKind(ratingKey: record.ratingKey)
             if backend == .plex {
@@ -991,12 +964,10 @@ public final class DownloadManager {
                 if let playSessionID = metadata.playSessionID, !playSessionID.isEmpty {
                     switch store.clearPlaySessionID(for: key, expectedPlaySessionID: playSessionID) {
                     case .cleared, .alreadyAbsent:
-                        startupCleanupOnlyKeys.remove(key)
+                        break
                     case .expectedValueMismatch, .staleOrMissing, .persistenceFailed:
                         break
                     }
-                } else {
-                    startupCleanupOnlyKeys.remove(key)
                 }
                 continue
             }
@@ -1020,10 +991,7 @@ public final class DownloadManager {
                     cleanupAuthorityDurable = false
                 }
             }
-            if cleanupOnly && cleanupAuthorityDurable {
-                // Every external cleanup authority on the row is now independent of row lifetime.
-                startupCleanupOnlyKeys.remove(key)
-            }
+            _ = cleanupAuthorityDurable
         }
 
 
@@ -1444,7 +1412,7 @@ public final class DownloadManager {
                 "backend": .label(backend),
                 "reason": .label("replace_active_without_task"),
             ])
-            repairUnownedInFlightState(ratingKey: ratingKey, reason: "replace_active_without_task")
+            recoverStaleInFlightSlot(ratingKey: ratingKey, reason: "replace_active_without_task")
         }
         switch DownloadStartSlotPolicy.decision(existingRecordStatus: existingStatus,
                                                 hasActiveSlot: activeJobs.contains(ratingKey),
@@ -1482,7 +1450,7 @@ public final class DownloadManager {
                 "backend": .label(backend),
                 "reason": .label("active_without_row"),
             ])
-            repairUnownedInFlightState(ratingKey: ratingKey, reason: "active_without_row")
+            recoverStaleInFlightSlot(ratingKey: ratingKey, reason: "active_without_row")
         }
         activeJobs.insert(ratingKey)
         return true
@@ -3668,20 +3636,10 @@ public final class DownloadManager {
                 return
             }
         }
-        let deletedAttemptKey = rowAttemptKey
-        let deletionSubmission: DownloadStore.RowDeletionSubmission
-        if let key = deletedAttemptKey {
-            deletionSubmission = wasDeletionPending
-                ? store.submitCompletePendingDeletion(for: key)
-                : store.submitRemove(for: key)
-        } else {
-            // Deliberate migration compatibility: ownerless terminal rows have no asynchronous
-            // attempt work. Active/reset-pending rows never enter this fallback.
-            guard rowToDelete.status == .complete || rowToDelete.status == .unverified else {
-                return
-            }
-            deletionSubmission = store.submitOwnerlessTerminalRemoval(ratingKey: ratingKey)
-        }
+        guard let deletedAttemptKey = rowAttemptKey else { return }
+        let deletionSubmission = wasDeletionPending
+            ? store.submitCompletePendingDeletion(for: deletedAttemptKey)
+            : store.submitRemove(for: deletedAttemptKey)
         // No rating-key runtime/session/server side effect is allowed until the exact Store owner
         // has installed its deletion barrier. A replacement that won since the rendered action
         // was captured makes submission stale and leaves the replacement entirely untouched.
@@ -3694,12 +3652,10 @@ public final class DownloadManager {
             return
         }
         session.cancel(ratingKey: ratingKey)
-        if let deletedAttemptKey {
-            // The durable terminal barrier now rejects every tail publication. Cancel side caches,
-            // finalizers, and other exact cancellable work immediately so they cannot create new
-            // unlisted staging bytes while the off-lock deletion worker is still running.
-            _ = downloadWorkRegistry.cancelCancellableWork(for: deletedAttemptKey)
-        }
+        // The durable terminal barrier now rejects every tail publication. Cancel side caches,
+        // finalizers, and other exact cancellable work immediately so they cannot create new
+        // unlisted staging bytes while the off-lock deletion worker is still running.
+        _ = downloadWorkRegistry.cancelCancellableWork(for: deletedAttemptKey)
         recordDownloadDiagnostic("downloads.cancel_or_delete", fields: [
             "download_id": .identifier(ratingKey),
         ])
@@ -3779,11 +3735,7 @@ public final class DownloadManager {
         // Pass the pre-removal snapshot: the store row no longer exists, so without it the
         // Jellyfin/Emby encoder-teardown server-match guard would see nil metadata and silently
         // dead-end the persisted-psid branch during this teardown.
-            if let deletedAttemptKey {
-                releaseInFlight(for: deletedAttemptKey, rowSnapshot: rowToDelete)
-            } else {
-                repairUnownedInFlightState(ratingKey: ratingKey, reason: "legacy_delete")
-            }
+            releaseInFlight(for: deletedAttemptKey, rowSnapshot: rowToDelete)
             refreshRecords()
         }
     }
@@ -3880,29 +3832,18 @@ public final class DownloadManager {
 
     func updateLocalPlaybackPosition(ratingKey: String, positionMs: Int, durationMs: Int?) {
         guard let record = store.record(for: ratingKey) else { return }
+        guard let attemptID = record.attemptID else { return }
+        let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
         var promoted = false
-        if let attemptID = record.attemptID {
-            let key = DownloadAttemptKey(ratingKey: ratingKey, attemptID: attemptID)
-            if positionMs > 0, case .promoted = store.markCompleteIfUnverified(for: key) {
-                promoted = true
-            }
-            switch store.setLocalPlaybackPosition(
-                for: key, positionMs: positionMs, durationMs: durationMs) {
-            case .applied, .noChange:
-                break
-            case .staleOrMissing, .persistenceFailed:
-                return
-            }
-        } else {
-            // Completed v1/v2 rows can legitimately remain ownerless. Active ownerless rows are
-            // rejected inside both Store operations and must pass startup migration instead.
-            guard record.status == .complete || record.status == .unverified else { return }
-            if positionMs > 0,
-               store.markCompleteIfUnverifiedOwnerlessTerminalRow(ratingKey: ratingKey) {
-                promoted = true
-            }
-            guard store.setLocalPlaybackPositionForOwnerlessTerminalRow(
-                ratingKey: ratingKey, positionMs: positionMs, durationMs: durationMs) else { return }
+        if positionMs > 0, case .promoted = store.markCompleteIfUnverified(for: key) {
+            promoted = true
+        }
+        switch store.setLocalPlaybackPosition(
+            for: key, positionMs: positionMs, durationMs: durationMs) {
+        case .applied, .noChange:
+            break
+        case .staleOrMissing, .persistenceFailed:
+            return
         }
         if promoted {
             recordDownloadDiagnostic("downloads.unverified_playback_confirmed", fields: [
@@ -4318,8 +4259,6 @@ public final class DownloadManager {
                     ? .preservingFinalizerAndSideCache
                     : .preservingFinalizer
                 releaseInFlight(for: key, cancellationMode: mode)
-            } else {
-                repairUnownedInFlightState(ratingKey: ratingKey, reason: "legacy_terminal")
             }
         }
 
@@ -4821,15 +4760,16 @@ public final class DownloadManager {
         embyKeepaliveAuthQuarantine.removeValue(forKey: ratingKey)
     }
 
-    /// Explicit compatibility/corruption repair. Normal asynchronous teardown must always provide
-    /// an exact attempt key and never enter this path.
-    private func repairUnownedInFlightState(ratingKey: String, reason: String) {
+    /// Repairs manager bookkeeping only when start admission has already proven that no live
+    /// transfer owns the slot. Prefer the exact attempt owner when one is still registered;
+    /// otherwise clear the stale rating-key state without manufacturing download authority.
+    private func recoverStaleInFlightSlot(ratingKey: String, reason: String) {
         if let owner = inFlightAttempts.owner(forRatingKey: ratingKey) {
             releaseInFlight(for: owner)
             return
         }
         clearCurrentInFlightState(ratingKey: ratingKey)
-        recordDownloadDiagnostic("downloads.inflight_ownerless_repaired", fields: [
+        recordDownloadDiagnostic("downloads.inflight_stale_recovered", fields: [
             "download_id": .identifier(ratingKey),
             "reason": .label(reason),
         ])

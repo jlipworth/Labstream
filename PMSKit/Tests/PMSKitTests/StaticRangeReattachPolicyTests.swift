@@ -3,7 +3,7 @@ import Testing
 
 @Suite("Static range reattach policy")
 struct StaticRangeReattachPolicyTests {
-    @Test("Legacy closed ranges are dropped instead of adopted")
+    @Test("Unowned closed ranges are rejected instead of adopted")
     func dropsClosedRange() {
         let plan = StaticRangeReattachPolicy.plan(
             taskIdentifier: 10,
@@ -55,8 +55,8 @@ struct StaticRangeReattachPolicyTests {
             bodyBytesWritten: 10,
             existingTasks: [],
             taskMarker: DownloadAttemptMarker.taskDescription(
-                ratingKey: "plex:item", attemptID: "attempt-A"),
-            rowAttemptID: "attempt-A"
+                ratingKey: "plex:item", attemptID: DownloadAttemptID(rawValue: "attempt-A")!),
+            rowAttemptID: DownloadAttemptID(rawValue: "attempt-A")!
         )
 
         #expect(plan == StaticRangeReattachPlan(
@@ -76,8 +76,8 @@ struct StaticRangeReattachPolicyTests {
             bodyBytesWritten: 0,
             existingTasks: [],
             taskMarker: DownloadAttemptMarker.taskDescription(
-                ratingKey: "emby:item", attemptID: "attempt-A"),
-            rowAttemptID: "attempt-A"
+                ratingKey: "emby:item", attemptID: DownloadAttemptID(rawValue: "attempt-A")!),
+            rowAttemptID: DownloadAttemptID(rawValue: "attempt-A")!
         )
 
         #expect(plan == StaticRangeReattachPlan(candidateBaseOffset: 512, disposition: .adopt))
@@ -96,8 +96,8 @@ struct StaticRangeReattachPolicyTests {
                 StaticRangeTaskSnapshot(taskIdentifier: 29, downloadID: "emby:item", baseOffset: 512, bodyBytesWritten: 32),
             ],
             taskMarker: DownloadAttemptMarker.taskDescription(
-                ratingKey: "emby:item", attemptID: "attempt-A"),
-            rowAttemptID: "attempt-A"
+                ratingKey: "emby:item", attemptID: DownloadAttemptID(rawValue: "attempt-A")!),
+            rowAttemptID: DownloadAttemptID(rawValue: "attempt-A")!
         )
 
         #expect(plan == StaticRangeReattachPlan(
@@ -106,8 +106,8 @@ struct StaticRangeReattachPolicyTests {
         ))
     }
 
-    @Test("Unmarked closed ranges are still dropped as legacy")
-    func unmarkedClosedRangeStillDropped() {
+    @Test("Unmarked closed ranges are rejected")
+    func unmarkedClosedRangeIsRejected() {
         let plan = StaticRangeReattachPolicy.plan(
             taskIdentifier: 40,
             downloadID: "plex:item",
@@ -135,8 +135,8 @@ struct StaticRangeReattachPolicyTests {
             rangeRequestShape: .closed,
             bodyBytesWritten: 10,
             existingTasks: [],
-            taskMarker: StaticRangeSegmentMarker.value(offset: 0, attemptID: "attempt-A"),
-            rowAttemptID: "attempt-A"
+            taskMarker: StaticRangeSegmentMarker.value(offset: 0, attemptID: DownloadAttemptID(rawValue: "attempt-A")!),
+            rowAttemptID: DownloadAttemptID(rawValue: "attempt-A")!
         )
 
         #expect(plan == StaticRangeReattachPlan(candidateBaseOffset: 0, disposition: .adopt))
@@ -152,8 +152,8 @@ struct StaticRangeReattachPolicyTests {
             rangeRequestShape: .closed,
             bodyBytesWritten: 10,
             existingTasks: [],
-            taskMarker: StaticRangeSegmentMarker.value(offset: 512, attemptID: "attempt-A"),
-            rowAttemptID: "attempt-A"
+            taskMarker: StaticRangeSegmentMarker.value(offset: 512, attemptID: DownloadAttemptID(rawValue: "attempt-A")!),
+            rowAttemptID: DownloadAttemptID(rawValue: "attempt-A")!
         )
 
         #expect(plan == StaticRangeReattachPlan(candidateBaseOffset: 512, disposition: .adopt))
@@ -169,8 +169,8 @@ struct StaticRangeReattachPolicyTests {
             rangeRequestShape: .closed,
             bodyBytesWritten: 10,
             existingTasks: [],
-            taskMarker: StaticRangeSegmentMarker.value(offset: 512, attemptID: "attempt-A"),
-            rowAttemptID: "attempt-A"
+            taskMarker: StaticRangeSegmentMarker.value(offset: 512, attemptID: DownloadAttemptID(rawValue: "attempt-A")!),
+            rowAttemptID: DownloadAttemptID(rawValue: "attempt-A")!
         )
 
         #expect(plan == StaticRangeReattachPlan(
@@ -192,8 +192,8 @@ struct StaticRangeReattachPolicyTests {
             rangeRequestShape: .closed,
             bodyBytesWritten: 10,
             existingTasks: [],
-            taskMarker: StaticRangeSegmentMarker.value(offset: 812, attemptID: "attempt-A"),
-            rowAttemptID: "attempt-A"
+            taskMarker: StaticRangeSegmentMarker.value(offset: 812, attemptID: DownloadAttemptID(rawValue: "attempt-A")!),
+            rowAttemptID: DownloadAttemptID(rawValue: "attempt-A")!
         )
 
         #expect(plan == StaticRangeReattachPlan(candidateBaseOffset: 812, disposition: .adopt))
@@ -211,8 +211,8 @@ struct StaticRangeReattachPolicyTests {
             rangeRequestShape: .closed,
             bodyBytesWritten: 10,
             existingTasks: [],
-            taskMarker: StaticRangeSegmentMarker.value(offset: 812, attemptID: "attempt-A"),
-            rowAttemptID: "attempt-A"
+            taskMarker: StaticRangeSegmentMarker.value(offset: 812, attemptID: DownloadAttemptID(rawValue: "attempt-A")!),
+            rowAttemptID: DownloadAttemptID(rawValue: "attempt-A")!
         )
 
         #expect(plan == StaticRangeReattachPlan(candidateBaseOffset: 812, disposition: .adopt))
@@ -232,8 +232,8 @@ struct StaticRangeReattachPolicyTests {
             rangeRequestShape: .closed,
             bodyBytesWritten: 10,
             existingTasks: existing,
-            taskMarker: StaticRangeSegmentMarker.value(offset: 512, attemptID: "attempt-A"),
-            rowAttemptID: "attempt-A"
+            taskMarker: StaticRangeSegmentMarker.value(offset: 512, attemptID: DownloadAttemptID(rawValue: "attempt-A")!),
+            rowAttemptID: DownloadAttemptID(rawValue: "attempt-A")!
         )
 
         #expect(plan == StaticRangeReattachPlan(candidateBaseOffset: 512, disposition: .adopt))
@@ -253,8 +253,8 @@ struct StaticRangeReattachPolicyTests {
             rangeRequestShape: .closed,
             bodyBytesWritten: 64,
             existingTasks: existing,
-            taskMarker: StaticRangeSegmentMarker.value(offset: 512, attemptID: "attempt-A"),
-            rowAttemptID: "attempt-A"
+            taskMarker: StaticRangeSegmentMarker.value(offset: 512, attemptID: DownloadAttemptID(rawValue: "attempt-A")!),
+            rowAttemptID: DownloadAttemptID(rawValue: "attempt-A")!
         )
 
         #expect(plan == StaticRangeReattachPlan(
@@ -274,7 +274,7 @@ struct StaticRangeReattachPolicyTests {
             bodyBytesWritten: 10,
             existingTasks: [],
             taskMarker: "lbs-segment:v1:0",
-            rowAttemptID: "attempt-A"
+            rowAttemptID: DownloadAttemptID(rawValue: "attempt-A")!
         )
 
         #expect(plan == StaticRangeReattachPlan(
@@ -293,8 +293,8 @@ struct StaticRangeReattachPolicyTests {
             rangeRequestShape: .closed,
             bodyBytesWritten: 10,
             existingTasks: [],
-            taskMarker: StaticRangeSegmentMarker.value(offset: 0, attemptID: "attempt-OLD"),
-            rowAttemptID: "attempt-NEW"
+            taskMarker: StaticRangeSegmentMarker.value(offset: 0, attemptID: DownloadAttemptID(rawValue: "attempt-OLD")!),
+            rowAttemptID: DownloadAttemptID(rawValue: "attempt-NEW")!
         )
 
         #expect(plan == StaticRangeReattachPlan(
@@ -315,7 +315,7 @@ struct StaticRangeReattachPolicyTests {
             rangeRequestShape: .closed,
             bodyBytesWritten: 10,
             existingTasks: [],
-            taskMarker: StaticRangeSegmentMarker.value(offset: 0, attemptID: "attempt-OLD"),
+            taskMarker: StaticRangeSegmentMarker.value(offset: 0, attemptID: DownloadAttemptID(rawValue: "attempt-OLD")!),
             rowAttemptID: nil
         )
 
@@ -337,8 +337,8 @@ struct StaticRangeReattachPolicyTests {
             rangeRequestShape: .openEnded,
             bodyBytesWritten: 0,
             existingTasks: [],
-            taskMarker: DownloadAttemptMarker.taskDescription(ratingKey: "plex:item", attemptID: "attempt-OLD"),
-            rowAttemptID: "attempt-NEW"
+            taskMarker: DownloadAttemptMarker.taskDescription(ratingKey: "plex:item", attemptID: DownloadAttemptID(rawValue: "attempt-OLD")!),
+            rowAttemptID: DownloadAttemptID(rawValue: "attempt-NEW")!
         )
 
         #expect(plan == StaticRangeReattachPlan(
@@ -359,8 +359,8 @@ struct StaticRangeReattachPolicyTests {
             rangeRequestShape: .openEnded,
             bodyBytesWritten: 0,
             existingTasks: [],
-            taskMarker: DownloadAttemptMarker.taskDescription(ratingKey: "plex:item", attemptID: "attempt-A"),
-            rowAttemptID: "attempt-A"
+            taskMarker: DownloadAttemptMarker.taskDescription(ratingKey: "plex:item", attemptID: DownloadAttemptID(rawValue: "attempt-A")!),
+            rowAttemptID: DownloadAttemptID(rawValue: "attempt-A")!
         )
 
         #expect(plan == StaticRangeReattachPlan(candidateBaseOffset: 512, disposition: .adopt))
@@ -395,8 +395,8 @@ struct StaticRangeReattachPolicyTests {
             rangeRequestShape: .closed,
             bodyBytesWritten: 10,
             existingTasks: [],
-            taskMarker: StaticRangeSegmentMarker.value(offset: 0, attemptID: "attempt-A"),
-            rowAttemptID: "attempt-A"
+            taskMarker: StaticRangeSegmentMarker.value(offset: 0, attemptID: DownloadAttemptID(rawValue: "attempt-A")!),
+            rowAttemptID: DownloadAttemptID(rawValue: "attempt-A")!
         )
 
         #expect(plan == StaticRangeReattachPlan(
@@ -408,7 +408,7 @@ struct StaticRangeReattachPolicyTests {
     @Test("Typed policy adopts only current markers and cancels matching legacy markers")
     func typedPolicyRequiresCurrentMarker() {
         let attemptID = DownloadAttemptID(rawValue: "attempt-A")!
-        let current = StaticRangeReattachPolicy.planTyped(
+        let current = StaticRangeReattachPolicy.plan(
             taskIdentifier: 80,
             downloadID: "plex:item",
             durableBytes: 0,
@@ -421,7 +421,7 @@ struct StaticRangeReattachPolicyTests {
         )
         #expect(current.disposition == .adopt)
 
-        let legacy = StaticRangeReattachPolicy.planTyped(
+        let legacy = StaticRangeReattachPolicy.plan(
             taskIdentifier: 81,
             downloadID: "plex:item",
             durableBytes: 0,

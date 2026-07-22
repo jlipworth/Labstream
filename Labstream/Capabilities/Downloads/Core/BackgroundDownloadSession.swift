@@ -111,7 +111,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
 
     enum StartupActivationResult: Sendable, Equatable {
-        case activated(cancelledTaskCount: Int, resetKeyCount: Int)
+        case activated(cancelledTaskCount: Int)
         case alreadyActive
         case alreadyPurging
         case failed(reason: String)
@@ -119,7 +119,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
 
     private enum StartupAdmissionState: Sendable, Equatable {
         case dormant
-        case legacyPurge
+        case purging
         case active
     }
 
@@ -166,9 +166,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
     /// taskIdentifier -> exact attempt-owned opaque transfer.
     private var inflight: [Int: OpaqueTransfer] = [:]
-    /// taskIdentifier -> in-flight static byte-range task state. New tasks are one open-ended
-    /// background `URLSessionDownloadTask` for the remaining bytes; legacy closed-range tasks may
-    /// still be adopted and folded into the durable partial after an app update.
+    /// taskIdentifier -> in-flight static byte-range task state. Current closed segments form the
+    /// bounded train; an open-ended task is retained only as the current unknown-total fallback.
     private var rangeInflight: [Int: RangeTransfer] = [:]
     /// Finished segment bodies stashed on disk ahead of the durable checkpoint (out-of-order
     /// arrivals), keyed by exact attempt then segment offset. Kept until the checkpoint reaches them and
@@ -250,10 +249,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// Background URLSession construction itself can trigger delegate delivery. Keep the session
     /// dormant until schema-v3 ownership has committed and every pre-current task has disappeared.
     private var startupAdmissionState: StartupAdmissionState = .dormant
-    /// Exact migrated owners whose daemon tasks must be purged before admission. Current-marker
-    /// callbacks for every other exact owner are safe to adopt while the background session is
-    /// reconnecting; rejecting them would destroy healthy force-quit survivors.
-    private var startupResetKeys: Set<DownloadAttemptKey> = []
     /// Destructive schema reset has no trustworthy row ownership. Unlike a current-schema purge,
     /// every callback is rejected until the daemon task list reaches an empty fixed point.
     private var startupRejectsAllCallbacks = false
@@ -727,38 +722,76 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     }
     #endif
 
-    /// Explicit schema-v3 startup barrier. This is the ONLY API that may create the underlying
-    /// background session while dormant. It cancels all pre-current markers plus every task mapped
-    /// to an approved reset key, waits until cancellation has drained from the daemon's task list,
-    /// then durably resets those exact rows before opening callback/start admission.
-    func activateAfterPurgingLegacyTasks(
-        resetKeys: Set<DownloadAttemptKey>,
+    /// Open a current schema-4 store only after every unowned or obsolete daemon task has drained.
+    /// Healthy current exact-attempt callbacks may continue during this purge window.
+    func activateCurrentStore(
         completion: @escaping @Sendable (StartupActivationResult) -> Void
     ) {
         lock.lock()
         switch startupAdmissionState {
         case .active:
-            lock.unlock()
-            completion(.alreadyActive)
-            return
-        case .legacyPurge:
-            lock.unlock()
-            completion(.alreadyPurging)
-            return
+            lock.unlock(); completion(.alreadyActive); return
+        case .purging:
+            lock.unlock(); completion(.alreadyPurging); return
         case .dormant:
-            startupAdmissionState = .legacyPurge
-            startupResetKeys = resetKeys
+            startupAdmissionState = .purging
             lock.unlock()
         }
+        purgeInvalidCurrentTasks(
+            in: urlSession, cancelledTaskIdentifiers: [], pass: 0, completion: completion)
+    }
 
-        let session = urlSession
-        purgeLegacyTasks(
-            in: session,
-            resetKeys: resetKeys,
-            cancelledTaskIdentifiers: [],
-            pass: 0,
-            completion: completion
-        )
+    private func purgeInvalidCurrentTasks(
+        in session: URLSession,
+        cancelledTaskIdentifiers: Set<Int>,
+        pass: Int,
+        completion: @escaping @Sendable (StartupActivationResult) -> Void
+    ) {
+        session.getAllTasks { [weak self] tasks in
+            guard let self else { completion(.failed(reason: "session_deallocated")); return }
+            let knownKeys = self.store.allRatingKeys
+            let purgeTasks = tasks.filter { task in
+                let mappedKey = Self.ratingKey(for: task, knownKeys: knownKeys)
+                let attemptID = BackgroundDownloadTaskIdentity.attemptIdentity(
+                    taskDescription: task.taskDescription)
+                let key = mappedKey.flatMap { ratingKey in attemptID.map {
+                    DownloadAttemptKey(ratingKey: ratingKey, attemptID: $0)
+                } }
+                return !BackgroundDownloadTaskIdentity.markerVersion(
+                    taskDescription: task.taskDescription).isCurrent
+                    || key.map(self.store.ownsAttempt) != true
+            }
+            if !purgeTasks.isEmpty {
+                let ids = Set(purgeTasks.map(\.taskIdentifier))
+                self.lock.withLock {
+                    self.permanentlyRejectedTaskIdentifiers.formUnion(ids)
+                }
+                purgeTasks.forEach { $0.cancel() }
+                guard pass < 100 else {
+                    self.failStartupAdmission(
+                        reason: "invalid_current_task_drain_timeout", completion: completion)
+                    return
+                }
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.05) {
+                    self.purgeInvalidCurrentTasks(
+                        in: session,
+                        cancelledTaskIdentifiers: cancelledTaskIdentifiers.union(ids),
+                        pass: pass + 1,
+                        completion: completion)
+                }
+                return
+            }
+            let opened = self.lock.withLock { () -> Bool in
+                guard self.startupAdmissionState == .purging else { return false }
+                self.startupAdmissionState = .active
+                return true
+            }
+            guard opened else {
+                completion(.failed(reason: "admission_state_changed")); return
+            }
+            completion(.activated(
+                cancelledTaskCount: cancelledTaskIdentifiers.count))
+        }
     }
 
     /// Destructive startup for an explicitly unsupported index schema. No legacy row/task is
@@ -771,10 +804,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         switch startupAdmissionState {
         case .active:
             lock.unlock(); completion(.alreadyActive); return
-        case .legacyPurge:
+        case .purging:
             lock.unlock(); completion(.alreadyPurging); return
         case .dormant:
-            startupAdmissionState = .legacyPurge
+            startupAdmissionState = .purging
             startupRejectsAllCallbacks = true
             lock.unlock()
         }
@@ -828,7 +861,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             switch self.store.replaceUnsupportedRootWithCurrentEmptyStore() {
             case .reset, .notRequired:
                 let opened = self.lock.withLock { () -> Bool in
-                    guard self.startupAdmissionState == .legacyPurge else { return false }
+                    guard self.startupAdmissionState == .purging else { return false }
                     self.startupRejectsAllCallbacks = false
                     self.startupAdmissionState = .active
                     return true
@@ -837,122 +870,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     completion(.failed(reason: "admission_state_changed")); return
                 }
                 completion(.activated(
-                    cancelledTaskCount: cancelledTaskIdentifiers.count, resetKeyCount: 0))
+                    cancelledTaskCount: cancelledTaskIdentifiers.count))
             case .failed(let stage, let errorType):
                 self.failStartupAdmission(
                     reason: "unsupported_schema_reset_\(stage)_\(errorType)",
                     completion: completion)
-            }
-        }
-    }
-
-    private func purgeLegacyTasks(
-        in session: URLSession,
-        resetKeys: Set<DownloadAttemptKey>,
-        cancelledTaskIdentifiers: Set<Int>,
-        pass: Int,
-        completion: @escaping @Sendable (StartupActivationResult) -> Void
-    ) {
-        session.getAllTasks { [weak self] tasks in
-            guard let self else {
-                completion(.failed(reason: "session_deallocated"))
-                return
-            }
-            let resetRatingKeys = Set(resetKeys.map(\.ratingKey))
-            let knownKeys = self.store.allRatingKeys
-            self.lock.lock()
-            let alreadyRejected = self.permanentlyRejectedTaskIdentifiers
-            self.lock.unlock()
-            let purgeTasks = tasks.filter { task in
-                let mappedKey = Self.ratingKey(for: task, knownKeys: knownKeys)
-                return alreadyRejected.contains(task.taskIdentifier)
-                    || BackgroundDownloadTaskIdentity.shouldPurgeBeforeAdmission(
-                        taskDescription: task.taskDescription,
-                        mapsToKnownRow: mappedKey != nil,
-                        mapsToApprovedResetKey: mappedKey.map(resetRatingKeys.contains) == true
-                    )
-            }
-            if !purgeTasks.isEmpty {
-                let ids = Set(purgeTasks.map(\.taskIdentifier))
-                self.lock.lock()
-                self.permanentlyRejectedTaskIdentifiers.formUnion(ids)
-                self.lock.unlock()
-                for task in purgeTasks { task.cancel() }
-
-                // Cancellation is asynchronous in nsurlsessiond. Re-enumerate until none of the
-                // claimed legacy/reset tasks remains; never open admission based on one snapshot.
-                guard pass < 100 else {
-                    self.failStartupAdmission(
-                        reason: "legacy_task_cancellation_timeout",
-                        completion: completion
-                    )
-                    return
-                }
-                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.05) {
-                    self.purgeLegacyTasks(
-                        in: session,
-                        resetKeys: resetKeys,
-                        cancelledTaskIdentifiers: cancelledTaskIdentifiers.union(ids),
-                        pass: pass + 1,
-                        completion: completion
-                    )
-                }
-                return
-            }
-
-            // Cancellation has been proven above. Submit each durable reset recipe in order, but
-            // await lifecycle completion asynchronously so neither URLSession nor the reset queue
-            // is occupied by filesystem deletion/persistence waits.
-            Task.detached(priority: .utility) {
-                for key in resetKeys.sorted(by: {
-                    if $0.ratingKey != $1.ratingKey { return $0.ratingKey < $1.ratingKey }
-                    return $0.attemptID.rawValue < $1.attemptID.rawValue
-                }) {
-                    let submission = self.store.submitLegacyResetAfterTaskCancellation(key)
-                    switch await self.store.resolveLegacyReset(submission) {
-                    case .committed:
-                        continue
-                    case .cleanupFailed(_, let failureCount):
-                        self.failStartupAdmission(
-                            reason: "legacy_reset_cleanup_failed_\(failureCount)",
-                            completion: completion
-                        )
-                        return
-                    case .failed(_, let persistence):
-                        self.failStartupAdmission(
-                            reason: "legacy_reset_persistence_\(String(describing: persistence))",
-                            completion: completion
-                        )
-                        return
-                    case .staleOrMissing:
-                        self.failStartupAdmission(reason: "legacy_reset_stale_or_missing", completion: completion)
-                        return
-                    case .notPending:
-                        // Activation is retryable after a prior pass reset some keys and a later key
-                        // failed. These keys come from the already-committed migration plan, so an
-                        // exact owner with no remaining reset barrier is success, not a fatal replay.
-                        continue
-                    }
-                }
-
-                let opened = self.lock.withLock { () -> Bool in
-                    guard self.startupAdmissionState == .legacyPurge else { return false }
-                    self.startupAdmissionState = .active
-                    self.startupResetKeys.removeAll()
-                    return true
-                }
-                guard opened else {
-                    completion(.failed(reason: "admission_state_changed"))
-                    return
-                }
-                AppDiagnostics.record(.downloads, "downloads.startup_admission_opened", fields: [
-                    "cancelled_task_count": .int(cancelledTaskIdentifiers.count),
-                    "reset_key_count": .int(resetKeys.count),
-                ])
-                completion(.activated(
-                    cancelledTaskCount: cancelledTaskIdentifiers.count,
-                    resetKeyCount: resetKeys.count
-                ))
             }
         }
     }
@@ -963,7 +885,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     ) {
         lock.lock()
         startupAdmissionState = .dormant
-        startupResetKeys.removeAll()
         startupRejectsAllCallbacks = false
         lock.unlock()
         AppDiagnostics.record(.downloads, "downloads.startup_admission_failed", fields: [
@@ -976,7 +897,6 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         lock.lock()
         let state = startupAdmissionState
         let rejected = permanentlyRejectedTaskIdentifiers.contains(task.taskIdentifier)
-        let resetKeys = startupResetKeys
         let rejectsAll = startupRejectsAllCallbacks
         lock.unlock()
         guard !rejectsAll else { return false }
@@ -988,12 +908,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             }
         return Self.shouldAdmitStartupCallback(
             isActive: state == .active,
-            isPurging: state == .legacyPurge,
+            isPurging: state == .purging,
             isPermanentlyRejected: rejected,
             hasCurrentMarker: BackgroundDownloadTaskIdentity.markerVersion(
                 taskDescription: task.taskDescription).isCurrent,
             taskKey: key,
-            resetKeys: resetKeys,
             ownsAttempt: key.map(store.ownsAttempt) ?? false
         )
     }
@@ -1004,13 +923,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         isPermanentlyRejected: Bool,
         hasCurrentMarker: Bool,
         taskKey: DownloadAttemptKey?,
-        resetKeys: Set<DownloadAttemptKey>,
         ownsAttempt: Bool
     ) -> Bool {
         guard !isPermanentlyRejected else { return false }
-        if isActive { return true }
-        guard isPurging, hasCurrentMarker, let taskKey, ownsAttempt else { return false }
-        return !resetKeys.contains(taskKey)
+        guard isActive || isPurging else { return false }
+        return hasCurrentMarker && taskKey != nil && ownsAttempt
     }
 
     private func rejectTaskCallback(_ task: URLSessionTask, temporaryBody: URL? = nil) -> Bool {
@@ -1397,8 +1314,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // on the URLSession delegate queue (where the getAllTasks completion lands) would block the
         // queue through the background-wake window — the commit that reworked activation dropped the
         // comment that warned against exactly this. The recovery only reads store rows (never the
-        // task list), so — mirroring how the legacy-reset FS work was moved off the delegate queue
-        // in `purgeLegacyTasks` — run it on a utility queue BEFORE re-enumerating tasks. Ordering is
+        // task list), so run it on a utility queue BEFORE re-enumerating tasks. Ordering is
         // preserved: recovery still finishes terminal rows before classification sees them (so a
         // straggler task is cancelled, not re-adopted) and before onReattached drives reconcile.
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -1507,17 +1423,16 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                 }
                 let destination = workingLayout.workingURL
                 if StaticRangeRecoveryPolicy.isStaticRangeRecord(record) {
-                    // #231: only open-ended remainder tasks from the new architecture are adopted.
-                    // Legacy closed-range tasks are cancelled, marked superseded,
-                    // and rebuilt from the durable partial through DownloadManager so their temp body
-                    // cannot append after an update/relaunch.
+                    // Only current exact-attempt segment or open-ended markers are adoptable.
+                    // Unmarked, malformed, or mismatched tasks are cancelled and rebuilt from the
+                    // durable checkpoint so no unknown body can append after relaunch.
                     let partialSize = self.fileSize(at: destination) ?? 0
                     let requestedOffset = RangeTransferHTTPPolicy.rangeRequestStart(from: task.originalRequest)
                         ?? RangeTransferHTTPPolicy.rangeRequestStart(from: task.currentRequest)
                     let reattachedRequest = task.originalRequest ?? task.currentRequest
                     let rangeHeader = reattachedRequest?.value(forHTTPHeaderField: "Range")
                     let rangeRequestShape = RangeTransferHTTPPolicy.rangeRequestShape(rangeHeader)
-                    let reattachPlan = StaticRangeReattachPolicy.planTyped(
+                    let reattachPlan = StaticRangeReattachPolicy.plan(
                         taskIdentifier: task.taskIdentifier,
                         downloadID: ratingKey,
                         durableBytes: partialSize,
@@ -1549,9 +1464,9 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     case .rejectUnownedRange(let requestedOffset, let durableBytes, let rangeRequestShape):
                         self.supersededRangeTaskIdentifiers.insert(task.taskIdentifier)
                         rangeTaskIdentifiersToCancel.append(task.taskIdentifier)
-                        rangeRequestRebuildReasons[ratingKey] = .legacyClosedRangeDropped
+                        rangeRequestRebuildReasons[ratingKey] = .unownedRangeRejected
                         liveKeys.insert(ratingKey)
-                        AppDiagnostics.record(.downloads, "downloads.range_legacy_closed_range_dropped", fields: [
+                        AppDiagnostics.record(.downloads, "downloads.range_unowned_range_rejected", fields: [
                             "download_id": .identifier(ratingKey),
                             "task_id": .int(task.taskIdentifier),
                             "requested_offset": .int(requestedOffset ?? -1),
@@ -1581,7 +1496,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     case .replaceExisting, .suppressForExisting, .adopt:
                         break
                     }
-                    // `planTyped` can admit only a current marker whose typed owner equals the
+                    // `plan` can admit only a current marker whose typed owner equals the
                     // row, so these dispositions imply a non-nil row owner. Keep that invariant
                     // explicit rather than force-unwrapping migration authority.
                     // C3: a reattached MARKED closed-range segment must recover its segmentLength, or
@@ -1681,8 +1596,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     // Opaque lane: a stamped task from a PRIOR attempt (the row was re-enqueued,
                     // possibly at a different quality) must not be re-adopted — its finish takes
                     // the plain move path and would replace the new attempt's file wholesale.
-                    // Legacy unstamped (bare-ratingKey) tasks keep the old adoption for the
-                    // one-time upgrade window.
+                    // Unstamped or malformed tasks have no ownership and are cancelled.
                     let taskAttemptID = BackgroundDownloadTaskIdentity.attemptIdentity(
                         taskDescription: task.taskDescription)
                     guard let taskAttemptID, taskAttemptID == rowAttemptID else {
@@ -1997,17 +1911,11 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
     }
 
-    /// Best-effort match of a resumed background task back to a known download record.
-    ///
-    /// Prefer the task description we set at creation time. Fall back to URL-shape heuristics
-    /// for older tasks: the original request URL may carry the item's metadata key as the `path`
-    /// query param (`/library/metadata/<ratingKey>`) or a Jellyfin `/Items`/`/Videos` path. Plex
-    /// `/library/parts/...` downloads do not include the source ratingKey, which is why the
-    /// explicit task description is required for reliable force-quit/relaunch reattach.
+    /// Match a current background task to a row exclusively through its exact task description.
+    /// Request URLs are mutable transport detail and never ownership authority.
     private static func ratingKey(for task: URLSessionTask, knownKeys: Set<String>) -> String? {
         BackgroundDownloadTaskIdentity.ratingKey(
             taskDescription: task.taskDescription,
-            requestURL: task.originalRequest?.url,
             knownKeys: knownKeys
         )
     }
@@ -3410,7 +3318,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// terminated; on relaunch the background session redelivers `didFinishDownloadingTo` before —
     /// or instead of — reattach re-adopting the task, so the finished multi-GB temp used to be
     /// dropped and reconcile parked the row `.failed` (full restart from zero). The opaque `start`
-    /// paths set `taskDescription` to the bare ratingKey (no segment marker), so an unmarked task
+    /// paths stamp `taskDescription` with the exact row attempt, so a matching current task
     /// resolving to a live forward-only, non-terminal row is ours: hand back a synthesized entry
     /// and let the normal opaque finish path run (HTTP/MIME checks, atomic move, then
     /// `finalizeTransferredFile` — whose tightened forward-only truncation validation is the
@@ -3427,8 +3335,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
               record.status != .complete, record.status != .failed, record.status != .unverified
         else { return nil }
         // Attempt-token gate: the finished body is adopted wholesale (plain move path), so it
-        // must provably belong to the row's CURRENT attempt. Pre-token (bare-ratingKey) tasks
-        // are no longer adoptable — a prior life's stream would replace the new attempt's file.
+        // must provably belong to the row's CURRENT attempt. Unstamped tasks are not adoptable —
+        // a prior life's stream would replace the new attempt's file.
         let taskAttemptID = DownloadAttemptMarker.attemptIdentity(fromTaskDescription: task.taskDescription)
         guard let taskAttemptID,
               taskAttemptID == record.attemptID else {
@@ -3483,14 +3391,14 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         guard record.status != .complete, record.status != .failed else {
             reject("terminal_status"); return nil
         }
-        // Attempt-token gate: only a v2-marked segment stamped with the row's CURRENT attempt
-        // token may be lazily adopted. A v1 (legacy) marker or a prior attempt's token means the
+        // Attempt-token gate: only a current segment stamped with the row's exact attempt
+        // may be adopted. An unowned marker or a prior attempt's token means the
         // body is from another rendition/attempt — appending it at offset 0 of a fresh attempt
         // (or pinning its validator) is the F1 silent-corruption path.
         let taskAttemptID = StaticRangeSegmentMarker.attemptIdentity(task.taskDescription)
         guard let taskAttemptID,
               taskAttemptID == record.attemptID else {
-            reject(taskAttemptID == nil ? "legacy_marker" : "attempt_mismatch"); return nil
+            reject(taskAttemptID == nil ? "unowned_marker" : "attempt_mismatch"); return nil
         }
         let http = task.response as? HTTPURLResponse
         // baseOffset: what WE asked for — the REQUEST's Range start (falling back to the marker

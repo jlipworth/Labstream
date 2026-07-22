@@ -8,25 +8,18 @@ struct BackgroundDownloadStartupAdmissionTests {
         let healthy = DownloadAttemptKey(
             ratingKey: "plex:healthy",
             attemptID: try #require(DownloadAttemptID(rawValue: "healthy-attempt")))
-        let reset = DownloadAttemptKey(
-            ratingKey: "plex:reset",
-            attemptID: try #require(DownloadAttemptID(rawValue: "reset-attempt")))
-
         #expect(BackgroundDownloadSession.shouldAdmitStartupCallback(
             isActive: false, isPurging: true, isPermanentlyRejected: false,
-            hasCurrentMarker: true, taskKey: healthy, resetKeys: [reset], ownsAttempt: true))
+            hasCurrentMarker: true, taskKey: healthy, ownsAttempt: true))
         #expect(!BackgroundDownloadSession.shouldAdmitStartupCallback(
             isActive: false, isPurging: true, isPermanentlyRejected: false,
-            hasCurrentMarker: true, taskKey: reset, resetKeys: [reset], ownsAttempt: true))
+            hasCurrentMarker: false, taskKey: healthy, ownsAttempt: true))
         #expect(!BackgroundDownloadSession.shouldAdmitStartupCallback(
             isActive: false, isPurging: true, isPermanentlyRejected: false,
-            hasCurrentMarker: false, taskKey: healthy, resetKeys: [], ownsAttempt: true))
-        #expect(!BackgroundDownloadSession.shouldAdmitStartupCallback(
-            isActive: false, isPurging: true, isPermanentlyRejected: false,
-            hasCurrentMarker: true, taskKey: healthy, resetKeys: [], ownsAttempt: false))
+            hasCurrentMarker: true, taskKey: healthy, ownsAttempt: false))
         #expect(!BackgroundDownloadSession.shouldAdmitStartupCallback(
             isActive: true, isPurging: false, isPermanentlyRejected: true,
-            hasCurrentMarker: true, taskKey: healthy, resetKeys: [], ownsAttempt: true))
+            hasCurrentMarker: true, taskKey: healthy, ownsAttempt: true))
     }
 
     @Test func dormantSessionRejectsStartWithoutCreatingWork() throws {
@@ -56,16 +49,16 @@ struct BackgroundDownloadStartupAdmissionTests {
         }
     }
 
-    @Test func emptyResetActivationOpensAdmissionOnce() async throws {
+    @Test func currentStoreActivationOpensAdmissionOnce() async throws {
         try await withTemporaryDirectory { directory in
             let store = DownloadStore(baseDirectory: directory)
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
             defer { session.invalidateInjectedSessionForTesting() }
 
-            let first = await activate(session, resetKeys: [])
-            #expect(first == .activated(cancelledTaskCount: 0, resetKeyCount: 0))
+            let first = await activate(session)
+            #expect(first == .activated(cancelledTaskCount: 0))
 
-            let second = await activate(session, resetKeys: [])
+            let second = await activate(session)
             #expect(second == .alreadyActive)
         }
     }
@@ -75,8 +68,8 @@ struct BackgroundDownloadStartupAdmissionTests {
             let store = DownloadStore(baseDirectory: directory)
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
             defer { session.invalidateInjectedSessionForTesting() }
-            #expect(await activate(session, resetKeys: []) == .activated(
-                cancelledTaskCount: 0, resetKeyCount: 0))
+            #expect(await activate(session) == .activated(
+                cancelledTaskCount: 0))
 
             let ratingKey = "plex:attempt-working-session"
             let attemptID = try #require(DownloadAttemptID(rawValue: "attempt-session-a"))
@@ -115,8 +108,8 @@ struct BackgroundDownloadStartupAdmissionTests {
             let session = BackgroundDownloadSession(
                 store: store, protocolClasses: [HeldRangeFailureURLProtocol.self])
             defer { session.invalidateInjectedSessionForTesting() }
-            #expect(await activate(session, resetKeys: []) == .activated(
-                cancelledTaskCount: 0, resetKeyCount: 0))
+            #expect(await activate(session) == .activated(
+                cancelledTaskCount: 0))
 
             let attemptID = try #require(DownloadAttemptID(rawValue: "pending-range-error-a"))
             let key = DownloadAttemptKey(ratingKey: "emby:pending-range", attemptID: attemptID)
@@ -208,8 +201,8 @@ struct BackgroundDownloadStartupAdmissionTests {
             let relaunchedStore = DownloadStore(baseDirectory: directory)
             let session = BackgroundDownloadSession(store: relaunchedStore, protocolClasses: [])
             defer { session.invalidateInjectedSessionForTesting() }
-            #expect(await activate(session, resetKeys: []) == .activated(
-                cancelledTaskCount: 0, resetKeyCount: 0))
+            #expect(await activate(session) == .activated(
+                cancelledTaskCount: 0))
             await withCheckedContinuation { continuation in
                 session.reattach { _ in continuation.resume() }
             }
@@ -257,8 +250,8 @@ struct BackgroundDownloadStartupAdmissionTests {
             let store = DownloadStore(baseDirectory: directory)
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
             defer { session.invalidateInjectedSessionForTesting() }
-            #expect(await activate(session, resetKeys: []) == .activated(
-                cancelledTaskCount: 0, resetKeyCount: 0))
+            #expect(await activate(session) == .activated(
+                cancelledTaskCount: 0))
             // Store construction alone must not have finalized it — reattach owns the recovery.
             #expect(store.record(for: key)?.status == .queued)
 
@@ -284,8 +277,8 @@ struct BackgroundDownloadStartupAdmissionTests {
             let store = DownloadStore(baseDirectory: directory)
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
             defer { session.invalidateInjectedSessionForTesting() }
-            #expect(await activate(session, resetKeys: []) == .activated(
-                cancelledTaskCount: 0, resetKeyCount: 0))
+            #expect(await activate(session) == .activated(
+                cancelledTaskCount: 0))
 
             let key = DownloadAttemptKey(
                 ratingKey: "plex:truncation-budget",
@@ -340,8 +333,8 @@ struct BackgroundDownloadStartupAdmissionTests {
                 indexPersistence: .init { data, url in try writes.write(data, to: url) })
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
             defer { session.invalidateInjectedSessionForTesting() }
-            #expect(await activate(session, resetKeys: []) == .activated(
-                cancelledTaskCount: 0, resetKeyCount: 0))
+            #expect(await activate(session) == .activated(
+                cancelledTaskCount: 0))
             await withCheckedContinuation { continuation in
                 session.reattach { _ in continuation.resume() }
             }
@@ -381,8 +374,8 @@ struct BackgroundDownloadStartupAdmissionTests {
             let store = DownloadStore(baseDirectory: directory, fileManager: failingFiles)
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
             defer { session.invalidateInjectedSessionForTesting() }
-            #expect(await activate(session, resetKeys: []) == .activated(
-                cancelledTaskCount: 0, resetKeyCount: 0))
+            #expect(await activate(session) == .activated(
+                cancelledTaskCount: 0))
             await withCheckedContinuation { continuation in
                 session.reattach { _ in continuation.resume() }
             }
@@ -416,8 +409,8 @@ struct BackgroundDownloadStartupAdmissionTests {
             let store = DownloadStore(baseDirectory: directory)
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
             defer { session.invalidateInjectedSessionForTesting() }
-            #expect(await activate(session, resetKeys: []) == .activated(
-                cancelledTaskCount: 0, resetKeyCount: 0))
+            #expect(await activate(session) == .activated(
+                cancelledTaskCount: 0))
 
             let attemptID = try #require(DownloadAttemptID(rawValue: "attempt-finalizer-a"))
             let key = DownloadAttemptKey(ratingKey: "plex:finalizer", attemptID: attemptID)
@@ -481,7 +474,7 @@ struct BackgroundDownloadStartupAdmissionTests {
             let session = BackgroundDownloadSession(store: store, protocolClasses: [])
             defer { session.invalidateInjectedSessionForTesting() }
             let activation = await UnsupportedResetActivationWaiter().wait(session: session)
-            #expect(activation == .activated(cancelledTaskCount: 0, resetKeyCount: 0))
+            #expect(activation == .activated(cancelledTaskCount: 0))
 
             let indexData = try Data(contentsOf: directory.appendingPathComponent("index.json"))
             let index = try #require(JSONSerialization.jsonObject(with: indexData) as? [String: Any])
@@ -501,7 +494,7 @@ struct BackgroundDownloadStartupAdmissionTests {
 
             let relaunched = DownloadStore(baseDirectory: directory)
             #expect(relaunched.startupIndexProbe == .current)
-            #expect(relaunched.commitLegacyAttemptOwnershipMigration() == .notRequired)
+            #expect(relaunched.startupIndexAdmission() == .current)
             #expect(relaunched.records.isEmpty)
         }
     }
@@ -551,7 +544,7 @@ struct BackgroundDownloadStartupAdmissionTests {
 
             let store = DownloadStore(baseDirectory: directory)
             #expect(store.startupIndexProbe == .unreadable)
-            #expect(store.submitLegacyAttemptOwnershipMigration() == .immediate(.unreadableIndex))
+            #expect(store.startupIndexAdmission() == .unreadableIndex)
             #expect(store.records.isEmpty)
             #expect(try Data(contentsOf: index) == bytes)
             #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted() == before)
@@ -565,7 +558,7 @@ struct BackgroundDownloadStartupAdmissionTests {
             try bytes.write(to: index)
             let store = DownloadStore(baseDirectory: directory)
             #expect(store.startupIndexProbe == .unreadable)
-            #expect(store.submitLegacyAttemptOwnershipMigration() == .immediate(.unreadableIndex))
+            #expect(store.startupIndexAdmission() == .unreadableIndex)
             #expect(store.replaceUnsupportedRootWithCurrentEmptyStore() == .notRequired)
             #expect(try Data(contentsOf: index) == bytes)
         }
@@ -573,10 +566,9 @@ struct BackgroundDownloadStartupAdmissionTests {
 
     private func activate(
         _ session: BackgroundDownloadSession,
-        resetKeys: Set<DownloadAttemptKey>,
         timeout: TimeInterval = 2
     ) async -> BackgroundDownloadSession.StartupActivationResult? {
-        await ActivationWaiter().wait(session: session, resetKeys: resetKeys, timeout: timeout)
+        await ActivationWaiter().wait(session: session, timeout: timeout)
     }
 
     private func writeV2PausedRow(
@@ -711,7 +703,6 @@ private final class ActivationWaiter: @unchecked Sendable {
 
     func wait(
         session: BackgroundDownloadSession,
-        resetKeys: Set<DownloadAttemptKey>,
         timeout: TimeInterval
     ) async -> BackgroundDownloadSession.StartupActivationResult? {
         await withCheckedContinuation { continuation in
@@ -719,7 +710,7 @@ private final class ActivationWaiter: @unchecked Sendable {
             self.continuation = continuation
             lock.unlock()
 
-            session.activateAfterPurgingLegacyTasks(resetKeys: resetKeys) { [weak self] result in
+            session.activateCurrentStore { [weak self] result in
                 self?.finish(result)
             }
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) { [weak self] in

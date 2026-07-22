@@ -62,12 +62,11 @@ final class AuthManager {
     /// Emby Connect PIN poll cadence and ceiling (matches Emby's own TV clients: ~5s).
     private let embyConnectPollInterval: Duration = .seconds(5)
     private let embyConnectPollTimeout: Duration = .seconds(300)
-    private var pollTask: Task<Void, Never>?
     /// PINs being polled for the current login attempt (#16): the non-strong
     /// "link" PIN (its 4-char code is shown for plex.tv/link) and the strong
     /// PIN (its long code backs the on-device web-auth URL). Whichever the
     /// user completes authorizes first; both clear when the attempt ends.
-    private var activePinIDs: Set<Int> = []
+    private var authorizationPolling = AuthorizationPollingCoordinator()
     private var authAttemptAuthority = AuthAttemptAuthority()
     private var plexSessionGeneration = UUID()
     /// Current Emby Connect attempt and the cloud session it produced. `pendingEmbyConnect`
@@ -524,12 +523,12 @@ final class AuthManager {
         guard isCurrentAuthAttempt(attemptID) else { throw CancellationError() }
 
         let authURL = PinAuth.authAppURL(code: strongPin.code, identity: appModel.identity)
-        activePinIDs = [linkPin.id, strongPin.id]
+        let pinIDs: Set<Int> = [linkPin.id, strongPin.id]
         state = .awaitingAuthorization(code: linkPin.code, url: authURL)
 
         // Kick off polling in the background; UI observes `state`.
-        let ids = activePinIDs
-        pollTask = Task { await pollForToken(pinIDs: ids, attemptID: attemptID) }
+        let task = Task { await pollForToken(pinIDs: pinIDs, attemptID: attemptID) }
+        authorizationPolling.install(ownerID: attemptID, plexPINIDs: pinIDs, task: task)
         return authURL
     }
 
@@ -539,7 +538,8 @@ final class AuthManager {
         while authNow() < deadline {
             try? await authSleep(pollInterval)
             if Task.isCancelled { return }
-            guard activePinIDs == pinIDs, isCurrentAuthAttempt(attemptID) else { return }
+            guard authorizationPolling.ownsPlexPINs(pinIDs, ownerID: attemptID),
+                  isCurrentAuthAttempt(attemptID) else { return }
 
             for pinID in pinIDs {
                 let pollReq = PinAuth.pollPinRequest(pinID: pinID, identity: appModel.identity)
@@ -558,9 +558,9 @@ final class AuthManager {
                 }
             }
         }
-        guard activePinIDs == pinIDs, isCurrentAuthAttempt(attemptID) else { return }
-        activePinIDs = []
-        pollTask = nil
+        guard authorizationPolling.ownsPlexPINs(pinIDs, ownerID: attemptID),
+              isCurrentAuthAttempt(attemptID) else { return }
+        authorizationPolling.finish(ownerID: attemptID)
         finishAuthAttempt(attemptID)
         state = .failed("Authorization timed out.")
     }
@@ -572,8 +572,7 @@ final class AuthManager {
         // as soon as Plex authorizes the PIN so a transient discovery outage exposes Retry rather
         // than throwing away a sign-in the user just completed.
         guard keychain.saveToken(token) else {
-            activePinIDs = []
-            pollTask = nil
+            authorizationPolling.finish(ownerID: attemptID)
             finishAuthAttempt(attemptID)
             state = .failed("Couldn’t securely save the Plex session.")
             return
@@ -587,14 +586,12 @@ final class AuthManager {
             }
             applyPlexSession(discovery, token: token)
             schedulePlexProfileRefreshIfNeeded(discovery)
-            activePinIDs = []
-            pollTask = nil
+            authorizationPolling.finish(ownerID: attemptID)
             finishAuthAttempt(attemptID)
             state = .authenticated
         } catch {
             guard isCurrentAuthAttempt(attemptID) else { return }
-            activePinIDs = []
-            pollTask = nil
+            authorizationPolling.finish(ownerID: attemptID)
             finishAuthAttempt(attemptID)
             state = .failed("Signed in, but server discovery failed.")
         }
@@ -686,9 +683,10 @@ final class AuthManager {
 
             guard isCurrentAuthAttempt(attemptID) else { return }
             state = .awaitingJellyfinQuickConnect(code: code)
-            pollTask = Task { await pollJellyfinQuickConnect(server: server,
+            let task = Task { await pollJellyfinQuickConnect(server: server,
                                                              secret: secret,
                                                              attemptID: attemptID) }
+            authorizationPolling.install(ownerID: attemptID, task: task)
         } catch JellyfinAuthError.quickConnectDisabled {
             guard isCurrentAuthAttempt(attemptID) else { return }
             finishAuthAttempt(attemptID)
@@ -744,29 +742,29 @@ final class AuthManager {
                 } catch JellyfinAuthError.http(let status) {
                     guard isCurrentAuthAttempt(attemptID) else { return }
                     finishAuthAttempt(attemptID)
-                    pollTask = nil
+                    authorizationPolling.finish(ownerID: attemptID)
                     state = .failed("Jellyfin Quick Connect sign-in failed (HTTP \(status)). Use username and password instead.")
                 } catch JellyfinAuthError.missingCredentials {
                     guard isCurrentAuthAttempt(attemptID) else { return }
                     finishAuthAttempt(attemptID)
-                    pollTask = nil
+                    authorizationPolling.finish(ownerID: attemptID)
                     state = .failed("Jellyfin did not return a usable session. Use username and password instead.")
                 } catch JellyfinAuthError.secureStorageFailed {
                     guard isCurrentAuthAttempt(attemptID) else { return }
                     finishAuthAttempt(attemptID)
-                    pollTask = nil
+                    authorizationPolling.finish(ownerID: attemptID)
                     state = .failed("Couldn’t securely save the Jellyfin session.")
                 } catch {
                     guard isCurrentAuthAttempt(attemptID) else { return }
                     finishAuthAttempt(attemptID)
-                    pollTask = nil
+                    authorizationPolling.finish(ownerID: attemptID)
                     state = .failed("Jellyfin Quick Connect sign-in failed. Use username and password instead.")
                 }
                 return
             } catch JellyfinAuthError.http(404) {
                 guard isCurrentAuthAttempt(attemptID) else { return }
                 finishAuthAttempt(attemptID)
-                pollTask = nil
+                authorizationPolling.finish(ownerID: attemptID)
                 state = .failed("Jellyfin Quick Connect code expired or was cancelled. Try again or use username and password.")
                 return
             } catch {
@@ -778,7 +776,7 @@ final class AuthManager {
 
         guard isCurrentAuthAttempt(attemptID) else { return }
         finishAuthAttempt(attemptID)
-        pollTask = nil
+        authorizationPolling.finish(ownerID: attemptID)
         state = .failed("Jellyfin Quick Connect timed out. Try again or use username and password.")
     }
 
@@ -792,7 +790,7 @@ final class AuthManager {
         guard isCurrentAuthAttempt(attemptID) else { return }
         try persistJellyfinAuthentication(result, server: server)
         finishAuthAttempt(attemptID)
-        pollTask = nil
+        authorizationPolling.finish(ownerID: attemptID)
         state = .authenticated
     }
 
@@ -929,7 +927,8 @@ final class AuthManager {
             guard isCurrentAuthAttempt(attemptID) else { return }
             recordAuthDiagnostic("auth.emby_connect.pin_created")
             state = .awaitingEmbyConnectPin(code: code)
-            pollTask = Task { await pollEmbyConnectPin(pin: code, attemptID: attemptID) }
+            let task = Task { await pollEmbyConnectPin(pin: code, attemptID: attemptID) }
+            authorizationPolling.install(ownerID: attemptID, task: task)
         } catch EmbyAuthError.http(let status) {
             guard isCurrentAuthAttempt(attemptID) else { return }
             finishAuthAttempt(attemptID)
@@ -1065,7 +1064,7 @@ final class AuthManager {
                                                     attemptID: attemptID)
             } else {
                 // The PIN poll is finished; the attempt now waits on the user's pick.
-                pollTask = nil
+                authorizationPolling.finish(ownerID: attemptID)
                 pendingEmbyConnect = PendingEmbyConnect(connectUserId: connectUserId, servers: servers)
                 recordAuthDiagnostic("auth.emby_connect.server_selection_required",
                                      fields: ["server_count": .string(serverCountBucket(servers.count))])
@@ -1125,7 +1124,7 @@ final class AuthManager {
             try persistEmbySession(server: base, token: token, userID: userID, serverID: expectedSystemID)
             finishAuthAttempt(attemptID)
             pendingEmbyConnect = nil
-            pollTask = nil
+            authorizationPolling.finish(ownerID: attemptID)
             state = .authenticated
             recordAuthDiagnostic("auth.emby_connect.exchange_success")
         } catch EmbyAuthError.http(let status) {
@@ -1287,7 +1286,7 @@ final class AuthManager {
         finishAuthAttempt(attemptID)
         embyConnectServerSelections.cancel()
         pendingEmbyConnect = nil
-        pollTask = nil
+        authorizationPolling.finish(ownerID: attemptID)
         state = .failed(message)
     }
 
@@ -1719,20 +1718,16 @@ final class AuthManager {
 
     private func cleanupCancelledAuthAttempt(_ id: AuthAttemptID) {
         guard Task.isCancelled, authAttemptAuthority.cancel(id) else { return }
-        activePinIDs = []
-        pollTask?.cancel()
-        pollTask = nil
+        authorizationPolling.cancel(ownerID: id)
         pendingEmbyConnect = nil
         embyConnectServerSelections.cancel()
         state = .idle
     }
 
     func cancelPendingLogin() {
-        pollTask?.cancel()
-        pollTask = nil
+        authorizationPolling.cancelAll()
         downloadHydrationTasks.values.forEach { $0.task.cancel() }
         downloadHydrationTasks.removeAll()
-        activePinIDs = []
         authAttemptAuthority.cancelAll()
         embyConnectServerSelections.cancel()
         pendingEmbyConnect = nil

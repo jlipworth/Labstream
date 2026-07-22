@@ -51,10 +51,10 @@ struct DownloadsPhase4CompositionTests {
         }
     }
 
-    @Test("Train retry composes v2 identity, reattach, and segment-local blob adoption")
+    @Test("Train retry composes current identity, reattach, and segment-local blob adoption")
     func trainBlobRetryComposition() {
         let ratingKey = "jellyfin:phase4"
-        let attemptID = "attempt-current"
+        let attemptID = DownloadAttemptID(rawValue: "attempt-current")!
         let segmentOffset = 1_024
         let description = StaticRangeSegmentMarker.taskDescription(
             ratingKey: ratingKey, offset: segmentOffset, attemptID: attemptID)
@@ -92,11 +92,11 @@ struct DownloadsPhase4CompositionTests {
             bodyBytesWritten: 256,
             existingTasks: [],
             taskMarker: StaticRangeSegmentMarker.taskDescription(
-                ratingKey: ratingKey, offset: segmentOffset, attemptID: "attempt-old"),
+                ratingKey: ratingKey, offset: segmentOffset, attemptID: DownloadAttemptID(rawValue: "attempt-old")!),
             rowAttemptID: attemptID)
         #expect(priorAttempt.disposition == .rejectAttemptMismatch(
             taskAttemptID: DownloadAttemptID(rawValue: "attempt-old")!,
-            rowAttemptID: DownloadAttemptID(rawValue: attemptID)!))
+            rowAttemptID: attemptID))
         #expect(StaticRangeResumeDataPolicy.adoptionDecision(
             blobRangeOffset: segmentOffset + 1,
             durableBytes: 0,

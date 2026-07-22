@@ -162,7 +162,7 @@ sequenceDiagram
   clears any old blob/watermark and plain-cancels unfinished segments. The app-owned durable partial
   remains authoritative, completed held bodies remain reusable during that process lifetime, and
   unfinished ranges are planned again on Resume.
-- **The durable partial is the fallback.** A legacy closed-range blob, or an open-ended blob that is
+- **The durable partial is the fallback.** A rejected old-format closed-range blob, or an open-ended blob that is
   missing, malformed, stale, exhausted, or backed by a deleted temp file, is rejected and cleared
   together with its display watermark. Recovery then re-plans from the durable partial's current
   file size rather than appending unvalidated bytes.

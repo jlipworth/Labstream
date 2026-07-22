@@ -17,7 +17,7 @@ struct StaticRangeSegmentMarkerTests {
 
     @Test("String convenience also emits only current marker")
     func stringBuilderIsCurrent() {
-        let marker = StaticRangeSegmentMarker.value(offset: 512, attemptID: "attempt-A")
+        let marker = StaticRangeSegmentMarker.value(offset: 512, attemptID: DownloadAttemptID(rawValue: "attempt-A")!)
         #expect(marker == "lbs-segment:v3:512:attempt-A")
         #expect(StaticRangeSegmentMarker.version(marker) == .currentV3)
     }
@@ -25,9 +25,10 @@ struct StaticRangeSegmentMarkerTests {
     @Test("Combined description round-trips row offset and attempt")
     func combinedDescriptionRoundTrips() {
         let description = StaticRangeSegmentMarker.taskDescription(
-            ratingKey: "movie-123", offset: 536_870_912, attemptID: "attempt-A")
+            ratingKey: "movie-123", offset: 536_870_912, attemptID: DownloadAttemptID(rawValue: "attempt-A")!)
         #expect(StaticRangeSegmentMarker.parse(description) == 536_870_912)
-        #expect(StaticRangeSegmentMarker.attemptID(description) == "attempt-A")
+        #expect(StaticRangeSegmentMarker.attemptIdentity(description) ==
+            DownloadAttemptID(rawValue: "attempt-A"))
         #expect(StaticRangeSegmentMarker.ratingKey(fromTaskDescription: description) == "movie-123")
     }
 
@@ -67,7 +68,7 @@ struct DownloadAttemptMarkerTests {
     @Test("String convenience emits current and v1 is rejected")
     func stringBuilderIsCurrentAndLegacyRejected() {
         let current = DownloadAttemptMarker.taskDescription(
-            ratingKey: "movie-123", attemptID: "attempt-A")
+            ratingKey: "movie-123", attemptID: DownloadAttemptID(rawValue: "attempt-A")!)
         #expect(current.contains("lbs-attempt:v2:attempt-A"))
         #expect(DownloadAttemptMarker.version(fromTaskDescription: current) == .currentV2)
         let legacy = "movie-123\u{1F}lbs-attempt:v1:attempt-A"
@@ -78,11 +79,14 @@ struct DownloadAttemptMarkerTests {
     @Test("Unified identity accessor reads both current lanes")
     func unifiedAttemptAccessor() {
         let segment = StaticRangeSegmentMarker.taskDescription(
-            ratingKey: "movie-123", offset: 512, attemptID: "attempt-A")
+            ratingKey: "movie-123", offset: 512, attemptID: DownloadAttemptID(rawValue: "attempt-A")!)
         let opaque = DownloadAttemptMarker.taskDescription(
-            ratingKey: "movie-123", attemptID: "attempt-B")
-        #expect(BackgroundDownloadTaskIdentity.attemptID(taskDescription: segment) == "attempt-A")
-        #expect(BackgroundDownloadTaskIdentity.attemptID(taskDescription: opaque) == "attempt-B")
-        #expect(BackgroundDownloadTaskIdentity.attemptID(taskDescription: "movie-123") == nil)
+            ratingKey: "movie-123", attemptID: DownloadAttemptID(rawValue: "attempt-B")!)
+        #expect(BackgroundDownloadTaskIdentity.attemptIdentity(taskDescription: segment) ==
+            DownloadAttemptID(rawValue: "attempt-A"))
+        #expect(BackgroundDownloadTaskIdentity.attemptIdentity(taskDescription: opaque) ==
+            DownloadAttemptID(rawValue: "attempt-B"))
+        #expect(BackgroundDownloadTaskIdentity.attemptIdentity(
+            taskDescription: "movie-123") == nil)
     }
 }
