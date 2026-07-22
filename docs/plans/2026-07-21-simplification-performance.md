@@ -1288,9 +1288,9 @@ policy:
 
 #### Wave 6 deletion checkpoint journal
 
-1. Commits `78f2df3a` through `c6314877` remove **362 net production LOC** and **124
+1. Commits `78f2df3a` through `b2c6d5c6` remove **428 net production LOC** and **124
    net test LOC**; the only configuration change is one stale Xcode test-membership exception.
-   Production accounting is `+78/-440` across `Labstream/` and `PMSKit/Sources/`; tests are
+   Production accounting is `+88/-516` across `Labstream/` and `PMSKit/Sources/`; tests are
    `+10/-134`. This is an opportunistic simplification checkpoint, not a performance result.
 2. The first slices delete an orphan held-range ownership policy, backend identity adapters, a
    test-only string lifecycle bridge, and a blocking alphabet-load mode that no production caller
@@ -1306,13 +1306,19 @@ policy:
 5. iPhone landscape player chrome now renders its six available menu pills directly. The deleted
    More menu was unreachable because its overflow set was empty for every iOS menu case; ordering,
    filtering, selection styling, hit targets, accessibility, and menu actions are unchanged.
-6. Independent read-only reviews passed every slice. Focused validation passed the initial 50-test
+   The remaining shared play/pause control and its call sites now compile only on visionOS, their
+   sole runtime consumer; iOS/iPadOS and macOS retain dedicated controls, while tvOS retains remote
+   and timeline-Select transport without a synthetic focus case.
+6. Media-browser system suggestions and Watch Together lookup now each use one combined
+   Jellyfin/Emby switch case. The removed bodies were byte-identical; backend-frozen clients,
+   opaque authority/currentness checks, cancellation, limits, filtering, and result order remain.
+7. Independent read-only reviews passed every slice. Focused validation passed the initial 50-test
    hosted deletion set, 23 catalog/search tests, 28 attempt-owned recovery tests, 4 PMSKit temp-policy
    tests, all 149 script tests, and clean Debug compile gates for macOS, visionOS, iOS, and tvOS.
    A pre-existing `DownloadStorePersistenceTests` order/isolation failure still reproduces when its
    class runs as a group (`57/58` pass) but the named failing test passes alone; track that harness
    defect separately rather than attributing it to definition-only deletion.
-7. No measured optimization has landed. Wave 5 still lacks the identical external UI workload and
+8. No measured optimization has landed. Wave 5 still lacks the identical external UI workload and
    statistically eligible paired samples needed for launch, browse, artwork, playback, download,
    memory, energy, or compile-time claims.
 
