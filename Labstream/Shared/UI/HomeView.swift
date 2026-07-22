@@ -181,6 +181,7 @@ struct HomeView: View {
                                     rail.id == mediaBrowserRails.first?.id
                                         ? homeFocusNamespace : nil,
                                 tvFocusBinding: $tvRailFocus)
+                        .macHomeMeasurementMilestone(rail.id == mediaBrowserRails.first?.id)
                     }
                 }
             }
@@ -383,6 +384,21 @@ struct HomeView: View {
               let backendKey = notification.userInfo?[LibraryVisibilityStore.didChangeBackendKeyUserInfoKey] as? String,
               backendKey == appModel.libraryVisibilityBackendKey else { return }
         Task { await load(force: true) }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func macHomeMeasurementMilestone(_ isFirstRail: Bool) -> some View {
+        #if os(macOS)
+        if isFirstRail {
+            accessibilityIdentifier("performance.mac.home.first-rail")
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
     }
 }
 

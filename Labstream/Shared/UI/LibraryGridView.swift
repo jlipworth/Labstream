@@ -1060,6 +1060,7 @@ private struct LibraryGridSlot: View {
                 }
                 .cardLink()
                 .videoCardContextMenu(for: item)
+                .macLibraryGridMeasurementMilestone(index == 0)
                 .id("loaded-\(item.ratingKey)")
             } else {
                 LibraryPlaceholderPoster(width: width)
@@ -1067,6 +1068,23 @@ private struct LibraryGridSlot: View {
                     .onAppear(perform: onPlaceholderAppear)
             }
         }
+    }
+}
+
+private extension View {
+    /// The first loaded card is both the deterministic external driver's readiness gate and
+    /// its item milestone. No server, library, or media identifier enters the accessibility ID.
+    @ViewBuilder
+    func macLibraryGridMeasurementMilestone(_ isFirstSlot: Bool) -> some View {
+        #if os(macOS)
+        if isFirstSlot {
+            accessibilityIdentifier("performance.mac.library-grid.first-item")
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
     }
 }
 

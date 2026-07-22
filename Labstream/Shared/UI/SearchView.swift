@@ -176,7 +176,9 @@ struct SearchView: View {
                             SearchLibrarySection(group: group,
                                                  query: queryText,
                                                  backend: appModel.activeBackend,
-                                                 sessionIdentity: appModel.activeBrowseSessionKey)
+                                                 sessionIdentity: appModel.activeBrowseSessionKey,
+                                                 isMeasurementMilestone:
+                                                    group.id == results.presentationGroups.first?.id)
                         }
                     }
                     .padding(.vertical, DS.Space.xl)
@@ -374,6 +376,7 @@ private struct SearchLibrarySection: View {
     let query: String
     let backend: MediaBackendKind
     let sessionIdentity: String
+    let isMeasurementMilestone: Bool
 
     @Environment(\.labstreamCompactWidth) private var compactWidth
 
@@ -382,6 +385,7 @@ private struct SearchLibrarySection: View {
             Text(group.title)
                 .font(compactWidth ? .title2.bold() : .title.bold())
                 .padding(.horizontal, DS.Scroll.railHorizontalMargin(compact: compactWidth))
+                .macSearchResultMeasurementMilestone(isMeasurementMilestone)
 
             ForEach(group.sections) { section in
                 switch section.kind {
@@ -420,6 +424,23 @@ private struct SearchLibrarySection: View {
         case .other("video"): return "Video"
         default: return nil
         }
+    }
+}
+
+private extension View {
+    /// A static result-ready gate for the external Mac workload. The visible server/library
+    /// title stays the accessibility label; its opaque identity is never encoded here.
+    @ViewBuilder
+    func macSearchResultMeasurementMilestone(_ isFirstGroup: Bool) -> some View {
+        #if os(macOS)
+        if isFirstGroup {
+            accessibilityIdentifier("performance.mac.search-results.first-group")
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
     }
 }
 
