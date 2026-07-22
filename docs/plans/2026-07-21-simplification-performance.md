@@ -1174,10 +1174,12 @@ policy:
    exceed the closed schema, begin-only dimensions disappear from comparable records, several stale
    returns can leave spans open, and a value-type span can be ended more than once. Instrumentation
    and deterministic workloads must be applied identically to both artifacts before paired evidence.
-3. Runtime comparisons use `40af93f3` as the post-safety benchmark-ready control when a Wave 0 fix
-   was a prerequisite for valid measurement; the simplified candidate begins at `cf2ceeb3`. Compile
-   topology may additionally report the original `b3045bc0` control, but must label the different
-   provenance rather than mixing controls inside one paired result.
+3. Runtime comparisons use `ead62213` as the instrumented post-safety control: it is a
+   measurement-only child of benchmark-ready `40af93f3` on `codex/audit-performance-control`.
+   The simplified candidate begins structurally at `cf2ceeb3` and has matching launch/span
+   instrumentation at `e191ce46`. Compile topology may additionally report the original
+   `b3045bc0` control, but must label the different provenance rather than mixing controls inside
+   one paired result.
 4. Highest-priority hypotheses to measure, not assume, are synchronous launch-time download-store
    I/O; Plex restore waiting beyond first usable connection; zero-work recovery wakeups; load-all
    movie grids; whole-snapshot Home/Search publication; shimmer invalidation; store-and-forward media
@@ -1201,6 +1203,11 @@ policy:
    usable backend session as authority, classifying credential-retained-but-unavailable lanes as
    partial rather than successful. Both phases have closed backend/field correctness profiles and
    pass Mac hosted tests plus visionOS, iOS arm64, and tvOS arm64 build gates.
+8. The compatible control instrumentation is now committed separately at `ead62213`. Its legacy
+   `AppServices.make` composition root is the pre-refactor equivalent of candidate `AppRuntime.make`,
+   and legacy inactive-backend hydration remains behaviorally intact but outside the selected-backend
+   restore span so it cannot bias paired timings. The control passed 85 Python tooling tests, 24
+   focused Mac tests, generic visionOS/iOS builds, tvOS build-for-testing, and adversarial review.
 
 ### Wave 6 — Optimize measured bottlenecks
 
