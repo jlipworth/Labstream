@@ -3141,26 +3141,6 @@ final class DownloadStore: @unchecked Sendable {
             ? .cleared : .persistenceFailed(persistence.result)
     }
 
-    /// Persist the exact static resource size once a byte-range transfer discovers it. Rows may
-    /// relaunch/reattach while the active bytes are still in URLSession's temp file; keeping this
-    /// denominator durable lets the Offline UI continue to show percent/ETA from live Range bytes
-    /// instead of falling back to a spinner + 0% caption.
-    func setSourcePartSizeIfMissing(ratingKey: String, _ size: Int?) {
-        setSourcePartSize(ratingKey: ratingKey, size, onlyIfMissing: true)
-    }
-
-    func setSourcePartSize(ratingKey: String, _ size: Int?) {
-        setSourcePartSize(ratingKey: ratingKey, size, onlyIfMissing: false)
-    }
-
-    @discardableResult
-    func setSourcePartSizeIfMissing(
-        for key: DownloadAttemptKey,
-        _ size: Int?
-    ) -> AttemptMutationResult {
-        setSourcePartSize(for: key, size, onlyIfMissing: true)
-    }
-
     @discardableResult
     func setSourcePartSize(
         for key: DownloadAttemptKey,
@@ -3169,6 +3149,9 @@ final class DownloadStore: @unchecked Sendable {
         setSourcePartSize(for: key, size, onlyIfMissing: false)
     }
 
+    /// Persist the exact static resource size once a byte-range transfer discovers it. Rows may
+    /// relaunch/reattach while active bytes are still in the network temporary file; keeping this
+    /// denominator durable lets Offline continue showing percent and ETA from live range bytes.
     @discardableResult
     func submitSourcePartSizeIfMissing(
         for key: DownloadAttemptKey,
@@ -3208,24 +3191,6 @@ final class DownloadStore: @unchecked Sendable {
             let existing = metadata.sourcePartSize ?? 0
             guard existing != size, !onlyIfMissing || existing <= 0 else { return }
             metadata.sourcePartSize = size
-        }
-    }
-
-    private func setSourcePartSize(ratingKey: String, _ size: Int?, onlyIfMissing: Bool) {
-        guard let size, size > 0 else { return }
-        lock.lock()
-        let existing = rows[ratingKey]?.metadata?.sourcePartSize ?? 0
-        lock.unlock()
-        // Range progress delegates see the same Content-Range denominator on every callback.
-        // Avoid rewriting metadata/index JSON, invalidating caches, and notifying refresh paths
-        // when the value is already durable.
-        guard existing != size else { return }
-        guard !onlyIfMissing || existing <= 0 else { return }
-        updateMetadata(ratingKey: ratingKey) { meta in
-            if meta.sourcePartSize != size,
-               (!onlyIfMissing || (meta.sourcePartSize ?? 0) <= 0) {
-                meta.sourcePartSize = size
-            }
         }
     }
 
