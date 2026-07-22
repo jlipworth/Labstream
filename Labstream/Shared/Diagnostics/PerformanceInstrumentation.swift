@@ -124,15 +124,33 @@ enum PerformanceInstrumentation {
     }
 }
 
+/// One shared gate follows a span across value copies and makes its terminal event atomic.
+/// Claiming before formatting the terminal fields also prevents duplicate callers from doing
+/// privacy-sensitive/logging work after another caller has already ended the span.
+final class PerformanceSpanEndGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ended = false
+
+    func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !ended else { return false }
+        ended = true
+        return true
+    }
+}
+
 struct PerformanceSpan {
     let phase: PerformanceInstrumentation.Phase
     let backend: String
     let log: OSLog
     let signpostID: OSSignpostID
     let startedAt: CFAbsoluteTime
+    private let endGate = PerformanceSpanEndGate()
 
     func end(result: String = "success",
              fields: @autoclosure () -> [String: Any] = [:]) {
+        guard endGate.claim() else { return }
         let durationMs = max(0, Int((CFAbsoluteTimeGetCurrent() - startedAt) * 1000.0))
         os_signpost(.end, log: log, name: phase.signpostName, signpostID: signpostID)
         PerformanceInstrumentation.logEnd(self,

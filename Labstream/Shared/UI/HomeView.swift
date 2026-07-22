@@ -226,7 +226,10 @@ struct HomeView: View {
                 // The backend can change while an earlier Home task is unwinding. A Plex task uses
                 // native hubs and must never enter the Jellyfin/Emby provider.
                 guard let provider = MediaBrowserHomeProvider(appModel: appModel,
-                                                              catalogRepository: catalogRepository) else { return }
+                                                              catalogRepository: catalogRepository) else {
+                    span.end(result: "superseded")
+                    return
+                }
                 let content = try await provider.loadHome(forceRefresh: force) { snapshot in
                     guard generation == loadGeneration,
                           loadIdentity == activeIdentity,
@@ -238,7 +241,12 @@ struct HomeView: View {
                     loadState = MediaBrowserHomePublicationPolicy.shouldShowLoadedState(snapshot)
                         ? .loaded : .loading
                 }
-                guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
+                guard generation == loadGeneration,
+                      loadIdentity == activeIdentity,
+                      !Task.isCancelled else {
+                    span.end(result: Task.isCancelled ? "cancelled" : "superseded")
+                    return
+                }
                 if let session = appModel.backendSession(for: appModel.activeBackend.downloadBackendKind) {
                     SpotlightIndexer.index(content.rails.flatMap(\.items),
                                            backend: appModel.activeBackend,
@@ -253,7 +261,12 @@ struct HomeView: View {
                     "pending_rail_count": content.pendingRailKeys.count,
                 ])
             } catch {
-                guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
+                guard generation == loadGeneration,
+                      loadIdentity == activeIdentity,
+                      !Task.isCancelled else {
+                    span.end(result: Task.isCancelled ? "cancelled" : "superseded")
+                    return
+                }
                 span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
                 loadState = .failed(friendlyMessage(error))
             }
@@ -268,7 +281,12 @@ struct HomeView: View {
         loadState = .loading
         do {
             let loadedHubs = try await service.hubs()
-            guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
+            guard generation == loadGeneration,
+                  loadIdentity == activeIdentity,
+                  !Task.isCancelled else {
+                span.end(result: Task.isCancelled ? "cancelled" : "superseded")
+                return
+            }
             hubs = loadedHubs
             loadedIdentity = activeIdentity
             loadState = .loaded
@@ -282,7 +300,12 @@ struct HomeView: View {
             SpotlightIndexer.index(hubs.flatMap(\.metadata), server: service.session.baseURL)
             LabstreamShortcuts.updateAppShortcutParameters()
         } catch {
-            guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
+            guard generation == loadGeneration,
+                  loadIdentity == activeIdentity,
+                  !Task.isCancelled else {
+                span.end(result: Task.isCancelled ? "cancelled" : "superseded")
+                return
+            }
             span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
             loadState = .failed(friendlyMessage(error))
         }

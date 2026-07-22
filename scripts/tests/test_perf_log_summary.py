@@ -36,6 +36,23 @@ class PerfLogSummaryTests(unittest.TestCase):
                 )
                 self.assertEqual(span.result, result)
 
+    def test_current_home_and_detail_fields_match_closed_schema(self):
+        home = perf.parse_span_line(
+            "perf.span phase=home.load backend=Jellyfin result=success duration_ms=10 "
+            "view_count=2 rail_count=3 pending_rail_count=1 item_count=9 degraded=1"
+        )
+        detail = perf.parse_span_line(
+            "perf.span phase=detail.metadata backend=Emby result=success duration_ms=8 "
+            "media_count=2 swr_refresh=1"
+        )
+
+        self.assertEqual(home.fields["pending_rail_count"], "1")
+        self.assertEqual(detail.fields["swr_refresh"], "1")
+        self.assertEqual(perf.parse_span_line_diagnostic(
+            "perf.span phase=detail.metadata backend=Emby result=success duration_ms=8 "
+            "media_count=2 swr_refresh=true"
+        )[1], "invalid_boolean_field")
+
     def test_error_values_are_closed_categories_not_copied(self):
         span = perf.parse_span_line(
             "perf.span phase=home.load backend=Plex result=failure duration_ms=1 error=Nas.Home.Internal"

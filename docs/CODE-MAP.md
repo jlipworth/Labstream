@@ -362,7 +362,9 @@ background.
 - `MetricKitDiagnostics.swift` stores a bounded set of redacted crash/hang summaries for
   user-generated feedback; it does not upload them.
 - `PerformanceInstrumentation.swift` is real signpost instrumentation in Debug and an
-  API-compatible no-op in Release.
+  API-compatible no-op in Release. Its terminal gate emits at most one end/signpost record per
+  span even when cancellation and completion race; `scripts/perf_evidence_schema.py` is the closed
+  allowlist for every emitted terminal field.
 - `PMSKit/Sources/PMSKit/Diagnostics/` owns typed fields, redaction, the bounded event
   store, report rendering, and MetricKit summary models.
 

@@ -1684,7 +1684,10 @@ struct DetailView: View {
                                                      policy: .display)
         guard activeVersionRatingKey == requestedRatingKey,
               actionBackend == requestedBackend,
-              !Task.isCancelled else { return }
+              !Task.isCancelled else {
+            span.end(result: Task.isCancelled ? "cancelled" : "superseded")
+            return
+        }
         guard let full = result.item else {
             span.end(result: "failure", fields: ["error": result.errorLabel ?? "metadata_unavailable"])
             return
@@ -1707,14 +1710,17 @@ struct DetailView: View {
                                                         policy: .authoritative)
         guard activeVersionRatingKey == requestedRatingKey,
               actionBackend == requestedBackend,
-              !Task.isCancelled else { return }
+              !Task.isCancelled else {
+            span.end(result: Task.isCancelled ? "cancelled" : "superseded")
+            return
+        }
         guard let refreshedItem = refreshed.item else {
             span.end(result: "stale", fields: ["media_count": full.media?.count ?? 0])
             return
         }
         applyHydratedMetadata(refreshedItem, snapshot: refreshed.snapshot)
         span.end(fields: ["media_count": refreshedItem.media?.count ?? 0,
-                          "swr_refresh": true])
+                          "swr_refresh": 1])
     }
 
     private func applyHydratedMetadata(_ item: MediaItem, snapshot: MetadataSnapshot?) {
