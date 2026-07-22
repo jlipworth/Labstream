@@ -29,6 +29,44 @@ class Process:
         self.returncode = None
 
 
+NATIVE_SCHEMA = """<schema name="thread-state" documentation="Determines that state of a thread during a given interval of time.">
+<col><mnemonic>start</mnemonic><name>Start Time</name><engineering-type>start-time</engineering-type></col>
+<col><mnemonic>thread</mnemonic><name>Thread</name><engineering-type>thread</engineering-type></col>
+<col><mnemonic>state</mnemonic><name>State</name><engineering-type>thread-state</engineering-type></col>
+<col><mnemonic>duration</mnemonic><name>Duration</name><engineering-type>duration</engineering-type></col>
+<col><mnemonic>process</mnemonic><name>Process</name><engineering-type>process</engineering-type></col>
+<col><mnemonic>core</mnemonic><name>Core</name><engineering-type>core</engineering-type></col>
+<col><mnemonic>cputime</mnemonic><name>Running Time</name><engineering-type>duration-on-core</engineering-type></col>
+<col><mnemonic>waittime</mnemonic><name>Wait Time</name><engineering-type>duration-waiting</engineering-type></col>
+<col><mnemonic>priority</mnemonic><name>Priority</name><engineering-type>sched-priority</engineering-type></col>
+<col><mnemonic>note</mnemonic><name>Note</name><engineering-type>narrative</engineering-type></col>
+<col><mnemonic>summary</mnemonic><name>Summary</name><engineering-type>narrative</engineering-type></col>
+<col><mnemonic>made-runnable-by-thread</mnemonic><name>Made Runnable By</name><engineering-type>thread</engineering-type></col>
+<col><mnemonic>preempted-by-thread</mnemonic><name>Preempted By</name><engineering-type>thread</engineering-type></col>
+<col><mnemonic>yielded-to-thread</mnemonic><name>Yielded To</name><engineering-type>thread</engineering-type></col>
+<col><mnemonic>rebalanced-from-cpu</mnemonic><name>Rebalanced From CPU</name><engineering-type>core</engineering-type></col>
+<col><mnemonic>thermal-throttled</mnemonic><name>Thermal Throttled</name><engineering-type>boolean</engineering-type></col>
+</schema>"""
+
+
+def native_toc(pid, duration):
+    unit = "second" if duration == 1 else "seconds"
+    return f"""<?xml version="1.0"?><trace-toc><run number="1"><info><target>
+<process type="attached" return-exit-status="0" name="Labstream" pid="{pid}" termination-reason="exit(0)"/>
+</target><summary><duration>{duration}.000000</duration><instruments-version>27.0 (17A456)</instruments-version>
+<template-name>System Trace</template-name><time-limit>{duration} {unit}</time-limit></summary></info>
+<data><table schema="thread-state" target-pid="SINGLE" documentation="Determines that state of a thread during a given interval of time."/></data>
+</run></trace-toc>"""
+
+
+def native_thread_state(pid):
+    return f"""<?xml version="1.0"?><trace-query-result><node xpath="//trace-toc[1]/run[1]/data[1]/table[58]">
+{NATIVE_SCHEMA}
+<row><start-time id="1" fmt="0">0</start-time><thread id="20" fmt="target"><tid id="21" fmt="1">1</tid><process id="10" fmt="Labstream"><pid id="11" fmt="{pid}">{pid}</pid><device-session id="12" fmt="TODO">TODO</device-session></process></thread><thread-state id="40" fmt="Running">Running</thread-state><duration id="41" fmt="1 us">1000</duration><process ref="10"/><sentinel/><sentinel/><sentinel/><sentinel/><sentinel/><sentinel/><sentinel/><sentinel/><sentinel/><sentinel/><sentinel/></row>
+<row><start-time id="2" fmt="1 us">1000</start-time><thread ref="20"/><thread-state id="42" fmt="Runnable">Runnable</thread-state><duration id="43" fmt="2 us">2000</duration><process ref="10"/><sentinel/><sentinel/><sentinel/><sentinel/><sentinel/><sentinel/><thread id="30" fmt="kernel"><tid id="31" fmt="2">2</tid><process id="32" fmt="kernel"><pid id="33" fmt="0">0</pid><device-session ref="12"/></process></thread><sentinel/><sentinel/><sentinel/><sentinel/></row>
+</node></trace-query-result>"""
+
+
 class FakeExecutor:
     def __init__(self, fail_sleep=False):
         self.actions = []
@@ -36,6 +74,8 @@ class FakeExecutor:
         self.fail_sleep = fail_sleep
         self.clock = datetime(2026, 7, 22, tzinfo=timezone.utc)
         self.processes = {}
+        self.trace_pid = None
+        self.trace_duration = None
 
     def run(self, argv, *, stdout=-1):
         self.actions.append(("run", argv))
@@ -44,7 +84,12 @@ class FakeExecutor:
             shutil.rmtree(argv[2], ignore_errors=True)
         elif argv[:2] == ["/bin/mkdir", "-p"]:
             pathlib.Path(argv[2]).mkdir(parents=True, exist_ok=True)
-        elif str(runner.SUMMARY) in argv or (str(runner.CONTRACT) in argv and "manifest" in argv):
+        elif argv[:3] == ["/usr/bin/xcrun", "xctrace", "export"]:
+            output_path = pathlib.Path(argv[argv.index("--output") + 1])
+            output_path.write_text(native_toc(self.trace_pid, self.trace_duration)
+                                   if "--toc" in argv else native_thread_state(self.trace_pid))
+        elif (str(runner.SUMMARY) in argv or str(runner.IDLE_EXTRACTOR) in argv
+              or (str(runner.CONTRACT) in argv and "manifest" in argv)):
             subprocess.run(argv, check=True, stdout=stdout, stderr=subprocess.STDOUT)
         elif argv[:4] == ["/usr/bin/log", "show", "--info", "--style"]:
             self.assert_ndjson(argv)
@@ -78,7 +123,11 @@ class FakeExecutor:
         self.next_pid += 1
         self.actions.append(("spawn", argv, self.next_pid))
         if "xctrace" in argv:
-            pathlib.Path(argv[argv.index("--output") + 1]).mkdir(parents=True)
+            trace = pathlib.Path(argv[argv.index("--output") + 1])
+            trace.mkdir(parents=True)
+            (trace / "data").write_bytes(b"trace-data")
+            self.trace_pid = int(argv[argv.index("--attach") + 1])
+            self.trace_duration = int(argv[argv.index("--time-limit") + 1].removesuffix("s"))
         process = Process(self.next_pid)
         self.processes[process.pid] = process
         return process
@@ -133,6 +182,17 @@ class RunnerTests(unittest.TestCase):
         (container / "Data").mkdir(parents=True, mode=0o700)
         (container / "Data").chmod(0o700)
         (container / ".com.apple.containermanagerd.metadata.plist").write_bytes(b"fixture")
+
+    @staticmethod
+    def cli_args(control, candidate, output):
+        return [
+            "--control-app", str(control), "--candidate-app", str(candidate),
+            "--control-commit", "a" * 40, "--candidate-commit", "b" * 40,
+            "--device-label", "local-device-01",
+            "--retention-deadline", "2099-01-01T00:00:00Z",
+            "--warmups", "0", "--measured", "1", "--duration-seconds", "1",
+            "--output", str(output),
+        ]
 
     def test_canonical_empty_index_bytes_and_digest_are_frozen(self):
         self.assertEqual(runner.CANONICAL_INDEX, b'{"schemaVersion":4,"rows":[]}\n')
@@ -303,7 +363,8 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(result, 0)
             self.assertEqual(fake.actions, [])
             self.assertEqual(document["mode"], "plan")
-            self.assertEqual(document["artifact_status"], "pre_manifest_raw_capture")
+            self.assertEqual(document["artifact_status"], "planned_typed_idle_per_run_manifests")
+            self.assertNotIn("idle_export_compatibility", document)
             self.assertEqual((document["warmups"], document["measured"],
                               document["duration_seconds"]), (1, 5, 120))
             self.assertEqual(document["settle_seconds"], 10)
@@ -320,6 +381,18 @@ class RunnerTests(unittest.TestCase):
             self.assertTrue(all("System Trace" in s["commands"]["idle_trace"]
                                 for s in document["samples"]))
 
+    def test_duration_above_evidence_contract_bound_fails_before_capture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            control = self.make_app(temporary, "A.app")
+            candidate = self.make_app(temporary, "B.app")
+            fake = FakeExecutor()
+            arguments = self.cli_args(control, candidate, pathlib.Path(temporary) / "result.json")
+            arguments[arguments.index("1", arguments.index("--duration-seconds"))] = "86401"
+            arguments.extend(["--scenario", "idle", "--plan"])
+            with self.assertRaisesRegex(runner.RunnerError, r"1\.\.\.86400"):
+                runner.main(arguments, executor=fake)
+            self.assertEqual(fake.actions, [])
+
     def test_capture_checks_binaries_seeds_externally_and_uses_exact_pids(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
@@ -334,7 +407,7 @@ class RunnerTests(unittest.TestCase):
             result = runner.capture(plan, (control, candidate), fake)
             contract_runs = [a for a in fake.actions if a[0] == "run" and
                              "performance-audit-contract.py" in " ".join(a[1])]
-            self.assertEqual(len(contract_runs), 2)
+            self.assertEqual(len(contract_runs), 4)
             index = pathlib.Path(plan["container"]) / runner.INDEX_RELATIVE
             self.assertEqual(index.read_bytes(), runner.CANONICAL_INDEX)
             record = result["records"][0]
@@ -352,8 +425,234 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(log_show[1][-1], str(app_spawn[2]))
             self.assertIn(("terminate", app_spawn[2]), fake.actions)
             self.assertEqual(result["verdict"]["status"], "insufficient_data")
-            self.assertEqual(result["artifact_status"], "pre_manifest_raw_capture")
+            self.assertEqual(result["artifact_status"], "typed_idle_per_run_manifests")
             self.assertTrue(str(pathlib.Path(plan["container"])).startswith(str(root)))
+            manifest_path = pathlib.Path(record["manifest"])
+            manifest = json.loads(manifest_path.read_text())
+            self.assertEqual(manifest["scenario"]["category"], "idle")
+            self.assertFalse(manifest["evidence"]["publishable"])
+            self.assertEqual([pointer["path"] for pointer in manifest["evidence"]["artifacts"]], [
+                "raw/artifact-0001.trace.zip", "raw/artifact-0002.xml", "raw/artifact-0003.json",
+            ])
+            summary = json.loads((manifest_path.parent / "summary/redacted.json").read_text())
+            self.assertEqual(summary["metrics"], {"cpu_running_ns": 1000, "wakeups_count": 1})
+            self.assertNotIn(str(control), json.dumps(summary))
+            self.assertFalse(any(path.name == "artifact.trace" for path in manifest_path.parent.iterdir()))
+            export_runs = [a for a in fake.actions if a[0] == "run" and a[1][:3] ==
+                           ["/usr/bin/xcrun", "xctrace", "export"]]
+            self.assertEqual(len(export_runs), 4)
+            self.assertIn("--toc", export_runs[0][1])
+            self.assertEqual(export_runs[1][1][export_runs[1][1].index("--xpath") + 1],
+                             runner.IDLE_XCTRACE_XPATH)
+            extractor_run = next(a for a in fake.actions if a[0] == "run"
+                                 and str(runner.IDLE_EXTRACTOR) in a[1])
+            manifest_run = next(a for a in fake.actions if a[0] == "run"
+                                and str(runner.CONTRACT) in a[1] and "manifest" in a[1])
+            self.assertLess(fake.actions.index(("wait", trace_spawn[2], 15)),
+                            fake.actions.index(("terminate", app_spawn[2])))
+            self.assertLess(fake.actions.index(("terminate", app_spawn[2])),
+                            fake.actions.index(export_runs[0]))
+            self.assertLess(fake.actions.index(export_runs[1]), fake.actions.index(extractor_run))
+            self.assertLess(fake.actions.index(extractor_run), fake.actions.index(manifest_run))
+            self.assertFalse((manifest_path.parent / ".xctrace-toc.xml").exists())
+            self.assertFalse((manifest_path.parent / ".xctrace-thread-state.xml").exists())
+            for evidence in (manifest_path.read_text(),
+                             (manifest_path.parent / "raw/artifact-0002.xml").read_text(),
+                             (manifest_path.parent / "raw/artifact-0003.json").read_text(),
+                             (manifest_path.parent / "summary/redacted.json").read_text()):
+                self.assertNotIn(str(control), evidence)
+
+    def test_idle_collision_starts_no_app_and_preserves_existing_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            apps = (runner.validate_app("control", self.make_app(root, "A.app")),
+                    runner.validate_app("candidate", self.make_app(root, "B.app")))
+            plan = runner.command_plan(
+                apps, "idle", 0, 1, 1, 4, root / "result.json",
+                containers_root=root / "Containers", control_commit="a" * 40,
+                candidate_commit="b" * 40)
+            plan["samples"] = plan["samples"][:1]
+            log_root = root / "result-logs"
+            destination = log_root / runner.idle_run_id(plan, plan["samples"][0])
+            destination.mkdir(parents=True)
+            sentinel = destination / "sentinel"
+            sentinel.write_text("keep")
+            fake = FakeExecutor()
+            result = runner.capture(plan, apps, fake)
+            self.assertEqual(result["capture_status"], "failure")
+            self.assertIn("already exists", result["records"][0]["failure"]["message"])
+            self.assertEqual(sentinel.read_text(), "keep")
+            self.assertFalse(any(path.name.startswith(".incomplete-idle-")
+                                 for path in log_root.iterdir()))
+            self.assertFalse(any(action[0] == "spawn" for action in fake.actions))
+
+    def test_idle_extractor_failure_publishes_no_partial_run(self):
+        class FailingExtractor(FakeExecutor):
+            def run(self, argv, *, stdout=-1):
+                if str(runner.IDLE_EXTRACTOR) in argv:
+                    self.actions.append(("run", argv))
+                    raise subprocess.CalledProcessError(
+                        2, argv, output=b"error: native thread-state export contains an unknown state\n")
+                return super().run(argv, stdout=stdout)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            apps = (runner.validate_app("control", self.make_app(root, "A.app")),
+                    runner.validate_app("candidate", self.make_app(root, "B.app")))
+            plan = runner.command_plan(apps, "idle", 0, 1, 1, 4, root / "result.json",
+                                       containers_root=root / "Containers")
+            plan["samples"] = plan["samples"][:1]
+            self.prepare_container(plan)
+            fake = FailingExtractor()
+            result = runner.capture(plan, apps, fake)
+            self.assertEqual(result["capture_status"], "failure")
+            self.assertEqual(list((root / "result-logs").iterdir()), [])
+            self.assertIn("unknown state", result["records"][0]["failure"]["message"])
+            app_pid = next(action[2] for action in fake.actions
+                           if action[0] == "spawn" and "xctrace" not in action[1])
+            self.assertIn(("terminate", app_pid), fake.actions)
+
+    def test_idle_tool_failure_detail_is_bounded_redacted_and_strict_utf8(self):
+        command = [sys.executable, str(runner.IDLE_EXTRACTOR), "--toc-xml", "/private/input.xml"]
+        unsafe = subprocess.CalledProcessError(
+            2, command,
+            output=(b'Traceback: /path/to/user/private.py line 4\n'
+                    b'error: failed /path/to/user/private.xml token=abc password=hunter2 '
+                    b'Authorization: secret Bearer credential https://user:pass@example.test/x\n'),
+        )
+        failure = runner.idle_failure_record(unsafe)
+        self.assertIn("error: failed <path>", failure["message"])
+        for secret in ("/Users", "alice", "abc", "hunter2", "secret", "credential",
+                       "user:pass", "example.test", "Traceback"):
+            self.assertNotIn(secret, failure["message"])
+        self.assertLessEqual(len(failure["message"].encode()), runner.IDLE_FAILURE_DETAIL_MAX_BYTES)
+
+        invalid = subprocess.CalledProcessError(
+            2, command, output=b"error: useful prefix then invalid \xff\n")
+        invalid_failure = runner.idle_failure_record(invalid)
+        self.assertEqual(invalid_failure["message"], "idle extractor failed with exit status 2")
+
+        contract_error = subprocess.CalledProcessError(
+            1, [sys.executable, str(runner.CONTRACT), "manifest", "/private/manifest.json"],
+            output=b"performance-audit-contract: FAIL: idle normalized XML row is unsupported\n",
+        )
+        self.assertIn("normalized XML row", runner.idle_failure_record(contract_error)["message"])
+
+        unrelated = subprocess.CalledProcessError(
+            7, ["/usr/bin/false"], output=b"error: should not be exposed\n")
+        self.assertEqual(runner.idle_failure_record(unrelated)["message"], str(unrelated))
+
+    def test_idle_cleanup_aggregates_and_retries_both_handles(self):
+        class CleanupFailures(FakeExecutor):
+            def poll(self, process):
+                self.actions.append(("poll", process.pid))
+                return None
+
+            def terminate(self, pid):
+                self.actions.append(("terminate", pid))
+                raise RuntimeError(f"cleanup-{pid}")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            apps = (runner.validate_app("control", self.make_app(root, "A.app")),
+                    runner.validate_app("candidate", self.make_app(root, "B.app")))
+            plan = runner.command_plan(apps, "idle", 0, 1, 1, 4, root / "result.json",
+                                       containers_root=root / "Containers")
+            plan["samples"] = plan["samples"][:1]
+            self.prepare_container(plan)
+            fake = CleanupFailures()
+            result = runner.capture(plan, apps, fake)
+            app_pid = next(action[2] for action in fake.actions
+                           if action[0] == "spawn" and "xctrace" not in action[1])
+            trace_pid = next(action[2] for action in fake.actions
+                             if action[0] == "spawn" and "xctrace" in action[1])
+            self.assertEqual(fake.actions.count(("terminate", app_pid)), 2)
+            self.assertEqual(fake.actions.count(("terminate", trace_pid)), 2)
+            failure = result["records"][0]["failure"]["message"]
+            self.assertIn(f"app: RuntimeError: cleanup-{app_pid}", failure)
+            self.assertIn(f"trace: RuntimeError: cleanup-{trace_pid}", failure)
+            self.assertEqual(list((root / "result-logs").iterdir()), [])
+
+    def test_idle_trace_symlink_is_rejected_without_publication(self):
+        class SymlinkTrace(FakeExecutor):
+            def spawn(self, argv, *, stdout=-3):
+                process = super().spawn(argv, stdout=stdout)
+                if "xctrace" in argv:
+                    trace = pathlib.Path(argv[argv.index("--output") + 1])
+                    (trace / "unsafe").symlink_to(trace / "data")
+                return process
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            apps = (runner.validate_app("control", self.make_app(root, "A.app")),
+                    runner.validate_app("candidate", self.make_app(root, "B.app")))
+            plan = runner.command_plan(apps, "idle", 0, 1, 1, 4, root / "result.json",
+                                       containers_root=root / "Containers")
+            plan["samples"] = plan["samples"][:1]
+            self.prepare_container(plan)
+            result = runner.capture(plan, apps, SymlinkTrace())
+            self.assertEqual(result["capture_status"], "failure")
+            self.assertIn("symlink or special", result["records"][0]["failure"]["message"])
+            self.assertEqual(list((root / "result-logs").iterdir()), [])
+
+    def test_trace_archive_is_deterministic_for_the_same_safe_tree(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            archives = []
+            for ordinal in (1, 2):
+                parent = root / str(ordinal)
+                trace = parent / "artifact.trace"
+                (trace / "nested").mkdir(parents=True)
+                (trace / "data").write_bytes(b"same")
+                (trace / "nested/value").write_bytes(b"bytes")
+                archive = parent / "artifact.trace.zip"
+                runner.archive_trace_directory(trace, archive)
+                archives.append(archive.read_bytes())
+            self.assertEqual(archives[0], archives[1])
+
+    def test_nonintegrated_result_collision_and_symlink_fail_before_capture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary).resolve()
+            control = self.make_app(root, "A.app")
+            candidate = self.make_app(root, "B.app")
+            existing = root / "existing.json"
+            existing.write_text("keep")
+            for output in (existing, root / "link.json"):
+                if output != existing:
+                    output.symlink_to(existing)
+                fake = FakeExecutor()
+                with self.subTest(output=output), self.assertRaisesRegex(
+                        runner.RunnerError, "must not already exist"):
+                    runner.main(self.cli_args(control, candidate, output), executor=fake)
+                self.assertEqual(fake.actions, [])
+                self.assertEqual(existing.read_text(), "keep")
+            real_parent = root / "real-parent"
+            real_parent.mkdir()
+            linked_parent = root / "linked-parent"
+            linked_parent.symlink_to(real_parent, target_is_directory=True)
+            fake = FakeExecutor()
+            with self.assertRaisesRegex(runner.RunnerError, "not a real directory"):
+                runner.main(self.cli_args(control, candidate, linked_parent / "result.json"),
+                            executor=fake)
+            self.assertEqual(fake.actions, [])
+
+    def test_nonintegrated_result_is_exclusively_published_after_capture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary).resolve()
+            control = self.make_app(root, "A.app")
+            candidate = self.make_app(root, "B.app")
+            output = root / "nested/result.json"
+            result = {"schema_version": 1, "capture_status": "success", "records": []}
+            with mock.patch.object(runner, "capture", return_value=result) as capture:
+                status = runner.main(self.cli_args(control, candidate, output), executor=FakeExecutor())
+            self.assertEqual(status, 0)
+            capture.assert_called_once()
+            self.assertEqual(output.read_bytes(), runner._json_bytes(result))
+            self.assertEqual(list(output.parent.glob(f".{output.name}.*.tmp")), [])
+            with mock.patch.object(runner, "capture") as second_capture, self.assertRaisesRegex(
+                    runner.RunnerError, "must not already exist"):
+                runner.main(self.cli_args(control, candidate, output), executor=FakeExecutor())
+            second_capture.assert_not_called()
 
     def test_capture_retains_failure_record_and_terminates_both_pids(self):
         with tempfile.TemporaryDirectory() as temporary:
