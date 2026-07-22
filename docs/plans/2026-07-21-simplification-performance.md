@@ -173,7 +173,7 @@ Theater, and SharePlay state.
 | Offline Detail action | **Open.** Keep explicit “Play Offline” unless product direction says primary Play should prefer local media | Offline launch consolidation |
 | Storage cap semantics | Recommendation: enforce durable bytes + known reservations; present side assets, held/resume data, and OS temp separately | Storage snapshot work |
 | Legacy download schemas/tasks | **Remove fully.** Delete compatibility for legacy schemas and abandoned OS tasks; keep only the current schema and the app-owned checkpoint/recovery authority required by current downloads | Migration sunset |
-| Physical matrix | Local discovery records this Apple-silicon Mac plus one paired iPhone, one paired iPad, and one paired AVP (the mobile devices/headset were unavailable during discovery). Physical Apple TV availability and any second AVP remain unconfirmed; unavailable cells must be labeled hardware-blocked rather than inferred from simulators | Final acceptance |
+| Physical matrix | Local discovery records this Apple-silicon Mac plus one paired iPhone, one paired iPad, and one accessible AVP (the mobile devices/headset were unavailable during discovery). The user has confirmed that no second AVP is available, so every two-headset/two-participant SharePlay cell is hardware-blocked rather than simulator-inferred. Physical Apple TV availability remains unconfirmed | Final acceptance |
 
 ## Safety findings to resolve before broad refactoring
 
@@ -1288,10 +1288,10 @@ policy:
 
 #### Wave 6 deletion checkpoint journal
 
-1. Commits `78f2df3a` through `b2c6d5c6` remove **428 net production LOC** and **124
+1. Commits `78f2df3a` through `d79a5f35` remove **555 net production LOC** and **109
    net test LOC**; the only configuration change is one stale Xcode test-membership exception.
-   Production accounting is `+88/-516` across `Labstream/` and `PMSKit/Sources/`; tests are
-   `+10/-134`. This is an opportunistic simplification checkpoint, not a performance result.
+   Production accounting is `+151/-706` across `Labstream/` and `PMSKit/Sources/`; tests are
+   `+30/-139`. This is an opportunistic simplification checkpoint, not a performance result.
 2. The first slices delete an orphan held-range ownership policy, backend identity adapters, a
    test-only string lifecycle bridge, and a blocking alphabet-load mode that no production caller
    enabled. The retained paging path still publishes page zero before its alphabet rail completes.
@@ -1312,13 +1312,25 @@ policy:
 6. Media-browser system suggestions and Watch Together lookup now each use one combined
    Jellyfin/Emby switch case. The removed bodies were byte-identical; backend-frozen clients,
    opaque authority/currentness checks, cancellation, limits, filtering, and result order remain.
-7. Independent read-only reviews passed every slice. Focused validation passed the initial 50-test
+7. Library-catalog and metadata repositories now share one lock-backed cancellation waiter without
+   changing their local actor/cancellation functions. Artwork and trick-play caches likewise share
+   one cost-bounded LRU with their existing promotion, replacement, eviction, overflow, count/cost,
+   and actor-isolation behavior; direct removal and disabled-limit coverage was added.
+8. Typed restart intents no longer carry an uninhabited short-buffer policy: their centralized
+   remote reopen remains literal `false`, while the separate startup-deadline and settled-seek paths
+   retain the live `true` default. The Mac player now owns `VideoNowPlayingCore` directly with the
+   exact process-wide 30-second command profile; configure/teardown, leases, and media keys remain.
+9. Independent read-only reviews passed every slice. Focused validation passed the initial 50-test
    hosted deletion set, 23 catalog/search tests, 28 attempt-owned recovery tests, 4 PMSKit temp-policy
-   tests, all 149 script tests, and clean Debug compile gates for macOS, visionOS, iOS, and tvOS.
+   tests, 37 repository-waiter tests, 45 cache tests, 3 typed-restart tests, 3 PMSKit buffering tests,
+   8 system-media tests, all 149 script tests, the 8-test topology suite, and repeated clean Debug
+   compile gates for macOS, visionOS, iOS, and tvOS. The current production-identity Mac app also
+   built, staged, and launched successfully; physical media-key/Control Center behavior remains an
+   acceptance gate rather than a build claim.
    A pre-existing `DownloadStorePersistenceTests` order/isolation failure still reproduces when its
    class runs as a group (`57/58` pass) but the named failing test passes alone; track that harness
    defect separately rather than attributing it to definition-only deletion.
-8. No measured optimization has landed. Wave 5 still lacks the identical external UI workload and
+10. No measured optimization has landed. Wave 5 still lacks the identical external UI workload and
    statistically eligible paired samples needed for launch, browse, artwork, playback, download,
    memory, energy, or compile-time claims.
 
