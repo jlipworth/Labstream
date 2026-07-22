@@ -1,25 +1,9 @@
 import Foundation
 
-public enum BackgroundNetworkTempCleanupDisposition: Sendable, Equatable {
-    case none
-    case skipLiveTasks(liveTaskCount: Int)
-    case skipReattach
-    case deleteCandidates
-}
-
-/// Which cleanup pass is asking. Reattach is special: a finished-but-undelivered background
-/// download task is absent from `getAllTasks` while its completed payload still lives in a
-/// `CFNetworkDownload_*.tmp` awaiting `didFinishDownloadingTo` delivery (#220), so a reattach
-/// pass can never prove a CFNetwork temp is orphaned.
-public enum BackgroundNetworkTempCleanupContext: String, Sendable {
-    case reattach
-    case manualScan = "manual_scan"
-}
-
-/// Pure file-name/path decisions for background-download temporary-file cleanup.
+/// Pure file-name/path classification for background-download temporary files.
 ///
-/// The app layer still owns filesystem reads/deletes and diagnostics. This policy only pins which
-/// temp paths are in scope and when a cleanup pass is allowed to remove them.
+/// The app layer owns filesystem reads and diagnostics. This policy pins the network-temp paths
+/// included in diagnostics and the exact task ownership of app-created Range body stashes.
 public enum BackgroundTempFileCleanupPolicy {
     public static let rangeBodyStashPrefix = "vp-range-body-"
     public static let legacyRangeChunkStashPrefix = "vp-range-chunk-"
@@ -75,28 +59,4 @@ public enum BackgroundTempFileCleanupPolicy {
         return !liveTaskIdentifiers.contains(taskIdentifier)
     }
 
-    /// CFNetwork temps younger than this are never deletable, even by a manual scan: the file
-    /// may back a completed transfer whose delegate delivery is still pending (#220 saw a response
-    /// body suspended ~3h before delivery). 72h comfortably clears any suspension-delivery latency
-    /// while still reclaiming genuinely leaked multi-GB temps.
-    public static let minimumCFNetworkTempAge: TimeInterval = 72 * 60 * 60
-
-    public static func cleanupDisposition(context: BackgroundNetworkTempCleanupContext,
-                                          liveTaskCount: Int,
-                                          candidateCount: Int) -> BackgroundNetworkTempCleanupDisposition {
-        guard candidateCount > 0 else { return .none }
-        guard context != .reattach else { return .skipReattach }
-        guard liveTaskCount == 0 else {
-            return .skipLiveTasks(liveTaskCount: liveTaskCount)
-        }
-        return .deleteCandidates
-    }
-
-    /// Per-file age gate for `.deleteCandidates`: only temps old enough that no delegate
-    /// delivery can still be pending are deletable. Unknown or negative (future-mtime) ages
-    /// are protected.
-    public static func shouldDeleteCFNetworkTemp(modificationAge: TimeInterval?) -> Bool {
-        guard let modificationAge else { return false }
-        return modificationAge >= minimumCFNetworkTempAge
-    }
 }
