@@ -1,4 +1,5 @@
 import Foundation
+import PMSKit
 import Testing
 @testable import Labstream
 
@@ -51,3 +52,21 @@ struct SystemEntryRouterTests {
         #expect(await sleeper.callCount == 1)
     }
 }
+
+#if os(macOS)
+extension SystemEntryRouterTests {
+    @Test @MainActor
+    func macSystemEntriesActivateTheUniqueMainWindowExactlyOncePerRoute() {
+        let router = SystemEntryRouter()
+        var activationCount = 0
+        router.registerMainWindowActivation { activationCount += 1 }
+
+        router.open(ratingKey: "movie-1", autoPlay: false)
+        #expect(activationCount == 1)
+
+        let item = MediaItem(ratingKey: "movie-2", title: "Movie 2", type: "movie")
+        router.open(item: item, autoPlay: true)
+        #expect(activationCount == 2)
+    }
+}
+#endif

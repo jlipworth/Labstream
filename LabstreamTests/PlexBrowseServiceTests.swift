@@ -169,7 +169,7 @@ struct PlexBrowseServiceTests {
     @Test func railPagingSourceHasNoDirectPlexExecutionRegression() throws {
         let testsURL = URL(fileURLWithPath: #filePath)
         let sourceURL = testsURL.deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("Labstream/Backend/Paging/RailPagingSource.swift")
+            .appendingPathComponent("Labstream/Shared/Backend/Paging/RailPagingSource.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
         #expect(!source.contains("appModel.client.send"))
         #expect(!source.contains("PlexRequest("))

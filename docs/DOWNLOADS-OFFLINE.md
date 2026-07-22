@@ -130,7 +130,7 @@ sequenceDiagram
   depth. When the expected total size is unknown, the planner falls back to a single
   open-ended `Range: bytes=<durableOffset>-` plan — the same shape used before segmentation,
   so that fallback is a zero-regression path rather than a special case.
-  `StaticRangeTransferRegime` (`Labstream/Downloads/StaticRangeTransferRegime.swift`) is a
+  `StaticRangeTransferRegime` (`Labstream/Capabilities/Downloads/Core/StaticRangeTransferRegime.swift`) is a
   compile-time switch between `.segmentTrain` (current, all platforms) and
   `.openEndedRemainder` (the prior single-task shipping behavior); flipping a platform back
   is a one-line change, and both regimes recover from the same durable-partial checkpoint,

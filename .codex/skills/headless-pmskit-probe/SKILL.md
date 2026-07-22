@@ -88,12 +88,12 @@ there — the headless limitation above is macOS-CLI only. To exercise real play
 playhead advance, seek-restart, stall) without UI tapping, use the launch-arg-driven
 **in-process debug probes** that already exist per backend:
 
-- `Labstream/DebugJellyfinPlaybackProbe.swift` → `--vp-probe-jellyfin-playback`
-- `Labstream/DebugEmbyPlaybackProbe.swift` → `--vp-probe-emby-playback`
-- `Labstream/DebugPlexPlaybackProbe.swift` → `--vp-probe-plex-playback`
-- `Labstream/DebugPlexDownloadProbe.swift` → `--vp-probe-plex-download` (downloads, not playback)
-- `Labstream/DebugJellyfinDownloadProbe.swift` → `--vp-probe-jellyfin-download`
-- `Labstream/DebugEmbyDownloadProbe.swift` → `--vp-probe-emby-download` (add `--vp-probe-start-download` to actually transfer + observe + delete)
+- `Labstream/Shared/Debug/DebugJellyfinPlaybackProbe.swift` → `--vp-probe-jellyfin-playback`
+- `Labstream/Shared/Debug/DebugEmbyPlaybackProbe.swift` → `--vp-probe-emby-playback`
+- `Labstream/Shared/Debug/DebugPlexPlaybackProbe.swift` → `--vp-probe-plex-playback`
+- `Labstream/Capabilities/Downloads/Debug/DebugPlexDownloadProbe.swift` → `--vp-probe-plex-download` (downloads, not playback)
+- `Labstream/Capabilities/Downloads/Debug/DebugJellyfinDownloadProbe.swift` → `--vp-probe-jellyfin-download`
+- `Labstream/Capabilities/Downloads/Debug/DebugEmbyDownloadProbe.swift` → `--vp-probe-emby-download` (add `--vp-probe-start-download` to actually transfer + observe + delete)
 
 ⚠️ **The simulator download probe catches what the headless probe cannot.** The headless
 `LiveEmbyDownloadProbe` originally only GET the static *original* and so missed that the

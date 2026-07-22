@@ -427,7 +427,7 @@ use still requires pairing/trust, Developer Mode, and the matching Apple ID in X
 
 ## Credentials and iCloud Keychain sync
 
-The app persists its long-lived secrets in the Keychain (`Labstream/Auth/KeychainStore.swift`).
+The app persists its long-lived secrets in the Keychain (`Labstream/Shared/Auth/KeychainStore.swift`).
 Exactly one item is stored as an iCloud-synchronizable Keychain item: the **Plex account token**.
 Because the supported visionOS, iPhone, and iPad variants share the
 `com.jlipworth.Labstream` bundle id and Keychain service string, a Plex sign-in on any one device
@@ -438,7 +438,7 @@ backup-excluded credential storage instead; see [macOS development preview](MACO
 Everything else is deliberately device-local:
 
 - **Plex `clientIdentifier`** — generated once per install and never synced. Combined with a distinct
-  `X-Plex-Device-Name` (see `Labstream/App/PlatformClientIdentity.swift`), every device presents a
+  `X-Plex-Device-Name` (see `Labstream/Shared/App/PlatformClientIdentity.swift`), every device presents a
   unique `X-Plex-Client-Identifier`, so the server still sees truly independent, per-device-identifiable
   sessions even though the token is shared. Syncing it would merge all devices into one server-side
   client identity, breaking per-device session listings and transcode bookkeeping.

@@ -1,6 +1,6 @@
 # Cross-platform simplification and performance program
 
-Status: **Wave 0 deterministic implementation complete — uncommitted; Wave 1 not started**
+Status: **Wave 0 committed at `40af93f3`; Wave 1 implementation and automated/simulator validation complete — committed on this branch**
 
 Audit baseline: `b3045bc0` (`Record tvOS merge checkpoint`) on
 `codex/audit-simplification-performance`
@@ -192,16 +192,16 @@ re-review as runtime proof.
 
 | ID | Priority | Finding | Evidence | Required stroke |
 | --- | --- | --- | --- | --- |
-| `SAFE-01` | P0 | Cancelled system-entry readiness can spin on `MainActor` until its 12-second wall deadline because cancelled sleeps are suppressed | `Labstream/SystemIntegration/SystemEntryRouter.swift:151-166` | Propagate cancellation immediately; then replace polling with a readiness single-flight |
+| `SAFE-01` | P0 | Cancelled system-entry readiness can spin on `MainActor` until its 12-second wall deadline because cancelled sleeps are suppressed | `Labstream/Shared/SystemIntegration/SystemEntryRouter.swift:151-166` | Propagate cancellation immediately; then replace polling with a readiness single-flight |
 | `SAFE-02` | P0 verify | Recovery/proxy request deadlines may not produce the intended 5s/20s behavior; session configuration may already be sufficient | `PMSKit/Sources/PMSKit/PlexSessionConfiguration.swift:13-47`; `PlexRequest+URLRequest.swift:24-30` | First prove actual behavior with a hanging transport; change request preparation only if the configured deadline is not enforced |
 | `SAFE-03` | P0 | Rotating one HLS upstream session can cancel unrelated healthy sibling requests | `PMSKit/Sources/PMSKit/MediaSession/UpstreamConnection.swift:15-45`; `MediaSessionProxy.swift:211-241` | Generation-tagged session swap; old work drains and stale failures cannot rotate the new session |
-| `SAFE-04` | P0 | Closing during an itemless playback reopen can send terminal progress at zero | `Labstream/Player/PlaybackController.swift:5163-5189`; `Labstream/Player/TimelineReporter.swift:90-107` | Canonical position snapshot: live clock, held target, last trustworthy offset, saved offset |
-| `SAFE-05` | P0 | MediaBrowser `Playing` is committed before the first request succeeds — the started flag flips when the request is built, not when it is accepted | `Labstream/Player/TimelineReporter.swift:189-225` | Commit only after accepted 2xx; retry `Playing` ahead of coalesced progress |
-| `SAFE-06` | P0 | Offline side assets can survive a source/version change without consistent source fencing — `preserveCachedSideAssets` fences only `embyBIFRelativePath` by `mediaSourceID`; poster, Plex BIF, Jellyfin trick-play/tiles, chapter images, and subtitles carry forward unfenced | `PMSKit/Sources/PMSKit/Downloads/OfflineDownloadModels.swift:782-816`; `Labstream/Downloads/DownloadStore.swift:2794-2799` | Source-owned side-asset bundle and attempt-scoped retirement |
-| `SAFE-07` | P0 | SharePlay receive/send work is not fully fenced to the exact replacement session and outgoing status can reorder | `Labstream/SharePlay/WatchTogetherCoordinator.swift:388-450` | Session generation on receive/send; ordered outbound tail; stale revision rejection |
-| `SAFE-08` | P0 | Non-vision remote seek/skip conversion lacks the validation already present on visionOS | `Labstream/Player/VideoNowPlayingCore.swift:95-112`; `Labstream/Player/VideoNowPlayingCoordinator.swift:185-194` | One pure validated remote-command policy feeding canonical controller intents |
-| `SAFE-09` | P1 | Side-asset waiter cancellation can race successful completion | `Labstream/Downloads/SideAssetFetchCoordinator.swift:116-145,353-399` | Post-resume cancellation check and deterministic waiter/job index |
-| `SAFE-10` | P1 | Background completion registry silently replaces a same-identifier handler | `Labstream/Downloads/BackgroundDownloadCompletionRegistry.swift:17-64` | Encode exact cardinality and prove every supplied handler fires exactly once |
+| `SAFE-04` | P0 | Closing during an itemless playback reopen can send terminal progress at zero | `Labstream/Shared/Player/PlaybackController.swift:5163-5189`; `Labstream/Shared/Player/TimelineReporter.swift:90-107` | Canonical position snapshot: live clock, held target, last trustworthy offset, saved offset |
+| `SAFE-05` | P0 | MediaBrowser `Playing` is committed before the first request succeeds — the started flag flips when the request is built, not when it is accepted | `Labstream/Shared/Player/TimelineReporter.swift:189-225` | Commit only after accepted 2xx; retry `Playing` ahead of coalesced progress |
+| `SAFE-06` | P0 | Offline side assets can survive a source/version change without consistent source fencing — `preserveCachedSideAssets` fences only `embyBIFRelativePath` by `mediaSourceID`; poster, Plex BIF, Jellyfin trick-play/tiles, chapter images, and subtitles carry forward unfenced | `PMSKit/Sources/PMSKit/Downloads/OfflineDownloadModels.swift:782-816`; `Labstream/Capabilities/Downloads/Core/DownloadStore.swift:2794-2799` | Source-owned side-asset bundle and attempt-scoped retirement |
+| `SAFE-07` | P0 | SharePlay receive/send work is not fully fenced to the exact replacement session and outgoing status can reorder | `Labstream/Platforms/visionOS/SharePlay/WatchTogetherCoordinator.swift:388-450` | Session generation on receive/send; ordered outbound tail; stale revision rejection |
+| `SAFE-08` | P0 | Non-vision remote seek/skip conversion lacks the validation already present on visionOS | `Labstream/Shared/Player/VideoNowPlayingCore.swift:95-112`; `Labstream/Platforms/visionOS/Player/VideoNowPlayingCoordinator.swift:185-194` | One pure validated remote-command policy feeding canonical controller intents |
+| `SAFE-09` | P1 | Side-asset waiter cancellation can race successful completion | `Labstream/Shared/Player/SideAssetFetchCoordinator.swift:116-145,353-399` | Post-resume cancellation check and deterministic waiter/job index |
+| `SAFE-10` | P1 | Background completion registry silently replaces a same-identifier handler | `Labstream/Capabilities/Downloads/Core/BackgroundDownloadCompletionRegistry.swift:17-64` | Encode exact cardinality and prove every supplied handler fires exactly once |
 
 ### Wave 0 implementation journal
 
@@ -244,8 +244,9 @@ visible in the project structure.
 1. Consume Wave 0's frozen clean-build, binary-size, and compile-time baseline for
    all four targets plus the hosted tests that exist at that checkpoint. Do not
    imply visionOS hosted-test coverage until the Wave 0 strategy lands.
-2. Add filesystem-synchronized roots for `Shared`, `Platforms/Vision`,
-   `Platforms/Mobile`, `Platforms/Mac`, `Platforms/TV`, and TV debug support.
+2. Add filesystem-synchronized roots for `Shared`, `Capabilities/Downloads`,
+   `Platforms/visionOS`, `Platforms/Mobile`, `Platforms/macOS`, and `Platforms/tvOS`
+   (including tvOS debug support).
 3. Move whole-platform entrypoints/adapters/fixtures mechanically. Do not change
    behavior in the move commits.
 4. Introduce one app-lifetime `AppRuntime`/`AppComposition` that owns common
@@ -648,7 +649,7 @@ snapshots, and the shared artwork pipeline.
 ### P3 — Playback, player UI, Cinema, and system media
 
 The primary polling hypotheses are the 500 ms scrubber/System Now Playing loop at
-`Labstream/Player/CustomPlayerView.swift:286-299` and the 250 ms visionOS
+`Labstream/Shared/Player/CustomPlayerView.swift:286-299` and the 250 ms visionOS
 SharePlay attachment loop at `CustomPlayerView.swift:331-368`. Event-driven
 replacement is a measured hypothesis, not an assumed win; the current loops also
 carry load-bearing recovery and delayed-attachment behavior.
@@ -784,6 +785,101 @@ flowchart LR
 - Decide the Mac window model and remove the already-retired Reality Theater
   prototype plus its cross-target plumbing while retaining shipping
   `CustomCinemaMode`.
+- After platform-root target membership becomes exclusive, close the capability
+  gate only with all of these structural assertions:
+  - the tvOS app compile-input list contains no
+    `Labstream/Capabilities/Downloads/` source; its linked app has no app-owned
+    `DownloadManager`/`BackgroundDownloadSession` symbols, while the first-render
+    smoke still reaches the streaming UI;
+  - the iOS/iPadOS, macOS, and tvOS app compile-input lists contain no
+    `Labstream/Platforms/visionOS/SharePlay/` source and no app-facing Cinema source
+    (`CustomCinemaMode.swift` or `CinemaAppRouting.swift`); the visionOS list
+    contains the real SharePlay and Cinema sources exactly once (PMSKit's
+    cross-platform pure SharePlay/Cinema policies are intentionally not part of
+    this exclusion);
+  - all four target builds pass after the exclusions. `CinemaAppRoutingTests` retains exact
+    online-tab, offline-rating-key, autoplay, system-entry-fallback, and missing-item-no-op
+    assertions behind `#if os(visionOS)`, but the matrix must continue to report them as planned,
+    not executed, until a visionOS-hosted app test target exists.
+
+#### Wave 1 implementation journal
+
+Wave 1 is implementation-complete in the audit worktree. It established six
+non-overlapping production roots: universal `Shared`, the download-capable
+`Capabilities/Downloads` root, and one owner root for each of visionOS, Mobile,
+macOS, and tvOS. The app targets now own exactly `Shared` plus their platform
+root; visionOS, Mobile, and macOS additionally own Downloads, while tvOS does
+not. No production membership exception is used to approximate this boundary.
+
+The behavior-bearing ownership changes are also complete:
+
+- one app-lifetime `AppRuntime` owns common service identity and bootstrap state;
+- tvOS constructs and ships no app-owned download graph and exposes no Offline
+  or season-download surface;
+- Cinema and SharePlay app sources compile only into visionOS, shipping
+  `CustomCinemaMode` remains intact, and the unrelated hidden Reality Theater
+  prototype is deleted;
+- mobile orientation ownership is iOS-only with the old non-iOS no-op removed;
+- one aggregate scene-activity owner prevents main-window/Cinema/Settings
+  handoffs from producing false download foreground/background transitions; and
+- macOS now has one reusable browse/player window plus singleton Settings.
+  Close and Command-W hide the retained main graph; Dock reopen, commands, and
+  system entries reactivate that exact window without duplicating it.
+
+Fresh isolated clean builds completed on 2026-07-22 at 01:50 +04. Their generated
+app-target `SwiftFileList` manifests were inspected directly after the source split.
+The manifests remain local build products; this bounded summary records the
+compile-input evidence without committing machine-specific paths or giant file lists.
+
+| App target | Shared Swift | Downloads Swift | Owned platform Swift | Other platform roots | Clean gate |
+| --- | ---: | ---: | ---: | ---: | --- |
+| visionOS | 116 | 35 | 8 visionOS | 0 | `build` passed |
+| iOS/iPadOS | 116 | 35 | 3 Mobile | 0 | `build-for-testing` passed |
+| macOS | 116 | 35 | 5 macOS | 0 | `build-for-testing` passed |
+| tvOS | 116 | 0 | 5 tvOS | 0 | `build-for-testing` passed |
+
+This proves the post-split target inputs: downloads are absent from tvOS, and no
+app target compiles another platform's owner root. Deterministic topology tests
+also enforce those memberships and keep the visionOS-hosted Cinema suite visibly
+`planned` until that host exists.
+
+Adversarial review found and closed four integration defects before the final
+gates: unfavorable scene-handoff ordering, last-scene activity retention, a
+reachable tvOS season-download action without a manager, and Mac system entries
+reopening underneath a retained player. It also found a pre-existing flaky
+SideAsset test handshake; the test now waits for the observable queued waiter
+instead of assuming `Task.yield()` establishes actor ordering. The formerly
+flaky test passed 1,000 focused repetitions, its full coordinator suite passed
+2,500 test executions, and the complete Mac plan passed three fresh post-fix
+repetitions.
+
+Automated and runtime evidence at the Wave 1 closeout:
+
+- PMSKit: 1,668 Swift Testing tests in 219 suites plus 92 XCTest tests, all green;
+- Mac hosted plan: three post-fix repetitions, each 352 Swift Testing plus 26
+  XCTest tests, all green;
+- script suite: 86/86; focused topology/matrix suite: 22/22;
+- fresh clean visionOS build, iOS build-for-testing, macOS build-for-testing,
+  and tvOS build-for-testing: all green;
+- exact-worktree passive smokes on visionOS, iPhone, iPad, and tvOS: all four
+  built from fresh isolated DerivedData, installed with matching binary UUIDs,
+  survived launch, rendered expected UI, and produced no relevant crash/fatal
+  log match; and
+- tvOS season-absence test: 5/5 focused repetitions; full TV UI suite: 18/18.
+  Xcode printed the complete green full-suite summary but hung in diagnostic
+  finalization, so the text log is authoritative and the full-suite xcresult is
+  deliberately not claimed as valid. The focused xcresult is valid.
+
+Raw screenshots, logs, DerivedData, and xcresults remain local under
+`/tmp/labstream-validation/audit-simplification-performance/`; only bounded,
+privacy-safe counts are recorded here. No simulator remains booted.
+
+Wave 1 does not claim physical-device acceptance. Real Vision Pro Cinema
+placement/adjustment, Crown/system dismissal, and window-to-immersive handoff;
+two-Vision-Pro SharePlay; authenticated Mac playback/download survival across
+close/reopen; mobile background transfer reattachment; and physical Apple TV
+remote/focus behavior remain explicit later acceptance gates rather than failed
+or simulator-proven checks.
 
 ### Wave 2 — Shared data plane
 
@@ -919,7 +1015,7 @@ using “build/test/smoke” generically:
 | iPhone | compact/landscape, PiP, AirPlay, Control Center, lock/background, network policy |
 | iPad | regular/split/Stage Manager, pointer/keyboard, PiP, lock/background, large-library/season flows |
 | Apple TV | Siri Remote, focus restoration, search keyboard, HDR/audio/HDMI, lifecycle, long play |
-| Mac | single/multiwindow decision, sidebar/commands, physical Escape, fullscreen, media keys, sleep/wake, staged identity cleanup |
+| Mac | single reusable main window, singleton Settings, sidebar/commands, physical Escape, fullscreen, media keys, sleep/wake, staged identity cleanup |
 
 ### Performance evidence rules
 

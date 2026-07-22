@@ -11,38 +11,42 @@ would become stale as implementations move.
 
 ## App shell and lifecycle
 
-- `Labstream/App/AppServices.swift` is the shared composition root for app-lifetime
-  `AppModel`, `AuthManager`, `DownloadManager`, and `MusicPlayerController` instances.
-- `Labstream/App/Labstream.swift` is the visionOS entry point. It declares the main window,
-  Custom Cinema, and hidden Reality Theater immersive spaces, and owns the live app-lifetime
-  `WatchTogetherCoordinator` shared by the window and Cinema.
-- `Labstream/App/LabstreamMobile.swift` is the universal iPhone/iPad entry point.
-- `Labstream/App/LabstreamMac.swift` is the native macOS entry point and declares the
-  Mac Settings scene and menu commands.
-- `Labstream/App/ContentView.swift` registers system routing, runs the one-time restore,
+- `Labstream/Shared/App/AppRuntime.swift` is the shared composition root for app-lifetime
+  `AppModel`, `AuthManager`, `MusicPlayerController`, and `SessionBootstrap` instances. It also
+  owns the real `DownloadManager` on download-capable products; tvOS has no download field or
+  construction path.
+- `Labstream/Platforms/visionOS/App/Labstream.swift` is the visionOS entry point. It declares the main window,
+  declares Custom Cinema, and owns the live app-lifetime `WatchTogetherCoordinator` shared by
+  the window and Cinema.
+- `Labstream/Platforms/Mobile/App/LabstreamMobile.swift` is the universal iPhone/iPad entry point.
+- `Labstream/Platforms/macOS/App/LabstreamMac.swift` is the native macOS entry point and declares the
+  unique reusable main window, singleton Mac Settings scene, deterministic window reactivation,
+  and menu commands.
+- `Labstream/Shared/App/ContentView.swift` registers system routing, runs the one-time restore,
   and switches between restore, login, and browse states.
-- `Labstream/App/AppDelegate.swift` bridges iOS/visionOS background URLSession relaunch
+- `Labstream/Capabilities/Downloads/App/AppDelegate.swift` bridges iOS/visionOS background URLSession relaunch
   events; `MacAppDelegate.swift` owns the small native Mac lifecycle adapter.
-- `Labstream/App/PlatformClientIdentity.swift` maps the target to its Plex client/device
+- `Labstream/Shared/App/PlatformClientIdentity.swift` maps the target to its Plex client/device
   identity.
 
-The targets share one source tree. Use Swift conditional compilation—`#if os(...)`,
-`#if canImport(...)`, `#if targetEnvironment(simulator)`, and `#if DEBUG`—for code that
-cannot compile or should not ship on every platform. Do not create duplicate backend or
-policy implementations merely to vary presentation.
+Every app target owns `Labstream/Shared/` plus exactly its matching `Labstream/Platforms/`
+root. Vision Pro, mobile, and Mac also own `Labstream/Capabilities/Downloads/`; tvOS does not.
+Use inline conditional compilation only where a genuinely shared file needs framework or
+presentation variation. Do not create duplicate backend or policy implementations merely to
+vary presentation.
 
 ## Session state, authentication, and secrets
 
-- `Labstream/App/AppModel.swift` owns live, separate Plex/Jellyfin/Emby server and
+- `Labstream/Shared/App/AppModel.swift` owns live, separate Plex/Jellyfin/Emby server and
   credential lanes, the active backend, token-free session identities, and the shared
   `PlexClient`.
-- `Labstream/Auth/AuthManager.swift` owns sign-in, restore, server selection, backend
+- `Labstream/Shared/Auth/AuthManager.swift` owns sign-in, restore, server selection, backend
   switching, and sign-out. It covers Plex PIN auth, Jellyfin credentials/Quick Connect,
   and Emby credentials/Connect PIN.
-- `Labstream/Auth/KeychainStore.swift` stores secrets and the stable client identifier.
+- `Labstream/Shared/Auth/KeychainStore.swift` stores secrets and the stable client identifier.
   Do not put tokens in UserDefaults, diagnostics, URLs that do not require them, or
   Codable profile indexes.
-- `Labstream/Auth/WebAuthSession.swift` is the cross-platform web-auth presentation
+- `Labstream/Shared/Auth/WebAuthSession.swift` is the cross-platform web-auth presentation
   adapter.
 - `PMSKit/Sources/PMSKit/SessionIdentity.swift` and
   `PMSKit/Sources/PMSKit/MediaBackendSwitch.swift` contain the corresponding pure
@@ -54,28 +58,28 @@ not necessarily the backend currently visible in the UI.
 ## Browse, paging, search, and artwork
 
 - `PMSKit/Sources/PMSKit/Models/PlexBrowseRequest.swift` contains pure Plex browse request
-  builders; `Labstream/Backend/PlexBrowseAPI.swift` is their source-compatible app facade.
-  `Labstream/Backend/PlexBrowseService.swift` pins one immutable Plex session and owns
+  builders; `Labstream/Shared/Backend/PlexBrowseAPI.swift` is their source-compatible app facade.
+  `Labstream/Shared/Backend/PlexBrowseService.swift` pins one immutable Plex session and owns
   execution, decoding, and normalized browse results.
-- `Labstream/Backend/Jellyfin/JellyfinBrowseService.swift` and
-  `Labstream/Backend/Emby/EmbyBrowseService.swift` are the live MediaBrowser browse
+- `Labstream/Shared/Backend/Jellyfin/JellyfinBrowseService.swift` and
+  `Labstream/Shared/Backend/Emby/EmbyBrowseService.swift` are the live MediaBrowser browse
   facades. Their shared browse-only execution/decode/map core is
-  `Labstream/Backend/MediaBrowserBrowseCore.swift`; playback and downloads stay outside it.
-- `Labstream/Backend/Paging/` owns backend-neutral paging sources/models and the
+  `Labstream/Shared/Backend/MediaBrowserBrowseCore.swift`; playback and downloads stay outside it.
+- `Labstream/Shared/Backend/Paging/` owns backend-neutral paging sources/models and the
   Plex/Jellyfin/Emby grid and rail adapters. `RailPagingModel`, `RailPagingSource`, and
   `RailViewAllDestination` power paged Home “View All” destinations.
 - `PMSKit/Sources/PMSKit/Search/SearchResults.swift` owns the pure grouped,
-  deduplicated, library-aware search presentation model; `Labstream/UI/SearchView.swift`
+  deduplicated, library-aware search presentation model; `Labstream/Shared/UI/SearchView.swift`
   renders its backend-neutral sections and routes standard versus music results.
-- `Labstream/UI/HomeView.swift` uses Plex native hubs or
-  `Labstream/UI/MediaBrowserHomeProvider.swift` for shared Jellyfin/Emby Home rails.
-- `Labstream/UI/LibraryGridView.swift` owns library roots and the shared sparse grid;
+- `Labstream/Shared/UI/HomeView.swift` uses Plex native hubs or
+  `Labstream/Shared/UI/MediaBrowserHomeProvider.swift` for shared Jellyfin/Emby Home rails.
+- `Labstream/Shared/UI/LibraryGridView.swift` owns library roots and the shared sparse grid;
   `LibraryAlphabetRail.swift` owns the A–Z interaction.
-- `Labstream/UI/ContainerBrowserView.swift` handles show/season child navigation and
+- `Labstream/Shared/UI/ContainerBrowserView.swift` handles show/season child navigation and
   normalizes duplicate visible episode rows.
-- `Labstream/UI/SearchView.swift` owns the shared search surface and music-result queue
+- `Labstream/Shared/UI/SearchView.swift` owns the shared search surface and music-result queue
   actions.
-- `Labstream/UI/MediaArtwork.swift` builds backend-authenticated artwork requests;
+- `Labstream/Shared/UI/MediaArtwork.swift` builds backend-authenticated artwork requests;
   `PosterImage.swift` loads them.
 
 Request/DTO implementations live under `PMSKit/Sources/PMSKit/Auth/`,
@@ -85,18 +89,18 @@ root Plex request files such as `PlexRequest.swift` and `PlexPhotoTranscode.swif
 
 ## Root navigation and shared UI
 
-- `Labstream/UI/RootView.swift` is the authenticated shell. It contains the native Mac
+- `Labstream/Shared/UI/RootView.swift` is the authenticated shell. It contains the native Mac
   split view, visionOS tab shell, and adaptive iPhone tab bar/iPad sidebar presentation,
   and owns the paths used by system entries and Cinema return routing.
-- `Labstream/UI/LoginView.swift`, `BackendSignInComponents.swift`,
+- `Labstream/Shared/UI/LoginView.swift`, `BackendSignInComponents.swift`,
   `LoginChromeComponents.swift`, and `PairingCodeView.swift` own shared backend login UI.
-- `Labstream/UI/DetailView.swift` owns item-detail presentation state. Extracted backend
+- `Labstream/Shared/UI/DetailView.swift` owns item-detail presentation state. Extracted backend
   effect seams are in `DetailMetadataLoader.swift`, `DetailWatchedUpdater.swift`, and
   `DetailPlaybackLauncher.swift`.
-- `Labstream/UI/DownloadOptionsSheet.swift` owns download intent/version selection.
-- `Labstream/UI/SettingsView.swift` owns backend/server status, preferences, storage,
+- `Labstream/Capabilities/Downloads/UI/DownloadOptionsSheet.swift` owns download intent/version selection.
+- `Labstream/Shared/UI/SettingsView.swift` owns backend/server status, preferences, storage,
   library visibility, diagnostics export, and About information.
-- `Labstream/UI/DesignSystem.swift` contains shared visual constants and modifiers.
+- `Labstream/Shared/UI/DesignSystem.swift` contains shared visual constants and modifiers.
 
 Online navigation paths are scoped to `AppModel.activeBrowseSessionKey` and reset when
 that session changes. Offline navigation is intentionally not reset because saved items
@@ -104,43 +108,43 @@ are backend-scoped and cross-backend.
 
 ## Video playback
 
-- `Labstream/Player/PlaybackController.swift` owns one active `AVPlayer` session and the
+- `Labstream/Shared/Player/PlaybackController.swift` owns one active `AVPlayer` session and the
   shared item-observation, transport, diagnostics, seek, chapter, and chrome-facing state for
   Plex streams, negotiated Jellyfin/Emby streams, and local files. Source negotiation,
   reopen/progress callbacks, track behavior, retry mechanics, and server cleanup remain
   lane-specific.
-- `Labstream/Player/CustomPlayerView.swift` is the shipping windowed player presenter and
-  hosts an `AVPlayerLayer` plus `CustomPlayerChrome`; `Labstream/Player/CustomCinemaMode.swift`
+- `Labstream/Shared/Player/CustomPlayerView.swift` is the shipping windowed player presenter and
+  hosts an `AVPlayerLayer` plus `CustomPlayerChrome`; `Labstream/Platforms/visionOS/Player/CustomCinemaMode.swift`
   owns the separate immersive presenter for the same live controller.
-- `Labstream/Player/CustomPlayerChrome.swift` owns the shared transport/menu/scrubber UI
+- `Labstream/Shared/Player/CustomPlayerChrome.swift` owns the shared transport/menu/scrubber UI
   and contains the largest concentration of platform conditional compilation.
-- `Labstream/UI/DetailPlaybackLauncher.swift` negotiates Jellyfin/Emby playback and
+- `Labstream/Shared/UI/DetailPlaybackLauncher.swift` negotiates Jellyfin/Emby playback and
   supplies remote reopen, progress, and encoding-cleanup callbacks to the controller.
-- `Labstream/Player/TimelineReporter.swift` serializes/coalesces Plex timeline and
+- `Labstream/Shared/Player/TimelineReporter.swift` serializes/coalesces Plex timeline and
   Jellyfin/Emby playback-progress traffic.
-- `Labstream/Player/PlaybackDiagnostics.swift`,
+- `Labstream/Shared/Player/PlaybackDiagnostics.swift`,
   `PlaybackController+Diagnostics.swift`, `PlaybackHDRProbe.swift`, and
   `StatsForNerdsView.swift` own runtime diagnostics surfaces.
-- `Labstream/Player/TrickPlayThumbnailProviders.swift` owns remote and local Plex BIF,
+- `Labstream/Shared/Player/TrickPlayThumbnailProviders.swift` owns remote and local Plex BIF,
   Jellyfin tile, and Emby chapter thumbnail providers.
-- `Labstream/Player/AudioSessionCoordinator.swift` owns non-Mac audio-session policy.
-- `Labstream/Player/MobilePlayerSystemCoordinator.swift` and
+- `Labstream/Shared/Player/AudioSessionCoordinator.swift` owns non-Mac audio-session policy.
+- `Labstream/Platforms/Mobile/Player/MobilePlayerSystemCoordinator.swift` and
   `MobilePlayerOrientationCoordinator.swift` add iOS/iPadOS PiP, AirPlay, system media,
   and orientation behavior.
-- `Labstream/Player/MacPlayerSystemCoordinator.swift` and
+- `Labstream/Platforms/macOS/Player/MacPlayerSystemCoordinator.swift` and
   `MacPlayerPresentation.swift` add native Mac system-media and presentation behavior.
-- `Labstream/Player/VideoNowPlayingCore.swift` is the iOS/iPadOS and macOS video adapter
+- `Labstream/Shared/Player/VideoNowPlayingCore.swift` is the iOS/iPadOS and macOS video adapter
   for the shared process-wide `SystemMediaSessionCoordinator` lease.
-- `Labstream/Player/VideoNowPlayingCoordinator.swift` is the separate visionOS video
+- `Labstream/Platforms/visionOS/Player/VideoNowPlayingCoordinator.swift` is the separate visionOS video
   system-media owner. It creates a scoped `MPNowPlayingSession`, publishes metadata on each
   `AVPlayerItem`, and routes session commands back to `PlaybackController`.
-- `Labstream/Player/PlaybackLifecycleCallbackSink.swift` and
+- `Labstream/Shared/Player/PlaybackLifecycleCallbackSink.swift` and
   `VideoPlaybackLifecyclePolicy.swift` reject queued observer/task callbacks from a
   superseded item generation; removing an observer alone is not treated as cancellation.
-- `Labstream/Player/SystemMediaSessionCoordinator.swift` serializes process-wide Now
+- `Labstream/Shared/Player/SystemMediaSessionCoordinator.swift` serializes process-wide Now
   Playing and remote-command ownership between music and video with identity-guarded leases;
   visionOS video does not use this lease path.
-- `Labstream/Player/NowPlayingArtwork.swift` provides the shared MediaPlayer artwork wrapper
+- `Labstream/Shared/Player/NowPlayingArtwork.swift` provides the shared MediaPlayer artwork wrapper
   used by both system-media approaches.
 
 Pure playback policies and request builders live primarily in
@@ -150,20 +154,19 @@ Pure playback policies and request builders live primarily in
 the usual pure-policy boundary: it owns the live, injectable loopback HLS proxy and
 upstream connection rotation used by `PlaybackController`.
 
-## Cinema and Reality Theater
+## Cinema
 
-- `Labstream/Player/CustomCinemaMode.swift` is the user-visible visionOS Custom Cinema
+- `Labstream/Platforms/visionOS/Player/CustomCinemaMode.swift` is the user-visible visionOS Custom Cinema
   implementation. It reuses the live `PlaybackController` and custom player chrome in an
-  immersive space. The non-visionOS half supplies inert compatibility types for shared UI.
-- `Labstream/Theater/RealityTheaterConfiguration.swift`,
-  `RealityTheaterSessionStore.swift`, and `RealityTheaterPrototypeView.swift` implement a
-  separate hidden RealityKit prototype. Its shipping and device-testing visibility gates
-  are currently false; do not wire user-facing behavior to it without changing and
-  validating that explicit gate.
+  immersive space and is absent from non-vision products at compile time.
+- `Labstream/Platforms/visionOS/Player/CinemaAppRouting.swift` is the small app-action adapter between PMSKit's
+  pure Cinema exit decision and the visionOS system-entry router. Its deterministic suite is now
+  visionOS-only; the assertions are preserved but honestly remain unexecuted until the planned
+  visionOS-hosted test target exists.
 
 ## Downloads and offline
 
-- `Labstream/Downloads/DownloadManager.swift` owns queue policy, observable records and
+- `Labstream/Capabilities/Downloads/Core/DownloadManager.swift` owns queue policy, observable records and
   snapshots, retry/resume, storage limits, server-prep polling, validation, and encoder
   cleanup.
 - `DownloadManager+Plex.swift` and `DownloadManager+PlexOptimize.swift` own Plex source
@@ -174,12 +177,12 @@ upstream connection rotation used by `PlaybackController`.
 - `DownloadManager+SideCache.swift` caches posters, subtitles, chapters, Plex BIF, and
   Jellyfin trick-play assets.
 - `DownloadTransferStartPlan.swift` is the common backend-to-transfer handoff contract.
-- `Labstream/Downloads/BackgroundDownloadSession.swift` owns URLSession delegates,
+- `Labstream/Capabilities/Downloads/Core/BackgroundDownloadSession.swift` owns URLSession delegates,
   reattachment, progress, validation, completion gating, and durable static byte-range
   recovery.
-- `Labstream/Downloads/BackgroundDownloadCompletionRegistry.swift` joins system relaunch
+- `Labstream/Capabilities/Downloads/Core/BackgroundDownloadCompletionRegistry.swift` joins system relaunch
   callbacks to the live/recreated background session.
-- `Labstream/Downloads/DownloadStore.swift` owns the locked relative-path index and files
+- `Labstream/Capabilities/Downloads/Core/DownloadStore.swift` owns the locked relative-path index and files
   under Application Support.
 - `DownloadArtifactLifecycleCoordinator.swift` registers attempt-scoped filesystem work
   before execution and releases it only after the matching persistence outcome;
@@ -191,7 +194,7 @@ upstream connection rotation used by `PlaybackController`.
 - `DownloadWorkRegistry.swift` tracks attempt-scoped side-cache and encoder work.
   `DownloadCleanupIntentJournal.swift` persists credential-free Jellyfin/Emby cleanup
   independently so deleting a row cannot discard required server cleanup.
-- `Labstream/Downloads/OfflineLibraryView.swift` owns the cross-backend offline UI and
+- `Labstream/Capabilities/Downloads/Core/OfflineLibraryView.swift` owns the cross-backend offline UI and
   local playback launch.
 - `PMSKit/Sources/PMSKit/Downloads/` contains pure route, status, retry, display, storage,
   identity, and range-transfer policies and offline models.
@@ -202,7 +205,7 @@ the documented foreground substitute.
 
 ## Music
 
-- `Labstream/Music/MusicProvider.swift` defines the backend-neutral browse boundary.
+- `Labstream/Shared/Music/MusicProvider.swift` defines the backend-neutral browse boundary.
 - `PlexMusicProvider.swift` supplies Plex-native and richer artist data.
 - `MediaBrowserMusicProvider.swift` is shared by Jellyfin and Emby.
 - `MusicStreamResolver.swift` is the single backend-aware stream resolver.
@@ -225,18 +228,18 @@ but MediaBrowser music progress reporting is not yet implemented.
 
 ## SharePlay / Watch Together (visionOS)
 
-- `Labstream/SharePlay/WatchTogetherActivity.swift` defines the GroupActivity wrapper and maps
+- `Labstream/Platforms/visionOS/SharePlay/WatchTogetherActivity.swift` defines the GroupActivity wrapper and maps
   PMSKit's sanitized payload display fields into `GroupActivityMetadata`.
-- `Labstream/SharePlay/WatchTogetherCoordinator.swift` owns activation, GroupSession and
+- `Labstream/Platforms/visionOS/SharePlay/WatchTogetherCoordinator.swift` owns activation, GroupSession and
   messenger state, participant readiness, local launch, the exact-item attachment consent gate,
   and the `AVPlayerPlaybackCoordinator` session binding.
-- `Labstream/SharePlay/WatchTogetherMediaLookup.swift` searches and attempts to hydrate candidates
+- `Labstream/Platforms/visionOS/SharePlay/WatchTogetherMediaLookup.swift` searches and attempts to hydrate candidates
   only through the participant's currently authenticated online backend.
-- `Labstream/SharePlay/WatchTogetherJoinView.swift` presents incoming local-resolution and
+- `Labstream/Platforms/visionOS/SharePlay/WatchTogetherJoinView.swift` presents incoming local-resolution and
   participant-readiness state and forwards search, selection, start, and decline actions; the
   coordinator and lookup own the resolution work.
-- `Labstream/Player/CustomPlayerView.swift` and
-  `Labstream/Player/CustomCinemaMode.swift` maintain attachment across player-item replacement
+- `Labstream/Shared/Player/CustomPlayerView.swift` and
+  `Labstream/Platforms/visionOS/Player/CustomCinemaMode.swift` maintain attachment across player-item replacement
   and the window-to-Cinema handoff.
 - `PMSKit/Sources/PMSKit/SharePlay/SharePlayMediaIdentity.swift` owns backend-neutral payload
   privacy, matching, readiness, leave, and late-join re-broadcast decisions;
@@ -245,16 +248,16 @@ but MediaBrowser music progress reporting is not yet implemented.
 
 ## System integration
 
-- `Labstream/SystemIntegration/SystemEntryRouter.swift` is the process-lifetime bridge
+- `Labstream/Shared/SystemIntegration/SystemEntryRouter.swift` is the process-lifetime bridge
   from non-view entry points—including a participant-locally resolved SharePlay launch—into
   RootView navigation. It weakly references the app-owned state and can wait for or initiate
   session restoration without preempting an in-progress user authorization attempt.
-- `Labstream/SystemIntegration/LabstreamIntents.swift` defines Play, Open, and Continue
+- `Labstream/Shared/SystemIntegration/LabstreamIntents.swift` defines Play, Open, and Continue
   Watching App Intents for all three backends.
-- `Labstream/SystemIntegration/MediaItemEntity.swift` defines backend/server-scoped
+- `Labstream/Shared/SystemIntegration/MediaItemEntity.swift` defines backend/server-scoped
   AppEntity search and suggestions. Display values are snapshots; metadata is refetched
   before navigation.
-- `Labstream/SystemIntegration/SpotlightIndexer.swift` performs token-free,
+- `Labstream/Shared/SystemIntegration/SpotlightIndexer.swift` performs token-free,
   index-as-you-browse video indexing and shared-domain deletion.
 - `PMSKit/Sources/PMSKit/SystemEntryRouting.swift` contains pure identifier and routing
   helpers.
@@ -264,7 +267,7 @@ background.
 
 ## Diagnostics and privacy
 
-- `Labstream/Diagnostics/AppDiagnostics.swift` is the opt-in app-side facade.
+- `Labstream/Shared/Diagnostics/AppDiagnostics.swift` is the opt-in app-side facade.
 - `DiagnosticFileLogSink.swift` owns the rotating local JSONL sink.
 - `DiagnosticReportArtifact.swift` owns export/share wrappers.
 - `BrowseDiagnostics.swift` creates privacy-safe browse facts.

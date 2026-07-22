@@ -5,6 +5,8 @@
 > guidance. Current invariants live in [`docs/DOWNLOADS-OFFLINE.md`](../../DOWNLOADS-OFFLINE.md),
 > and remediation status lives in
 > [`docs/plans/2026-07-10-codebase-remediation.md`](../../plans/2026-07-10-codebase-remediation.md).
+> Historical `Labstream/Downloads/` citations now live under
+> `Labstream/Capabilities/Downloads/Core/` in the current tree.
 
 Extraction date 2026-07-10, read at commit `347f035` (includes `00c1dc7` train-supersede and
 `9600fe9` server-job/poller fixes). Concurrent small fixes were landing in

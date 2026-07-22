@@ -39,7 +39,7 @@ print(count)
 printf '%-36s %8s\n' 'Module' 'LOC'
 printf '%-36s %8s\n' '------' '---'
 
-for dir in Labstream/*; do
+for dir in Labstream/Shared/* Labstream/Capabilities/* Labstream/Platforms/*; do
   [[ -d "$dir" ]] || continue
   count_dir "$dir" "$dir"
 done

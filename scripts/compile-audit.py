@@ -16,8 +16,8 @@ from dataclasses import dataclass
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 EDIT_FILES = (
     "PMSKit/Sources/PMSKit/Playback/PlaybackFailurePolicy.swift",
-    "Labstream/UI/ProgressSliver.swift",
-    "Labstream/Player/PlaybackController.swift",
+    "Labstream/Shared/UI/ProgressSliver.swift",
+    "Labstream/Shared/Player/PlaybackController.swift",
 )
 TYPECHECK_RE = re.compile(
     r"(?P<kind>instance\s+method|class\s+method|static\s+method|operator\s+function|"

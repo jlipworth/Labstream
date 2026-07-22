@@ -59,10 +59,12 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 		AA0000000000000000000060 /* tvOS excludes download-only app tests */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				BackgroundCompletionPersistenceBarrierTests.swift,
+				BackgroundDownloadCompletionRegistryTests.swift,
 				BackgroundDownloadStartupAdmissionTests.swift,
 				DownloadArtifactLifecycleTests.swift,
 				DownloadCleanupIntentJournalTests.swift,
@@ -93,7 +95,12 @@
 			path = LabstreamTVUITests;
 			sourceTree = "<group>";
 		};
-		AA0000000000000000000006 /* Labstream */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Labstream; sourceTree = "<group>"; };
+		AA0000000000000000000006 /* Shared */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Labstream/Shared; sourceTree = "<group>"; };
+		AA0000000000000000000065 /* Downloads */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Labstream/Capabilities/Downloads; sourceTree = "<group>"; };
+		AA0000000000000000000061 /* visionOS */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Labstream/Platforms/visionOS; sourceTree = "<group>"; };
+		AA0000000000000000000062 /* Mobile */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Labstream/Platforms/Mobile; sourceTree = "<group>"; };
+		AA0000000000000000000063 /* macOS */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Labstream/Platforms/macOS; sourceTree = "<group>"; };
+		AA0000000000000000000064 /* tvOS */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Labstream/Platforms/tvOS; sourceTree = "<group>"; };
 		AA0000000000000000000042 /* LabstreamTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -175,7 +182,12 @@
 			isa = PBXGroup;
 			children = (
 				AA0000000000000000000013 /* Signing.xcconfig */,
-				AA0000000000000000000006 /* Labstream */,
+				AA0000000000000000000006 /* Shared */,
+				AA0000000000000000000065 /* Downloads */,
+				AA0000000000000000000061 /* visionOS */,
+				AA0000000000000000000062 /* Mobile */,
+				AA0000000000000000000063 /* macOS */,
+				AA0000000000000000000064 /* tvOS */,
 				AA0000000000000000000042 /* LabstreamTests */,
 				AA0000000000000000000003 /* Products */,
 				9740A1E22E5FACDBEAB15AEC /* LabstreamTVUITests */,
@@ -213,7 +225,8 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				AA0000000000000000000006 /* Labstream */,
+				AA0000000000000000000006 /* Shared */,
+				AA0000000000000000000064 /* tvOS */,
 			);
 			name = LabstreamTV;
 			packageProductDependencies = (
@@ -282,7 +295,9 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				AA0000000000000000000006 /* Labstream */,
+				AA0000000000000000000006 /* Shared */,
+				AA0000000000000000000065 /* Downloads */,
+				AA0000000000000000000061 /* visionOS */,
 			);
 			name = Labstream;
 			packageProductDependencies = (
@@ -305,7 +320,9 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				AA0000000000000000000006 /* Labstream */,
+				AA0000000000000000000006 /* Shared */,
+				AA0000000000000000000065 /* Downloads */,
+				AA0000000000000000000062 /* Mobile */,
 			);
 			name = LabstreamMobile;
 			packageProductDependencies = (
@@ -328,7 +345,9 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				AA0000000000000000000006 /* Labstream */,
+				AA0000000000000000000006 /* Shared */,
+				AA0000000000000000000065 /* Downloads */,
+				AA0000000000000000000063 /* macOS */,
 			);
 			name = LabstreamMac;
 			packageProductDependencies = (

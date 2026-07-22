@@ -43,7 +43,9 @@ class NativeTestMatrixTests(unittest.TestCase):
         self.assertEqual(lanes, ["tvos-build", "tvos-hosted", "tvos-ui-smoke"])
 
     def test_current_shared_app_root_selects_every_platform(self) -> None:
-        lanes = matrix.affected_lanes(self.manifest, ["Labstream/Player/PlaybackController.swift"])
+        lanes = matrix.affected_lanes(
+            self.manifest, ["Labstream/Shared/Player/PlaybackController.swift"]
+        )
         for expected in (
             "visionos-build",
             "visionos-hosted",
@@ -57,13 +59,26 @@ class NativeTestMatrixTests(unittest.TestCase):
         ):
             self.assertIn(expected, lanes)
 
+    def test_download_capability_excludes_tvos_lanes(self) -> None:
+        lanes = matrix.affected_lanes(
+            self.manifest,
+            ["Labstream/Capabilities/Downloads/Core/DownloadManager.swift"],
+        )
+        self.assertIn("visionos-build", lanes)
+        self.assertIn("mobile-build", lanes)
+        self.assertIn("macos-build", lanes)
+        self.assertNotIn("tvos-build", lanes)
+        self.assertNotIn("tvos-hosted", lanes)
+
     def test_live_probes_are_not_part_of_pmskit_correctness_command(self) -> None:
         command = self.manifest["lanes"]["pmskit-correctness"]["command"]
         self.assertIn("--skip", command)
         self.assertIn("Live.*ProbeTests", command)
 
     def test_tv_event_swizzle_is_explicit_opt_in(self) -> None:
-        source = (ROOT / "Labstream" / "App" / "TVInputEvidence.swift").read_text()
+        source = (
+            ROOT / "Labstream" / "Platforms" / "tvOS" / "Debug" / "TVInputEvidence.swift"
+        ).read_text()
         player_tests = (
             ROOT / "LabstreamTVUITests" / "LabstreamTVPlayerTests.swift"
         ).read_text()
