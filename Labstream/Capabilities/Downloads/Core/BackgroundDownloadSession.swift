@@ -1598,7 +1598,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             // clears `tmp/` under pressure, so reclaim them here (cheap, alongside reattach).
             self.sweepOrphanedRangeBodyStashes(liveTaskIdentifiers: Set(tasks.map(\.taskIdentifier)))
             self.sweepOrphanedDurableHeldRangeSegments()
-            self.sweepOrphanedNetworkTemps(liveTaskCount: tasks.count, context: .reattach)
+            self.recordPendingNetworkTemps(liveTaskCount: tasks.count)
             onReattached?(liveKeys)
             self.onChange?()
         }
@@ -1749,74 +1749,19 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         }
     }
 
-    private func sweepOrphanedNetworkTemps(liveTaskCount: Int,
-                                           context: BackgroundNetworkTempCleanupContext) {
+    /// #220: a finished-but-undelivered task can be absent from `getAllTasks` while its payload
+    /// remains in a CFNetwork temp. Observe those files during reattach, but never delete them.
+    private func recordPendingNetworkTemps(liveTaskCount: Int) {
         let candidates = cfNetworkTempDirectories()
             .flatMap { directory in cfNetworkTempFiles(in: directory).map { (directory, $0) } }
+        guard !candidates.isEmpty else { return }
         let candidateBytes = candidates.reduce(0) { $0 + (fileSize(at: $1.1) ?? 0) }
-        switch BackgroundTempFileCleanupPolicy.cleanupDisposition(
-            context: context,
-            liveTaskCount: liveTaskCount,
-            candidateCount: candidates.count
-        ) {
-        case .none:
-            return
-        case .skipReattach:
-            // #220: a finished-but-undelivered task's payload lives in one of these temps and
-            // the task is absent from `getAllTasks` — deleting here is what lost completed bodies.
-            AppDiagnostics.record(.downloads, "downloads.cfnetwork_temp_cleanup_skipped", fields: [
-                "reason": .label(context.rawValue),
-                "live_task_count": .int(liveTaskCount),
-                "candidate_count": .int(candidates.count),
-                "candidate_bytes": .int(candidateBytes),
-            ])
-            return
-        case .skipLiveTasks:
-            AppDiagnostics.record(.downloads, "downloads.cfnetwork_temp_cleanup_skipped", fields: [
-                "reason": .label(context.rawValue),
-                "live_task_count": .int(liveTaskCount),
-                "candidate_count": .int(candidates.count),
-                "candidate_bytes": .int(candidateBytes),
-            ])
-            return
-        case .deleteCandidates:
-            break
-        }
-
-        var deletedCount = 0
-        var deletedBytes = 0
-        var failedCount = 0
-        var skippedYoungCount = 0
-        for (_, url) in candidates {
-            guard BackgroundTempFileCleanupPolicy.shouldDeleteCFNetworkTemp(
-                modificationAge: modificationAge(at: url)
-            ) else {
-                skippedYoungCount += 1
-                continue
-            }
-            let bytes = fileSize(at: url) ?? 0
-            do {
-                try fileManager.removeItem(at: url)
-                deletedCount += 1
-                deletedBytes += bytes
-            } catch {
-                failedCount += 1
-            }
-        }
-        AppDiagnostics.record(.downloads, "downloads.cfnetwork_temp_cleanup", fields: [
-            "reason": .label(context.rawValue),
+        AppDiagnostics.record(.downloads, "downloads.cfnetwork_temp_cleanup_skipped", fields: [
+            "reason": .label("reattach"),
+            "live_task_count": .int(liveTaskCount),
             "candidate_count": .int(candidates.count),
-            "deleted_count": .int(deletedCount),
-            "failed_count": .int(failedCount),
-            "skipped_young_count": .int(skippedYoungCount),
-            "deleted_bytes": .int(deletedBytes),
+            "candidate_bytes": .int(candidateBytes),
         ])
-    }
-
-    private func modificationAge(at url: URL) -> TimeInterval? {
-        guard let modified = try? fileManager.attributesOfItem(
-            atPath: url.path)[.modificationDate] as? Date else { return nil }
-        return Date().timeIntervalSince(modified)
     }
 
     private func pendingCFNetworkTempBytes() -> Int {
