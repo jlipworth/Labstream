@@ -133,6 +133,11 @@ class RunnerTests(unittest.TestCase):
             "109c196b8a013bc4ca80a3de58b26981571817011021e92eb0dbcd35827906e1",
         )
 
+    def test_log_time_bounds_use_supported_epoch_seconds_with_outward_rounding(self):
+        self.assertEqual(runner.log_time_bound("2026-07-22T16:08:32.164Z"), "@1784736512")
+        self.assertEqual(runner.log_time_bound("2026-07-22T16:08:37.382Z", end=True),
+                         "@1784736518")
+
     def test_seed_preserves_system_data_root_and_clears_only_children(self):
         with tempfile.TemporaryDirectory() as temporary:
             container = pathlib.Path(temporary) / "com.jlipworth.Labstream.perf.audit"
