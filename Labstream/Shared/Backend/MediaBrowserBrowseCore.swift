@@ -16,9 +16,6 @@ struct MediaBrowserLibraryLink: Identifiable, Hashable, Sendable {
     let collectionType: String?
 }
 
-typealias JellyfinLibraryLink = MediaBrowserLibraryLink
-typealias EmbyLibraryLink = MediaBrowserLibraryLink
-
 struct MediaBrowserBrowsePage: Sendable {
     let items: [MediaItem]
     let total: Int?

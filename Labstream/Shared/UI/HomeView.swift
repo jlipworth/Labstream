@@ -1,9 +1,6 @@
 import SwiftUI
 import PMSKit
 
-/// Compatibility name retained for the Home-specific state and tests that introduced this seam.
-typealias MediaBrowserHomeLoadIdentity = AuthenticatedBrowseLoadIdentity
-
 /// Home tab: the server's hubs (`GET /hubs`) rendered as horizontal poster rails,
 /// Swiftfin-style. Each rail is one `Hub`; tapping a poster opens `DetailView`.
 struct HomeView: View {
@@ -19,7 +16,7 @@ struct HomeView: View {
     @State private var loadState: BrowseLoadState = .idle
     /// Server/backend identity the current hubs were loaded from (pop-back no-op guard).
     /// Includes selected Plex server id because multiple servers can resolve through the same URL.
-    @State private var loadedIdentity: MediaBrowserHomeLoadIdentity?
+    @State private var loadedIdentity: AuthenticatedBrowseLoadIdentity?
     @State private var loadGeneration = 0
 
 
@@ -101,10 +98,8 @@ struct HomeView: View {
         }
         #endif
         .labstreamTopLevelNavigationTitle("Home")
-        // JellyfinLibraryLink and EmbyLibraryLink are compatibility aliases for the SAME
-        // MediaBrowserLibraryLink type. Registering both independently makes SwiftUI report an
-        // invalid duplicate destination and pick one by stack position. Route the one canonical
-        // type through the active backend instead.
+        // Register the shared Jellyfin/Emby library-link type once, then route it through the
+        // active backend. Duplicate registrations make SwiftUI pick one by stack position.
         .navigationDestination(for: MediaBrowserLibraryLink.self) { view in
             switch appModel.activeBackend {
             case .jellyfin:
@@ -140,8 +135,8 @@ struct HomeView: View {
         }
     }
 
-    private var loadIdentity: MediaBrowserHomeLoadIdentity {
-        MediaBrowserHomeLoadIdentity(appModel: appModel)
+    private var loadIdentity: AuthenticatedBrowseLoadIdentity {
+        AuthenticatedBrowseLoadIdentity(appModel: appModel)
     }
 
     /// First rail's id as the `HubRail` sees it (mediaBrowser rails wrap into a

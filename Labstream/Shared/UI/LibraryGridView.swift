@@ -267,8 +267,8 @@ struct LibrariesView: View {
 struct LibraryRootItem: Identifiable, Hashable {
     enum Destination: Hashable {
         case plex(PlexSection)
-        case jellyfin(JellyfinLibraryLink)
-        case emby(EmbyLibraryLink)
+        case jellyfin(MediaBrowserLibraryLink)
+        case emby(MediaBrowserLibraryLink)
     }
 
     let id: String
@@ -285,7 +285,7 @@ struct LibraryRootItem: Identifiable, Hashable {
         self.destination = .plex(section)
     }
 
-    init(jellyfin view: JellyfinLibraryLink) {
+    init(jellyfin view: MediaBrowserLibraryLink) {
         self.id = "jellyfin:\(view.id)"
         self.backend = .jellyfin
         self.title = view.title
@@ -293,7 +293,7 @@ struct LibraryRootItem: Identifiable, Hashable {
         self.destination = .jellyfin(view)
     }
 
-    init(emby view: EmbyLibraryLink) {
+    init(emby view: MediaBrowserLibraryLink) {
         self.id = "emby:\(view.id)"
         self.backend = .emby
         self.title = view.title
@@ -328,8 +328,8 @@ enum LibraryGridSource: Hashable {
     /// Backend-defined collections of one Plex section (#199). Plex exposes collections
     /// per section, so this grid is pushed from that section's toolbar.
     case plexCollections(PlexSection)
-    case jellyfin(JellyfinLibraryLink)
-    case emby(EmbyLibraryLink)
+    case jellyfin(MediaBrowserLibraryLink)
+    case emby(MediaBrowserLibraryLink)
 
     init(catalog descriptor: LibraryCatalogDescriptor) {
         switch descriptor.backend {
@@ -511,11 +511,11 @@ struct LibraryGridView: View {
         self.source = .plex(section)
     }
 
-    init(jellyfin view: JellyfinLibraryLink) {
+    init(jellyfin view: MediaBrowserLibraryLink) {
         self.source = .jellyfin(view)
     }
 
-    init(emby view: EmbyLibraryLink) {
+    init(emby view: MediaBrowserLibraryLink) {
         self.source = .emby(view)
     }
 

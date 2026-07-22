@@ -81,13 +81,13 @@ extension LibraryPagingSource {
         )
     }
 
-    static func jellyfin(view: JellyfinLibraryLink,
+    static func jellyfin(view: MediaBrowserLibraryLink,
                          query: LibraryBrowseQuery = .default,
                          appModel: AppModel) -> LibraryPagingSource {
         mediaBrowser(view: view, backend: .jellyfin, query: query, appModel: appModel)
     }
 
-    static func emby(view: EmbyLibraryLink,
+    static func emby(view: MediaBrowserLibraryLink,
                      query: LibraryBrowseQuery = .default,
                      appModel: AppModel) -> LibraryPagingSource {
         mediaBrowser(view: view, backend: .emby, query: query, appModel: appModel)
