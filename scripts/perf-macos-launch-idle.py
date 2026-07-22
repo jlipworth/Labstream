@@ -11,6 +11,7 @@ import plistlib
 import re
 import signal
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -238,7 +239,8 @@ def command_plan(apps: tuple[App, App], scenario: str, warmups: int, measured: i
     for sample in samples:
         app = by_role[sample["role"]]
         sample["commands"] = {
-            "reset": ["/bin/rm", "-rf", str(container)],
+            "reset": {"operation": "fd_anchored_clear_children",
+                      "path": str(container / "Data"), "preserve_root": True},
             "seed_directory": ["/bin/mkdir", "-p", str((container / INDEX_RELATIVE).parent)],
             "seed": {"operation": "atomic_write", "path": str(container / INDEX_RELATIVE),
                      "sha256": CANONICAL_INDEX_SHA256},
@@ -280,14 +282,79 @@ def command_plan(apps: tuple[App, App], scenario: str, warmups: int, measured: i
     }
 
 def seed_container(container: pathlib.Path, executor: Executor) -> None:
-    index = container / INDEX_RELATIVE
-    executor.run(["/bin/rm", "-rf", str(container)])
-    executor.run(["/bin/mkdir", "-p", str(index.parent)])
-    temporary = index.with_name(".index.json.runner-tmp")
-    temporary.write_bytes(CANONICAL_INDEX)
-    os.replace(temporary, index)
-    if index.read_bytes() != CANONICAL_INDEX:
-        fail("canonical index seed verification failed")
+    del executor  # Seeding is intentionally descriptor-anchored rather than shell/path based.
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        container_fd = os.open(container, directory_flags)
+    except OSError:
+        fail("dedicated sandbox container is not system-managed; launch one staged audit app "
+             "once to bootstrap it, terminate it, then retry")
+    try:
+        metadata = os.stat(".com.apple.containermanagerd.metadata.plist", dir_fd=container_fd,
+                           follow_symlinks=False)
+        if not stat.S_ISREG(metadata.st_mode):
+            fail("dedicated sandbox container has invalid containermanagerd metadata")
+        data_fd = os.open("Data", directory_flags, dir_fd=container_fd)
+        try:
+            data_identity = os.fstat(data_fd)
+            # Preserve the system-created Data directory, including its mode and metadata. The
+            # fd-relative safe rmtree implementation refuses swapped directories and never follows
+            # symlinks out of this already-open sandbox.
+            if not shutil.rmtree.avoids_symlink_attacks:
+                fail("this Python runtime cannot safely reset a sandbox fixture")
+            for name in os.listdir(data_fd):
+                entry = os.stat(name, dir_fd=data_fd, follow_symlinks=False)
+                if stat.S_ISDIR(entry.st_mode):
+                    shutil.rmtree(name, dir_fd=data_fd)
+                else:
+                    os.unlink(name, dir_fd=data_fd)
+
+            current_fd = os.dup(data_fd)
+            try:
+                for component in ("Library", "Application Support", "Labstream", "Downloads"):
+                    try:
+                        os.mkdir(component, mode=0o700, dir_fd=current_fd)
+                    except FileExistsError:
+                        pass
+                    next_fd = os.open(component, directory_flags, dir_fd=current_fd)
+                    os.close(current_fd)
+                    current_fd = next_fd
+                temporary = ".index.json.runner-tmp"
+                try:
+                    os.unlink(temporary, dir_fd=current_fd)
+                except FileNotFoundError:
+                    pass
+                output_fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                    0o600, dir_fd=current_fd)
+                try:
+                    view = memoryview(CANONICAL_INDEX)
+                    while view:
+                        view = view[os.write(output_fd, view):]
+                    os.fsync(output_fd)
+                finally:
+                    os.close(output_fd)
+                os.replace(temporary, "index.json", src_dir_fd=current_fd, dst_dir_fd=current_fd)
+                input_fd = os.open("index.json", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=current_fd)
+                try:
+                    seeded = b""
+                    while chunk := os.read(input_fd, 4096):
+                        seeded += chunk
+                finally:
+                    os.close(input_fd)
+                if seeded != CANONICAL_INDEX:
+                    fail("canonical index seed verification failed")
+            finally:
+                os.close(current_fd)
+            after = os.fstat(data_fd)
+            if (after.st_dev, after.st_ino, stat.S_IMODE(after.st_mode)) != (
+                    data_identity.st_dev, data_identity.st_ino, stat.S_IMODE(data_identity.st_mode)):
+                fail("sandbox Data root identity or mode changed during reset")
+        finally:
+            os.close(data_fd)
+    except (FileNotFoundError, NotADirectoryError, OSError) as error:
+        fail(f"dedicated sandbox container is incomplete or unsafe: {error}")
+    finally:
+        os.close(container_fd)
 
 def process_app_bundle_id(command: str) -> str | None:
     """Read the enclosing .app identity for one `ps comm=` executable path."""

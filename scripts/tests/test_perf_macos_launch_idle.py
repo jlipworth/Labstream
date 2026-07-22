@@ -120,12 +120,53 @@ class RunnerTests(unittest.TestCase):
         binary.chmod(0o755)
         return app
 
+    def prepare_container(self, plan):
+        container = pathlib.Path(plan["container"])
+        (container / "Data").mkdir(parents=True, mode=0o700)
+        (container / "Data").chmod(0o700)
+        (container / ".com.apple.containermanagerd.metadata.plist").write_bytes(b"fixture")
+
     def test_canonical_empty_index_bytes_and_digest_are_frozen(self):
         self.assertEqual(runner.CANONICAL_INDEX, b'{"schemaVersion":4,"rows":[]}\n')
         self.assertEqual(
             runner.CANONICAL_INDEX_SHA256,
             "109c196b8a013bc4ca80a3de58b26981571817011021e92eb0dbcd35827906e1",
         )
+
+    def test_seed_preserves_system_data_root_and_clears_only_children(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            container = pathlib.Path(temporary) / "com.jlipworth.Labstream.perf.audit"
+            data = container / "Data"
+            data.mkdir(parents=True, mode=0o700)
+            data.chmod(0o700)
+            (container / ".com.apple.containermanagerd.metadata.plist").write_bytes(b"fixture")
+            (data / "stale").mkdir()
+            (data / "stale/value").write_text("old")
+            before = data.stat()
+
+            runner.seed_container(container, FakeExecutor())
+
+            after = data.stat()
+            self.assertEqual((after.st_dev, after.st_ino), (before.st_dev, before.st_ino))
+            self.assertEqual(after.st_mode & 0o777, 0o700)
+            self.assertFalse((data / "stale").exists())
+            self.assertEqual((container / runner.INDEX_RELATIVE).read_bytes(),
+                             runner.CANONICAL_INDEX)
+
+    def test_seed_rejects_symlinked_data_root_without_touching_target(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            container = root / "com.jlipworth.Labstream.perf.audit"
+            target = root / "outside"
+            container.mkdir(); target.mkdir()
+            (container / ".com.apple.containermanagerd.metadata.plist").write_bytes(b"fixture")
+            (target / "sentinel").write_text("keep")
+            (container / "Data").symlink_to(target, target_is_directory=True)
+
+            with self.assertRaises(runner.RunnerError):
+                runner.seed_container(container, FakeExecutor())
+
+            self.assertEqual((target / "sentinel").read_text(), "keep")
 
     def test_bundle_digest_tracks_entry_boundaries_and_modes(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -254,6 +295,11 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(document["settle_seconds"], 10)
             self.assertEqual(document["container"],
                              str(pathlib.Path.home() / "Library/Containers/com.jlipworth.Labstream.perf.audit"))
+            self.assertEqual(document["samples"][0]["commands"]["reset"], {
+                "operation": "fd_anchored_clear_children",
+                "path": str(pathlib.Path(document["container"]) / "Data"),
+                "preserve_root": True,
+            })
             self.assertTrue(all(s["commands"]["app_arguments"] == [] for s in document["samples"]))
             self.assertTrue(all(s["commands"]["app_environment"] == {} for s in document["samples"]))
             self.assertTrue(all(s["commands"]["log"][-1] == "{exact_pid}" for s in document["samples"]))
@@ -270,6 +316,7 @@ class RunnerTests(unittest.TestCase):
             plan = runner.command_plan((control, candidate), "idle", 0, 1, 1, 2, output,
                                        containers_root=containers)
             fake = FakeExecutor()
+            self.prepare_container(plan)
             result = runner.capture(plan, (control, candidate), fake)
             contract_runs = [a for a in fake.actions if a[0] == "run" and
                              "performance-audit-contract.py" in " ".join(a[1])]
@@ -301,6 +348,7 @@ class RunnerTests(unittest.TestCase):
             plan = runner.command_plan(apps, "launch", 0, 1, 1, 0, root / "result.json",
                                        containers_root=root / "Containers")
             fake = FakeExecutor(fail_sleep=True)
+            self.prepare_container(plan)
             result = runner.capture(plan, apps, fake)
             self.assertEqual([r["status"] for r in result["records"]], ["failure", "failure"])
             self.assertTrue(all(r["failure"]["type"] == "RuntimeError" for r in result["records"]))
@@ -319,6 +367,7 @@ class RunnerTests(unittest.TestCase):
                                        control_commit="a" * 40, candidate_commit="b" * 40,
                                        device_label="local-device-07")
             self.assertEqual(plan["artifact_status"], "planned_admissible_per_run_manifests")
+            self.prepare_container(plan)
             result = runner.capture(plan, apps, FakeExecutor())
             loaded = {"control": [], "candidate": []}
             for record in result["records"]:

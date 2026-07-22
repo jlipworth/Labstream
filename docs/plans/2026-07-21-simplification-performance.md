@@ -1212,7 +1212,8 @@ policy:
    only two real `PerformanceAudit` apps with the same dedicated
    `com.jlipworth.Labstream.perf.*` bundle identity,
    validates both binaries through the closed contract, and limits reset/seed work to the exact
-   corresponding sandbox container. The deterministic schedule uses adjacent A/B pairs in the exact
+   sandbox container's mutable `Data` subtree while preserving containermanagerd metadata. The
+   deterministic schedule uses adjacent A/B pairs in the exact
    seeded role order enforced by the comparator: launch
    defaults to 3 warmups plus 20 measured samples; idle defaults to 1 plus 5 at 120 seconds. Plan
    mode is side-effect-free JSON, the app receives no arguments or environment, bounded post-run
