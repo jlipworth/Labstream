@@ -177,40 +177,12 @@ extension CustomPlayerChrome {
         .accessibilityLabel(isForward ? "Skip forward \(amount) seconds" : "Skip back \(amount) seconds")
     }
 
-    var phoneLandscapePrimaryMenus: [CustomPlayerMenuKind] {
-        availableMenus.filter { [.quality, .subtitles, .audio, .chapters, .speed, .stats].contains($0) }
-    }
-
-    var phoneLandscapeOverflowMenus: [CustomPlayerMenuKind] {
-        availableMenus.filter { !phoneLandscapePrimaryMenus.contains($0) }
-    }
-
     /// Compact landscape controls keep the complete playback-option set visible now
     /// that play/pause lives over the picture and no longer consumes this row.
     var phoneLandscapeMenuStrip: some View {
         HStack(spacing: 6) {
-            ForEach(phoneLandscapePrimaryMenus) { menu in
+            ForEach(availableMenus) { menu in
                 phoneLandscapeMenuButton(menu)
-            }
-
-            if !phoneLandscapeOverflowMenus.isEmpty {
-                Menu {
-                    ForEach(phoneLandscapeOverflowMenus) { menu in
-                        Button {
-                            openMenu(menu)
-                        } label: {
-                            Label(menu.title, systemImage: menu.systemImage)
-                        }
-                    }
-                } label: {
-                    Label("More", systemImage: "ellipsis")
-                        .labelStyle(.iconOnly)
-                        .font(.body.weight(.semibold))
-                        .frame(width: 44, height: 40)
-                        .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .phoneLandscapePlayerMenuButtonStyle(isSelected: selectedMenu.map { phoneLandscapeOverflowMenus.contains($0) } ?? false)
             }
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
