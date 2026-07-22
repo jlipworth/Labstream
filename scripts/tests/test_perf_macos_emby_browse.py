@@ -33,8 +33,9 @@ class FakeExecutor:
 
 
 class Process:
-    def __init__(self, pid):
+    def __init__(self, pid, executable=None):
         self.pid = pid
+        self.executable = executable
         self.returncode = None
 
 
@@ -58,7 +59,13 @@ class CaptureExecutor(FakeExecutor):
 
     def run(self, argv, *, stdout=-1):
         self.actions.append(("run", argv))
-        if argv[:3] == ["/usr/bin/xcrun", "swiftc", str(runner.DRIVER)]:
+        if argv[:3] == ["/usr/bin/open", "-n", "-a"]:
+            app = pathlib.Path(argv[3])
+            info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+            executable = app / "Contents/MacOS" / info["CFBundleExecutable"]
+            self.next_pid += 1
+            self.processes[self.next_pid] = Process(self.next_pid, executable)
+        elif argv[:3] == ["/usr/bin/xcrun", "swiftc", str(runner.DRIVER)]:
             output = pathlib.Path(argv[argv.index("-o") + 1])
             output.write_bytes(b"compiled-driver")
         elif argv and pathlib.Path(argv[0]).name == ".perf-macos-ax-driver":
@@ -85,8 +92,16 @@ class CaptureExecutor(FakeExecutor):
 
     def output(self, argv):
         self.actions.append(("output", argv))
-        if argv[:2] == ["/bin/ps", "-axo"]:
-            return ""
+        if argv == ["/bin/ps", "-axo", "comm="]:
+            return "".join(
+                f"{process.executable}\n" for process in self.processes.values()
+                if process.executable is not None and process.returncode is None
+            )
+        if argv == ["/bin/ps", "-axo", "pid=,comm="]:
+            return "".join(
+                f"{process.pid:6d} {process.executable}\n" for process in self.processes.values()
+                if process.executable is not None and process.returncode is None
+            )
         if argv[:4] == ["/usr/bin/log", "show", "--info", "--style"]:
             return self.span_line()
         if argv[:2] == ["/usr/bin/sw_vers", "-buildVersion"]:
@@ -118,7 +133,7 @@ class CaptureExecutor(FakeExecutor):
         self.actions.append(("sleep", seconds))
 
     def poll(self, process):
-        return process.returncode
+        return self.processes.get(process.pid, process).returncode
 
     def terminate(self, pid):
         self.actions.append(("terminate", pid))
@@ -129,7 +144,7 @@ class CaptureExecutor(FakeExecutor):
         self.processes[pid].returncode = -9
 
     def wait(self, process, timeout):
-        return process.returncode
+        return self.processes.get(process.pid, process).returncode
 
     def now(self):
         value = self.clock.isoformat(timespec="milliseconds")
@@ -179,6 +194,8 @@ class BrowseRunnerTests(unittest.TestCase):
                 self.assertEqual([row["pair_order"] for row in pair], [1, 2])
                 self.assertEqual(pair[0]["sample_index"], pair[1]["sample_index"])
             for sample in document["samples"]:
+                self.assertEqual(sample["commands"]["launch"][:3],
+                                 ["/usr/bin/open", "-n", "-a"])
                 self.assertEqual(sample["commands"]["app_arguments"], [])
                 self.assertEqual(sample["commands"]["app_environment"], {})
                 self.assertEqual(sample["commands"]["driver"][1:3],
@@ -192,6 +209,151 @@ class BrowseRunnerTests(unittest.TestCase):
             candidate = self.make_app(temporary, "Candidate.app", service="com.visionplay.app")
             with self.assertRaisesRegex(runner.RunnerError, "dedicated performance"):
                 runner.validate_inputs(control, candidate)
+
+    def test_launchservices_launch_binds_only_new_exact_executable_pid(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            app = runner.base.validate_app("control", self.make_app(temporary, "Control.app"))
+            fake = CaptureExecutor()
+            process = runner.launch_app(app, fake)
+            self.assertEqual(process.executable, app.executable)
+            self.assertEqual(fake.processes[process.pid].executable, app.executable)
+            opens = [action for action in fake.actions
+                     if action[:1] == ("run",) and action[1][:3]
+                     == ["/usr/bin/open", "-n", "-a"]]
+            self.assertEqual(opens, [("run", ["/usr/bin/open", "-n", "-a", str(app.path)])])
+            self.assertFalse(any(action[0] == "spawn" and action[1] == [str(app.executable)]
+                                 for action in fake.actions if isinstance(action, tuple)))
+
+    def test_launchservices_launch_rejects_and_cleans_ambiguous_exact_pids(self):
+        class Ambiguous(CaptureExecutor):
+            def run(self, argv, *, stdout=-1):
+                super().run(argv, stdout=stdout)
+                if argv[:3] == ["/usr/bin/open", "-n", "-a"]:
+                    first = self.processes[self.next_pid]
+                    self.next_pid += 1
+                    self.processes[self.next_pid] = Process(self.next_pid, first.executable)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            app = runner.base.validate_app("control", self.make_app(temporary, "Control.app"))
+            fake = Ambiguous()
+            with self.assertRaisesRegex(runner.RunnerError, "ambiguous exact app PIDs"):
+                runner.launch_app(app, fake)
+            self.assertTrue(all(process.returncode is not None
+                                for process in fake.processes.values()))
+
+    def test_launchservices_launch_fails_closed_on_discovery_timeout(self):
+        class Missing(CaptureExecutor):
+            def run(self, argv, *, stdout=-1):
+                if argv[:3] == ["/usr/bin/open", "-n", "-a"]:
+                    self.actions.append(("run", argv))
+                    return
+                super().run(argv, stdout=stdout)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            app = runner.base.validate_app("control", self.make_app(temporary, "Control.app"))
+            fake = Missing()
+            with self.assertRaisesRegex(runner.RunnerError, "discovery deadline exceeded"):
+                runner.launch_app(app, fake)
+            self.assertEqual(sum(action == ("sleep", 0.05) for action in fake.actions), 120)
+
+    def test_launchservices_timeout_cleans_late_exact_child(self):
+        class Late(CaptureExecutor):
+            def __init__(self):
+                super().__init__()
+                self.discovery_sleeps = 0
+                self.app = None
+
+            def run(self, argv, *, stdout=-1):
+                if argv[:3] == ["/usr/bin/open", "-n", "-a"]:
+                    self.actions.append(("run", argv))
+                    self.app = pathlib.Path(argv[3])
+                    return
+                super().run(argv, stdout=stdout)
+
+            def sleep(self, seconds):
+                super().sleep(seconds)
+                if seconds == 0.05:
+                    self.discovery_sleeps += 1
+                if self.discovery_sleeps == 120:
+                    info = plistlib.loads((self.app / "Contents/Info.plist").read_bytes())
+                    executable = self.app / "Contents/MacOS" / info["CFBundleExecutable"]
+                    self.next_pid += 1
+                    self.processes[self.next_pid] = Process(self.next_pid, executable)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            app = runner.base.validate_app("control", self.make_app(temporary, "Control.app"))
+            fake = Late()
+            with self.assertRaisesRegex(runner.RunnerError, "discovery deadline exceeded"):
+                runner.launch_app(app, fake)
+            self.assertTrue(fake.processes)
+            self.assertTrue(all(process.returncode is not None
+                                for process in fake.processes.values()))
+
+    def test_launchservices_launch_rejects_preexisting_bundle_collision(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            app = runner.base.validate_app("control", self.make_app(temporary, "Control.app"))
+            fake = CaptureExecutor()
+            fake.next_pid += 1
+            fake.processes[fake.next_pid] = Process(fake.next_pid, app.executable)
+            with self.assertRaisesRegex(runner.RunnerError, "already running"):
+                runner.launch_app(app, fake)
+            self.assertFalse(any(action[:1] == ("run",) and action[1][:1] == ["/usr/bin/open"]
+                                 for action in fake.actions if isinstance(action, tuple)))
+
+    def test_detached_process_poll_and_wait_are_exact_and_bounded(self):
+        class PollingExecutor(runner.Executor):
+            def __init__(self, snapshots):
+                self.snapshots = list(snapshots)
+                self.sleeps = []
+
+            def output(self, argv):
+                self.assert_argv = argv
+                return self.snapshots.pop(0)
+
+            def sleep(self, seconds):
+                self.sleeps.append(seconds)
+
+        executable = pathlib.Path("/tmp/Exact.app/Contents/MacOS/Labstream")
+        process = runner.DetachedAppProcess(321, executable)
+        fake = PollingExecutor([
+            f"   321 {executable}\n",
+            "   321 /tmp/Other.app/Contents/MacOS/Labstream\n",
+        ])
+        self.assertEqual(fake.wait(process, 1), 0)
+        self.assertEqual(fake.sleeps, [0.1])
+        self.assertEqual(fake.assert_argv, ["/bin/ps", "-axo", "pid=,comm="])
+        self.assertEqual(process.returncode, 0)
+
+        live = runner.DetachedAppProcess(654, executable)
+        timed_out = PollingExecutor([f"654 {executable}\n"] * 10)
+        with self.assertRaises(subprocess.TimeoutExpired):
+            timed_out.wait(live, 1)
+        self.assertEqual(len(timed_out.sleeps), 10)
+
+    def test_detached_cleanup_never_signals_a_reused_pid(self):
+        class ReusedExecutor(runner.Executor):
+            def __init__(self):
+                self.snapshots = [
+                    "321 /tmp/Exact.app/Contents/MacOS/Labstream\n",
+                    "321 /tmp/Other.app/Contents/MacOS/Other\n",
+                ]
+                self.signals = []
+
+            def output(self, argv):
+                return self.snapshots.pop(0)
+
+            def terminate(self, pid):
+                self.signals.append(("term", pid))
+
+            def kill(self, pid):
+                self.signals.append(("kill", pid))
+
+        executable = pathlib.Path("/tmp/Exact.app/Contents/MacOS/Labstream")
+        process = runner.DetachedAppProcess(321, executable)
+        fake = ReusedExecutor()
+        self.assertIsNone(runner.stop_app_and_prove_gone(process, fake))
+        self.assertEqual(fake.signals, [])
+        self.assertEqual(process.returncode, 0)
 
     def test_keychain_reset_targets_only_closed_accounts_and_verifies_absence(self):
         fake = FakeExecutor([0, 44] * len(runner.AUTH_ACCOUNTS))
@@ -273,6 +435,37 @@ class BrowseRunnerTests(unittest.TestCase):
             self.assertIn("result=success", payload)
             self.assertNotIn("result=cancelled", payload)
             self.assertEqual(selected.stat().st_mode & 0o777, 0o600)
+
+    def test_catalog_selector_excludes_superseded_attempt_but_rejects_other_failures(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            source = root / "full.log"
+            selected = root / "selected.log"
+            prefix = ("perf.capture run_id=run-123456789abc "
+                      "workload_id=workload-123456789abc "
+                      "launch_nonce=nonce-1234567890abcdef\n")
+            success = ('{"eventMessage":"perf.span phase=library_grid.complete backend=Emby '
+                       'result=success duration_ms=10 collapse_mode=collapsed item_count=26 '
+                       'page_count=1 publication_count=2 total_count=26"}\n')
+            source.write_text(
+                prefix
+                + '{"eventMessage":"perf.span phase=library_grid.complete backend=Emby '
+                  'result=superseded duration_ms=3"}\n'
+                + success
+            )
+            runner.write_success_selector_artifact(source, selected, "library_grid.complete")
+            self.assertNotIn("result=superseded", selected.read_text())
+
+            rejected = root / "rejected.log"
+            source.write_text(
+                prefix
+                + '{"eventMessage":"perf.span phase=library_grid.complete backend=Emby '
+                  'result=stale duration_ms=3"}\n'
+                + success
+            )
+            with self.assertRaisesRegex(runner.RunnerError, "non-success target"):
+                runner.write_success_selector_artifact(
+                    source, rejected, "library_grid.complete")
 
     def test_driver_result_rejects_nonterminal_stage_for_every_scenario(self):
         expected = {

@@ -178,6 +178,8 @@ private enum Attribute: String {
     case children = "AXChildren"
     case enabled = "AXEnabled"
     case focused = "AXFocused"
+    case parent = "AXParent"
+    case selected = "AXSelected"
     case value = "AXValue"
 }
 
@@ -221,9 +223,13 @@ private final class AccessibilityDriver {
         guard AXIsProcessTrustedWithOptions([promptKey: false] as CFDictionary) else {
             throw DriverError.accessibilityNotTrusted
         }
-        guard application.activate(options: [.activateAllWindows]) else {
-            throw DriverError.accessibilityActionFailed
-        }
+        let activationDeadline = Date().addingTimeInterval(min(timeout, 5))
+        var activated = false
+        repeat {
+            activated = application.isActive || application.activate(options: [.activateAllWindows])
+            if !activated { usleep(50_000) }
+        } while !activated && Date() < activationDeadline && kill(pid, 0) == 0
+        guard activated else { throw DriverError.accessibilityActionFailed }
         self.pid = pid
         self.root = AXUIElementCreateApplication(pid)
         self.timeout = timeout
@@ -287,15 +293,33 @@ private final class AccessibilityDriver {
     }
 
     private func openCatalog() throws {
-        try press(Query(roles: [kAXStaticTextRole as String, kAXButtonRole as String,
-                                kAXRowRole as String], strings: [
-                            .identifier: ["performance.mac.sidebar.library"],
-                            .description: ["Fixture Movies"],
-                        ]),
-                  fallback: Query(roles: [kAXStaticTextRole as String, kAXButtonRole as String,
-                                          kAXRowRole as String],
-                                  attribute: .title, values: ["Fixture Movies"]),
-                  stage: "catalog_opened")
+        // SwiftUI exposes each selectable source-list label as AXStaticText. Both libraries share
+        // the privacy-safe identifier, while the accessibility label is AXValue; require both so
+        // the synthetic Movies row remains exact and duplicate-safe.
+        let label = try requiredElement(Query(roles: [kAXStaticTextRole as String], strings: [
+            .identifier: ["performance.mac.sidebar.library"],
+            .value: ["Fixture Movies"],
+        ]))
+        var candidate = label
+        for _ in 0..<4 {
+            if case .success(let rawRole) = copy(.role, from: candidate),
+               rawRole as? String == kAXRowRole as String {
+                guard AXUIElementSetAttributeValue(candidate,
+                                                   Attribute.selected.rawValue as CFString,
+                                                   kCFBooleanTrue) == .success else {
+                    throw DriverError.accessibilityActionFailed
+                }
+                actionCount += 1
+                completedStage = "catalog_opened"
+                return
+            }
+            guard case .success(let rawParent) = copy(.parent, from: candidate),
+                  CFGetTypeID(rawParent) == AXUIElementGetTypeID() else {
+                throw DriverError.accessibilityReadFailed
+            }
+            candidate = unsafeBitCast(rawParent, to: AXUIElement.self)
+        }
+        throw DriverError.elementNotFound
     }
 
     private func openSearch() throws {
