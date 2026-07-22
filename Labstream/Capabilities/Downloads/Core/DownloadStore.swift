@@ -228,7 +228,6 @@ final class DownloadStore: @unchecked Sendable {
     // own persistence owner and lock.
     typealias EmbyConvertCleanupTombstone = EmbyConvertCleanupJournal.Tombstone
     typealias EmbyCleanupPersistence = EmbyConvertCleanupJournal.Persistence
-    typealias EmbyCleanupPersistenceFailure = EmbyConvertCleanupJournal.Failure
     typealias EmbyCleanupLoadResult = EmbyConvertCleanupJournal.LoadResult
     typealias EmbyCleanupAddResult = EmbyConvertCleanupJournal.AddResult
     typealias EmbyCleanupRemoveResult = EmbyConvertCleanupJournal.RemoveResult
@@ -3072,37 +3071,6 @@ final class DownloadStore: @unchecked Sendable {
         }
     }
 
-    /// Record the locally-cached Plex BIF path (relative to the base dir) on a row's
-    /// metadata snapshot (#78). No-op if the row or metadata is gone.
-    func setPlexBIFRelativePath(ratingKey: String, _ relativePath: String) {
-        updateMetadata(ratingKey: ratingKey) { $0.plexBIFRelativePath = relativePath }
-    }
-
-    func setEmbyBIFRelativePath(ratingKey: String, _ relativePath: String) {
-        updateMetadata(ratingKey: ratingKey) { $0.embyBIFRelativePath = relativePath }
-    }
-
-    /// Record locally-cached Jellyfin trickplay assets (#79). Relative paths only; the playlist
-    /// itself is sanitized before writing, so no token-bearing URLs are persisted.
-    func setJellyfinTrickPlayRelativePaths(ratingKey: String, playlist: String, tiles: [String]) {
-        updateMetadata(ratingKey: ratingKey) {
-            $0.jellyfinTrickPlayPlaylistRelativePath = playlist
-            $0.jellyfinTrickPlayTileRelativePaths = tiles
-        }
-    }
-
-    /// Record locally-cached per-chapter image paths (#88/#89), keyed by chapter index. Relative
-    /// paths only. No-op for an empty map or a missing row/metadata.
-    func setChapterImageRelativePaths(ratingKey: String, _ relativePathsByIndex: [Int: String]) {
-        guard !relativePathsByIndex.isEmpty else { return }
-        updateMetadata(ratingKey: ratingKey) { $0.chapterImageRelativePaths = relativePathsByIndex }
-    }
-
-    func setOfflineTextSubtitles(ratingKey: String, _ tracks: [OfflineTextSubtitleTrack]) {
-        guard !tracks.isEmpty else { return }
-        updateMetadata(ratingKey: ratingKey) { $0.offlineTextSubtitles = tracks }
-    }
-
     /// Persist the last local-file playback position for a completed offline row (#146).
     ///
     /// This intentionally updates `localPlaybackPositionMs`, not the captured server `viewOffset`,
@@ -3171,12 +3139,6 @@ final class DownloadStore: @unchecked Sendable {
         let persistence = waitForPersistence(through: ticket)
         return persistence.result.committed(through: persistence.ticket)
             ? .cleared : .persistenceFailed(persistence.result)
-    }
-
-    /// #84: persist the authoritative media-source id chosen for this download so a retry can
-    /// re-issue the request without re-deriving it. No-op if the row/metadata is gone.
-    func setMediaSourceID(ratingKey: String, _ mediaSourceID: String) {
-        updateMetadata(ratingKey: ratingKey) { $0.mediaSourceID = mediaSourceID }
     }
 
     /// Persist the exact static resource size once a byte-range transfer discovers it. Rows may
@@ -4062,15 +4024,6 @@ final class DownloadStore: @unchecked Sendable {
         return malformed.isEmpty ? .current : .malformedCurrentRows(malformed)
     }
 
-    private static func hasAsyncCleanupEvidence(_ row: Row) -> Bool {
-        guard let metadata = row.metadata else { return false }
-        return metadata.playSessionID?.isEmpty == false
-            || metadata.embyConvertJobID != nil
-            || metadata.hasEmbyConvertCrashWindowIdentity
-            || metadata.resumeDataRelativePath?.isEmpty == false
-            || !(metadata.heldRangeSegments?.isEmpty ?? true)
-    }
-
     /// #169: reset persisted static byte-range progress to the bytes that are actually durable in
     /// the partial file. The current in-flight static Range task body lives in an OS temp
     /// until `didFinishDownloadingTo`; progress callbacks may have published those optimistic bytes
@@ -4606,22 +4559,6 @@ final class DownloadStore: @unchecked Sendable {
         let ticket = enqueueAttemptPersistenceLocked()
         lock.unlock()
         return .accepted(change: .applied, ticket: ticket)
-    }
-
-    /// Remove only the short-lived Sync-list crash-window markers. The server job id and File
-    /// source snapshot have independent lifetimes and must remain available for polling/pickup.
-    func clearEmbyConvertRecovery(ratingKey: String) {
-        updateMetadata(ratingKey: ratingKey) {
-            $0.clearEmbyConvertRecoveryIdentity()
-        }
-    }
-
-    /// Forget a Sync job id that reached a TERMINAL server state (Failed/Cancelled/404/410), so a
-    /// retry creates a fresh job instead of resuming polling a dead one.
-    func clearEmbyConvertJobID(ratingKey: String) {
-        updateMetadata(ratingKey: ratingKey) {
-            $0.embyConvertJobID = nil
-        }
     }
 
     /// Update transfer progress for an in-flight download. Moving any bytes from a task still owned by

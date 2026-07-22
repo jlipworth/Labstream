@@ -451,12 +451,6 @@ final class KeychainStore {
             optional: [(Self.embyServerIDKey, serverID)])
     }
 
-    @discardableResult
-    func savePlexSession(token: String, selectedServerID: String?) -> Bool {
-        saveCredentialSet(required: [(Self.tokenKey, token)],
-                          optional: [(Self.selectedPlexServerIDKey, selectedServerID)])
-    }
-
     private func saveCredentialSet(required: [(String, String)],
                                    optional: [(String, String?)]) -> Bool {
         let allKeys = required.map(\.0) + optional.map(\.0)
