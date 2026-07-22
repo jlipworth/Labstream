@@ -56,11 +56,27 @@ final class LibraryPagingModel {
         total = 0
         alphabetBuckets = []
         collapser = source.collapsesMovieVersions ? MovieVersionCollapser() : nil
+        let firstContentSpan = PerformanceInstrumentation.begin(
+            .libraryGridFirstContent,
+            backend: source.backendLabel)
+        let completeSpan = PerformanceInstrumentation.begin(
+            .libraryGridComplete,
+            backend: source.backendLabel)
 
         if source.collapsesMovieVersions {
-            await loadAllCollapsing(source: source, identity: identity, generation: generation, isCurrent: isCurrent)
+            await loadAllCollapsing(source: source,
+                                    identity: identity,
+                                    generation: generation,
+                                    firstContentSpan: firstContentSpan,
+                                    completeSpan: completeSpan,
+                                    isCurrent: isCurrent)
         } else {
-            await loadLazy(source: source, identity: identity, generation: generation, isCurrent: isCurrent)
+            await loadLazy(source: source,
+                           identity: identity,
+                           generation: generation,
+                           firstContentSpan: firstContentSpan,
+                           completeSpan: completeSpan,
+                           isCurrent: isCurrent)
         }
     }
 
@@ -72,6 +88,8 @@ final class LibraryPagingModel {
     private func loadLazy(source: LibraryPagingSource,
                           identity: String,
                           generation: Int,
+                          firstContentSpan: PerformanceSpan,
+                          completeSpan: PerformanceSpan,
                           isCurrent: @MainActor () -> Bool) async {
         let span = PerformanceInstrumentation.begin(.libraryGridInitialPage,
                                                      backend: source.backendLabel,
@@ -84,6 +102,8 @@ final class LibraryPagingModel {
             if source.awaitAlphabetBeforeInitialLoad {
                 let buckets = AlphabetBucket.buckets(from: await alphabetCounts, total: page.total)
                 guard isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else {
+                    firstContentSpan.end(result: "superseded")
+                    completeSpan.end(result: "superseded")
                     span.end(result: "stale")
                     return
                 }
@@ -91,6 +111,22 @@ final class LibraryPagingModel {
                                  alphabetBuckets: buckets,
                                  source: source,
                                  identity: identity)
+                firstContentSpan.end(
+                    result: BrowsePerformanceMeasurementPolicy.firstContentResult(itemCount: page.items.count),
+                    fields: [
+                        "item_count": page.items.count,
+                        "total_count": page.total,
+                        "page_count": 1,
+                        "publication_count": 1,
+                        "collapse_mode": "sparse",
+                    ])
+                completeSpan.end(fields: [
+                    "item_count": page.items.count,
+                    "total_count": page.total,
+                    "page_count": 1,
+                    "publication_count": 1,
+                    "collapse_mode": "sparse",
+                ])
                 span.end(fields: [
                     "item_count": page.items.count,
                     "total_count": page.total,
@@ -98,6 +134,8 @@ final class LibraryPagingModel {
                 ])
             } else {
                 guard isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else {
+                    firstContentSpan.end(result: "superseded")
+                    completeSpan.end(result: "superseded")
                     span.end(result: "stale")
                     return
                 }
@@ -105,21 +143,65 @@ final class LibraryPagingModel {
                                  alphabetBuckets: [],
                                  source: source,
                                  identity: identity)
+                firstContentSpan.end(
+                    result: BrowsePerformanceMeasurementPolicy.firstContentResult(itemCount: page.items.count),
+                    fields: [
+                    "item_count": page.items.count,
+                    "total_count": page.total,
+                    "page_count": 1,
+                    "publication_count": 1,
+                    "collapse_mode": "sparse",
+                ])
                 span.end(fields: [
                     "item_count": page.items.count,
                     "total_count": page.total,
                 ])
 
                 let buckets = AlphabetBucket.buckets(from: await alphabetCounts, total: page.total)
-                guard isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else { return }
+                guard isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else {
+                    completeSpan.end(result: "superseded")
+                    return
+                }
                 alphabetBuckets = buckets
+                completeSpan.end(fields: [
+                    "item_count": page.items.count,
+                    "total_count": page.total,
+                    "page_count": 1,
+                    "publication_count": 2,
+                    "collapse_mode": "sparse",
+                ])
             }
         } catch {
-            guard isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else {
-                span.end(result: "stale")
+            let isCurrentIdentity = isCurrent()
+                && activeIdentity == identity
+                && activeLoadGeneration == generation
+            guard isCurrentIdentity else {
+                firstContentSpan.end(result: BrowsePerformanceMeasurementPolicy.caughtErrorResult(
+                    isCurrentIdentity: false,
+                    taskIsCancelled: Task.isCancelled,
+                    errorIsCancellation: error is CancellationError))
+                completeSpan.end(result: BrowsePerformanceMeasurementPolicy.caughtErrorResult(
+                    isCurrentIdentity: false,
+                    taskIsCancelled: Task.isCancelled,
+                    errorIsCancellation: error is CancellationError))
+                span.end(result: Task.isCancelled || error is CancellationError ? "cancelled" : "stale")
                 return
             }
-            span.end(result: "failure", fields: ["error": performanceErrorLabel(error)])
+            firstContentSpan.end(result: BrowsePerformanceMeasurementPolicy.caughtErrorResult(
+                isCurrentIdentity: true,
+                taskIsCancelled: Task.isCancelled,
+                errorIsCancellation: error is CancellationError),
+                                 fields: ["error": performanceErrorLabel(error)])
+            completeSpan.end(result: BrowsePerformanceMeasurementPolicy.caughtErrorResult(
+                isCurrentIdentity: true,
+                taskIsCancelled: Task.isCancelled,
+                errorIsCancellation: error is CancellationError),
+                             fields: ["error": performanceErrorLabel(error)])
+            span.end(result: BrowsePerformanceMeasurementPolicy.caughtErrorResult(
+                isCurrentIdentity: true,
+                taskIsCancelled: Task.isCancelled,
+                errorIsCancellation: error is CancellationError),
+                     fields: ["error": performanceErrorLabel(error)])
             loadState = .failed(friendlyMessage(error))
             // Structured `async let` alphabet work is cancelled at scope exit. Do not wait
             // for slow rail probes after the first page fails (#96).
@@ -140,6 +222,8 @@ final class LibraryPagingModel {
     private func loadAllCollapsing(source: LibraryPagingSource,
                                    identity: String,
                                    generation: Int,
+                                   firstContentSpan: PerformanceSpan,
+                                   completeSpan: PerformanceSpan,
                                    isCurrent: @MainActor () -> Bool) async {
         let span = PerformanceInstrumentation.begin(.libraryGridInitialPage,
                                                      backend: source.backendLabel,
@@ -147,6 +231,8 @@ final class LibraryPagingModel {
         do {
             let first = try await source.fetchPage(0, source.pageSize)
             guard isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else {
+                firstContentSpan.end(result: "superseded")
+                completeSpan.end(result: "superseded")
                 span.end(result: "stale")
                 return
             }
@@ -154,6 +240,15 @@ final class LibraryPagingModel {
             // Show the grid immediately after the first page; keep loading the rest below.
             loadedIdentity = (source.cacheEmptyFirstPage || !first.items.isEmpty) ? identity : nil
             loadState = .loaded
+            firstContentSpan.end(
+                result: BrowsePerformanceMeasurementPolicy.firstContentResult(itemCount: total),
+                fields: [
+                "item_count": total,
+                "total_count": first.total,
+                "page_count": 1,
+                "publication_count": 1,
+                "collapse_mode": "collapsed",
+            ])
 
             var loadedPages = 1
             var start = source.pageSize
@@ -163,6 +258,7 @@ final class LibraryPagingModel {
             while !lastPageWasEmpty, start < serverTotal {
                 let page = try await source.fetchPage(start, source.pageSize)
                 guard isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else {
+                    completeSpan.end(result: "superseded")
                     span.end(result: "stale")
                     return
                 }
@@ -183,6 +279,13 @@ final class LibraryPagingModel {
             alphabetBuckets = source.supportsAlphabetRail
                 ? AlphabetBucket.buckets(fromTitles: collapsed.map(\.title))
                 : []
+            completeSpan.end(fields: [
+                "item_count": collapsed.count,
+                "total_count": serverTotal,
+                "page_count": loadedPages,
+                "publication_count": loadedPages + (source.supportsAlphabetRail ? 1 : 0),
+                "collapse_mode": "collapsed",
+            ])
             span.end(fields: [
                 "item_count": collapsed.count,
                 "total_count": serverTotal,
@@ -190,16 +293,49 @@ final class LibraryPagingModel {
                 "alphabet_count": alphabetBuckets.count,
             ])
         } catch {
-            guard isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else {
-                span.end(result: "stale")
+            let isCurrentIdentity = isCurrent()
+                && activeIdentity == identity
+                && activeLoadGeneration == generation
+            guard isCurrentIdentity else {
+                firstContentSpan.end(result: BrowsePerformanceMeasurementPolicy.caughtErrorResult(
+                    isCurrentIdentity: false,
+                    taskIsCancelled: Task.isCancelled,
+                    errorIsCancellation: error is CancellationError))
+                completeSpan.end(result: BrowsePerformanceMeasurementPolicy.caughtErrorResult(
+                    isCurrentIdentity: false,
+                    taskIsCancelled: Task.isCancelled,
+                    errorIsCancellation: error is CancellationError))
+                span.end(result: Task.isCancelled || error is CancellationError ? "cancelled" : "stale")
                 return
             }
             // If we already showed the first page, keep what we have rather than wiping the
             // grid to an error; otherwise surface the failure.
             if case .loaded = loadState {
-                span.end(result: "partial", fields: ["error": performanceErrorLabel(error)])
+                completeSpan.end(result: Task.isCancelled || error is CancellationError
+                                 ? "cancelled" : "partial", fields: [
+                    "item_count": total,
+                    "total_count": total,
+                    "error": performanceErrorLabel(error),
+                ])
+                span.end(result: Task.isCancelled || error is CancellationError
+                         ? "cancelled" : "partial",
+                         fields: ["error": performanceErrorLabel(error)])
             } else {
-                span.end(result: "failure", fields: ["error": performanceErrorLabel(error)])
+                firstContentSpan.end(result: BrowsePerformanceMeasurementPolicy.caughtErrorResult(
+                    isCurrentIdentity: true,
+                    taskIsCancelled: Task.isCancelled,
+                    errorIsCancellation: error is CancellationError),
+                                     fields: ["error": performanceErrorLabel(error)])
+                completeSpan.end(result: BrowsePerformanceMeasurementPolicy.caughtErrorResult(
+                    isCurrentIdentity: true,
+                    taskIsCancelled: Task.isCancelled,
+                    errorIsCancellation: error is CancellationError),
+                                 fields: ["error": performanceErrorLabel(error)])
+                span.end(result: BrowsePerformanceMeasurementPolicy.caughtErrorResult(
+                    isCurrentIdentity: true,
+                    taskIsCancelled: Task.isCancelled,
+                    errorIsCancellation: error is CancellationError),
+                         fields: ["error": performanceErrorLabel(error)])
                 loadState = .failed(friendlyMessage(error))
             }
         }
@@ -310,7 +446,11 @@ final class LibraryPagingModel {
 
             let wasCancelled = Task.isCancelled
             guard let self else {
-                span.end(result: wasCancelled ? "cancelled" : "orphaned")
+                span.end(result: wasCancelled ? "cancelled" : "orphaned", fields: [
+                    "page": page,
+                    "page_size": source.pageSize,
+                    "attempt": attempt + 1,
+                ])
                 return
             }
             self.completePageFlightAttempt(outcome,
@@ -341,16 +481,28 @@ final class LibraryPagingModel {
         isCurrent: @escaping @MainActor () -> Bool
     ) {
         guard let flight = pageFlights[page], flight.id == flightID else {
-            span.end(result: wasCancelled ? "cancelled" : "stale")
+            span.end(result: wasCancelled ? "cancelled" : "stale", fields: [
+                "page": page,
+                "page_size": source.pageSize,
+                "attempt": attempt + 1,
+            ])
             return
         }
         guard !wasCancelled else {
-            span.end(result: "cancelled")
+            span.end(result: "cancelled", fields: [
+                "page": page,
+                "page_size": source.pageSize,
+                "attempt": attempt + 1,
+            ])
             finishPageFlight(page: page, flightID: flightID)
             return
         }
         guard isCurrent(), activeIdentity == identity, activeLoadGeneration == generation else {
-            span.end(result: "stale")
+            span.end(result: "stale", fields: [
+                "page": page,
+                "page_size": source.pageSize,
+                "attempt": attempt + 1,
+            ])
             finishPageFlight(page: page, flightID: flightID)
             return
         }
@@ -358,7 +510,12 @@ final class LibraryPagingModel {
         switch outcome {
         case .success(let pageResult):
             PagingPageWindow.insert(pageResult.items, into: &slots, at: start)
-            span.end(fields: ["item_count": pageResult.items.count])
+            span.end(fields: [
+                "item_count": pageResult.items.count,
+                "page": page,
+                "page_size": source.pageSize,
+                "attempt": attempt + 1,
+            ])
             if retryPageFlightIfNeeded(flight: flight,
                                         page: page,
                                         start: start,
@@ -373,7 +530,12 @@ final class LibraryPagingModel {
             finishPageFlight(page: page, flightID: flightID)
 
         case .failure(let error):
-            span.end(result: "failure", fields: ["error": performanceErrorLabel(error)])
+            span.end(result: "failure", fields: [
+                "error": performanceErrorLabel(error),
+                "page": page,
+                "page_size": source.pageSize,
+                "attempt": attempt + 1,
+            ])
 
             if retryPageFlightIfNeeded(flight: flight,
                                         page: page,

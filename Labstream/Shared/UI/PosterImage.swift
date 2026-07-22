@@ -112,6 +112,18 @@ struct PosterImage: View {
                     loaded = Image(decodedImage: response.image)
                 }
                 completed = true
+                #if DEBUG || PERFORMANCE_AUDIT
+                span.end(fields: [
+                    "attempts": attempts,
+                    "bytes": response.byteCount,
+                    "status": response.statusCode,
+                    "width": Int(width),
+                    "height": Int(height),
+                    "pixel_width": pixelDimensions.width,
+                    "pixel_height": pixelDimensions.height,
+                    "delivery": response.delivery.rawValue,
+                ])
+                #else
                 span.end(fields: [
                     "attempts": attempts,
                     "bytes": response.byteCount,
@@ -121,6 +133,7 @@ struct PosterImage: View {
                     "pixel_width": pixelDimensions.width,
                     "pixel_height": pixelDimensions.height,
                 ])
+                #endif
                 return
             } catch is CancellationError {
                 return

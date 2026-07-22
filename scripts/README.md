@@ -61,6 +61,13 @@ its manifest, and that manifest points to the exact raw artifact and SHA-256. Ge
 before appending the bounded unified-log capture, update the raw checksum, then derive the strict
 summary with the closed correctness fields required for that phase/backend:
 
+Browse/artwork measurement uses separate `home.first_content`/`home.load` and
+`library_grid.first_content`/`library_grid.complete` spans, a post-debounce `search.load` span,
+terminal page/publication counters, and the closed `artwork.load delivery=` provenance enum. These
+records measure existing execution only; they do not select a transport, fixture, cache policy, or
+retry policy. `publication_count` is an allowed diagnostic, not a correctness selector: concurrent
+completion order can vary between otherwise equivalent runs.
+
 ```sh
 scripts/perf-log-summary.py --emit-capture-marker \
   --manifest run/manifest.json --workload-id workload-0123456789ab \
@@ -83,7 +90,8 @@ before candidate capture, so the result records that ordering as operator-attest
 ```sh
 scripts/perf-compare.py freeze --control-manifest runs/control-*/*.json \
   --phase home.load --backend Plex --correctness-field hub_count \
-  --correctness-field item_count --sample-policy short --out frozen-mde.json
+  --correctness-field item_count \
+  --sample-policy short --out frozen-mde.json
 scripts/perf-compare.py compare \
   --control-manifest runs/pairs/control-*/*.json \
   --candidate-manifest runs/pairs/candidate-*/*.json \

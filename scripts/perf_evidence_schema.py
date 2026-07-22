@@ -24,17 +24,28 @@ BACKEND_LABELS = {"plex": "Plex", "jellyfin": "Jellyfin", "emby": "Emby", "none"
 PHASE_FIELDS: dict[str, set[str]] = {
     "runtime.composition": {"downloads_capable"},
     "session.restore": {"restored"},
+    "home.first_content": {"rail_count", "item_count", "publication_count", "error"},
     "home.load": {
-        "view_count", "rail_count", "pending_rail_count", "item_count", "degraded", "hub_count", "error",
+        "view_count", "rail_count", "pending_rail_count", "item_count", "degraded", "hub_count",
+        "publication_count", "error",
     },
     "libraries.load": {"library_count", "error"},
+    "library_grid.first_content": {
+        "item_count", "total_count", "page_count", "publication_count", "collapse_mode", "error",
+    },
+    "library_grid.complete": {
+        "item_count", "total_count", "page_count", "publication_count", "collapse_mode", "error",
+    },
     "library_grid.initial_page": {"item_count", "total_count", "alphabet_count", "page_count", "error"},
-    "library_grid.page": {"item_count", "error"},
+    "library_grid.page": {"item_count", "page", "page_size", "attempt", "error"},
+    "search.load": {"group_count", "item_count", "publication_count", "error"},
     "detail.metadata": {"media_count", "swr_refresh", "error"},
     "playback.resolve": {"path_mode", "play_method", "reason", "error"},
     "playback.startup": {"path_mode"},
     "playback.item_load": {"path_mode", "duration_seconds"},
-    "artwork.load": {"attempts", "bytes", "status", "width", "height", "pixel_width", "pixel_height"},
+    "artwork.load": {
+        "attempts", "bytes", "status", "width", "height", "pixel_width", "pixel_height", "delivery",
+    },
 }
 MEDIA_BACKENDS = {"Plex", "Jellyfin", "Emby"}
 PHASE_BACKENDS: dict[str, set[str]] = {
@@ -46,18 +57,30 @@ REQUIRED_CORRECTNESS_FIELDS: dict[tuple[str, str], tuple[str, ...]] = {
     ("session.restore", "Plex"): ("restored",),
     ("session.restore", "Jellyfin"): ("restored",),
     ("session.restore", "Emby"): ("restored",),
+    ("home.first_content", "Plex"): ("rail_count", "item_count"),
+    ("home.first_content", "Jellyfin"): ("rail_count", "item_count"),
+    ("home.first_content", "Emby"): ("rail_count", "item_count"),
     ("home.load", "Plex"): ("hub_count", "item_count"),
     ("home.load", "Jellyfin"): ("view_count", "rail_count", "item_count", "degraded"),
     ("home.load", "Emby"): ("view_count", "rail_count", "item_count", "degraded"),
     ("libraries.load", "Plex"): ("library_count",),
     ("libraries.load", "Jellyfin"): ("library_count",),
     ("libraries.load", "Emby"): ("library_count",),
+    ("library_grid.first_content", "Plex"): ("item_count", "total_count", "page_count", "collapse_mode"),
+    ("library_grid.first_content", "Jellyfin"): ("item_count", "total_count", "page_count", "collapse_mode"),
+    ("library_grid.first_content", "Emby"): ("item_count", "total_count", "page_count", "collapse_mode"),
+    ("library_grid.complete", "Plex"): ("item_count", "total_count", "page_count", "collapse_mode"),
+    ("library_grid.complete", "Jellyfin"): ("item_count", "total_count", "page_count", "collapse_mode"),
+    ("library_grid.complete", "Emby"): ("item_count", "total_count", "page_count", "collapse_mode"),
     ("library_grid.initial_page", "Plex"): ("item_count", "total_count"),
     ("library_grid.initial_page", "Jellyfin"): ("item_count", "total_count"),
     ("library_grid.initial_page", "Emby"): ("item_count", "total_count"),
-    ("library_grid.page", "Plex"): ("item_count",),
-    ("library_grid.page", "Jellyfin"): ("item_count",),
-    ("library_grid.page", "Emby"): ("item_count",),
+    ("library_grid.page", "Plex"): ("item_count", "page", "page_size", "attempt"),
+    ("library_grid.page", "Jellyfin"): ("item_count", "page", "page_size", "attempt"),
+    ("library_grid.page", "Emby"): ("item_count", "page", "page_size", "attempt"),
+    ("search.load", "Plex"): ("group_count", "item_count"),
+    ("search.load", "Jellyfin"): ("group_count", "item_count"),
+    ("search.load", "Emby"): ("group_count", "item_count"),
     ("detail.metadata", "Plex"): ("media_count",),
     ("detail.metadata", "Jellyfin"): ("media_count",),
     ("detail.metadata", "Emby"): ("media_count",),
@@ -70,16 +93,17 @@ REQUIRED_CORRECTNESS_FIELDS: dict[tuple[str, str], tuple[str, ...]] = {
     ("playback.item_load", "Plex"): ("path_mode", "duration_seconds"),
     ("playback.item_load", "Jellyfin"): ("path_mode", "duration_seconds"),
     ("playback.item_load", "Emby"): ("path_mode", "duration_seconds"),
-    ("artwork.load", "Plex"): ("attempts", "bytes", "status", "width", "height", "pixel_width", "pixel_height"),
-    ("artwork.load", "Jellyfin"): ("attempts", "bytes", "status", "width", "height", "pixel_width", "pixel_height"),
-    ("artwork.load", "Emby"): ("attempts", "bytes", "status", "width", "height", "pixel_width", "pixel_height"),
+    ("artwork.load", "Plex"): ("attempts", "bytes", "status", "width", "height", "pixel_width", "pixel_height", "delivery"),
+    ("artwork.load", "Jellyfin"): ("attempts", "bytes", "status", "width", "height", "pixel_width", "pixel_height", "delivery"),
+    ("artwork.load", "Emby"): ("attempts", "bytes", "status", "width", "height", "pixel_width", "pixel_height", "delivery"),
 }
 ERROR_CATEGORIES = {
     "error_authentication", "error_configuration", "error_decoding", "error_other",
     "error_timeout", "error_transport", "error_unavailable",
 }
 INTEGER_FIELDS = {
-    "view_count", "rail_count", "pending_rail_count", "item_count", "hub_count", "library_count", "total_count",
+    "view_count", "rail_count", "pending_rail_count", "publication_count", "group_count", "item_count",
+    "hub_count", "library_count", "total_count", "page", "page_size", "attempt",
     "alphabet_count", "page_count", "media_count", "duration_seconds", "attempts", "bytes",
     "status", "width", "height", "pixel_width", "pixel_height",
 }
@@ -88,6 +112,10 @@ ENUM_FIELDS = {
     "path_mode": {"local_file", "remote_stream", "plex_stream"},
     "play_method": {"directPlay", "directStream", "transcode"},
     "reason": {"stale_metadata", "stale_open_success", "stale_open_failure"},
+    "collapse_mode": {"sparse", "collapsed"},
+    "delivery": {
+        "network_decode", "compressed_cache_decode", "decoded_cache", "inflight_join", "local_file",
+    },
 }
 CORE_FIELDS = {"phase", "backend", "result", "duration_ms"}
 
