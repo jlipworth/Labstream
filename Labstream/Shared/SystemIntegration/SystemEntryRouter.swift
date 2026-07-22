@@ -94,10 +94,14 @@ final class SystemEntryRouter {
     /// AppModel/AuthManager are owned by `Labstream.App`.
     private(set) weak var appModel: AppModel?
     private(set) weak var authManager: AuthManager?
+    private(set) weak var libraryCatalogRepository: LibraryCatalogRepository?
 
-    func register(appModel: AppModel, authManager: AuthManager) {
+    func register(appModel: AppModel,
+                  authManager: AuthManager,
+                  libraryCatalogRepository: LibraryCatalogRepository) {
         self.appModel = appModel
         self.authManager = authManager
+        self.libraryCatalogRepository = libraryCatalogRepository
     }
 
     #if os(macOS)
@@ -173,13 +177,26 @@ final class SystemEntryRouter {
     /// from its `.task`. The pure one-shot/time-box behavior lives in PMSKit so it
     /// stays covered by tests instead of being hidden in SwiftUI side effects.
     private var autoPlayGate = PendingAutoPlayGate()
+    @ObservationIgnored
+    private var autoPlaySnapshot: (ratingKey: String, snapshot: MetadataSnapshot?)?
 
-    func requestAutoPlay(forRatingKey ratingKey: String) {
-        autoPlayGate.arm(ratingKey: ratingKey)
+    struct AutoPlayAdmission {
+        /// One-shot handoff from Root's route-key native read. Item-only/container routes carry
+        /// nil and let Detail perform their ordinary authoritative hydration.
+        let snapshot: MetadataSnapshot?
     }
 
-    func consumeAutoPlay(for ratingKey: String) -> Bool {
-        autoPlayGate.consume(ratingKey: ratingKey)
+    func requestAutoPlay(forRatingKey ratingKey: String,
+                         snapshot: MetadataSnapshot? = nil) {
+        autoPlayGate.arm(ratingKey: ratingKey)
+        autoPlaySnapshot = (ratingKey, snapshot)
+    }
+
+    func consumeAutoPlay(for ratingKey: String) -> AutoPlayAdmission? {
+        guard autoPlaySnapshot?.ratingKey == ratingKey else { return nil }
+        defer { autoPlaySnapshot = nil }
+        guard autoPlayGate.consume(ratingKey: ratingKey) else { return nil }
+        return AutoPlayAdmission(snapshot: autoPlaySnapshot?.snapshot)
     }
 
     // MARK: - Session readiness (for intents)

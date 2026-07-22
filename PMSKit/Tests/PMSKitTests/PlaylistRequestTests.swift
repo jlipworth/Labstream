@@ -27,6 +27,18 @@ private let id = ClientIdentity(clientIdentifier: "CID",
     #expect(r.headers["X-Plex-Token"] == "tok")
 }
 
+@Test func playlistItemsCarriesPlexContainerWindowWithoutChangingOrderShape() {
+    let r = PlaylistRequest.items(server: server, token: "tok", identity: id,
+                                  ratingKey: "555", containerStart: 200,
+                                  containerSize: 100)
+    func value(_ name: String) -> String? {
+        r.queryItems.first { $0.name == name }?.value
+    }
+    #expect(value("X-Plex-Container-Start") == "200")
+    #expect(value("X-Plex-Container-Size") == "100")
+    #expect(r.queryItems.count == 2)
+}
+
 @Test func decodesPlaylistRowFields() throws {
     // A /playlists row: type "playlist", mosaic art under `composite` (no thumb),
     // track count under `leafCount`, total duration in ms.

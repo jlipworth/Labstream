@@ -361,10 +361,11 @@ final class AuthManager {
     }
 
     private func applyJellyfinSessionSnapshot(_ snapshot: JellyfinSessionSnapshot) {
-        appModel.jellyfinServerBaseURL = snapshot.server
-        appModel.jellyfinAccessToken = snapshot.token
-        appModel.jellyfinUserID = snapshot.userID
-        appModel.jellyfinServerID = snapshot.serverID
+        appModel.applyMediaBrowserSession(backend: .jellyfin,
+                                          server: snapshot.server,
+                                          token: snapshot.token,
+                                          userID: snapshot.userID,
+                                          serverID: snapshot.serverID)
     }
 
     private func restoreEmbySession(validateReachability: Bool = true,
@@ -451,10 +452,11 @@ final class AuthManager {
     }
 
     private func applyEmbySessionSnapshot(_ snapshot: EmbySessionSnapshot) {
-        appModel.embyServerBaseURL = snapshot.server
-        appModel.embyAccessToken = snapshot.token
-        appModel.embyUserID = snapshot.userID
-        appModel.embyServerID = snapshot.serverID
+        appModel.applyMediaBrowserSession(backend: .emby,
+                                          server: snapshot.server,
+                                          token: snapshot.token,
+                                          userID: snapshot.userID,
+                                          serverID: snapshot.serverID)
     }
 
     /// Start a fresh login. Creates TWO PINs (#16): a non-strong one whose
@@ -766,10 +768,11 @@ final class AuthManager {
                                             serverID: result.serverId) else {
             throw JellyfinAuthError.secureStorageFailed
         }
-        appModel.jellyfinServerBaseURL = server
-        appModel.jellyfinAccessToken = token
-        appModel.jellyfinUserID = userID
-        appModel.jellyfinServerID = result.serverId
+        appModel.applyMediaBrowserSession(backend: .jellyfin,
+                                          server: server,
+                                          token: token,
+                                          userID: userID,
+                                          serverID: result.serverId)
     }
 
     /// Emby username/password sign-in (NO Quick Connect — slice 1 is password-only).
@@ -853,10 +856,11 @@ final class AuthManager {
                                        serverID: serverID) else {
             throw EmbyAuthError.secureStorageFailed
         }
-        appModel.embyServerBaseURL = server
-        appModel.embyAccessToken = token
-        appModel.embyUserID = userID
-        appModel.embyServerID = serverID
+        appModel.applyMediaBrowserSession(backend: .emby,
+                                          server: server,
+                                          token: token,
+                                          userID: userID,
+                                          serverID: serverID)
     }
 
     // MARK: - Emby Connect PIN sign-in (GH #72)
@@ -1320,11 +1324,7 @@ final class AuthManager {
     /// available for retry/sign-out UI, while `isBrowseReady` honestly reports that discovery
     /// did not produce a usable server.
     private func clearResolvedPlexServerState() {
-        appModel.serverToken = nil
-        appModel.selectedServer = nil
-        appModel.plexServers = []
-        appModel.serverBaseURL = nil
-        appModel.selectedServerConnectionIsLocal = false
+        appModel.clearResolvedPlexBrowseSession()
     }
 
     /// Performs all suspension-prone Plex work without touching runtime or secure state.
@@ -1386,13 +1386,13 @@ final class AuthManager {
     }
 
     private func applyPlexSession(_ discovery: PlexSessionDiscovery, token: String) {
-        appModel.token = token
-        appModel.plexServers = discovery.servers
-        appModel.selectedServer = discovery.selectedServer
-        appModel.serverToken = discovery.serverToken
-        appModel.serverBaseURL = discovery.baseURL
-        appModel.selectedServerConnectionIsLocal = discovery.isLocal
-        appModel.plexAccountProfile = discovery.accountProfile
+        appModel.applyPlexBrowseSession(accountToken: token,
+                                        servers: discovery.servers,
+                                        selectedServer: discovery.selectedServer,
+                                        serverToken: discovery.serverToken,
+                                        baseURL: discovery.baseURL,
+                                        isLocal: discovery.isLocal,
+                                        accountProfile: discovery.accountProfile)
         plexSessionGeneration = UUID()
     }
 
@@ -1416,10 +1416,10 @@ final class AuthManager {
         guard keychain.saveSelectedPlexServerID(server.clientIdentifier) else {
             throw AuthCoordinationError.secureStorageFailed
         }
-        appModel.selectedServer = server
-        appModel.serverToken = serverToken
-        appModel.serverBaseURL = connection.url
-        appModel.selectedServerConnectionIsLocal = connection.isLocal
+        appModel.applySelectedPlexServer(server,
+                                         serverToken: serverToken,
+                                         baseURL: connection.url,
+                                         isLocal: connection.isLocal)
         plexSessionGeneration = UUID()
     }
 
@@ -1632,26 +1632,7 @@ final class AuthManager {
     }
 
     private func clearRuntimeState(for backend: MediaBackendKind) {
-        switch backend {
-        case .plex:
-            appModel.token = nil
-            appModel.serverToken = nil
-            appModel.selectedServer = nil
-            appModel.plexServers = []
-            appModel.serverBaseURL = nil
-            appModel.plexAccountProfile = nil
-            appModel.selectedServerConnectionIsLocal = false
-        case .jellyfin:
-            appModel.jellyfinServerBaseURL = nil
-            appModel.jellyfinAccessToken = nil
-            appModel.jellyfinUserID = nil
-            appModel.jellyfinServerID = nil
-        case .emby:
-            appModel.embyServerBaseURL = nil
-            appModel.embyAccessToken = nil
-            appModel.embyUserID = nil
-            appModel.embyServerID = nil
-        }
+        appModel.clearBrowseSession(for: backend)
     }
 
     /// Starts the single authority generation used by the auth and legacy-session

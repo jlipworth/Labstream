@@ -20,6 +20,8 @@ library screenshots into committed evidence.
 | iPhone simulator | `LabstreamMobile` on a compact-width simulator | Phone tab shell, login/browse/detail layout, player controls, orientation code paths; not PiP/AirPlay/cellular/background-device guarantees |
 | iPad simulator | `LabstreamMobile` on an iPad simulator | Adaptive sidebar, regular-width grids/sheets, shared player UI; not physical background transfer or external-route behavior |
 | Physical iPhone/iPad | Signed mobile build with required trust/Developer Mode | PiP, AirPlay, Control Center/lock screen, audio routes, cellular policy, background transfers, Spotlight and App Intents |
+| Apple TV simulator | Exact worktree `LabstreamTV` simulator; signed-in test session or production-isolated fixture | Ten-foot shell, deterministic focus/navigation, custom-player remote paths, and absence of downloads; not physical Siri Remote, HDR/audio/HDMI, lifecycle, or performance |
+| Physical Apple TV | Signed `LabstreamTV` build on the supported hardware baseline with a real Siri Remote and display/audio chain | Remote-only operation, focus, system keyboard/dictation, HDR/DV, HDMI/audio, interruptions, lifecycle, accessibility, long-play performance, and release acceptance |
 | macOS preview | `LabstreamMac` host build under the worktree development identity | Native split view, menus, Settings window, keyboard/full-screen/media-key behavior, live playback and download reconciliation; record as preview evidence |
 
 - [ ] Record the exact target/scheme, configuration, OS/runtime, app marketing/build ID,
@@ -99,6 +101,9 @@ layout code changed.
       container or a stale item from a previous backend session.
 - [ ] Poster/artwork requests authenticate correctly for the active backend and fail to a
       privacy-safe placeholder without logging a token-bearing URL.
+- [ ] On a physical iPhone against Emby, Recently Added TV Shows prefers a season/series Primary
+      poster when available; a Thumb-only episode uses a 16:9 card/request without warping. Also
+      regression-check one movie rail and one missing-parent episode fallback before closing #245.
 
 ## 4. Shared video playback
 
@@ -156,8 +161,8 @@ Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The 
 
 - [ ] **visionOS:** Windowed playback remains interactive; entering user-visible Custom
       Cinema keeps the same controller/playhead/chrome, dismisses/reopens the main window
-      cleanly, and returns to the originating detail or Offline row. The hidden RealityKit
-      Theater prototype must not appear as a normal user option.
+      cleanly, and returns to the originating detail or Offline row. No retired theater-prototype
+      route, scene, or settings surface exists; Custom Cinema is the sole immersive player.
 - [ ] **visionOS Now Playing:** Video publishes title/context, duration, elapsed time, playback
       rate, and authenticated artwork. System play, pause, toggle, 10-second back, 30-second
       forward, and absolute-position seek control the current video. Closing clears item metadata
@@ -174,6 +179,13 @@ Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The 
       hover never steals touch/drag slider interaction.
 - [ ] **iOS/iPadOS hardware:** Control Center, lock screen, headphones, route changes, and
       interruptions control the active video rather than resuming suspended music underneath.
+- [ ] **tvOS:** Using only Siri Remote input, hidden chrome reveals predictably; the focusable
+      timeline scrubs and commits without double seeks; Menu/Back dismisses a submenu before
+      exiting playback; every quality/audio/subtitle/chapter/speed/Stats action is reachable; and
+      focus returns coherently after auto-hide, errors, item completion, and player close.
+- [ ] **tvOS hardware:** Now Playing, system Play/Pause, interruptions, routes, HDR/DV, HDMI audio,
+      background behavior, and long-play thermal/memory behavior are proven on a physical Apple TV.
+      Simulator focus and remote automation cannot satisfy these cells.
 - [ ] **macOS preview:** overlay/full-screen presentation, Escape/Close, toolbar visibility,
       menu commands, media keys, Now Playing ownership, and restoration to the prior split-view
       state all behave natively.
@@ -221,6 +233,10 @@ never capture account names, server addresses, provider IDs, item IDs, or activi
       play-session IDs, device identifiers, and private paths. Record only a privacy-reviewed result.
 
 ## 5. Downloads and Offline
+
+This section applies only to visionOS, iOS/iPadOS, and the Mac preview. The tvOS app must compile
+without the Downloads capability and expose no Offline tab, download action, storage control,
+background-session registration, or migration/recovery work.
 
 ### Route and presentation matrix
 
@@ -377,8 +393,8 @@ Run the common music rows against Plex and at least one Jellyfin and Emby librar
 
 ## 7. System integration
 
-Use physical iPhone/iPad, Apple Vision Pro, or a signed-in Mac host as applicable; simulator
-navigation alone does not prove the external system invocation.
+Use physical iPhone/iPad, Apple Vision Pro, Apple TV, or a signed-in Mac host as applicable;
+simulator navigation alone does not prove the external system invocation.
 
 - [ ] Browsed video items become discoverable in Spotlight without thumbnails or tokens;
       music and never-browsed full-library content are not expected to be indexed.

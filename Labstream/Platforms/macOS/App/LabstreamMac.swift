@@ -70,10 +70,12 @@ struct LabstreamMac: App {
         Settings {
             if let runtime {
                 NavigationStack {
-                    SettingsView(authManager: runtime.authManager)
+                    SettingsView(authManager: runtime.authManager,
+                                 catalogRepository: runtime.libraryCatalogRepository)
                         .environment(runtime.appModel)
                         .environment(runtime.downloadManager)
                         .environment(runtime.musicPlayer)
+                        .environment(\.artworkPipeline, runtime.artworkPipeline)
                 }
                 .formStyle(.grouped)
                 .frame(minWidth: 680, minHeight: 560)

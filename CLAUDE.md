@@ -3,7 +3,8 @@
 Apple-platform Plex/Jellyfin/Emby client. App code in `Labstream/`, networking/model
 layer in `PMSKit/` (local Swift package with its own tests). The primary shipping path is
 still visionOS, and the repo also contains the `LabstreamMobile` universal iOS/iPadOS
-target and a native `LabstreamMac` development preview. `docs/DEVELOPMENT.md` covers
+target, the in-development streaming-only `LabstreamTV` target, and a native `LabstreamMac`
+development preview. `docs/DEVELOPMENT.md` covers
 build/run setup; current player ownership and the load-bearing startup, stall,
 seek/restart, cleanup, HDR/DV, and Cinema invariants live in
 `docs/PLAYBACK-ARCHITECTURE.md`. Archived development notes are historical context only.
@@ -88,6 +89,28 @@ Mobile simulator builds require an iOS Simulator runtime compatible with the ins
 iOS SDK. If Xcode reports the iOS platform/runtime is missing, install the matching
 runtime in Xcode Settings before treating `LabstreamMobile` as broken.
 
+### Building the native Apple TV target
+
+The in-development tvOS target/scheme is `LabstreamTV`. It owns a streaming-only TV shell;
+the Downloads capability, Offline destination, and download-storage settings are absent at
+compile time. Use the exact worktree Apple TV simulator rather than a generic `booted` device:
+
+```sh
+scripts/worktree-sim.sh --platform tvos setup
+SIMID=$(scripts/worktree-sim.sh --platform tvos id)
+xcrun simctl boot "$SIMID" 2>/dev/null || true
+DD="$PWD/build/DerivedData-tvos"
+rm -rf "$DD"
+
+scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamTV \
+  -destination "platform=tvOS Simulator,id=$SIMID" -configuration Debug \
+  -derivedDataPath "$DD" build CODE_SIGNING_ALLOWED=NO
+```
+
+The complete install, launch, fixture, test, and shutdown procedures live in
+`docs/DEVELOPMENT.md` and `docs/TVOS.md`. Simulator evidence does not close physical Siri
+Remote, HDR/audio/HDMI, lifecycle, accessibility, performance, or release gates.
+
 ### Installing on a physical iPhone or iPad (device testing)
 
 The mobile simulator flow builds with `CODE_SIGNING_ALLOWED=NO`, which will NOT install
@@ -149,11 +172,14 @@ owns the build/install command once signing is unblocked.
 ### Verification expectation — a green build is NOT "done"
 
 Compiling is necessary but not sufficient. Any time you change app code — yourself OR via
-a workflow / subagent — you MUST headlessly verify it actually *runs* on **this worktree's
-own `$SIMID`** (`scripts/worktree-sim.sh id` for the selected platform, or
-`--platform visionos`/`--platform ipad` explicitly; boot it first — sims are created
-Shutdown; never target `booted`). The minimum smoke test, which Claude self-serves (it is the passive
-half of the live-testing workflow — do NOT ask the user to do it):
+a workflow / subagent — use `scripts/native-test-matrix.py affected` to identify the affected
+targets, then headlessly verify the applicable product actually *runs* on **this worktree's own
+simulator** (or through the isolated Mac host path). Resolve the selected platform with
+`scripts/worktree-sim.sh id` or `--platform visionos|iphone|ipad|tvos`; boot it first because
+worktree simulators are created Shutdown, and never target `booted`. The command below is the
+minimum visionOS smoke; use the exact mobile/tvOS equivalents in `docs/DEVELOPMENT.md` for those
+products. Claude self-serves this passive half of the live-testing workflow—do not ask the user
+to do it:
 
 ```sh
 SIMID=$(scripts/worktree-sim.sh --platform visionos id)
@@ -200,6 +226,9 @@ script backs both the git hook and these agent steps.
   visionOS golden. Use `LABSTREAM_SIM_PLATFORM=iphone` or `ipad`,
   `scripts/worktree-sim.sh --platform iphone|ipad ...`, or a gitignored `.simplatform`
   containing `iphone` or `ipad`; iPhone UDIDs live in `.simid-iphone`, iPad UDIDs in `.simid-ipad`.
+- tvOS work uses a fresh Apple TV simulator rather than cloning the visionOS golden. Select it
+  with `LABSTREAM_SIM_PLATFORM=tvos`, `scripts/worktree-sim.sh --platform tvos ...`, or a
+  gitignored `.simplatform` containing `tvos`; its UDID lives in `.simid-tvos`.
 - `scripts/worktree-sim.sh id` prints the selected platform's UDID — used as `$SIMID`
   above. Always target `"$SIMID"`, never `booted` (which errors once two sims are up).
 
@@ -208,11 +237,12 @@ scripts/worktree-sim.sh install-hook   # one-time: post-checkout auto-clones on 
 scripts/worktree-sim.sh setup          # provision this worktree's sim (idempotent; clone bounces the golden briefly)
 scripts/worktree-sim.sh teardown       # delete this worktree's clone + .simid (run before removing the worktree)
 scripts/worktree-sim.sh teardown --all # delete every sim owned by this linked worktree
-scripts/worktree-sim.sh closeout PATH  # teardown PATH if present, then prune orphaned vpwt-*/iphonewt-*/ipadwt-* sims
+scripts/worktree-sim.sh closeout PATH  # teardown PATH if present, then prune orphaned vpwt-*/iphonewt-*/ipadwt-*/tvwt-* sims
 scripts/worktree-sim.sh prune          # sweep worktree sims whose worktree is gone (backstop after a bare `git worktree remove`)
 scripts/worktree-sim.sh --platform visionos id
 scripts/worktree-sim.sh --platform iphone id
 scripts/worktree-sim.sh --platform ipad id
+scripts/worktree-sim.sh --platform tvos id
 ```
 
 If `install-hook` warns that `core.hooksPath` is set, Git will ignore the shared hook it
@@ -224,14 +254,14 @@ prefer `scripts/worktree-sim.sh closeout PATH` from any repo worktree, or run
 `git worktree remove`. Use `prune` immediately afterward if removal already happened.
 visionOS `setup` clones from the golden sim, which `simctl` can only do while the golden
 is **shut down**, so it briefly bounces your booted main sim — expect a ~10s blip in the
-main worktree's simulator when a new visionOS worktree sim is provisioned. iPhone/iPad
-setup creates a fresh simulator from the newest available iOS runtime instead.
+main worktree's simulator when a new visionOS worktree sim is provisioned. iPhone/iPad and tvOS
+setup create fresh simulators from the newest compatible installed runtime instead.
 
 **Booted sims are NOT free — use a strict one-at-a-time queue.** Never run multiple
 simulators simultaneously. This is especially important when parallel agents are working
 in separate worktrees: source work and unit tests may proceed in parallel, but simulator
 build/install/launch/visual-verification turns must be serialized by the lead agent. An
-agent must obtain the current simulator lease before booting any visionOS, iPhone, or iPad
+agent must obtain the current simulator lease before booting any visionOS, iPhone, iPad, or tvOS
 simulator; all other agents wait with their simulators shut down. A leased agent may use
 only one simulator at a time, must shut it down before switching platforms, and must release
 the lease before another agent boots a simulator. Do not leave the golden simulator booted
@@ -263,12 +293,12 @@ scripts/worktree-sim.sh closeout <worktree>
 
 # If the worktree was already removed or you are unsure:
 scripts/worktree-sim.sh prune
-xcrun simctl list devices | rg 'vpwt|iphonewt|ipadwt|<branch-fragment>' || true
+xcrun simctl list devices | rg 'vpwt|iphonewt|ipadwt|tvwt|<branch-fragment>' || true
 ```
 
 Closeout invariant: only the main worktree owns the golden sim; linked-worktree closeout
-must remove the relevant `vpwt-*`, `iphonewt-*`, and/or `ipadwt-*` simulator and must not remove the
-golden sim.
+must remove the relevant `vpwt-*`, `iphonewt-*`, `ipadwt-*`, and/or `tvwt-*` simulator and must not
+remove the golden sim.
 
 ## Native macOS host deploy/run and cleanup
 

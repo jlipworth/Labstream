@@ -1,10 +1,5 @@
 import Foundation
 import PMSKit
-#if os(macOS)
-import AppKit
-#elseif canImport(UIKit)
-import UIKit
-#endif
 
 /// Shared one-load BIF frame source used by Plex, Emby, and local offline providers. Parsing,
 /// malformed-asset fallback, nearest-frame lookup, and cancellation retry behavior live here so
@@ -69,7 +64,8 @@ actor PlexBIFTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
           server: URL,
           token: String,
           identity: ClientIdentity,
-          client: PlexClient) {
+          session: URLSession = SideAssetTransportPolicy.sharedSession,
+          coordinator: SideAssetFetchCoordinator = .shared) {
         guard let part = Self.selectedPart(from: item, mediaIndex: mediaIndex),
               part.hasStandardDefinitionBIFIndex else {
             return nil
@@ -80,7 +76,10 @@ actor PlexBIFTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
                                                     partID: part.id,
                                                     quality: "sd")
         self.provider = BIFBackedTrickPlayThumbnailProvider {
-            try await client.send(request)
+            try await coordinator.fetch(
+                request: request.urlRequest(),
+                owner: SideAssetOwner(rawValue: "player-trickplay"),
+                session: session)
         }
     }
 
@@ -119,8 +118,8 @@ actor LocalBIFTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
 /// trickplay providers (which otherwise duplicated this byte-for-byte) so the timing/crop math lives
 /// in one place.
 enum JellyfinTrickPlayTileRenderer {
-    static func crop(sheet: UIImage, frame: JellyfinTrickPlayFrame) -> UIImage? {
-        guard let cgImage = sheet.cgImage else { return nil }
+    static func crop(sheet: DecodedImage, frame: JellyfinTrickPlayFrame) -> DecodedImage? {
+        let cgImage = sheet.cgImage
         let scaleX = CGFloat(cgImage.width) / CGFloat(frame.tile.columns * frame.tile.tileWidth)
         let scaleY = CGFloat(cgImage.height) / CGFloat(frame.tile.rows * frame.tile.tileHeight)
         let rect = CGRect(x: CGFloat(frame.column * frame.tile.tileWidth) * scaleX,
@@ -128,14 +127,14 @@ enum JellyfinTrickPlayTileRenderer {
                           width: CGFloat(frame.tile.tileWidth) * scaleX,
                           height: CGFloat(frame.tile.tileHeight) * scaleY).integral
         guard let cropped = cgImage.cropping(to: rect) else { return nil }
-        return UIImage(cgImage: cropped, scale: sheet.scale, orientation: sheet.imageOrientation)
+        return DecodedImage(cgImage: cropped, scale: sheet.scale, orientation: sheet.orientation)
     }
 }
 
 /// Small LRU of decoded tile sheets keyed by URI, owned by each Jellyfin trickplay provider so the
 /// eviction logic is defined once rather than copied per provider.
 struct JellyfinTrickPlayTileCache {
-    private var images: [String: UIImage] = [:]
+    private var images: [String: DecodedImage] = [:]
     private var order: [String] = []
     private let limit: Int
 
@@ -143,7 +142,7 @@ struct JellyfinTrickPlayTileCache {
 
     /// Promotes the accessed sheet to most-recently-used so an actively-revisited sheet (a scrub that
     /// lingers on one range) isn't the next thing evicted and re-decoded from disk/network.
-    mutating func image(for uri: String) -> UIImage? {
+    mutating func image(for uri: String) -> DecodedImage? {
         guard let image = images[uri] else { return nil }
         if let idx = order.firstIndex(of: uri) {
             order.remove(at: idx)
@@ -152,7 +151,7 @@ struct JellyfinTrickPlayTileCache {
         return image
     }
 
-    mutating func insert(_ image: UIImage, for uri: String) {
+    mutating func insert(_ image: DecodedImage, for uri: String) {
         if images[uri] == nil { order.append(uri) }
         images[uri] = image
         while order.count > limit, let oldest = order.first {
@@ -185,7 +184,7 @@ actor JellyfinTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
           token: String?,
           identity: JellyfinClientIdentity,
           width: Int = 320,
-          session: URLSession = .shared) {
+          session: URLSession = SideAssetTransportPolicy.sharedSession) {
         guard let server, let token, !token.isEmpty else { return nil }
         self.itemId = item.ratingKey
         self.mediaSourceId = Self.mediaSourceId(from: item) ?? item.ratingKey
@@ -233,7 +232,7 @@ actor JellyfinTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
         return value ?? nil
     }
 
-    private func tileImage(for tile: JellyfinTrickPlayTile) async -> UIImage? {
+    private func tileImage(for tile: JellyfinTrickPlayTile) async -> DecodedImage? {
         if let cached = tileCache.image(for: tile.uri) { return cached }
         do {
             let req = try JellyfinLibrary.trickPlayTileRequest(server: server,
@@ -248,7 +247,7 @@ actor JellyfinTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
                 owner: SideAssetOwner(rawValue: "player-trickplay"),
                 session: session
             )
-            guard let image = UIImage(data: data) else { return nil }
+            guard let image = DecodedImage(data: data) else { return nil }
             tileCache.insert(image, for: tile.uri)
             return image
         } catch {
@@ -311,10 +310,10 @@ actor LocalJellyfinTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
         return value ?? nil
     }
 
-    private func tileImage(for tile: JellyfinTrickPlayTile) async -> UIImage? {
+    private func tileImage(for tile: JellyfinTrickPlayTile) async -> DecodedImage? {
         if let cached = tileCache.image(for: tile.uri) { return cached }
         let url = playlistURL.deletingLastPathComponent().appendingPathComponent(tile.uri)
-        guard let data = try? Data(contentsOf: url), let image = UIImage(data: data) else { return nil }
+        guard let data = try? Data(contentsOf: url), let image = DecodedImage(data: data) else { return nil }
         tileCache.insert(image, for: tile.uri)
         return image
     }
@@ -353,7 +352,7 @@ actor EmbyTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
           identity: EmbyClientIdentity,
           userId: String?,
           width: Int = EmbyTrickPlayRequest.canonicalWidth,
-          session: URLSession = .shared,
+          session: URLSession = SideAssetTransportPolicy.sharedSession,
           coordinator: SideAssetFetchCoordinator = .shared) {
         guard let server, let token, !token.isEmpty, !mediaSourceId.isEmpty else { return nil }
         guard let bifRequest = try? EmbyTrickPlayRequest.bifIndex(
@@ -433,7 +432,7 @@ actor EmbyTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
                 request: request,
                 owner: SideAssetOwner(rawValue: "player-trickplay"),
                 session: session)
-            guard !Task.isCancelled, UIImage(data: data) != nil else { return nil }
+            guard !Task.isCancelled, DecodedImage(data: data) != nil else { return nil }
             insertImage(data, for: advertised.positionTicks)
             return data
         } catch {
@@ -485,7 +484,7 @@ actor EmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
           token: String?,
           identity: EmbyClientIdentity,
           userId: String?,
-          session: URLSession = .shared,
+          session: URLSession = SideAssetTransportPolicy.sharedSession,
           coordinator: SideAssetFetchCoordinator = .shared) {
         guard let server, let token, !token.isEmpty else { return nil }
         let frames = (item.chapters ?? []).compactMap { chapter -> Frame? in
@@ -525,6 +524,7 @@ actor EmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
                 owner: SideAssetOwner(rawValue: "player-trickplay"),
                 session: session
             )
+            guard !Task.isCancelled, DecodedImage(data: data) != nil else { return nil }
             insert(data, for: frame.index)
             return TrickPlayThumbnail(timeMs: frame.timeMs, imageData: data, contentType: "image/jpeg")
         } catch {
@@ -594,7 +594,8 @@ actor LocalEmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
             return TrickPlayThumbnail(timeMs: frame.timeMs, imageData: data, contentType: "image/jpeg")
         }
         guard let url = imageURLsByChapterIndex[frame.chapterIndex],
-              let data = try? Data(contentsOf: url), !data.isEmpty else { return nil }
+              let data = try? Data(contentsOf: url),
+              DecodedImage(data: data) != nil else { return nil }
         insert(data, for: frame.chapterIndex)
         return TrickPlayThumbnail(timeMs: frame.timeMs, imageData: data, contentType: "image/jpeg")
     }
@@ -622,18 +623,18 @@ actor LocalEmbyChapterTrickPlayThumbnailProvider: TrickPlayThumbnailProviding {
 @MainActor
 final class TrickPlayPreviewImageCache {
     private let limit: Int
-    private var images: [Int: UIImage] = [:]
+    private var images: [Int: DecodedImage] = [:]
     private var order: [Int] = []
 
     init(limit: Int = 32) {
         self.limit = max(1, limit)
     }
 
-    func image(for timeMs: Int) -> UIImage? {
+    func image(for timeMs: Int) -> DecodedImage? {
         images[timeMs]
     }
 
-    func nearestImage(to targetMs: Int, toleranceMs: Int) -> (timeMs: Int, image: UIImage)? {
+    func nearestImage(to targetMs: Int, toleranceMs: Int) -> (timeMs: Int, image: DecodedImage)? {
         guard !images.isEmpty else { return nil }
         let nearest = images.keys.min { lhs, rhs in
             abs(lhs - targetMs) < abs(rhs - targetMs)
@@ -644,7 +645,7 @@ final class TrickPlayPreviewImageCache {
         return (nearest, image)
     }
 
-    func insert(_ image: UIImage, for timeMs: Int) {
+    func insert(_ image: DecodedImage, for timeMs: Int) {
         if images[timeMs] == nil {
             order.append(timeMs)
         }

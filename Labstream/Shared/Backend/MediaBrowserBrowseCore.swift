@@ -24,6 +24,79 @@ struct MediaBrowserBrowsePage: Sendable {
     let total: Int?
 }
 
+/// An immutable Jellyfin/Emby browse lane captured in the same MainActor turn as a catalog
+/// request. Catalog-derived view ids must never be sent through a facade that can re-read a
+/// newer `AppModel` session after the catalog await; this value binds the opaque authority and
+/// request credentials together before either operation can suspend.
+struct MediaBrowserCatalogClient: Sendable {
+    private enum Core: Sendable {
+        case jellyfin(MediaBrowserBrowseCore<JellyfinBrowseCoreAdapter>)
+        case emby(MediaBrowserBrowseCore<EmbyBrowseCoreAdapter>)
+    }
+
+    let backend: MediaBackendKind
+    let authority: BrowseSessionAuthority
+    private let core: Core
+
+    @MainActor
+    init(appModel: AppModel) throws {
+        guard let context = appModel.activeAuthenticatedBrowseSession,
+              context.backend.isMediaBrowser else {
+            throw LibraryCatalogRepositoryError.noAuthenticatedSession
+        }
+        backend = context.backend
+        authority = context.authority
+        switch context.backend {
+        case .jellyfin:
+            core = .jellyfin(try JellyfinBrowseService(appModel: appModel).browseCore())
+        case .emby:
+            core = .emby(try EmbyBrowseService(appModel: appModel).browseCore())
+        case .plex:
+            throw LibraryCatalogRepositoryError.backendMismatch
+        }
+    }
+
+    func matches(_ catalog: LibraryCatalogSnapshot) -> Bool {
+        catalog.backend == backend && catalog.authority == authority
+    }
+
+    @MainActor
+    func isCurrent(in appModel: AppModel) -> Bool {
+        guard let current = appModel.activeAuthenticatedBrowseSession else { return false }
+        return current.backend == backend && current.authority == authority
+    }
+
+    func searchResults(query: String,
+                       views: [MediaBrowserLibraryLink],
+                       limitPerLibrary: Int = 50) async throws -> SearchResults {
+        switch core {
+        case .jellyfin(let core):
+            return try await core.searchResults(query: query,
+                                                limitPerLibrary: limitPerLibrary,
+                                                views: views)
+        case .emby(let core):
+            return try await core.searchResults(query: query,
+                                                limitPerLibrary: limitPerLibrary,
+                                                views: views)
+        }
+    }
+
+    func musicPlaylists(in viewID: String) async throws -> [MediaItem] {
+        let query = MediaBrowserItemsQuery(
+            parentID: viewID,
+            recursive: false,
+            sortBy: "SortName",
+            sortOrder: "Ascending",
+            includeItemTypes: "Playlist",
+            fields: MediaBrowserMetadataFieldProfiles.music.fields + ",ChildCount"
+        )
+        switch core {
+        case .jellyfin(let core): return try await core.itemsPage(query).items
+        case .emby(let core): return try await core.itemsPage(query).items
+        }
+    }
+}
+
 /// Full items/paging/search query while the two public facades retain their existing parameter
 /// lists and defaults. Query order and backend casing remain owned by the existing PMSKit wrappers.
 struct MediaBrowserItemsQuery: Sendable {
@@ -87,25 +160,29 @@ protocol MediaBrowserBrowseCoreAdapter: Sendable {
                              nameStartsWith: String?, sortBy: String,
                              sortOrder: String) throws -> URLRequest
     func playlistItemsRequest(_ context: MediaBrowserBrowseContext<Identity>,
-                              playlistID: String) throws -> URLRequest
+                              playlistID: String,
+                              startIndex: Int?,
+                              limit: Int?) throws -> URLRequest
     func resumeItemsRequest(_ context: MediaBrowserBrowseContext<Identity>,
                             parentID: String?, startIndex: Int?, limit: Int) throws -> URLRequest
     func nextUpRequest(_ context: MediaBrowserBrowseContext<Identity>,
                        parentID: String?, startIndex: Int?, limit: Int) throws -> URLRequest
     func latestItemsRequest(_ context: MediaBrowserBrowseContext<Identity>,
                             parentID: String?, includeItemTypes: String,
-                            limit: Int) throws -> URLRequest
+                            limit: Int,
+                            metadataProfile: MediaBrowserMetadataFieldProfile) throws -> URLRequest
     func metadataRequest(_ context: MediaBrowserBrowseContext<Identity>,
                          itemID: String) throws -> URLRequest
     func setPlayedRequest(_ context: MediaBrowserBrowseContext<Identity>,
                           itemID: String, played: Bool) throws -> URLRequest
 }
 
-/// Shared browse-only execution/decode/map core. PlaybackInfo, downloads, device profiles, and
+/// Shared browse-only execution/decode/map core. The main-actor facades snapshot immutable
+/// authentication context before creating this Sendable value; request execution, response decode,
+/// and DTO mapping then stay off the main actor. PlaybackInfo, downloads, device profiles, and
 /// active-encoding cleanup deliberately remain outside this type so Phase 3 seams stay isolated.
-@MainActor
-struct MediaBrowserBrowseCore<Adapter: MediaBrowserBrowseCoreAdapter> {
-    typealias Send = (URLRequest) async throws -> Data
+struct MediaBrowserBrowseCore<Adapter: MediaBrowserBrowseCoreAdapter>: Sendable {
+    typealias Send = @Sendable (URLRequest) async throws -> Data
 
     let context: MediaBrowserBrowseContext<Adapter.Identity>
     let adapter: Adapter
@@ -129,8 +206,11 @@ struct MediaBrowserBrowseCore<Adapter: MediaBrowserBrowseCoreAdapter> {
 
     func itemsPage(_ query: MediaBrowserItemsQuery) async throws -> MediaBrowserBrowsePage {
         let request = try adapter.itemsRequest(context, query: query)
-        let response: MediaBrowserItemsResponse<Adapter.Flavor> = try await execute(request)
-        return page(response)
+        return try await execute(
+            request,
+            as: MediaBrowserItemsResponse<Adapter.Flavor>.self,
+            transform: Self.page
+        )
     }
 
     func albumArtistsPage(parentID: String?,
@@ -143,19 +223,39 @@ struct MediaBrowserBrowseCore<Adapter: MediaBrowserBrowseCoreAdapter> {
                                                       startIndex: startIndex, limit: limit,
                                                       nameStartsWith: nameStartsWith,
                                                       sortBy: sortBy, sortOrder: sortOrder)
-        let response: MediaBrowserItemsResponse<Adapter.Flavor> = try await execute(request)
-        return page(response)
+        return try await execute(
+            request,
+            as: MediaBrowserItemsResponse<Adapter.Flavor>.self,
+            transform: Self.page
+        )
     }
 
     func playlistItems(playlistID: String) async throws -> [MediaItem] {
-        let request = try adapter.playlistItemsRequest(context, playlistID: playlistID)
-        let response: MediaBrowserItemsResponse<Adapter.Flavor> = try await execute(request)
-        // Server order is the user's playlist order. Mapping must never sort it.
-        return map(response.items)
+        try await playlistItemsPage(playlistID: playlistID,
+                                    startIndex: nil,
+                                    limit: nil).items
     }
 
-    func searchResults(query: String, limitPerLibrary: Int) async throws -> SearchResults {
-        let views = try await userViewLinks()
+    func playlistItemsPage(playlistID: String,
+                           startIndex: Int?,
+                           limit: Int?) async throws -> MediaBrowserBrowsePage {
+        let request = try adapter.playlistItemsRequest(context,
+                                                       playlistID: playlistID,
+                                                       startIndex: startIndex,
+                                                       limit: limit)
+        // Server order is the user's playlist order. Mapping must never sort it.
+        return try await execute(
+            request,
+            as: MediaBrowserItemsResponse<Adapter.Flavor>.self,
+            transform: Self.page
+        )
+    }
+
+    /// Search policy consumes a caller-supplied catalog so user-facing Search can share the
+    /// exact-authority enumeration repository with Home, Libraries, Music, and Settings.
+    func searchResults(query: String,
+                       limitPerLibrary: Int,
+                       views: [MediaBrowserLibraryLink]) async throws -> SearchResults {
         return try await MediaBrowserSearchFanout.search(
             views: views,
             query: query,
@@ -170,7 +270,7 @@ struct MediaBrowserBrowseCore<Adapter: MediaBrowserBrowseCoreAdapter> {
                 sortBy: "SortName",
                 sortOrder: "Ascending",
                 includeItemTypes: itemTypes,
-                fields: MediaBrowserLibraryFields.fullItem
+                fields: MediaBrowserMetadataFieldProfiles.search.fields
             ))
         }
     }
@@ -184,8 +284,11 @@ struct MediaBrowserBrowseCore<Adapter: MediaBrowserBrowseCoreAdapter> {
                          limit: Int) async throws -> MediaBrowserBrowsePage {
         let request = try adapter.resumeItemsRequest(
             context, parentID: parentID, startIndex: startIndex, limit: limit)
-        let response: MediaBrowserItemsResponse<Adapter.Flavor> = try await execute(request)
-        return page(response)
+        return try await execute(
+            request,
+            as: MediaBrowserItemsResponse<Adapter.Flavor>.self,
+            transform: Self.page
+        )
     }
 
     func nextUp(parentID: String? = nil, limit: Int) async throws -> [MediaItem] {
@@ -197,24 +300,37 @@ struct MediaBrowserBrowseCore<Adapter: MediaBrowserBrowseCoreAdapter> {
                     limit: Int) async throws -> MediaBrowserBrowsePage {
         let request = try adapter.nextUpRequest(
             context, parentID: parentID, startIndex: startIndex, limit: limit)
-        let response: MediaBrowserItemsResponse<Adapter.Flavor> = try await execute(request)
-        return page(response)
+        return try await execute(
+            request,
+            as: MediaBrowserItemsResponse<Adapter.Flavor>.self,
+            transform: Self.page
+        )
     }
 
     func latestItems(parentID: String?,
                      includeItemTypes: String,
-                     limit: Int) async throws -> [MediaItem] {
+                     limit: Int,
+                     metadataProfile: MediaBrowserMetadataFieldProfile =
+                         MediaBrowserMetadataFieldProfiles.home) async throws -> [MediaItem] {
         let request = try adapter.latestItemsRequest(context, parentID: parentID,
                                                      includeItemTypes: includeItemTypes,
-                                                     limit: limit)
-        let response: [MediaBrowserBaseItemDto<Adapter.Flavor>] = try await execute(request)
-        return map(response)
+                                                     limit: limit,
+                                                     metadataProfile: metadataProfile)
+        return try await execute(
+            request,
+            as: [MediaBrowserBaseItemDto<Adapter.Flavor>].self,
+            transform: Self.map
+        )
     }
 
     func metadata(itemID: String) async throws -> MediaItem? {
         let request = try adapter.metadataRequest(context, itemID: itemID)
-        let dto: MediaBrowserBaseItemDto<Adapter.Flavor> = try await execute(request)
-        return dto.toMediaItem()
+        return try await execute(
+            request,
+            as: MediaBrowserBaseItemDto<Adapter.Flavor>.self
+        ) { dto in
+            dto.toMediaItem()
+        }
     }
 
     func setPlayed(itemID: String, played: Bool) async throws {
@@ -222,25 +338,43 @@ struct MediaBrowserBrowseCore<Adapter: MediaBrowserBrowseCoreAdapter> {
         _ = try await send(request)
     }
 
-    private func execute<Value: Decodable>(_ request: URLRequest) async throws -> Value {
+    private func execute<Value: Decodable & Sendable>(_ request: URLRequest) async throws -> Value {
         let data = try await send(request)
         return try MediaBrowserRequestExecutor.decode(data, as: Value.self)
     }
 
-    private func page(_ response: MediaBrowserItemsResponse<Adapter.Flavor>) -> MediaBrowserBrowsePage {
+    /// Internal so the hosted execution-boundary test can prove both decode and transform run on
+    /// this nonisolated executor rather than accidentally hopping back to a calling MainActor.
+    func execute<Value: Decodable & Sendable, Output: Sendable>(
+        _ request: URLRequest,
+        as type: Value.Type,
+        transform: @escaping @Sendable (Value) throws -> Output
+    ) async throws -> Output {
+        let data = try await send(request)
+        let decoded = try MediaBrowserRequestExecutor.decode(data, as: type)
+        return try transform(decoded)
+    }
+
+    private static func page(
+        _ response: MediaBrowserItemsResponse<Adapter.Flavor>
+    ) -> MediaBrowserBrowsePage {
         MediaBrowserBrowsePage(items: map(response.items), total: response.totalRecordCount)
     }
 
-    private func map(_ values: [MediaBrowserBaseItemDto<Adapter.Flavor>]) -> [MediaItem] {
+    private static func map(
+        _ values: [MediaBrowserBaseItemDto<Adapter.Flavor>]
+    ) -> [MediaItem] {
         values.compactMap { $0.toMediaItem() }
     }
 }
 
-/// Concurrent per-library MediaBrowser search. Successful empty libraries degrade to no group,
-/// while any request failure preserves the existing all-or-error facade contract. Results are
-/// reconstructed in server view order rather than task completion order.
+/// Bounded concurrent per-library MediaBrowser search. Successful empty libraries degrade to no
+/// group, while any request failure preserves the existing all-or-error facade contract. Results
+/// remain in server view order rather than task completion order.
 @MainActor
 enum MediaBrowserSearchFanout {
+    static let maximumConcurrentTasks = 4
+
     typealias FetchItems = @MainActor @Sendable (
         _ view: MediaBrowserLibraryLink,
         _ query: String,
@@ -253,37 +387,24 @@ enum MediaBrowserSearchFanout {
                        limitPerLibrary: Int,
                        backendID: MediaBackendID,
                        fetchItems: @escaping FetchItems) async throws -> SearchResults {
-        let groupsByIndex = try await withThrowingTaskGroup(
-            of: (Int, SearchResultGroup?).self,
-            returning: [Int: SearchResultGroup].self
-        ) { taskGroup in
-            for (index, view) in views.enumerated() {
-                taskGroup.addTask {
-                    try Task.checkCancellation()
-                    let items = try await fetchItems(
-                        view,
-                        query,
-                        limitPerLibrary,
-                        mediaBrowserSearchItemTypes(forCollectionType: view.collectionType)
-                    )
-                    try Task.checkCancellation()
-                    return (index, SearchResultGroup.mediaBrowserLibrary(
-                        backendID: backendID,
-                        libraryID: view.id,
-                        title: view.title,
-                        items: items
-                    ))
-                }
-            }
-
-            var groupsByIndex: [Int: SearchResultGroup] = [:]
-            for try await (index, group) in taskGroup {
-                if let group { groupsByIndex[index] = group }
-            }
-            return groupsByIndex
+        let groups = try await BoundedAsyncMap.values(
+            views,
+            maximumConcurrentTasks: maximumConcurrentTasks
+        ) { view in
+            let items = try await fetchItems(
+                view,
+                query,
+                limitPerLibrary,
+                mediaBrowserSearchItemTypes(forCollectionType: view.collectionType)
+            )
+            return SearchResultGroup.mediaBrowserLibrary(
+                backendID: backendID,
+                libraryID: view.id,
+                title: view.title,
+                items: items
+            )
         }
-
-        return SearchResults(groups: views.indices.compactMap { groupsByIndex[$0] })
+        return SearchResults(groups: groups.compactMap { $0 })
     }
 }
 
@@ -321,10 +442,12 @@ struct JellyfinBrowseCoreAdapter: MediaBrowserBrowseCoreAdapter {
                                                 sortBy: sortBy, sortOrder: sortOrder)
     }
 
-    func playlistItemsRequest(_ c: MediaBrowserBrowseContext<Identity>, playlistID: String) throws -> URLRequest {
+    func playlistItemsRequest(_ c: MediaBrowserBrowseContext<Identity>, playlistID: String,
+                              startIndex: Int?, limit: Int?) throws -> URLRequest {
         try JellyfinLibrary.playlistItemsRequest(server: c.server, token: c.token,
                                                  identity: c.identity, userId: c.userID,
-                                                 playlistId: playlistID)
+                                                 playlistId: playlistID,
+                                                 startIndex: startIndex, limit: limit)
     }
 
     func resumeItemsRequest(_ c: MediaBrowserBrowseContext<Identity>, parentID: String?, startIndex: Int?, limit: Int) throws -> URLRequest {
@@ -340,11 +463,13 @@ struct JellyfinBrowseCoreAdapter: MediaBrowserBrowseCoreAdapter {
     }
 
     func latestItemsRequest(_ c: MediaBrowserBrowseContext<Identity>, parentID: String?,
-                            includeItemTypes: String, limit: Int) throws -> URLRequest {
+                            includeItemTypes: String, limit: Int,
+                            metadataProfile: MediaBrowserMetadataFieldProfile) throws -> URLRequest {
         try JellyfinLibrary.latestItemsRequest(server: c.server, token: c.token,
                                                identity: c.identity, userId: c.userID,
                                                parentId: parentID,
-                                               includeItemTypes: includeItemTypes, limit: limit)
+                                               includeItemTypes: includeItemTypes, limit: limit,
+                                               metadataProfile: metadataProfile)
     }
 
     func metadataRequest(_ c: MediaBrowserBrowseContext<Identity>, itemID: String) throws -> URLRequest {
@@ -394,10 +519,12 @@ struct EmbyBrowseCoreAdapter: MediaBrowserBrowseCoreAdapter {
                                            sortBy: sortBy, sortOrder: sortOrder)
     }
 
-    func playlistItemsRequest(_ c: MediaBrowserBrowseContext<Identity>, playlistID: String) throws -> URLRequest {
+    func playlistItemsRequest(_ c: MediaBrowserBrowseContext<Identity>, playlistID: String,
+                              startIndex: Int?, limit: Int?) throws -> URLRequest {
         try EmbyLibrary.playlistItemsRequest(server: c.server, token: c.token,
                                             identity: c.identity, userId: c.userID,
-                                            playlistId: playlistID)
+                                            playlistId: playlistID,
+                                            startIndex: startIndex, limit: limit)
     }
 
     func resumeItemsRequest(_ c: MediaBrowserBrowseContext<Identity>, parentID: String?, startIndex: Int?, limit: Int) throws -> URLRequest {
@@ -413,11 +540,13 @@ struct EmbyBrowseCoreAdapter: MediaBrowserBrowseCoreAdapter {
     }
 
     func latestItemsRequest(_ c: MediaBrowserBrowseContext<Identity>, parentID: String?,
-                            includeItemTypes: String, limit: Int) throws -> URLRequest {
+                            includeItemTypes: String, limit: Int,
+                            metadataProfile: MediaBrowserMetadataFieldProfile) throws -> URLRequest {
         try EmbyLibrary.latestItemsRequest(server: c.server, token: c.token,
                                           identity: c.identity, userId: c.userID,
                                           parentId: parentID,
-                                          includeItemTypes: includeItemTypes, limit: limit)
+                                          includeItemTypes: includeItemTypes, limit: limit,
+                                          metadataProfile: metadataProfile)
     }
 
     func metadataRequest(_ c: MediaBrowserBrowseContext<Identity>, itemID: String) throws -> URLRequest {

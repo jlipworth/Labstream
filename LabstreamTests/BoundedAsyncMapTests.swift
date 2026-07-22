@@ -2,6 +2,53 @@ import Testing
 @testable import Labstream
 
 struct BoundedAsyncMapTests {
+    @Test func failFastValuesAreBoundedAndPreserveInputOrder() async throws {
+        let operation = ControlledOperation()
+        let task = Task {
+            try await BoundedAsyncMap.values(Array(0..<6), maximumConcurrentTasks: 3) {
+                try await operation.perform($0)
+            }
+        }
+
+        await operation.waitUntilStarted(count: 3)
+        await operation.succeed(2, value: 20)
+        await operation.waitUntilStarted(count: 4)
+        await operation.succeed(0, value: 0)
+        await operation.waitUntilStarted(count: 5)
+        await operation.succeed(4, value: 40)
+        await operation.waitUntilStarted(count: 6)
+        await operation.succeed(5, value: 50)
+        await operation.succeed(3, value: 30)
+        await operation.succeed(1, value: 10)
+
+        #expect(try await task.value == [0, 10, 20, 30, 40, 50])
+        #expect(await operation.maximumInFlight == 3)
+    }
+
+    @Test func failFastValuesCancelInFlightAndNeverSubmitQueuedInputs() async {
+        let operation = ControlledOperation()
+        let task = Task {
+            try await BoundedAsyncMap.values(Array(0..<8), maximumConcurrentTasks: 3) {
+                try await operation.perform($0)
+            }
+        }
+
+        await operation.waitUntilStarted(count: 3)
+        await operation.fail(1)
+
+        do {
+            _ = try await task.value
+            Issue.record("Expected operation failure")
+        } catch is CancellationError {
+            Issue.record("Expected the original operation failure, not cancellation")
+        } catch {
+            // Expected.
+        }
+
+        #expect(await operation.startedIDs.count == 3)
+        #expect(Set(await operation.startedIDs) == Set([0, 1, 2]))
+    }
+
     @Test func maximumInFlightIsBounded() async throws {
         let operation = ControlledOperation()
         let task = Task {
@@ -92,6 +139,52 @@ struct BoundedAsyncMapTests {
         let startedIDs = await operation.startedIDs
         #expect(Set(startedIDs) == Set([0, 1]))
         #expect(startedIDs.count == 2)
+    }
+}
+
+struct AlphabetCountFanoutTests {
+    @Test func boundsPeakPreservesLetterOrderAndDegradesFailuresToZero() async throws {
+        let letters = Array("ABCDEFG").map(String.init)
+        let indexByLetter = Dictionary(uniqueKeysWithValues: letters.enumerated().map { ($0.element, $0.offset) })
+        let operation = ControlledOperation()
+        let task = Task {
+            try await AlphabetCountFanout.counts(letters: letters) { letter in
+                try await operation.perform(indexByLetter[letter]!)
+            }
+        }
+
+        await operation.waitUntilStarted(count: 4)
+        await operation.succeed(3, value: 40)
+        await operation.waitUntilStarted(count: 5)
+        await operation.fail(1)
+        await operation.waitUntilStarted(count: 6)
+        await operation.succeed(5, value: 60)
+        await operation.waitUntilStarted(count: 7)
+        await operation.succeed(6, value: 70)
+        await operation.succeed(4, value: 0)
+        await operation.succeed(2, value: 30)
+        await operation.succeed(0, value: 10)
+
+        let counts = try await task.value
+        #expect(counts.map(\.display) == ["A", "C", "D", "F", "G"])
+        #expect(counts.map(\.count) == [10, 30, 40, 60, 70])
+        #expect(await operation.maximumInFlight == AlphabetCountFanout.maximumConcurrentTasks)
+    }
+
+    @Test func cancellationStopsQueuedLetterProbes() async {
+        let letters = Array("ABCDEFGHIJ").map(String.init)
+        let indexByLetter = Dictionary(uniqueKeysWithValues: letters.enumerated().map { ($0.element, $0.offset) })
+        let operation = ControlledOperation()
+        let task = Task {
+            try await AlphabetCountFanout.counts(letters: letters) { letter in
+                try await operation.perform(indexByLetter[letter]!)
+            }
+        }
+
+        await operation.waitUntilStarted(count: AlphabetCountFanout.maximumConcurrentTasks)
+        task.cancel()
+        await #expect(throws: CancellationError.self) { _ = try await task.value }
+        #expect(await operation.startedIDs.count == AlphabetCountFanout.maximumConcurrentTasks)
     }
 }
 

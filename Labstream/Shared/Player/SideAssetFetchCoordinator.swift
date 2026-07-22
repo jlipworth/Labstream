@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import PMSKit
 
@@ -27,11 +28,55 @@ struct SideAssetRequestPolicy: Sendable, Equatable {
     }
 }
 
-/// Stable identifiers deliberately contain no logging or description behavior. Callers
-/// can use redacted download/request identities without putting URLs into diagnostics.
-struct SideAssetOrigin: Hashable, Sendable { let rawValue: String }
-struct SideAssetOwner: Hashable, Sendable { let rawValue: String }
-struct SideAssetRequestKey: Hashable, Sendable { let rawValue: String }
+/// Stable coordinator identifiers are deliberately opaque to string interpolation, reflection,
+/// and `dump`. Owners and origins can reveal server or library identity, while request keys can be
+/// derived from credential-bearing requests; none belongs in diagnostics.
+struct SideAssetOrigin: Hashable, Sendable, CustomStringConvertible,
+                        CustomDebugStringConvertible, CustomReflectable {
+    let rawValue: String
+    var description: String { "SideAssetOrigin(<opaque>)" }
+    var debugDescription: String { description }
+    var customMirror: Mirror {
+        Mirror(self, children: ["origin": "<opaque>"], displayStyle: .struct)
+    }
+}
+
+struct SideAssetOwner: Hashable, Sendable, CustomStringConvertible,
+                       CustomDebugStringConvertible, CustomReflectable {
+    let rawValue: String
+    var description: String { "SideAssetOwner(<opaque>)" }
+    var debugDescription: String { description }
+    var customMirror: Mirror {
+        Mirror(self, children: ["owner": "<opaque>"], displayStyle: .struct)
+    }
+}
+
+struct SideAssetRequestKey: Hashable, Sendable, CustomStringConvertible,
+                            CustomDebugStringConvertible, CustomReflectable {
+    let rawValue: String
+
+    /// Exact authenticated request material is reduced to a one-way opaque identity before
+    /// entering actor state. This preserves coalescing across equal requests without retaining a
+    /// readable URL, authorization header, or request body in `jobs`.
+    static func authenticatedRequest(_ request: URLRequest) -> Self {
+        var material = "side-asset-request-v1\u{0}\(request.httpMethod ?? "GET")\u{0}\(request.url?.absoluteString ?? "")"
+        for (name, value) in request.allHTTPHeaderFields?.sorted(by: {
+            if $0.key != $1.key { return $0.key < $1.key }
+            return $0.value < $1.value
+        }) ?? [] {
+            material += "\u{0}\(name):\(value)"
+        }
+        if let body = request.httpBody { material += "\u{0}\(body.base64EncodedString())" }
+        let digest = SHA256.hash(data: Data(material.utf8))
+        return Self(rawValue: Data(digest).base64EncodedString())
+    }
+
+    var description: String { "SideAssetRequestKey(<redacted>)" }
+    var debugDescription: String { description }
+    var customMirror: Mirror {
+        Mirror(self, children: ["request": "<redacted>"], displayStyle: .struct)
+    }
+}
 
 struct SideAssetCoordinatorClock: Sendable {
     let nowNanoseconds: @Sendable () -> UInt64
@@ -45,6 +90,35 @@ struct SideAssetCoordinatorClock: Sendable {
             try await Task.sleep(nanoseconds: deadline - now)
         }
     )
+}
+
+/// Construction policy for authenticated optional side-asset transport.
+///
+/// Chapter and trick-play URLs can carry Plex tokens in their query while Jellyfin/Emby use
+/// authorization headers. Keep that material out of URLSession's persistent cache, cookie, and
+/// credential stores. Callers still own every other request semantic (method, headers, body,
+/// timeout, and cellular policy); the gateway changes only the cache policy.
+enum SideAssetTransportPolicy {
+    static func nonpersistentConfiguration(protocolClasses: [AnyClass]? = nil)
+        -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.urlCache = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieAcceptPolicy = .never
+        configuration.urlCredentialStorage = nil
+        if let protocolClasses { configuration.protocolClasses = protocolClasses }
+        return configuration
+    }
+
+    static let sharedSession = URLSession(configuration: nonpersistentConfiguration())
+
+    static func nonpersistentRequest(_ request: URLRequest) -> URLRequest {
+        var copy = request
+        copy.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        return copy
+    }
 }
 
 /// Coordinates burst-prone optional side assets across downloads and online playback in the
@@ -171,25 +245,33 @@ actor SideAssetFetchCoordinator {
     func fetch(request: URLRequest,
                owner: SideAssetOwner,
                existingFile: URL? = nil,
-               session: URLSession = .shared,
+               session: URLSession = SideAssetTransportPolicy.sharedSession,
                operation injectedOperation: FetchOperation? = nil) async throws -> Data {
-        guard let url = request.url,
+        let transportRequest = SideAssetTransportPolicy.nonpersistentRequest(request)
+        guard let url = transportRequest.url,
               let scheme = url.scheme?.lowercased(),
               let host = url.host?.lowercased() else { throw SideAssetFetchError.invalidOrigin }
         let effectivePort = url.port ?? (scheme == "https" ? 443 : 80)
         let origin = SideAssetOrigin(rawValue: "\(scheme)://\(host):\(effectivePort)")
 
-        var requestIdentity = "\(request.httpMethod ?? "GET")\u{0}\(url.absoluteString)"
-        for (name, value) in request.allHTTPHeaderFields?.sorted(by: {
-            if $0.key != $1.key { return $0.key < $1.key }
-            return $0.value < $1.value
-        }) ?? [] {
-            requestIdentity += "\u{0}\(name):\(value)"
-        }
-        if let body = request.httpBody { requestIdentity += "\u{0}\(body.base64EncodedString())" }
+        let requestKey = SideAssetRequestKey.authenticatedRequest(transportRequest)
 
         let operation: FetchOperation = injectedOperation ?? {
-            let (data, response) = try await session.data(for: request)
+            let data: Data
+            let response: URLResponse
+            do {
+                (data, response) = try await session.data(for: transportRequest)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as URLError where error.code == .cancelled {
+                throw CancellationError()
+            } catch let error as URLError {
+                throw SideAssetFetchError.transportFailure(code: error.code.rawValue)
+            } catch {
+                let nsError = error as NSError
+                let code = nsError.domain == NSURLErrorDomain ? nsError.code : nil
+                throw SideAssetFetchError.transportFailure(code: code)
+            }
             guard let http = response as? HTTPURLResponse,
                   (200..<300).contains(http.statusCode) else {
                 throw SideAssetFetchError.httpStatus((response as? HTTPURLResponse)?.statusCode ?? -1)
@@ -199,7 +281,7 @@ actor SideAssetFetchCoordinator {
         }
         return try await fetch(origin: origin,
                                owner: owner,
-                               requestKey: SideAssetRequestKey(rawValue: requestIdentity),
+                               requestKey: requestKey,
                                existingFile: existingFile,
                                operation: operation)
     }
@@ -483,10 +565,13 @@ actor SideAssetFetchCoordinator {
     }
 }
 
-private enum SideAssetFetchError: Error {
+enum SideAssetFetchError: Error, Equatable, Sendable {
     case invalidOrigin
     case httpStatus(Int)
     case emptyResponse
+    /// Token-free Foundation transport category. The original error is intentionally discarded
+    /// because its userInfo can retain a credential-bearing request URL.
+    case transportFailure(code: Int?)
 }
 
 #if !os(tvOS)

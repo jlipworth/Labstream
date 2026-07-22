@@ -1,9 +1,4 @@
 import MediaPlayer
-#if os(macOS)
-import AppKit
-#else
-import UIKit
-#endif
 
 /// `MPMediaItemArtwork`'s image request handler is invoked on MediaPlayer's own serial queue
 /// (e.g. while serializing Now Playing info), so it must NOT be actor-isolated — a closure formed
@@ -12,7 +7,8 @@ import UIKit
 /// surface (music, mobile video, Mac video, visionOS video) must build artwork through this
 /// single nonisolated factory so the constraint cannot be lost in a copy.
 enum NowPlayingArtwork {
-    nonisolated static func make(_ image: UIImage) -> MPMediaItemArtwork {
-        MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+    nonisolated static func make(_ image: DecodedImage) -> MPMediaItemArtwork {
+        let platformImage = image.platformImage
+        return MPMediaItemArtwork(boundsSize: platformImage.size) { _ in platformImage }
     }
 }

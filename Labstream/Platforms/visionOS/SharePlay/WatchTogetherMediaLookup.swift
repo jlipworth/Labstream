@@ -7,31 +7,52 @@ import PMSKit
 @MainActor
 struct WatchTogetherMediaLookup {
     let appModel: AppModel
+    let catalogRepository: LibraryCatalogRepository
 
     func candidates(matching query: String) async -> [MediaItem] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return [] }
+        guard !trimmed.isEmpty,
+              let lookupContext = appModel.activeAuthenticatedBrowseSession else { return [] }
 
         let snapshots: [MediaItem]
-        switch appModel.activeBackend {
+        switch lookupContext.backend {
         case .plex:
-            guard let server = appModel.serverBaseURL,
-                  let token = appModel.serverToken else { return [] }
-            let request = BrowseAPI.search(server: server, token: token,
-                                           identity: appModel.identity, query: trimmed)
+            let request = BrowseAPI.search(server: lookupContext.session.baseURL,
+                                           token: lookupContext.session.token,
+                                           identity: lookupContext.clientIdentity,
+                                           query: trimmed)
             guard let response = try? await appModel.client.send(request, as: HubsResponse.self) else {
                 return []
             }
             snapshots = response.mediaContainer.hub.flatMap(\.metadata)
         case .jellyfin:
-            guard let results = try? await JellyfinBrowseService(appModel: appModel)
-                .searchResults(query: trimmed) else { return [] }
+            guard let client = try? MediaBrowserCatalogClient(appModel: appModel),
+                  let request = try? catalogRepository.request(appModel: appModel),
+                  let catalog = try? await catalogRepository.catalog(for: request),
+                  client.matches(catalog), client.isCurrent(in: appModel) else {
+                return []
+            }
+            let views = catalog.descriptors.compactMap(\.mediaBrowserLink)
+            guard let results = try? await client.searchResults(query: trimmed, views: views),
+                  client.isCurrent(in: appModel), !Task.isCancelled else { return [] }
             snapshots = results.groups.flatMap(\.hubs).flatMap(\.metadata)
         case .emby:
-            guard let results = try? await EmbyBrowseService(appModel: appModel)
-                .searchResults(query: trimmed) else { return [] }
+            guard let client = try? MediaBrowserCatalogClient(appModel: appModel),
+                  let request = try? catalogRepository.request(appModel: appModel),
+                  let catalog = try? await catalogRepository.catalog(for: request),
+                  client.matches(catalog), client.isCurrent(in: appModel) else {
+                return []
+            }
+            let views = catalog.descriptors.compactMap(\.mediaBrowserLink)
+            guard let results = try? await client.searchResults(query: trimmed, views: views),
+                  client.isCurrent(in: appModel), !Task.isCancelled else { return [] }
             snapshots = results.groups.flatMap(\.hubs).flatMap(\.metadata)
         }
+
+        guard let current = appModel.activeAuthenticatedBrowseSession,
+              current.backend == lookupContext.backend,
+              current.authority == lookupContext.authority,
+              !Task.isCancelled else { return [] }
 
         var seen = Set<String>()
         let leaves = snapshots.filter {
@@ -39,10 +60,17 @@ struct WatchTogetherMediaLookup {
         }
         var hydrated: [MediaItem] = []
         for item in leaves.prefix(100) {
-            if Task.isCancelled { return [] }
+            guard let current = appModel.activeAuthenticatedBrowseSession,
+                  current.backend == lookupContext.backend,
+                  current.authority == lookupContext.authority,
+                  !Task.isCancelled else { return [] }
             let result = await DetailMetadataLoader.load(ratingKey: item.ratingKey,
-                                                         backend: appModel.activeBackend,
+                                                         backend: lookupContext.backend,
                                                          appModel: appModel)
+            guard let current = appModel.activeAuthenticatedBrowseSession,
+                  current.backend == lookupContext.backend,
+                  current.authority == lookupContext.authority,
+                  !Task.isCancelled else { return [] }
             hydrated.append(result.item ?? item)
         }
         return hydrated

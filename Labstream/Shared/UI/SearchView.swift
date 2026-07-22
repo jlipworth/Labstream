@@ -16,6 +16,7 @@ struct SearchView: View {
     /// the query. In the iOS search-role tab this restores the normal browse tab chrome.
     let onClearSearch: (() -> Void)?
     private let externalQuery: Binding<String>?
+    private let catalogRepository: LibraryCatalogRepository
 
     @Environment(AppModel.self) private var appModel
     @Environment(\.dismissSearch) private var dismissSearch
@@ -24,16 +25,18 @@ struct SearchView: View {
     @State private var results: SearchResults = .empty
     @State private var loadState: BrowseLoadState = .idle
     /// The query the current results were fetched for (pop-back no-op guard).
-    @State private var loadedQuery: String?
+    @State private var loadedQuery: SearchLoadIdentity?
     /// Drives programmatic focus of the `.searchable` field for ⌘F (RootView).
     @FocusState private var searchFieldFocused: Bool
 
     init(query: Binding<String>? = nil,
          focusRequest: Int = 0,
-         onClearSearch: (() -> Void)? = nil) {
+         onClearSearch: (() -> Void)? = nil,
+         catalogRepository: LibraryCatalogRepository) {
         self.externalQuery = query
         self.focusRequest = focusRequest
         self.onClearSearch = onClearSearch
+        self.catalogRepository = catalogRepository
     }
 
     var body: some View {
@@ -185,8 +188,8 @@ struct SearchView: View {
     private var queryBinding: Binding<String> { externalQuery ?? $internalQuery }
     private var queryText: String { queryBinding.wrappedValue }
 
-    private var searchTaskID: String {
-        "\(appModel.activeBrowseSessionKey):\(queryText)"
+    private var searchTaskID: SearchLoadIdentity {
+        SearchLoadIdentity(appModel: appModel, query: queryText)
     }
 
     private var showsClearSearchButton: Bool {
@@ -208,9 +211,8 @@ struct SearchView: View {
         onClearSearch?()
     }
 
-    private var currentSearchAuthorityKey: String {
-        let currentQuery = queryText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return "\(appModel.activeBrowseSessionKey):\(currentQuery)"
+    private var currentSearchAuthorityKey: SearchLoadIdentity {
+        SearchLoadIdentity(appModel: appModel, query: queryText)
     }
 
     private func runSearch() async {
@@ -222,7 +224,7 @@ struct SearchView: View {
         }
         // `.task(id:)` re-fires on pop-back from a result with the query unchanged;
         // re-running then would flash the spinner and dump the scroll position.
-        let searchKey = "\(appModel.activeBrowseSessionKey):\(trimmed)"
+        let searchKey = SearchLoadIdentity(appModel: appModel, query: trimmed)
         if searchKey == loadedQuery, case .loaded = loadState { return }
         // Light debounce so we don't fire a request per keystroke.
         try? await Task.sleep(for: .milliseconds(300))
@@ -233,14 +235,24 @@ struct SearchView: View {
         if appModel.activeBackend == .jellyfin {
             loadState = .loading
             do {
-                let searchResults = try await JellyfinBrowseService(appModel: appModel)
-                    .searchResults(query: trimmed)
-                if Task.isCancelled { return }
+                let client = try MediaBrowserCatalogClient(appModel: appModel)
+                let request = try catalogRepository.request(appModel: appModel)
+                let snapshot = try await catalogRepository.catalog(for: request)
+                guard client.matches(snapshot), client.isCurrent(in: appModel) else {
+                    throw LibraryCatalogRepositoryError.authorityExpired
+                }
+                let views = snapshot.descriptors.compactMap(\.mediaBrowserLink)
+                let searchResults = try await client.searchResults(query: trimmed, views: views)
+                guard SearchRequestAuthority.accepts(capturedKey: searchKey,
+                                                     currentKey: currentSearchAuthorityKey,
+                                                     isCancelled: Task.isCancelled) else { return }
                 results = searchResults
                 loadedQuery = searchKey
                 loadState = .loaded
             } catch {
-                if Task.isCancelled { return }
+                guard SearchRequestAuthority.accepts(capturedKey: searchKey,
+                                                     currentKey: currentSearchAuthorityKey,
+                                                     isCancelled: Task.isCancelled) else { return }
                 loadState = .failed(friendlyMessage(error))
             }
             return
@@ -249,14 +261,24 @@ struct SearchView: View {
         if appModel.activeBackend == .emby {
             loadState = .loading
             do {
-                let searchResults = try await EmbyBrowseService(appModel: appModel)
-                    .searchResults(query: trimmed)
-                if Task.isCancelled { return }
+                let client = try MediaBrowserCatalogClient(appModel: appModel)
+                let request = try catalogRepository.request(appModel: appModel)
+                let snapshot = try await catalogRepository.catalog(for: request)
+                guard client.matches(snapshot), client.isCurrent(in: appModel) else {
+                    throw LibraryCatalogRepositoryError.authorityExpired
+                }
+                let views = snapshot.descriptors.compactMap(\.mediaBrowserLink)
+                let searchResults = try await client.searchResults(query: trimmed, views: views)
+                guard SearchRequestAuthority.accepts(capturedKey: searchKey,
+                                                     currentKey: currentSearchAuthorityKey,
+                                                     isCancelled: Task.isCancelled) else { return }
                 results = searchResults
                 loadedQuery = searchKey
                 loadState = .loaded
             } catch {
-                if Task.isCancelled { return }
+                guard SearchRequestAuthority.accepts(capturedKey: searchKey,
+                                                     currentKey: currentSearchAuthorityKey,
+                                                     isCancelled: Task.isCancelled) else { return }
                 loadState = .failed(friendlyMessage(error))
             }
             return
@@ -268,11 +290,22 @@ struct SearchView: View {
         }
         loadState = .loading
         do {
-            let snapshot = try await service.searchWithLibraries(query: trimmed)
+            // Capture both immutable requests in one MainActor turn. Catalog titles are
+            // best-effort, but must come from the same opaque authority as the Plex search.
+            let catalogRequest = try? catalogRepository.request(appModel: appModel)
+            let combined = try await PlexSearchOrchestration.results(
+                search: { try await service.search(query: trimmed) },
+                catalog: {
+                    guard let catalogRequest else {
+                        throw LibraryCatalogRepositoryError.noAuthenticatedSession
+                    }
+                    return try await catalogRepository.catalog(for: catalogRequest).descriptors
+                }
+            )
             guard SearchRequestAuthority.accepts(capturedKey: searchKey,
                                                  currentKey: currentSearchAuthorityKey,
                                                  isCancelled: Task.isCancelled) else { return }
-            results = .plexNativeHubs(snapshot.hubs, sections: snapshot.libraries)
+            results = combined
             loadedQuery = searchKey
             loadState = .loaded
         } catch {
@@ -284,8 +317,38 @@ struct SearchView: View {
     }
 }
 
+struct SearchLoadIdentity: Hashable {
+    let browse: AuthenticatedBrowseLoadIdentity
+    let query: String
+
+    @MainActor
+    init(appModel: AppModel, query: String) {
+        browse = AuthenticatedBrowseLoadIdentity(appModel: appModel)
+        self.query = query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
+enum PlexSearchOrchestration {
+    typealias Search = @MainActor @Sendable () async throws -> [Hub]
+    typealias Catalog = @MainActor @Sendable () async throws -> [LibraryCatalogDescriptor]
+
+    @MainActor
+    static func results(search: @escaping Search,
+                        catalog: @escaping Catalog) async throws -> SearchResults {
+        async let searchHubs = search()
+        async let catalogDescriptors: [LibraryCatalogDescriptor]? = {
+            try? await catalog()
+        }()
+        let hubs = try await searchHubs
+        let sections = await catalogDescriptors?.compactMap(\.plexSection) ?? []
+        return .plexNativeHubs(hubs, sections: sections)
+    }
+}
+
 enum SearchRequestAuthority {
-    static func accepts(capturedKey: String, currentKey: String, isCancelled: Bool) -> Bool {
+    static func accepts<Key: Equatable>(capturedKey: Key,
+                                        currentKey: Key,
+                                        isCancelled: Bool) -> Bool {
         !isCancelled && capturedKey == currentKey
     }
 }

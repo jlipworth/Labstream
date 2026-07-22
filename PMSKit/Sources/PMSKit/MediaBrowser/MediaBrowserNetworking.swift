@@ -142,6 +142,52 @@ public enum MediaBrowserLibraryFields {
     public static let fullItem = "Overview,Genres,MediaSources,People,Studios,ProviderIds,ParentId,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,CriticRating,Taglines,Chapters,ExtraIds,LocalTrailerCount,SpecialFeatureCount,RemoteTrailers,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags,ParentPrimaryImageItemId,ParentPrimaryImageTag,SeriesPrimaryImageTag"
 }
 
+/// An intent-bearing MediaBrowser metadata contract. `purpose` is deliberately kept alongside the
+/// wire field string so shared routes (notably Latest Items) cannot silently substitute one
+/// surface's profile merely because two profiles happen to emit identical bytes today.
+public struct MediaBrowserMetadataFieldProfile: Sendable, Equatable {
+    public enum Purpose: String, Sendable {
+        case grid
+        case search
+        case home
+        case playlist
+        case item
+        case relatedMedia
+        case music
+    }
+
+    public let purpose: Purpose
+    public let fields: String
+
+    init(purpose: Purpose, fields: String) {
+        self.purpose = purpose
+        self.fields = fields
+    }
+}
+
+/// Intent-bearing aliases for the MediaBrowser metadata contracts.
+///
+/// These profiles are deliberately behavior-neutral today: `grid` is byte-for-byte identical to
+/// the established grid field list, while every richer route is byte-for-byte identical to the
+/// established full-item list. Neutral `item` and `relatedMedia` ownership reflects the actual
+/// shared callers; `music` remains distinct from Home even while their current fields match.
+public enum MediaBrowserMetadataFieldProfiles {
+    public static let grid = MediaBrowserMetadataFieldProfile(
+        purpose: .grid, fields: MediaBrowserLibraryFields.gridItem)
+    public static let search = MediaBrowserMetadataFieldProfile(
+        purpose: .search, fields: MediaBrowserLibraryFields.fullItem)
+    public static let home = MediaBrowserMetadataFieldProfile(
+        purpose: .home, fields: MediaBrowserLibraryFields.fullItem)
+    public static let playlist = MediaBrowserMetadataFieldProfile(
+        purpose: .playlist, fields: MediaBrowserLibraryFields.fullItem)
+    public static let item = MediaBrowserMetadataFieldProfile(
+        purpose: .item, fields: MediaBrowserLibraryFields.fullItem)
+    public static let relatedMedia = MediaBrowserMetadataFieldProfile(
+        purpose: .relatedMedia, fields: MediaBrowserLibraryFields.fullItem)
+    public static let music = MediaBrowserMetadataFieldProfile(
+        purpose: .music, fields: MediaBrowserLibraryFields.fullItem)
+}
+
 public enum MediaBrowserLibraryQueryName: Sendable {
     case userId
     case includeExternalContent

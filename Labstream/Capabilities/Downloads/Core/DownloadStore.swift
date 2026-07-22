@@ -2979,7 +2979,9 @@ final class DownloadStore: @unchecked Sendable {
     /// metadata snapshot (D5). No-op if the row or its metadata is gone — a missing
     /// poster is never a download failure.
     func setPosterRelativePath(ratingKey: String, _ relativePath: String) {
-        updateMetadata(ratingKey: ratingKey) { $0.posterRelativePath = relativePath }
+        updateMetadata(ratingKey: ratingKey) {
+            $0.recordCachedPoster(relativePath: relativePath)
+        }
     }
 
     /// Record the locally-cached Plex BIF path (relative to the base dir) on a row's

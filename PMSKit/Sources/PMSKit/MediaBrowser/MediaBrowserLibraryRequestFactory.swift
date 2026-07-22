@@ -110,7 +110,7 @@ public struct MediaBrowserLibraryRequestFactory: Sendable {
                              nameStartsWith: String? = nil,
                              sortBy: String = "SortName",
                              sortOrder: String = "Ascending",
-                             fields: String = MediaBrowserLibraryFields.gridItem)
+                             fields: String = MediaBrowserMetadataFieldProfiles.grid.fields)
         -> MediaBrowserLibraryRequestShape {
         var query = [
             dialect.queryItem(.userId, value: userId),
@@ -137,7 +137,7 @@ public struct MediaBrowserLibraryRequestFactory: Sendable {
                               playlistId: String,
                               startIndex: Int? = nil,
                               limit: Int? = nil,
-                              fields: String = MediaBrowserLibraryFields.fullItem)
+                              fields: String = MediaBrowserMetadataFieldProfiles.playlist.fields)
         -> MediaBrowserLibraryRequestShape {
         var query = [
             dialect.queryItem(.userId, value: userId),
@@ -157,7 +157,7 @@ public struct MediaBrowserLibraryRequestFactory: Sendable {
                             parentId: String? = nil,
                             startIndex: Int? = nil,
                             limit: Int = 20,
-                            fields: String = MediaBrowserLibraryFields.fullItem)
+                            fields: String = MediaBrowserMetadataFieldProfiles.home.fields)
         -> MediaBrowserLibraryRequestShape {
         var query: [URLQueryItem] = []
         if dialect == .jellyfin { query.append(dialect.queryItem(.userId, value: userId)) }
@@ -181,7 +181,7 @@ public struct MediaBrowserLibraryRequestFactory: Sendable {
                        parentId: String? = nil,
                        startIndex: Int? = nil,
                        limit: Int = 20,
-                       fields: String = MediaBrowserLibraryFields.fullItem)
+                       fields: String = MediaBrowserMetadataFieldProfiles.home.fields)
         -> MediaBrowserLibraryRequestShape {
         var query = [
             dialect.queryItem(.userId, value: userId),
@@ -202,7 +202,7 @@ public struct MediaBrowserLibraryRequestFactory: Sendable {
                             parentId: String? = nil,
                             includeItemTypes: String = "Movie,Episode,Video",
                             limit: Int = 20,
-                            fields: String = MediaBrowserLibraryFields.fullItem)
+                            fields: String = MediaBrowserMetadataFieldProfiles.home.fields)
         -> MediaBrowserLibraryRequestShape {
         var query: [URLQueryItem] = []
         if dialect == .jellyfin { query.append(dialect.queryItem(.userId, value: userId)) }
@@ -221,7 +221,7 @@ public struct MediaBrowserLibraryRequestFactory: Sendable {
 
     public func item(userId: String,
                      itemId: String,
-                     fields: String = MediaBrowserLibraryFields.fullItem)
+                     fields: String = MediaBrowserMetadataFieldProfiles.item.fields)
         -> MediaBrowserLibraryRequestShape {
         MediaBrowserLibraryRequestShape(
             path: dialect.path(.item(userId: userId, itemId: itemId)),

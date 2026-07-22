@@ -4,6 +4,8 @@ import PMSKit
 /// Libraries tab: lists the server's sections (`GET /library/sections`); selecting
 /// one pushes a `LibraryGridView` of its items.
 struct LibrariesView: View {
+    let catalogRepository: LibraryCatalogRepository
+
     @Environment(AppModel.self) private var appModel
     @Environment(\.labstreamCompactWidth) private var compactWidth
 
@@ -191,70 +193,27 @@ struct LibrariesView: View {
                                                      backend: appModel.activeBackend.performanceLabel,
                                                      fields: ["force": force ? 1 : 0])
 
-        if appModel.activeBackend == .jellyfin {
-            do {
-                let allViews = try await JellyfinBrowseService(appModel: appModel).userViewLinks()
-                guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
-                appModel.migrateLibraryVisibilityKeysIfNeeded(store: visibilityStore)
-                let backendKey = appModel.libraryVisibilityBackendKey
-                maybePresentFirstRunPrompt(backendKey: backendKey,
-                                           candidates: allViews.map { candidate(jellyfin: $0) })
-                let hidden = visibilityStore.hiddenIDs(forBackendKey: backendKey)
-                let visible = LibraryVisibility.visible(allViews, hiddenIDs: hidden) { $0.id }
-                rootItems = visible.map(LibraryRootItem.init(jellyfin:))
-                loadedIdentity = activeIdentity
-                loadState = .loaded
-                span.end(fields: ["library_count": rootItems.count])
-            } catch {
-                guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
-                span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
-                loadState = .failed(friendlyMessage(error))
-            }
-            return
-        }
-
-        if appModel.activeBackend == .emby {
-            do {
-                let allViews = try await EmbyBrowseService(appModel: appModel).userViewLinks()
-                guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
-                appModel.migrateLibraryVisibilityKeysIfNeeded(store: visibilityStore)
-                let backendKey = appModel.libraryVisibilityBackendKey
-                maybePresentFirstRunPrompt(backendKey: backendKey,
-                                           candidates: allViews.map { candidate(emby: $0) })
-                let hidden = visibilityStore.hiddenIDs(forBackendKey: backendKey)
-                let visible = LibraryVisibility.visible(allViews, hiddenIDs: hidden) { $0.id }
-                rootItems = visible.map(LibraryRootItem.init(emby:))
-                loadedIdentity = activeIdentity
-                loadState = .loaded
-                span.end(fields: ["library_count": rootItems.count])
-            } catch {
-                guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
-                span.end(result: "failure", fields: ["error": PerformanceInstrumentation.errorLabel(error)])
-                loadState = .failed(friendlyMessage(error))
-            }
-            return
-        }
-
-        guard let service = try? PlexBrowseService(appModel: appModel) else {
-            span.end(result: "failure", fields: ["error": "missing_plex_server"])
-            loadState = .failed("No server selected.")
-            return
-        }
         do {
-            let libraries = try await service.libraries()
-            guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
+            let snapshot = try await catalogRepository.catalog(appModel: appModel,
+                                                               forceRefresh: force)
+            guard snapshot.isCurrent(in: appModel),
+                  generation == loadGeneration,
+                  loadIdentity == activeIdentity,
+                  !Task.isCancelled else { return }
             // Music sections deliberately stay out of this tab even after the #17
             // un-hide: the Music tab is their dedicated entry point and listing the
             // section twice is noise (MUSIC-DESIGN §2 — a considered exception to
             // #17's original "remove the !isMusic filter" checklist item).
-            let nonMusic = libraries.filter { !$0.isMusic }
+            let candidates = snapshot.backend == .plex
+                ? snapshot.descriptors.filter { $0.kind != .music }
+                : snapshot.descriptors
             appModel.migrateLibraryVisibilityKeysIfNeeded(store: visibilityStore)
             let backendKey = appModel.libraryVisibilityBackendKey
             maybePresentFirstRunPrompt(backendKey: backendKey,
-                                       candidates: nonMusic.map { candidate(plex: $0) })
+                                       candidates: candidates.map(visibilityCandidate))
             let hidden = visibilityStore.hiddenIDs(forBackendKey: backendKey)
-            let visible = LibraryVisibility.visible(nonMusic, hiddenIDs: hidden) { $0.key }
-            rootItems = visible.map(LibraryRootItem.init(plex:))
+            let visible = LibraryVisibility.visible(candidates, hiddenIDs: hidden) { $0.sourceID }
+            rootItems = visible.map(LibraryRootItem.init(catalog:))
             loadedIdentity = activeIdentity
             loadState = .loaded
             span.end(fields: ["library_count": rootItems.count])
@@ -290,22 +249,10 @@ struct LibrariesView: View {
         Task { await load(force: true) }
     }
 
-    private func candidate(plex section: PlexSection) -> LibraryVisibility.Candidate {
-        LibraryVisibility.Candidate(id: section.key,
-                                    title: section.title,
-                                    kind: LibrarySectionKind(plexType: section.type).visibilityKindToken)
-    }
-
-    private func candidate(jellyfin view: JellyfinLibraryLink) -> LibraryVisibility.Candidate {
-        LibraryVisibility.Candidate(id: view.id,
-                                    title: view.title,
-                                    kind: LibrarySectionKind(collectionType: view.collectionType).visibilityKindToken)
-    }
-
-    private func candidate(emby view: EmbyLibraryLink) -> LibraryVisibility.Candidate {
-        LibraryVisibility.Candidate(id: view.id,
-                                    title: view.title,
-                                    kind: LibrarySectionKind(collectionType: view.collectionType).visibilityKindToken)
+    private func visibilityCandidate(_ descriptor: LibraryCatalogDescriptor) -> LibraryVisibility.Candidate {
+        LibraryVisibility.Candidate(id: descriptor.sourceID,
+                                    title: descriptor.title,
+                                    kind: descriptor.kind.visibilityKindToken)
     }
 }
 
@@ -345,6 +292,27 @@ struct LibraryRootItem: Identifiable, Hashable {
         self.kind = LibrarySectionKind(collectionType: view.collectionType)
         self.destination = .emby(view)
     }
+
+    init(catalog descriptor: LibraryCatalogDescriptor) {
+        id = descriptor.id
+        backend = descriptor.backend.backendChoice
+        title = descriptor.title
+        kind = descriptor.kind
+        switch descriptor.backend {
+        case .plex:
+            destination = .plex(PlexSection(key: descriptor.sourceID,
+                                            title: descriptor.title,
+                                            type: descriptor.sourceKind ?? ""))
+        case .jellyfin:
+            destination = .jellyfin(MediaBrowserLibraryLink(id: descriptor.sourceID,
+                                                             title: descriptor.title,
+                                                             collectionType: descriptor.sourceKind))
+        case .emby:
+            destination = .emby(MediaBrowserLibraryLink(id: descriptor.sourceID,
+                                                        title: descriptor.title,
+                                                        collectionType: descriptor.sourceKind))
+        }
+    }
 }
 
 enum LibraryGridSource: Hashable {
@@ -354,6 +322,23 @@ enum LibraryGridSource: Hashable {
     case plexCollections(PlexSection)
     case jellyfin(JellyfinLibraryLink)
     case emby(EmbyLibraryLink)
+
+    init(catalog descriptor: LibraryCatalogDescriptor) {
+        switch descriptor.backend {
+        case .plex:
+            self = .plex(PlexSection(key: descriptor.sourceID,
+                                     title: descriptor.title,
+                                     type: descriptor.sourceKind ?? ""))
+        case .jellyfin:
+            self = .jellyfin(MediaBrowserLibraryLink(id: descriptor.sourceID,
+                                                      title: descriptor.title,
+                                                      collectionType: descriptor.sourceKind))
+        case .emby:
+            self = .emby(MediaBrowserLibraryLink(id: descriptor.sourceID,
+                                                 title: descriptor.title,
+                                                 collectionType: descriptor.sourceKind))
+        }
+    }
 
     var title: String {
         switch self {

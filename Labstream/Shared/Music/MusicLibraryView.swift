@@ -10,6 +10,7 @@ import PMSKit
 struct MusicLibraryView: View {
     let macPivot: MusicPivot?
     let allowedLibraryIDs: Set<String>?
+    private let catalogRepository: LibraryCatalogRepository
     private let externalSelectedLibraryID: Binding<String?>?
     @Environment(AppModel.self) private var appModel
 
@@ -19,15 +20,17 @@ struct MusicLibraryView: View {
     @State private var selectedSectionKey: String?
     /// Server identity the current sections were loaded from (pop-back no-op guard).
     /// Includes selected Plex server id because multiple servers can share the same base URL.
-    @State private var loadedIdentity: String?
+    @State private var loadedIdentity: MusicCatalogLoadIdentity?
     @State private var loadGeneration = 0
 
     init(macPivot: MusicPivot? = nil,
          selectedLibraryID: Binding<String?>? = nil,
-         allowedLibraryIDs: Set<String>? = nil) {
+         allowedLibraryIDs: Set<String>? = nil,
+         catalogRepository: LibraryCatalogRepository) {
         self.macPivot = macPivot
         self.externalSelectedLibraryID = selectedLibraryID
         self.allowedLibraryIDs = allowedLibraryIDs
+        self.catalogRepository = catalogRepository
     }
 
     var body: some View {
@@ -38,7 +41,8 @@ struct MusicLibraryView: View {
             // Jellyfin/Emby music browses through the shared MusicProvider (#111).
             MediaBrowserMusicView(macPivot: macPivot,
                                   selectedLibraryID: externalSelectedLibraryID,
-                                  allowedLibraryIDs: allowedLibraryIDs)
+                                  allowedLibraryIDs: allowedLibraryIDs,
+                                  catalogRepository: catalogRepository)
         }
     }
 
@@ -60,7 +64,9 @@ struct MusicLibraryView: View {
                                            systemImage: "music.note",
                                            description: Text("This server has no music libraries."))
                 } else if let section = selectedSection {
-                    MusicHomeView(section: section, requestedPivot: macPivot)
+                    MusicHomeView(section: section,
+                                  requestedPivot: macPivot,
+                                  catalogRepository: catalogRepository)
                         .id("\(section.key):\(macPivot?.rawValue ?? "adaptive")")
                 }
             }
@@ -101,8 +107,8 @@ struct MusicLibraryView: View {
         .pickerStyle(.menu)
     }
 
-    private var loadIdentity: String {
-        appModel.browseSessionKey(for: .plex)
+    private var loadIdentity: MusicCatalogLoadIdentity {
+        MusicCatalogLoadIdentity(appModel: appModel, allowedLibraryIDs: allowedLibraryIDs)
     }
 
     /// The section to browse: the explicit selection, else the first music section.
@@ -123,13 +129,11 @@ struct MusicLibraryView: View {
         if !force, loadedIdentity == activeIdentity, case .loaded = loadState { return }
         loadGeneration += 1
         let generation = loadGeneration
-        guard let service = try? PlexBrowseService(appModel: appModel) else {
-            loadState = .failed("No reachable Plex server selected.")
-            return
-        }
         if case .loaded = loadState {} else { loadState = .loading }
         do {
-            let libraries = try await service.libraries()
+            let snapshot = try await catalogRepository.catalog(appModel: appModel,
+                                                               forceRefresh: force)
+            let libraries = snapshot.descriptors.compactMap(\.plexSection)
             guard generation == loadGeneration, loadIdentity == activeIdentity, !Task.isCancelled else { return }
             sections = libraries.filter { section in
                 section.isMusic && (allowedLibraryIDs?.contains(section.key) ?? true)
@@ -173,12 +177,16 @@ func musicDestination(for item: MediaItem, sectionKey: String?) -> some View {
 private struct MusicHomeView: View {
     let section: PlexSection
     let requestedPivot: MusicPivot?
+    let catalogRepository: LibraryCatalogRepository
 
     @State private var pivot: MusicPivot = .home
 
-    init(section: PlexSection, requestedPivot: MusicPivot? = nil) {
+    init(section: PlexSection,
+         requestedPivot: MusicPivot? = nil,
+         catalogRepository: LibraryCatalogRepository) {
         self.section = section
         self.requestedPivot = requestedPivot
+        self.catalogRepository = catalogRepository
         _pivot = State(initialValue: requestedPivot ?? .home)
     }
 
@@ -204,7 +212,7 @@ private struct MusicHomeView: View {
             MusicPagedGrid(libraryID: section.key, libraryTitle: section.title, kind: .artists)
         case .albums:
             MusicPagedGrid(libraryID: section.key, libraryTitle: section.title, kind: .albums)
-        case .playlists: MusicPlaylistsPivot()
+        case .playlists: MusicPlaylistsPivot(catalogRepository: catalogRepository)
         }
     }
 }
@@ -512,6 +520,7 @@ private struct MusicTrackRail: View {
 /// this takes no library id; the toolbar library Picker does not scope it. Rows push the shared
 /// provider-backed `PlaylistDetailView` via `musicDestination`.
 struct MusicPlaylistsPivot: View {
+    let catalogRepository: LibraryCatalogRepository
     @Environment(AppModel.self) private var appModel
     @Environment(\.labstreamCompactWidth) private var compactWidth
 
@@ -542,8 +551,12 @@ struct MusicPlaylistsPivot: View {
                 }
             }
         }
-        .task { await load() }
-        .refreshable { await load() }
+        .task(id: loadIdentity) { await load() }
+        .refreshable { await load(force: true) }
+    }
+
+    private var loadIdentity: MusicCatalogLoadIdentity {
+        MusicCatalogLoadIdentity(appModel: appModel, allowedLibraryIDs: nil)
     }
 
     /// One material card of playlist rows, hairline-separated — the same card-of-rows
@@ -566,17 +579,21 @@ struct MusicPlaylistsPivot: View {
                     in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
     }
 
-    private func load() async {
+    private func load(force: Bool = false) async {
+        let identity = loadIdentity
         loadGeneration += 1
         let generation = loadGeneration
         loadState = .loading
         do {
-            let loaded = try await appModel.musicProvider.musicPlaylists()
-            guard generation == loadGeneration, !Task.isCancelled else { return }
+            let loaded = try await appModel.musicProvider
+                .musicPlaylists(catalogRepository: catalogRepository, forceRefresh: force)
+            guard generation == loadGeneration, loadIdentity == identity,
+                  !Task.isCancelled else { return }
             playlists = loaded
             loadState = .loaded
         } catch {
-            guard generation == loadGeneration, !Task.isCancelled else { return }
+            guard generation == loadGeneration, loadIdentity == identity,
+                  !Task.isCancelled else { return }
             loadState = .failed(friendlyMessage(error))
         }
     }

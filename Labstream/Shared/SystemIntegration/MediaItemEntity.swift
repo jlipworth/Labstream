@@ -104,10 +104,26 @@ struct MediaItemEntityQuery: EntityStringQuery {
                   let hubs = try? await service.search(query: string) else { return [] }
             matches = hubs.flatMap(\.metadata)
         case .jellyfin:
-            let results = try? await JellyfinBrowseService(appModel: appModel).searchResults(query: string, limitPerLibrary: 15)
+            guard let catalogRepository = SystemEntryRouter.shared.libraryCatalogRepository,
+                  let client = try? MediaBrowserCatalogClient(appModel: appModel),
+                  let request = try? catalogRepository.request(appModel: appModel),
+                  let catalog = try? await catalogRepository.catalog(for: request),
+                  client.matches(catalog), client.isCurrent(in: appModel) else { return [] }
+            let views = catalog.descriptors.compactMap(\.mediaBrowserLink)
+            let results = try? await client.searchResults(query: string, views: views,
+                                                          limitPerLibrary: 15)
+            guard client.isCurrent(in: appModel), !Task.isCancelled else { return [] }
             matches = results?.groups.flatMap(\.hubs).flatMap(\.metadata) ?? []
         case .emby:
-            let results = try? await EmbyBrowseService(appModel: appModel).searchResults(query: string, limitPerLibrary: 15)
+            guard let catalogRepository = SystemEntryRouter.shared.libraryCatalogRepository,
+                  let client = try? MediaBrowserCatalogClient(appModel: appModel),
+                  let request = try? catalogRepository.request(appModel: appModel),
+                  let catalog = try? await catalogRepository.catalog(for: request),
+                  client.matches(catalog), client.isCurrent(in: appModel) else { return [] }
+            let views = catalog.descriptors.compactMap(\.mediaBrowserLink)
+            let results = try? await client.searchResults(query: string, views: views,
+                                                          limitPerLibrary: 15)
+            guard client.isCurrent(in: appModel), !Task.isCancelled else { return [] }
             matches = results?.groups.flatMap(\.hubs).flatMap(\.metadata) ?? []
         }
         var seen = Set<String>()

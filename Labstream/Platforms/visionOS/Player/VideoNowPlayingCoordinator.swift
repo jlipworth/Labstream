@@ -1,7 +1,6 @@
 import AVFoundation
 import MediaPlayer
 import PMSKit
-import UIKit
 
 /// Video-only Now Playing owner for the app's custom AVPlayer path.
 ///
@@ -36,13 +35,13 @@ final class VideoNowPlayingCoordinator {
                               elapsedMilliseconds: Int,
                               playbackRate: Double,
                               defaultPlaybackRate: Double,
-                              artworkData: Data? = nil) {
+                              artworkImage: DecodedImage? = nil) {
         playerItem.nowPlayingInfo = Self.nowPlayingInfo(mediaItem: mediaItem,
                                                         durationMilliseconds: durationMilliseconds,
                                                         elapsedMilliseconds: elapsedMilliseconds,
                                                         playbackRate: playbackRate,
                                                         defaultPlaybackRate: defaultPlaybackRate,
-                                                        artworkData: artworkData)
+                                                        artworkImage: artworkImage)
     }
 
     func refreshDynamicMetadata(mediaItem: MediaItem,
@@ -209,7 +208,7 @@ final class VideoNowPlayingCoordinator {
                                        elapsedMilliseconds: Int,
                                        playbackRate: Double,
                                        defaultPlaybackRate: Double,
-                                       artworkData: Data? = nil) -> [String: Any] {
+                                       artworkImage: DecodedImage? = nil) -> [String: Any] {
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: item.title,
             MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.video.rawValue,
@@ -229,9 +228,8 @@ final class VideoNowPlayingCoordinator {
                                                                   month: 1,
                                                                   day: 1).date
         }
-        if let artworkData,
-           let image = UIImage(data: artworkData) {
-            info[MPMediaItemPropertyArtwork] = NowPlayingArtwork.make(image)
+        if let artworkImage {
+            info[MPMediaItemPropertyArtwork] = NowPlayingArtwork.make(artworkImage)
         }
         return info
     }

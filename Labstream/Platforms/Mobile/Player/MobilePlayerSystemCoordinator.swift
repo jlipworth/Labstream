@@ -31,7 +31,10 @@ final class MobilePlayerSystemCoordinator: NSObject, @preconcurrency AVPictureIn
         isPictureInPictureActive || controller?.player.isExternalPlaybackActive == true
     }
 
-    func configure(controller: PlaybackController, item: MediaItem, artworkRequest: URLRequest? = nil) {
+    func configure(controller: PlaybackController,
+                   item: MediaItem,
+                   artworkDescriptor: ArtworkRequestDescriptor? = nil,
+                   artworkPipeline: ArtworkPipeline? = nil) {
         self.controller = controller
 
         controller.player.allowsExternalPlayback = true
@@ -39,7 +42,10 @@ final class MobilePlayerSystemCoordinator: NSObject, @preconcurrency AVPictureIn
             self?.canContinueOnBackground ?? false
         }
 
-        core.configure(controller: controller, item: item, artworkRequest: artworkRequest)
+        core.configure(controller: controller,
+                       item: item,
+                       artworkDescriptor: artworkDescriptor,
+                       artworkPipeline: artworkPipeline)
     }
 
     func attach(playerLayer: AVPlayerLayer) {

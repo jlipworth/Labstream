@@ -80,7 +80,10 @@ struct ContentView: View {
             // Register the live state objects for out-of-app entry points (App
             // Intents, Spotlight) BEFORE restoring, so an intent that launched the
             // app can await `ensureBrowseReady()` against the real instances.
-            SystemEntryRouter.shared.register(appModel: appModel, authManager: authManager)
+            SystemEntryRouter.shared.register(
+                appModel: appModel,
+                authManager: authManager,
+                libraryCatalogRepository: runtime.libraryCatalogRepository)
             // Restore exactly once per app launch. The session objects are app-lifetime, so a window
             // reopened after Cinema already holds a live, connected session — re-running discovery
             // here would needlessly re-show "Connecting…" and re-probe the server.
@@ -199,11 +202,14 @@ private struct RestoringSessionView: View {
 #Preview(windowStyle: .plain) {
     let identity = PlatformClientIdentity.make(clientIdentifier: "preview", version: "0.0.0")
     let model = AppModel(identity: identity)
+    let artworkPipeline = ArtworkPipeline()
     let runtime = AppRuntime(appModel: model,
                              authManager: AuthManager(appModel: model),
                              downloadManager: DownloadManager(appModel: model),
                              sceneActivity: AppSceneActivity { _ in },
-                             musicPlayer: MusicPlayerController(appModel: model),
+                             musicPlayer: MusicPlayerController(appModel: model,
+                                                                artworkPipeline: artworkPipeline),
+                             artworkPipeline: artworkPipeline,
                              bootstrap: SessionBootstrap())
     let watchTogetherCoordinator = WatchTogetherCoordinator()
     ContentView(runtime: runtime)
@@ -214,17 +220,22 @@ private struct RestoringSessionView: View {
 #Preview {
     let identity = PlatformClientIdentity.make(clientIdentifier: "preview", version: "0.0.0")
     let model = AppModel(identity: identity)
+    let artworkPipeline = ArtworkPipeline()
     #if os(tvOS)
     let runtime = AppRuntime(appModel: model,
                              authManager: AuthManager(appModel: model),
-                             musicPlayer: MusicPlayerController(appModel: model),
+                             musicPlayer: MusicPlayerController(appModel: model,
+                                                                artworkPipeline: artworkPipeline),
+                             artworkPipeline: artworkPipeline,
                              bootstrap: SessionBootstrap())
     #else
     let runtime = AppRuntime(appModel: model,
                              authManager: AuthManager(appModel: model),
                              downloadManager: DownloadManager(appModel: model),
                              sceneActivity: AppSceneActivity { _ in },
-                             musicPlayer: MusicPlayerController(appModel: model),
+                             musicPlayer: MusicPlayerController(appModel: model,
+                                                                artworkPipeline: artworkPipeline),
+                             artworkPipeline: artworkPipeline,
                              bootstrap: SessionBootstrap())
     #endif
     ContentView(runtime: runtime)

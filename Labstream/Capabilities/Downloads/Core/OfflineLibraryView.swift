@@ -1,10 +1,5 @@
 import SwiftUI
 import PMSKit
-#if os(macOS)
-import AppKit
-#elseif canImport(UIKit)
-import UIKit
-#endif
 
 /// Lists offline downloads with live progress + delete, and plays a completed
 /// file through the custom player (`CustomPlayerView(localFile:item:)`).
@@ -179,7 +174,9 @@ public struct OfflineLibraryView: View {
         CustomPlayerView(localFile: record.localURL,
                          item: offlineItem(from: record),
                          trickPlayProvider: localTrickPlayProvider(for: record),
-                         offlinePosterURL: record.posterURL,
+                         offlineArtworkSource: OfflineArtworkSource(fileURL: record.posterURL,
+                                                                    metadata: record.metadata,
+                                                                    ratingKey: record.ratingKey),
                          offlineTextSubtitles: record.metadata?.offlineTextSubtitles ?? [],
                          offlineChapterImageURLs: record.chapterImageURLs,
                          onLocalPlaybackProgress: { positionMs, durationMs in
@@ -443,8 +440,9 @@ public struct OfflineLibraryView: View {
         HStack(spacing: 16) {
             // D5: show the locally-cached poster when present (works fully offline);
             // otherwise fall back to a small offline glyph tile.
-            OfflinePosterTile(posterURL: record.posterURL,
-                              reloadVersion: record.sideAssetBytes,
+            OfflinePosterTile(source: OfflineArtworkSource(fileURL: record.posterURL,
+                                                           metadata: record.metadata,
+                                                           ratingKey: record.ratingKey),
                               isComplete: isComplete,
                               isFailed: isFailed,
                               isUnverified: isUnverified)
@@ -748,19 +746,28 @@ public struct OfflineLibraryView: View {
 /// main actor, not inline in row rendering, so frequent progress refreshes don't repeatedly stat,
 /// read, and decode poster files while the user scrolls.
 private struct OfflinePosterTile: View {
-    let posterURL: URL?
-    let reloadVersion: Int
+    let source: OfflineArtworkSource?
     let isComplete: Bool
     let isFailed: Bool
     let isUnverified: Bool
 
-    @State private var image: UIImage?
-    @State private var loadedPosterURL: URL?
+    @Environment(\.artworkPipeline) private var artworkPipeline
+    @Environment(\.displayScale) private var displayScale
+    @State private var image: DecodedImage?
+    @State private var loadedIdentity: ArtworkTaskIdentity?
+
+    private var descriptor: ArtworkRequestDescriptor? {
+        let pixels = MediaArtwork.pixelDimensions(width: 44,
+                                                  height: 66,
+                                                  displayScale: displayScale,
+                                                  requestScale: nil)
+        return source?.descriptor(pixelWidth: pixels.width, pixelHeight: pixels.height)
+    }
 
     var body: some View {
         Group {
-            if loadedPosterURL == posterURL, let image {
-                Image(uiImage: image)
+            if loadedIdentity == descriptor?.taskIdentity, let image {
+                Image(decodedImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
             } else {
@@ -769,7 +776,7 @@ private struct OfflinePosterTile: View {
         }
         .frame(width: 44, height: 66)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .task(id: PosterLoadID(url: posterURL, version: reloadVersion)) {
+        .task(id: descriptor?.taskIdentity) {
             await loadPoster()
         }
     }
@@ -794,47 +801,19 @@ private struct OfflinePosterTile: View {
     @MainActor
     private func loadPoster() async {
         image = nil
-        loadedPosterURL = nil
-        guard let posterURL else { return }
-        if let cached = OfflinePosterImageCache.shared.image(for: posterURL) {
-            image = cached
-            loadedPosterURL = posterURL
+        loadedIdentity = nil
+        guard let descriptor, let artworkPipeline else { return }
+        do {
+            let response = try await artworkPipeline.fetch(descriptor, priority: .utility)
+            guard !Task.isCancelled,
+                  self.descriptor?.taskIdentity == descriptor.taskIdentity else { return }
+            image = response.image
+            loadedIdentity = descriptor.taskIdentity
+        } catch is CancellationError {
             return
+        } catch {
+            // Offline poster art is optional; retain the status-specific placeholder.
         }
-
-        let decoded = await Task.detached(priority: .utility) {
-            guard let data = try? Data(contentsOf: posterURL) else { return nil as UIImage? }
-            return UIImage(data: data)
-        }.value
-        guard !Task.isCancelled,
-              let decoded else { return }
-        OfflinePosterImageCache.shared.insert(decoded, for: posterURL)
-        image = decoded
-        loadedPosterURL = posterURL
-    }
-}
-
-private struct PosterLoadID: Hashable {
-    let url: URL?
-    let version: Int
-}
-
-@MainActor
-private final class OfflinePosterImageCache {
-    static let shared = OfflinePosterImageCache()
-
-    private let cache: NSCache<NSURL, UIImage> = {
-        let cache = NSCache<NSURL, UIImage>()
-        cache.countLimit = 256
-        return cache
-    }()
-
-    func image(for url: URL) -> UIImage? {
-        cache.object(forKey: url as NSURL)
-    }
-
-    func insert(_ image: UIImage, for url: URL) {
-        cache.setObject(image, forKey: url as NSURL)
     }
 }
 

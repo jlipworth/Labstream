@@ -9,6 +9,61 @@ final class EmbyTrickPlayThumbnailProviderTests: XCTestCase {
         super.tearDown()
     }
 
+    func testDefaultTrickPlayTransportIsEphemeralAndCredentialSafe() {
+        let configuration = SideAssetTransportPolicy.nonpersistentConfiguration()
+
+        XCTAssertEqual(configuration.requestCachePolicy, .reloadIgnoringLocalAndRemoteCacheData)
+        XCTAssertNil(configuration.urlCache)
+        XCTAssertNil(configuration.httpCookieStorage)
+        XCTAssertFalse(configuration.httpShouldSetCookies)
+        XCTAssertEqual(configuration.httpCookieAcceptPolicy, .never)
+        XCTAssertNil(configuration.urlCredentialStorage)
+
+        let sharedConfiguration = SideAssetTransportPolicy.sharedSession.configuration
+        XCTAssertEqual(sharedConfiguration.requestCachePolicy, .reloadIgnoringLocalAndRemoteCacheData)
+        XCTAssertNil(sharedConfiguration.urlCache)
+        XCTAssertNil(sharedConfiguration.httpCookieStorage)
+        XCTAssertNil(sharedConfiguration.urlCredentialStorage)
+    }
+
+    func testPlexBIFUsesInjectedSpecializedTransportAndPreservesAuthenticatedRequest() async throws {
+        let payload = Data("plex-bif-frame".utf8)
+        TrickPlayURLProtocol.configure { request in
+            (200, "application/octet-stream", makeBIF(payload: payload))
+        }
+        let configuration = SideAssetTransportPolicy.nonpersistentConfiguration()
+        configuration.protocolClasses = [TrickPlayURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        let identity = ClientIdentity(clientIdentifier: "test-device",
+                                      product: "Labstream",
+                                      version: "1",
+                                      deviceName: "Test")
+        let item = MediaItem(ratingKey: "item", title: "Movie", type: "movie", media: [
+            Media(id: 1, part: [Part(id: 42, key: "/library/parts/42", indexes: "sd")])
+        ])
+        let coordinator = SideAssetFetchCoordinator(
+            policy: .init(maximumRequestStartsPerSecond: 10_000, maximumConcurrentRequests: 4))
+        let provider = try XCTUnwrap(PlexBIFTrickPlayThumbnailProvider(
+            item: item,
+            mediaIndex: 0,
+            server: URL(string: "https://plex.invalid:32400")!,
+            token: "secret-token",
+            identity: identity,
+            session: session,
+            coordinator: coordinator
+        ))
+
+        let result = await provider.thumbnail(nearMs: 9_000)
+
+        XCTAssertEqual(result?.timeMs, 0)
+        XCTAssertEqual(result?.imageData, payload)
+        let request = try XCTUnwrap(TrickPlayURLProtocol.requests.first)
+        XCTAssertEqual(request.url?.path, "/library/parts/42/indexes/sd")
+        let query = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)?.queryItems ?? []
+        XCTAssertEqual(query.first(where: { $0.name == "X-Plex-Token" })?.value, "secret-token")
+        XCTAssertEqual(request.cachePolicy, .reloadIgnoringLocalAndRemoteCacheData)
+    }
+
     func testMalformedBIFFallsBackToCoalescedSelectedSourcePositionImage() async throws {
         let image = onePixelPNG
         TrickPlayURLProtocol.configure { request in
@@ -82,6 +137,29 @@ final class EmbyTrickPlayThumbnailProviderTests: XCTestCase {
         XCTAssertEqual(result?.timeMs, 5_000)
         XCTAssertEqual(result?.imageData, image)
         XCTAssertEqual(TrickPlayURLProtocol.count(path: "/Videos/item/index.bif"), 0)
+    }
+
+    func testMalformedChapterPayloadIsRejectedAndNotCached() async throws {
+        TrickPlayURLProtocol.configure { request in
+            switch request.url!.path {
+            case "/Items/item/ThumbnailSet":
+                return (200, "application/json", #"{"Thumbnails":[]}"#.data(using: .utf8)!)
+            case "/Items/item/Images/Chapter/0":
+                return (200, "image/jpeg", Data("not-an-image".utf8))
+            default:
+                return (404, "application/json", Data([0]))
+            }
+        }
+        let chapter = Chapter(startTimeOffset: 0, thumb: "emby://item/item/Chapter/0?tag=c")
+        let provider = try makeProvider(item: MediaItem(
+            ratingKey: "item", title: "", type: "movie", chapters: [chapter]))
+
+        let first = await provider.thumbnail(nearMs: 0)
+        let second = await provider.thumbnail(nearMs: 0)
+        XCTAssertNil(first)
+        XCTAssertNil(second)
+        XCTAssertEqual(TrickPlayURLProtocol.count(path: "/Items/item/Images/Chapter/0"), 2,
+                       "a malformed 2xx body must never become a provider cache hit")
     }
 
     func testCancelledRequestDoesNotStartPreviewWork() async throws {

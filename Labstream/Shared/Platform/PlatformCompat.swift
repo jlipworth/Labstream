@@ -6,43 +6,9 @@ import AppKit
 import AVFoundation
 import MediaPlayer
 
-/// Lightweight native-image compatibility for the first macOS slice.
-///
-/// Most artwork code is still UIImage-shaped. The target now builds native macOS by
-/// aliasing those image values to `NSImage`, while future feature agents can replace
-/// call sites with the `PlatformImage` spelling as they deepen Mac polish.
+/// Native image values are allowed only at platform-framework boundaries. Shared artwork
+/// decode, crop, cache, and SwiftUI presentation use `DecodedImage` instead.
 typealias PlatformImage = NSImage
-typealias UIImage = NSImage
-
-extension Image {
-    init(uiImage: UIImage) {
-        self.init(nsImage: uiImage)
-    }
-}
-
-extension NSImage {
-    typealias Orientation = Int
-
-    var cgImage: CGImage? {
-        var rect = CGRect(origin: .zero, size: size)
-        return cgImage(forProposedRect: &rect, context: nil, hints: nil)
-    }
-
-    var scale: CGFloat { 1 }
-    var imageOrientation: Orientation { 0 }
-
-    convenience init(cgImage: CGImage, scale: CGFloat, orientation: Orientation) {
-        let size = CGSize(width: CGFloat(cgImage.width) / max(scale, 1),
-                          height: CGFloat(cgImage.height) / max(scale, 1))
-        self.init(cgImage: cgImage, size: size)
-    }
-
-    func jpegData(compressionQuality: CGFloat) -> Data? {
-        guard let cgImage else { return nil }
-        let rep = NSBitmapImageRep(cgImage: cgImage)
-        return rep.representation(using: .jpeg, properties: [.compressionFactor: compressionQuality])
-    }
-}
 
 /// Pasteboard adapter so diagnostics/feedback code does not import UIKit on macOS.
 enum PlatformPasteboard {
@@ -63,6 +29,8 @@ enum PlatformAudioSessionMode {
 import UIKit
 import AVFAudio
 
+/// Native image values are allowed only at platform-framework boundaries. Shared artwork
+/// decode, crop, cache, and SwiftUI presentation use `DecodedImage` instead.
 typealias PlatformImage = UIImage
 typealias PlatformAudioSessionMode = AVAudioSession.Mode
 
@@ -76,6 +44,8 @@ enum PlatformPasteboard {
 import UIKit
 import AVFAudio
 
+/// Native image values are allowed only at platform-framework boundaries. Shared artwork
+/// decode, crop, cache, and SwiftUI presentation use `DecodedImage` instead.
 typealias PlatformImage = UIImage
 typealias PlatformAudioSessionMode = AVAudioSession.Mode
 

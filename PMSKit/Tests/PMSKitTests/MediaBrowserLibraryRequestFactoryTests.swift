@@ -198,6 +198,155 @@ struct MediaBrowserLibraryRequestFactoryTests {
         #expect(shape.queryItems.map(\.value) == ["first", "second"])
     }
 
+    @Test func namedMetadataProfilesPreserveLegacyRequestShapesByteForByte() {
+        for dialect in [MediaBrowserLibraryQueryDialect.jellyfin, .emby] {
+            let factory = MediaBrowserLibraryRequestFactory(dialect: dialect)
+            let cases: [(name: String,
+                         profiled: MediaBrowserLibraryRequestShape,
+                         legacy: MediaBrowserLibraryRequestShape)] = [
+                (
+                    "grid",
+                    factory.albumArtists(
+                        userId: "user-1",
+                        parentId: "library-1",
+                        startIndex: 20,
+                        limit: 10,
+                        nameStartsWith: "A",
+                        fields: MediaBrowserMetadataFieldProfiles.grid.fields
+                    ),
+                    factory.albumArtists(
+                        userId: "user-1",
+                        parentId: "library-1",
+                        startIndex: 20,
+                        limit: 10,
+                        nameStartsWith: "A",
+                        fields: MediaBrowserLibraryFields.gridItem
+                    )
+                ),
+                (
+                    "search",
+                    factory.items(
+                        userId: "user-1",
+                        parentId: "library-1",
+                        recursive: true,
+                        limit: 30,
+                        searchTerm: "query",
+                        fields: MediaBrowserMetadataFieldProfiles.search.fields
+                    ),
+                    factory.items(
+                        userId: "user-1",
+                        parentId: "library-1",
+                        recursive: true,
+                        limit: 30,
+                        searchTerm: "query",
+                        fields: MediaBrowserLibraryFields.fullItem
+                    )
+                ),
+                (
+                    "home",
+                    factory.latestItems(
+                        userId: "user-1",
+                        parentId: "library-1",
+                        includeItemTypes: "Movie,Episode",
+                        limit: 20,
+                        fields: MediaBrowserMetadataFieldProfiles.home.fields
+                    ),
+                    factory.latestItems(
+                        userId: "user-1",
+                        parentId: "library-1",
+                        includeItemTypes: "Movie,Episode",
+                        limit: 20,
+                        fields: MediaBrowserLibraryFields.fullItem
+                    )
+                ),
+                (
+                    "playlist",
+                    factory.playlistItems(
+                        userId: "user-1",
+                        playlistId: "playlist-1",
+                        startIndex: 0,
+                        limit: 200,
+                        fields: MediaBrowserMetadataFieldProfiles.playlist.fields
+                    ),
+                    factory.playlistItems(
+                        userId: "user-1",
+                        playlistId: "playlist-1",
+                        startIndex: 0,
+                        limit: 200,
+                        fields: MediaBrowserLibraryFields.fullItem
+                    )
+                ),
+                (
+                    "item",
+                    factory.item(
+                        userId: "user-1",
+                        itemId: "item-1",
+                        fields: MediaBrowserMetadataFieldProfiles.item.fields
+                    ),
+                    factory.item(
+                        userId: "user-1",
+                        itemId: "item-1",
+                        fields: MediaBrowserLibraryFields.fullItem
+                    )
+                ),
+                (
+                    "music",
+                    factory.latestItems(
+                        userId: "user-1",
+                        parentId: "music-1",
+                        includeItemTypes: "Audio,MusicAlbum",
+                        limit: 20,
+                        fields: MediaBrowserMetadataFieldProfiles.music.fields
+                    ),
+                    factory.latestItems(
+                        userId: "user-1",
+                        parentId: "music-1",
+                        includeItemTypes: "Audio,MusicAlbum",
+                        limit: 20,
+                        fields: MediaBrowserLibraryFields.fullItem
+                    )
+                ),
+            ]
+
+            for comparison in cases {
+                #expect(
+                    shapeSnapshot(comparison.profiled) == shapeSnapshot(comparison.legacy),
+                    Comment(rawValue: "\(dialect) \(comparison.name)")
+                )
+            }
+        }
+    }
+
+    @Test func latestItemWrappersHonorTheRoutedMetadataProfile() throws {
+        let sentinel = MediaBrowserMetadataFieldProfile(
+            purpose: .music,
+            fields: "MusicRoutingSentinel"
+        )
+        let jellyfin = try JellyfinLibrary.latestItemsRequest(
+            server: URL(string: "https://jellyfin.example.test/root")!,
+            token: "token",
+            identity: JellyfinClientIdentity(
+                client: "Labstream", device: "Mac", deviceId: "device", version: "1"
+            ),
+            userId: "user",
+            parentId: "music",
+            metadataProfile: sentinel
+        )
+        let emby = try EmbyLibrary.latestItemsRequest(
+            server: URL(string: "https://emby.example.test/root")!,
+            token: "token",
+            identity: EmbyClientIdentity(
+                client: "Labstream", device: "Mac", deviceId: "device", version: "1"
+            ),
+            userId: "user",
+            parentId: "music",
+            metadataProfile: sentinel
+        )
+
+        #expect(try queryValue(jellyfin, "fields") == sentinel.fields)
+        #expect(try queryValue(emby, "Fields") == sentinel.fields)
+    }
+
     @Test func remainingConceptsPreserveOrderedDialectGoldens() {
         struct ShapeGolden {
             let name: String

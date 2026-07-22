@@ -30,6 +30,7 @@ struct DetailView: View {
     let originBackend: MediaBackendKind?
 
     @Environment(AppModel.self) private var appModel
+    @Environment(\.metadataRepository) private var metadataRepository
     #if !os(tvOS)
     @Environment(DownloadManager.self) private var downloadManager
     #endif
@@ -58,15 +59,23 @@ struct DetailView: View {
     #endif
 
     @State private var detailed: MediaItem
+    /// Provenance for the current hydrated detail. Only an exact-current, unpatched native read
+    /// may satisfy immediate Play without another authoritative metadata request.
+    @State private var detailedMetadataSnapshot: MetadataSnapshot?
     @State private var presentingPlayer = false
     @State private var localPlaybackRequest: LocalPlaybackRequest?
     @State private var remotePlayback: MediaBrowserRemotePlayback?
     #if !os(tvOS)
     @State private var showDownloadOptions = false
+    @State private var downloadOptionsItem: MediaItem?
+    @State private var isPreparingDownloadOptions = false
     #endif
     @State private var playbackErrorMessage: String?
     @State private var isResolvingPlayback = false
     @State private var isTogglingWatched = false
+    #if os(visionOS)
+    @State private var isPreparingWatchTogether = false
+    #endif
     @State private var metadataLoadingRatingKey: String?
     @State private var playbackRequestID: UUID?
     #if os(iOS)
@@ -105,6 +114,9 @@ struct DetailView: View {
     /// value from `detailed`"; once the user toggles we hold their intent here so the row
     /// reflects it immediately, before/independent of the scrobble round-trip.
     @State private var watchedOverride: Bool?
+    /// Rating key that owns `watchedOverride`. A collapsed-version selection can change while a
+    /// mutation is in flight; the old version's optimism must never paint the newly selected one.
+    @State private var watchedOverrideItemID: String?
     #if os(macOS)
     @State private var macPlayerPresentationOwnerID = UUID()
     #endif
@@ -119,6 +131,7 @@ struct DetailView: View {
         self.item = item
         self.originBackend = originBackend
         _detailed = State(initialValue: item)
+        _detailedMetadataSnapshot = State(initialValue: nil)
     }
 
     /// Backend that Play / watched / download must act against (#100): the item's origin
@@ -538,15 +551,27 @@ struct DetailView: View {
             #if os(tvOS) && DEBUG
             if TVUIFixtureCatalog.isBrowseEnabled { return }
             #endif
-            await refreshMetadata()
+            let autoPlay = SystemEntryRouter.shared.consumeAutoPlay(for: activeVersionRatingKey)
+            if let handoff = autoPlay?.snapshot,
+               metadataRepository?.mayAuthorizeAction(handoff,
+                                                       appModel: appModel,
+                                                       backend: actionBackend,
+                                                       itemID: activeVersionRatingKey) == true {
+                // Route-key system entry already performed this exact native Detail read. Preserve
+                // its one-shot provenance rather than degrading it to generic display-cache reuse.
+                applyHydratedMetadata(handoff.item, snapshot: handoff)
+            } else {
+                await refreshMetadata()
+            }
             // System-entry autoplay (#24): a "Play …" intent armed the router right
-            // before pushing this view; consume it once metadata is in and present
-            // the player — the same sequence as tapping the Play button.
-            if SystemEntryRouter.shared.consumeAutoPlay(for: detailed.ratingKey),
+            // before pushing this view; after accepting its native handoff or finishing ordinary
+            // hydration, present the player through the same admission path as the Play button.
+            if autoPlay != nil,
                !detailed.isMusic {
-                musicPlayer.pauseForVideo()
-                playingItem = DetailPlaybackLauncher.itemWithResumeRewind(detailed, resumeRewindSeconds: resumeRewindSeconds)
-                await presentResolvedPlayer()
+                isResolvingPlayback = true
+                let requestID = UUID()
+                playbackRequestID = requestID
+                await startPlayback(requestID: requestID)
             }
             await loadRelatedMedia()
         }
@@ -562,7 +587,7 @@ struct DetailView: View {
         }
         #if os(macOS)
         .sheet(isPresented: $showDownloadOptions) {
-            DownloadOptionsSheet(item: detailed,
+            DownloadOptionsSheet(item: downloadOptionsItem ?? detailed,
                                  mediaIndex: selectedMediaIndex,
                                  backend: actionBackend.downloadBackendKind)
         }
@@ -594,7 +619,7 @@ struct DetailView: View {
         }
         #if !os(tvOS)
         .sheet(isPresented: $showDownloadOptions) {
-            DownloadOptionsSheet(item: detailed,
+            DownloadOptionsSheet(item: downloadOptionsItem ?? detailed,
                                  mediaIndex: selectedMediaIndex,
                                  backend: actionBackend.downloadBackendKind)
         }
@@ -694,7 +719,7 @@ struct DetailView: View {
                                                                    url: request.trickPlayURL,
                                                                    chapterImageURLs: request.chapterImageURLs,
                                                                    offlineChapters: request.offlineChapters),
-                         offlinePosterURL: request.posterURL,
+                         offlineArtworkSource: request.artworkSource,
                          offlineTextSubtitles: request.offlineTextSubtitles,
                          offlineChapterImageURLs: request.chapterImageURLs,
                          onClose: { localPlaybackRequest = nil })
@@ -773,8 +798,9 @@ struct DetailView: View {
     @ViewBuilder
     private var watchTogetherButton: some View {
         Button {
-            let item = detailed
-            Task { await watchTogetherCoordinator.requestWatchTogether(for: item) }
+            guard !isPreparingWatchTogether else { return }
+            isPreparingWatchTogether = true
+            Task { await prepareWatchTogether() }
         } label: {
             Label("Watch Together", systemImage: "shareplay")
                 .font(.title3.weight(.semibold))
@@ -783,9 +809,21 @@ struct DetailView: View {
         }
         .buttonStyle(.bordered)
         .disabled(isResolvingPlayback
+                  || isPreparingWatchTogether
                   || !metadataReadyForActions
                   || !watchTogetherCoordinator.canRequestWatchTogether
                   || detailed.sharePlayMediaIdentity?.coordinatorIdentifier == nil)
+    }
+
+    /// SharePlay matching is an action, not presentation. Resolve the same exact-current native
+    /// item used by Play/Download before handing anything to the coordinator.
+    private func prepareWatchTogether() async {
+        defer { isPreparingWatchTogether = false }
+        guard let action = await authoritativeItemForAction(),
+              !Task.isCancelled,
+              metadataReadyForActions,
+              watchTogetherCoordinator.canRequestWatchTogether else { return }
+        await watchTogetherCoordinator.requestWatchTogether(for: action.item)
     }
 
     @ViewBuilder
@@ -972,6 +1010,10 @@ struct DetailView: View {
                                                    trickPlayURL: trickPlayURL,
                                                    trickPlayKind: trickPlayKind,
                                                    posterURL: record?.posterURL,
+                                                   artworkSource: OfflineArtworkSource(
+                                                       fileURL: record?.posterURL,
+                                                       metadata: record?.metadata,
+                                                       ratingKey: key),
                                                    chapterImageURLs: chapterImageURLs,
                                                    offlineChapters: record?.metadata?.chapters ?? [],
                                                    offlineTextSubtitles: record?.metadata?.offlineTextSubtitles ?? [],
@@ -985,14 +1027,20 @@ struct DetailView: View {
             .labstreamGlassButtonStyle()
         } else {
             Button {
-                showDownloadOptions = true
+                guard !isPreparingDownloadOptions else { return }
+                isPreparingDownloadOptions = true
+                Task { await prepareDownloadOptions() }
             } label: {
-                Label(downloadLabel, systemImage: "arrow.down.circle")
-                    .font(detailActionFont)
-                    .frame(maxWidth: compactWidth ? .infinity : nil)
+                ZStack {
+                    Label(downloadLabel, systemImage: "arrow.down.circle")
+                        .opacity(isPreparingDownloadOptions ? 0 : 1)
+                    if isPreparingDownloadOptions { ProgressView() }
+                }
+                .font(detailActionFont)
+                .frame(maxWidth: compactWidth ? .infinity : nil)
             }
             .labstreamGlassButtonStyle()
-            .disabled(isDownloading || !metadataReadyForActions)
+            .disabled(isDownloading || isPreparingDownloadOptions || !metadataReadyForActions)
         }
     }
     #endif
@@ -1012,7 +1060,7 @@ struct DetailView: View {
                 .frame(maxWidth: compactWidth ? .infinity : nil)
         }
         .labstreamGlassButtonStyle()
-        .disabled(isTogglingWatched)
+        .disabled(isTogglingWatched || !metadataReadyForActions)
     }
 
     private var detailActionFont: Font {
@@ -1175,8 +1223,7 @@ struct DetailView: View {
                                                                                       mediaIndex: mediaIndex,
                                                                                       server: server,
                                                                                       token: token,
-                                                                                      identity: appModel.identity,
-                                                                                      client: appModel.client),
+                                                                                      identity: appModel.identity),
                                  onClose: { presentingPlayer = false },
                                  onRequestPlay: playNext)
                     #if os(iOS)
@@ -1209,19 +1256,131 @@ struct DetailView: View {
     private func toggleWatched() async {
         defer { isTogglingWatched = false }
         guard !isResolvingPlayback else { return }
-        let wasWatched = isWatched
-        // Optimistic flip.
-        watchedOverride = !wasWatched
+        let previousOverride = watchedOverride
+        let previousOverrideItemID = watchedOverrideItemID
+        guard let action = await authoritativeItemForAction() else {
+            return
+        }
+        // The server-native state, not a stale or cache-painted presentation value, decides the
+        // mutation direction. Apply optimism only after that native admission has completed.
+        let targetPlayed = (action.item.viewCount ?? 0) == 0
+        let mutationBackend = actionBackend
+        let mutationItemID = action.item.ratingKey
+        let expectedDetailVersionID = activeVersionRatingKey
+        guard let mutationContext = appModel.authenticatedBrowseSession(for: mutationBackend) else {
+            return
+        }
+        let mutationTarget = DetailWatchedMutationTarget(
+            backend: mutationBackend,
+            authority: mutationContext.authority,
+            itemID: mutationItemID,
+            detailVersionID: expectedDetailVersionID)
+        watchedOverride = targetPlayed
+        watchedOverrideItemID = mutationItemID
 
         do {
-            try await DetailWatchedUpdater.setPlayed(item: detailed,
-                                                     backend: actionBackend,
+            try await DetailWatchedUpdater.setPlayed(item: action.item,
+                                                     backend: mutationBackend,
                                                      appModel: appModel,
-                                                     played: !wasWatched)
+                                                     played: targetPlayed)
+            let currentAuthority = appModel
+                .authenticatedBrowseSession(for: mutationBackend)?.authority
+            if currentAuthority == mutationTarget.authority {
+                // Cache truth follows the exact item sent to the server even if the user selected
+                // another collapsed movie version while this request was in flight.
+                try? metadataRepository?.patchWatchedState(
+                    appModel: appModel,
+                    backend: mutationTarget.backend,
+                    authority: mutationTarget.authority,
+                    itemID: mutationTarget.itemID,
+                    played: targetPlayed)
+                // Mounted state is narrower: never apply version A's completion to version B.
+                if mutationTarget.isStillMounted(
+                    backend: actionBackend,
+                    authority: appModel.authenticatedBrowseSession(for: actionBackend)?.authority,
+                    activeVersionID: activeVersionRatingKey,
+                    detailedItemID: detailed.ratingKey),
+                   detailedMetadataSnapshot?.backend == mutationTarget.backend,
+                   detailedMetadataSnapshot?.authority == mutationTarget.authority,
+                   detailedMetadataSnapshot?.item.ratingKey == mutationTarget.itemID {
+                    detailedMetadataSnapshot = detailedMetadataSnapshot?
+                        .patchingWatchedState(played: targetPlayed)
+                }
+            }
         } catch {
             // Roll back the optimistic flip; the server rejected the change.
-            watchedOverride = wasWatched
+            watchedOverride = previousOverride
+            watchedOverrideItemID = previousOverrideItemID
         }
+    }
+
+    #if !os(tvOS)
+    /// Display-cache values may render the sheet button but cannot supply download negotiation.
+    /// Resolve an exact-current native value before presenting the existing direct planner.
+    private func prepareDownloadOptions() async {
+        defer { isPreparingDownloadOptions = false }
+        downloadOptionsItem = nil
+        guard let action = await authoritativeItemForAction(),
+              !Task.isCancelled,
+              metadataReadyForActions else { return }
+        downloadOptionsItem = action.item
+        showDownloadOptions = true
+    }
+    #endif
+
+    private typealias AuthoritativeActionItem = (item: MediaItem, snapshot: MetadataSnapshot?)
+
+    /// Return the current native Detail value or perform one authoritative metadata read. This
+    /// admission gate is shared by Play, Download, and watched mutation, while their existing
+    /// context-fenced launcher/planner/mutator paths retain ownership of each action.
+    private func authoritativeItemForAction(itemID: String? = nil) async
+        -> AuthoritativeActionItem? {
+        let expectedBackend = actionBackend
+        let expectedDetailID = activeVersionRatingKey
+        let expectedItemID = itemID ?? expectedDetailID
+        if expectedItemID == expectedDetailID,
+           let detailedMetadataSnapshot,
+           metadataRepository?.mayAuthorizeAction(detailedMetadataSnapshot,
+                                                   appModel: appModel,
+                                                   backend: expectedBackend,
+                                                   itemID: expectedItemID)
+            ?? detailedMetadataSnapshot.mayAuthorizeAction(in: appModel,
+                                                           backend: expectedBackend,
+                                                           itemID: expectedItemID) {
+            return (detailedMetadataSnapshot.item, detailedMetadataSnapshot)
+        }
+
+        let authority = appModel.authenticatedBrowseSession(for: expectedBackend)?.authority
+        let result = await DetailMetadataLoader.load(ratingKey: expectedItemID,
+                                                     backend: expectedBackend,
+                                                     appModel: appModel,
+                                                     repository: metadataRepository,
+                                                     policy: .authoritative)
+        guard !Task.isCancelled,
+              actionBackend == expectedBackend,
+              activeVersionRatingKey == expectedDetailID,
+              appModel.authenticatedBrowseSession(for: expectedBackend)?.authority == authority,
+              let item = result.item else { return nil }
+        // Shipping RootView always injects the repository, so this is a native provenance value.
+        // The nil-snapshot path is retained only for isolated previews/fixtures and is still fenced
+        // by the exact authority captured above.
+        if let snapshot = result.snapshot {
+            guard metadataRepository?.mayAuthorizeAction(snapshot,
+                                                         appModel: appModel,
+                                                         backend: expectedBackend,
+                                                         itemID: expectedItemID)
+                ?? snapshot.mayAuthorizeAction(in: appModel,
+                                               backend: expectedBackend,
+                                               itemID: expectedItemID) else { return nil }
+            if expectedItemID == expectedDetailID {
+                detailed = item
+                detailedMetadataSnapshot = snapshot
+                if selectedMediaIndex >= (item.media?.count ?? 1) {
+                    selectedMediaIndex = 0
+                }
+            }
+        }
+        return (item, result.snapshot)
     }
 
     private var metadataReadyForActions: Bool {
@@ -1239,10 +1398,18 @@ struct DetailView: View {
             }
         }
         guard playbackRequestID == requestID, metadataReadyForActions, !presentingPlayer else { return }
-        let subject = target ?? detailed
+        let displayedSubject = target ?? detailed
         // Defense-in-depth (#15): music is filtered from browse, but never let a music item
         // launch the video player. Unreachable in normal flow.
-        guard !subject.isMusic else { return }
+        guard !displayedSubject.isMusic else { return }
+        // Presentation cache can paint this page, but it cannot select stream metadata. Reuse the
+        // initial native Detail read when it is still exact-current; otherwise perform one native
+        // authority-fenced read before any backend's playback path proceeds.
+        guard let action = await authoritativeItemForAction(itemID: displayedSubject.ratingKey),
+              playbackRequestID == requestID,
+              metadataReadyForActions,
+              !presentingPlayer else { return }
+        let subject = action.item
         let launchRatingKey = subject.ratingKey
         // The page must still show the same item when an async resolve lands; comparing
         // against the page key (not the launch target) keeps the guard meaningful for
@@ -1281,6 +1448,8 @@ struct DetailView: View {
                 let playbackItem = await DetailPlaybackLauncher.metadataItem(
                     ratingKey: launchRatingKey,
                     fallback: subject,
+                    trustedDetailSnapshot: action.snapshot,
+                    metadataRepository: metadataRepository,
                     context: capturedContext,
                     appModel: appModel,
                     resumeRewindSeconds: resumeRewindSeconds)
@@ -1391,6 +1560,7 @@ struct DetailView: View {
         let trickPlayURL: URL?
         let trickPlayKind: LocalTrickPlayKind?
         let posterURL: URL?
+        let artworkSource: OfflineArtworkSource?
         let chapterImageURLs: [Int: URL]
         let offlineChapters: [OfflineChapter]
         let offlineTextSubtitles: [OfflineTextSubtitleTrack]
@@ -1458,7 +1628,10 @@ struct DetailView: View {
     #endif
 
     private var isWatched: Bool {
-        if let override = watchedOverride { return override }
+        if watchedOverrideItemID == detailed.ratingKey,
+           let override = watchedOverride {
+            return override
+        }
         return (detailed.viewCount ?? 0) > 0
     }
 
@@ -1491,6 +1664,8 @@ struct DetailView: View {
 
     private func refreshMetadata() async {
         let requestedRatingKey = activeVersionRatingKey
+        let requestedBackend = actionBackend
+        detailedMetadataSnapshot = nil
         metadataLoadingRatingKey = requestedRatingKey
         defer {
             if metadataLoadingRatingKey == requestedRatingKey {
@@ -1500,24 +1675,58 @@ struct DetailView: View {
         // Resolve metadata against the item's origin backend (#100), not the live active
         // backend, so a detail that lingered across a switch refreshes from the right server.
         let span = PerformanceInstrumentation.begin(.detailMetadata,
-                                                     backend: actionBackend.performanceLabel)
+                                                     backend: requestedBackend.performanceLabel)
         let result = await DetailMetadataLoader.load(ratingKey: requestedRatingKey,
-                                                     backend: actionBackend,
-                                                     appModel: appModel)
-        guard activeVersionRatingKey == requestedRatingKey, !Task.isCancelled else { return }
+                                                     backend: requestedBackend,
+                                                     appModel: appModel,
+                                                     repository: metadataRepository,
+                                                     policy: .display)
+        guard activeVersionRatingKey == requestedRatingKey,
+              actionBackend == requestedBackend,
+              !Task.isCancelled else { return }
         guard let full = result.item else {
             span.end(result: "failure", fields: ["error": result.errorLabel ?? "metadata_unavailable"])
             return
         }
-        detailed = full
-        // The fresh payload may have a different number of media entries; clamp the
-        // selection and drop any stale optimistic watched override now that we have
-        // an authoritative value from the server.
-        if selectedMediaIndex >= (full.media?.count ?? 1) {
+        applyHydratedMetadata(full, snapshot: result.snapshot)
+
+        guard result.snapshot?.provenance.delivery == .staleWhileRevalidate else {
+            span.end(fields: ["media_count": full.media?.count ?? 0])
+            return
+        }
+
+        // SWR is visible, not merely a warm-cache side effect: paint the bounded stale value,
+        // then join the repository-owned exact refresh and replace it when that native read lands.
+        // `metadataLoadingRatingKey` remains set throughout, so the stale paint cannot admit an
+        // action even before provenance is consulted.
+        let refreshed = await DetailMetadataLoader.load(ratingKey: requestedRatingKey,
+                                                        backend: requestedBackend,
+                                                        appModel: appModel,
+                                                        repository: metadataRepository,
+                                                        policy: .authoritative)
+        guard activeVersionRatingKey == requestedRatingKey,
+              actionBackend == requestedBackend,
+              !Task.isCancelled else { return }
+        guard let refreshedItem = refreshed.item else {
+            span.end(result: "stale", fields: ["media_count": full.media?.count ?? 0])
+            return
+        }
+        applyHydratedMetadata(refreshedItem, snapshot: refreshed.snapshot)
+        span.end(fields: ["media_count": refreshedItem.media?.count ?? 0,
+                          "swr_refresh": true])
+    }
+
+    private func applyHydratedMetadata(_ item: MediaItem, snapshot: MetadataSnapshot?) {
+        detailed = item
+        detailedMetadataSnapshot = snapshot
+        // The hydrated payload may have a different number of media entries; clamp the
+        // selection and drop the prior optimistic override. Repository provenance separately
+        // decides whether this value may authorize an action.
+        if selectedMediaIndex >= (item.media?.count ?? 1) {
             selectedMediaIndex = 0
         }
         watchedOverride = nil
-        span.end(fields: ["media_count": full.media?.count ?? 0])
+        watchedOverrideItemID = nil
     }
 
     // MARK: - Trailers & Extras shelf (#199)

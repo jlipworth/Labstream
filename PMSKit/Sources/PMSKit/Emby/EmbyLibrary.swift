@@ -67,7 +67,7 @@ public enum EmbyLibrary {
                                           parentId: String? = nil,
                                           startIndex: Int? = nil,
                                           limit: Int? = nil,
-                                          fields: String = gridItemFields) throws -> URLRequest {
+                                          fields: String = MediaBrowserMetadataFieldProfiles.grid.fields) throws -> URLRequest {
         try itemsRequest(server: server,
                          token: token,
                          identity: identity,
@@ -94,7 +94,7 @@ public enum EmbyLibrary {
                                               collectionId: String,
                                               startIndex: Int? = nil,
                                               limit: Int? = nil,
-                                              fields: String = gridItemFields) throws -> URLRequest {
+                                              fields: String = MediaBrowserMetadataFieldProfiles.grid.fields) throws -> URLRequest {
         try itemsRequest(server: server,
                          token: token,
                          identity: identity,
@@ -164,7 +164,7 @@ public enum EmbyLibrary {
                                            nameStartsWith: String? = nil,
                                            sortBy: String = "SortName",
                                            sortOrder: String = "Ascending",
-                                           fields: String = gridItemFields) throws -> URLRequest {
+                                           fields: String = MediaBrowserMetadataFieldProfiles.grid.fields) throws -> URLRequest {
         let shape = requestFactory.albumArtists(
             userId: userId,
             parentId: parentId,
@@ -189,7 +189,7 @@ public enum EmbyLibrary {
                                             playlistId: String,
                                             startIndex: Int? = nil,
                                             limit: Int? = nil,
-                                            fields: String = fullItemFields) throws -> URLRequest {
+                                            fields: String = MediaBrowserMetadataFieldProfiles.playlist.fields) throws -> URLRequest {
         let shape = requestFactory.playlistItems(
             userId: userId,
             playlistId: playlistId,
@@ -214,7 +214,7 @@ public enum EmbyLibrary {
             parentId: parentId,
             startIndex: startIndex,
             limit: limit,
-            fields: fullItemFields
+            fields: MediaBrowserMetadataFieldProfiles.home.fields
         )
         let url = try url(server: server, shape: shape)
         return get(url: url, token: token, identity: identity, userId: userId)
@@ -233,7 +233,7 @@ public enum EmbyLibrary {
             parentId: parentId,
             startIndex: startIndex,
             limit: limit,
-            fields: fullItemFields
+            fields: MediaBrowserMetadataFieldProfiles.home.fields
         )
         let url = try url(server: server, shape: shape)
         return get(url: url, token: token, identity: identity, userId: userId)
@@ -246,13 +246,15 @@ public enum EmbyLibrary {
                                           userId: String,
                                           parentId: String? = nil,
                                           includeItemTypes: String = "Movie,Episode,Video",
-                                          limit: Int = 20) throws -> URLRequest {
+                                          limit: Int = 20,
+                                          metadataProfile: MediaBrowserMetadataFieldProfile =
+                                              MediaBrowserMetadataFieldProfiles.home) throws -> URLRequest {
         let shape = requestFactory.latestItems(
             userId: userId,
             parentId: parentId,
             includeItemTypes: includeItemTypes,
             limit: limit,
-            fields: fullItemFields
+            fields: metadataProfile.fields
         )
         let url = try url(server: server, shape: shape)
         return get(url: url, token: token, identity: identity, userId: userId)
@@ -264,7 +266,11 @@ public enum EmbyLibrary {
                                    identity: EmbyClientIdentity,
                                    userId: String,
                                    itemId: String) throws -> URLRequest {
-        let shape = requestFactory.item(userId: userId, itemId: itemId, fields: fullItemFields)
+        let shape = requestFactory.item(
+            userId: userId,
+            itemId: itemId,
+            fields: MediaBrowserMetadataFieldProfiles.item.fields
+        )
         let url = try url(server: server, shape: shape)
         return get(url: url, token: token, identity: identity, userId: userId)
     }
@@ -560,7 +566,7 @@ public enum EmbyLibrary {
         let url = try url(server: server,
                           path: "/Users/\(userId)/Items/\(itemId)/\(relationPath)",
                           queryItems: [
-                              dialect.queryItem(.fields, value: fullItemFields),
+                              dialect.queryItem(.fields, value: MediaBrowserMetadataFieldProfiles.relatedMedia.fields),
                               dialect.queryItem(.enableUserData, value: "true"),
                               dialect.queryItem(.enableImages, value: "true"),
                           ])

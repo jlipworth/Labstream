@@ -10,6 +10,7 @@ import PMSKit
 struct MediaBrowserMusicView: View {
     let macPivot: MusicPivot?
     let allowedLibraryIDs: Set<String>?
+    private let catalogRepository: LibraryCatalogRepository
     private let externalSelectedLibraryID: Binding<String?>?
     @Environment(AppModel.self) private var appModel
 
@@ -20,14 +21,16 @@ struct MediaBrowserMusicView: View {
     /// `MusicLibraryView.loadedIdentity`: without it, the `.task(id: backendIdentity)` reload
     /// fires on a backend switch but `load()` early-returns (still `.loaded`) and keeps showing
     /// the previous backend's libraries.
-    @State private var loadedIdentity: String?
+    @State private var loadedIdentity: MusicCatalogLoadIdentity?
 
     init(macPivot: MusicPivot? = nil,
          selectedLibraryID: Binding<String?>? = nil,
-         allowedLibraryIDs: Set<String>? = nil) {
+         allowedLibraryIDs: Set<String>? = nil,
+         catalogRepository: LibraryCatalogRepository) {
         self.macPivot = macPivot
         self.externalSelectedLibraryID = selectedLibraryID
         self.allowedLibraryIDs = allowedLibraryIDs
+        self.catalogRepository = catalogRepository
     }
 
     private var selectedLibrary: MusicLibrary? {
@@ -39,8 +42,8 @@ struct MediaBrowserMusicView: View {
     }
 
     /// Reload when the backend or its server changes (switching Jellyfin ⇄ Emby).
-    private var backendIdentity: String {
-        appModel.activeBrowseSessionKey
+    private var backendIdentity: MusicCatalogLoadIdentity {
+        MusicCatalogLoadIdentity(appModel: appModel, allowedLibraryIDs: allowedLibraryIDs)
     }
 
     var body: some View {
@@ -60,7 +63,9 @@ struct MediaBrowserMusicView: View {
                                            systemImage: "music.note",
                                            description: Text("This server has no music libraries."))
                 } else if let library = selectedLibrary {
-                    MediaBrowserMusicLibraryView(library: library, requestedPivot: macPivot)
+                    MediaBrowserMusicLibraryView(library: library,
+                                                 requestedPivot: macPivot,
+                                                 catalogRepository: catalogRepository)
                         .id("\(library.id):\(macPivot?.rawValue ?? "adaptive")")
                 }
             }
@@ -107,7 +112,8 @@ struct MediaBrowserMusicView: View {
         if identityChanged { loadState = .loading }
         else if case .loaded = loadState {} else { loadState = .loading }
         do {
-            let fetched = try await appModel.musicProvider.musicLibraries()
+            let fetched = try await appModel.musicProvider
+                .musicLibraries(catalogRepository: catalogRepository, forceRefresh: force)
             let libs = fetched.filter { allowedLibraryIDs?.contains($0.id) ?? true }
             // A newer backend switch may have superseded this fetch while it was in flight; its own
             // `.task(id:)` reload will deliver the correct libraries, so drop this stale result.
@@ -134,6 +140,7 @@ struct MediaBrowserMusicView: View {
 private struct MediaBrowserMusicLibraryView: View {
     let library: MusicLibrary
     let requestedPivot: MusicPivot?
+    let catalogRepository: LibraryCatalogRepository
 
     @State private var pivot: MusicPivot = .home
 
@@ -161,7 +168,7 @@ private struct MediaBrowserMusicLibraryView: View {
             MusicPagedGrid(libraryID: library.id, libraryTitle: library.title, kind: .albums)
                 .id("albums")
         case .playlists:
-            MusicPlaylistsPivot().id("playlists")
+            MusicPlaylistsPivot(catalogRepository: catalogRepository).id("playlists")
         }
     }
 }

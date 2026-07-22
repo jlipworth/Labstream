@@ -12,6 +12,20 @@ public enum HomeRailArtworkPolicy {
         case poster
         /// Episode-still/backdrop artwork, rendered as the existing 16:9 episode card.
         case landscape
+
+        /// The selected artwork's width/height contract. Home uses this same value for its
+        /// frame and backend request so a landscape Thumb can never be requested as a 2:3
+        /// poster (the server may otherwise reshape the response before SwiftUI sees it).
+        public var aspectRatio: Double {
+            switch self {
+            case .poster: MediaItem.defaultPosterAspect
+            case .landscape: 16.0 / 9.0
+            }
+        }
+
+        public func pixelHeight(forPixelWidth width: Int) -> Int {
+            max(1, Int((Double(max(1, width)) / aspectRatio).rounded()))
+        }
     }
 
     public struct Selection: Sendable, Equatable {
@@ -34,16 +48,46 @@ public enum HomeRailArtworkPolicy {
             return Selection(path: nonEmpty(item.thumb), presentation: .poster)
         }
 
-        if let seasonArtwork = nonEmpty(item.parentThumb) {
-            return Selection(path: seasonArtwork, presentation: .poster)
+        let seasonArtwork = classified(item.parentThumb, fallback: .poster)
+        let showArtwork = classified(item.grandparentThumb, fallback: .poster)
+
+        // MediaBrowser's ParentThumb is a landscape season thumbnail, despite the field's
+        // historical use as "season artwork". Prefer an actual season/show Primary poster
+        // before it so Home keeps portrait cards whenever the backend supplied one.
+        if let seasonArtwork, seasonArtwork.presentation == .poster { return seasonArtwork }
+        if let showArtwork, showArtwork.presentation == .poster { return showArtwork }
+
+        // When no Primary exists, retain the available contextual image but honor its real
+        // image type. A Thumb/Backdrop must flow through the 16:9 cell/request contract.
+        if let seasonArtwork { return seasonArtwork }
+        if let showArtwork { return showArtwork }
+        if let episodeStill = classified(item.thumb, fallback: .landscape) { return episodeStill }
+        return classified(item.art, fallback: .landscape)
+            ?? Selection(path: nil, presentation: .landscape)
+    }
+
+    private static func classified(_ path: String?, fallback: Presentation) -> Selection? {
+        guard let path = nonEmpty(path) else { return nil }
+        let presentation: Presentation
+        switch syntheticImageType(path) {
+        case .primary:
+            presentation = .poster
+        case .thumb, .backdrop:
+            presentation = .landscape
+        case .logo, nil:
+            // Plex paths do not encode an image type. Preserve the caller's established
+            // semantic fallback for those paths rather than guessing from a URL shape.
+            presentation = fallback
         }
-        if let showArtwork = nonEmpty(item.grandparentThumb) {
-            return Selection(path: showArtwork, presentation: .poster)
+        return Selection(path: path, presentation: presentation)
+    }
+
+    private static func syntheticImageType(_ path: String) -> MediaBrowserImageType? {
+        guard let scheme = URL(string: path)?.scheme,
+              scheme == JellyfinFlavor.syntheticScheme || scheme == EmbyFlavor.syntheticScheme else {
+            return nil
         }
-        if let episodeStill = nonEmpty(item.thumb) {
-            return Selection(path: episodeStill, presentation: .landscape)
-        }
-        return Selection(path: nonEmpty(item.art), presentation: .landscape)
+        return MediaBrowserSyntheticImageRef.parse(path, scheme: scheme)?.type
     }
 
     private static func nonEmpty(_ value: String?) -> String? {

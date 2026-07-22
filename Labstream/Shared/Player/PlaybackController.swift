@@ -132,9 +132,10 @@ final class PlaybackController {
 
     /// The local file URL, when playing offline content.
     private let localFile: URL?
-    /// Locally cached poster for offline playback. Unlike `item.thumb`, this remains readable
-    /// without a server/token and can populate player chrome plus system Now Playing artwork.
-    private let offlinePosterURL: URL?
+    /// App-lifetime artwork facade and exact authority/source descriptor configured by the player
+    /// view before `start()`. Offline descriptors never consult current browse credentials.
+    private var externalArtworkPipeline: ArtworkPipeline?
+    private var externalArtworkDescriptor: ArtworkRequestDescriptor?
     /// Persists local-file playback progress for offline downloads. nil for online streams.
     private let localPlaybackProgress: ((Int, Int?) -> Void)?
     /// Cached per-chapter image file URLs (chapter index → file), for offline playback only (#88).
@@ -1023,7 +1024,6 @@ final class PlaybackController {
         self.identity = identity
         self.client = client
         self.localFile = nil
-        self.offlinePosterURL = nil
         self.localPlaybackProgress = nil
         self.offlineChapterImageURLs = [:]
         self.offlineTextSubtitles = []
@@ -1053,7 +1053,6 @@ final class PlaybackController {
          item: MediaItem,
          identity: ClientIdentity,
          client: PlexClient,
-         offlinePosterURL: URL? = nil,
          offlineTextSubtitles: [OfflineTextSubtitleTrack] = [],
          offlineChapterImageURLs: [Int: URL] = [:],
          onLocalPlaybackProgress: ((Int, Int?) -> Void)? = nil,
@@ -1061,7 +1060,6 @@ final class PlaybackController {
          qualityDefaultsKey: String = PlaybackPreferences.Keys.legacyQualityKbps) {
         self.item = item
         self.localFile = localFile
-        self.offlinePosterURL = offlinePosterURL
         self.localPlaybackProgress = onLocalPlaybackProgress
         self.offlineChapterImageURLs = offlineChapterImageURLs
         self.offlineTextSubtitles = offlineTextSubtitles
@@ -1116,7 +1114,6 @@ final class PlaybackController {
          qualityDefaultsKey: String = PlaybackPreferences.Keys.legacyQualityKbps) {
         self.item = item
         self.localFile = nil
-        self.offlinePosterURL = nil
         self.localPlaybackProgress = nil
         self.offlineChapterImageURLs = [:]
         self.offlineTextSubtitles = []
@@ -3190,12 +3187,23 @@ final class PlaybackController {
         return item
     }
 
-    /// Build an artwork `AVMetadataItem` (`.commonIdentifierArtwork`) from raw image data.
-    private static func artworkMetadataItem(data: Data) -> AVMetadataItem {
+    /// Configure the one artwork request used by AVPlayerItem metadata and visionOS Now Playing.
+    /// Called before `start()`; the immutable descriptor carries the exact authenticated/local
+    /// ownership generation and the pipeline joins matching system-surface consumers.
+    func configureExternalArtwork(descriptor: ArtworkRequestDescriptor?,
+                                  pipeline: ArtworkPipeline?) {
+        externalArtworkDescriptor = descriptor
+        externalArtworkPipeline = pipeline
+    }
+
+    /// Build an artwork `AVMetadataItem` from original encoded bytes. Preserve the true ImageIO
+    /// type instead of claiming all bytes are JPEG (PNG/WebP inputs must never be mislabeled).
+    private static func artworkMetadataItem(data: Data,
+                                            typeIdentifier: String?) -> AVMetadataItem {
         let item = AVMutableMetadataItem()
         item.identifier = .commonIdentifierArtwork
         item.value = data as NSData
-        item.dataType = kCMMetadataBaseDataType_JPEG as String
+        item.dataType = typeIdentifier
         item.extendedLanguageTag = "und"
         return item
     }
@@ -3226,66 +3234,32 @@ final class PlaybackController {
                                                          defaultPlaybackRate: Double(playbackSpeed))
         #endif
 
-        let artworkURL: URL?
-        if let offlinePosterURL {
-            artworkURL = offlinePosterURL
-        } else if let server, let token {
-            let imagePath = item.thumb ?? item.art
-            artworkURL = imagePath.flatMap {
-                Self.posterTranscodeURL(imagePath: $0, server: server, token: token)
-            }
-        } else {
-            artworkURL = nil
-        }
-        guard let artworkURL else { return }
+        guard let descriptor = externalArtworkDescriptor,
+              let pipeline = externalArtworkPipeline else { return }
 
         Task { [weak self, weak playerItem] in
-            // Fetch returns Sendable Data off-actor; metadata is then built/set on the main
-            // actor where AVMetadataItem / AVPlayerItem live.
-            guard let data = await Self.fetchArtworkData(url: artworkURL) else { return }
-            await MainActor.run {
-                guard let self, let playerItem else { return }
-                guard self.isCurrentPlaybackLifecycle(observedPlaybackGeneration) else { return }
-                // Only attach if this is still the player's current item (a Quality reload may
-                // have swapped it out from under the in-flight fetch).
-                guard self.player.currentItem === playerItem else { return }
-                playerItem.externalMetadata = textItems + [Self.artworkMetadataItem(data: data)]
-                #if os(visionOS)
-                self.videoNowPlayingCoordinator?.applyInitialMetadata(
-                    to: playerItem,
-                    mediaItem: self.item,
-                    durationMilliseconds: self.knownDurationMs,
-                    elapsedMilliseconds: self.currentResumeMs,
-                    playbackRate: self.currentNowPlayingPlaybackRate,
-                    defaultPlaybackRate: Double(self.playbackSpeed),
-                    artworkData: data)
-                #endif
-            }
+            guard let response = try? await pipeline.fetch(descriptor, priority: .visible),
+                  !Task.isCancelled,
+                  let self,
+                  let playerItem,
+                  self.isCurrentPlaybackLifecycle(observedPlaybackGeneration),
+                  self.externalArtworkDescriptor?.taskIdentity == descriptor.taskIdentity,
+                  self.player.currentItem === playerItem else { return }
+            playerItem.externalMetadata = textItems + [Self.artworkMetadataItem(
+                data: response.encodedData,
+                typeIdentifier: response.encodedTypeIdentifier)]
+            #if os(visionOS)
+            self.videoNowPlayingCoordinator?.applyInitialMetadata(
+                to: playerItem,
+                mediaItem: self.item,
+                durationMilliseconds: self.knownDurationMs,
+                elapsedMilliseconds: self.currentResumeMs,
+                playbackRate: self.currentNowPlayingPlaybackRate,
+                defaultPlaybackRate: Double(self.playbackSpeed),
+                artworkImage: response.image)
+            #endif
         }
         #endif
-    }
-
-    /// Best-effort artwork fetch. Returns `nil` (never throws) on any failure so it can't
-    /// black-hole playback. `nonisolated` + returns Sendable `Data`.
-    private nonisolated static func fetchArtworkData(url: URL) async -> Data? {
-        if url.isFileURL {
-            return try? Data(contentsOf: url)
-        }
-        do {
-            let (data, response) = try await URLSession.shared.data(from: url)
-            if let http = response as? HTTPURLResponse,
-               !(200...299).contains(http.statusCode) { return nil }
-            return data.isEmpty ? nil : data
-        } catch {
-            return nil
-        }
-    }
-
-    /// Build the `/photo/:/transcode` URL for an image path via the shared `PlexPhotoTranscode`
-    /// builder. Requests a poster-sized image so the chrome artwork stays small.
-    private nonisolated static func posterTranscodeURL(imagePath: String, server: URL, token: String) -> URL? {
-        PlexPhotoTranscode.url(server: server, token: token, imagePath: imagePath,
-                               width: 600, height: 900)
     }
 
     /// Builds a request for a chapter thumbnail key, sized 16:9 landscape. Plex images

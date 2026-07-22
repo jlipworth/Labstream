@@ -3,9 +3,6 @@ import AVFoundation
 import Foundation
 import MediaPlayer
 import PMSKit
-#if os(iOS)
-import UIKit
-#endif
 
 ///
 /// iOS/iPadOS and macOS both participate in the system transport stack (media keys, Control
@@ -19,7 +16,7 @@ final class VideoNowPlayingCore {
     private var item: MediaItem?
     private let mediaSession: SystemMediaSessionCoordinator
     private var mediaLease: SystemMediaSessionCoordinator.Lease?
-    private var artworkImage: UIImage?
+    private var artworkImage: DecodedImage?
     private var artworkTask: Task<Void, Never>?
     private let defaultSkipIntervalSeconds: Double
 
@@ -28,13 +25,16 @@ final class VideoNowPlayingCore {
         self.mediaSession = mediaSession
     }
 
-    func configure(controller: PlaybackController, item: MediaItem, artworkRequest: URLRequest?) {
+    func configure(controller: PlaybackController,
+                   item: MediaItem,
+                   artworkDescriptor: ArtworkRequestDescriptor?,
+                   artworkPipeline: ArtworkPipeline?) {
         teardown()
         self.controller = controller
         self.item = item
         mediaLease = mediaSession.acquire(owner: .video, commands: commandConfiguration())
         updateNowPlayingInfo()
-        loadArtwork(from: artworkRequest)
+        loadArtwork(from: artworkDescriptor, pipeline: artworkPipeline)
     }
 
     func updateNowPlayingInfo() {
@@ -121,33 +121,28 @@ final class VideoNowPlayingCore {
            })
     }
 
-    private func loadArtwork(from request: URLRequest?) {
+    private func loadArtwork(from descriptor: ArtworkRequestDescriptor?,
+                             pipeline: ArtworkPipeline?) {
         artworkTask?.cancel()
         artworkImage = nil
-        guard let request else { return }
+        guard let descriptor, let pipeline else { return }
         let lease = mediaLease
         artworkTask = Task { [weak self] in
-            guard let data = await Self.fetchArtworkData(request: request),
-                  let image = UIImage(data: data), !Task.isCancelled else { return }
-            await MainActor.run {
+            do {
+                let response = try await pipeline.fetch(descriptor, priority: .visible)
+                try Task.checkCancellation()
                 guard let self, self.mediaLease === lease else { return }
-                self.artworkImage = image
+                self.artworkImage = response.image
                 // Keep the result while another owner is momentarily current. The lease's
                 // didBecomeCurrent hook republishes it when video regains ownership.
                 if lease?.isCurrent == true {
                     self.updateNowPlayingInfo()
                 }
+            } catch {
+                // Text-only system metadata is the safe fallback for cancellation, missing art,
+                // transport failure, or an invalid image.
             }
         }
-    }
-
-    private nonisolated static func fetchArtworkData(request: URLRequest) async -> Data? {
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            if let http = response as? HTTPURLResponse,
-               !(200...299).contains(http.statusCode) { return nil }
-            return data.isEmpty ? nil : data
-        } catch { return nil }
     }
 
     private func durationSeconds(for controller: PlaybackController) -> Double? {

@@ -104,7 +104,7 @@ struct CollectionExtrasRequestTests {
                                                                 itemId: "movie-1")
         #expect(try #require(trailers.url).path == "/base/Items/movie-1/LocalTrailers")
         #expect(try queryValue(trailers, "userId") == "user-1")
-        #expect(try queryValue(trailers, "fields") == JellyfinLibrary.fullItemFields)
+        #expect(try queryValue(trailers, "fields") == MediaBrowserMetadataFieldProfiles.relatedMedia.fields)
 
         let features = try JellyfinLibrary.specialFeaturesRequest(server: TestFixtures.jellyfinServer,
                                                                   token: "jf-token",
@@ -128,7 +128,7 @@ struct CollectionExtrasRequestTests {
                                                             userId: "user-1",
                                                             itemId: "movie-1")
         #expect(try #require(trailers.url).path == "/emby/path/to/user/Items/movie-1/LocalTrailers")
-        #expect(try queryValue(trailers, "Fields") == EmbyLibrary.fullItemFields)
+        #expect(try queryValue(trailers, "Fields") == MediaBrowserMetadataFieldProfiles.relatedMedia.fields)
         #expect(trailers.value(forHTTPHeaderField: "X-Emby-Token") == "emby-token")
         #expect(!(try #require(trailers.url).absoluteString.contains("emby-token")))
 

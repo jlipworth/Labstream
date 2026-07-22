@@ -4,6 +4,7 @@
 [![visionOS 26](https://img.shields.io/badge/visionOS-26-black.svg)](https://developer.apple.com/visionos/)
 [![iOS 26.1+](https://img.shields.io/badge/iOS-26.1%2B-black.svg)](https://developer.apple.com/ios/)
 [![iPadOS 26.1+](https://img.shields.io/badge/iPadOS-26.1%2B-black.svg)](https://developer.apple.com/ipados/)
+[![tvOS 26 preview](https://img.shields.io/badge/tvOS-26%20development%20preview-lightgrey.svg)](docs/TVOS.md)
 [![macOS 26 preview](https://img.shields.io/badge/macOS-26%20development%20preview-lightgrey.svg)](docs/MACOS.md)
 [![Swift 6](https://img.shields.io/badge/Swift-6-orange.svg)](https://www.swift.org/)
 [![Xcode 26](https://img.shields.io/badge/Xcode-26-blue.svg)](https://developer.apple.com/xcode/)
@@ -12,11 +13,11 @@
 
 Labstream does not provide, host, sell, or bundle movies, TV, music, or other media. It connects only to servers you choose, and offline downloads are for media you are authorized to access and download under the applicable server/service terms.
 
-The repository contains native targets for Apple Vision Pro, iPhone/iPad, and Mac. The
+The repository contains native targets for Apple Vision Pro, iPhone/iPad, Apple TV, and Mac. The
 visionOS target is the primary development path, `LabstreamMobile` is one universal iPhone/iPad
-target, and `LabstreamMac` is a local-build development preview. They share the SwiftUI app
-source, custom AVFoundation player, and `PMSKit` backend layer, with platform-specific shells and
-system integration.
+target, `LabstreamTV` is an in-development streaming-only TV target, and `LabstreamMac` is a
+local-build development preview. They share the SwiftUI app core, custom AVFoundation player, and
+`PMSKit` backend layer while owning platform-specific shells, input, and system integration.
 
 > **Distribution status:** Labstream is currently distributed as source for local builds. There
 > is no App Store or TestFlight build today. Mac distribution remains deferred pending licensing
@@ -47,11 +48,11 @@ and backend. See the platform and backend status tables below for the current su
 
 ### Playback
 
-- Custom AVFoundation player surface shared across the visionOS, iOS/iPadOS, and Mac-preview targets.
+- Custom AVFoundation player surface shared across visionOS, iOS/iPadOS, tvOS, and the Mac preview.
 - Direct Play / Maximum attempts copy or direct-stream paths where viable.
 - Explicit quality rungs request capped server streams when needed.
 - Resume, seek, retry, subtitles, chapters, playback speed, buffering state, and Stats for Nerds.
-- Cinema mode expands playback into an app-owned immersive surface with the same transport controls.
+- On visionOS, Cinema mode expands playback into an app-owned immersive surface with the same transport controls.
 - Watch progress, mark-watched behavior, Up Next, and episode autoplay.
 
 ### Libraries and search
@@ -62,6 +63,9 @@ and backend. See the platform and backend status tables below for the current su
 - Backend-aware sign-in and server/session restore.
 
 ### Downloads and offline
+
+Downloads and offline playback are available on visionOS, iOS/iPadOS, and the Mac preview. The
+tvOS target deliberately omits the complete download capability and Offline product surface.
 
 - Offline downloads with metadata, poster/side-asset support, integrity checks, and route-specific recovery: static/original and server-prepared static files use checkpoints, while live remux/transcode streams reconcile safely but may need retry/restart after interruption.
 - Direct original downloads only when Labstream expects the file to be locally playable.
@@ -94,11 +98,12 @@ Labstream is unofficial and independent. It is not affiliated with, endorsed by,
 | Apple Vision Pro / visionOS 26 | `Labstream` | Primary development and validation path. Includes the app-owned immersive cinema surface. |
 | iPhone / iOS 26.1+ | `LabstreamMobile` | Native adaptive mobile shell in active development. Local simulator and signed-device builds are supported. |
 | iPad / iPadOS 26.1+ | `LabstreamMobile` | The same universal mobile target, using the regular-width sidebar layout. Local simulator and signed-device builds are supported. |
+| Apple TV / tvOS 26+ | `LabstreamTV` | Native streaming-only development target with a ten-foot shell and custom Siri Remote player interactions. Downloads and Offline are absent; physical-device, parity, accessibility, system-integration, and release acceptance remain open. |
 | Apple-silicon Mac / macOS 26 | `LabstreamMac` | Local-build development preview only; not a supported distribution target or compatibility promise. Shared sign-in, playback, media-key, and background-download code is present, but live Mac validation is not yet equivalent to the primary visionOS lane. |
 
 ## Tech stack
 
-- SwiftUI app shells targeting visionOS 26 and iOS/iPadOS 26.1+, plus a macOS 26 development-preview target.
+- SwiftUI app shells targeting visionOS 26, iOS/iPadOS 26.1+, and tvOS 26+, plus a macOS 26 development-preview target.
 - Swift 6 with strict concurrency.
 - Custom AVFoundation playback and offline playback paths.
 - `PMSKit`, a local Swift package for Plex/Jellyfin/Emby request builders, models,
@@ -109,8 +114,8 @@ Labstream is unofficial and independent. It is not affiliated with, endorsed by,
 
 ### Requirements
 
-- macOS with Xcode 26 plus the visionOS 26 SDK and an iOS/iPadOS 26.1+ SDK/runtime for mobile builds.
-- A compatible Apple Vision Pro simulator runtime for visionOS builds, a compatible iPhone/iPad simulator runtime for mobile builds, or paired Apple Vision Pro / iPhone / iPad hardware for device installs.
+- macOS with Xcode 26 plus the SDK/runtime for each target being built: visionOS 26, iOS/iPadOS 26.1+, or tvOS 26+.
+- A compatible simulator runtime for visionOS, iPhone/iPad, or Apple TV work, or paired physical hardware for the device acceptance being performed.
 - Python 3 and [`uv`](https://docs.astral.sh/uv/getting-started/installation/) for documentation and repository tooling checks.
 - A Plex, Jellyfin, or Emby server you control or have permission to access.
 
@@ -121,8 +126,8 @@ macOS 26; it has no simulator lane.
 
 [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) is the canonical executable workflow:
 
-- Before the first visionOS build or linked visionOS worktree, [select or create and record the initial visionOS simulator](docs/DEVELOPMENT.md#bootstrap-the-first-visionos-simulator). Mobile-only work does not require this bootstrap.
-- Build the primary [`Labstream` visionOS scheme](docs/DEVELOPMENT.md#build-for-the-visionos-simulator), or build the universal [`LabstreamMobile` iPhone/iPad scheme](docs/DEVELOPMENT.md#build-for-an-iphone-or-ipad-simulator) with the selected mobile platform.
+- Before the first visionOS build or linked visionOS worktree, [select or create and record the initial visionOS simulator](docs/DEVELOPMENT.md#bootstrap-the-first-visionos-simulator). Mobile-only and tvOS-only work do not require this bootstrap.
+- Build the primary [`Labstream` visionOS scheme](docs/DEVELOPMENT.md#build-for-the-visionos-simulator), the universal [`LabstreamMobile` iPhone/iPad scheme](docs/DEVELOPMENT.md#build-for-an-iphone-or-ipad-simulator), or the [`LabstreamTV` Apple TV scheme](docs/DEVELOPMENT.md#build-for-an-apple-tv-simulator).
 - Complete the [exact-product install, observable launch/log/screenshot smoke, and simulator shutdown](docs/DEVELOPMENT.md#install-and-observe-a-simulator-smoke).
 - Run the [core validation commands](docs/DEVELOPMENT.md#core-validation-commands) and clean up any [linked-worktree simulators](docs/DEVELOPMENT.md#linked-worktree-simulator-cleanup).
 
@@ -130,29 +135,26 @@ macOS 26; it has no simulator lane.
 
 - Apple Vision Pro: complete the [first-use pairing, Developer Mode, Xcode account/signing, install, and launch procedure](docs/DEVELOPMENT.md#physical-apple-vision-pro-install).
 - iPhone/iPad: use the canonical [signed hardware install procedure](docs/DEVELOPMENT.md#physical-iphone-or-ipad-install).
+- Apple TV: simulator procedures are documented today; physical Apple TV deployment and acceptance remain open development gates in the [tvOS target guide](docs/TVOS.md).
 - Apple-silicon Mac: use the [host development-preview procedure](docs/DEVELOPMENT.md#build-and-run-the-macos-development-preview).
 
-The visionOS and mobile app targets use `com.jlipworth.Labstream` for the intended unified product
-identity. The Mac helper defaults to a per-worktree development bundle identifier so local host
+The visionOS, mobile, and tvOS app targets currently use `com.jlipworth.Labstream`. The Mac helper
+defaults to a per-worktree development bundle identifier so local host
 builds do not collide; see [macOS development preview](docs/MACOS.md).
 
 ## Project structure
 
 ```text
 Labstream/
-├── Labstream/             # shared app source for visionOS, iOS/iPadOS, and the Mac preview
-│   ├── App/               # visionOS, mobile, and Mac-preview entry points; object graph; restore state
-│   ├── Auth/              # Plex/Jellyfin/Emby auth and Keychain persistence
-│   ├── Backend/           # backend service lanes, paging, search
-│   ├── Diagnostics/       # local diagnostics/reporting helpers
-│   ├── Downloads/         # offline transfers, offline index, download UI state
-│   ├── Music/             # music browse, queue, and audio playback
-│   ├── Networking/        # shared app networking helpers
-│   ├── Platform/          # cross-platform pasteboard and compatibility adapters
-│   ├── Player/            # custom player, diagnostics, restart/reopen logic
-│   ├── SystemIntegration/ # App Intents, Spotlight, system-entry routing
-│   ├── Theater/           # immersive playback surface support
-│   └── UI/                # login, home, libraries, search, detail, settings
+├── Labstream/             # app-owned source, split by capability and platform ownership
+│   ├── Shared/            # universal app core, backend facades, player, music, and shared UI
+│   ├── Capabilities/
+│   │   └── Downloads/ # visionOS, mobile, and Mac offline engine/UI; absent from tvOS
+│   └── Platforms/
+│       ├── visionOS/      # vision app entry point, Cinema, scoped system media, SharePlay
+│       ├── Mobile/        # universal iPhone/iPad entry point and mobile player integration
+│       ├── macOS/         # single-window Mac entry point and desktop player integration
+│       └── tvOS/          # streaming-only TV entry point and Debug fixture ownership
 ├── PMSKit/                # reusable requests, models, policies, infrastructure, and tests
 ├── docs/                  # published docs plus plans, research, evidence, and archive lanes
 ├── scripts/               # local validation, simulator, deploy, and probe helpers
@@ -164,6 +166,7 @@ Labstream/
 - Published docs: <https://jlipworth.github.io/Labstream/>
 - Development setup: [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)
 - iOS/iPadOS target: [`docs/MOBILE-IOS.md`](docs/MOBILE-IOS.md)
+- tvOS target: [`docs/TVOS.md`](docs/TVOS.md)
 - macOS development preview: [`docs/MACOS.md`](docs/MACOS.md)
 - Architecture overview: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - Backend model: [`docs/BACKENDS.md`](docs/BACKENDS.md)

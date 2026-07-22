@@ -149,8 +149,20 @@ struct EmbyBrowseService {
         try await browseCore().playlistItems(playlistID: playlistId)
     }
 
-    func searchResults(query: String, limitPerLibrary: Int = 50) async throws -> SearchResults {
-        try await browseCore().searchResults(query: query, limitPerLibrary: limitPerLibrary)
+    func playlistItemsPage(playlistId: String,
+                           startIndex: Int,
+                           limit: Int) async throws -> (items: [MediaItem], total: Int?) {
+        let page = try await browseCore().playlistItemsPage(
+            playlistID: playlistId, startIndex: startIndex, limit: limit)
+        return (page.items, page.total)
+    }
+
+    func searchResults(query: String,
+                       views: [MediaBrowserLibraryLink],
+                       limitPerLibrary: Int = 50) async throws -> SearchResults {
+        try await browseCore().searchResults(query: query,
+                                             limitPerLibrary: limitPerLibrary,
+                                             views: views)
     }
 
     func resumeItems(parentId: String? = nil, limit: Int = 20) async throws -> [MediaItem] {
@@ -179,10 +191,13 @@ struct EmbyBrowseService {
 
     func latestItems(parentId: String?,
                      includeItemTypes: String = "Movie,Episode,Video",
-                     limit: Int = 20) async throws -> [MediaItem] {
+                     limit: Int = 20,
+                     metadataProfile: MediaBrowserMetadataFieldProfile =
+                         MediaBrowserMetadataFieldProfiles.home) async throws -> [MediaItem] {
         try await browseCore().latestItems(parentID: parentId,
                                            includeItemTypes: includeItemTypes,
-                                           limit: limit)
+                                           limit: limit,
+                                           metadataProfile: metadataProfile)
     }
 
     func metadata(itemId: String) async throws -> MediaItem {
@@ -203,7 +218,7 @@ struct EmbyBrowseService {
                                                userID: userID,
                                                identity: identity.emby),
             adapter: EmbyBrowseCoreAdapter(),
-            send: { request in try await send(request) }
+            send: browseSend()
         )
         guard let item = try await core.metadata(itemID: itemId) else {
             throw ServiceError.noPlayableItem
@@ -363,7 +378,7 @@ struct EmbyBrowseService {
         return status
     }
 
-    private func browseCore() throws -> MediaBrowserBrowseCore<EmbyBrowseCoreAdapter> {
+    func browseCore() throws -> MediaBrowserBrowseCore<EmbyBrowseCoreAdapter> {
         let values = try context()
         return MediaBrowserBrowseCore(
             context: MediaBrowserBrowseContext(server: values.server,
@@ -371,8 +386,21 @@ struct EmbyBrowseService {
                                                userID: values.userID,
                                                identity: embyIdentity),
             adapter: EmbyBrowseCoreAdapter(),
-            send: { request in try await send(request) }
+            send: browseSend()
         )
+    }
+
+    /// Capture the configured transport while still on MainActor. The returned closure owns only
+    /// a Sendable executor, so the shared browse core never has to hop back through this facade.
+    private func browseSend() -> MediaBrowserBrowseCore<EmbyBrowseCoreAdapter>.Send {
+        let executor = MediaBrowserRequestExecutor(session: session)
+        return { request in
+            do {
+                return try await executor.send(request)
+            } catch MediaBrowserRequestError.httpStatus(let status) {
+                throw ServiceError.http(status)
+            }
+        }
     }
 
     private func context() throws -> (server: URL, token: String, userID: String) {

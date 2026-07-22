@@ -53,6 +53,7 @@ struct OfflineDownloadModelsTests {
         #expect(meta.type == "movie")          // defaulted
         #expect(meta.year == nil)
         #expect(meta.posterRelativePath == nil)
+        #expect(meta.posterGeneration == 0)
         #expect(meta.plexBIFRelativePath == nil)
         #expect(meta.embyBIFRelativePath == nil)
         #expect(meta.jellyfinTrickPlayPlaylistRelativePath == nil)
@@ -206,6 +207,7 @@ struct OfflineDownloadModelsTests {
             optimizeBaselinePartIDs: [42, 43, 44],
             plexOptimizeStartedAtEpochSeconds: 1_700_000_000,
             posterRelativePath: "555.poster.jpg",
+            posterGeneration: 17,
             plexBIFRelativePath: "555.plex-sd.bif",
             embyBIFRelativePath: "555.emby.bif",
             jellyfinTrickPlayPlaylistRelativePath: "555.jf-trickplay.m3u8",
@@ -230,6 +232,45 @@ struct OfflineDownloadModelsTests {
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(OfflineMetadata.self, from: data)
         #expect(decoded == original)
+        #expect(decoded.posterGeneration == 17)
+    }
+
+    @Test("poster generation advances for same-path replacement and clear")
+    func posterGenerationTracksContentChanges() {
+        var metadata = OfflineMetadata(
+            ratingKey: "555", title: "Poster revision", type: "movie")
+
+        metadata.recordCachedPoster(relativePath: "555.poster.jpg")
+        #expect(metadata.posterGeneration == 1)
+        metadata.recordCachedPoster(relativePath: "555.poster.jpg")
+        #expect(metadata.posterGeneration == 2)
+        metadata.clearCachedPoster()
+        #expect(metadata.posterGeneration == 3)
+        #expect(metadata.posterRelativePath == nil)
+    }
+
+    @Test("poster preservation carries the exact cached content generation")
+    func posterPreservationCarriesGeneration() {
+        var previous = OfflineMetadata(
+            ratingKey: "plex:item", title: "Title", type: "movie",
+            posterRelativePath: "poster.jpg", posterGeneration: 42,
+            backendKind: .plex, downloadAttemptID: "attempt-a")
+        previous.claimCachedSideAssets(attemptID: "attempt-a")
+        var incoming = OfflineMetadata(
+            ratingKey: "plex:item", title: "Title", type: "movie",
+            backendKind: .plex, downloadAttemptID: "attempt-a")
+
+        incoming.preserveCachedSideAssets(from: previous)
+
+        #expect(incoming.posterRelativePath == "poster.jpg")
+        #expect(incoming.posterGeneration == 42)
+
+        var staleSamePath = OfflineMetadata(
+            ratingKey: "plex:item", title: "Title", type: "movie",
+            posterRelativePath: "poster.jpg", posterGeneration: 41,
+            backendKind: .plex, downloadAttemptID: "attempt-a")
+        staleSamePath.preserveCachedSideAssets(from: previous)
+        #expect(staleSamePath.posterGeneration == 42)
     }
 
 

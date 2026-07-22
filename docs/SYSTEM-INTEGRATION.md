@@ -21,7 +21,7 @@ flowchart TD
 
 ## Single-window routing
 
-`SystemEntryRouter` is the app's central handoff point. It waits for restore/sign-in readiness when needed, then routes into the main browse window rather than opening separate navigation stacks. Its fallback restore calls `restoreSessionIfNoAuthorizationInProgress()` and keeps waiting if a user-facing login owns authorization, so a system entry cannot cancel or supersede that login. External media identifiers are resolved against the active backend/session only, so Plex, Jellyfin, and Emby entries never imply a cross-device or offline catalog.
+`SystemEntryRouter` is the app's central handoff point. It waits for restore/sign-in readiness when needed, then routes into the main browse window rather than opening separate navigation stacks. Its fallback restore calls `restoreSessionIfNoAuthorizationInProgress()` and keeps waiting if a user-facing login owns authorization, so a system entry cannot cancel or supersede that login. External media identifiers are resolved against the exact active authenticated authority only: suggestions share that authority's `LibraryCatalogRepository` enumeration and route-key Detail hydration uses an authoritative `MetadataRepository` read before navigation/autoplay. Plex, Jellyfin, and Emby entries never imply a cross-device or offline catalog.
 
 ## App Intents
 
@@ -57,7 +57,8 @@ omitted rather than transmitted. Readiness messages carry only the activity id a
 state.
 
 Each participant resolves the activity locally. `WatchTogetherMediaLookup` searches only that
-participant's currently authenticated active online backend, attempts to hydrate candidate
+participant's currently authenticated active online backend, reuses the exact-authority catalog
+enumeration, attempts to hydrate candidate
 metadata using their own credentials, and excludes offline downloads. Automatic PMSKit resolution
 requires compatible logical identity and an exact rounded-timeline match. When automatic
 resolution is absent or ambiguous, the UI offers only same-kind, timeline-compatible local

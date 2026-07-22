@@ -17,8 +17,14 @@ final class MacPlayerSystemCoordinator {
         core = VideoNowPlayingCore(defaultSkipIntervalSeconds: 30, mediaSession: mediaSession)
     }
 
-    func configure(controller: PlaybackController, item: MediaItem, artworkRequest: URLRequest? = nil) {
-        core.configure(controller: controller, item: item, artworkRequest: artworkRequest)
+    func configure(controller: PlaybackController,
+                   item: MediaItem,
+                   artworkDescriptor: ArtworkRequestDescriptor? = nil,
+                   artworkPipeline: ArtworkPipeline? = nil) {
+        core.configure(controller: controller,
+                       item: item,
+                       artworkDescriptor: artworkDescriptor,
+                       artworkPipeline: artworkPipeline)
     }
 
     func updateNowPlayingInfo() {

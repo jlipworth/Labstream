@@ -49,6 +49,17 @@ as popular tracks, categorized releases, appears-on, and similar artists. MediaB
 providers leave unsupported sections empty and use their `/Items`, album-artist, latest,
 and playlist endpoints for the common artist/album/track/playlist surface.
 
+Music library and playlist-section discovery consumes the app-lifetime
+`LibraryCatalogRepository` rather than enumerating backend sections/views independently. The
+repository shares only the exact authenticated catalog; each provider still owns which descriptors
+are music-capable and how its artist, album, playlist, sort, and presentation policies work.
+
+Playlist contents use `PlaylistPagingModel`, not the deduplicating rail model. Plex container
+ranges and Jellyfin/Emby `StartIndex`/`Limit` ranges append positional rows in native server order,
+including duplicate tracks across page boundaries. The first page renders progressively; Play,
+Shuffle, per-row playback, and queue menus remain disabled until all reported positions have loaded,
+and a failed next page can be retried without discarding the prefix.
+
 ## Playback and queue
 
 `MusicPlayerController` owns one long-lived `AVPlayer`, audio-session state, queue mutation,
@@ -79,7 +90,9 @@ which publishes track metadata, artwork, duration, playhead, and rate to
 `MPNowPlayingInfoCenter` and installs play/pause/next/previous/scrub handlers on
 `MPRemoteCommandCenter`. Video can temporarily take the process-wide lease; when video
 releases it, the coordinator restores the surviving music owner and republishes its current
-state. In-app Now Playing artist/album navigation returns to the Music tab. The current
+state. Artwork decode values cross the same immutable CGImage-backed `DecodedImage` boundary as
+video; AppKit/UIKit conversion is confined to `MPMediaItemArtwork` and other native framework
+bridges. In-app Now Playing artist/album navigation returns to the Music tab. The current
 Spotlight and App Intent index deliberately excludes music items; those surfaces remain
 video-only. On visionOS, Now Playing uses an app-owned player panel and inert dimmed
 backdrop: its top-leading close control and a tap in the surround both dismiss without

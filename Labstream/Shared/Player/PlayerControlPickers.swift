@@ -1,11 +1,6 @@
 import AVFoundation
 import PMSKit
 import SwiftUI
-#if os(macOS)
-import AppKit
-#elseif canImport(UIKit)
-import UIKit
-#endif
 
 /// Pointer-driven Mac menus should be information-dense; iOS/visionOS retain the 44-point
 /// touch/gaze rows. Keeping these metrics shared prevents Quality, Speed, Subtitles, and Audio
@@ -240,13 +235,13 @@ private struct RequestBackedChapterImage: View {
     let request: URLRequest
     let placeholder: AnyView
 
-    @State private var image: UIImage?
+    @State private var image: DecodedImage?
     @State private var didFail = false
 
     var body: some View {
         ZStack {
             if let image {
-                Image(uiImage: image)
+                Image(decodedImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .transition(.opacity)
@@ -277,7 +272,7 @@ private struct RequestBackedChapterImage: View {
         didFail = false
         do {
             let data = try await Self.data(for: request)
-            guard let decoded = UIImage(data: data) else {
+            guard let decoded = DecodedImage(data: data) else {
                 didFail = true
                 return
             }

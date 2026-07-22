@@ -51,18 +51,20 @@ scripts/native-test-matrix.py affected --base main --include-working-tree
 
 # Plan one known path without consulting Git (useful in tooling and review automation).
 scripts/native-test-matrix.py affected \
-  --changed-file Labstream/Platforms/tvOS/Player/TVChrome.swift
+  --changed-file Labstream/Platforms/tvOS/App/LabstreamTV.swift
 
 # Full correctness, hosted, and exhaustive-TV plan. Missing simulator IDs and the current
 # visionOS-hosted gap are reported as BLOCKED/PLANNED rather than silently omitted.
 scripts/native-test-matrix.py full
 ```
 
-The driver reads `scripts/native-test-matrix.json`. Until the platform source split lands, a
-change under the synchronized `Labstream/` source root selects all four app builds and every
-available hosted suite. The manifest already defines exclusive `Labstream/Platforms/<platform>/`
-roots for the post-split topology; shared-root edits continue to select all targets. Update the
-manifest in the same change whenever target membership or a platform root changes.
+The driver reads `scripts/native-test-matrix.json`. The current source topology is explicit:
+`Labstream/Shared/` selects all four app builds and every available hosted suite;
+`Labstream/Capabilities/Downloads/` selects visionOS, mobile, and Mac but not tvOS; and each
+`Labstream/Platforms/<platform>/` root selects only its owning product lanes. A conservative
+fallback still selects all app lanes for an unclassified path under `Labstream/`. Update the
+manifest and its topology tests in the same change whenever target membership or an ownership
+root changes.
 
 Execution is deliberately lane-at-a-time. The driver never provisions or boots a simulator, and
 `--run` requires an exact `--lane`. A simulator-hosted lane additionally requires the ID recorded
@@ -76,7 +78,7 @@ Shutdown**, so `xcodebuild` cannot silently boot an unleased device or run along
 SIMID=$(scripts/worktree-sim.sh --platform tvos id)
 xcrun simctl boot "$SIMID"
 scripts/native-test-matrix.py affected \
-  --changed-file Labstream/Platforms/tvOS/Player/TVChrome.swift \
+  --changed-file Labstream/Platforms/tvOS/App/LabstreamTV.swift \
   --tvos-sim-id "$SIMID" --run --lane tvos-hosted --allow-simulator
 xcrun simctl shutdown "$SIMID"
 ```
@@ -86,6 +88,35 @@ browse probe. Credentialless probe returns are readiness signals, not hermetic c
 passes. Live probes remain separate opt-in commands. Timing benchmarks must likewise use a future
 optimized benchmark target/lane and must not be added to smoke, affected, or ordinary hosted
 correctness suites.
+
+### PerformanceAudit comparison gate
+
+Release-parity `PerformanceAudit` runs use the manifest/raw/summary contract documented in
+the [scripts catalog](SCRIPTS.md#paired-performance-comparison). A comparison regenerates
+every strict summary from its exact checksummed raw artifact, uses the closed phase/backend
+correctness fields, freezes the minimum detectable effect from control-only evidence, and compares
+seeded pairs through `scripts/perf-compare.py`. Warmup failures, missing/foreign spans, changed work
+counts, reused run IDs, privacy-unsafe fields, invalid schedules, thermal/battery mismatch, storage
+drift, or excessive pair gaps fail closed. Static inspection and unpaired timings are not
+performance proof. Frozen-before-candidate timing remains operator-attested until the manifest
+schema itself carries the frozen checksum.
+
+### Shared data-plane contracts
+
+Phase 2 data-plane changes have deterministic contracts at their owning layer: opaque browse
+authority replacement and repository fencing; off-main Plex/Jellyfin/Emby decode witnesses;
+bounded fail-fast/partial fan-out; catalog force/failure/cancellation behavior; metadata
+fresh/stale/provenance/action admission and watched-patch ordering; progressive Home snapshots and
+failed-key-only retry; page-flight waiter cancellation; incremental movie-version projection;
+duplicate-preserving long-playlist paging; `DecodedImage` color/orientation/crop bridges; and
+artwork joining, priority, downsampling, privacy, cache cost, and clear epochs.
+
+These hosted/package checks are not all-target or live-backend acceptance. Shared source still
+requires the affected native matrix builds and isolated host/simulator smokes, and live Plex,
+Jellyfin, and Emby request behavior remains an opt-in credentialed gate where a hermetic fixture
+cannot establish server truth. In particular, the Emby Home poster correction for GitHub issue
+#245 requires a physical iPhone signed into Emby: verify Recently Added TV Shows portrait art, a
+movie rail, and the episode Thumb/Backdrop fallback before commenting on or closing the issue.
 
 ### visionOS hosted-test migration
 
@@ -143,12 +174,14 @@ Use platform-specific worktree simulators and the exact-product procedures in De
 
 - Before the first visionOS build or linked visionOS worktree, [bootstrap the first visionOS simulator](DEVELOPMENT.md#bootstrap-the-first-visionos-simulator), then [build the `Labstream` scheme](DEVELOPMENT.md#build-for-the-visionos-simulator).
 - iPhone/iPad-only work needs no visionOS bootstrap: [build the universal `LabstreamMobile` scheme](DEVELOPMENT.md#build-for-an-iphone-or-ipad-simulator) with `PLATFORM=iphone` or `PLATFORM=ipad`.
-- Both paths: complete the [observable smoke and shutdown](DEVELOPMENT.md#install-and-observe-a-simulator-smoke). Linked-worktree simulators must also follow the [closeout cleanup](DEVELOPMENT.md#linked-worktree-simulator-cleanup) when the worktree is removed.
+- tvOS work uses a fresh worktree-owned simulator rather than the visionOS golden clone: [build the streaming-only `LabstreamTV` scheme](DEVELOPMENT.md#build-for-an-apple-tv-simulator) and keep the download/offline absence gates enabled.
+- Every path must complete the [observable smoke and shutdown](DEVELOPMENT.md#install-and-observe-a-simulator-smoke). Linked-worktree simulators must also follow the [closeout cleanup](DEVELOPMENT.md#linked-worktree-simulator-cleanup) when the worktree is removed.
 
 Simulator builds are useful for compile coverage, sign-in UI, settings, browse flows, compact/regular
-mobile shell regressions, and many download/playback routing checks. They are not a full substitute
-for headset playback or physical iPhone/iPad media-background behavior, cellular-transfer policy,
-PiP/AirPlay handoff, or system search/Shortcuts invocation.
+mobile shell regressions, TV focus/remote fixtures, and many download/playback routing checks. They
+are not a full substitute for headset playback, physical iPhone/iPad media-background behavior,
+cellular-transfer policy, PiP/AirPlay handoff, physical Apple TV Siri Remote/HDR/audio/HDMI and
+long-play behavior, or system search/Shortcuts invocation.
 
 ### tvOS UI and evidence tiers
 

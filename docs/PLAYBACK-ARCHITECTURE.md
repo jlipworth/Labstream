@@ -200,6 +200,26 @@ in-controller item replacement. Controller stop, a surfaced playback failure, or
 autoplay tears it down. Metadata is published on each `AVPlayerItem`, including best-effort
 Plex-authenticated or cached offline artwork when those inputs are available, and the session's
 commands route play, pause, skip, and absolute seeks back through `PlaybackController`.
+The app-lifetime `ArtworkPipeline` supplies music/video system Now Playing, `AVPlayerItem`
+external metadata, ordinary posters, offline rows, and offline player art from the same exact
+authenticated/local flight and cost-cache boundary. Completed image values cross the immutable
+CGImage-backed `DecodedImage` boundary; original encoded bytes are retained only for
+`AVMetadataItem` artwork, and AppKit/UIKit images are created only at native publication bridges.
+Video and visionOS metadata completion additionally requires the exact descriptor, pipeline,
+playback generation, and current `AVPlayerItem`; stale success/failure callbacks cannot overwrite a
+replacement item.
+
+The chapter info tab is the deliberate exception: AVKit hosts it in an independent
+`UIHostingController` without the app's injected pipeline or a stable requested-pixel contract, so
+`RequestBackedChapterImage` remains request-backed. BIF and sprite-sheet providers, Emby generated
+per-position frames, Emby online/offline chapter fallback, and the player nearest-frame cache remain
+provider-scoped time-indexed exceptions rather than `ArtworkPipeline` consumers. Authenticated
+requests use the nonpersistent side-asset transport, and their leaf caches are memory-only and
+fixed-entry-count bounded. Byte-cost eviction, off-main preview decode,
+full-BIF mapping/selected-frame copying, and largest-BIF/tile-sheet peak-RSS validation remain Phase
+3/5 performance gates.
+Those paths use `DecodedImage` at their image boundary, but that conversion is not shared-pipeline
+migration.
 
 iOS/iPadOS and macOS use a separate process-wide lease model. Their platform coordinators wrap
 `VideoNowPlayingCore`, which acquires an identity-guarded video lease on the app-lifetime
