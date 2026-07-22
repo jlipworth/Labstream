@@ -243,7 +243,7 @@ final class EmbyTrickPlayThumbnailProviderTests: XCTestCase {
     }
 
     func testCostBoundedLRUPromotesReplacesAndRejectsOversizeEntries() {
-        var cache = TrickPlayCostBoundedLRU<String, String>(costLimit: 10, countLimit: 3)
+        var cache = CostBoundedLRU<String, String>(costLimit: 10, countLimit: 3)
         cache.insert("a", for: "a", cost: 4)
         cache.insert("b", for: "b", cost: 4)
         XCTAssertEqual(cache.value(for: "a"), "a", "a hit should promote it over b")
@@ -264,7 +264,7 @@ final class EmbyTrickPlayThumbnailProviderTests: XCTestCase {
     }
 
     func testCostBoundedLRUAlsoEnforcesEntryCeiling() {
-        var cache = TrickPlayCostBoundedLRU<Int, Int>(costLimit: 1_000, countLimit: 2)
+        var cache = CostBoundedLRU<Int, Int>(costLimit: 1_000, countLimit: 2)
         cache.insert(1, for: 1, cost: 1)
         cache.insert(2, for: 2, cost: 1)
         _ = cache.value(for: 1)
@@ -274,6 +274,24 @@ final class EmbyTrickPlayThumbnailProviderTests: XCTestCase {
         XCTAssertNotNil(cache.value(for: 1))
         XCTAssertNil(cache.value(for: 2))
         XCTAssertNotNil(cache.value(for: 3))
+    }
+
+    func testCostBoundedLRURemovesEntriesAndHonorsDisabledLimits() {
+        var cache = CostBoundedLRU<String, String>(costLimit: 10)
+        cache.insert("value", for: "key", cost: 4)
+        cache.removeValue(for: "key")
+        XCTAssertNil(cache.value(for: "key"))
+        XCTAssertEqual(cache.totalCost, 0)
+
+        var zeroCostLimit = CostBoundedLRU<String, String>(costLimit: 0)
+        zeroCostLimit.insert("value", for: "key", cost: 1)
+        XCTAssertEqual(zeroCostLimit.count, 0)
+        XCTAssertEqual(zeroCostLimit.totalCost, 0)
+
+        var zeroCountLimit = CostBoundedLRU<String, String>(costLimit: 10, countLimit: 0)
+        zeroCountLimit.insert("value", for: "key", cost: 1)
+        XCTAssertEqual(zeroCountLimit.count, 0)
+        XCTAssertEqual(zeroCountLimit.totalCost, 0)
     }
 
     func testDecodedTileCacheEvictsByPixelBytesRatherThanOnlyEntryCount() throws {

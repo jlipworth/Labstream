@@ -1,7 +1,6 @@
-/// Provider-local memory cache with explicit byte and entry ceilings. Trick-play values vary by
-/// orders of magnitude (a decoded 10x10 tile sheet is not comparable to a chapter JPEG), so a fixed
-/// entry count alone is not a meaningful memory bound.
-struct TrickPlayCostBoundedLRU<Key: Hashable, Value> {
+/// In-memory LRU with explicit cost and optional entry ceilings. Values can vary by orders of
+/// magnitude, so a fixed entry count alone is not a meaningful memory bound.
+struct CostBoundedLRU<Key: Hashable, Value> {
     private struct Entry {
         var value: Value
         let cost: Int
@@ -44,6 +43,12 @@ struct TrickPlayCostBoundedLRU<Key: Hashable, Value> {
         nextAccess &+= 1
         entries[key] = Entry(value: value, cost: normalizedCost, access: nextAccess)
         totalCost += normalizedCost
+    }
+
+    mutating func removeValue(for key: Key) {
+        if let removed = entries.removeValue(forKey: key) {
+            totalCost -= removed.cost
+        }
     }
 
     mutating func removeAll() {
