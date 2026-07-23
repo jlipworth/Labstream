@@ -88,6 +88,22 @@ public enum StaticRangeRecoveryPolicy {
         (record.status == .queued || record.status == .downloading) && isStaticRangeRecord(record)
     }
 
+    /// Storage-full is terminal-until-user-action: automatic resume drives (relaunch recovery,
+    /// backend-ready pending-resume drains, range request rebuilds) must not redrive a row that
+    /// failed for lack of disk space while the volume still cannot plausibly hold the remainder —
+    /// each redrive fails the same preflight against unchanged disk and loops. A row is released
+    /// back to automatic resume only once free space would satisfy the same remainder+headroom
+    /// bound the start preflight enforces; a user-initiated retry clears the failure marker
+    /// before dispatch and never consults this.
+    public static func shouldParkAutoResumeAfterStorageFull(lastFailureWasStorageFull: Bool,
+                                                            freeBytes: Int64?,
+                                                            remainingBytes: Int64,
+                                                            headroomBytes: Int64 = 500_000_000) -> Bool {
+        guard lastFailureWasStorageFull else { return false }
+        guard let freeBytes else { return true }
+        return freeBytes < max(headroomBytes, max(0, remainingBytes) + headroomBytes)
+    }
+
     /// Restart counters should survive request rebuilds that did not append forward progress,
     /// otherwise validator/offset livelock bounds can be reset by each rebuilt request.
     public static func shouldPreserveRangeRestartCounters(reason: String) -> Bool {
