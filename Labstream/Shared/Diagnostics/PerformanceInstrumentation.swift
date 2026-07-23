@@ -12,6 +12,8 @@ enum PerformanceInstrumentation {
         case runtimeComposition = "runtime.composition"
         case runtimeDownloadManager = "runtime.download_manager"
         case runtimeDownloadStore = "runtime.download_store"
+        case runtimeDownloadTransportConstruct = "runtime.download_transport_construct"
+        case runtimeDownloadTransportSubmission = "runtime.download_transport_submission"
         case sessionRestore = "session.restore"
         case homeFirstContent = "home.first_content"
         case homeLoad = "home.load"
@@ -32,6 +34,8 @@ enum PerformanceInstrumentation {
             case .runtimeComposition: return "runtime.composition"
             case .runtimeDownloadManager: return "runtime.download_manager"
             case .runtimeDownloadStore: return "runtime.download_store"
+            case .runtimeDownloadTransportConstruct: return "runtime.download_transport_construct"
+            case .runtimeDownloadTransportSubmission: return "runtime.download_transport_submission"
             case .sessionRestore: return "session.restore"
             case .homeFirstContent: return "home.first_content"
             case .homeLoad: return "home.load"
@@ -52,6 +56,7 @@ enum PerformanceInstrumentation {
         var osLog: OSLog {
             switch self {
             case .runtimeComposition, .runtimeDownloadManager, .runtimeDownloadStore,
+                    .runtimeDownloadTransportConstruct, .runtimeDownloadTransportSubmission,
                     .sessionRestore:
                 return Self.launchLog
             case .homeFirstContent, .homeLoad:
@@ -195,8 +200,6 @@ import Foundation
 enum PerformanceInstrumentation {
     enum Phase: String {
         case runtimeComposition = "runtime.composition"
-        case runtimeDownloadManager = "runtime.download_manager"
-        case runtimeDownloadStore = "runtime.download_store"
         case sessionRestore = "session.restore"
         case homeFirstContent = "home.first_content"
         case homeLoad = "home.load"
