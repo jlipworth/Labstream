@@ -326,6 +326,7 @@ struct LibraryPagingModelTests {
 
     @Test func collapsingLaterPageFailurePreservesPublishedPrefix() async {
         struct PageFailure: Error {}
+        var laterPageAttempts = 0
         let source = LibraryPagingSource(
             title: "Movies",
             identity: "collapse-partial-failure",
@@ -334,7 +335,10 @@ struct LibraryPagingModelTests {
             cacheEmptyFirstPage: true,
             collapsesMovieVersions: true,
             fetchPage: { start, _ in
-                guard start == 0 else { throw PageFailure() }
+                guard start == 0 else {
+                    laterPageAttempts += 1
+                    throw PageFailure()
+                }
                 return LibraryPagingPage(
                     items: [Self.movie("alpha", title: "Alpha", year: 2020),
                             Self.movie("bravo", title: "Bravo", year: 2021)],
@@ -352,6 +356,193 @@ struct LibraryPagingModelTests {
         #expect(model.total == 2)
         // The final list is unknown, so the final-offset rail must remain unpublished.
         #expect(model.alphabetBuckets.isEmpty)
+        #expect(laterPageAttempts == 1)
+
+        // The truncation is NOT terminal: because the interrupted load never latched
+        // `loadedIdentity`, a same-identity re-entry re-runs the load (re-attempting the failing
+        // page) instead of short-circuiting the partial grid. This source keeps failing, so the
+        // grid stays partial — but the fresh fetch attempt proves the model can self-heal once the
+        // transient error clears (see collapsingReloadAfterLaterPageFailureCompletesFullSet).
+        await model.load(source: source) { true }
+        #expect(laterPageAttempts == 2)
+        #expect(model.loadState == .loaded)
+        #expect(model.slots.compactMap { $0 }.map(\.ratingKey) == ["alpha", "bravo"])
+    }
+
+    @Test func collapsingReloadAfterLaterPageFailureCompletesFullSet() async {
+        struct PageFailure: Error {}
+        var failLaterPages = true
+        let source = LibraryPagingSource(
+            title: "Movies",
+            identity: "collapse-heal-after-error",
+            backendLabel: "Test",
+            pageSize: 2,
+            cacheEmptyFirstPage: true,
+            collapsesMovieVersions: true,
+            fetchPage: { start, _ in
+                if start == 0 {
+                    return LibraryPagingPage(
+                        items: [Self.movie("alpha", title: "Alpha", year: 2020),
+                                Self.movie("bravo", title: "Bravo", year: 2021)],
+                        reportedTotal: 4
+                    )
+                }
+                if failLaterPages { throw PageFailure() }
+                return LibraryPagingPage(
+                    items: [Self.movie("charlie", title: "Charlie", year: 2022),
+                            Self.movie("delta", title: "Delta", year: 2023)],
+                    reportedTotal: 4
+                )
+            },
+            fetchAlphabetCounts: { [] }
+        )
+        let model = LibraryPagingModel()
+
+        // First load stalls after page 0: partial prefix kept, identity NOT latched.
+        await model.load(source: source) { true }
+        #expect(model.loadState == .loaded)
+        #expect(model.slots.compactMap { $0 }.map(\.ratingKey) == ["alpha", "bravo"])
+        #expect(model.total == 2)
+        #expect(model.alphabetBuckets.isEmpty)
+
+        // Transient error clears; same-identity re-entry completes the full item set and builds
+        // the final-offset rail instead of freezing the partial grid.
+        failLaterPages = false
+        await model.load(source: source) { true }
+        #expect(model.loadState == .loaded)
+        #expect(model.slots.compactMap { $0 }.map(\.ratingKey)
+            == ["alpha", "bravo", "charlie", "delta"])
+        #expect(model.total == 4)
+        #expect(model.alphabetBuckets.map(\.display) == ["A", "B", "C", "D"])
+        #expect(model.alphabetBuckets.map(\.offset) == [0, 1, 2, 3])
+    }
+
+    @Test func collapsingReloadAfterCancellationCompletesFullSet() async {
+        let laterPageEntered = MainActorSignal()
+        var cancelPhase = true
+        let source = LibraryPagingSource(
+            title: "Movies",
+            identity: "collapse-heal-after-cancel",
+            backendLabel: "Test",
+            pageSize: 2,
+            cacheEmptyFirstPage: true,
+            collapsesMovieVersions: true,
+            fetchPage: { start, _ in
+                if start == 0 {
+                    return LibraryPagingPage(
+                        items: [Self.movie("alpha", title: "Alpha", year: 2020),
+                                Self.movie("bravo", title: "Bravo", year: 2021)],
+                        reportedTotal: 4
+                    )
+                }
+                if cancelPhase {
+                    // Suspend the later page until the load task is cancelled; the sleep then
+                    // throws CancellationError, mirroring a navigation push tearing down the
+                    // grid's `.task(id:)` mid-load.
+                    laterPageEntered.signal()
+                    try await Task.sleep(nanoseconds: 60 * 1_000_000_000)
+                }
+                return LibraryPagingPage(
+                    items: [Self.movie("charlie", title: "Charlie", year: 2022),
+                            Self.movie("delta", title: "Delta", year: 2023)],
+                    reportedTotal: 4
+                )
+            },
+            fetchAlphabetCounts: { [] }
+        )
+        let model = LibraryPagingModel()
+
+        let load = Task { await model.load(source: source) { true } }
+        await laterPageEntered.wait()
+        load.cancel()
+        await load.value
+
+        #expect(model.loadState == .loaded)
+        #expect(model.slots.compactMap { $0 }.map(\.ratingKey) == ["alpha", "bravo"])
+        #expect(model.total == 2)
+        #expect(model.alphabetBuckets.isEmpty)
+
+        // Same-identity re-entry after the cancellation-truncated load completes the full set.
+        cancelPhase = false
+        await model.load(source: source) { true }
+        #expect(model.slots.compactMap { $0 }.map(\.ratingKey)
+            == ["alpha", "bravo", "charlie", "delta"])
+        #expect(model.total == 4)
+        #expect(model.alphabetBuckets.map(\.display) == ["A", "B", "C", "D"])
+    }
+
+    @Test func fullyLoadedCollapsingShortCircuitsReentryButForceRefetches() async {
+        var pageFetches = 0
+        let source = LibraryPagingSource(
+            title: "Movies",
+            identity: "collapse-shortcircuit",
+            backendLabel: "Test",
+            pageSize: 2,
+            cacheEmptyFirstPage: true,
+            collapsesMovieVersions: true,
+            fetchPage: { start, _ in
+                pageFetches += 1
+                if start == 0 {
+                    return LibraryPagingPage(
+                        items: [Self.movie("alpha", title: "Alpha", year: 2020),
+                                Self.movie("bravo", title: "Bravo", year: 2021)],
+                        reportedTotal: 4
+                    )
+                }
+                return LibraryPagingPage(
+                    items: [Self.movie("charlie", title: "Charlie", year: 2022),
+                            Self.movie("delta", title: "Delta", year: 2023)],
+                    reportedTotal: 4
+                )
+            },
+            fetchAlphabetCounts: { [] }
+        )
+        let model = LibraryPagingModel()
+
+        await model.load(source: source) { true }
+        #expect(model.slots.compactMap { $0 }.map(\.ratingKey)
+            == ["alpha", "bravo", "charlie", "delta"])
+        let fetchesAfterFullLoad = pageFetches // page 0 + page 2
+
+        // A completed collapsing load latches the identity: same-identity re-entry short-circuits.
+        await model.load(source: source) { true }
+        #expect(pageFetches == fetchesAfterFullLoad)
+
+        // Force still re-runs the whole collapsing load.
+        await model.load(source: source, force: true) { true }
+        #expect(pageFetches == fetchesAfterFullLoad * 2)
+        #expect(model.slots.compactMap { $0 }.map(\.ratingKey)
+            == ["alpha", "bravo", "charlie", "delta"])
+    }
+
+    @Test func lazyLoadShortCircuitsSameIdentityReentry() async {
+        var starts: [Int] = []
+        let source = LibraryPagingSource(
+            title: "Movies",
+            identity: "lazy-shortcircuit",
+            backendLabel: "Plex",
+            pageSize: 2,
+            cacheEmptyFirstPage: true,
+            fetchPage: { start, _ in
+                starts.append(start)
+                return LibraryPagingPage(items: [Self.item("a"), Self.item("b")],
+                                         reportedTotal: 4)
+            },
+            fetchAlphabetCounts: { [("A", 2), ("C", 2)] }
+        )
+        let model = LibraryPagingModel()
+
+        await model.load(source: source) { true }
+        #expect(starts == [0])
+
+        // The lazy path is unaffected: page-0-loaded is still "complete", so same-identity
+        // re-entry short-circuits without refetching page 0.
+        await model.load(source: source) { true }
+        #expect(starts == [0])
+
+        // Force still re-runs it.
+        await model.load(source: source, force: true) { true }
+        #expect(starts == [0, 0])
     }
 
     @Test func forceResetFencesSuspendedCollapsingSourceCompletion() async {

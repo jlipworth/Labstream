@@ -203,7 +203,14 @@ final class LibraryPagingModel {
             }
             ingestCollapsed(first.items)
             // Show the grid immediately after the first page; keep loading the rest below.
-            loadedIdentity = (source.cacheEmptyFirstPage || !first.items.isEmpty) ? identity : nil
+            // Deliberately do NOT latch `loadedIdentity` here. That flag gates the
+            // same-identity re-entry short-circuit in `load()`; for the collapsing path it must
+            // mean "every page ingested", not merely "page 0 shown". Latching after page 0 froze
+            // a permanently partial grid whenever the loop below was interrupted — a transient
+            // later-page fetch error (kept as `.loaded` in the catch) or task cancellation from a
+            // navigation push — because re-entry would short-circuit before finishing the load.
+            // We keep publishing the partial prefix immediately (unchanged perceived latency);
+            // only the completion latch moves to after the loop.
             loadState = .loaded
             firstContentSpan.end(
                 result: BrowsePerformanceMeasurementPolicy.firstContentResult(itemCount: total),
@@ -236,6 +243,14 @@ final class LibraryPagingModel {
                 start += source.pageSize
             }
 
+            // Full load complete → it is now safe to latch the fully-loaded identity so
+            // same-identity re-entry short-circuits in `load()`. Until this point `loadedIdentity`
+            // stays nil, so an interrupted partial load self-heals: the next `load()` re-runs
+            // `loadAllCollapsing` from scratch, atomically rebuilding `slots` behind a fresh
+            // collapser and a bumped generation. Mirror the prior empty-first-page policy via the
+            // final collapsed count so genuinely empty libraries are still cached only when the
+            // source opts in.
+            loadedIdentity = (source.cacheEmptyFirstPage || total > 0) ? identity : nil
             // Full load complete → build the rail from the final collapsed list's positions
             // (F1 fix). Until now `alphabetBuckets` stayed empty (rail hidden during load).
             let collapsed = collapser?.collapsedItems() ?? []
