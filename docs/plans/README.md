@@ -23,6 +23,6 @@ When a plan is complete or superseded:
 
 ## Active plans
 
-- [`2026-07-21-simplification-performance.md`](2026-07-21-simplification-performance.md) — implemented cross-platform simplification program; remaining performance measurements were explicitly forgone, and physical-device acceptance stays active for user validation after merge to `main`.
-- [`2026-07-10-codebase-remediation.md`](2026-07-10-codebase-remediation.md) — whole-repository correctness, concurrency, performance, backend/platform sharing, and build-cost remediation journal.
-- [`2026-07-20-tvos-implementation.md`](2026-07-20-tvos-implementation.md) — first-class tvOS implementation and acceptance plan.
+None currently. Completed plans live in [`docs/archive/plans/`](../archive/plans/); the most
+recently archived programs (2026-07-24) are the codebase remediation journal, the tvOS
+implementation plan, and the cross-platform simplification and performance program.

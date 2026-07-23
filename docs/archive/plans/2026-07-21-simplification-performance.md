@@ -1,6 +1,6 @@
 # Cross-platform simplification and performance program
 
-Status: **Waves 0–4 are implemented and validated; the independent Wave 6 simplification pass is complete; the operator has accepted the resolved Mac composition regression and explicitly forgone the remaining Wave 5 performance measurements; Wave 7 documentation reconciliation and automated acceptance are complete, while physical-device acceptance is deliberately deferred until the user tests the merged result on `main`**
+Status: **complete — archived 2026-07-24.** Waves 0–4 are implemented and validated; the independent Wave 6 simplification pass is complete; the operator accepted the resolved Mac composition regression and explicitly forwent the remaining Wave 5 performance measurements; Wave 7 documentation reconciliation and automated acceptance are complete. The program is merged to `main` and the user accepted the plan as complete, closing the previously deferred physical-device acceptance.
 
 Audit baseline: `b3045bc0` (`Record tvOS merge checkpoint`) on
 `codex/audit-simplification-performance`

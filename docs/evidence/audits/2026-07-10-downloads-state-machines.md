@@ -4,7 +4,7 @@
 > remediation changed these machines; use this file as audit evidence, not current operating
 > guidance. Current invariants live in [`docs/DOWNLOADS-OFFLINE.md`](../../DOWNLOADS-OFFLINE.md),
 > and remediation status lives in
-> [`docs/plans/2026-07-10-codebase-remediation.md`](../../plans/2026-07-10-codebase-remediation.md).
+> [`docs/archive/plans/2026-07-10-codebase-remediation.md`](../../archive/plans/2026-07-10-codebase-remediation.md).
 > Historical `Labstream/Downloads/` citations now live under
 > `Labstream/Capabilities/Downloads/Core/` in the current tree.
 

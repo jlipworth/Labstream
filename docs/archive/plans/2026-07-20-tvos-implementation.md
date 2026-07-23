@@ -1,6 +1,6 @@
 # tvOS implementation plan
 
-Status: **active research and implementation plan** for [GitHub issue #246](https://github.com/jlipworth/Labstream/issues/246). A tvOS target and substantial parity scaffolding now exist, but tvOS is not yet a supported or release-complete Labstream platform; the phase checkboxes below are acceptance gates, not claims of shipped behavior.
+Status: **complete — archived 2026-07-24** for [GitHub issue #246](https://github.com/jlipworth/Labstream/issues/246); the tvOS target work is merged to `main` and the user accepted the plan as complete. A tvOS target and substantial parity scaffolding now exist, but tvOS is not yet a supported or release-complete Labstream platform; the phase checkboxes below are acceptance gates, not claims of shipped behavior.
 
 **Current source-ownership note (2026-07-22):** subsequent platform-topology work moved the app
 core to `Labstream/Shared/` and made `Labstream/Platforms/tvOS/` the exclusive TV owner root.
