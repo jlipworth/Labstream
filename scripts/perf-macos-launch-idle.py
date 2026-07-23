@@ -63,6 +63,7 @@ LAUNCH_PHASE_PROFILES = {
     },
 }
 IDLE_FAILURE_DETAIL_MAX_BYTES = 2 * 1024
+IDLE_TRACE_FINALIZATION_TIMEOUT_SECONDS = 120
 IDLE_TOOL_ERROR_PREFIXES = {
     str(IDLE_EXTRACTOR): "error: ",
     str(CONTRACT): "performance-audit-contract: FAIL: ",
@@ -760,7 +761,13 @@ def capture_idle_sample(plan: dict[str, Any], sample: dict[str, Any], app: App,
                           "--process", str(pid)], stdout=output)
         if executor.poll(process) is not None:
             fail(f"app PID {pid} exited during capture")
-        trace_status = executor.wait(trace_process, 15)
+        try:
+            trace_status = executor.wait(
+                trace_process, IDLE_TRACE_FINALIZATION_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            fail(
+                "System Trace xctrace did not finalize within "
+                f"{IDLE_TRACE_FINALIZATION_TIMEOUT_SECONDS} seconds")
         if trace_status != 0:
             fail(f"System Trace xctrace failed with status {trace_status}")
         if trace_path.is_symlink() or not trace_path.is_dir():
