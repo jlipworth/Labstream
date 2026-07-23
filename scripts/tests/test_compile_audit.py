@@ -25,6 +25,17 @@ class CompileAuditTests(unittest.TestCase):
         self.assertIn("visionos: clean, no_op", result.stdout)
         self.assertIn("mobile: clean, no_op", result.stdout)
         self.assertIn("mac: clean, no_op", result.stdout)
+        self.assertIn(
+            "incremental_ProgressSliver "
+            "[Labstream/UI/ProgressSliver.swift | Labstream/Shared/UI/ProgressSliver.swift]",
+            result.stdout,
+        )
+        self.assertIn(
+            "incremental_PlaybackController "
+            "[Labstream/Player/PlaybackController.swift | "
+            "Labstream/Shared/Player/PlaybackController.swift]",
+            result.stdout,
+        )
 
     def test_run_requires_explicit_commits_and_at_least_five_repetitions(self):
         missing = subprocess.run([sys.executable, SCRIPT, "--run"], text=True, capture_output=True)
@@ -157,21 +168,123 @@ class CompileAuditTests(unittest.TestCase):
                  mock.patch.object(audit, "settle_restoration", side_effect=fake_settle):
                 audit.run_repetition(
                     output=root, commits={"control": "a", "candidate": "b"},
-                    sources=sources, repetition=1, seed=0, rows=[])
+                    sources=sources, repetition=1, seed=0, rows=[],
+                    edit_paths={
+                        variant: {edit.name: edit.paths[-1] for edit in audit.APP_EDITS}
+                        for variant in sources
+                    },
+                )
 
             first = events.index("measure:incremental_PlaybackFailurePolicy:control")
             second = events.index("measure:incremental_PlaybackFailurePolicy:candidate")
             self.assertEqual(second, first + 1)
             self.assertNotIn("settle", events[first:second + 1])
 
-    def test_missing_representative_path_is_detected_before_capture(self):
-        commit = audit.resolve_commit("HEAD")
-        with mock.patch.object(audit, "APP_EDIT_FILES", ("does/not/exist.swift",)), \
-             mock.patch.object(audit, "PMS_EDIT_FILE", "does/not/exist.swift"):
-            self.assertEqual(
-                audit.missing_edit_paths({"candidate": commit}),
-                ["candidate:does/not/exist.swift"],
+    def test_edit_paths_resolve_per_snapshot_for_old_and_new_topology(self):
+        existing = {
+            ("old-commit", audit.PMS_EDIT_FILE),
+            ("old-commit", "Labstream/UI/ProgressSliver.swift"),
+            ("old-commit", "Labstream/Player/PlaybackController.swift"),
+            ("new-commit", audit.PMS_EDIT_FILE),
+            ("new-commit", "Labstream/Shared/UI/ProgressSliver.swift"),
+            ("new-commit", "Labstream/Shared/Player/PlaybackController.swift"),
+        }
+        with mock.patch.object(
+            audit, "path_exists_at_commit", side_effect=lambda commit, path: (commit, path) in existing
+        ):
+            resolved = audit.resolve_snapshot_edit_paths(
+                {"control": "old-commit", "candidate": "new-commit"}
             )
+        self.assertEqual(
+            resolved["control"]["ProgressSliver"], "Labstream/UI/ProgressSliver.swift"
+        )
+        self.assertEqual(
+            resolved["candidate"]["ProgressSliver"], "Labstream/Shared/UI/ProgressSliver.swift"
+        )
+        self.assertEqual(
+            resolved["control"]["PlaybackController"], "Labstream/Player/PlaybackController.swift"
+        )
+        self.assertEqual(
+            resolved["candidate"]["PlaybackController"],
+            "Labstream/Shared/Player/PlaybackController.swift",
+        )
+
+    def test_missing_and_ambiguous_edit_topologies_are_rejected(self):
+        edit = audit.RepresentativeEdit("Moved", ("old.swift", "new.swift"))
+        with mock.patch.object(audit, "APP_EDITS", (edit,)), \
+             mock.patch.object(audit, "path_exists_at_commit", return_value=False):
+            with self.assertRaisesRegex(
+                ValueError, r"candidate:Moved:missing \(old.swift, new.swift\)"
+            ):
+                audit.resolve_snapshot_edit_paths({"candidate": "commit"})
+        with mock.patch.object(audit, "APP_EDITS", (edit,)), \
+             mock.patch.object(audit, "path_exists_at_commit", return_value=True):
+            with self.assertRaisesRegex(
+                ValueError, r"candidate:Moved:ambiguous \(old.swift, new.swift\)"
+            ):
+                audit.resolve_snapshot_edit_paths({"candidate": "commit"})
+
+    def test_exported_snapshot_must_exactly_match_resolved_topology(self):
+        edit = audit.RepresentativeEdit("Moved", ("old.swift", "new.swift"))
+        with tempfile.TemporaryDirectory() as temporary:
+            source = pathlib.Path(temporary) / "control"
+            source.mkdir()
+            (source / "old.swift").write_text("old\n")
+            mapping = {"control": {"Moved": "old.swift"}}
+            with mock.patch.object(audit, "APP_EDITS", (edit,)):
+                audit.verify_exported_edit_paths({"control": source}, mapping)
+                (source / "new.swift").write_text("ambiguous\n")
+                with self.assertRaisesRegex(RuntimeError, "exported representative edit topology mismatch"):
+                    audit.verify_exported_edit_paths({"control": source}, mapping)
+
+    def test_per_snapshot_mapped_edits_restore_the_selected_file_byte_exactly(self):
+        edit = audit.RepresentativeEdit("Moved", ("old.swift", "new.swift"))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            sources = {variant: root / variant for variant in ("control", "candidate")}
+            mapping = {
+                "control": {"Moved": "old.swift"},
+                "candidate": {"Moved": "new.swift"},
+            }
+            originals = {}
+            for variant, source in sources.items():
+                pms = source / audit.PMS_EDIT_FILE
+                pms.parent.mkdir(parents=True)
+                pms.write_bytes(b"pms\n")
+                selected = source / mapping[variant]["Moved"]
+                selected.parent.mkdir(parents=True, exist_ok=True)
+                selected.write_bytes(f"{variant}\n".encode())
+                originals[variant] = selected.read_bytes()
+            observed = []
+
+            def fake_measure(_command, **kwargs):
+                if kwargs["group"] == "app" and kwargs["scenario"] == "incremental_Moved":
+                    selected = sources[kwargs["variant"]] / mapping[kwargs["variant"]]["Moved"]
+                    self.assertTrue(
+                        selected.read_bytes().endswith(b"// compile-audit representative edit\n")
+                    )
+                    observed.append(kwargs["variant"])
+                return {
+                    "result": 0, "valid": True, "restoration_result": "",
+                    "restoration_source_match": "",
+                }
+
+            with mock.patch.object(audit, "APP_EDITS", (edit,)), \
+                 mock.patch.object(
+                     audit, "LANES", (audit.Lane("test", "Test", "generic/platform=test"),)
+                 ), \
+                 mock.patch.object(audit, "measure", side_effect=fake_measure), \
+                 mock.patch.object(audit, "settle_restoration", return_value=0):
+                audit.run_repetition(
+                    output=root, commits={"control": "a", "candidate": "b"},
+                    sources=sources, repetition=1, seed=0, rows=[], edit_paths=mapping,
+                )
+
+            self.assertEqual(observed, ["control", "candidate"])
+            for variant, source in sources.items():
+                self.assertEqual(
+                    (source / mapping[variant]["Moved"]).read_bytes(), originals[variant]
+                )
 
     def test_integrity_manifest_covers_results_but_excludes_workspace(self):
         with tempfile.TemporaryDirectory() as temporary:

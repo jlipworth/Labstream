@@ -18,11 +18,6 @@ import subprocess
 from dataclasses import dataclass
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-APP_EDIT_FILES = (
-    "PMSKit/Sources/PMSKit/Playback/PlaybackFailurePolicy.swift",
-    "Labstream/Shared/UI/ProgressSliver.swift",
-    "Labstream/Shared/Player/PlaybackController.swift",
-)
 PMS_EDIT_FILE = "PMSKit/Sources/PMSKit/Playback/PlaybackFailurePolicy.swift"
 MIN_REPETITIONS = 5
 LIVE_ENV_PREFIXES = ("PLEX_LIVE_", "EMBY_LIVE_", "JELLYFIN_")
@@ -41,6 +36,27 @@ class Lane:
     name: str
     scheme: str
     destination: str
+
+
+@dataclass(frozen=True)
+class RepresentativeEdit:
+    """One stable audit scenario and every path it may have at an audited commit."""
+
+    name: str
+    paths: tuple[str, ...]
+
+
+APP_EDITS = (
+    RepresentativeEdit("PlaybackFailurePolicy", (PMS_EDIT_FILE,)),
+    RepresentativeEdit(
+        "ProgressSliver",
+        ("Labstream/UI/ProgressSliver.swift", "Labstream/Shared/UI/ProgressSliver.swift"),
+    ),
+    RepresentativeEdit(
+        "PlaybackController",
+        ("Labstream/Player/PlaybackController.swift", "Labstream/Shared/Player/PlaybackController.swift"),
+    ),
+)
 
 
 LANES = (
@@ -63,18 +79,48 @@ def resolve_commit(reference: str) -> str:
     return checked_output(["git", "rev-parse", "--verify", f"{reference}^{{commit}}"])
 
 
-def missing_edit_paths(commits: dict[str, str]) -> list[str]:
-    missing = []
-    paths = sorted(set(APP_EDIT_FILES) | {PMS_EDIT_FILE})
+def path_exists_at_commit(commit: str, path: str) -> bool:
+    result = subprocess.run(
+        ["git", "cat-file", "-e", f"{commit}:{path}"], cwd=ROOT,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0
+
+
+def resolve_snapshot_edit_paths(commits: dict[str, str]) -> dict[str, dict[str, str]]:
+    """Resolve each logical edit against its exact commit, rejecting uncertain topology."""
+    resolved: dict[str, dict[str, str]] = {}
+    problems: list[str] = []
     for variant, commit in commits.items():
-        for path in paths:
-            result = subprocess.run(
-                ["git", "cat-file", "-e", f"{commit}:{path}"], cwd=ROOT,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            if result.returncode != 0:
-                missing.append(f"{variant}:{path}")
-    return missing
+        resolved[variant] = {}
+        for edit in APP_EDITS:
+            matches = [path for path in edit.paths if path_exists_at_commit(commit, path)]
+            if len(matches) == 1:
+                resolved[variant][edit.name] = matches[0]
+            elif not matches:
+                problems.append(f"{variant}:{edit.name}:missing ({', '.join(edit.paths)})")
+            else:
+                problems.append(f"{variant}:{edit.name}:ambiguous ({', '.join(matches)})")
+    if problems:
+        raise ValueError("representative edit topology invalid: " + "; ".join(problems))
+    return resolved
+
+
+def verify_exported_edit_paths(
+    sources: dict[str, pathlib.Path], edit_paths: dict[str, dict[str, str]]
+) -> None:
+    """Refuse to edit if an exported tree differs from the commit-derived topology."""
+    problems: list[str] = []
+    for variant, source in sources.items():
+        for edit in APP_EDITS:
+            mapped = edit_paths[variant][edit.name]
+            matches = [path for path in edit.paths if (source / path).is_file()]
+            if matches != [mapped]:
+                problems.append(
+                    f"{variant}:{edit.name}:mapped={mapped}:exported={','.join(matches) or '<missing>'}"
+                )
+    if problems:
+        raise RuntimeError("exported representative edit topology mismatch: " + "; ".join(problems))
 
 
 def snapshot(reference: str, destination: pathlib.Path) -> str:
@@ -378,13 +424,16 @@ def print_plan(repetitions: int, control: str | None, candidate: str | None, see
     print("order: same-index A/B, B/A alternating")
     print("pmskit: cold, no_op, incremental_PlaybackFailurePolicy, checked restoration, test_coverage")
     for lane in LANES:
-        edits = ", ".join(f"incremental_{pathlib.Path(p).stem}" for p in APP_EDIT_FILES)
+        edits = ", ".join(
+            f"incremental_{edit.name} [{' | '.join(edit.paths)}]" for edit in APP_EDITS
+        )
         print(f"{lane.name}: clean, no_op, {edits} (checked restoration after each edit)")
 
 
 def run_repetition(*, output: pathlib.Path, commits: dict[str, str],
                    sources: dict[str, pathlib.Path], repetition: int, seed: int,
-                   rows: list[dict[str, object]]) -> None:
+                   rows: list[dict[str, object]],
+                   edit_paths: dict[str, dict[str, str]]) -> None:
     """Run each scenario as an adjacent A/B pair while preserving per-variant build state."""
     order = variant_order(repetition, seed)
     pair_positions = {variant: index for index, variant in enumerate(order, start=1)}
@@ -484,15 +533,15 @@ def run_repetition(*, output: pathlib.Path, commits: dict[str, str],
                     dd=derived[variant], env=audit_env)
                 rows.append(row)
                 lane_valid[variant] = int(row["result"]) == 0
-        for edit in APP_EDIT_FILES:
-            scenario = "incremental_" + pathlib.Path(edit).stem
+        for edit in APP_EDITS:
+            scenario = "incremental_" + edit.name
             measured_incrementals: dict[str, dict[str, object]] = {}
             for variant in order:
                 if not lane_valid[variant]:
                     skip(variant, group="app", lane=lane.name, scenario=scenario,
                          reason=f"invalidated by earlier {lane.name} prerequisite failure")
                     continue
-                path = sources[variant] / edit
+                path = sources[variant] / edit_paths[variant][edit.name]
                 original = temporary_edit(path)
                 try:
                     row = measure(
@@ -543,9 +592,11 @@ def main(argv: list[str] | None = None) -> int:
     control_commit, candidate_commit = resolve_commit(args.control), resolve_commit(args.candidate)
     if control_commit == candidate_commit:
         parser.error("--control and --candidate must resolve to different commits")
-    missing = missing_edit_paths({"control": control_commit, "candidate": candidate_commit})
-    if missing:
-        parser.error("representative edit path missing from compared snapshot(s): " + ", ".join(missing))
+    commits = {"control": control_commit, "candidate": candidate_commit}
+    try:
+        edit_paths = resolve_snapshot_edit_paths(commits)
+    except ValueError as error:
+        parser.error(str(error))
     output = (args.output or ROOT / "build/compile-audit" / dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")).resolve()
     if output.exists():
         parser.error(f"output already exists: {output}")
@@ -559,6 +610,7 @@ def main(argv: list[str] | None = None) -> int:
         "repetitions": args.repetitions, "seed": args.seed,
         "pair_orders": {str(i): list(variant_order(i, args.seed)) for i in range(1, args.repetitions + 1)},
         "configuration": "Debug", "architecture": "arm64",
+        "representative_edit_paths": edit_paths,
         "destinations": {lane.name: lane.destination for lane in LANES},
         "toolchain": {
             "xcodebuild": safe_output(["xcodebuild", "-version"]),
@@ -587,11 +639,12 @@ def main(argv: list[str] | None = None) -> int:
                 (("control", control_commit), ("candidate", candidate_commit))}
     if exported != {"control": control_commit, "candidate": candidate_commit}:
         raise RuntimeError("exported snapshot commit mismatch")
+    verify_exported_edit_paths(sources, edit_paths)
     rows: list[dict[str, object]] = []
-    commits = {"control": control_commit, "candidate": candidate_commit}
     for repetition in range(1, args.repetitions + 1):
         run_repetition(output=output, commits=commits, sources=sources,
-                       repetition=repetition, seed=args.seed, rows=rows)
+                       repetition=repetition, seed=args.seed, rows=rows,
+                       edit_paths=edit_paths)
     failures = [
         {"variant": row["variant"], "lane": row["lane"], "scenario": row["scenario"],
          "repetition": row["repetition"], "result": row["result"],
