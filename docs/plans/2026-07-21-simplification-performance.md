@@ -1,6 +1,6 @@
 # Cross-platform simplification and performance program
 
-Status: **Waves 0–4 implemented and validated; the independent Wave 6 simplification pass is complete; Wave 5 now has an admissible Mac launch baseline, while browse foreground admission, long idle thresholds/capture, compile and artwork evidence, and physical acceptance remain open**
+Status: **Waves 0–4 implemented and validated; the independent Wave 6 simplification pass is complete; Wave 5 has resolved the admissible Mac composition regression, while browse foreground admission, long idle thresholds/capture, compile and artwork evidence, and physical acceptance remain open**
 
 Audit baseline: `b3045bc0` (`Record tvOS merge checkpoint`) on
 `codex/audit-simplification-performance`
@@ -1469,6 +1469,38 @@ policy:
     implementation-complete at Phase 2 commit `e6e67519` but remains open pending physical-iPhone
     acceptance; this Primary-only performance fixture does not exercise or close that visual defect.
 
+21. The remaining launch-composition regression has now been attributed rather than guessed at.
+    Candidate commit `1a0d9833` and measurement-only control commit `9ff550e6` added exact nested
+    `runtime.download_manager` and `runtime.download_store` profiles. Directional 3-warmup/10-pair
+    captures completed without failure: the manager measured 1 ms control versus 3 ms candidate
+    medians (paired +2 ms), while the complete persistence-admission span measured 0 ms for both
+    medians. A proposed parent-directory-fsync shortcut was rejected before landing because a crash
+    between directory creation and the durability barrier could permanently skip healing; a direct
+    APFS probe also placed that fsync far below the observed gap.
+
+    Candidate `68858ae4` and control `4ae82f32` then isolated transport construction and synchronous
+    startup submission without changing transport or recovery. The 3+10 construction capture was
+    flat at 2 ms for both medians (one candidate 3 ms outlier), while retained raw launch evidence
+    showed that candidate construction/submission occurred inside manager composition and control
+    performed the same work after its asynchronous startup boundary. The evidence therefore
+    supports a critical-path scheduling change, not deletion of download recovery or a claim that
+    total transport work became cheaper.
+
+    Commit `c1cce27e` defers only the healthy current-store transport submission by one bounded
+    MainActor turn, after all callbacks and the background-completion registry are installed. Store
+    admission, unsupported/unreadable blocking, retry ownership, deterministic recovery, and the
+    app-owned background transport remain intact. The bounded task retains the manager through that
+    turn so an already-registered OS completion handler cannot be stranded by runtime replacement;
+    private-registry tests couple session release to the same registry. Five new deferral/order/
+    retry/deallocation tests and 16 existing startup-admission tests pass, as do PerformanceAudit and
+    Release builds; the four launch-attribution strings are absent from Release. Full verification
+    `mac-launch-deferred-full-20260723` then completed 23 control calibration arms and 46 paired arms
+    without failure. Control measured 3 ms median / 4 ms p95 and candidate 3.5 ms median / 4 ms p95,
+    but the exact paired median was 0% with a `[0%, 0%]` bootstrap interval, so the comparator
+    classified the candidate as noise rather than a regression. The earlier 5 ms versus 8 ms
+    composition regression is therefore resolved to parity and the bounded deferral is retained.
+    This remains critical-path scheduling evidence, not an end-to-end first-render claim.
+
 ### Wave 6 — Optimize measured bottlenecks
 
 - Land one attributable optimization per slice.
@@ -1555,11 +1587,13 @@ policy:
    A pre-existing `DownloadStorePersistenceTests` order/isolation failure still reproduces when its
    class runs as a group (`57/58` pass) but the named failing test passes alone; track that harness
    defect separately rather than attributing it to definition-only deletion.
-13. No measured optimization is retained. The first eligible launch baseline found a 3 ms
-   composition regression, but the first focused artwork-transport hypothesis measured as noise in
-   a separate full paired run and was reverted rather than adding 89 lines without evidence. Wave 5
-   still lacks statistically eligible full browse, artwork, playback, download, memory/energy, and
-   compile-time results; the launch regression remains an open measurement-led optimization target.
+13. One measured optimization is retained. The first focused artwork-transport hypothesis measured
+   as noise and was reverted rather than adding 89 lines without evidence. Nested launch evidence
+   instead attributed the 3 ms regression to performing the same 2 ms background-transport
+   construction inside candidate composition that control submitted after its async startup edge.
+   Deferring only the healthy current-store submission restored full-run composition parity without
+   weakening recovery or changing transport. Wave 5 still lacks statistically eligible full browse,
+   artwork, playback, download, memory/energy, and compile-time results.
 
 ### Wave 7 — Acceptance and closeout
 
