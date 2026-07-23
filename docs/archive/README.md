@@ -35,6 +35,7 @@ Historical prose and path literals may remain as written when they are part of t
 
 ## Archived plans
 
+- [`2026-07-20-emby-bif-trickplay.md`](plans/2026-07-20-emby-bif-trickplay.md) — completed Emby ThumbnailSet/BIF online and offline trick-play implementation and accepted #238 verification journal.
 - [`2026-07-20-main-documentation-alignment.md`](plans/2026-07-20-main-documentation-alignment.md) — completed factual alignment, documentation taxonomy, Mermaid, and durable-governance work.
 - [`2026-07-20-macos-shell-redesign.md`](plans/2026-07-20-macos-shell-redesign.md) — completed native Mac source-list, toolbar Search, adaptive-window, and acceptance work for #232; follow-up presentation polish is tracked in #251.
 

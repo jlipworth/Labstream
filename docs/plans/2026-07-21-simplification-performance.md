@@ -1,6 +1,6 @@
 # Cross-platform simplification and performance program
 
-Status: **Waves 0–4 implemented and validated; the independent Wave 6 simplification pass is complete; Wave 5 resolved the admissible Mac composition regression and is now intentionally paused with foreground browse/artwork, long-idle, compile, and broader performance evidence still open; Wave 7 documentation reconciliation and acceptance disposition are in progress**
+Status: **Waves 0–4 are implemented and validated; the independent Wave 6 simplification pass is complete; the operator has accepted the resolved Mac composition regression and explicitly forgone the remaining Wave 5 performance measurements; Wave 7 documentation reconciliation and automated acceptance are complete, while physical-device acceptance is deliberately deferred until the user tests the merged result on `main`**
 
 Audit baseline: `b3045bc0` (`Record tvOS merge checkpoint`) on
 `codex/audit-simplification-performance`
@@ -1165,6 +1165,12 @@ policy:
 
 #### Wave 5 readiness audit journal
 
+**Final disposition (2026-07-23):** the operator explicitly elected to forgo the remaining
+foreground browse/artwork, long-idle, compile, playback, download, memory/energy, largest-BIF,
+and broader performance measurements. The admissible Mac launch-composition regression was
+resolved to parity as recorded below. The uncaptured matrices remain historical planned work,
+not a release claim, a regression finding, or a gate on the authorized merge.
+
 1. The Release-parity `PerformanceAudit` configuration, binary/manifest guard, strict raw-summary
    binding, frozen-MDE workflow, and seeded paired comparator remain valid foundations. The current
    nine spans cover only broad browse, artwork, and playback latency; they do not yet make launch,
@@ -1612,31 +1618,41 @@ policy:
 1. Phase 5 was paused at the operator's direction after its long-idle admission succeeded but
    before an admissible pilot or verdict completed. The active pilot was interrupted through its
    owning runner, which removed its exact app and `xctrace` children and left both worktrees clean.
-   Commits `6ca1566a`, `4a00bdab`, and `ef4fd211` retain the Xcode 27 `Terminated` state contract,
+   Rebasing changed the journaled commit identities: commits `b5679038`, `e41f036d`, and
+   `312dc59a` retain the Xcode 27 `Terminated` state contract,
    the control-only two-pass idle-threshold freeze, and a bounded fail-closed long-trace
    finalization window. These are tooling results, not long-idle performance evidence.
 2. Current-document reconciliation found three material tooling gaps and two architecture gaps:
    the two-pass idle freeze/verdict procedure, the closed launch-attribution profiles, the exact
    first-poster artwork admission, the bounded deferred download-startup edge, and cross-snapshot
    compile-path resolution. Wave 7 promotes those durable contracts into current docs without
-   rewriting dated evidence, research, or archived plans. This plan remains active because paused
-   Phase 5 and physical acceptance gates are still open.
-3. Current accounting for parent candidate `ef4fd211` plus this Wave 7 documentation checkpoint
-   against original control `b3045bc0` covers 502 changed files: production
-   `+20,898/-13,514` (net `+7,384`), product tests `+12,618/-1,699` (net `+10,919`),
-   performance/tooling `+16,641/-225` (net `+16,416`), current docs `+2,796/-289`
-   (net `+2,507`), historical/evidence docs `+7/-1`, 63 asset-only
+   rewriting dated evidence, research, or archived plans. This plan remains active because physical
+   acceptance gates are still open.
+3. The final pre-closeout-documentation accounting at `43cfead8` against current local
+   `main` (`94cd28d0`) covers 502 changed files: production
+   `+20,909/-13,516` (net `+7,393`), product tests `+12,634/-1,700` (net `+10,934`),
+   performance/tooling `+16,641/-225` (net `+16,416`), current docs `+2,797/-289`
+   (net `+2,508`), historical/evidence docs `+7/-1` (net `+6`), 63 asset-only
    moves, and configuration/project/privacy `+311/-13` (net `+298`). The totals reconcile to
-   `+53,271/-15,741`; this is a checkpoint, not a claim that the still-open program is complete.
+   `+53,299/-15,744` (net `+37,555`). This is the snapshot immediately before this closeout
+   documentation edit, not a claim that the still-open physical acceptance is complete.
    Production net addition is principally the shared artwork/UI pipeline, repositories and paging,
    platform shells, app-lifecycle composition, durability, and auth added by the larger program,
    not duplicated player presentation. Wave 6's independently measured simplification checkpoint
    removed 992 production lines within that broader feature-and-remediation branch.
-4. Wave 7 can reconcile docs, run repository validation, and disposition available acceptance
-   cells while Phase 5 is paused. It cannot claim the program Definition of Done until the paused
-   browse/artwork, long-idle, compile, and broader performance matrices are resumed or explicitly
-   deferred, available one-device physical cells are resolved, and two-participant SharePlay is
-   recorded as hardware-blocked with the single available Vision Pro rather than failed.
+4. The operator's final disposition is to **forgo**, rather than resume, the remaining Phase 5
+   foreground browse/artwork, long-idle, compile, playback, download, memory/energy, largest-BIF,
+   and broader performance matrices. Their absence must not be rewritten as measured parity or
+   improvement, but it is no longer a gate on Wave 7 closeout or the authorized merge.
+5. Final automated Phase 7 evidence passed 1,636 PMSKit tests / 202 suites; clean visionOS,
+   mobile, tvOS, and macOS build gates; 561 Mac-hosted tests / 66 suites; 548 mobile-hosted tests /
+   64 suites; 279 tvOS-hosted tests / 35 suites; and the tvOS UI smoke, 2/2 tests. These automated
+   results do not substitute for the physical-device cells below.
+6. Physical-device acceptance is deliberately deferred to the user, who will run it from the
+   integrated `main` tree after merge. Until those results are recorded, this plan remains active
+   and is not archived. Available single-device visionOS, iPhone/iPad, Mac input/system-media, and
+   Apple TV cells remain pending rather than passed; two-participant SharePlay remains
+   hardware-blocked because only one Vision Pro is available.
 
 ## Pull request / commit slicing
 

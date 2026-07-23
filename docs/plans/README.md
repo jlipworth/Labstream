@@ -23,7 +23,6 @@ When a plan is complete or superseded:
 
 ## Active plans
 
-- [`2026-07-21-simplification-performance.md`](2026-07-21-simplification-performance.md) — post-feature cross-platform simplification program followed by a measured whole-app performance audit and optimization pass.
+- [`2026-07-21-simplification-performance.md`](2026-07-21-simplification-performance.md) — implemented cross-platform simplification program; remaining performance measurements were explicitly forgone, and physical-device acceptance stays active for user validation after merge to `main`.
 - [`2026-07-10-codebase-remediation.md`](2026-07-10-codebase-remediation.md) — whole-repository correctness, concurrency, performance, backend/platform sharing, and build-cost remediation journal.
-- [`2026-07-20-emby-bif-trickplay.md`](2026-07-20-emby-bif-trickplay.md) — Emby ThumbnailSet/BIF online and offline trick-play implementation and real-server acceptance journal.
 - [`2026-07-20-tvos-implementation.md`](2026-07-20-tvos-implementation.md) — first-class tvOS implementation and acceptance plan.
