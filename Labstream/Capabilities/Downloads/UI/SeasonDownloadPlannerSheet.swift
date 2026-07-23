@@ -23,6 +23,7 @@ struct SeasonDownloadPlannerSheet: View {
     @State private var pendingDraft: SeasonPlanDraft?
     @State private var commitError: String?
     @State private var planningTask: Task<Void, Never>?
+    @State private var commitTask: Task<Void, Never>?
 
     private var backend: DownloadBackendKind { appModel.activeBackend }
     private var watchedSummary: SeasonDownloadSelectionSummary {
@@ -397,13 +398,16 @@ struct SeasonDownloadPlannerSheet: View {
     }
 
     private func commit() {
-        guard let pendingDraft else { return }
-        let result = downloadManager.commitSeasonPlan(pendingDraft)
-        if let error = result.failureMessage {
-            commitError = error
-        } else {
-            self.pendingDraft = nil
-            dismiss()
+        guard let pendingDraft, commitTask == nil else { return }
+        commitTask = Task { @MainActor in
+            defer { commitTask = nil }
+            let result = await downloadManager.commitSeasonPlan(pendingDraft)
+            if let error = result.failureMessage {
+                commitError = error
+            } else {
+                self.pendingDraft = nil
+                dismiss()
+            }
         }
     }
 }

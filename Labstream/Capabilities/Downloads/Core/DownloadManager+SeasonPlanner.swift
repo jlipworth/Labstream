@@ -76,8 +76,11 @@ extension DownloadManager {
 
     /// Persist every new ordinary episode row before admitting any lane. Failed included rows are
     /// durably marked for the same bounded admission worker; paused rows are never passed here.
+    /// Async so the store's durability waits (a full-index write, plus compensating writes on
+    /// failure) never block the main actor; admission stays gated on the returned outcome via
+    /// `seasonPlanCommitsInFlight`.
     func commitSeasonPlan(_ draft: SeasonPlanDraft)
-        -> SeasonPlanCommitResult {
+        async -> SeasonPlanCommitResult {
         let plans = draft.newPlans
         let retryAttempts = draft.retryAttempts
         guard startupRecoveryState == .ready else {
@@ -125,8 +128,14 @@ extension DownloadManager {
                 bytes: 0, progress: 0, status: plan.shouldStart ? .queued : .failed,
                 metadata: metadata))
         }
-        let applied = store.applySeasonPlanAtomically(
-            newRecords: records, retryAttempts: retryAttempts)
+        seasonPlanCommitsInFlight += 1
+        defer { seasonPlanCommitsInFlight -= 1 }
+        let store = store
+        let plannedRecords = records
+        let applied = await Task.detached(priority: .userInitiated) {
+            store.applySeasonPlanAtomically(
+                newRecords: plannedRecords, retryAttempts: retryAttempts)
+        }.value
         guard case .applied(let inserted, let retried) = applied else {
             let message: String
             switch applied {
@@ -161,6 +170,9 @@ extension DownloadManager {
 
     /// Returns true while durable pending rows remain (including rows waiting for an occupied lane).
     private func admitSeasonPlannerRowsOnce() async -> Bool {
+        // A commit's rows are published before their durability is proven; a failed commit
+        // withdraws them. Keep polling instead of admitting anything mid-commit.
+        if seasonPlanCommitsInFlight > 0 { return true }
         if isQueuePaused { return records.contains { $0.metadata?.seasonPlannerPendingAdmission == true } }
         let snapshot = store.records
         let pendingRecords = snapshot.filter {
