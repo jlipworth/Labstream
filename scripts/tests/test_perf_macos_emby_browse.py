@@ -1202,7 +1202,19 @@ class BrowseRunnerTests(unittest.TestCase):
         class DriverFailure(CaptureExecutor):
             def run(self, argv, *, stdout=-1):
                 if argv and pathlib.Path(argv[0]).name == ".perf-macos-ax-driver":
-                    raise RuntimeError("driver failed")
+                    pid = int(argv[argv.index("--pid") + 1])
+                    spec_path = pathlib.Path(argv[argv.index("--workload-spec") + 1])
+                    output = pathlib.Path(argv[argv.index("--output") + 1])
+                    output.write_text(json.dumps({
+                        "schema_version": 1,
+                        "tool": {"name": "labstream-macos-ax-driver", "version": 1},
+                        "pid": pid, "scenario": json.loads(spec_path.read_text())["scenario"],
+                        "status": "failure", "completed_stage": "authenticated",
+                        "action_count": 5, "elapsed_milliseconds": 123,
+                        "error_code": "element_not_found",
+                    }))
+                    output.chmod(0o600)
+                    raise subprocess.CalledProcessError(1, argv)
                 return super().run(argv, stdout=stdout)
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -1222,7 +1234,18 @@ class BrowseRunnerTests(unittest.TestCase):
                                    {"reset": True} if method == "POST" else {}):
                 result = runner.capture(plan, apps, fake)
             self.assertEqual(result["capture_status"], "failure")
-            self.assertIn("driver failed", result["records"][0]["error"])
+            failure = result["records"][0]
+            self.assertEqual(failure["driver_failure"], {
+                "error_code": "element_not_found",
+                "completed_stage": "authenticated",
+                "elapsed_milliseconds": 123,
+            })
+            self.assertIn(
+                "AX driver failed: error_code=element_not_found "
+                "completed_stage=authenticated elapsed_milliseconds=123",
+                failure["error"])
+            self.assertNotIn("action_count", failure)
+            self.assertEqual(list((root / "result-raw").glob(".pending-*")), [])
             fixture_pid = next(action[2] for action in fake.actions
                                if action[0] == "spawn" and str(runner.FIXTURE) in action[1])
             app_pids = [pid for pid in fake.processes if pid != fixture_pid]
@@ -1230,6 +1253,40 @@ class BrowseRunnerTests(unittest.TestCase):
             deletes = [action for action in fake.actions if isinstance(action, list)
                        and action[:2] == ["/usr/bin/security", "delete-generic-password"]]
             self.assertEqual(len(deletes), 2 * len(runner.AUTH_ACCOUNTS))
+
+    def test_malformed_driver_failure_is_redacted_and_pending_evidence_is_removed(self):
+        class MalformedDriverFailure(CaptureExecutor):
+            def run(self, argv, *, stdout=-1):
+                if argv and pathlib.Path(argv[0]).name == ".perf-macos-ax-driver":
+                    output = pathlib.Path(argv[argv.index("--output") + 1])
+                    output.write_text('{"error_code":"secret-token-value"}')
+                    output.chmod(0o600)
+                    raise subprocess.CalledProcessError(1, argv)
+                return super().run(argv, stdout=stdout)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            apps, service = runner.validate_inputs(
+                self.make_app(root, "Control.app"), self.make_app(root, "Candidate.app"))
+            plan = runner.plan_for(apps, service, "home", 0, 1, 3, root / "result.json",
+                                   "a" * 40, "b" * 40, "local-device-01",
+                                   "2099-01-01T00:00:00Z")
+            container = root / "Containers" / service
+            (container / "Data").mkdir(parents=True)
+            (container / ".com.apple.containermanagerd.metadata.plist").write_text("fixture")
+            plan["container"] = str(container)
+            fake = MalformedDriverFailure()
+            with mock.patch.object(runner, "request_fixture",
+                                   side_effect=lambda _u, _p, method="GET":
+                                   {"reset": True} if method == "POST" else {}):
+                result = runner.capture(plan, apps, fake)
+
+            self.assertEqual(result["capture_status"], "failure")
+            failure = result["records"][0]
+            self.assertNotIn("driver_failure", failure)
+            self.assertIn("AX driver failed with malformed private result", failure["error"])
+            self.assertNotIn("secret-token-value", json.dumps(result))
+            self.assertEqual(list((root / "result-raw").glob(".pending-*")), [])
 
     def test_post_stop_keychain_reset_failure_invalidates_capture(self):
         class ResetFailure(CaptureExecutor):
