@@ -20,6 +20,7 @@ public struct OfflineLibraryView: View {
     #endif
     @State private var manager: DownloadManager
     @State private var playing: DownloadRecord?
+    @State private var mobilePlayerOrientationCoordinator = MobilePlayerOrientationCoordinator()
     @Binding private var focusedRatingKey: String?
     @State private var highlightedRatingKey: String?
     @State private var pendingDeletion: PendingOfflineDeletion?
@@ -175,6 +176,7 @@ public struct OfflineLibraryView: View {
                                                                  positionMs: positionMs,
                                                                  durationMs: durationMs)
                          },
+                         mobileOrientationCoordinator: mobilePlayerOrientationCoordinator,
                          onClose: { playing = nil })
     }
 
@@ -352,6 +354,20 @@ public struct OfflineLibraryView: View {
         DownloadStorageLimitPolicy.byteString(bytes)
     }
 
+    /// Match DetailView's iPhone presentation contract: rotate the presenting browse surface
+    /// before introducing the full-screen player, then pass that same coordinator into the player
+    /// so Close/natural-end restoration uses the instance that captured the prior orientation.
+    private func presentOfflinePlayer(_ record: DownloadRecord) {
+        #if os(iOS)
+        Task { @MainActor in
+            await mobilePlayerOrientationCoordinator.enterLandscapeBeforePresentationIfNeeded()
+            playing = record
+        }
+        #else
+        playing = record
+        #endif
+    }
+
     private func localTrickPlayProvider(for record: DownloadRecord) -> (any TrickPlayThumbnailProviding)? {
         if backendKind(for: record) == .emby {
             let providers = ([
@@ -499,7 +515,7 @@ public struct OfflineLibraryView: View {
                         // Music and video share one audio session — yield music
                         // before launching the offline player (#17).
                         musicPlayer.pauseForVideo()
-                        playing = record
+                        presentOfflinePlayer(record)
                     } label: {
                         Image(systemName: "play.circle.fill")
                     }
@@ -568,7 +584,7 @@ public struct OfflineLibraryView: View {
         .onTapGesture {
             if isComplete {
                 musicPlayer.pauseForVideo()
-                playing = record
+                presentOfflinePlayer(record)
             } else if isFailed || isPaused {
                 // #95: tapping a paused row resumes it (manager.retry continues from the offset).
                 manager.retry(ratingKey: record.ratingKey)
