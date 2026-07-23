@@ -1434,11 +1434,40 @@ policy:
     Remaining Wave 5 evidence is intentionally serialized. Home, Catalog, and Search each require a
     fresh two-arm foreground AX admission before their 69-arm full run. Long idle requires a closed,
     independently justified threshold artifact before its 1-warmup/5-measured 120-second pairs.
-    Artwork requires a deterministic loaded-cardinality milestone and comparable control, while the
-    five-pair PMSKit/four-app-target compile matrix is reserved for a cooled, otherwise idle host.
+    Artwork requires a fresh foreground AX admission against its now-symmetric exact first-poster
+    control, while the five-pair PMSKit/four-app-target compile matrix is reserved for a cooled,
+    otherwise idle host.
     The broader playback, transport, download, memory/energy, largest-BIF, and physical-device matrix
     remains explicit follow-up work; one available AVP can close single-headset cells, while
     two-participant SharePlay is hardware-blocked rather than failed.
+
+20. Artwork capture now has a deterministic loaded milestone without pretending viewport-wide
+    poster cardinality is stable. Candidate commit `4e96e2b0` designates only library-grid slot zero,
+    claims that target before its `artwork.load` span, labels every target terminal result with the
+    closed `scoped=1 milestone=library_first_poster` selector, and exposes a privacy-safe AX image
+    identifier only after decoded-image state is accepted. A process-lifetime lock prevents a
+    recreated first-slot view from hiding an earlier failure behind a later target success. Ordinary
+    posters remain unscoped diagnostics, and Release builds compile out the role, lock, state, and
+    AX plumbing.
+
+    The external driver requires exactly one loaded AX image; the runner retains exactly one matching
+    successful span, rejects matching failure/cancellation/duplicates, requires at least one successful
+    fixture image route, and binds the selector into calibration, frozen-MDE, resume, manifest, and
+    summary evidence. It deliberately does not require an exact total image-route count because
+    `LazyVGrid` viewport/prefetch behavior is layout-dependent, and this cold unique-poster fixture
+    makes no cache-hit or in-flight-join claim. Control instrumentation-only commit `2b29e408`
+    mirrors the same milestone while preserving its original `URLSession.shared` and decode path.
+    Focused validation passed 60 Python tests, 37 candidate Mac artwork/instrumentation tests, seven
+    control instrumentation tests, candidate/control PerformanceAudit builds, and both Release
+    builds. Safe nonzero-driver diagnostics landed separately in `69069861`.
+
+    Two-arm admission `mac-emby-artwork-smoke-20260723-v2` did not reach the workload: macOS denied
+    app foreground activation after 5.058 seconds (`accessibility_action_failed`, stage `preflight`).
+    It produced no admissible manifest and left no app, fixture, build, or driver process. Artwork
+    therefore joins Home, Catalog, and Search behind the same fresh foreground-session admission gate;
+    no full 69-arm run may start until that two-arm smoke succeeds. Emby warped-artwork issue #245 is
+    implementation-complete at Phase 2 commit `e6e67519` but remains open pending physical-iPhone
+    acceptance; this Primary-only performance fixture does not exercise or close that visual defect.
 
 ### Wave 6 — Optimize measured bottlenecks
 
