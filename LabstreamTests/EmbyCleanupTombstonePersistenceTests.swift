@@ -33,7 +33,11 @@ struct EmbyCleanupTombstonePersistenceTests {
                 loadFinished.signal()
             }
             defer { releaseRead.signal() }
-            guard readEntered.wait(timeout: .now() + 2) == .success else {
+            // Hosted matrices schedule hundreds of tests concurrently. These waits detect
+            // deadlock rather than impose a product latency requirement, so keep them bounded
+            // while allowing the coordination blocks to be descheduled behind suite-wide load.
+            let coordinationTimeout = DispatchTimeInterval.seconds(10)
+            guard readEntered.wait(timeout: .now() + coordinationTimeout) == .success else {
                 Issue.record("Expected the injected cleanup-journal read to begin")
                 return
             }
@@ -42,9 +46,9 @@ struct EmbyCleanupTombstonePersistenceTests {
                 _ = store.contains(ratingKey: "unrelated-index-row")
                 indexReadFinished.signal()
             }
-            #expect(indexReadFinished.wait(timeout: .now() + 2) == .success)
+            #expect(indexReadFinished.wait(timeout: .now() + coordinationTimeout) == .success)
             releaseRead.signal()
-            #expect(loadFinished.wait(timeout: .now() + 2) == .success)
+            #expect(loadFinished.wait(timeout: .now() + coordinationTimeout) == .success)
         }
     }
 
