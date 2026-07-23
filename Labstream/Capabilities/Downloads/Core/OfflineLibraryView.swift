@@ -278,12 +278,14 @@ public struct OfflineLibraryView: View {
         if let speed = snapshot.aggregateStats.activeSpeedBytesPerSecond, speed > 0 {
             aggregateToolbarMetric(value: "\(Self.aggregateByteString(Int(speed)))/s",
                                    systemImage: "speedometer",
-                                   accessibilityLabel: "Active download speed")
+                                   accessibilityLabel: "Active download speed",
+                                   envelope: .rate)
         }
         if snapshot.aggregateStats.downloadedBytes > 0 {
             aggregateToolbarMetric(value: Self.aggregateByteString(snapshot.aggregateStats.downloadedBytes),
                                    systemImage: "externaldrive.fill",
-                                   accessibilityLabel: "Local download data")
+                                   accessibilityLabel: "Local download data",
+                                   envelope: .storageTotal)
         }
         if let queueToolbarAction = snapshot.queueToolbarAction {
             queueToolbarButton(queueToolbarAction)
@@ -296,12 +298,14 @@ public struct OfflineLibraryView: View {
             if let speed = snapshot.aggregateStats.activeSpeedBytesPerSecond, speed > 0 {
                 aggregateToolbarMetric(value: "\(Self.aggregateByteString(Int(speed)))/s",
                                        systemImage: "speedometer",
-                                       accessibilityLabel: "Active download speed")
+                                       accessibilityLabel: "Active download speed",
+                                       envelope: .rate)
             }
             if snapshot.aggregateStats.downloadedBytes > 0 {
                 aggregateToolbarMetric(value: Self.aggregateByteString(snapshot.aggregateStats.downloadedBytes),
                                        systemImage: "externaldrive.fill",
-                                       accessibilityLabel: "Local download data")
+                                       accessibilityLabel: "Local download data",
+                                       envelope: .storageTotal)
             }
             if snapshot.aggregateStats.hasVisibleMetrics, snapshot.queueToolbarAction != nil {
                 Divider()
@@ -327,15 +331,14 @@ public struct OfflineLibraryView: View {
 
     private func aggregateToolbarMetric(value: String,
                                         systemImage: String,
-                                        accessibilityLabel: String) -> some View {
+                                        accessibilityLabel: String,
+                                        envelope: HotMetricEnvelope) -> some View {
         Label {
             Text(value)
                 .font(.caption.weight(.semibold))
-                .monospacedDigit()
+                .stableHotMetric(envelope)
                 .lineLimit(1)
-                // iOS toolbars compress adjacent items and ellipsize the value ("1.7 M…");
-                // the metric is only a few characters, so keep its intrinsic width.
-                .fixedSize(horizontal: true, vertical: false)
+                .minimumScaleFactor(0.8)
         } icon: {
             Image(systemName: systemImage)
                 .font(.caption.weight(.semibold))
@@ -357,11 +360,28 @@ public struct OfflineLibraryView: View {
                 manager.resumeQueue()
             }
         } label: {
+            #if os(iOS)
+            if compactWidth {
+                // Compact portrait prioritizes the two live values. The icon keeps the queue
+                // action reachable without allowing its title to evict or clip either metric.
+                Image(systemName: action.systemImage)
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+            } else {
+                Label(action.title, systemImage: action.systemImage)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+            }
+            #else
             Label(action.title, systemImage: action.systemImage)
                 .font(.caption.weight(.semibold))
                 .lineLimit(1)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
+            #endif
         }
         .buttonStyle(.plain)
         .accessibilityLabel(action.title)
@@ -487,19 +507,14 @@ public struct OfflineLibraryView: View {
                         .foregroundStyle(.red)
                 } else if isRetrying {
                     ProgressView()
-                    Text(rowSnapshot.statusCaption)
-                        .font(.caption)
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .foregroundStyle(.secondary)
+                    downloadStatusCaption(rowSnapshot.statusCaption, isHot: true)
                 } else if isPaused {
                     // #95: paused (recoverably interrupted). Show how far it got and that it
                     // resumes, in secondary (not red) — it's not a failure.
-                    Text(rowSnapshot.errorMessage ?? rowSnapshot.statusCaption)
-                        .font(.caption)
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .foregroundStyle(.secondary)
+                    downloadStatusCaption(
+                        rowSnapshot.errorMessage ?? rowSnapshot.statusCaption,
+                        isHot: false
+                    )
                 } else if isComplete {
                     Text(rowSnapshot.statusCaption)
                         .font(.caption)
@@ -511,20 +526,10 @@ public struct OfflineLibraryView: View {
                     if let progress = rowSnapshot.displayProgress {
                         ProgressView(value: progress)
                             .animation(.linear(duration: 0.2), value: progress)
-                        Text(rowSnapshot.statusCaption)
-                            .font(.caption)
-                            .monospacedDigit()
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .foregroundStyle(.secondary)
+                        downloadStatusCaption(rowSnapshot.statusCaption, isHot: true)
                     } else {
                         ProgressView()
-                        Text(rowSnapshot.statusCaption)
-                            .font(.caption)
-                            .monospacedDigit()
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .foregroundStyle(.secondary)
+                        downloadStatusCaption(rowSnapshot.statusCaption, isHot: true)
                     }
                 }
             }
@@ -617,6 +622,46 @@ public struct OfflineLibraryView: View {
                 // #95: tapping a paused row resumes it (manager.retry continues from the offset).
                 manager.retry(rowSnapshot.actionIdentity)
             }
+        }
+    }
+
+    /// Compact portrait treats each semantic bullet-delimited metric as an atomic field and lets
+    /// the fields flow onto deliberate rows. This prevents a single long `Text` from clipping the
+    /// trailing speed/size or wrapping midway through a value. VoiceOver still receives the exact
+    /// unabridged caption as one value.
+    @ViewBuilder
+    private func downloadStatusCaption(_ caption: String, isHot: Bool) -> some View {
+        if compactWidth && isHot {
+            OfflineMetricFlowLayout(horizontalSpacing: 8, verticalSpacing: 3) {
+                ForEach(Array(OfflineMetricToken.tokenize(caption).enumerated()), id: \.offset) {
+                    _, token in
+                    if let envelope = token.envelope {
+                        Text(token.text)
+                            .font(.caption)
+                            .stableHotMetric(envelope, alignment: .leading)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.75)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text(token.text)
+                            .font(.caption)
+                            .lineLimit(1)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Download status")
+            .accessibilityValue(caption)
+        } else {
+            Text(caption)
+                .font(.caption)
+                .monospacedDigit()
+                .lineLimit(isHot ? 1 : 2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .foregroundStyle(.secondary)
+                .accessibilityValue(caption)
         }
     }
 
@@ -816,6 +861,101 @@ private struct OfflineRowActionControlModifier: ViewModifier {
             .font(.system(size: glyphSize, weight: .semibold))
             .frame(width: size, height: size)
             .contentShape(Circle())
+    }
+}
+
+struct OfflineMetricToken: Sendable, Equatable {
+    let text: String
+    let envelope: HotMetricEnvelope?
+
+    static func tokenize(_ caption: String) -> [Self] {
+        caption.components(separatedBy: " • ").map { text in
+            let lowercase = text.lowercased()
+            let envelope: HotMetricEnvelope?
+            if lowercase.hasSuffix("%") {
+                envelope = .percent
+            } else if lowercase.contains("/s") {
+                envelope = lowercase.contains("server-paced") ? .annotatedRate : .rate
+            } else if lowercase.contains(" left") || lowercase.contains("under a min") {
+                envelope = .duration
+            } else if [" kb", " mb", " gb", " tb"].contains(where: lowercase.contains) {
+                envelope = .bytes
+            } else {
+                envelope = nil
+            }
+            return Self(text: text, envelope: envelope)
+        }
+    }
+}
+
+/// A small leading-aligned flow layout for compact metric fields. Unlike free-form `Text`
+/// wrapping, a field never breaks between its number and unit; it moves intact to the next row.
+struct OfflineMetricFlowLayout: Layout {
+    let horizontalSpacing: CGFloat
+    let verticalSpacing: CGFloat
+
+    struct Cache {
+        var sizes: [CGSize] = []
+    }
+
+    func makeCache(subviews: Subviews) -> Cache {
+        Cache(sizes: subviews.map { $0.sizeThatFits(.unspecified) })
+    }
+
+    func updateCache(_ cache: inout Cache, subviews: Subviews) {
+        cache.sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+    }
+
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout Cache
+    ) -> CGSize {
+        layout(proposedWidth: proposal.width, sizes: cache.sizes).size
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout Cache
+    ) {
+        let result = layout(proposedWidth: bounds.width, sizes: cache.sizes)
+        for (index, point) in result.origins.enumerated() where index < subviews.count {
+            subviews[index].place(
+                at: CGPoint(x: bounds.minX + point.x, y: bounds.minY + point.y),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(cache.sizes[index])
+            )
+        }
+    }
+
+    private func layout(
+        proposedWidth: CGFloat?,
+        sizes: [CGSize]
+    ) -> (size: CGSize, origins: [CGPoint]) {
+        let available = max(1, proposedWidth ?? sizes.reduce(0) {
+            $0 + $1.width + horizontalSpacing
+        })
+        var origins: [CGPoint] = []
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        var usedWidth: CGFloat = 0
+
+        for size in sizes {
+            if x > 0, x + size.width > available {
+                x = 0
+                y += rowHeight + verticalSpacing
+                rowHeight = 0
+            }
+            origins.append(CGPoint(x: x, y: y))
+            x += size.width + horizontalSpacing
+            rowHeight = max(rowHeight, size.height)
+            usedWidth = max(usedWidth, min(available, x - horizontalSpacing))
+        }
+
+        return (CGSize(width: proposedWidth ?? usedWidth, height: y + rowHeight), origins)
     }
 }
 

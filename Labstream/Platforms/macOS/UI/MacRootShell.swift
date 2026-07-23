@@ -387,7 +387,7 @@ struct PlatformRootShell: View {
       if let percent = downloadManager.offlineLibrarySnapshot.activeTransferPercentage {
         Text("\(percent)%")
           .foregroundStyle(.secondary)
-          .monospacedDigit()
+          .stableHotMetric(.percent)
           .accessibilityLabel("\(percent) percent downloaded")
       }
     }

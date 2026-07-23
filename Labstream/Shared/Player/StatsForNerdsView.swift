@@ -72,17 +72,20 @@ struct StatsForNerdsView: View {
                 row("Audio", diagnostics.audioFormatText)
                 Divider().gridCellUnsizedAxes(.horizontal)
                 row("Target", diagnostics.targetBitrateLabel)
-                row("Observed", diagnostics.observedBitrateLabel)
-                row("Indicated", kbps(diagnostics.indicatedBitrateKbps))
+                row("Observed", diagnostics.observedBitrateLabel, metric: .annotatedBitrate)
+                row("Indicated", kbps(diagnostics.indicatedBitrateKbps), metric: .bitrate)
                 if diagnostics.indicatedAverageBitrateKbps > 0 {
-                    row("Indicated avg", kbps(diagnostics.indicatedAverageBitrateKbps))
+                    row("Indicated avg", kbps(diagnostics.indicatedAverageBitrateKbps),
+                        metric: .bitrate)
                 }
                 if diagnostics.averageVideoBitrateKbps > 0 {
-                    row("Avg video", kbps(diagnostics.averageVideoBitrateKbps))
+                    row("Avg video", kbps(diagnostics.averageVideoBitrateKbps),
+                        metric: .bitrate)
                 }
-                row("Dropped frames", "\(diagnostics.droppedFrames)")
-                row("Stalls", "\(diagnostics.stalls)")
-                row("Buffer ahead", String(format: "%.1f s", diagnostics.bufferedAheadSeconds))
+                row("Dropped frames", "\(diagnostics.droppedFrames)", metric: .counter)
+                row("Stalls", "\(diagnostics.stalls)", metric: .counter)
+                row("Buffer ahead", String(format: "%.1f s", diagnostics.bufferedAheadSeconds),
+                    metric: .duration)
                 row("Keep up", diagnostics.likelyToKeepUp ? "Yes" : "No")
             }
             .font(.system(showsHeader ? .caption : .callout, design: .monospaced))
@@ -104,15 +107,30 @@ struct StatsForNerdsView: View {
     }
 
     @ViewBuilder
-    private func row(_ label: String, _ value: String, wraps: Bool = false) -> some View {
+    private func row(
+        _ label: String,
+        _ value: String,
+        wraps: Bool = false,
+        metric: HotMetricEnvelope? = nil
+    ) -> some View {
         GridRow {
             Text(label)
                 .foregroundStyle(.secondary)
-            Text(value)
-                .foregroundStyle(.primary)
-                .lineLimit(wraps ? nil : 1)
-                .truncationMode(.middle)
-                .fixedSize(horizontal: false, vertical: wraps)
+            if let metric {
+                Text(value)
+                    .foregroundStyle(.primary)
+                    .stableHotMetric(metric, alignment: .leading)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                    .truncationMode(.middle)
+                    .accessibilityValue(value)
+            } else {
+                Text(value)
+                    .foregroundStyle(.primary)
+                    .lineLimit(wraps ? nil : 1)
+                    .truncationMode(.middle)
+                    .fixedSize(horizontal: false, vertical: wraps)
+            }
         }
     }
 
