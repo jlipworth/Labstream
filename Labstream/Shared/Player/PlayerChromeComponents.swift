@@ -10,44 +10,23 @@ struct CustomTransportStatusOverlay: View {
     /// keep the exact 340-pt platter.
     var isCompact: Bool = false
 
-    private var title: String {
-        switch status {
-        case .none: ""
-        case .buffering: "Buffering…"
-        case .pausedBuffering: "Paused — buffering…"
-        case .reconnecting: "Reconnecting…"
-        case .failed: "Playback failed"
-        }
-    }
-
-    private var detail: String? {
-        switch status {
-        case .none:
-            nil
-        case .buffering:
-            "You can pause now and let the stream build buffer before playing."
-        case .pausedBuffering:
-            "Playback will stay paused once the stream is ready."
-        case .reconnecting:
-            nil
-        case .failed(let message):
-            message?.isEmpty == false ? message : nil
-        }
+    private var content: PlayerTransportStatusContent {
+        PlayerTransportStatusContent(status: status)
     }
 
     var body: some View {
         VStack(spacing: statusSpacing) {
             switch status {
             case .failed:
-                Label(title, systemImage: "exclamationmark.triangle")
+                Label(content.title, systemImage: "exclamationmark.triangle")
                     .font(titleFont)
             default:
                 ProgressView()
                     .controlSize(.large)
-                Text(title)
+                Text(content.title)
                     .font(titleFont)
             }
-            if let detail {
+            if let detail = content.detail {
                 Text(detail)
                     .font(detailFont)
                     .foregroundStyle(.secondary)
@@ -55,7 +34,7 @@ struct CustomTransportStatusOverlay: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             switch status {
-            case .buffering, .pausedBuffering:
+            case .buffering, .pausedBuffering, .preparingLocal:
                 Button {
                     onTogglePause()
                 } label: {
@@ -171,6 +150,7 @@ struct CustomTransportStatusOverlay: View {
 
     private var isPausedBuffering: Bool {
         if case .pausedBuffering = status { return true }
+        if case .preparingLocal(isPaused: true, hasObservedPlayback: _) = status { return true }
         return false
     }
 }

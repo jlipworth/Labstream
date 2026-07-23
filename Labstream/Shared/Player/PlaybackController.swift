@@ -3982,46 +3982,28 @@ final class PlaybackController {
     }
 
     private func resolvedTransportStatus() -> PlaybackTransportStatus {
-        if playbackError.isFailed {
-            return .failed(message: playbackError.message)
-        }
-        if reconnectInProgress {
-            return .reconnecting
-        }
+        let isPaused = userWantsPaused || transport.pauseRequested || transport.isPaused
         // Preparation window: a begin/reopen lane is producing a fresh item, so the cached
         // KVO fields below hold the PREVIOUS item's last value (usually `.playing`) until
         // `load()` resets them — both the waiting-status guard and the isSeeking branch are
         // defeated by that staleness, and the viewer would get dead chrome over a black,
-        // detached surface for the whole negotiate/prewarm/proxy window. Report buffering
-        // explicitly instead of inferring it from a player that has no item.
-        if itemPreparationInProgress {
-            if userWantsPaused || transport.pauseRequested || transport.isPaused {
-                return .pausedBuffering
-            }
-            return .buffering
-        }
-        guard hasObservedTimeControlStatus,
-              currentTimeControlStatus == .waitingToPlayAtSpecifiedRate else {
-            // A rebuild-backed user seek replaces the player item, which resets the
-            // timeControlStatus observation gate above. A wedged rebuild (starved
-            // transcoder whose playlist never grows segments) can then sit forever
-            // without a single KVO transition — no spinner over a frozen, pinned
-            // scrubber (seen live on iPad, GH #110 follow-up). While the seek hold is
-            // riding such a not-yet-started item, report buffering so the viewer sees
-            // progress state instead of dead chrome. In-buffer native seeks keep the
-            // observation gate (same item), so quick scrubs don't flash the overlay.
-            if isSeeking, !hasObservedTimeControlStatus {
-                if userWantsPaused || transport.pauseRequested || transport.isPaused {
-                    return .pausedBuffering
-                }
-                return .buffering
-            }
-            return .none
-        }
-        if userWantsPaused || transport.pauseRequested || transport.isPaused {
-            return .pausedBuffering
-        }
-        return .buffering
+        // detached surface for the whole negotiate/prewarm/proxy window. A rebuild-backed user
+        // seek has the same gap after replacing its item and before the first KVO callback.
+        let isAwaitingFreshItemObservation = isSeeking && !hasObservedTimeControlStatus
+        let isWaitingForMedia = itemPreparationInProgress
+            || (hasObservedTimeControlStatus
+                && currentTimeControlStatus == .waitingToPlayAtSpecifiedRate)
+            || isAwaitingFreshItemObservation
+
+        return PlaybackTransportPresentationPolicy.status(.init(
+            source: sessionSource.kind == .offline ? .localFile : .remote,
+            isFailed: playbackError.isFailed,
+            failureMessage: playbackError.message,
+            isReconnecting: reconnectInProgress,
+            isWaitingForMedia: isWaitingForMedia,
+            isPaused: isPaused,
+            hasObservedPlayback: hasObservedPlayback
+        ))
     }
 
     // MARK: - Skip markers (#14)
@@ -5351,22 +5333,26 @@ enum PlaybackTransportStatus: Equatable {
     case none
     case buffering
     case pausedBuffering
+    case preparingLocal(isPaused: Bool, hasObservedPlayback: Bool)
     case reconnecting
     case failed(message: String?)
 
     var diagnosticLabel: String {
         switch self {
-        case .none: "none"
-        case .buffering: "buffering"
-        case .pausedBuffering: "paused_buffering"
-        case .reconnecting: "reconnecting"
-        case .failed: "failed"
+        case .none: return "none"
+        case .buffering: return "buffering"
+        case .pausedBuffering: return "paused_buffering"
+        case .preparingLocal(let isPaused, let hasObservedPlayback):
+            if isPaused { return "paused_local_preparation" }
+            return hasObservedPlayback ? "local_media_wait" : "local_initial_preparation"
+        case .reconnecting: return "reconnecting"
+        case .failed: return "failed"
         }
     }
 
     var keepsChromeVisible: Bool {
         switch self {
-        case .none, .buffering, .pausedBuffering:
+        case .none, .buffering, .pausedBuffering, .preparingLocal:
             false
         case .reconnecting, .failed:
             true
