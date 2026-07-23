@@ -243,7 +243,11 @@ upstream connection rotation used by `PlaybackController`.
 
 - `Labstream/Capabilities/Downloads/Core/DownloadManager.swift` owns queue policy, observable records and
   snapshots, retry/resume, storage limits, server-prep polling, validation, and encoder
-  cleanup.
+  cleanup. At startup it installs session callbacks and registers the dormant session before
+  deferring only healthy-current initial transport submission by one bounded MainActor turn. The
+  deferred task retains the manager; a retry cancels that edge and owns the sole immediate
+  submission, while unsupported, unreadable, and malformed recovery retain their existing
+  reset/fail-closed behavior. This is scheduling, not transport or durability deletion.
 - `DownloadKeepaliveCoordinator.swift` privately owns exact-attempt Jellyfin/Emby
   keepalive tasks and credential-generation quarantine; the manager only forwards start/reconcile and exact-cancellation requests.
 - `DownloadManager+Plex.swift` and `DownloadManager+PlexOptimize.swift` own Plex source
@@ -283,8 +287,8 @@ upstream connection rotation used by `PlaybackController`.
   serializes that queue independently of the `DownloadStore` index lock.
 - `Labstream/Capabilities/Downloads/Core/OfflineLibraryView.swift` owns the cross-backend offline UI and
   local playback launch. Its snapshot is lightweight and actions re-resolve exact attempt identity.
-- `PMSKit/.../DownloadStorageSnapshot.swift` owns provenance-aware known/unknown/not-applicable
-  storage presentation.
+- `PMSKit/Sources/PMSKit/Downloads/DownloadStorageSnapshot.swift` owns provenance-aware
+  known/unknown/not-applicable storage presentation.
 - `PMSKit/Sources/PMSKit/Downloads/` contains pure route, status, retry, display, storage,
   identity, and range-transfer policies and offline models.
 

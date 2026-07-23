@@ -243,6 +243,15 @@ Side assets such as posters, chapters, and compatible external text subtitles ar
 On launch, Labstream compares the offline index, files on disk, active transfers, persisted
 artifact reservations, and durable cleanup intents. Current reconciliation:
 
+Startup first installs all transfer callbacks and registers the still-dormant session with the
+background-completion registry. When the Store admits a healthy current index, the initial
+transport submission crosses one bounded MainActor turn and retains the manager until that
+submission occurs. A retry before that turn cancels the deferred edge and owns the one immediate
+submission, so retry cannot overtake it or submit activation twice. Unsupported schemas retain
+their explicit reset path, while unreadable indexes and malformed current ownership remain
+fail-closed. The deferral changes critical-path scheduling only: it does not delete the background
+transport, recovery work, persistence barriers, or background-completion durability.
+
 - adopts only current task markers whose exact attempt matches the durable row;
 - keeps current malformed/ownerless active rows fail-closed rather than guessing ownership;
 - resumes/retries recoverable transfers and surfaces terminal failures in the row;

@@ -101,6 +101,29 @@ drift, or excessive pair gaps fail closed. Static inspection and unpaired timing
 performance proof. Frozen-before-candidate timing remains operator-attested until the manifest
 schema itself carries the frozen checksum.
 
+Ordinary launch and Home/catalog/Search/artwork **latency** comparisons use a control-only
+calibration freeze followed by separately collected seeded control/candidate pairs. A launch run
+selects one closed attribution profile (`runtime.composition`, `runtime.download_manager`,
+`runtime.download_store`, `runtime.download_transport_construct`, or
+`runtime.download_transport_submission`) before capture. Browse artwork is admitted only for the
+scoped `library_first_poster` span: one unique loaded AX image, one selected successful span, and at
+least one successful fixture image response. That milestone does not claim that a viewport or every
+poster loaded, nor does it establish a cache state.
+
+Mac **idle** thresholds use a different two-run protocol. First complete one 1+5 paired pilot with
+120-second arms, then run `perf-idle-compare.py freeze` on that result. The freeze derives thresholds
+from the pilot's five measured control arms and binds their runner, manifests, control commit, and
+product checksum. Record the printed threshold checksum before capturing a fresh, non-overlapping
+1+5 paired verdict result with the same control product; only then run the idle comparison. Reusing
+pilot evidence or comparison/order identities, or changing the control commit/product, fails closed.
+The latency comparator's frozen MDE and pair-gap threshold are not idle thresholds: idle has
+duration-normalized CPU/wakeup MDEs, and its start-gap tolerance must exceed the 120-second capture
+window.
+
+These paragraphs describe supported tooling and admission contracts, not completed measurements.
+A planned, paused, or capture-only run remains `insufficient_data` until its required calibration,
+fresh pairs, comparator output, and correctness/covariate gates all complete.
+
 ### Shared data-plane contracts
 
 Phase 2 data-plane changes have deterministic contracts at their owning layer: opaque browse
@@ -232,6 +255,13 @@ behavior, and App Intents/Spotlight invocation.
 For the Mac development preview, use a real signed-in host session for keyboard/fullscreen
 behavior, menu commands, system media keys, live playback, and download reconciliation. Keep that
 evidence labeled as preview validation rather than released-platform support.
+
+Semantic AX performance captures have a narrower admission boundary: keep the interactive Mac
+session unlocked and available to the foreground, grant Accessibility trust to the invoking
+process, and allow the exact audit app PID to become active. The driver does not use coordinates,
+but it still cannot produce admissible Home, catalog, Search, or artwork evidence from a locked or
+background-only login session. Missing trust, failed activation, ambiguous selectors, or a lost PID
+fails the arm rather than becoming a timing sample.
 
 When a headset-only bug is reproduced, collect a bounded bundle with
 `scripts/headset-evidence.sh` before trying ad hoc log collection, then triage it first with
