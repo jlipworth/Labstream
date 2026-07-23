@@ -46,8 +46,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		74A6F7C12A1B4C668E9D0011 /* AVKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVKit.framework; path = System/Library/Frameworks/AVKit.framework; sourceTree = SDKROOT; };
 		3BACD17B3F519B4A69AECCC5 /* LabstreamTVTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LabstreamTVTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		74A6F7C12A1B4C668E9D0011 /* AVKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVKit.framework; path = System/Library/Frameworks/AVKit.framework; sourceTree = SDKROOT; };
 		82636F4F72B65C69461F9642 /* LabstreamTVUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LabstreamTVUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		87D665784A1BD8FCD02EF77C /* Labstream.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Labstream.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000005 /* Labstream.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Labstream.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -59,8 +59,7 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-
-		AA0000000000000000000060 /* tvOS excludes download-only app tests */ = {
+		AA0000000000000000000060 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				BackgroundCompletionPersistenceBarrierTests.swift,
@@ -88,29 +87,14 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		9740A1E22E5FACDBEAB15AEC /* LabstreamTVUITests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-			);
-			path = LabstreamTVUITests;
-			sourceTree = "<group>";
-		};
-		AA0000000000000000000006 /* Shared */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Labstream/Shared; sourceTree = "<group>"; };
-		AA0000000000000000000065 /* Downloads */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Labstream/Capabilities/Downloads; sourceTree = "<group>"; };
-		AA0000000000000000000061 /* visionOS */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Labstream/Platforms/visionOS; sourceTree = "<group>"; };
-		AA0000000000000000000062 /* Mobile */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Labstream/Platforms/Mobile; sourceTree = "<group>"; };
-		AA0000000000000000000063 /* macOS */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Labstream/Platforms/macOS; sourceTree = "<group>"; };
-		AA0000000000000000000064 /* tvOS */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Labstream/Platforms/tvOS; sourceTree = "<group>"; };
-		AA0000000000000000000042 /* LabstreamTests */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				AA0000000000000000000060 /* tvOS excludes download-only app tests */,
-			);
-			explicitFileTypes = {};
-			explicitFolders = ();
-			path = LabstreamTests;
-			sourceTree = "<group>";
-		};
+		9740A1E22E5FACDBEAB15AEC /* LabstreamTVUITests */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = LabstreamTVUITests; sourceTree = "<group>"; };
+		AA0000000000000000000006 /* Labstream/Shared */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Labstream/Shared; sourceTree = "<group>"; };
+		AA0000000000000000000042 /* LabstreamTests */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (AA0000000000000000000060 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = LabstreamTests; sourceTree = "<group>"; };
+		AA0000000000000000000061 /* Labstream/Platforms/visionOS */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Labstream/Platforms/visionOS; sourceTree = "<group>"; };
+		AA0000000000000000000062 /* Labstream/Platforms/Mobile */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Labstream/Platforms/Mobile; sourceTree = "<group>"; };
+		AA0000000000000000000063 /* Labstream/Platforms/macOS */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Labstream/Platforms/macOS; sourceTree = "<group>"; };
+		AA0000000000000000000064 /* Labstream/Platforms/tvOS */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Labstream/Platforms/tvOS; sourceTree = "<group>"; };
+		AA0000000000000000000065 /* Labstream/Capabilities/Downloads */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Labstream/Capabilities/Downloads; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -178,19 +162,28 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		6987DCCD3012066E006B9811 /* Recovered References */ = {
+			isa = PBXGroup;
+			children = (
+				74A6F7C12A1B4C668E9D0011 /* AVKit.framework */,
+			);
+			name = "Recovered References";
+			sourceTree = "<group>";
+		};
 		AA0000000000000000000002 = {
 			isa = PBXGroup;
 			children = (
 				AA0000000000000000000013 /* Signing.xcconfig */,
-				AA0000000000000000000006 /* Shared */,
-				AA0000000000000000000065 /* Downloads */,
-				AA0000000000000000000061 /* visionOS */,
-				AA0000000000000000000062 /* Mobile */,
-				AA0000000000000000000063 /* macOS */,
-				AA0000000000000000000064 /* tvOS */,
+				AA0000000000000000000006 /* Labstream/Shared */,
+				AA0000000000000000000065 /* Labstream/Capabilities/Downloads */,
+				AA0000000000000000000061 /* Labstream/Platforms/visionOS */,
+				AA0000000000000000000062 /* Labstream/Platforms/Mobile */,
+				AA0000000000000000000063 /* Labstream/Platforms/macOS */,
+				AA0000000000000000000064 /* Labstream/Platforms/tvOS */,
 				AA0000000000000000000042 /* LabstreamTests */,
 				AA0000000000000000000003 /* Products */,
 				9740A1E22E5FACDBEAB15AEC /* LabstreamTVUITests */,
+				6987DCCD3012066E006B9811 /* Recovered References */,
 			);
 			sourceTree = "<group>";
 		};
@@ -225,8 +218,8 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				AA0000000000000000000006 /* Shared */,
-				AA0000000000000000000064 /* tvOS */,
+				AA0000000000000000000006 /* Labstream/Shared */,
+				AA0000000000000000000064 /* Labstream/Platforms/tvOS */,
 			);
 			name = LabstreamTV;
 			packageProductDependencies = (
@@ -295,9 +288,9 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				AA0000000000000000000006 /* Shared */,
-				AA0000000000000000000065 /* Downloads */,
-				AA0000000000000000000061 /* visionOS */,
+				AA0000000000000000000006 /* Labstream/Shared */,
+				AA0000000000000000000061 /* Labstream/Platforms/visionOS */,
+				AA0000000000000000000065 /* Labstream/Capabilities/Downloads */,
 			);
 			name = Labstream;
 			packageProductDependencies = (
@@ -320,9 +313,9 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				AA0000000000000000000006 /* Shared */,
-				AA0000000000000000000065 /* Downloads */,
-				AA0000000000000000000062 /* Mobile */,
+				AA0000000000000000000006 /* Labstream/Shared */,
+				AA0000000000000000000062 /* Labstream/Platforms/Mobile */,
+				AA0000000000000000000065 /* Labstream/Capabilities/Downloads */,
 			);
 			name = LabstreamMobile;
 			packageProductDependencies = (
@@ -345,9 +338,9 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				AA0000000000000000000006 /* Shared */,
-				AA0000000000000000000065 /* Downloads */,
-				AA0000000000000000000063 /* macOS */,
+				AA0000000000000000000006 /* Labstream/Shared */,
+				AA0000000000000000000063 /* Labstream/Platforms/macOS */,
+				AA0000000000000000000065 /* Labstream/Capabilities/Downloads */,
 			);
 			name = LabstreamMac;
 			packageProductDependencies = (
@@ -623,6 +616,34 @@
 			};
 			name = Release;
 		};
+		6987E1C83012066E006B9811 /* PerformanceAudit */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = LabstreamTests;
+			};
+			name = PerformanceAudit;
+		};
+		6987E1C93012066E006B9811 /* PerformanceAudit */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = LabstreamMacTests;
+			};
+			name = PerformanceAudit;
+		};
+		6987E1CA3012066E006B9811 /* PerformanceAudit */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = LabstreamTVTests;
+			};
+			name = PerformanceAudit;
+		};
+		6987E1CB3012066E006B9811 /* PerformanceAudit */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = LabstreamTVUITests;
+			};
+			name = PerformanceAudit;
+		};
 		AA0000000000000000000009 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -686,63 +707,6 @@
 				XROS_DEPLOYMENT_TARGET = 26.0;
 			};
 			name = Debug;
-		};
-		C0DE00000000000000000001 /* PerformanceAudit */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = NO;
-				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
-				CLANG_ANALYZER_NONNULL = YES;
-				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
-				CLANG_ENABLE_MODULES = YES;
-				CLANG_ENABLE_OBJC_ARC = YES;
-				CLANG_ENABLE_OBJC_WEAK = YES;
-				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
-				CLANG_WARN_BOOL_CONVERSION = YES;
-				CLANG_WARN_COMMA = YES;
-				CLANG_WARN_CONSTANT_CONVERSION = YES;
-				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
-				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
-				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
-				CLANG_WARN_EMPTY_BODY = YES;
-				CLANG_WARN_ENUM_CONVERSION = YES;
-				CLANG_WARN_INFINITE_RECURSION = YES;
-				CLANG_WARN_INT_CONVERSION = YES;
-				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
-				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
-				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
-				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
-				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
-				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
-				CLANG_WARN_STRICT_PROTOTYPES = YES;
-				CLANG_WARN_SUSPICIOUS_MOVE = YES;
-				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
-				CLANG_WARN_UNREACHABLE_CODE = YES;
-				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				COPY_PHASE_STRIP = NO;
-				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				ENABLE_NS_ASSERTIONS = NO;
-				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
-				GCC_C_LANGUAGE_STANDARD = gnu17;
-				GCC_NO_COMMON_BLOCKS = YES;
-				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
-				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
-				GCC_WARN_UNDECLARED_SELECTOR = YES;
-				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
-				GCC_WARN_UNUSED_FUNCTION = YES;
-				GCC_WARN_UNUSED_VARIABLE = YES;
-				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MTL_ENABLE_DEBUG_INFO = NO;
-				MTL_FAST_MATH = YES;
-				SDKROOT = xros;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SWIFT_COMPILATION_MODE = wholemodule;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "PERFORMANCE_AUDIT $(inherited)";
-				SWIFT_VERSION = 6.0;
-				XROS_DEPLOYMENT_TARGET = 26.0;
-			};
-			name = PerformanceAudit;
 		};
 		AA000000000000000000000A /* Release */ = {
 			isa = XCBuildConfiguration;
@@ -833,39 +797,6 @@
 			};
 			name = Debug;
 		};
-		C0DE00000000000000000002 /* PerformanceAudit */ = {
-			isa = XCBuildConfiguration;
-			baseConfigurationReference = AA0000000000000000000013 /* Signing.xcconfig */;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = Labstream/Labstream.entitlements;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = Config/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Labstream;
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				"INFOPLIST_KEY_UISupportedInterfaceOrientations[sdk=xros*]" = UIInterfaceOrientationPortrait;
-				LABSTREAM_BUILD_DATE_UTC = unknown;
-				LABSTREAM_BUILD_SLUG = dev;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				MARKETING_VERSION = 1.5.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.Labstream;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SUPPORTED_PLATFORMS = "xros xrsimulator";
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = 7;
-				XROS_DEPLOYMENT_TARGET = 26.0;
-			};
-			name = PerformanceAudit;
-		};
 		AA000000000000000000000C /* Release */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = AA0000000000000000000013 /* Signing.xcconfig */;
@@ -933,41 +864,6 @@
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
-		};
-		C0DE00000000000000000003 /* PerformanceAudit */ = {
-			isa = XCBuildConfiguration;
-			baseConfigurationReference = AA0000000000000000000013 /* Signing.xcconfig */;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = MobileAppIcon;
-				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = Config/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Labstream;
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIBackgroundModes = audio;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
-				LABSTREAM_BUILD_DATE_UTC = unknown;
-				LABSTREAM_BUILD_SLUG = dev;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-				);
-				MARKETING_VERSION = 1.4.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.Labstream;
-				PRODUCT_NAME = Labstream;
-				SDKROOT = iphoneos;
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-			};
-			name = PerformanceAudit;
 		};
 		AA0000000000000000000028 /* Release */ = {
 			isa = XCBuildConfiguration;
@@ -1038,42 +934,6 @@
 				SWIFT_VERSION = 6.0;
 			};
 			name = Debug;
-		};
-		C0DE00000000000000000004 /* PerformanceAudit */ = {
-			isa = XCBuildConfiguration;
-			baseConfigurationReference = AA0000000000000000000013 /* Signing.xcconfig */;
-			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = MacAppIcon;
-				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = Config/LabstreamMac.entitlements;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEAD_CODE_STRIPPING = YES;
-				ENABLE_HARDENED_RUNTIME = YES;
-				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = Config/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = Labstream;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.entertainment";
-				LABSTREAM_BUILD_DATE_UTC = unknown;
-				LABSTREAM_BUILD_SLUG = dev;
-				LABSTREAM_KEYCHAIN_SERVICE = com.visionplay.app;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-				);
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.0.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.Labstream;
-				PRODUCT_NAME = Labstream;
-				SDKROOT = macosx;
-				SUPPORTED_PLATFORMS = macosx;
-				SUPPORTS_MACCATALYST = NO;
-				SWIFT_COMPILATION_MODE = wholemodule;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 6.0;
-			};
-			name = PerformanceAudit;
 		};
 		AA0000000000000000000038 /* Release */ = {
 			isa = XCBuildConfiguration;
@@ -1193,40 +1053,166 @@
 			};
 			name = Debug;
 		};
-		D39759F53ED74BFB333F2A2B /* Debug */ = {
+		C0DE00000000000000000001 /* PerformanceAudit */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGN_STYLE = Automatic;
-				GENERATE_INFOPLIST_FILE = YES;
-				PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.LabstreamTVTests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = appletvos;
-				SUPPORTED_PLATFORMS = appletvsimulator;
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = xros;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "PERFORMANCE_AUDIT $(inherited)";
+				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = 3;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Labstream.app/Labstream";
-				TVOS_DEPLOYMENT_TARGET = 26.0;
+				XROS_DEPLOYMENT_TARGET = 26.0;
 			};
-			name = Debug;
+			name = PerformanceAudit;
 		};
-		E6E7E785A4590EB1569C85C0 /* Release */ = {
+		C0DE00000000000000000002 /* PerformanceAudit */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = AA0000000000000000000013 /* Signing.xcconfig */;
 			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Labstream/Labstream.entitlements;
 				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.LabstreamTVTests;
+				INFOPLIST_FILE = Config/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Labstream;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				"INFOPLIST_KEY_UISupportedInterfaceOrientations[sdk=xros*]" = UIInterfaceOrientationPortrait;
+				LABSTREAM_BUILD_DATE_UTC = unknown;
+				LABSTREAM_BUILD_SLUG = dev;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.5.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.Labstream;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = appletvos;
-				SUPPORTED_PLATFORMS = appletvsimulator;
+				SUPPORTED_PLATFORMS = "xros xrsimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 6.0;
-				TARGETED_DEVICE_FAMILY = 3;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Labstream.app/Labstream";
-				TVOS_DEPLOYMENT_TARGET = 26.0;
-				VALIDATE_PRODUCT = YES;
+				TARGETED_DEVICE_FAMILY = 7;
+				XROS_DEPLOYMENT_TARGET = 26.0;
 			};
-			name = Release;
+			name = PerformanceAudit;
+		};
+		C0DE00000000000000000003 /* PerformanceAudit */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = AA0000000000000000000013 /* Signing.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = MobileAppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Config/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Labstream;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIBackgroundModes = audio;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.1;
+				LABSTREAM_BUILD_DATE_UTC = unknown;
+				LABSTREAM_BUILD_SLUG = dev;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.4.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.Labstream;
+				PRODUCT_NAME = Labstream;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = PerformanceAudit;
+		};
+		C0DE00000000000000000004 /* PerformanceAudit */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = AA0000000000000000000013 /* Signing.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = MacAppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Config/LabstreamMac.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Config/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Labstream;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.entertainment";
+				LABSTREAM_BUILD_DATE_UTC = unknown;
+				LABSTREAM_BUILD_SLUG = dev;
+				LABSTREAM_KEYCHAIN_SERVICE = com.visionplay.app;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.Labstream;
+				PRODUCT_NAME = Labstream;
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = PerformanceAudit;
 		};
 		C0DE00000000000000000007 /* PerformanceAudit */ = {
 			isa = XCBuildConfiguration;
@@ -1261,6 +1247,41 @@
 				TVOS_DEPLOYMENT_TARGET = 26.0;
 			};
 			name = PerformanceAudit;
+		};
+		D39759F53ED74BFB333F2A2B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.LabstreamTVTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = appletvos;
+				SUPPORTED_PLATFORMS = appletvsimulator;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 3;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Labstream.app/Labstream";
+				TVOS_DEPLOYMENT_TARGET = 26.0;
+			};
+			name = Debug;
+		};
+		E6E7E785A4590EB1569C85C0 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jlipworth.LabstreamTVTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = appletvos;
+				SUPPORTED_PLATFORMS = appletvsimulator;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 3;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Labstream.app/Labstream";
+				TVOS_DEPLOYMENT_TARGET = 26.0;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
 		};
 		F9234045121BCE61F6BD14AD /* Release */ = {
 			isa = XCBuildConfiguration;
@@ -1347,6 +1368,7 @@
 			buildConfigurations = (
 				282248E2CE0037B1DFE0BE2B /* Release */,
 				B2BEAFAF18597BC7C07A3560 /* Debug */,
+				6987E1CB3012066E006B9811 /* PerformanceAudit */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -1396,6 +1418,7 @@
 			buildConfigurations = (
 				AA0000000000000000000046 /* Debug */,
 				AA0000000000000000000047 /* Release */,
+				6987E1C83012066E006B9811 /* PerformanceAudit */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -1405,6 +1428,7 @@
 			buildConfigurations = (
 				AA0000000000000000000056 /* Debug */,
 				AA0000000000000000000057 /* Release */,
+				6987E1C93012066E006B9811 /* PerformanceAudit */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -1414,6 +1438,7 @@
 			buildConfigurations = (
 				E6E7E785A4590EB1569C85C0 /* Release */,
 				D39759F53ED74BFB333F2A2B /* Debug */,
+				6987E1CA3012066E006B9811 /* PerformanceAudit */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
