@@ -1076,10 +1076,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         DownloadFileStat.logicalSize(at: url, attributesOfItem: fileManager.attributesOfItem(atPath:))
     }
 
-    private func availableStorageBytes() -> Int64? {
-        guard let attributes = try? fileManager.attributesOfFileSystem(forPath: store.directory.path),
-              let number = attributes[.systemFreeSize] as? NSNumber else { return nil }
-        return number.int64Value
+    private func availableStorageMeasurement() -> DownloadVolumeFreeSpace.Measurement? {
+        DownloadVolumeFreeSpace.measure(directory: store.directory, fileManager: fileManager)
     }
 
     /// Sync accessor for async contexts (`finalizeTransferredFile`): NSLock is unavailable in
@@ -1863,16 +1861,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         // here rather than mid-transfer.
         let headroom: Int64 = 500_000_000
         let required = max(headroom, Int64(expectedBytes ?? 0) + headroom)
-        if let free = try? fileManager
-            .attributesOfFileSystem(forPath: store.directory.path)[.systemFreeSize] as? Int64,
-           free < required {
+        if let measured = availableStorageMeasurement(), measured.bytes < required {
             AppDiagnostics.record(.downloads, "downloads.transfer_start_failed", fields: [
                 "download_id": .identifier(ratingKey),
                 "reason": .label("storage_full"),
                 "required_bytes": .bytes(Int(required)),
                 "required_bytes_exact": .int(Int(required)),
-                "free_bytes": .bytes(Int(free)),
-                "free_bytes_exact": .int(Int(free)),
+                "free_bytes": .bytes(Int(measured.bytes)),
+                "free_bytes_exact": .int(Int(measured.bytes)),
+                "free_space_source": .label(measured.source.rawValue),
             ])
             throw DownloadManager.DownloadError.storageFull
         }
@@ -2013,16 +2010,15 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         let storageHeadroom: Int64 = 500_000_000
         let remainingBytes = Int64(max(0, (expectedBytes ?? 0) - offset))
         let requiredFreeBytes = max(storageHeadroom, remainingBytes + storageHeadroom)
-        if let free = try? fileManager
-            .attributesOfFileSystem(forPath: store.directory.path)[.systemFreeSize] as? Int64,
-           free < requiredFreeBytes {
+        if let measured = availableStorageMeasurement(), measured.bytes < requiredFreeBytes {
             AppDiagnostics.record(.downloads, "downloads.range_start_failed", fields: [
                 "download_id": .identifier(ratingKey),
                 "reason": .label("storage_full"),
                 "required_bytes": .bytes(Int(requiredFreeBytes)),
                 "required_bytes_exact": .int(Int(requiredFreeBytes)),
-                "free_bytes": .bytes(Int(free)),
-                "free_bytes_exact": .int(Int(free)),
+                "free_bytes": .bytes(Int(measured.bytes)),
+                "free_bytes_exact": .int(Int(measured.bytes)),
+                "free_space_source": .label(measured.source.rawValue),
             ])
             throw DownloadManager.DownloadError.storageFull
         }
@@ -2344,9 +2340,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             "download_id": .identifier(ratingKey),
             "context": .label(context),
         ]
-        if let free = availableStorageBytes() {
-            fields["free_bytes"] = .bytes(Int(free))
-            fields["free_bytes_exact"] = .int(Int(free))
+        if let measured = availableStorageMeasurement() {
+            fields["free_bytes"] = .bytes(Int(measured.bytes))
+            fields["free_bytes_exact"] = .int(Int(measured.bytes))
+            fields["free_space_source"] = .label(measured.source.rawValue)
         }
         AppDiagnostics.record(.downloads, "downloads.range_storage_full", fields: fields)
         setFailedPurgingHeldSegments(for: key)
@@ -5788,9 +5785,10 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
                     "context": .label("task_completion"),
                     "bytes": .bytes(durableBytes),
                 ]
-                if let free = availableStorageBytes() {
-                    fields["free_bytes"] = .bytes(Int(free))
-                    fields["free_bytes_exact"] = .int(Int(free))
+                if let measured = availableStorageMeasurement() {
+                    fields["free_bytes"] = .bytes(Int(measured.bytes))
+                    fields["free_bytes_exact"] = .int(Int(measured.bytes))
+                    fields["free_space_source"] = .label(measured.source.rawValue)
                 }
                 AppDiagnostics.record(.downloads, "downloads.range_storage_full", fields: fields)
                 setFailedPurgingHeldSegments(for: rangeEntry.attemptKey)
