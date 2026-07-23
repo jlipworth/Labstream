@@ -66,6 +66,7 @@
 				BackgroundCompletionPersistenceBarrierTests.swift,
 				BackgroundDownloadCompletionRegistryTests.swift,
 				BackgroundDownloadStartupAdmissionTests.swift,
+				DeferredDownloadStartupActivationTests.swift,
 				DownloadArtifactLifecycleTests.swift,
 				DownloadCleanupIntentJournalTests.swift,
 				DownloadCleanupOrderingTests.swift,
