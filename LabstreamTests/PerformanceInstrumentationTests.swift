@@ -32,6 +32,20 @@ struct PerformanceInstrumentationTests {
         #expect(!gate.claim())
     }
 
+    @Test("Cold first-poster measurement target can be claimed exactly once")
+    func artworkMeasurementTargetIsProcessSafeExactlyOnce() {
+        let gate = ArtworkMeasurementTargetGate()
+        let successfulClaims = TestLockedBox(0)
+
+        DispatchQueue.concurrentPerform(iterations: 128) { _ in
+            guard gate.claim() else { return }
+            successfulClaims.withValue { $0 += 1 }
+        }
+
+        #expect(successfulClaims.value == 1)
+        #expect(!gate.claim())
+    }
+
     @Test("Span result and fields are evaluated only by the winning end")
     func spanEndPayloadsAreLazy() {
         let evaluations = TestLockedBox(0)

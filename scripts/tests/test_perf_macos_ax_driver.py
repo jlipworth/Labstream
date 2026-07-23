@@ -131,6 +131,19 @@ class PerfMacOSAXDriverTests(unittest.TestCase):
         self.assertIn('copy(.parent, from: candidate)', catalog)
         self.assertIn('Attribute.selected.rawValue', catalog)
 
+    def test_artwork_waits_for_exact_loaded_image_identifier(self):
+        source = SCRIPT.read_text()
+        artwork = source[source.index("private func waitForLoadedArtwork()"):
+                         source.index("private func press(", source.index(
+                             "private func waitForLoadedArtwork()"))]
+        self.assertIn("kAXImageRole", artwork)
+        self.assertIn(
+            'values: ["performance.mac.library-grid.first-poster.loaded"]',
+            artwork,
+        )
+        self.assertIn('completedStage = "artwork_loaded"', artwork)
+        self.assertNotIn("performance.mac.library-grid.first-item", artwork)
+
 
 if __name__ == "__main__":
     unittest.main()

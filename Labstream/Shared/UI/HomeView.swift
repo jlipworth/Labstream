@@ -696,6 +696,14 @@ enum PosterCellLabelStyle {
     case denseLibrary
 }
 
+#if DEBUG || PERFORMANCE_AUDIT
+/// Opt-in roles for narrow performance-audit milestones. Ordinary poster callers remain
+/// unscoped; the library grid assigns this only to its stable first slot.
+enum PosterArtworkMeasurementRole: Equatable {
+    case coldFirstPoster
+}
+#endif
+
 struct PosterCell: View {
     let item: MediaItem
     /// Explicit width from grid callers; nil means "rail default for this size class".
@@ -708,6 +716,10 @@ struct PosterCell: View {
     var aspectOverride: Double?
     /// Compact library grids use denser typography; rail/search/music callers retain defaults.
     var labelStyle: PosterCellLabelStyle = .standard
+    #if DEBUG || PERFORMANCE_AUDIT
+    /// Optional audit role forwarded unchanged to the image loader.
+    var artworkMeasurementRole: PosterArtworkMeasurementRole?
+    #endif
 
     @Environment(\.labstreamCompactWidth) private var compactWidth
 
@@ -726,7 +738,7 @@ struct PosterCell: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Space.sm) {
-            PosterImage(path: artworkPath ?? item.thumb, width: resolvedWidth, height: height)
+            posterArtworkImage
                 .overlay(alignment: .bottom) { progressSliver }
                 .posterHover()
                 .tvFocusHighlight()
@@ -759,6 +771,18 @@ struct PosterCell: View {
         // NOTE: no hover effect here — the wrapping link uses `.cardLink()`, whose
         // built-in `.plain` style draws (and correctly registers) the gaze highlight.
         // A custom ButtonStyle here misroutes pinches to neighboring cards (DEVELOPMENT.md).
+    }
+
+    @ViewBuilder
+    private var posterArtworkImage: some View {
+        #if DEBUG || PERFORMANCE_AUDIT
+        PosterImage(path: artworkPath ?? item.thumb,
+                    width: resolvedWidth,
+                    height: height,
+                    measurementRole: artworkMeasurementRole)
+        #else
+        PosterImage(path: artworkPath ?? item.thumb, width: resolvedWidth, height: height)
+        #endif
     }
 
     private var primaryLabelFont: Font {
@@ -863,6 +887,7 @@ func friendlyMessage(_ error: Error) -> String {
         case .decoding: return "Unexpected response from the server."
         }
     }
+
     return DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Loading")
 }
 

@@ -86,11 +86,19 @@ SCENARIO_PHASES = {
     "home": "home.load",
     "catalog": "library_grid.complete",
     "search": "search.load",
+    "artwork": "artwork.load",
+}
+SCENARIO_SELECTOR_FIELDS = {
+    "home": {},
+    "catalog": {},
+    "search": {},
+    "artwork": {"scoped": "1", "milestone": "library_first_poster"},
 }
 ALLOWED_TRANSIENT_RESULTS = {
     "home.load": {"cancelled"},
     "library_grid.complete": {"cancelled", "superseded"},
     "search.load": {"cancelled", "superseded"},
+    "artwork.load": set(),
 }
 
 
@@ -455,6 +463,7 @@ def wait_for_stable_zero_ledger(base_url: str, ready: dict[str, Any], scenario: 
 
 def wait_for_terminal_span(pid: int, start: str, scenario: str, executor: Any) -> None:
     phase = SCENARIO_PHASES[scenario]
+    selector_fields = SCENARIO_SELECTOR_FIELDS[scenario]
     for _ in range(100):
         end = executor.now().replace("+00:00", "Z")
         document = executor.output([
@@ -465,7 +474,9 @@ def wait_for_terminal_span(pid: int, start: str, scenario: str, executor: Any) -
         successes = []
         for line in document.splitlines():
             span, _reason = evidence_schema.parse_span_line_diagnostic(line)
-            if span is not None and span.phase == phase and span.backend == "Emby":
+            if (span is not None and span.phase == phase and span.backend == "Emby"
+                    and all(span.fields.get(key) == value
+                            for key, value in selector_fields.items())):
                 if span.result == "success":
                     successes.append(span)
                 elif span.result not in ALLOWED_TRANSIENT_RESULTS[phase]:
@@ -479,8 +490,9 @@ def wait_for_terminal_span(pid: int, start: str, scenario: str, executor: Any) -
 
 
 def write_success_selector_artifact(source: pathlib.Path, destination: pathlib.Path,
-                                    phase: str) -> None:
+                                    phase: str, selector_fields: dict[str, str] | None = None) -> None:
     """Retain the capture binding and one successful target span; preserve the full log separately."""
+    selector_fields = selector_fields or {}
     selected: list[str] = []
     binding_count = 0
     success_count = 0
@@ -494,7 +506,9 @@ def write_success_selector_artifact(source: pathlib.Path, destination: pathlib.P
         span, span_reason = evidence_schema.parse_span_line_diagnostic(line)
         if span_reason is not None:
             fail("full capture contains a malformed performance span")
-        if span is not None and span.phase == phase and span.backend == "Emby":
+        if (span is not None and span.phase == phase and span.backend == "Emby"
+                and all(span.fields.get(key) == value
+                        for key, value in selector_fields.items())):
             if span.result == "success":
                 success_count += 1
                 selected.append(line)
@@ -546,8 +560,7 @@ def plan_for(apps: tuple[Any, Any], service: str, scenario: str, warmups: int, m
         }
     return {
         "schema_version": 1, "mode": "capture",
-        "artifact_status": ("pre_manifest_raw_capture" if scenario == "artwork"
-                            else "planned_admissible_per_run_manifests"),
+        "artifact_status": "planned_admissible_per_run_manifests",
         "scenario": scenario, "bundle_id": apps[0].bundle_id, "keychain_service": service,
         "fixture": {"command": [sys.executable, str(FIXTURE), "--ready-file", "{private_ready_file}"],
                     "lifetime": "one_process_per_capture", "bind": "127.0.0.1", "port": "ephemeral"},
@@ -599,7 +612,7 @@ def freeze_selector(plan: dict[str, Any]) -> dict[str, Any]:
     phase = SCENARIO_PHASES[plan["scenario"]]
     return {
         "id": plan["identities"]["workload_id"], "phase": phase, "backend": "Emby",
-        "fields": {},
+        "fields": SCENARIO_SELECTOR_FIELDS[plan["scenario"]],
         "correctness_fields": list(evidence_schema.REQUIRED_CORRECTNESS_FIELDS[(phase, "Emby")]),
         "expected_span_count": 1, "aggregation": "median",
     }
@@ -649,7 +662,7 @@ def validate_driver_result(path: pathlib.Path, *, pid: int, scenario: str) -> di
         fail("AX driver result has an unexpected shape")
     expected_stage = {
         "home": "home_loaded", "catalog": "catalog_loaded",
-        "search": "search_loaded", "artwork": "artwork_requested",
+        "search": "search_loaded", "artwork": "artwork_loaded",
     }[scenario]
     if (value.get("schema_version") != 1 or value.get("tool") != {
             "name": "labstream-macos-ax-driver", "version": 1}
@@ -1324,7 +1337,9 @@ def capture_sample(active_plan: dict[str, Any], sample: dict[str, Any], app: Any
             json.dumps(ledger, indent=2, sort_keys=True) + "\n")
         phase = SCENARIO_PHASES[active_plan["scenario"]]
         selected_log = raw_dir / "artifact-0004.log"
-        write_success_selector_artifact(raw_log, selected_log, phase)
+        write_success_selector_artifact(
+            raw_log, selected_log, phase,
+            SCENARIO_SELECTOR_FIELDS[active_plan["scenario"]])
         update_pointer_checksums(manifest, run_dir)
         write_manifest(manifest_path, manifest)
         summary_path = summary_dir / "redacted.json"
@@ -1332,6 +1347,8 @@ def capture_sample(active_plan: dict[str, Any], sample: dict[str, Any], app: Any
                            "--manifest", str(manifest_path), "--raw-artifact", str(selected_log),
                            "--workload-id", active_plan["identities"]["workload_id"],
                            "--phase", phase, "--backend", "Emby", "--expected-span-count", "1"]
+        for key, value in SCENARIO_SELECTOR_FIELDS[active_plan["scenario"]].items():
+            summary_command += ["--field", f"{key}={value}"]
         for field in evidence_schema.REQUIRED_CORRECTNESS_FIELDS[(phase, "Emby")]:
             summary_command += ["--correctness-field", field]
         with summary_path.open("wb") as output:
@@ -1370,8 +1387,6 @@ def capture(plan: dict[str, Any], apps: tuple[Any, Any], executor: Any,
             calibration_output: pathlib.Path | None = None,
             frozen_mde_output: pathlib.Path | None = None,
             resume: bool = False, fixture_port: int = 0) -> dict[str, Any]:
-    if plan["scenario"] == "artwork":
-        fail("artwork capture is pre-manifest until an exact loaded-artwork milestone exists")
     if not resume:
         base.preflight_no_existing_app(apps, executor)
     validate_paired_schedule(plan["samples"])

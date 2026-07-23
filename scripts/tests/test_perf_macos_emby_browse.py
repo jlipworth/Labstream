@@ -53,6 +53,12 @@ class CaptureExecutor(FakeExecutor):
             "catalog": ("library_grid.complete",
                         "item_count=26 total_count=26 page_count=1 collapse_mode=sparse"),
             "search": ("search.load", "group_count=1 item_count=1"),
+            "artwork": (
+                "artwork.load",
+                "attempts=1 bytes=100 status=200 width=100 height=150 "
+                "pixel_width=200 pixel_height=300 delivery=network_decode "
+                "scoped=1 milestone=library_first_poster",
+            ),
         }[self.last_scenario]
         return (f'{{"eventMessage":"perf.span phase={span[0]} backend=Emby '
                 f'result=success duration_ms=10 {span[1]}"}}\n')
@@ -80,7 +86,7 @@ class CaptureExecutor(FakeExecutor):
                 "pid": pid, "scenario": document["scenario"], "status": "success",
                 "completed_stage": {
                     "home": "home_loaded", "catalog": "catalog_loaded",
-                    "search": "search_loaded", "artwork": "artwork_requested",
+                    "search": "search_loaded", "artwork": "artwork_loaded",
                 }[document["scenario"]], "action_count": 6,
                 "elapsed_milliseconds": 50, "error_code": None,
             }))
@@ -174,12 +180,12 @@ class BrowseRunnerTests(unittest.TestCase):
         binary.chmod(0o755)
         return app
 
-    def integrated_fixture(self, root, *, cooldown=0):
+    def integrated_fixture(self, root, *, cooldown=0, scenario="home"):
         root = pathlib.Path(root)
         apps, service = runner.validate_inputs(
             self.make_app(root, "Control.app"), self.make_app(root, "Candidate.app"))
         paired = runner.plan_for(
-            apps, service, "home", 0, 1, 3, root / "paired.json",
+            apps, service, scenario, 0, 1, 3, root / "paired.json",
             "a" * 40, "b" * 40, "local-device-01", "2099-01-01T00:00:00Z",
             cooldown)
         calibration = runner.calibration_plan_for(paired, root / "calibration.json")
@@ -188,10 +194,13 @@ class BrowseRunnerTests(unittest.TestCase):
         (container / ".com.apple.containermanagerd.metadata.plist").write_text("fixture")
         paired["container"] = calibration["container"] = str(container)
         ready = {"fixture_id": "fixture-123456789abc", "fixture_sha256": "a" * 64}
+        routes = {
+            "home": ("authenticate", "views", "resume", "next_up", "latest"),
+            "artwork": ("authenticate", "views", "items", "image"),
+        }[scenario]
         ledger = {
             "schema_version": 1, **ready, "total": 6,
-            "by_route": {route: 1 for route in
-                         ("authenticate", "views", "resume", "next_up", "latest")},
+            "by_route": {route: 1 for route in routes},
             "by_status": {"200": 6}, "delayed": 0, "faulted": 0, "in_flight": 0,
             "max_in_flight": 2, "declared_response_bytes": {},
             "committed_response_bytes": {}, "write_failures": 0,
@@ -203,13 +212,13 @@ class BrowseRunnerTests(unittest.TestCase):
 
         return apps, paired, calibration, fixture_request
 
-    def resumable_fixture(self, root, *, cooldown=0, measured=1):
+    def resumable_fixture(self, root, *, cooldown=0, measured=1, scenario="home"):
         apps, paired, calibration, fixture_request = self.integrated_fixture(
-            root, cooldown=cooldown)
+            root, cooldown=cooldown, scenario=scenario)
         if measured != 1:
             commands = paired["samples"][0]["commands"]
             paired["measured"] = measured
-            paired["samples"] = runner.base.schedule("home", 0, measured, paired["seed"])
+            paired["samples"] = runner.base.schedule(scenario, 0, measured, paired["seed"])
             for sample in paired["samples"]:
                 sample["commands"] = commands
         calibration["samples"] = calibration["samples"][:2]
@@ -264,6 +273,47 @@ class BrowseRunnerTests(unittest.TestCase):
             run_ids = [json.loads(pathlib.Path(record["manifest"]).read_text())["run"]["id"]
                        for record in result["records"]]
             self.assertEqual(len(run_ids), len(set(run_ids)))
+
+    def test_artwork_calibration_freeze_and_resume_preserve_scoped_workload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            apps, paired, calibration, fixture_request = self.resumable_fixture(
+                root, scenario="artwork")
+            first = CaptureExecutor()
+            real_launch = runner.launch_app
+
+            def crash_candidate(app, executor, bound_callback=None):
+                if app.role == "candidate":
+                    raise KeyboardInterrupt("simulated artwork process loss")
+                return real_launch(app, executor, bound_callback)
+
+            with mock.patch.object(runner, "request_fixture", side_effect=fixture_request), \
+                    mock.patch.object(runner, "freeze_calibration", side_effect=self.fake_freeze), \
+                    mock.patch.object(runner, "launch_app", side_effect=crash_candidate):
+                with self.assertRaises(KeyboardInterrupt):
+                    runner.capture(
+                        paired, apps, first, calibration_plan=calibration,
+                        calibration_output=root / "calibration.json",
+                        frozen_mde_output=root / "frozen.json", fixture_port=54321)
+
+            second = CaptureExecutor()
+            with mock.patch.object(runner, "request_fixture", side_effect=fixture_request), \
+                    mock.patch.object(runner.compare, "load_frozen", return_value={"ok": True}), \
+                    mock.patch.object(runner, "frozen_artifact_for",
+                                      return_value={"test": "frozen"}):
+                result = runner.capture(
+                    paired, apps, second, calibration_plan=calibration,
+                    calibration_output=root / "calibration.json",
+                    frozen_mde_output=root / "frozen.json", resume=True, fixture_port=54321)
+
+            self.assertEqual(result["capture_status"], "success")
+            self.assertEqual(result["scenario"], "artwork")
+            record = result["records"][0]
+            sample = compare.load_sample(pathlib.Path(record["manifest"]), record["role"])
+            self.assertEqual(sample.workload["fields"], {
+                "milestone": "library_first_poster", "scoped": "1",
+            })
+            self.assertEqual(list((root / "paired-raw").glob(".pending-pair-*")), [])
 
     def test_resume_fails_closed_on_retained_driver_and_plan_drift(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -875,10 +925,68 @@ class BrowseRunnerTests(unittest.TestCase):
                 runner.write_success_selector_artifact(
                     source, rejected, "library_grid.complete")
 
+    def test_artwork_selector_retains_only_one_scoped_milestone_and_rejects_target_failures(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            source = root / "full.log"
+            selected = root / "selected.log"
+            prefix = ("perf.capture run_id=run-123456789abc "
+                      "workload_id=workload-123456789abc "
+                      "launch_nonce=nonce-1234567890abcdef\n")
+            fields = ("attempts=1 bytes=100 status=200 width=100 height=150 "
+                      "pixel_width=200 pixel_height=300 delivery=network_decode ")
+            unrelated = (
+                '{"eventMessage":"perf.span phase=artwork.load backend=Emby result=success '
+                f'duration_ms=8 {fields}scoped=0 milestone=library_first_poster"}}\n')
+            target = (
+                '{"eventMessage":"perf.span phase=artwork.load backend=Emby result=success '
+                f'duration_ms=9 {fields}scoped=1 milestone=library_first_poster"}}\n')
+            selector = {"scoped": "1", "milestone": "library_first_poster"}
+            source.write_text(prefix + unrelated + target)
+            runner.write_success_selector_artifact(
+                source, selected, "artwork.load", selector)
+            self.assertNotIn("scoped=0", selected.read_text())
+            self.assertIn("scoped=1", selected.read_text())
+
+            source.write_text(
+                prefix
+                + ('{"eventMessage":"perf.span phase=artwork.load backend=Emby result=failure '
+                   f'duration_ms=3 {fields}scoped=1 milestone=library_first_poster"}}\n')
+                + target
+            )
+            with self.assertRaisesRegex(runner.RunnerError, "non-success target"):
+                runner.write_success_selector_artifact(
+                    source, root / "failure.log", "artwork.load", selector)
+
+            source.write_text(prefix + target + target)
+            with self.assertRaisesRegex(runner.RunnerError, "one capture binding and one successful"):
+                runner.write_success_selector_artifact(
+                    source, root / "duplicate.log", "artwork.load", selector)
+
+            source.write_text(prefix + target.replace(" scoped=1", " scoped=1 scoped=1"))
+            with self.assertRaisesRegex(runner.RunnerError, "malformed performance span"):
+                runner.write_success_selector_artifact(
+                    source, root / "malformed.log", "artwork.load", selector)
+
+    def test_artwork_scope_is_selector_only_not_a_global_correctness_requirement(self):
+        ordinary = (
+            "perf.span phase=artwork.load backend=Emby result=success duration_ms=8 "
+            "attempts=1 bytes=100 status=200 width=100 height=150 "
+            "pixel_width=200 pixel_height=300 delivery=network_decode"
+        )
+        span, reason = runner.evidence_schema.parse_span_line_diagnostic(ordinary)
+        self.assertIsNone(reason)
+        self.assertIsNotNone(span)
+        self.assertEqual(
+            runner.evidence_schema.REQUIRED_CORRECTNESS_FIELDS[("artwork.load", "Emby")],
+            ("attempts", "bytes", "status", "width", "height",
+             "pixel_width", "pixel_height", "delivery"),
+        )
+
     def test_driver_result_rejects_nonterminal_stage_for_every_scenario(self):
         expected = {
             "home": "home_loaded", "catalog": "catalog_loaded",
-            "search": "search_loaded", "artwork": "artwork_requested",
+            "search": "search_loaded", "artwork": "artwork_loaded",
         }
         with tempfile.TemporaryDirectory() as temporary:
             path = pathlib.Path(temporary) / "driver.json"
@@ -909,6 +1017,11 @@ class BrowseRunnerTests(unittest.TestCase):
         runner.validate_ledger(ledger, ready)
         with self.assertRaisesRegex(runner.RunnerError, "missing required"):
             runner.validate_ledger(ledger, ready, "artwork")
+        ledger["by_route"].update({"views": 1, "items": 1, "image": 0})
+        with self.assertRaisesRegex(runner.RunnerError, "missing required.*image"):
+            runner.validate_ledger(ledger, ready, "artwork")
+        ledger["by_route"]["image"] = 1
+        runner.validate_ledger(ledger, ready, "artwork")
         ledger["in_flight"] = 1
         with self.assertRaisesRegex(runner.RunnerError, "incomplete"):
             runner.validate_ledger(ledger, ready)
@@ -1164,8 +1277,11 @@ class BrowseRunnerTests(unittest.TestCase):
             self.assertIn("dedicated Keychain reset failed", result["records"][0]["error"])
             self.assertFalse((root / "result-raw/sample-0001/manifest.json").exists())
 
-    def test_catalog_and_search_publish_contract_valid_exact_phase_summaries(self):
-        for scenario, phase in (("catalog", "library_grid.complete"), ("search", "search.load")):
+    def test_catalog_search_and_artwork_publish_contract_valid_exact_phase_summaries(self):
+        for scenario, phase in (
+                ("catalog", "library_grid.complete"),
+                ("search", "search.load"),
+                ("artwork", "artwork.load")):
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
                 root = pathlib.Path(temporary)
                 apps, service = runner.validate_inputs(
@@ -1178,10 +1294,13 @@ class BrowseRunnerTests(unittest.TestCase):
                 (container / ".com.apple.containermanagerd.metadata.plist").write_text("fixture")
                 plan["container"] = str(container)
                 fake = CaptureExecutor()
+                routes = {"authenticate", "views", "items"}
+                if scenario == "artwork":
+                    routes.add("image")
                 ledger = {
                     "schema_version": 1, "fixture_id": "fixture-123456789abc",
                     "fixture_sha256": "a" * 64, "total": 4,
-                    "by_route": {route: 1 for route in ("authenticate", "views", "items")},
+                    "by_route": {route: 1 for route in routes},
                     "by_status": {"200": 4}, "delayed": 0, "faulted": 0, "in_flight": 0,
                     "max_in_flight": 2, "declared_response_bytes": {},
                     "committed_response_bytes": {}, "write_failures": 0,
@@ -1200,12 +1319,10 @@ class BrowseRunnerTests(unittest.TestCase):
                     self.assertEqual(summary["workload"]["phase"], phase)
                     self.assertEqual(summary["workload"]["backend"], "Emby")
                     self.assertEqual(summary["workload"]["expected_span_count"], 1)
-
-    def test_artwork_capture_is_explicitly_rejected_before_processes(self):
-        fake = CaptureExecutor()
-        with self.assertRaisesRegex(runner.RunnerError, "pre-manifest"):
-            runner.capture({"scenario": "artwork"}, (), fake)
-        self.assertEqual(fake.actions, [])
+                    if scenario == "artwork":
+                        self.assertEqual(summary["workload"]["fields"], {
+                            "milestone": "library_first_poster", "scoped": "1",
+                        })
 
 
 if __name__ == "__main__":
