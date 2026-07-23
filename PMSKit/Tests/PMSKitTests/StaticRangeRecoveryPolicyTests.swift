@@ -125,4 +125,37 @@ struct StaticRangeRecoveryPolicyTests {
         #expect(!StaticRangeRecoveryPolicy.shouldPreserveRangeRestartCounters(reason: "unownedRangeRejected"))
         #expect(!StaticRangeRecoveryPolicy.shouldPreserveRangeRestartCounters(reason: "backend_ready"))
     }
+
+    @Test("Storage-full rows park automatic resume until space would fit the remainder")
+    func storageFullParksAutoResume() {
+        // Only a storage-full last failure parks; other failures keep normal auto-resume.
+        #expect(!StaticRangeRecoveryPolicy.shouldParkAutoResumeAfterStorageFull(
+            lastFailureWasStorageFull: false,
+            freeBytes: 0,
+            remainingBytes: 10_000_000_000))
+        // Unmeasurable free space is treated as still-full: never auto-redrive blind.
+        #expect(StaticRangeRecoveryPolicy.shouldParkAutoResumeAfterStorageFull(
+            lastFailureWasStorageFull: true,
+            freeBytes: nil,
+            remainingBytes: 1))
+        // The observed defect shape: ~8.6 GB free vs a ~8.9 GB remainder + headroom.
+        #expect(StaticRangeRecoveryPolicy.shouldParkAutoResumeAfterStorageFull(
+            lastFailureWasStorageFull: true,
+            freeBytes: 8_586_698_752,
+            remainingBytes: 8_880_317_413))
+        // Enough space for remainder + headroom releases the row back to auto-resume.
+        #expect(!StaticRangeRecoveryPolicy.shouldParkAutoResumeAfterStorageFull(
+            lastFailureWasStorageFull: true,
+            freeBytes: 9_380_317_413,
+            remainingBytes: 8_880_317_413))
+        // A zero/unknown remainder still requires the headroom floor, matching the preflight.
+        #expect(StaticRangeRecoveryPolicy.shouldParkAutoResumeAfterStorageFull(
+            lastFailureWasStorageFull: true,
+            freeBytes: 499_999_999,
+            remainingBytes: 0))
+        #expect(!StaticRangeRecoveryPolicy.shouldParkAutoResumeAfterStorageFull(
+            lastFailureWasStorageFull: true,
+            freeBytes: 500_000_000,
+            remainingBytes: 0))
+    }
 }

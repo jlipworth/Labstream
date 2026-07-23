@@ -2154,6 +2154,36 @@ public final class DownloadManager {
             return
         }
         guard let checkpointBytes = store.durableStaticRangeCheckpointSize(for: key) else { return }
+        // Storage-full retry-storm fix: every automatic redrive edge funnels through this
+        // function (`launch_interrupted` relaunch recovery, `backend_ready` pending-resume
+        // drains, `requestRebuildNeeded` range rebuilds), and each used to call `retry`
+        // against an unchanged full disk — enqueue → start → storage_full preflight →
+        // failed, over and over. Park the row instead, keeping the pending-resume intent so
+        // a later edge re-checks after space is actually freed. A user-initiated Retry
+        // clears `lastError` before dispatch (`retry(record:)`), so it never parks here.
+        var lastFailureWasStorageFull = false
+        if case .storageFull = lastError[ratingKey] { lastFailureWasStorageFull = true }
+        if lastFailureWasStorageFull {
+            let expectedBytes = expectedDownloadBytes(for: record) ?? 0
+            let remainingBytes = Int64(max(0, expectedBytes - checkpointBytes))
+            let measured = DownloadVolumeFreeSpace.measure(directory: store.directory)
+            if StaticRangeRecoveryPolicy.shouldParkAutoResumeAfterStorageFull(
+                lastFailureWasStorageFull: true,
+                freeBytes: measured?.bytes,
+                remainingBytes: remainingBytes
+            ) {
+                staticRangeRecovery.addPendingResume(ratingKey)
+                recordDownloadDiagnostic("downloads.range_auto_resume_parked", fields: [
+                    "download_id": .identifier(ratingKey),
+                    "reason": .label("storage_full"),
+                    "resume_reason": .label(reason),
+                    "remaining_bytes": .bytes(Int(remainingBytes)),
+                    "free_bytes": .bytes(Int(measured?.bytes ?? 0)),
+                    "free_space_source": .label(measured?.source.rawValue ?? "unavailable"),
+                ])
+                return
+            }
+        }
         staticRangeRecovery.addPendingResume(ratingKey)
         recordDownloadDiagnostic("downloads.range_resume_ready", fields: [
             "download_id": .identifier(ratingKey),
