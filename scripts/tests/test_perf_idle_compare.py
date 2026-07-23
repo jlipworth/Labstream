@@ -3,6 +3,7 @@ import importlib.util
 import json
 import pathlib
 import shutil
+import statistics
 import sys
 import tempfile
 import unittest
@@ -305,6 +306,241 @@ class IdleCompareTests(unittest.TestCase):
         self.assertEqual(loaded["metrics"], self.thresholds()["metrics"])
         self.assertEqual(opened.call_count, 1)
 
+    def test_freeze_is_deterministic_and_uses_control_only(self):
+        digest = hashlib.sha256(self.runner_path.read_bytes()).hexdigest()
+        first = idle.freeze_thresholds(
+            self.runner, self.records, self.samples, runner_sha256=digest,
+            rationale="Control only pilot")
+        for sample in self.samples:
+            if sample.role == "candidate":
+                sample.summary["metrics"]["cpu_running_ns"] *= 1000
+                sample.summary["metrics"]["wakeups_count"] *= 1000
+        second = idle.freeze_thresholds(
+            self.runner, self.records, self.samples, runner_sha256=digest,
+            rationale="Control only pilot")
+        self.assertEqual(first, second)
+        self.assertEqual(
+            first["metrics"]["cpu_running_ns_per_second"]["relative_mde_percent"], 5.0)
+        self.assertEqual(
+            first["metrics"]["wakeups_per_minute"]["relative_mde_percent"], 5.0)
+        self.assertEqual(
+            [item["sample_index"] for item in
+             first["control_provenance"]["evidence_manifests"]], list(range(5)))
+
+    def test_freeze_formula_uses_twice_bootstrap_width(self):
+        controls = sorted(
+            (sample for sample in self.samples
+             if sample.role == "control" and sample.kind == "measured"),
+            key=lambda sample: sample.index)
+        for sample, cpu, wakeups in zip(
+                controls, (1, 2, 4, 8, 16), (1, 2, 4, 8, 16), strict=True):
+            sample.summary["metrics"]["cpu_running_ns"] = cpu * 120
+            sample.summary["metrics"]["wakeups_count"] = wakeups
+        result = idle.freeze_thresholds(
+            self.runner, self.records, self.samples,
+            runner_sha256="9" * 64, rationale="Formula fixture")
+        for metric in idle.METRICS:
+            values = [sample.rates[metric] for sample in controls]
+            low, high = idle._bootstrap(
+                values, idle._metric_seed(
+                    self.runner["identities"]["order_seed"], f"control-threshold:{metric}"))
+            width = high - low
+            expected_relative = max(5.0, 200.0 * width / statistics.median(values))
+            self.assertEqual(result["metrics"][metric]["absolute_mde"], 2.0 * width)
+            self.assertEqual(
+                result["metrics"][metric]["relative_mde_percent"], expected_relative)
+
+    def test_freeze_zero_wakeup_floor_and_zero_cpu_rejection(self):
+        for sample in self.samples:
+            if sample.role == "control" and sample.kind == "measured":
+                sample.summary["metrics"]["wakeups_count"] = 0
+        result = idle.freeze_thresholds(
+            self.runner, self.records, self.samples,
+            runner_sha256="8" * 64, rationale="Zero wakeups")
+        self.assertEqual(result["metrics"]["wakeups_per_minute"]["absolute_mde"], 0.5)
+        for sample in self.samples:
+            if sample.role == "control" and sample.kind == "measured":
+                sample.summary["metrics"]["cpu_running_ns"] = 0
+        with self.assertRaisesRegex(idle.IdleCompareError, "zero CPU"):
+            idle.freeze_thresholds(
+                self.runner, self.records, self.samples,
+                runner_sha256="8" * 64, rationale="Zero CPU")
+        controls = sorted(
+            (sample for sample in self.samples
+             if sample.role == "control" and sample.kind == "measured"),
+            key=lambda sample: sample.index)
+        for sample, cpu in zip(controls, (0, 0, 0, 120, 120), strict=True):
+            sample.summary["metrics"]["cpu_running_ns"] = cpu
+        informative = idle.freeze_thresholds(
+            self.runner, self.records, self.samples,
+            runner_sha256="8" * 64, rationale="Sparse CPU")
+        self.assertGreater(
+            informative["metrics"]["cpu_running_ns_per_second"]["absolute_mde"], 0)
+
+    def test_freeze_requires_exact_completed_long_policy(self):
+        for warmups, measured, duration in ((0, 5, 120), (1, 4, 120), (1, 5, 60)):
+            runner = dict(self.runner, warmups=warmups, measured=measured,
+                          duration_seconds=duration)
+            with self.subTest(warmups=warmups, measured=measured, duration=duration):
+                with self.assertRaisesRegex(idle.IdleCompareError, "exactly one warmup"):
+                    idle.freeze_thresholds(
+                        runner, self.records, self.samples,
+                        runner_sha256="7" * 64, rationale="Policy")
+        self.records[0]["status"] = "failure"
+        self.records[0]["failure"] = {"type": "RunnerError", "message": "failure"}
+        self.runner["capture_status"] = "failure"
+        with self.assertRaisesRegex(idle.IdleCompareError, "completed successful"):
+            idle.freeze_thresholds(
+                self.runner, self.records, self.samples,
+                runner_sha256="7" * 64, rationale="Failure")
+
+    def test_freeze_rejects_control_environment_and_chronology_drift(self):
+        control = next(sample for sample in self.samples if sample.role == "control")
+        control.manifest["device"]["thermal_state"] = "serious"
+        with self.assertRaisesRegex(idle.IdleCompareError, "must remain stable"):
+            idle.freeze_thresholds(
+                self.runner, self.records, self.samples,
+                runner_sha256="7" * 64, rationale="Drift")
+        control.manifest["device"]["thermal_state"] = "nominal"
+        measured = sorted(
+            (sample for sample in self.samples
+             if sample.role == "control" and sample.kind == "measured"),
+            key=lambda sample: sample.index)
+        measured[1].manifest["run"]["recorded_at"] = measured[0].manifest["run"]["recorded_at"]
+        with self.assertRaisesRegex(idle.IdleCompareError, "chronology"):
+            idle.freeze_thresholds(
+                self.runner, self.records, self.samples,
+                runner_sha256="7" * 64, rationale="Chronology")
+
+    def test_freeze_rejects_inadmissible_control_power_state(self):
+        for sample in self.samples:
+            if sample.role == "control":
+                sample.manifest["device"]["power_source"] = "battery"
+        with self.assertRaisesRegex(idle.IdleCompareError, "external power"):
+            idle.freeze_thresholds(
+                self.runner, self.records, self.samples,
+                runner_sha256="7" * 64, rationale="Power")
+
+    def test_derived_threshold_provenance_is_closed_and_reported(self):
+        artifact = idle.freeze_thresholds(
+            self.runner, self.records, self.samples,
+            runner_sha256="6" * 64, rationale="Authenticated pilot")
+        artifact["control_provenance"]["comparison_id"] = "comparison-" + "1" * 12
+        artifact["control_provenance"]["order_seed"] = "seed-" + "1" * 16
+        for index, item in enumerate(
+                artifact["control_provenance"]["evidence_manifests"]):
+            item["run_id"] = f"run-{index + 1:012x}"
+            item["sha256"] = f"{index + 1:064x}"
+        path = self.root / "derived-thresholds.json"
+        path.write_text(json.dumps(artifact))
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        loaded = idle.load_thresholds(path, digest, duration_seconds=120)
+        self.assertEqual(
+            loaded["control_provenance"]["pilot_runner_result_sha256"], "6" * 64)
+        result = idle.compare(
+            self.runner_path, self.runner, self.records, self.samples,
+            runner_sha256=hashlib.sha256(self.runner_path.read_bytes()).hexdigest(),
+            thresholds=loaded, threshold_path=path, threshold_sha256=digest,
+            max_storage_drift=10_000_000, max_pair_start_gap=140,
+            max_window_drift_ns=1_000_000)
+        self.assertEqual(
+            result["threshold_artifact"]["control_provenance"]["kind"],
+            "control_only_pilot")
+        tampered = json.loads(path.read_text())
+        tampered["control_provenance"]["evidence_manifests"][0]["sha256"] = "bad"
+        path.write_text(json.dumps(tampered))
+        with self.assertRaisesRegex(idle.IdleCompareError, "manifest identity"):
+            idle.load_thresholds(
+                path, hashlib.sha256(path.read_bytes()).hexdigest(), duration_seconds=120)
+        for field, value in (("commit", 1), ("comparison_id", []),
+                             ("product_sha256", True)):
+            malformed = json.loads(json.dumps(artifact))
+            malformed["control_provenance"][field] = value
+            path.write_text(json.dumps(malformed))
+            with self.subTest(field=field), self.assertRaisesRegex(
+                    idle.IdleCompareError, "provenance identity"):
+                idle.load_thresholds(
+                    path, hashlib.sha256(path.read_bytes()).hexdigest(),
+                    duration_seconds=120)
+        malformed = json.loads(json.dumps(artifact))
+        malformed["control_provenance"]["evidence_manifests"][0]["sample_index"] = True
+        path.write_text(json.dumps(malformed))
+        with self.assertRaisesRegex(idle.IdleCompareError, "manifest identity"):
+            idle.load_thresholds(
+                path, hashlib.sha256(path.read_bytes()).hexdigest(), duration_seconds=120)
+
+    def test_derived_threshold_must_use_separate_matching_control(self):
+        actual_digest = hashlib.sha256(self.runner_path.read_bytes()).hexdigest()
+        artifact = idle.freeze_thresholds(
+            self.runner, self.records, self.samples,
+            runner_sha256=actual_digest, rationale="Pilot")
+        with self.assertRaisesRegex(idle.IdleCompareError, "separate paired"):
+            idle.compare(
+                self.runner_path, self.runner, self.records, self.samples,
+                runner_sha256=actual_digest, thresholds=artifact,
+                threshold_path=self.root / "thresholds.json", threshold_sha256="5" * 64,
+                max_storage_drift=10_000_000, max_pair_start_gap=140,
+                max_window_drift_ns=1_000_000)
+        artifact["control_provenance"]["pilot_runner_result_sha256"] = "4" * 64
+        with self.assertRaisesRegex(idle.IdleCompareError, "distinct comparison"):
+            idle.compare(
+                self.runner_path, self.runner, self.records, self.samples,
+                runner_sha256=actual_digest, thresholds=artifact,
+                threshold_path=self.root / "thresholds.json", threshold_sha256="5" * 64,
+                max_storage_drift=10_000_000, max_pair_start_gap=140,
+                max_window_drift_ns=1_000_000)
+        artifact["control_provenance"]["comparison_id"] = "comparison-" + "2" * 12
+        artifact["control_provenance"]["order_seed"] = "seed-" + "2" * 16
+        # Changing ignored runner metadata changes its checksum, but unchanged evidence
+        # must still be rejected as the same pilot.
+        with self.assertRaisesRegex(idle.IdleCompareError, "evidence overlaps"):
+            idle.compare(
+                self.runner_path, self.runner, self.records, self.samples,
+                runner_sha256="3" * 64, thresholds=artifact,
+                threshold_path=self.root / "thresholds.json", threshold_sha256="5" * 64,
+                max_storage_drift=10_000_000, max_pair_start_gap=140,
+                max_window_drift_ns=1_000_000)
+        for index, item in enumerate(
+                artifact["control_provenance"]["evidence_manifests"]):
+            item["run_id"] = f"run-{index + 10:012x}"
+            item["sha256"] = f"{index + 10:064x}"
+        artifact["control_provenance"]["commit"] = "e" * 40
+        with self.assertRaisesRegex(idle.IdleCompareError, "control commit"):
+            idle.compare(
+                self.runner_path, self.runner, self.records, self.samples,
+                runner_sha256=actual_digest, thresholds=artifact,
+                threshold_path=self.root / "thresholds.json", threshold_sha256="5" * 64,
+                max_storage_drift=10_000_000, max_pair_start_gap=140,
+                max_window_drift_ns=1_000_000)
+        artifact["control_provenance"]["commit"] = self.runner["commits"]["control"]
+        artifact["control_provenance"]["product_sha256"] = "e" * 64
+        with self.assertRaisesRegex(idle.IdleCompareError, "product checksum"):
+            idle.compare(
+                self.runner_path, self.runner, self.records, self.samples,
+                runner_sha256=actual_digest, thresholds=artifact,
+                threshold_path=self.root / "thresholds.json", threshold_sha256="5" * 64,
+                max_storage_drift=10_000_000, max_pair_start_gap=140,
+                max_window_drift_ns=1_000_000)
+
+    def test_freeze_cli_is_exclusive_and_protects_evidence(self):
+        self.write_runner()
+        output = self.root / "frozen.json"
+        with mock.patch.object(idle.contract, "validate_manifest"):
+            status = idle.main([
+                "freeze", "--runner-result", str(self.runner_path),
+                "--thresholds-out", str(output), "--rationale", "CLI pilot"])
+        self.assertEqual(status, 0)
+        self.assertTrue(output.is_file())
+        with mock.patch.object(idle.contract, "validate_manifest"):
+            self.assertEqual(idle.main([
+                "freeze", "--runner-result", str(self.runner_path),
+                "--thresholds-out", str(output)]), 1)
+        manifest = pathlib.Path(self.records[0]["manifest"])
+        with mock.patch.object(idle.contract, "validate_manifest"):
+            self.assertEqual(idle.main([
+                "freeze", "--runner-result", str(self.runner_path),
+                "--thresholds-out", str(manifest)]), 1)
+
     def test_load_runner_recomputes_schedule_and_revalidates_manifest_contract(self):
         self.write_runner()
         with mock.patch.object(idle.contract, "validate_manifest") as validate:
@@ -422,6 +658,18 @@ class IdleCompareTests(unittest.TestCase):
                 idle._publish([(first, b"json"), (second, b"csv")], protected)
         self.assertFalse(first.exists())
         self.assertFalse(second.exists())
+
+        raced = self.root / "exclusive.json"
+        real_link = idle.os.link
+
+        def race_link(source, destination):
+            pathlib.Path(destination).write_bytes(b"competitor")
+            return real_link(source, destination)
+
+        with mock.patch.object(idle.os, "link", side_effect=race_link):
+            with self.assertRaises(OSError):
+                idle._publish([(raced, b"ours")], protected, exclusive=True)
+        self.assertEqual(raced.read_bytes(), b"competitor")
 
         self.write_runner()
         cli_output = self.root / "cli-result.json"
