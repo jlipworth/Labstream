@@ -93,7 +93,10 @@ struct MediaBrowserHomeRailPlan {
         var seenLibraryIDs: Set<String> = []
         let uniqueLibraries = libraries.filter { seenLibraryIDs.insert($0.id).inserted }
         entries.append(contentsOf: uniqueLibraries.prefix(8).map { library in
-            let title = "Recently Added \(library.title)"
+            let libraryTitle = library.collectionType?.lowercased() == "tvshows"
+                ? "TV Shows"
+                : library.title
+            let title = "Recently Added \(libraryTitle)"
             let itemTypes = MediaBrowserHomeProvider.latestItemTypes(for: library)
             return Entry(
                 key: .latest(libraryID: library.id),

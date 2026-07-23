@@ -5363,7 +5363,16 @@ enum PlaybackTransportStatus: Equatable {
 @Observable
 @MainActor
 final class PlaybackTransportStatusState {
+    static let localInitialPreparationDelay: Duration = .milliseconds(750)
+
     private(set) var status: PlaybackTransportStatus = .none
+    @ObservationIgnored private var pendingStatus: PlaybackTransportStatus?
+    @ObservationIgnored private var pendingStatusTask: Task<Void, Never>?
+    @ObservationIgnored private let initialPreparationDelay: Duration
+
+    init(initialPreparationDelay: Duration = localInitialPreparationDelay) {
+        self.initialPreparationDelay = initialPreparationDelay
+    }
 
     var activeStatus: PlaybackTransportStatus? {
         status == .none ? nil : status
@@ -5374,6 +5383,26 @@ final class PlaybackTransportStatusState {
     }
 
     func set(_ value: PlaybackTransportStatus) {
+        if case .preparingLocal(_, false) = value {
+            guard status != value else { return }
+            guard pendingStatus != value else { return }
+            pendingStatusTask?.cancel()
+            pendingStatus = value
+            if status != .none { status = .none }
+            let delay = initialPreparationDelay
+            pendingStatusTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: delay)
+                guard !Task.isCancelled, let self, self.pendingStatus == value else { return }
+                self.pendingStatus = nil
+                self.pendingStatusTask = nil
+                if self.status != value { self.status = value }
+            }
+            return
+        }
+
+        pendingStatusTask?.cancel()
+        pendingStatusTask = nil
+        pendingStatus = nil
         if status != value { status = value }
     }
 }
