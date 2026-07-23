@@ -178,6 +178,58 @@ class SourceTopologyTests(unittest.TestCase):
         matrix = json.loads((ROOT / "scripts" / "native-test-matrix.json").read_text())
         self.assertEqual(matrix["lanes"]["visionos-hosted"]["status"], "planned")
 
+    def test_tvos_download_test_exclusions_are_complete(self) -> None:
+        # LabstreamTV compiles without the Downloads capability, so every shared LabstreamTests
+        # file that references a Downloads-only type must be kept out of the LabstreamTVTests
+        # compile — either listed in that target's membershipExceptions or `#if !os(tvOS)`-guarded.
+        # A new download test that is neither drift-breaks the tvOS build; this catches it here.
+        tv_target_id = self.target_blocks["LabstreamTVTests"][0]
+        exception_section = project_section(
+            self.project, "PBXFileSystemSynchronizedBuildFileExceptionSet"
+        )
+        tv_exception_block = next(
+            body
+            for _identifier, body in object_blocks(exception_section).values()
+            if re.search(rf"target = {tv_target_id}\b", body)
+        )
+        membership = re.search(
+            r"membershipExceptions = \((.*?)\);", tv_exception_block, re.DOTALL
+        ).group(1)
+        excluded_stems = {
+            name.removesuffix(".swift")
+            for name in re.findall(r"([A-Za-z0-9_]+\.swift)", membership)
+        }
+
+        # Downloads-only marker: type identifiers that are unambiguously part of the Downloads
+        # capability by name (Download<Something>, BackgroundDownload*, the BackgroundCompletion
+        # persistence barrier). String literals are stripped first so a file-path reference such
+        # as "Labstream/Capabilities/Downloads/Core/DownloadItemPlanner.swift" is not a match.
+        string_literal = re.compile(r'"(?:[^"\\]|\\.)*"')
+        downloads_marker = re.compile(
+            r"\b(?:Download[A-Z]\w*|BackgroundDownload\w*|BackgroundCompletionPersistenceBarrier)\b"
+        )
+        tvos_guard = re.compile(r"(?m)^\s*#if\s+!os\(tvOS\)")
+
+        offenders = []
+        for path in sorted((ROOT / "LabstreamTests").glob("*.swift")):
+            raw = path.read_text()
+            code = string_literal.sub('""', raw)
+            if not downloads_marker.search(code):
+                continue
+            if path.stem in excluded_stems:
+                continue
+            if tvos_guard.search(raw):
+                continue
+            offenders.append(path.name)
+
+        self.assertEqual(
+            offenders,
+            [],
+            "LabstreamTests files reference Downloads-only types but are neither in the "
+            "LabstreamTVTests membershipExceptions nor `#if !os(tvOS)`-guarded, which will "
+            f"break the tvOS test compile: {offenders}",
+        )
+
     def test_external_performance_fixture_cannot_enter_app_compile_roots(self) -> None:
         fixture = ROOT / "scripts" / "perf-emby-browse-fixture.py"
         self.assertTrue(fixture.is_file())
