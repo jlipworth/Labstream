@@ -59,7 +59,9 @@ NATIVE_CELL_TAGS = (
     "duration", "duration", "sched-priority", "narrative", "narrative",
     "thread", "thread", "thread", "core", "boolean",
 )
-KNOWN_STATES = {"Running", "Runnable", "Idle", "Blocked", "Interrupted", "Preempted"}
+KNOWN_STATES = {
+    "Running", "Runnable", "Idle", "Blocked", "Interrupted", "Preempted", "Terminated",
+}
 ARCHIVE_PATH_RE = re.compile(r"^raw/artifact-[0-9]{4}\.trace\.zip$")
 EXPORT_PATH_RE = re.compile(r"^raw/artifact-[0-9]{4}\.xml$")
 EXTRACTION_PATH_RE = re.compile(r"^raw/artifact-[0-9]{4}\.json$")
@@ -393,7 +395,10 @@ def normalize_native(toc: ET.Element, native: ET.Element, *, expected_pid: int,
         clipped_duration_ns = min(end_ns, window_ns) - start_ns
         if clipped_duration_ns <= 0 or clipped_duration_ns > window_ns:
             fail("native thread-state row has an invalid clipped interval")
+        state_element = refs.resolve(row[2])
         state = _resolved_text(refs, row[2], "thread state")
+        if state_element.attrib["fmt"] != state:
+            fail("native thread-state formatted value does not match its typed value")
         if state not in KNOWN_STATES:
             fail("native thread-state export contains an unknown state")
         process_missing = row[4].tag == "sentinel"
