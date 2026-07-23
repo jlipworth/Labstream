@@ -101,6 +101,77 @@ struct DownloadStorePersistenceTests {
         }
     }
 
+    /// The failure compensation runs off-lock: the withdrawn plan must remove inserted rows and
+    /// restore the retry row's prior admission flag, in memory and in durable authority.
+    @Test func seasonPlanPersistenceFailureRestoresRetryRowAndRemovesInsertedRow() throws {
+        try withTemporaryDirectory { directory in
+            let retryID = DownloadAttemptID.generated()
+            let retryKey = DownloadAttemptKey(ratingKey: "episode-retry", attemptID: retryID)
+            let seed = DownloadStore(baseDirectory: directory)
+            let failed = DownloadRecord(
+                ratingKey: retryKey.ratingKey, attemptID: retryID, title: "Retry",
+                localURL: directory.appendingPathComponent("retry.mp4"), status: .failed,
+                metadata: OfflineMetadata(ratingKey: retryKey.ratingKey, title: "Retry", type: "episode"))
+            #expect(seed.createAttemptOwnedRecord(failed, attemptID: retryID) == .committed(retryKey))
+
+            let store = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
+            let inserted = DownloadRecord(
+                ratingKey: "episode-new", attemptID: .generated(), title: "New",
+                localURL: directory.appendingPathComponent("new.mp4"), status: .queued,
+                metadata: OfflineMetadata(ratingKey: "episode-new", title: "New", type: "episode",
+                                          seasonPlannerPendingAdmission: true))
+
+            #expect(store.applySeasonPlanAtomically(
+                newRecords: [inserted], retryAttempts: [retryKey]) == .persistenceFailed)
+            #expect(store.record(for: inserted.ratingKey) == nil)
+            let retryRow = try #require(store.record(for: retryKey.ratingKey))
+            #expect(retryRow.status == .failed)
+            #expect(retryRow.metadata?.seasonPlannerPendingAdmission == nil)
+
+            let restored = DownloadStore(baseDirectory: directory)
+            #expect(restored.record(for: inserted.ratingKey) == nil)
+            #expect(restored.record(for: retryKey.ratingKey)?.metadata?.seasonPlannerPendingAdmission == nil)
+        }
+    }
+
+    /// The store lock must be free while the season plan awaits durability: readers see the plan
+    /// atomically the moment it is submitted, and reads complete while the index write is stuck.
+    @Test func seasonPlanDurabilityWaitDoesNotHoldTheStoreLock() async throws {
+        try await withTemporaryDirectory { directory in
+            let writes = FirstBlockingAtomicWriteHarness()
+            let store = DownloadStore(
+                baseDirectory: directory,
+                indexPersistence: .init { data, url in try writes.write(data, to: url) })
+            let inserted = DownloadRecord(
+                ratingKey: "episode-blocked", attemptID: .generated(), title: "Blocked",
+                localURL: directory.appendingPathComponent("blocked.mp4"), status: .queued,
+                metadata: OfflineMetadata(ratingKey: "episode-blocked", title: "Blocked",
+                                          type: "episode", seasonPlannerPendingAdmission: true))
+            let applyReturned = DispatchSemaphore(value: 0)
+            DispatchQueue.global(qos: .utility).async {
+                _ = store.applySeasonPlanAtomically(newRecords: [inserted], retryAttempts: [])
+                applyReturned.signal()
+            }
+            #expect(await waitForSignal(writes.started, timeout: 5))
+
+            let readCompleted = DispatchSemaphore(value: 0)
+            DispatchQueue.global(qos: .utility).async {
+                #expect(store.record(for: inserted.ratingKey)?.status == .queued)
+                readCompleted.signal()
+            }
+            #expect(await waitForSignal(readCompleted, timeout: 5))
+            // The apply is still parked on the blocked write, not returned early.
+            #expect(await waitForSignal(applyReturned, timeout: 0) == false)
+
+            writes.release.signal()
+            #expect(await waitForSignal(applyReturned, timeout: 5))
+            #expect(DownloadStore(baseDirectory: directory)
+                .record(for: inserted.ratingKey)?.status == .queued)
+        }
+    }
+
     @Test func mutationDoesNotReturnBeforeAtomicWriteAttemptFinishes() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("download-store-persistence-\(UUID().uuidString)", isDirectory: true)
@@ -1354,30 +1425,93 @@ struct DownloadStorePersistenceTests {
         }
     }
 
-    @Test func ownerlessPersistedSideAssetBundleFailsClosedOnLoad() throws {
+    /// Seed one complete owned row with a cached poster, then mutate its persisted row JSON
+    /// (mimicking an index written by an older build) before the store under test loads it.
+    private func seedOwnedPosterRow(
+        directory: URL,
+        mutatingPersistedRow mutate: (inout [String: Any]) -> Void
+    ) throws -> (ratingKey: String, attempt: DownloadAttemptID, poster: URL) {
+        let ratingKey = "plex:ownerless-assets"
+        let attempt = DownloadAttemptID(rawValue: "attempt-current")!
+        let poster = directory.appendingPathComponent("ownerless.poster.jpg")
+        try Data([0x1]).write(to: poster)
+        let seed = DownloadStore(baseDirectory: directory)
+        #expect(seed.createAttemptOwnedRecord(DownloadRecord(
+            ratingKey: ratingKey, attemptID: attempt, title: "Ownerless",
+            localURL: directory.appendingPathComponent("ownerless.mp4"), status: .complete,
+            metadata: OfflineMetadata(
+                ratingKey: ratingKey, title: "Ownerless", type: "movie",
+                posterRelativePath: poster.lastPathComponent, backendKind: .plex)),
+            attemptID: attempt) == .committed(
+                DownloadAttemptKey(ratingKey: ratingKey, attemptID: attempt)))
+        let indexURL = directory.appendingPathComponent("index.json")
+        let data = try Data(contentsOf: indexURL)
+        var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var rows = try #require(object["rows"] as? [[String: Any]])
+        var row = rows[0]
+        mutate(&row)
+        rows[0] = row
+        object["rows"] = rows
+        try JSONSerialization.data(withJSONObject: object).write(to: indexURL, options: .atomic)
+        return (ratingKey, attempt, poster)
+    }
+
+    /// The pre-`sideAssetBundleOwner` schema (still version 4) persisted cached side assets with
+    /// no owner. A row whose sole top-level attempt exists must adopt that owner on first load —
+    /// not delete the user's posters/trickplay/chapters/subtitles.
+    @Test func legacyOwnerlessSideAssetBundleWithAttemptIsAdoptedOnLoad() throws {
         try withTemporaryDirectory { directory in
-            let ratingKey = "plex:ownerless-assets"
-            let attempt = DownloadAttemptID(rawValue: "attempt-current")!
-            let poster = directory.appendingPathComponent("ownerless.poster.jpg")
-            try Data([0x1]).write(to: poster)
-            let seed = DownloadStore(baseDirectory: directory)
-            #expect(seed.createAttemptOwnedRecord(DownloadRecord(
-                ratingKey: ratingKey, attemptID: attempt, title: "Ownerless",
-                localURL: directory.appendingPathComponent("ownerless.mp4"), status: .complete,
-                metadata: OfflineMetadata(
-                    ratingKey: ratingKey, title: "Ownerless", type: "movie",
-                    posterRelativePath: poster.lastPathComponent, backendKind: .plex)),
-                attemptID: attempt) == .committed(
-                    DownloadAttemptKey(ratingKey: ratingKey, attemptID: attempt)))
-            let indexURL = directory.appendingPathComponent("index.json")
-            let data = try Data(contentsOf: indexURL)
-            var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-            var rows = try #require(object["rows"] as? [[String: Any]])
-            var persistedMetadata = try #require(rows[0]["metadata"] as? [String: Any])
-            persistedMetadata.removeValue(forKey: "sideAssetBundleOwner")
-            rows[0]["metadata"] = persistedMetadata
-            object["rows"] = rows
-            try JSONSerialization.data(withJSONObject: object).write(to: indexURL, options: .atomic)
+            let (ratingKey, attempt, poster) = try seedOwnedPosterRow(directory: directory) { row in
+                guard var metadata = row["metadata"] as? [String: Any] else { return }
+                metadata.removeValue(forKey: "sideAssetBundleOwner")
+                row["metadata"] = metadata
+            }
+
+            let restored = DownloadStore(baseDirectory: directory)
+
+            let metadata = try #require(restored.metadata(for: ratingKey))
+            #expect(metadata.posterRelativePath == poster.lastPathComponent)
+            #expect(metadata.sideAssetBundleOwner == OfflineSideAssetBundleOwner(
+                attemptID: attempt.rawValue, source: metadata.sideAssetSourceIdentity))
+            #expect(FileManager.default.fileExists(atPath: poster.path))
+            let relaunched = DownloadStore(baseDirectory: directory)
+            let durable = try #require(relaunched.metadata(for: ratingKey))
+            #expect(durable.posterRelativePath == poster.lastPathComponent)
+            #expect(durable.sideAssetBundleOwner == OfflineSideAssetBundleOwner(
+                attemptID: attempt.rawValue, source: durable.sideAssetSourceIdentity))
+        }
+    }
+
+    @Test func mismatchedSideAssetBundleOwnerStillFailsClosedOnLoad() throws {
+        try withTemporaryDirectory { directory in
+            let (ratingKey, _, poster) = try seedOwnedPosterRow(directory: directory) { row in
+                guard var metadata = row["metadata"] as? [String: Any],
+                      var owner = metadata["sideAssetBundleOwner"] as? [String: Any] else { return }
+                owner["attemptID"] = "attempt-mismatched"
+                metadata["sideAssetBundleOwner"] = owner
+                row["metadata"] = metadata
+            }
+
+            let restored = DownloadStore(baseDirectory: directory)
+
+            let metadata = try #require(restored.metadata(for: ratingKey))
+            #expect(!metadata.hasCachedSideAssets)
+            #expect(metadata.sideAssetBundleOwner == nil)
+            #expect(!FileManager.default.fileExists(atPath: poster.path))
+            let relaunched = DownloadStore(baseDirectory: directory)
+            #expect(relaunched.metadata(for: ratingKey)?.posterRelativePath == nil)
+        }
+    }
+
+    @Test func ownerlessSideAssetBundleWithoutAttemptStillFailsClosedOnLoad() throws {
+        try withTemporaryDirectory { directory in
+            let (ratingKey, _, poster) = try seedOwnedPosterRow(directory: directory) { row in
+                row.removeValue(forKey: "attemptID")
+                guard var metadata = row["metadata"] as? [String: Any] else { return }
+                metadata.removeValue(forKey: "sideAssetBundleOwner")
+                metadata.removeValue(forKey: "downloadAttemptID")
+                row["metadata"] = metadata
+            }
 
             let restored = DownloadStore(baseDirectory: directory)
 

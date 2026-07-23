@@ -239,6 +239,10 @@ public final class DownloadManager {
     /// No season/batch entity is retained; relaunch simply rediscovers marked rows.
     @ObservationIgnored var seasonPlannerAdmissionTask: Task<Void, Never>?
     @ObservationIgnored var seasonPlannerAdmittingKeys: Set<String> = []
+    /// Season-plan commits publish their rows atomically but await durability off the main actor.
+    /// While one is in flight, the admission worker must not admit rows whose plan has not yet
+    /// proven durable (a failed commit withdraws them again).
+    @ObservationIgnored var seasonPlanCommitsInFlight = 0
 
     /// Coarse, pre-derived UI state for `OfflineLibraryView`.
     ///

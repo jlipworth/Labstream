@@ -2764,7 +2764,12 @@ final class DownloadStore: @unchecked Sendable {
     }
 
     /// Atomically publish new rows and mark exact failed attempts for retry in one schema-v4
-    /// snapshot. No row becomes visible to admission unless the complete plan is durable.
+    /// snapshot. The complete plan becomes visible to readers in one locked mutation whose full
+    /// snapshot is submitted under the same lock hold, so no reader observes a partial plan and
+    /// no other writer's snapshot interleaves with it. Waiting for durability happens after the
+    /// lock is released (see `enqueueAttemptPersistenceLocked`); callers must not admit
+    /// network/server work for the plan unless this returns `.applied`, and a failed outcome is
+    /// compensated conditionally so concurrent mutations made during the wait survive.
     func applySeasonPlanAtomically(
         newRecords records: [DownloadRecord],
         retryAttempts: [DownloadAttemptKey]
@@ -2772,6 +2777,10 @@ final class DownloadStore: @unchecked Sendable {
         guard !records.isEmpty || !retryAttempts.isEmpty else {
             return .applied(inserted: 0, retried: 0)
         }
+        // Pre-plan authority is captured before the lock: it only classifies a failed rollback,
+        // and that classification tolerates a stale copy (a mismatch degrades to indeterminate).
+        let oldIndexData = try? Data(contentsOf: indexURL)
+        let oldIndexWasMissing = oldIndexData == nil && !fileManager.fileExists(atPath: indexURL.path)
         lock.lock()
         let keys = records.map(\.ratingKey)
         let retryKeys = retryAttempts.map(\.ratingKey)
@@ -2788,97 +2797,125 @@ final class DownloadStore: @unchecked Sendable {
             lock.unlock()
             return .staleInput
         }
-        var candidateRows = rows
-        var candidateHydrationCache = sideAssetHydrationCache
+        var priorRetryAdmissionFlags: [DownloadAttemptKey: Bool?] = [:]
         for record in records {
-            guard let attemptID = record.attemptID else { continue }
-            let relativePath = record.localURL.lastPathComponent
-            var metadata = record.metadata
-            metadata?.downloadAttemptID = attemptID.rawValue
-            candidateRows[record.ratingKey] = Row(
-                ratingKey: record.ratingKey,
-                attemptID: attemptID,
-                title: record.title,
-                relativePath: relativePath,
-                attemptWorkingRelativePath: Self.attemptStagingRelativePath(
-                    for: DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID),
-                    stableRelativePath: relativePath),
-                bytes: 0,
-                progress: 0,
-                status: record.status,
-                metadata: metadata,
-                heldRangeBodyDeletionIntents: [])
-            candidateHydrationCache.removeValue(forKey: record.ratingKey)
+            guard let row = Self.seasonPlannedRow(for: record) else { continue }
+            rows[record.ratingKey] = row
+            sideAssetHydrationCache.removeValue(forKey: record.ratingKey)
         }
         for key in retryAttempts {
-            guard var row = candidateRows[key.ratingKey], var metadata = row.metadata else { continue }
+            guard var row = rows[key.ratingKey], var metadata = row.metadata else { continue }
+            // updateValue, not subscript assignment: a nil prior flag must be stored as an entry
+            // holding nil (restore-to-nil), which the subscript setter would instead drop.
+            priorRetryAdmissionFlags.updateValue(metadata.seasonPlannerPendingAdmission, forKey: key)
             metadata.seasonPlannerPendingAdmission = true
             row.metadata = metadata
-            candidateRows[key.ratingKey] = row
+            rows[key.ratingKey] = row
         }
-        // Submit the candidate snapshot without publishing it in memory. Holding the Store lock
-        // through the writer outcome makes validation + persistence + publication one transaction;
-        // no concurrent mutation can observe or build on rows that have not committed.
-        let oldIndexData = try? Data(contentsOf: indexURL)
-        let oldIndexWasMissing = oldIndexData == nil && !fileManager.fileExists(atPath: indexURL.path)
-        let candidateSnapshot = Array(candidateRows.values)
-        guard let candidateData = try? DownloadIndexCoding.encode(candidateSnapshot) else {
-            lock.unlock()
-            return .persistenceFailed
-        }
+        let candidateSnapshot = Array(rows.values)
         nextPersistenceRevision += 1
         let ticket = PersistenceTicket(revision: nextPersistenceRevision)
         indexWriter.submit(revision: ticket.revision, snapshot: candidateSnapshot)
-        let writerResult = indexWriter.waitSynchronouslyForOutcome(through: ticket.revision)
-        let persistenceResult = Self.mapPersistenceResult(writerResult)
-        guard persistenceResult.committed(through: ticket) else {
-            // Atomic replacement can succeed and then surface an error. If the exact candidate is
-            // already durable, publish it rather than letting a later old-memory snapshot erase it.
-            if (try? Data(contentsOf: indexURL)) == candidateData {
-                rows = candidateRows
-                sideAssetHydrationCache = candidateHydrationCache
-                lock.unlock()
-                return .applied(inserted: records.count, retried: retryAttempts.count)
-            }
-            // Supersede the writer's dirty candidate with the unchanged authoritative rows. Even
-            // if this compensating write fails, any future writer flush now retries old authority,
-            // not an unreported season plan.
-            nextPersistenceRevision += 1
-            let rollbackTicket = PersistenceTicket(revision: nextPersistenceRevision)
-            indexWriter.submit(revision: rollbackTicket.revision, snapshot: Array(rows.values))
-            let rollbackResult = indexWriter.waitSynchronouslyForOutcome(
-                through: rollbackTicket.revision)
-            if Self.mapPersistenceResult(rollbackResult).committed(through: rollbackTicket) {
-                lock.unlock()
-                return .persistenceFailed
-            }
-            let durableBytes = try? Data(contentsOf: indexURL)
-            if durableBytes == candidateData {
-                // Make the candidate the writer's newest dirty authority as well as memory/disk
-                // authority, so a later flush cannot replay the failed rollback over it.
-                nextPersistenceRevision += 1
-                indexWriter.submit(
-                    revision: nextPersistenceRevision, snapshot: candidateSnapshot)
-                rows = candidateRows
-                sideAssetHydrationCache = candidateHydrationCache
-                lock.unlock()
-                return .applied(inserted: records.count, retried: retryAttempts.count)
-            }
-            if durableBytes == oldIndexData
-                || (oldIndexWasMissing && !fileManager.fileExists(atPath: indexURL.path)) {
-                lock.unlock()
-                return .persistenceFailed
-            }
-            // Neither authority can be proven. Mark startup admission unreadable so the manager
-            // can stop the queue rather than report an ordinary save failure and continue.
-            startupSchemaProbe = .unreadable
-            lock.unlock()
-            return .persistenceIndeterminate
-        }
-        rows = candidateRows
-        sideAssetHydrationCache = candidateHydrationCache
         lock.unlock()
-        return .applied(inserted: records.count, retried: retryAttempts.count)
+
+        let writerResult = indexWriter.waitSynchronouslyForOutcome(through: ticket.revision)
+        if Self.mapPersistenceResult(writerResult).committed(through: ticket) {
+            return .applied(inserted: records.count, retried: retryAttempts.count)
+        }
+        // Atomic replacement can succeed and then surface an error. Encoding is deterministic
+        // (`sortedKeys` over the exact submitted snapshot value), so byte equality proves the
+        // candidate is already durable; keep the published plan rather than compensating it away.
+        let candidateData = try? DownloadIndexCoding.encode(candidateSnapshot)
+        if let candidateData, (try? Data(contentsOf: indexURL)) == candidateData {
+            return .applied(inserted: records.count, retried: retryAttempts.count)
+        }
+        // Genuine failure: withdraw exactly the plan's own effects. Every compensation is
+        // conditional on the exact attempt so mutations that interleaved during the off-lock
+        // wait are never clobbered, then the rollback snapshot supersedes the writer's dirty
+        // candidate so a future flush retries current authority, not an unreported season plan.
+        lock.lock()
+        withdrawSeasonPlanLocked(records: records, priorRetryAdmissionFlags: priorRetryAdmissionFlags)
+        let rollbackTicket = enqueuePersistenceLocked()
+        lock.unlock()
+        let rollbackResult = indexWriter.waitSynchronouslyForOutcome(through: rollbackTicket.revision)
+        if Self.mapPersistenceResult(rollbackResult).committed(through: rollbackTicket) {
+            return .persistenceFailed
+        }
+        let durableBytes = try? Data(contentsOf: indexURL)
+        if let candidateData, durableBytes == candidateData {
+            // The plan is durable after all. Re-publish it (conditionally, for the same reason as
+            // above) and make current memory the writer's newest dirty authority so a later flush
+            // cannot replay the failed rollback over the durable candidate.
+            lock.lock()
+            for record in records {
+                guard rows[record.ratingKey] == nil,
+                      let row = Self.seasonPlannedRow(for: record) else { continue }
+                rows[record.ratingKey] = row
+                sideAssetHydrationCache.removeValue(forKey: record.ratingKey)
+            }
+            for key in retryAttempts {
+                guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
+                      var metadata = row.metadata else { continue }
+                metadata.seasonPlannerPendingAdmission = true
+                row.metadata = metadata
+                rows[key.ratingKey] = row
+            }
+            _ = enqueuePersistenceLocked()
+            lock.unlock()
+            return .applied(inserted: records.count, retried: retryAttempts.count)
+        }
+        if durableBytes == oldIndexData
+            || (oldIndexWasMissing && !fileManager.fileExists(atPath: indexURL.path)) {
+            return .persistenceFailed
+        }
+        // Neither authority can be proven. Mark startup admission unreadable so the manager
+        // can stop the queue rather than report an ordinary save failure and continue.
+        lock.lock()
+        startupSchemaProbe = .unreadable
+        lock.unlock()
+        return .persistenceIndeterminate
+    }
+
+    private static func seasonPlannedRow(for record: DownloadRecord) -> Row? {
+        guard let attemptID = record.attemptID else { return nil }
+        let relativePath = record.localURL.lastPathComponent
+        var metadata = record.metadata
+        metadata?.downloadAttemptID = attemptID.rawValue
+        return Row(
+            ratingKey: record.ratingKey,
+            attemptID: attemptID,
+            title: record.title,
+            relativePath: relativePath,
+            attemptWorkingRelativePath: Self.attemptStagingRelativePath(
+                for: DownloadAttemptKey(ratingKey: record.ratingKey, attemptID: attemptID),
+                stableRelativePath: relativePath),
+            bytes: 0,
+            progress: 0,
+            status: record.status,
+            metadata: metadata,
+            heldRangeBodyDeletionIntents: [])
+    }
+
+    /// Must be called with `lock` held. Removes the plan's inserted rows and restores retry rows'
+    /// prior admission flags, each only while the row still belongs to the plan's exact attempt.
+    private func withdrawSeasonPlanLocked(
+        records: [DownloadRecord],
+        priorRetryAdmissionFlags: [DownloadAttemptKey: Bool?]
+    ) {
+        for record in records {
+            guard let attemptID = record.attemptID,
+                  rows[record.ratingKey]?.attemptID == attemptID else { continue }
+            rows.removeValue(forKey: record.ratingKey)
+            sideAssetHydrationCache.removeValue(forKey: record.ratingKey)
+        }
+        for (key, priorFlag) in priorRetryAdmissionFlags {
+            guard var row = rows[key.ratingKey], row.attemptID == key.attemptID,
+                  var metadata = row.metadata,
+                  metadata.seasonPlannerPendingAdmission == true else { continue }
+            metadata.seasonPlannerPendingAdmission = priorFlag
+            row.metadata = metadata
+            rows[key.ratingKey] = row
+        }
     }
 
     /// Compatibility wrapper for callers that only create new rows.
@@ -5127,6 +5164,7 @@ final class DownloadStore: @unchecked Sendable {
         }
         var normalizedPreparedStaticRows = 0
         var fencedSideAssetRows = 0
+        var adoptedSideAssetRows = 0
         var retiredSideAssetPaths: Set<String> = []
         rows = Dictionary(uniqueKeysWithValues: result.rows.map { row in
             var repaired = row
@@ -5141,13 +5179,24 @@ final class DownloadStore: @unchecked Sendable {
                     OfflineSideAssetBundleOwner(
                         attemptID: $0.rawValue, source: metadata.sideAssetSourceIdentity)
                 }
-                if metadata.hasCachedSideAssets,
-                   expectedOwner == nil || metadata.sideAssetBundleOwner != expectedOwner {
-                    retiredSideAssetPaths.formUnion(sideAssetRelativePaths(for: metadata))
-                    metadata.clearCachedSideAssets()
-                    fencedSideAssetRows += 1
-                } else if !metadata.hasCachedSideAssets,
-                          metadata.sideAssetBundleOwner != nil {
+                if metadata.hasCachedSideAssets {
+                    if let expectedOwner, metadata.sideAssetBundleOwner == nil {
+                        // One-time adoption of the pre-owner schema: rows written before
+                        // `sideAssetBundleOwner` existed decode with a nil owner, and the row's
+                        // sole top-level attempt is the only attempt that can have produced these
+                        // assets. Stamp that owner instead of deleting the user's cached
+                        // posters/trickplay/chapters/subtitles on first launch after update.
+                        metadata.sideAssetBundleOwner = expectedOwner
+                        adoptedSideAssetRows += 1
+                        NSLog("DownloadStore: adopted legacy ownerless side-asset bundle for %@",
+                              row.ratingKey)
+                    } else if expectedOwner == nil
+                                || metadata.sideAssetBundleOwner != expectedOwner {
+                        retiredSideAssetPaths.formUnion(sideAssetRelativePaths(for: metadata))
+                        metadata.clearCachedSideAssets()
+                        fencedSideAssetRows += 1
+                    }
+                } else if metadata.sideAssetBundleOwner != nil {
                     metadata.sideAssetBundleOwner = nil
                     fencedSideAssetRows += 1
                 }
@@ -5167,7 +5216,7 @@ final class DownloadStore: @unchecked Sendable {
         // Never let a best-effort cache repair stamp a pre-v4 snapshot as v4 before the startup
         // migration has durably closed admission and marked every nonterminal partial for reset.
         // The repaired values are already in memory and ride along with the migration snapshot.
-        if normalizedPreparedStaticRows > 0 || fencedSideAssetRows > 0,
+        if normalizedPreparedStaticRows > 0 || fencedSideAssetRows > 0 || adoptedSideAssetRows > 0,
            startupSchemaProbe == .current {
             lock.unlock()
             persist()
