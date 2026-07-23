@@ -53,6 +53,39 @@ struct PlaybackPositionModelsTests {
         #expect(!hold.isActive)
     }
 
+    @Test func nilTargetBeginHoldsWithoutSynthesizingNearZeroTarget() {
+        var hold = PlaybackSeekHold()
+        hold.begin(targetMs: nil, now: 5)
+
+        // The hold is active (so it can time out / be explicitly ended) but carries no target,
+        // so it grants no near-zero permit and cannot defeat transient-zero suppression.
+        #expect(hold.isActive)
+        #expect(hold.target == nil)
+
+        let pending = PlaybackPositionSample(positionMs: 60_000,
+                                             capturedAt: 1,
+                                             cause: .load)
+        #expect(PlaybackPositionResolver.isTransientNearZero(
+            0,
+            seekHold: hold,
+            pending: pending,
+            lastTrustworthy: nil,
+            savedOffsetMs: nil))
+
+        // It still times out on the max-hold ceiling and can be cleared by generation.
+        #expect(!hold.exceeded(maxSeconds: 12, now: 16.9))
+        #expect(hold.exceeded(maxSeconds: 12, now: 17))
+        let cleared = hold.clear(ifGeneration: hold.generation)
+        #expect(cleared)
+        #expect(!hold.isActive)
+
+        // A nil-target begin that follows a real target inherits that target (unchanged behavior).
+        var rearmed = PlaybackSeekHold()
+        rearmed.begin(targetMs: 30_000, now: 1)
+        rearmed.begin(targetMs: nil, now: 2)
+        #expect(rearmed.target?.positionMs == 30_000)
+    }
+
     @Test func fallbackUsesFreshTypedEvidenceWithoutNearZeroRegression() {
         let oldPending = PlaybackPositionSample(positionMs: 55_000,
                                                 capturedAt: 5,

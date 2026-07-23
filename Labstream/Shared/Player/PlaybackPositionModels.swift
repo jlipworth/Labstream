@@ -81,20 +81,30 @@ struct PlaybackPositionSample: Equatable, Sendable {
 struct PlaybackSeekHold: Equatable, Sendable {
     private(set) var generation = 0
     private(set) var target: PlaybackPositionSample?
+    /// When the current hold was (re)armed; drives the max-hold ceiling independently of whether
+    /// a concrete target sample exists. A hold can be active with a nil `target` (a nil-target
+    /// `begin` with no prior target to inherit): it still times out and can be explicitly ended,
+    /// but grants no near-zero permit, so it never defeats the GH #110 transient-zero suppression.
+    private var armedAt: TimeInterval?
 
-    var isActive: Bool { target != nil }
+    var isActive: Bool { armedAt != nil }
 
     mutating func begin(targetMs: Int?, now: TimeInterval) {
         generation += 1
-        let resolvedTarget = targetMs ?? target?.positionMs ?? 0
-        target = PlaybackPositionSample(positionMs: resolvedTarget,
-                                        capturedAt: now,
-                                        cause: .userSeekTarget,
-                                        permitsNearZero: true)
+        armedAt = now
+        if let resolvedTarget = targetMs ?? target?.positionMs {
+            target = PlaybackPositionSample(positionMs: resolvedTarget,
+                                            capturedAt: now,
+                                            cause: .userSeekTarget,
+                                            permitsNearZero: true)
+        } else {
+            target = nil
+        }
     }
 
     mutating func clear() {
         target = nil
+        armedAt = nil
     }
 
     mutating func clear(ifGeneration expectedGeneration: Int) -> Bool {
@@ -104,8 +114,8 @@ struct PlaybackSeekHold: Equatable, Sendable {
     }
 
     func exceeded(maxSeconds: TimeInterval, now: TimeInterval) -> Bool {
-        guard let target else { return false }
-        return now - target.capturedAt >= maxSeconds
+        guard let armedAt else { return false }
+        return now - armedAt >= maxSeconds
     }
 }
 
