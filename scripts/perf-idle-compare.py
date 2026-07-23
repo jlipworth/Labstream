@@ -342,9 +342,12 @@ def load_runner(path: pathlib.Path) -> tuple[dict[str, Any], list[dict[str, Any]
 
 def load_thresholds(path: pathlib.Path, sha256: str, *, duration_seconds: int) -> dict[str, Any]:
     document = _read_bound_json(path, sha256, "idle threshold artifact")
-    artifact = _exact(document, {
-        "schema_version", "tool", "sample_policy", "duration_seconds", "rationale", "metrics"},
-        "idle threshold artifact")
+    legacy_fields = {
+        "schema_version", "tool", "sample_policy", "duration_seconds", "rationale", "metrics"}
+    derived_fields = legacy_fields | {"control_provenance"}
+    if not isinstance(document, dict) or set(document) not in (legacy_fields, derived_fields):
+        raise IdleCompareError("idle threshold artifact must contain exactly the closed fields")
+    artifact = document
     if (artifact["schema_version"] != 1 or artifact["tool"] != THRESHOLD_TOOL
             or artifact["sample_policy"] != "long"
             or artifact["duration_seconds"] != duration_seconds
@@ -361,7 +364,143 @@ def load_thresholds(path: pathlib.Path, sha256: str, *, duration_seconds: int) -
             raise IdleCompareError(f"{name} threshold exceeds its bound")
         if absolute == 0 and relative == 0:
             raise IdleCompareError(f"{name} threshold cannot be entirely zero")
+    if "control_provenance" in artifact:
+        provenance = _exact(artifact["control_provenance"], {
+            "kind", "pilot_runner_result_sha256", "comparison_id", "order_seed",
+            "commit", "product_sha256", "evidence_manifests", "derivation"},
+            "idle threshold control provenance")
+        identity_fields = ("pilot_runner_result_sha256", "comparison_id", "order_seed",
+                           "commit", "product_sha256")
+        if (provenance["kind"] != "control_only_pilot"
+                or any(not isinstance(provenance[field], str) for field in identity_fields)
+                or SHA256_RE.fullmatch(provenance["pilot_runner_result_sha256"]) is None
+                or not contract.COMPARISON_ID_RE.fullmatch(provenance["comparison_id"])
+                or not contract.ORDER_SEED_RE.fullmatch(provenance["order_seed"])
+                or re.fullmatch(r"[a-f0-9]{40}", provenance["commit"]) is None
+                or SHA256_RE.fullmatch(provenance["product_sha256"]) is None):
+            raise IdleCompareError("idle threshold control provenance identity is invalid")
+        derivation = _exact(provenance["derivation"], {
+            "bootstrap_resamples", "confidence_level", "statistic",
+            "relative_formula", "absolute_formula", "zero_wakeup_floor"},
+            "idle threshold derivation")
+        if (derivation != {
+                "bootstrap_resamples": BOOTSTRAP_RESAMPLES,
+                "confidence_level": CONFIDENCE_LEVEL,
+                "statistic": "median_of_control_rates",
+                "relative_formula": "max(5_percent,2x_relative_ci_width)",
+                "absolute_formula": "2x_absolute_ci_width",
+                "zero_wakeup_floor": 60/duration_seconds}):
+            raise IdleCompareError("idle threshold derivation contract is unsupported")
+        manifests = provenance["evidence_manifests"]
+        if not isinstance(manifests, list) or len(manifests) != 5:
+            raise IdleCompareError("idle threshold provenance requires five control manifests")
+        for index, item in enumerate(manifests):
+            entry = _exact(item, {"run_id", "sample_index", "sha256"},
+                           "idle threshold evidence manifest")
+            if (type(entry["sample_index"]) is not int or entry["sample_index"] != index
+                    or not isinstance(entry["run_id"], str)
+                    or re.fullmatch(r"run-[a-f0-9]{12}", entry["run_id"]) is None
+                    or not isinstance(entry["sha256"], str)
+                    or SHA256_RE.fullmatch(entry["sha256"]) is None):
+                raise IdleCompareError("idle threshold evidence manifest identity is invalid")
     return artifact
+
+
+def freeze_thresholds(runner: dict[str, Any], records: list[dict[str, Any]],
+                      samples: list[IdleSample], *, runner_sha256: str,
+                      rationale: str) -> dict[str, Any]:
+    """Derive a guardrail from the five measured control arms of one pilot only."""
+    if (runner["warmups"], runner["measured"], runner["duration_seconds"]) != (1, 5, 120):
+        raise IdleCompareError(
+            "threshold freeze requires exactly one warmup, five measured pairs, and 120 seconds")
+    if runner["capture_status"] != "success" or any(
+            record["status"] != "success" for record in records):
+        raise IdleCompareError("threshold freeze requires a completed successful pilot")
+    if not isinstance(rationale, str) or SAFE_TEXT_RE.fullmatch(rationale) is None:
+        raise IdleCompareError("threshold rationale must be bounded safe text")
+    all_controls = [
+        sample for sample in samples if sample.role == "control"]
+    controls = sorted(
+        (sample for sample in samples if sample.role == "control" and sample.kind == "measured"),
+        key=lambda sample: sample.index)
+    if (len(all_controls) != 6 or len(controls) != 5
+            or [sample.index for sample in controls] != list(range(5))):
+        raise IdleCompareError("threshold freeze requires five successful measured control samples")
+    scheduled_controls = [
+        next((sample for sample in all_controls
+              if sample.kind == raw["sample_kind"] and sample.index == raw["sample_index"]), None)
+        for raw in _expected_schedule(runner["seed"], 1, 5) if raw["role"] == "control"
+    ]
+    if (any(sample is None for sample in scheduled_controls)
+            or any(left.recorded_at >= right.recorded_at
+                   for left, right in zip(scheduled_controls, scheduled_controls[1:]))):
+        raise IdleCompareError("threshold control samples violate strict schedule chronology")
+    if len({_canonical_sha256(_environment(sample)) for sample in all_controls}) != 1:
+        raise IdleCompareError("threshold control environment differs across samples")
+    if len({sample.manifest["product"]["commit"] for sample in all_controls}) != 1:
+        raise IdleCompareError("threshold control commit differs across samples")
+    if len({sample.manifest["product"]["sha256"] for sample in all_controls}) != 1:
+        raise IdleCompareError("threshold control product checksum differs across samples")
+    mutable = {(sample.manifest["device"]["power_source"],
+                sample.manifest["device"]["battery_state"],
+                sample.manifest["device"]["thermal_state"]) for sample in all_controls}
+    if len(mutable) != 1:
+        raise IdleCompareError(
+            "threshold control power, battery, and thermal state must remain stable")
+    power, battery, thermal = next(iter(mutable))
+    if (power != "external" or battery not in {"charging", "full", "not_applicable"}
+            or thermal not in {"nominal", "fair"}):
+        raise IdleCompareError(
+            "threshold freeze requires external power and nominal or fair thermal state")
+
+    thresholds: dict[str, dict[str, float]] = {}
+    for metric in METRICS:
+        values = [sample.rates[metric] for sample in controls]
+        median = statistics.median(values)
+        low, high = _bootstrap(values, _metric_seed(
+            runner["identities"]["order_seed"], f"control-threshold:{metric}"))
+        width = high - low
+        if metric == "cpu_running_ns_per_second" and median == 0 and width == 0:
+            raise IdleCompareError("zero CPU baseline is non-informative for threshold derivation")
+        relative_width = 0.0 if median == 0 else 100.0 * width / median
+        absolute = 2.0 * width
+        if metric == "wakeups_per_minute" and median == 0:
+            absolute = max(absolute, 60.0 / runner["duration_seconds"])
+        thresholds[metric] = {
+            "absolute_mde": absolute,
+            "relative_mde_percent": max(5.0, 2.0 * relative_width),
+        }
+
+    product_hashes = {sample.manifest["product"]["sha256"] for sample in controls}
+    return {
+        "schema_version": 1,
+        "tool": THRESHOLD_TOOL,
+        "sample_policy": "long",
+        "duration_seconds": runner["duration_seconds"],
+        "rationale": rationale,
+        "metrics": thresholds,
+        "control_provenance": {
+            "kind": "control_only_pilot",
+            "pilot_runner_result_sha256": runner_sha256,
+            "comparison_id": runner["identities"]["comparison_id"],
+            "order_seed": runner["identities"]["order_seed"],
+            "commit": runner["commits"]["control"],
+            "product_sha256": next(iter(product_hashes)),
+            "evidence_manifests": [
+                {"run_id": sample.manifest["run"]["id"], "sample_index": sample.index,
+                 "sha256": sample.manifest_sha256}
+                for sample in controls
+            ],
+            "derivation": {
+                "bootstrap_resamples": BOOTSTRAP_RESAMPLES,
+                "confidence_level": CONFIDENCE_LEVEL,
+                "statistic": "median_of_control_rates",
+                "relative_formula": "max(5_percent,2x_relative_ci_width)",
+                "absolute_formula": "2x_absolute_ci_width",
+                "zero_wakeup_floor": 60 / runner["duration_seconds"],
+            },
+        },
+    }
 
 
 def _bootstrap(values: list[float], seed: int) -> tuple[float, float]:
@@ -391,6 +530,27 @@ def compare(runner_path: pathlib.Path, runner: dict[str, Any], records: list[dic
         raise IdleCompareError("storage and window drift tolerances must be nonnegative")
     if (not math.isfinite(max_pair_start_gap) or max_pair_start_gap <= runner["duration_seconds"]):
         raise IdleCompareError("pair start-gap tolerance must exceed the capture duration")
+    if thresholds is not None and "control_provenance" in thresholds:
+        provenance = thresholds["control_provenance"]
+        if provenance["pilot_runner_result_sha256"] == runner_sha256:
+            raise IdleCompareError(
+                "threshold pilot and verdict must be separate paired runner results")
+        if (provenance["comparison_id"] == runner["identities"]["comparison_id"]
+                or provenance["order_seed"] == runner["identities"]["order_seed"]):
+            raise IdleCompareError(
+                "threshold pilot and verdict require distinct comparison and order identities")
+        pilot_run_ids = {
+            item["run_id"] for item in provenance["evidence_manifests"]}
+        pilot_manifest_hashes = {
+            item["sha256"] for item in provenance["evidence_manifests"]}
+        verdict_controls = [sample for sample in samples if sample.role == "control"]
+        if (pilot_run_ids & {sample.manifest["run"]["id"] for sample in verdict_controls}
+                or pilot_manifest_hashes & {
+                    sample.manifest_sha256 for sample in verdict_controls}):
+            raise IdleCompareError(
+                "threshold pilot evidence overlaps verdict control evidence")
+        if provenance["commit"] != runner["commits"]["control"]:
+            raise IdleCompareError("threshold control commit does not match the verdict control")
 
     by_key = {(sample.kind, sample.index, sample.role): sample for sample in samples}
     if len(by_key) != len(samples):
@@ -410,6 +570,13 @@ def compare(runner_path: pathlib.Path, runner: dict[str, Any], records: list[dic
                 raise IdleCompareError(f"{role} product checksum differs across samples")
     if samples and len({_canonical_sha256(_environment(sample)) for sample in samples}) != 1:
         raise IdleCompareError("control and candidate environments differ")
+    if thresholds is not None and "control_provenance" in thresholds:
+        verdict_control_hashes = {
+            sample.manifest["product"]["sha256"]
+            for sample in samples if sample.role == "control"}
+        if verdict_control_hashes != {thresholds["control_provenance"]["product_sha256"]}:
+            raise IdleCompareError(
+                "threshold control product checksum does not match the verdict control")
     mutable = {(sample.manifest["device"]["power_source"],
                 sample.manifest["device"]["battery_state"],
                 sample.manifest["device"]["thermal_state"]) for sample in samples}
@@ -585,10 +752,14 @@ def compare(runner_path: pathlib.Path, runner: dict[str, Any], records: list[dic
         "duration_seconds": runner["duration_seconds"],
         "environment_sha256": (_canonical_sha256(_environment(samples[0])) if samples else None),
         "protocol": {"thresholds_preregistered_before_candidate": "operator_attested",
-                     "limitation": "threshold_sha_not_bound_in_candidate_manifests"},
+                     "limitation": (
+                         "threshold timing remains operator attested because the threshold "
+                         "checksum is not bound in verdict manifests; a derived pilot may "
+                         "contain ignored candidate observations")},
         "threshold_artifact": (None if thresholds is None else {
             "kind": "preregistered_idle_thresholds", "sha256": threshold_sha256,
-            "rationale": thresholds["rationale"]}),
+            "rationale": thresholds["rationale"],
+            "control_provenance": thresholds.get("control_provenance")}),
         "tolerances": {"max_free_storage_drift_bytes": max_storage_drift,
                        "max_pair_start_gap_seconds": max_pair_start_gap,
                        "max_actual_window_drift_ns": max_window_drift_ns},
@@ -648,7 +819,8 @@ def _protected_paths(runner_path: pathlib.Path, threshold_path: pathlib.Path | N
     return paths
 
 
-def _publish(outputs: list[tuple[pathlib.Path, bytes]], protected: set[pathlib.Path]) -> None:
+def _publish(outputs: list[tuple[pathlib.Path, bytes]], protected: set[pathlib.Path],
+             *, exclusive: bool = False) -> None:
     resolved: list[pathlib.Path] = []
     for path, _ in outputs:
         absolute = path.resolve()
@@ -673,7 +845,13 @@ def _publish(outputs: list[tuple[pathlib.Path, bytes]], protected: set[pathlib.P
                 os.fsync(handle.fileno())
             staged.append((temporary, path))
         for temporary, path in staged:
-            os.replace(temporary, path)
+            if exclusive:
+                # A same-directory hard link publishes fully durable staged bytes
+                # atomically and fails rather than replacing a concurrently created path.
+                os.link(temporary, path)
+                temporary.unlink()
+            else:
+                os.replace(temporary, path)
             published.append(path)
         for parent in {path.parent for _, path in staged}:
             descriptor = os.open(parent, os.O_RDONLY)
@@ -691,7 +869,19 @@ def _publish(outputs: list[tuple[pathlib.Path, bytes]], protected: set[pathlib.P
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if raw and raw[0] == "freeze":
+        parser = argparse.ArgumentParser(
+            description="Freeze idle thresholds from a completed control-only pilot")
+        parser.set_defaults(command="freeze")
+        parser.add_argument("freeze", nargs="?")
+        parser.add_argument("--runner-result", required=True, type=pathlib.Path)
+        parser.add_argument("--thresholds-out", required=True, type=pathlib.Path)
+        parser.add_argument(
+            "--rationale", default="Control only pilot derived engineering guardrail")
+        return parser.parse_args(raw)
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.set_defaults(command="compare")
     parser.add_argument("--runner-result", required=True, type=pathlib.Path)
     parser.add_argument("--thresholds", type=pathlib.Path)
     parser.add_argument("--thresholds-sha256")
@@ -700,12 +890,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-actual-window-drift-ms", required=True, type=float)
     parser.add_argument("--json-out", type=pathlib.Path)
     parser.add_argument("--csv-out", type=pathlib.Path)
-    return parser.parse_args(argv)
+    return parser.parse_args(raw)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
+        if args.command == "freeze":
+            runner, records, samples, runner_sha256 = load_runner(args.runner_result)
+            artifact = freeze_thresholds(
+                runner, records, samples, runner_sha256=runner_sha256,
+                rationale=args.rationale)
+            payload = (json.dumps(artifact, indent=2, sort_keys=True) + "\n").encode()
+            _publish([(args.thresholds_out, payload)],
+                     _protected_paths(args.runner_result, None, samples), exclusive=True)
+            digest = hashlib.sha256(payload).hexdigest()
+            if load_thresholds(
+                    args.thresholds_out, digest,
+                    duration_seconds=runner["duration_seconds"]) != artifact:
+                raise IdleCompareError("published idle thresholds failed exact reload validation")
+            print(f"idle thresholds frozen: {args.thresholds_out} sha256={digest}")
+            return 0
         if (args.thresholds is None) != (args.thresholds_sha256 is None):
             raise IdleCompareError("--thresholds and --thresholds-sha256 must be supplied together")
         if args.json_out is None and args.csv_out is None:
