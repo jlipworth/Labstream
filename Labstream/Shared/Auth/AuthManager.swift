@@ -74,6 +74,12 @@ final class AuthManager {
     /// it must never receive credentials. `AppRuntime` wires the download manager here.
     @ObservationIgnored var onBackendWillSignOut: ((MediaBackendKind) -> Void)?
 
+    /// Complete saved authenticated profiles, used by Settings/menu presentation. Reading this
+    /// never hydrates a session or changes the selected backend.
+    var savedAuthenticatedBackends: [MediaBackendKind] {
+        keychain.mediaBackendCredentialSnapshot.savedAuthenticatedBackends
+    }
+
     /// Poll cadence and ceiling for the PIN flow.
     private let pollInterval: Duration = .seconds(1)
     private let pollTimeout: Duration = .seconds(300)
@@ -1453,19 +1459,66 @@ final class AuthManager {
         state = .idle
     }
 
+    /// Coordinated local sign-out for every backend. Remote revocation remains best effort and
+    /// cannot prevent credential deletion in another lane. Downloads are only paused; their
+    /// records and files remain recoverable after the corresponding backend is authenticated.
+    func signOutAll() {
+        cancelPendingLogin()
+        let affectedBackends = savedAuthenticatedBackends
+        let jellyfinSnapshot = readJellyfinSessionSnapshot()
+        let embySnapshot = readEmbySessionSnapshot()
+
+        appModel.isSwitchingBackend = false
+        for backend in affectedBackends {
+            // Preserve the single-backend lifecycle ordering: credential-bearing work stops
+            // while that backend's runtime session is still available.
+            onBackendWillSignOut?(backend)
+            switch backend {
+            case .plex:
+                break
+            case .jellyfin:
+                revokeJellyfinSessionIfPossible(snapshot: jellyfinSnapshot)
+            case .emby:
+                revokeEmbySessionIfPossible(snapshot: embySnapshot)
+            }
+        }
+
+        // Clear every lane, not only the complete profiles listed in the dialog. This also
+        // retires partial credential remnants and makes repeated invocation idempotent.
+        signOutPlex()
+        signOutJellyfin()
+        signOutEmby()
+        if !keychain.resetSelectedBackend() {
+            _ = keychain.saveSelectedBackend(.plex)
+        }
+        appModel.activeBackend = .plex
+        state = .idle
+
+        // Shared system integration is intentionally updated once after the coordinated clear.
+        SpotlightIndexer.deleteAll()
+    }
+
     /// Remote revocation is deliberately best effort. Capture the live values before local
     /// clearing, then always complete the local sign-out synchronously from the caller's view.
     private func revokeJellyfinSessionIfPossible() {
-        guard let server = appModel.jellyfinServerBaseURL,
-              let token = appModel.jellyfinAccessToken else { return }
+        revokeJellyfinSessionIfPossible(snapshot: nil)
+    }
+
+    private func revokeJellyfinSessionIfPossible(snapshot: JellyfinSessionSnapshot?) {
+        guard let server = snapshot?.server ?? appModel.jellyfinServerBaseURL,
+              let token = snapshot?.token ?? appModel.jellyfinAccessToken else { return }
         let request = JellyfinAuth.logoutRequest(server: server, token: token, identity: jellyfinIdentity)
         Task { _ = try? await Self.mediaBrowserAuthSession.data(for: request) }
     }
 
     private func revokeEmbySessionIfPossible() {
-        guard let server = appModel.embyServerBaseURL,
-              let token = appModel.embyAccessToken,
-              let userID = appModel.embyUserID,
+        revokeEmbySessionIfPossible(snapshot: nil)
+    }
+
+    private func revokeEmbySessionIfPossible(snapshot: EmbySessionSnapshot?) {
+        guard let server = snapshot?.server ?? appModel.embyServerBaseURL,
+              let token = snapshot?.token ?? appModel.embyAccessToken,
+              let userID = snapshot?.userID ?? appModel.embyUserID,
               let request = try? EmbyAuth.logoutRequest(server: server,
                                                         token: token,
                                                         identity: embyIdentity,

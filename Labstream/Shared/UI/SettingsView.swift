@@ -24,6 +24,7 @@ struct SettingsView: View {
     @State private var selectingPlexServerID: String?
     @State private var checkingPlexServers = false
     @State private var confirmingSignOut = false
+    @State private var confirmingSignOutAll = false
     @State private var confirmingDifferentServerSignIn: MediaBackendKind?
     @State private var confirmingReset = false
     #if !os(tvOS)
@@ -1110,11 +1111,53 @@ struct SettingsView: View {
             } message: {
                 Text(signOutConfirmationMessage)
             }
+
+            if MediaBackendSignOutAllPresentation.shouldOfferAction(
+                for: authManager.savedAuthenticatedBackends
+            ) {
+                Button(role: .destructive) {
+                    confirmingSignOutAll = true
+                } label: {
+                    Label("Sign Out of All Backends",
+                          systemImage: "rectangle.portrait.and.arrow.right.fill")
+                }
+                .confirmationDialog(
+                    "Sign out of all backends?",
+                    isPresented: $confirmingSignOutAll,
+                    titleVisibility: .visible
+                ) {
+                    Button("Sign Out of All", role: .destructive) {
+                        handleSignOutAllConfirmation(.confirm)
+                    }
+                    Button("Cancel", role: .cancel) {
+                        handleSignOutAllConfirmation(.cancel)
+                    }
+                } message: {
+                    Text(signOutAllConfirmationMessage)
+                }
+            }
         }
     }
 
     private func signOutAndHandoffIfNeeded() {
         authManager.signOut()
+        handoffRequiredSignInToMainWindow()
+    }
+
+    private var signOutAllConfirmationMessage: String {
+        let affected = MediaBackendSignOutAllPresentation.affectedBackendsDescription(
+            authManager.savedAuthenticatedBackends
+        )
+        return "This signs out of \(affected). Downloaded media will remain on this device and can be used again after signing back in."
+    }
+
+    private func handleSignOutAllConfirmation(
+        _ decision: MediaBackendSignOutAllPresentation.ConfirmationDecision
+    ) {
+        guard MediaBackendSignOutAllPresentation.effect(for: decision) == .signOutAll else {
+            return
+        }
+        authManager.signOutAll()
         handoffRequiredSignInToMainWindow()
     }
 

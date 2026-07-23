@@ -1,3 +1,4 @@
+import PMSKit
 import SwiftUI
 
 @main
@@ -60,10 +61,17 @@ struct LabstreamMac: App {
                 }
 
                 CommandMenu("Account") {
-                    Button("Sign Out") {
+                    Button("Sign Out of \(runtime.appModel.activeBackend.displayName)") {
                         MacMainWindowController.shared.issue(.requestSignOut)
                     }
                         .disabled(!runtime.appModel.isAuthenticated)
+                    if MediaBackendSignOutAllPresentation.shouldOfferAction(
+                        for: runtime.authManager.savedAuthenticatedBackends
+                    ) {
+                        Button("Sign Out of All Backends") {
+                            MacMainWindowController.shared.issue(.requestSignOutAll)
+                        }
+                    }
                 }
             }
         }

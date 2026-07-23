@@ -76,6 +76,40 @@ struct DownloadSignOutPauseTests {
         #expect(store.record(for: plex.key)?.status == .downloading)
     }
 
+    @Test func coordinatedSignOutPausesEveryBackendWithoutDeletingRecordsOrFiles() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "download-signout-all-preserve-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = DownloadStore(baseDirectory: directory)
+        let rows = try MediaBackendKind.allCases.map { backend in
+            let kind = DownloadBackendKind(rawValue: backend.rawValue)!
+            return try #require(makeRecord(
+                store: store, ratingKey: "\(backend.rawValue):item", backend: kind))
+        }
+        for row in rows {
+            #expect(store.createAttemptOwnedRecord(row.record, attemptID: row.key.attemptID)
+                    == .committed(row.key))
+            try Data("download".utf8).write(to: row.record.localURL)
+        }
+
+        let model = AppModel(identity: PlatformClientIdentity.make(
+            clientIdentifier: "download-signout-all"))
+        let session = BackgroundDownloadSession(store: store, protocolClasses: [])
+        let manager = DownloadManager(appModel: model, store: store, session: session,
+                                      registerForBackgroundEvents: false)
+        defer { session.invalidateInjectedSessionForTesting() }
+
+        MediaBackendKind.allCases.forEach(manager.pauseDownloadsForBackendSignOut)
+
+        #expect(store.records.count == rows.count)
+        for row in rows {
+            #expect(store.record(for: row.key)?.status == .paused)
+            #expect(FileManager.default.fileExists(atPath: row.record.localURL.path))
+        }
+    }
+
     private func makeRecord(store: DownloadStore, ratingKey: String,
                             backend: DownloadBackendKind,
                             attemptSuffix: String? = nil) -> (key: DownloadAttemptKey, record: DownloadRecord)? {

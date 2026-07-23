@@ -53,6 +53,7 @@ final class MacMainWindowController: NSObject {
         case focusSearch
         case selectOffline
         case requestSignOut
+        case requestSignOutAll
     }
 
     struct CommandRequest: Equatable, Identifiable {

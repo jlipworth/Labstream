@@ -137,6 +137,79 @@ struct AuthSecureStorageTests {
         #expect(model.backendSession(for: .plex) == nil)
     }
 
+    @Test func signOutAllClearsEveryCredentialAndRuntimeLaneAfterCallbacks() throws {
+        let store = KeychainStore(
+            service: "com.visionplay.tests.signout-all.\(UUID().uuidString)",
+            synchronizesPlexToken: false)
+        #expect(store.saveSelectedBackend(.emby))
+        #expect(store.saveToken("plex-token"))
+        #expect(store.saveJellyfinSession(serverURLString: "https://jellyfin.invalid",
+                                         accessToken: "jellyfin-token",
+                                         userID: "jellyfin-user",
+                                         serverID: "jellyfin-server"))
+        #expect(store.saveEmbySession(serverURLString: "https://emby.invalid",
+                                     accessToken: "emby-token",
+                                     userID: "emby-user",
+                                     serverID: "emby-server"))
+        let model = AppModel(
+            identity: PlatformClientIdentity.make(clientIdentifier: "signout-all"),
+            activeBackend: .emby,
+            token: "plex-token")
+        model.serverBaseURL = URL(string: "https://plex.invalid")
+        model.serverToken = "plex-server-token"
+        model.applyMediaBrowserSession(
+            backend: .jellyfin,
+            server: URL(string: "https://jellyfin.invalid")!,
+            token: "jellyfin-token",
+            userID: "jellyfin-user",
+            serverID: "jellyfin-server")
+        model.applyMediaBrowserSession(
+            backend: .emby,
+            server: URL(string: "https://emby.invalid")!,
+            token: "emby-token",
+            userID: "emby-user",
+            serverID: "emby-server")
+        let manager = AuthManager(appModel: model, keychain: store)
+        var callbacks: [MediaBackendKind] = []
+        manager.onBackendWillSignOut = { backend in
+            #expect(model.backendSession(for: backend) != nil)
+            callbacks.append(backend)
+        }
+
+        manager.signOutAll()
+
+        #expect(callbacks == [.plex, .jellyfin, .emby])
+        #expect(manager.savedAuthenticatedBackends.isEmpty)
+        #expect(MediaBackendKind.allCases.allSatisfy { model.backendSession(for: $0) == nil })
+        #expect(model.activeBackend == .plex)
+        #expect(store.selectedBackend == .plex)
+        cleanupBackendKeys(store)
+    }
+
+    @Test func signOutAllDeletesPartialArtifactsAndIsRepeatable() {
+        let store = KeychainStore(
+            service: "com.visionplay.tests.signout-all-partial.\(UUID().uuidString)",
+            synchronizesPlexToken: false)
+        store.jellyfinServerURLString = "https://jellyfin.invalid"
+        store.jellyfinUserID = "orphan-user"
+        let model = AppModel(
+            identity: PlatformClientIdentity.make(clientIdentifier: "signout-all-partial"),
+            activeBackend: .jellyfin)
+        let manager = AuthManager(appModel: model, keychain: store)
+        var callbacks: [MediaBackendKind] = []
+        manager.onBackendWillSignOut = { callbacks.append($0) }
+
+        manager.signOutAll()
+        manager.signOutAll()
+
+        #expect(callbacks.isEmpty)
+        #expect(store.jellyfinServerURLString == nil)
+        #expect(store.jellyfinUserID == nil)
+        #expect(manager.savedAuthenticatedBackends.isEmpty)
+        #expect(model.activeBackend == .plex)
+        cleanupBackendKeys(store)
+    }
+
     @Test func clientIdentityWriteFailureStillBuildsRuntimeForBackgroundDrain() throws {
         let store = KeychainStore(
             service: "com.visionplay.tests.identity.\(UUID().uuidString)",
