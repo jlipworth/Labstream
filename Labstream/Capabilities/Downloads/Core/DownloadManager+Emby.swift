@@ -201,14 +201,16 @@ extension DownloadManager {
         }
 
         // The resolution label built above came from the item's PRIMARY media — wrong for a
-        // server-prepared version, which downloads the CONVERTED source (e.g. a 720p copy of a 4K
-        // original). Re-label from the negotiated source's real height so the caption shows the
-        // ACTUAL downloaded resolution, not the original's. Only for server-prepared/existing
-        // versions; a genuine original keeps its primary-media label.
-        if DownloadChoicePolicy.isServerPreparedVersion(for: choice),
-           let correctedResolution = DownloadResolutionLabel.label(width: nil, height: decision.height) {
-            metadata.resolutionLabel = correctedResolution
-        }
+        // server-prepared version, which downloads the CONVERTED source (e.g. a 1080p-class
+        // 1920x800 copy of a 4K original). Persist the negotiated source's width-aware canonical
+        // label so the existing-version menu and every Offline-row phase classify identical facts
+        // identically. Genuine originals retain their primary-media label.
+        metadata.resolutionLabel = EmbyDownloadResolutionPolicy.persistedLabel(
+            choice: choice,
+            currentLabel: metadata.resolutionLabel,
+            negotiatedWidth: decision.width,
+            negotiatedHeight: decision.height
+        )
 
         // Three-way route detection against the AUTHORITATIVE negotiated verdict:
         //   .original          ⇔ negotiated DirectPlay AND locally playable container
