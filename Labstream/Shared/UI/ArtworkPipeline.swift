@@ -377,33 +377,6 @@ enum ArtworkTransportPolicy {
     }
 }
 
-/// Thread-safe, one-time construction for the app-lifetime artwork transport.
-///
-/// `ArtworkPipelineCore` can start distinct-origin requests concurrently on detached tasks, so a
-/// plain Swift `lazy` property would race. Keep the unchecked conformance contained here: every
-/// access to the sole mutable field is protected by `lock`, and the lock is released before any
-/// request suspends. The retained session preserves connection reuse after the first remote fetch.
-private final class LazyArtworkURLSession: @unchecked Sendable {
-    typealias Factory = @Sendable () -> URLSession
-
-    private let lock = NSLock()
-    private let factory: Factory
-    private var storedSession: URLSession?
-
-    init(factory: @escaping Factory) {
-        self.factory = factory
-    }
-
-    func session() -> URLSession {
-        lock.lock()
-        defer { lock.unlock() }
-        if let storedSession { return storedSession }
-        let session = factory()
-        storedSession = session
-        return session
-    }
-}
-
 /// App-lifetime facade over the actor-owned artwork scheduler and memory caches.
 ///
 /// There is deliberately still no persistent cache. Exact requests join only when their backend,
@@ -413,17 +386,10 @@ final class ArtworkPipeline: Sendable {
     typealias Transport = @Sendable (ArtworkRequestDescriptor) async throws -> (Data, URLResponse)
     private let core: ArtworkPipelineCore
 
-    convenience init(configuration: ArtworkPipelineConfiguration = ArtworkPipelineConfiguration()) {
-        self.init(configuration: configuration, makeSession: {
-            URLSession(configuration: ArtworkTransportPolicy.nonpersistentConfiguration())
-        })
-    }
-
-    private init(configuration: ArtworkPipelineConfiguration,
-                 makeSession: @escaping LazyArtworkURLSession.Factory) {
-        let sessionProvider = LazyArtworkURLSession(factory: makeSession)
+    init(configuration: ArtworkPipelineConfiguration = ArtworkPipelineConfiguration()) {
+        let session = URLSession(configuration: ArtworkTransportPolicy.nonpersistentConfiguration())
         core = ArtworkPipelineCore(configuration: configuration) { descriptor in
-            try await descriptor.remoteData(using: sessionProvider.session())
+            try await descriptor.remoteData(using: session)
         }
     }
 
@@ -435,14 +401,6 @@ final class ArtworkPipeline: Sendable {
         core = ArtworkPipelineCore(configuration: configuration) { descriptor in
             try await descriptor.remoteData(using: session)
         }
-    }
-
-    /// Deterministic seam for proving that production-style transport construction is lazy and
-    /// race-free. Tests supply a nonpersistent stub session; shipping code cannot replace the
-    /// privacy-safe factory above.
-    convenience init(configuration: ArtworkPipelineConfiguration = ArtworkPipelineConfiguration(),
-                     sessionFactory: @escaping @Sendable () -> URLSession) {
-        self.init(configuration: configuration, makeSession: sessionFactory)
     }
 
     init(configuration: ArtworkPipelineConfiguration = ArtworkPipelineConfiguration(),
