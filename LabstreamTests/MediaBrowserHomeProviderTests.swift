@@ -71,6 +71,15 @@ struct MediaBrowserHomeProviderTests {
             .latest(parentID: "library-7", itemTypes: "Movie", limit: 20),
             .latest(parentID: "library-8", itemTypes: "Movie", limit: 20),
         ])
+        #expect(plan.entries[3].title == "Recently Added TV Shows")
+        #expect(plan.entries[3].destination.title == "Recently Added TV Shows")
+        #expect(plan.entries[3].destination.query.usesHomeEpisodeArtworkPolicy)
+        #expect(!plan.entries[2].destination.query.usesHomeEpisodeArtworkPolicy)
+        #expect(!RailViewAllQuery.mediaBrowserSearch(
+            text: "episode",
+            parentID: "library-2",
+            itemTypes: "Episode"
+        ).usesHomeEpisodeArtworkPolicy)
     }
 
     @Test func duplicateLibraryIDsDoNotConsumeLatestRailCap() {
@@ -241,7 +250,7 @@ struct MediaBrowserHomeProviderTests {
         #expect(load.pendingKeys.isEmpty)
         #expect(load.failedKeys == [.latest(libraryID: "movies")])
         #expect(load.rails.map(\.id) == ["continue-watching", "latest-shows"])
-        #expect(load.rails.map(\.title) == ["Continue Watching", "Recently Added Shows"])
+        #expect(load.rails.map(\.title) == ["Continue Watching", "Recently Added TV Shows"])
         #expect(load.rails.map { $0.items.map(\.ratingKey) } == [["resume"], ["latest-shows"]])
 
         let resumeDestination = try #require(load.rails[0].destination)
@@ -251,7 +260,7 @@ struct MediaBrowserHomeProviderTests {
         #expect(resumeDestination.query == .mediaBrowserResume(parentID: nil))
 
         let latestDestination = try #require(load.rails[1].destination)
-        #expect(latestDestination.title == "Recently Added Shows")
+        #expect(latestDestination.title == "Recently Added TV Shows")
         #expect(latestDestination.backend == .emby)
         #expect(latestDestination.sessionIdentity == "session")
         #expect(latestDestination.query == .mediaBrowserRecentlyAdded(parentID: "shows",

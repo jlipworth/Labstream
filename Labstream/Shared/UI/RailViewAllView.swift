@@ -49,9 +49,7 @@ struct RailViewAllView: View {
                           spacing: metrics?.rowSpacing ?? DS.Space.xxl) {
                     ForEach(Array(model.items.enumerated()), id: \.element.ratingKey) { index, item in
                         NavigationLink(value: item) {
-                            PosterCell(item: item,
-                                       width: metrics.map { CGFloat($0.posterWidth) },
-                                       labelStyle: metrics == nil ? .standard : .denseLibrary)
+                            viewAllCell(item: item, metrics: metrics)
                         }
                             .cardLink()
                             .videoCardContextMenu(for: item)
@@ -86,5 +84,35 @@ struct RailViewAllView: View {
         return Array(repeating: GridItem(.fixed(CGFloat(metrics.posterWidth)),
                                          spacing: CGFloat(metrics.gutter)),
                      count: metrics.columnCount)
+    }
+
+    @ViewBuilder
+    private func viewAllCell(item: MediaItem,
+                             metrics: MobileViewAllGridLayout.Metrics?) -> some View {
+        let width = metrics.map { CGFloat($0.posterWidth) }
+        let labelStyle: PosterCellLabelStyle = metrics == nil ? .standard : .denseLibrary
+        if destination.query.usesHomeEpisodeArtworkPolicy, item.kind == .episode {
+            let selection = HomeRailArtworkPolicy.selection(for: item)
+            PosterCell(item: item,
+                       width: width,
+                       artworkPath: selection.path,
+                       aspectOverride: selection.presentation.aspectRatio,
+                       labelStyle: labelStyle)
+        } else {
+            PosterCell(item: item, width: width, labelStyle: labelStyle)
+        }
+    }
+}
+
+extension RailViewAllQuery {
+    /// A Recently Added TV destination is the expanded form of the Home rail, so its episode
+    /// cards must keep the same series/season artwork selection and shape. Other View All
+    /// destinations retain their established generic poster/episode behavior.
+    var usesHomeEpisodeArtworkPolicy: Bool {
+        guard case .mediaBrowserRecentlyAdded(_, let itemTypes) = self else { return false }
+        return itemTypes
+            .split(separator: ",")
+            .contains { $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                .caseInsensitiveCompare("Episode") == .orderedSame }
     }
 }

@@ -78,6 +78,56 @@ struct PlaybackTransportPresentationPolicyTests {
         #expect(resolved(source: .remote, waiting: false) == .none)
     }
 
+    @Test("A transient Offline initial wait never publishes an overlay")
+    @MainActor
+    func transientOfflineInitialWait() async throws {
+        let state = PlaybackTransportStatusState(initialPreparationDelay: .milliseconds(20))
+        state.set(.preparingLocal(isPaused: false, hasObservedPlayback: false))
+        #expect(state.status == .none)
+
+        state.set(.none)
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(state.status == .none)
+    }
+
+    @Test("A sustained Offline initial wait publishes preparation after the threshold")
+    @MainActor
+    func sustainedOfflineInitialWait() async throws {
+        let state = PlaybackTransportStatusState(initialPreparationDelay: .milliseconds(20))
+        state.set(.preparingLocal(isPaused: false, hasObservedPlayback: false))
+        #expect(state.status == .none)
+
+        try await Task.sleep(for: .milliseconds(40))
+        #expect(state.status == .preparingLocal(
+            isPaused: false,
+            hasObservedPlayback: false
+        ))
+
+        state.set(.preparingLocal(isPaused: false, hasObservedPlayback: false))
+        #expect(state.status == .preparingLocal(
+            isPaused: false,
+            hasObservedPlayback: false
+        ))
+    }
+
+    @Test("Remote, post-start local, reconnect, and failure statuses remain immediate")
+    @MainActor
+    func immediateStatuses() {
+        let state = PlaybackTransportStatusState(initialPreparationDelay: .seconds(60))
+
+        state.set(.buffering)
+        #expect(state.status == .buffering)
+        state.set(.preparingLocal(isPaused: false, hasObservedPlayback: true))
+        #expect(state.status == .preparingLocal(
+            isPaused: false,
+            hasObservedPlayback: true
+        ))
+        state.set(.reconnecting)
+        #expect(state.status == .reconnecting)
+        state.set(.failed(message: "Try again."))
+        #expect(state.status == .failed(message: "Try again."))
+    }
+
     private func resolved(
         source: PlaybackTransportPresentationPolicy.Source,
         waiting: Bool,
