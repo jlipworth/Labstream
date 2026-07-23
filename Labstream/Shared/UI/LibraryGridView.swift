@@ -1054,9 +1054,16 @@ private struct LibraryGridSlot: View {
         Group {
             if let item {
                 NavigationLink(value: item) {
+                    #if DEBUG || PERFORMANCE_AUDIT
+                    PosterCell(item: item,
+                               width: width,
+                               labelStyle: usesDenseLabels ? .denseLibrary : .standard,
+                               artworkMeasurementRole: artworkMeasurementRole)
+                    #else
                     PosterCell(item: item,
                                width: width,
                                labelStyle: usesDenseLabels ? .denseLibrary : .standard)
+                    #endif
                 }
                 .cardLink()
                 .videoCardContextMenu(for: item)
@@ -1069,6 +1076,12 @@ private struct LibraryGridSlot: View {
             }
         }
     }
+
+    #if DEBUG || PERFORMANCE_AUDIT
+    private var artworkMeasurementRole: PosterArtworkMeasurementRole? {
+        index == 0 ? .coldFirstPoster : nil
+    }
+    #endif
 }
 
 private extension View {

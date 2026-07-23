@@ -248,7 +248,7 @@ private final class AccessibilityDriver {
             try waitForIdentifier("performance.mac.search-results.first-group", stage: "search_loaded")
         case .artwork:
             try openCatalog()
-            try waitForIdentifier("performance.mac.library-grid.first-item", stage: "artwork_requested")
+            try waitForLoadedArtwork()
         }
     }
 
@@ -410,6 +410,14 @@ private final class AccessibilityDriver {
                     kAXRowRole as String], attribute: .identifier, values: [identifier],
             requiresEnabled: false))
         completedStage = stage
+    }
+
+    private func waitForLoadedArtwork() throws {
+        _ = try requiredElement(Query(
+            roles: [kAXImageRole as String], attribute: .identifier,
+            values: ["performance.mac.library-grid.first-poster.loaded"],
+            requiresEnabled: false))
+        completedStage = "artwork_loaded"
     }
 
     private func press(_ query: Query, fallback: Query? = nil, stage: String) throws {

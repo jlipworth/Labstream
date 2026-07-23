@@ -68,7 +68,8 @@ class PerfLogSummaryTests(unittest.TestCase):
             ("perf.span phase=library_grid.page backend=Plex result=success duration_ms=7 "
              "item_count=200 page=3 page_size=200 attempt=1", "library_grid.page"),
             ("perf.span phase=artwork.load backend=Emby result=success duration_ms=8 attempts=1 bytes=100 "
-             "status=200 width=100 height=150 pixel_width=200 pixel_height=300 delivery=inflight_join",
+             "status=200 width=100 height=150 pixel_width=200 pixel_height=300 delivery=inflight_join "
+             "scoped=1 milestone=library_first_poster",
              "artwork.load"),
         )
         for line, phase in records:
@@ -223,7 +224,8 @@ class PerfLogSummaryTests(unittest.TestCase):
     def test_json_cli_is_bound_to_exact_raw_artifact_and_capture_nonce(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
-            raw_dir = root / "raw"; raw_dir.mkdir()
+            raw_dir = root / "raw"
+            raw_dir.mkdir()
             raw = raw_dir / "artifact-0001.log"
             manifest = root / "manifest.json"
             manifest_data = {

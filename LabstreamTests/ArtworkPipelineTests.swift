@@ -919,6 +919,11 @@ struct ArtworkPipelineTests {
         #expect(poster.contains("@Environment(\\.displayScale)"))
         #expect(poster.contains("artworkPipeline.fetch(descriptor)"))
         #expect(poster.contains("PosterLoadPublicationPolicy.canPublish"))
+        #expect(poster.contains("ArtworkMeasurementTargetGate.processLifetime.claim()"))
+        #expect(poster.contains(
+            "accessibilityIdentifier(\"performance.mac.library-grid.first-poster.loaded\")"))
+        #expect(poster.contains("fields[\"scoped\"] = 1"))
+        #expect(poster.contains("fields[\"milestone\"] = \"library_first_poster\""))
         #expect(poster.contains("for attempt in 0..<3"))
         #expect(poster.contains("300 << attempt"))
         #expect(poster.contains(".easeOut(duration: 0.35)"))
@@ -931,6 +936,19 @@ struct ArtworkPipelineTests {
             of: "if artworkDescriptor == nil || artworkPipeline == nil"))
         let loadedBranch = try #require(poster.range(of: "} else if let loaded"))
         #expect(unavailableBranch.lowerBound < loadedBranch.lowerBound)
+
+        let libraryGrid = try String(contentsOf: root.appendingPathComponent(
+            "Labstream/Shared/UI/LibraryGridView.swift"), encoding: .utf8)
+        #expect(libraryGrid.contains("artworkMeasurementRole: artworkMeasurementRole"))
+        #expect(libraryGrid.contains("index == 0 ? .coldFirstPoster : nil"))
+        #expect(libraryGrid.contains("#if DEBUG || PERFORMANCE_AUDIT"))
+
+        let claim = try #require(poster.range(of:
+            "ArtworkMeasurementTargetGate.processLifetime.claim()"))
+        let spanStart = try #require(poster.range(of:
+            "PerformanceInstrumentation.begin(.artworkLoad"))
+        #expect(claim.lowerBound < spanStart.lowerBound)
+        #expect(poster.contains("span.end(result: Task.isCancelled ? \"cancelled\" : \"failure\""))
     }
 
     @Test func posterPublicationRejectsSignOutPathRemovalStaleFailureAndPipelineReplacement() throws {

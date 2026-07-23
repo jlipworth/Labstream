@@ -45,6 +45,7 @@ PHASE_FIELDS: dict[str, set[str]] = {
     "playback.item_load": {"path_mode", "duration_seconds"},
     "artwork.load": {
         "attempts", "bytes", "status", "width", "height", "pixel_width", "pixel_height", "delivery",
+        "scoped", "milestone",
     },
 }
 MEDIA_BACKENDS = {"Plex", "Jellyfin", "Emby"}
@@ -107,7 +108,9 @@ INTEGER_FIELDS = {
     "alphabet_count", "page_count", "media_count", "duration_seconds", "attempts", "bytes",
     "status", "width", "height", "pixel_width", "pixel_height",
 }
-BOOLEAN_FIELDS = {"content_present", "downloads_capable", "restored", "degraded", "swr_refresh"}
+BOOLEAN_FIELDS = {
+    "content_present", "downloads_capable", "restored", "degraded", "swr_refresh", "scoped",
+}
 ENUM_FIELDS = {
     "path_mode": {"local_file", "remote_stream", "plex_stream"},
     "play_method": {"directPlay", "directStream", "transcode"},
@@ -116,6 +119,7 @@ ENUM_FIELDS = {
     "delivery": {
         "network_decode", "compressed_cache_decode", "decoded_cache", "inflight_join", "local_file",
     },
+    "milestone": {"library_first_poster"},
 }
 CORE_FIELDS = {"phase", "backend", "result", "duration_ms"}
 

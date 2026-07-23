@@ -28,6 +28,10 @@ struct PosterImage: View {
     /// for video posters; music cells pass a `music.*` glyph so an art-less artist/album
     /// reads as "no cover" rather than "broken" (#111).
     var placeholderSymbol: String = "film"
+    #if DEBUG || PERFORMANCE_AUDIT
+    /// Narrow audit role supplied only by the stable first library-grid slot.
+    var measurementRole: PosterArtworkMeasurementRole?
+    #endif
 
     @Environment(AppModel.self) private var appModel
     @Environment(\.artworkPipeline) private var artworkPipeline
@@ -35,6 +39,9 @@ struct PosterImage: View {
 
     @State private var loaded: Image?
     @State private var failed = false
+    #if DEBUG || PERFORMANCE_AUDIT
+    @State private var loadedMeasurementMilestone = false
+    #endif
 
     var body: some View {
         Group {
@@ -47,6 +54,9 @@ struct PosterImage: View {
                     .resizable()
                     .aspectRatio(contentMode: .fill)
                     .transition(.opacity)
+                    #if DEBUG || PERFORMANCE_AUDIT
+                    .macLoadedArtworkMeasurementMilestone(loadedMeasurementMilestone)
+                    #endif
             } else if failed {
                 placeholder
             } else {
@@ -70,9 +80,18 @@ struct PosterImage: View {
     private func load() async {
         loaded = nil
         failed = false
+        #if DEBUG || PERFORMANCE_AUDIT
+        loadedMeasurementMilestone = false
+        #endif
         guard let descriptor = artworkDescriptor,
               let artworkPipeline else { return }
 
+        #if DEBUG || PERFORMANCE_AUDIT
+        let claimedMeasurementTarget = measurementRole == .coldFirstPoster
+            && ArtworkMeasurementTargetGate.processLifetime.claim()
+        #else
+        let claimedMeasurementTarget = false
+        #endif
         var attempts = 0
         var completed = false
         let span = PerformanceInstrumentation.begin(.artworkLoad,
@@ -85,8 +104,13 @@ struct PosterImage: View {
                                                      ])
         defer {
             if !completed {
+                var fields: [String: Any] = ["attempts": attempts]
+                if claimedMeasurementTarget {
+                    fields["scoped"] = 1
+                    fields["milestone"] = "library_first_poster"
+                }
                 span.end(result: Task.isCancelled ? "cancelled" : "failure",
-                         fields: ["attempts": attempts])
+                         fields: fields)
             }
         }
 
@@ -107,13 +131,10 @@ struct PosterImage: View {
                     currentIdentity: artworkDescriptor?.taskIdentity,
                     expectedPipeline: artworkPipeline,
                     currentPipeline: self.artworkPipeline,
-                    isCancelled: Task.isCancelled) else { return }
-                withAnimation(.easeOut(duration: 0.35)) {
-                    loaded = Image(decodedImage: response.image)
-                }
+                  isCancelled: Task.isCancelled) else { return }
                 completed = true
                 #if DEBUG || PERFORMANCE_AUDIT
-                span.end(fields: [
+                var fields: [String: Any] = [
                     "attempts": attempts,
                     "bytes": response.byteCount,
                     "status": response.statusCode,
@@ -122,7 +143,16 @@ struct PosterImage: View {
                     "pixel_width": pixelDimensions.width,
                     "pixel_height": pixelDimensions.height,
                     "delivery": response.delivery.rawValue,
-                ])
+                ]
+                if claimedMeasurementTarget {
+                    fields["scoped"] = 1
+                    fields["milestone"] = "library_first_poster"
+                }
+                span.end(fields: fields)
+                withAnimation(.easeOut(duration: 0.35)) {
+                    loaded = Image(decodedImage: response.image)
+                    loadedMeasurementMilestone = claimedMeasurementTarget
+                }
                 #else
                 span.end(fields: [
                     "attempts": attempts,
@@ -133,6 +163,9 @@ struct PosterImage: View {
                     "pixel_width": pixelDimensions.width,
                     "pixel_height": pixelDimensions.height,
                 ])
+                withAnimation(.easeOut(duration: 0.35)) {
+                    loaded = Image(decodedImage: response.image)
+                }
                 #endif
                 return
             } catch is CancellationError {
@@ -197,10 +230,49 @@ struct PosterImage: View {
     }
 }
 
+#if DEBUG || PERFORMANCE_AUDIT
+private extension View {
+    /// This literal exists only on the decoded Image branch after the process-lifetime target
+    /// gate succeeds. Skeletons, placeholders, failures, and later loads expose no marker.
+    @ViewBuilder
+    func macLoadedArtworkMeasurementMilestone(_ isTarget: Bool) -> some View {
+        #if os(macOS)
+        if isTarget {
+            accessibilityIdentifier("performance.mac.library-grid.first-poster.loaded")
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
+}
+#endif
+
 private struct PosterLoadKey: Hashable {
     let identity: ArtworkTaskIdentity?
     let pipelineIdentity: ObjectIdentifier?
 }
+
+/// Thread-safe process-lifetime admission for the single cold first-poster attempt. Claiming before
+/// the span starts labels that attempt's success, failure, or cancellation consistently and prevents
+/// a recreated first-slot view from hiding an earlier terminal result behind a later success.
+#if DEBUG || PERFORMANCE_AUDIT
+final class ArtworkMeasurementTargetGate: @unchecked Sendable {
+    static let processLifetime = ArtworkMeasurementTargetGate()
+
+    private let lock = NSLock()
+    private var claimed = false
+
+    func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !claimed else { return false }
+        claimed = true
+        return true
+    }
+}
+#endif
 
 /// Pure publication fence shared by success and terminal failure. Cancellation is advisory for
 /// transports, so publication also requires the exact current descriptor and facade instance.
