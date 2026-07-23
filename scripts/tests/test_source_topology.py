@@ -33,8 +33,11 @@ def production_root_records(section: str) -> dict[str, tuple[str, str]]:
             line,
         )
         if match:
-            identifier, name, path = match.groups()
-            records[name] = (identifier, path)
+            identifier, _comment, path = match.groups()
+            # Key by the path basename, not the /* comment */: Xcode's canonical
+            # writer rewrites comments to full paths (e.g. "Labstream/Shared"),
+            # while the trailing path component is the stable logical name.
+            records[path.rstrip("/").rsplit("/", 1)[-1]] = (identifier, path)
     return records
 
 
