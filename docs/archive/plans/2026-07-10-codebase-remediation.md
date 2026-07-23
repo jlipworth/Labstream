@@ -1,6 +1,7 @@
 # Codebase remediation plan
 
-Status: **active implementation and acceptance journal**. The summary table near the top is
+Status: **complete — archived 2026-07-24**. The program's remediation work is merged to `main`
+and the user accepted the plan as complete. The summary table near the top is
 the current status source within this file; dated journal entries preserve earlier states and
 must not be read as current instructions when they conflict with that summary.
 

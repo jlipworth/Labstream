@@ -5,7 +5,7 @@ Status: **session record** for [GitHub issue #246](https://github.com/jlipworth/
 captures one working session on branch `codex/issue-246-tvos`. It is evidence-first and does not
 claim parity completion; it complements the durable
 [implementation plan](../plans/2026-07-20-tvos-implementation.md) and the
-[exhaustive screen audit](2026-07-20-tvos-screen-audit.md).
+[exhaustive screen audit](../../research/2026-07-20-tvos-screen-audit.md).
 
 The video player is app-owned by hard requirement of the backends (Plex/Jellyfin/Emby). The retired
 `AVPlayerViewController` path was not and will not be reintroduced; every player fix below adapts the

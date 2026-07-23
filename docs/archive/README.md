@@ -38,5 +38,9 @@ Historical prose and path literals may remain as written when they are part of t
 - [`2026-07-20-emby-bif-trickplay.md`](plans/2026-07-20-emby-bif-trickplay.md) — completed Emby ThumbnailSet/BIF online and offline trick-play implementation and accepted #238 verification journal.
 - [`2026-07-20-main-documentation-alignment.md`](plans/2026-07-20-main-documentation-alignment.md) — completed factual alignment, documentation taxonomy, Mermaid, and durable-governance work.
 - [`2026-07-20-macos-shell-redesign.md`](plans/2026-07-20-macos-shell-redesign.md) — completed native Mac source-list, toolbar Search, adaptive-window, and acceptance work for #232; follow-up presentation polish is tracked in #251.
+- [`2026-07-10-codebase-remediation.md`](plans/2026-07-10-codebase-remediation.md) — completed whole-repository correctness, concurrency, performance, backend/platform sharing, and build-cost remediation journal; accepted as complete 2026-07-24.
+- [`2026-07-20-tvos-implementation.md`](plans/2026-07-20-tvos-implementation.md) — completed first-class tvOS implementation and acceptance plan for #246; accepted as complete 2026-07-24.
+- [`2026-07-21-simplification-performance.md`](plans/2026-07-21-simplification-performance.md) — completed cross-platform simplification and performance program (Wave 5 measurements explicitly forgone); accepted as complete 2026-07-24.
+- [`2026-07-21-tvos-session-report.md`](research/2026-07-21-tvos-session-report.md) — closed evidence-first session record for the tvOS focus/remote-input work; findings absorbed into the archived tvOS plan and the active screen audit.
 
 Archived files may mention retired decisions such as the `Safari` Plex client profile, old proxy-owned seek designs, or pre-Jellyfin assumptions. Do not copy those details back into code or active docs without re-verifying them against current source.

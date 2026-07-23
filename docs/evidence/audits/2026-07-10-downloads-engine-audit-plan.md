@@ -908,7 +908,7 @@ its own offset history, while durable appends retain the existing row-wide forwa
 ## K. DOWNSTREAM REMEDIATION CHECKPOINT (2026-07-12, through `f05944c`)
 
 This audit remains the characterization/evidence record. The companion
-`docs/plans/2026-07-10-codebase-remediation.md` owns the corrective Phase 1 queue and its
+`docs/archive/plans/2026-07-10-codebase-remediation.md` owns the corrective Phase 1 queue and its
 commit-by-commit journal.
 
 The schema-v3 train now carries exact attempt ownership through background-session entries and

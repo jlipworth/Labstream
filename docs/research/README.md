@@ -26,7 +26,7 @@ When the investigation resolves:
 - [`2026-07-20-tvos-screen-audit.md`](2026-07-20-tvos-screen-audit.md) — exhaustive tvOS
   screen/interaction audit for [issue #246](https://github.com/jlipworth/Labstream/issues/246),
   tracking per-defect status; open items remain (search input, physical-device sweep).
-- [`2026-07-21-tvos-session-report.md`](2026-07-21-tvos-session-report.md) — evidence-first
-  session record for the tvOS focus/remote-input work, including the parked TVUI-004
-  search-keyboard investigation. The tvOS implementation plan itself lives in
-  [`docs/plans/2026-07-20-tvos-implementation.md`](../plans/2026-07-20-tvos-implementation.md).
+The evidence-first tvOS session record now lives in
+[`docs/archive/research/2026-07-21-tvos-session-report.md`](../archive/research/2026-07-21-tvos-session-report.md);
+the completed tvOS implementation plan is archived at
+[`docs/archive/plans/2026-07-20-tvos-implementation.md`](../archive/plans/2026-07-20-tvos-implementation.md).
