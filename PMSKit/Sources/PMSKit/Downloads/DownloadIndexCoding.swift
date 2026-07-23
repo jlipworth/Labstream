@@ -104,6 +104,11 @@ public enum DownloadIndexCoding {
 
     /// Encode rows into the current versioned envelope.
     public static func encode<Row: Encodable>(_ rows: [Row]) throws -> Data {
-        try JSONEncoder().encode(EncodeEnvelope(schemaVersion: currentSchemaVersion, rows: rows))
+        let encoder = JSONEncoder()
+        // Store recovery compares an ambiguous post-replace canonical file with the exact
+        // candidate submitted to the persistence writer. JSON object key order is otherwise
+        // unspecified, so two encodes of the same snapshot can produce different bytes.
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(EncodeEnvelope(schemaVersion: currentSchemaVersion, rows: rows))
     }
 }

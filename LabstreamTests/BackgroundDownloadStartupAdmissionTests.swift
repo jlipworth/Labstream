@@ -484,7 +484,11 @@ struct BackgroundDownloadStartupAdmissionTests {
 
             let quarantinedRoot = directory.deletingLastPathComponent().appendingPathComponent(
                 ".\(directory.lastPathComponent)-unsupported-reset-pending")
-            for _ in 0..<100 where FileManager.default.fileExists(atPath: quarantinedRoot.path) {
+            // The complete hosted matrix schedules hundreds of Swift Testing cases concurrently.
+            // Keep cleanup verification bounded without treating scheduler contention as failure.
+            let cleanupDeadline = ContinuousClock.now.advanced(by: .seconds(10))
+            while FileManager.default.fileExists(atPath: quarantinedRoot.path),
+                  ContinuousClock.now < cleanupDeadline {
                 try await Task.sleep(for: .milliseconds(10))
             }
             #expect(!FileManager.default.fileExists(atPath: quarantinedRoot.path))

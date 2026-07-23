@@ -18,7 +18,8 @@ struct DeferredDownloadStartupActivationTests {
           manager.startupActivationSubmissionCountForTesting == 1
         })
       #expect(await waitUntil { session.startupAdmissionIsActiveForTesting })
-      #expect(manager.startupRecoveryState == .ready)
+      // Session admission becomes active before its completion crosses back to MainActor.
+      #expect(await waitUntil { manager.startupRecoveryState == .ready })
     }
   }
 

@@ -332,7 +332,10 @@ struct AuthSecureStorageTests {
                                   authSleep: { _ in await Task.yield() })
 
         _ = try await manager.createPin()
-        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        // The complete hosted matrix runs hundreds of Swift Testing cases concurrently. Keep
+        // this authorization completion bounded without mistaking scheduler starvation for an
+        // authentication failure; focused runs normally complete well below this deadline.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
         while ContinuousClock.now < deadline {
             if case .failed = manager.state { break }
             try await Task.sleep(for: .milliseconds(10))
