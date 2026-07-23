@@ -659,6 +659,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
         fireBackgroundCompletionWhenFinalizationIsSafe(identifier: identifier)
     }
 
+    var startupAdmissionIsActiveForTesting: Bool { isStartupAdmissionActive }
+
     func backgroundDeferredRevalidationKeysForTesting() -> Set<DownloadAttemptKey> {
         backgroundWakeCoordinator.deferredRevalidationKeysForTesting
     }

@@ -226,7 +226,15 @@ public final class DownloadManager {
     @ObservationIgnored private var didRunInitialStartupReattach = false
     @ObservationIgnored private var startupRecoveryErrorKeys: Set<String> = []
     @ObservationIgnored private var startupRecoveryRetryTask: Task<Void, Never>?
+    /// The healthy current-store path deliberately crosses one MainActor turn before it creates
+    /// and submits work to the background transport. It retains the manager for exactly that
+    /// bounded turn so a registered OS background completion handler cannot be stranded with a
+    /// dormant session if the surrounding runtime is replaced during launch.
+    @ObservationIgnored private var startupRecoveryDeferredActivationTask: Task<Void, Never>?
     @ObservationIgnored private var startupRecoveryRetryCount = 0
+    #if DEBUG
+    @ObservationIgnored private(set) var startupActivationSubmissionCountForTesting = 0
+    #endif
     /// Short-lived worker for ordinary episode rows carrying the durable one-time planner marker.
     /// No season/batch entity is retained; relaunch simply rediscovers marked rows.
     @ObservationIgnored var seasonPlannerAdmissionTask: Task<Void, Never>?
@@ -417,6 +425,7 @@ public final class DownloadManager {
     let appModel: AppModel
     let store: DownloadStore
     let session: BackgroundDownloadSession
+    @ObservationIgnored private let backgroundCompletionRegistry: BackgroundDownloadCompletionRegistry
     /// Owns exact-attempt Jellyfin/Emby encoder keepalive tasks and auth quarantine.
     @ObservationIgnored private let keepaliveCoordinator: DownloadKeepaliveCoordinator
     /// Attempt-scoped server cleanup survives row/file removal in a separate durability domain.
@@ -433,6 +442,7 @@ public final class DownloadManager {
          session injectedSession: BackgroundDownloadSession? = nil,
          cleanupIntentJournal injectedCleanupIntentJournal: DownloadCleanupIntentJournal? = nil,
          sideAssetFetchCoordinator injectedSideAssetFetchCoordinator: SideAssetFetchCoordinator? = nil,
+         backgroundCompletionRegistry: BackgroundDownloadCompletionRegistry = .shared,
          registerForBackgroundEvents: Bool = true) {
         #if DEBUG && os(tvOS)
         Self.debugConstructionCount += 1
@@ -451,6 +461,7 @@ public final class DownloadManager {
         #endif
         self.store = store
         self.session = injectedSession ?? BackgroundDownloadSession(store: store)
+        self.backgroundCompletionRegistry = backgroundCompletionRegistry
         self.keepaliveCoordinator = DownloadKeepaliveCoordinator(appModel: appModel, store: store)
         self.sideAssetFetchCoordinator = injectedSideAssetFetchCoordinator ?? .shared
         self.cleanupIntentJournal = injectedCleanupIntentJournal
@@ -645,9 +656,9 @@ public final class DownloadManager {
         // delegate already holds a background completion handler, registration records it in the
         // session's completion gate before activation constructs URLSession and events can arrive.
         if registerForBackgroundEvents {
-            BackgroundDownloadCompletionRegistry.shared.register(self.session)
+            backgroundCompletionRegistry.register(self.session)
         }
-        continueStartupRecovery(with: startupAdmission)
+        continueStartupRecovery(with: startupAdmission, deferCurrentActivation: true)
     }
 
     /// Explicit retry hook for a prior persistence/activation failure. It is intentionally not an
@@ -656,6 +667,8 @@ public final class DownloadManager {
     /// blocked rather than receiving a guessed owner.
     public func retryDownloadStartupRecovery() {
         guard startupRecoveryState != .ready, !startupRecoveryInFlight else { return }
+        startupRecoveryDeferredActivationTask?.cancel()
+        startupRecoveryDeferredActivationTask = nil
         startupRecoveryRetryTask?.cancel()
         startupRecoveryRetryTask = nil
         startupRecoveryState = .preparing
@@ -678,7 +691,8 @@ public final class DownloadManager {
     }
 
     private func continueStartupRecovery(
-        with admission: DownloadStore.StartupIndexAdmission
+        with admission: DownloadStore.StartupIndexAdmission,
+        deferCurrentActivation: Bool = false
     ) {
         guard !startupRecoveryInFlight else { return }
         switch admission {
@@ -692,13 +706,35 @@ public final class DownloadManager {
             )
         case .current:
             store.stageHeldBodyDeletionJobs()
-            activateDownloadsForCurrentStore()
+            if deferCurrentActivation {
+                scheduleCurrentStoreActivation()
+            } else {
+                activateDownloadsForCurrentStore()
+            }
         case .malformedCurrentRows(let ratingKeys):
             blockDownloadStartup(
                 affectedRatingKeys: Set(ratingKeys),
                 message: "Download recovery data is inconsistent. Downloads are paused for safety.",
                 reason: "malformed_current_ownership"
             )
+        }
+    }
+
+    /// Keep deterministic store admission and callback/registry installation synchronous, but move
+    /// the healthy store's lazy transport construction/submission across the same async boundary
+    /// used by the older startup composition. A retry before this turn cancels the pending edge and
+    /// owns the sole immediate submission; all state transitions remain MainActor-serialized.
+    private func scheduleCurrentStoreActivation() {
+        guard startupRecoveryDeferredActivationTask == nil else { return }
+        startupRecoveryDeferredActivationTask = Task { @MainActor in
+            guard !Task.isCancelled else {
+                self.startupRecoveryDeferredActivationTask = nil
+                return
+            }
+            self.startupRecoveryDeferredActivationTask = nil
+            guard self.startupRecoveryState != .ready,
+                  !self.startupRecoveryInFlight else { return }
+            self.activateDownloadsForCurrentStore()
         }
     }
 
@@ -729,7 +765,12 @@ public final class DownloadManager {
     }
 
     private func activateDownloadsForCurrentStore() {
+        startupRecoveryDeferredActivationTask?.cancel()
+        startupRecoveryDeferredActivationTask = nil
         startupRecoveryInFlight = true
+        #if DEBUG
+        startupActivationSubmissionCountForTesting += 1
+        #endif
         #if PERFORMANCE_AUDIT
         // Critical-path submission only: this intentionally ends before the asynchronous
         // activation result and includes lazy transport construction when this is the first use.
@@ -787,7 +828,7 @@ public final class DownloadManager {
             "reason": .label(reason),
             "affected_count": .int(affectedRatingKeys.count),
             "pending_background_handler": .bool(
-                BackgroundDownloadCompletionRegistry.shared.hasPendingHandler(
+                backgroundCompletionRegistry.hasPendingHandler(
                     identifier: BackgroundDownloadSession.identifier
                 )
             ),
