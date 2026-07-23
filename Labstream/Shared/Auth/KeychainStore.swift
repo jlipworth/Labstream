@@ -376,6 +376,14 @@ final class KeychainStore {
         save(backend.rawValue, for: Self.selectedBackendKey)
     }
 
+    /// Remove backend restoration/selection state. The read-side default is Plex, so a
+    /// coordinated sign-out returns to a deterministic login surface without persisting
+    /// a backend choice that could silently restore a retired session.
+    @discardableResult
+    func resetSelectedBackend() -> Bool {
+        delete(Self.selectedBackendKey)
+    }
+
     var selectedPlexServerID: String? {
         get { read(Self.selectedPlexServerIDKey) }
         set { _ = saveSelectedPlexServerID(newValue) }

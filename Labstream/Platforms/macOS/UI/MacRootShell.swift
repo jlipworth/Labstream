@@ -14,6 +14,7 @@ struct PlatformRootShell: View {
   @State private var macSearchText = ""
   @State private var macSearchPresented = false
   @State private var macConfirmingSignOut = false
+  @State private var macConfirmingSignOutAll = false
   @State private var macWasCompactWidth = false
   @State private var macColumnVisibility: NavigationSplitViewVisibility = .all
   @State private var macColumnVisibilityBeforePlayer: NavigationSplitViewVisibility = .all
@@ -146,6 +147,20 @@ struct PlatformRootShell: View {
     } message: {
       Text(macSignOutConfirmationMessage)
     }
+    .confirmationDialog(
+      "Sign out of all backends?",
+      isPresented: $macConfirmingSignOutAll,
+      titleVisibility: .visible
+    ) {
+      Button("Sign Out of All", role: .destructive) {
+        handleMacSignOutAllConfirmation(.confirm)
+      }
+      Button("Cancel", role: .cancel) {
+        handleMacSignOutAllConfirmation(.cancel)
+      }
+    } message: {
+      Text(macSignOutAllConfirmationMessage)
+    }
     .sheet(
       item: Binding(
         get: { macSidebarModel.visibilityPrompt },
@@ -174,6 +189,12 @@ struct PlatformRootShell: View {
     case .requestSignOut:
       if appModel.isAuthenticated {
         macConfirmingSignOut = true
+      }
+    case .requestSignOutAll:
+      if MediaBackendSignOutAllPresentation.shouldOfferAction(
+        for: authManager.savedAuthenticatedBackends
+      ) {
+        macConfirmingSignOutAll = true
       }
     }
     MacMainWindowController.shared.consume(request)
@@ -403,6 +424,21 @@ struct PlatformRootShell: View {
     case .emby:
       "Signing back in requires connecting to your Emby server again."
     }
+  }
+
+  private var macSignOutAllConfirmationMessage: String {
+    let affected = MediaBackendSignOutAllPresentation.affectedBackendsDescription(
+      authManager.savedAuthenticatedBackends)
+    return "This signs out of \(affected). Downloaded media will remain on this device and can be used again after signing back in."
+  }
+
+  private func handleMacSignOutAllConfirmation(
+    _ decision: MediaBackendSignOutAllPresentation.ConfirmationDecision
+  ) {
+    guard MediaBackendSignOutAllPresentation.effect(for: decision) == .signOutAll else {
+      return
+    }
+    authManager.signOutAll()
   }
 
   @ViewBuilder

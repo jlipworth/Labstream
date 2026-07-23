@@ -62,6 +62,54 @@ public struct MediaBackendCredentialSnapshot: Sendable, Equatable {
                 !(embyUserID ?? "").isEmpty
         }
     }
+
+    /// Saved, complete authenticated profiles in stable product order.
+    ///
+    /// Partial Jellyfin/Emby artifacts are deliberately excluded from the user-facing
+    /// confirmation list: they cannot restore an authenticated session. Coordinated
+    /// credential cleanup still deletes every artifact, including partial remnants.
+    public var savedAuthenticatedBackends: [MediaBackendChoice] {
+        MediaBackendChoice.allCases.filter { hasSavedSession(for: $0) }
+    }
+}
+
+/// Pure presentation policy for the coordinated account action.
+public enum MediaBackendSignOutAllPresentation {
+    public enum ConfirmationDecision: Sendable, Equatable {
+        case confirm
+        case cancel
+    }
+
+    public enum ConfirmationEffect: Sendable, Equatable {
+        case signOutAll
+        case none
+    }
+
+    public static func effect(for decision: ConfirmationDecision) -> ConfirmationEffect {
+        decision == .confirm ? .signOutAll : .none
+    }
+
+    public static func shouldOfferAction(for backends: [MediaBackendChoice]) -> Bool {
+        Set(backends).count > 1
+    }
+
+    public static func affectedBackendsDescription(
+        _ backends: [MediaBackendChoice]
+    ) -> String {
+        let names = MediaBackendChoice.allCases
+            .filter { Set(backends).contains($0) }
+            .map(\.displayName)
+        switch names.count {
+        case 0:
+            return "saved backends"
+        case 1:
+            return names[0]
+        case 2:
+            return names.joined(separator: " and ")
+        default:
+            return "\(names.dropLast().joined(separator: ", ")), and \(names.last!)"
+        }
+    }
 }
 
 public enum MediaBackendSwitchResolution: Sendable, Equatable {
