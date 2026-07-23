@@ -512,6 +512,13 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private lazy var urlSession: URLSession = makeURLSession()
 
     private func makeURLSession() -> URLSession {
+        #if PERFORMANCE_AUDIT
+        let transportSpan = PerformanceInstrumentation.begin(
+            .runtimeDownloadTransportConstruct,
+            backend: "App"
+        )
+        defer { transportSpan.end(fields: ["background_session": 1]) }
+        #endif
         let config: URLSessionConfiguration
         if let injectedProtocolClasses {
             config = URLSessionConfiguration.default

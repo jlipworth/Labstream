@@ -13,6 +13,10 @@ struct PerformanceInstrumentationTests {
                 == "runtime.download_manager")
         #expect(PerformanceInstrumentation.Phase.runtimeDownloadStore.rawValue
                 == "runtime.download_store")
+        #expect(PerformanceInstrumentation.Phase.runtimeDownloadTransportConstruct.rawValue
+                == "runtime.download_transport_construct")
+        #expect(PerformanceInstrumentation.Phase.runtimeDownloadTransportSubmission.rawValue
+                == "runtime.download_transport_submission")
         #expect(PerformanceInstrumentation.Phase.homeFirstContent.rawValue == "home.first_content")
         #expect(PerformanceInstrumentation.Phase.searchLoad.rawValue == "search.load")
         #expect(PerformanceInstrumentation.Phase.libraryGridFirstContent.rawValue

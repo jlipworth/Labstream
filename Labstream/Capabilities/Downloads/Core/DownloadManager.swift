@@ -730,6 +730,14 @@ public final class DownloadManager {
 
     private func activateDownloadsForCurrentStore() {
         startupRecoveryInFlight = true
+        #if PERFORMANCE_AUDIT
+        // Critical-path submission only: this intentionally ends before the asynchronous
+        // activation result and includes lazy transport construction when this is the first use.
+        let submissionSpan = PerformanceInstrumentation.begin(
+            .runtimeDownloadTransportSubmission,
+            backend: "App"
+        )
+        #endif
         session.activateCurrentStore { [weak self] result in
             Task { @MainActor in
                 guard let self else { return }
@@ -758,6 +766,9 @@ public final class DownloadManager {
                 }
             }
         }
+        #if PERFORMANCE_AUDIT
+        submissionSpan.end(fields: ["startup_submission": 1])
+        #endif
     }
 
     private func blockDownloadStartup(

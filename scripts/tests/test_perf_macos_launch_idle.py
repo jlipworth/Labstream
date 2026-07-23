@@ -293,6 +293,12 @@ class RunnerTests(unittest.TestCase):
             manager = runner.command_plan(
                 apps, "launch", 0, 1, 1, 7, root / "manager.json",
                 launch_phase="runtime.download_manager", **common)
+            transport_construct = runner.command_plan(
+                apps, "launch", 0, 1, 1, 7, root / "transport-construct.json",
+                launch_phase="runtime.download_transport_construct", **common)
+            transport_submission = runner.command_plan(
+                apps, "launch", 0, 1, 1, 7, root / "transport-activation.json",
+                launch_phase="runtime.download_transport_submission", **common)
 
             self.assertEqual(composition["launch_profile"], {
                 "phase": "runtime.composition",
@@ -305,10 +311,26 @@ class RunnerTests(unittest.TestCase):
                 "--correctness-field", "background_events",
                 "--expected-span-count", "1",
             ])
+            self.assertEqual(runner.launch_summary_arguments(transport_construct), [
+                "--phase", "runtime.download_transport_construct", "--backend", "App",
+                "--field", "background_session=1",
+                "--correctness-field", "background_session",
+                "--expected-span-count", "1",
+            ])
+            self.assertEqual(runner.launch_summary_arguments(transport_submission), [
+                "--phase", "runtime.download_transport_submission", "--backend", "App",
+                "--field", "startup_submission=1",
+                "--correctness-field", "startup_submission",
+                "--expected-span-count", "1",
+            ])
             self.assertNotEqual(composition["identities"]["comparison_id"],
                                 manager["identities"]["comparison_id"])
             self.assertNotEqual(composition["identities"]["workload_id"],
                                 manager["identities"]["workload_id"])
+            self.assertNotEqual(transport_construct["identities"]["workload_id"],
+                                transport_submission["identities"]["workload_id"])
+            self.assertNotEqual(transport_construct["identities"]["comparison_id"],
+                                transport_submission["identities"]["comparison_id"])
             with self.assertRaisesRegex(runner.RunnerError, "idle scenario"):
                 runner.command_plan(
                     apps, "idle", 0, 1, 1, 7, root / "idle.json",
@@ -335,6 +357,33 @@ class RunnerTests(unittest.TestCase):
                     (pathlib.Path(record["manifest"]).parent / "summary/redacted.json").read_text())
                 self.assertEqual(summary["workload"]["phase"], "runtime.download_store")
                 self.assertEqual(summary["workload"]["fields"], {"default_store": "1"})
+
+    def test_launch_transport_profiles_select_exact_spans_for_strict_summary(self):
+        profiles = (
+            ("runtime.download_transport_construct", {"background_session": "1"}),
+            ("runtime.download_transport_submission", {"startup_submission": "1"}),
+        )
+        for phase, expected_fields in profiles:
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as temporary:
+                root = pathlib.Path(temporary)
+                apps = (runner.validate_app("control", self.make_app(root, "A.app")),
+                        runner.validate_app("candidate", self.make_app(root, "B.app")))
+                plan = runner.command_plan(
+                    apps, "launch", 0, 1, 1, 9, root / "result.json",
+                    containers_root=root / "Containers",
+                    control_commit="a" * 40, candidate_commit="b" * 40,
+                    device_label="local-device-07", launch_phase=phase)
+                self.prepare_container(plan)
+
+                result = runner.capture(plan, apps, FakeExecutor(launch_phase=phase))
+
+                self.assertEqual(result["capture_status"], "success")
+                for record in result["records"]:
+                    summary = json.loads(
+                        (pathlib.Path(record["manifest"]).parent
+                         / "summary/redacted.json").read_text())
+                    self.assertEqual(summary["workload"]["phase"], phase)
+                    self.assertEqual(summary["workload"]["fields"], expected_fields)
 
     def test_app_validation_rejects_production_mismatch_and_symlinks(self):
         with tempfile.TemporaryDirectory() as temporary:

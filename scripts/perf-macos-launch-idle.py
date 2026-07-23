@@ -53,6 +53,14 @@ LAUNCH_PHASE_PROFILES = {
         "field": "default_store=1",
         "correctness_field": "default_store",
     },
+    "runtime.download_transport_construct": {
+        "field": "background_session=1",
+        "correctness_field": "background_session",
+    },
+    "runtime.download_transport_submission": {
+        "field": "startup_submission=1",
+        "correctness_field": "startup_submission",
+    },
 }
 IDLE_FAILURE_DETAIL_MAX_BYTES = 2 * 1024
 IDLE_TOOL_ERROR_PREFIXES = {

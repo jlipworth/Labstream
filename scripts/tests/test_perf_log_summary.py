@@ -118,6 +118,14 @@ class PerfLogSummaryTests(unittest.TestCase):
             "perf.span phase=runtime.download_store backend=App result=success duration_ms=2 "
             "default_store=1"
         )
+        transport_construct = perf.parse_span_line(
+            "perf.span phase=runtime.download_transport_construct backend=App result=success "
+            "duration_ms=2 background_session=1"
+        )
+        transport_submission = perf.parse_span_line(
+            "perf.span phase=runtime.download_transport_submission backend=App result=success "
+            "duration_ms=1 startup_submission=1"
+        )
         restore = perf.parse_span_line(
             "perf.span phase=session.restore backend=Emby result=partial duration_ms=7 "
             "restored=0"
@@ -129,6 +137,8 @@ class PerfLogSummaryTests(unittest.TestCase):
         self.assertEqual(composition.fields, {"downloads_capable": "1"})
         self.assertEqual(download_manager.fields, {"background_events": "1"})
         self.assertEqual(download_store.fields, {"default_store": "1"})
+        self.assertEqual(transport_construct.fields, {"background_session": "1"})
+        self.assertEqual(transport_submission.fields, {"startup_submission": "1"})
         self.assertEqual(restore.fields, {"restored": "0"})
         self.assertEqual(cancelled.result, "cancelled")
         self.assertEqual(
@@ -151,6 +161,18 @@ class PerfLogSummaryTests(unittest.TestCase):
         )
         self.assertEqual(
             perf.evidence_schema.validate_correctness_fields(
+                "runtime.download_transport_construct", "App", ["background_session"]
+            ),
+            ("background_session",),
+        )
+        self.assertEqual(
+            perf.evidence_schema.validate_correctness_fields(
+                "runtime.download_transport_submission", "App", ["startup_submission"]
+            ),
+            ("startup_submission",),
+        )
+        self.assertEqual(
+            perf.evidence_schema.validate_correctness_fields(
                 "session.restore", "Emby", ["restored"]
             ),
             ("restored",),
@@ -159,6 +181,10 @@ class PerfLogSummaryTests(unittest.TestCase):
             "perf.span phase=runtime.composition backend=Plex result=success duration_ms=4 "
             "downloads_capable=1"
         )[1], "unexpected_phase_backend")
+        self.assertEqual(perf.parse_span_line_diagnostic(
+            "perf.span phase=runtime.download_transport_submission backend=App result=success "
+            "duration_ms=1 startup_submission=2"
+        )[1], "invalid_boolean_field")
         self.assertEqual(perf.parse_span_line_diagnostic(
             "perf.span phase=session.restore backend=Emby result=success duration_ms=7 restored=2"
         )[1], "invalid_boolean_field")

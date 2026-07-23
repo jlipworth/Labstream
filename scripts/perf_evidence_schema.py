@@ -25,6 +25,8 @@ PHASE_FIELDS: dict[str, set[str]] = {
     "runtime.composition": {"downloads_capable"},
     "runtime.download_manager": {"background_events"},
     "runtime.download_store": {"default_store"},
+    "runtime.download_transport_construct": {"background_session"},
+    "runtime.download_transport_submission": {"startup_submission"},
     "session.restore": {"restored"},
     "home.first_content": {"content_present", "rail_count", "item_count", "publication_count", "error"},
     "home.load": {
@@ -59,6 +61,8 @@ REQUIRED_CORRECTNESS_FIELDS: dict[tuple[str, str], tuple[str, ...]] = {
     ("runtime.composition", "App"): ("downloads_capable",),
     ("runtime.download_manager", "App"): ("background_events",),
     ("runtime.download_store", "App"): ("default_store",),
+    ("runtime.download_transport_construct", "App"): ("background_session",),
+    ("runtime.download_transport_submission", "App"): ("startup_submission",),
     ("session.restore", "Plex"): ("restored",),
     ("session.restore", "Jellyfin"): ("restored",),
     ("session.restore", "Emby"): ("restored",),
@@ -113,8 +117,8 @@ INTEGER_FIELDS = {
     "status", "width", "height", "pixel_width", "pixel_height",
 }
 BOOLEAN_FIELDS = {
-    "background_events", "content_present", "default_store", "downloads_capable", "restored",
-    "degraded", "swr_refresh", "scoped",
+    "background_events", "background_session", "content_present", "startup_submission", "default_store",
+    "downloads_capable", "restored", "degraded", "swr_refresh", "scoped",
 }
 ENUM_FIELDS = {
     "path_mode": {"local_file", "remote_stream", "plex_stream"},
