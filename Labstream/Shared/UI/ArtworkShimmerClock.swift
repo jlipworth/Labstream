@@ -21,7 +21,7 @@ final class ArtworkShimmerClock {
     @ObservationIgnored private var animationTask: Task<Void, Never>?
     @ObservationIgnored private(set) var animationStartCount = 0
 
-    init(tickInterval: Duration = .milliseconds(50)) {
+    init(tickInterval: Duration = .nanoseconds(16_666_667)) {
         self.tickInterval = tickInterval
     }
 
@@ -65,9 +65,9 @@ final class ArtworkShimmerClock {
     }
 
     private func advancePhase() {
-        // Twenty shared frames per second completes a sweep in roughly 1.4 seconds while
-        // avoiding display-rate work for a deliberately subtle loading affordance.
-        let next = phase + (1 / 14)
+        // Keep the shared-clock efficiency win while updating at a display-smooth 60 Hz.
+        // The sweep still takes roughly 1.4 seconds, matching the original animation.
+        let next = phase + (1 / 42)
         phase = next > 1 ? -1 : next
     }
 }
