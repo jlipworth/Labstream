@@ -558,7 +558,8 @@ class RunnerTests(unittest.TestCase):
                                  and str(runner.IDLE_EXTRACTOR) in a[1])
             manifest_run = next(a for a in fake.actions if a[0] == "run"
                                 and str(runner.CONTRACT) in a[1] and "manifest" in a[1])
-            self.assertLess(fake.actions.index(("wait", trace_spawn[2], 15)),
+            self.assertLess(fake.actions.index((
+                "wait", trace_spawn[2], runner.IDLE_TRACE_FINALIZATION_TIMEOUT_SECONDS)),
                             fake.actions.index(("terminate", app_spawn[2])))
             self.assertLess(fake.actions.index(("terminate", app_spawn[2])),
                             fake.actions.index(export_runs[0]))
@@ -621,6 +622,48 @@ class RunnerTests(unittest.TestCase):
             app_pid = next(action[2] for action in fake.actions
                            if action[0] == "spawn" and "xctrace" not in action[1])
             self.assertIn(("terminate", app_pid), fake.actions)
+
+    def test_idle_trace_finalization_timeout_is_bounded_redacted_and_unpublished(self):
+        class SlowFinalizer(FakeExecutor):
+            def spawn(self, argv, *, stdout=-3):
+                process = super().spawn(argv, stdout=stdout)
+                if "xctrace" in argv:
+                    self.xctrace_process_pid = process.pid
+                return process
+
+            def wait(self, process, timeout):
+                self.actions.append(("wait", process.pid, timeout))
+                if process.pid == self.xctrace_process_pid and process.returncode is None:
+                    raise subprocess.TimeoutExpired("xctrace", timeout)
+                process.returncode = 0 if process.returncode is None else process.returncode
+                return process.returncode
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            apps = (runner.validate_app("control", self.make_app(root, "A.app")),
+                    runner.validate_app("candidate", self.make_app(root, "B.app")))
+            plan = runner.command_plan(apps, "idle", 0, 1, 120, 4, root / "result.json",
+                                       containers_root=root / "Containers")
+            plan["samples"] = plan["samples"][:1]
+            self.prepare_container(plan)
+            fake = SlowFinalizer()
+            result = runner.capture(plan, apps, fake)
+            record = result["records"][0]
+            self.assertEqual(record["status"], "failure")
+            self.assertEqual(
+                record["failure"]["message"],
+                "System Trace xctrace did not finalize within 120 seconds")
+            trace_wait = ("wait", fake.xctrace_process_pid,
+                          runner.IDLE_TRACE_FINALIZATION_TIMEOUT_SECONDS)
+            self.assertIn(trace_wait, fake.actions)
+            app_pid = next(action[2] for action in fake.actions
+                           if action[0] == "spawn" and "xctrace" not in action[1])
+            self.assertIn(("terminate", fake.xctrace_process_pid), fake.actions)
+            self.assertIn(("terminate", app_pid), fake.actions)
+            self.assertFalse(any(action[0] == "run" and action[1][:3] ==
+                                 ["/usr/bin/xcrun", "xctrace", "export"]
+                                 for action in fake.actions))
+            self.assertEqual(list((root / "result-logs").iterdir()), [])
 
     def test_idle_tool_failure_detail_is_bounded_redacted_and_strict_utf8(self):
         command = [sys.executable, str(runner.IDLE_EXTRACTOR), "--toc-xml", "/private/input.xml"]
