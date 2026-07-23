@@ -100,6 +100,20 @@ ALLOWED_TRANSIENT_RESULTS = {
     "search.load": {"cancelled", "superseded"},
     "artwork.load": set(),
 }
+DRIVER_ERROR_CODES = {
+    "invalid_arguments", "invalid_output", "invalid_spec_file", "invalid_spec_permissions",
+    "invalid_spec_schema", "invalid_fixture_url", "invalid_fixture_credentials", "invalid_pid",
+    "process_unavailable", "accessibility_not_trusted", "element_not_found",
+    "element_ambiguous", "accessibility_read_failed", "accessibility_action_failed",
+    "keyboard_action_failed", "output_write_failed",
+}
+DRIVER_COMPLETED_STAGES = {
+    "preflight", "attached", "backend_selected", "credential_method_selected",
+    "server_entered", "username_entered", "password_entered", "sign_in_submitted",
+    "awaiting_visibility_or_home", "visibility_ambiguous", "home_ambiguous",
+    "authenticated", "home_loaded", "catalog_opened", "catalog_loaded", "search_opened",
+    "search_entered", "search_loaded", "artwork_loaded",
+}
 
 
 class Executor(base.Executor):
@@ -677,6 +691,33 @@ def validate_driver_result(path: pathlib.Path, *, pid: int, scenario: str) -> di
     return value
 
 
+def safe_driver_failure(path: pathlib.Path, *, pid: int, scenario: str) -> dict[str, Any]:
+    """Validate a private failure result while returning only closed, non-sensitive fields."""
+    try:
+        payload = read_regular_bytes(path, private=True, max_bytes=16_384)
+        value = json.loads(payload)
+    except (RunnerError, json.JSONDecodeError, UnicodeDecodeError):
+        fail("AX driver failed with malformed private result")
+    keys = {"schema_version", "tool", "pid", "scenario", "status", "completed_stage",
+            "action_count", "elapsed_milliseconds", "error_code"}
+    if (not isinstance(value, dict) or set(value) != keys
+            or value.get("schema_version") != 1
+            or value.get("tool") != {"name": "labstream-macos-ax-driver", "version": 1}
+            or value.get("pid") != pid or value.get("scenario") != scenario
+            or value.get("status") != "failure"
+            or value.get("error_code") not in DRIVER_ERROR_CODES
+            or value.get("completed_stage") not in DRIVER_COMPLETED_STAGES
+            or type(value.get("action_count")) is not int or value["action_count"] < 0
+            or type(value.get("elapsed_milliseconds")) is not int
+            or value["elapsed_milliseconds"] < 0):
+        fail("AX driver failed with malformed private result")
+    return {
+        "error_code": value["error_code"],
+        "completed_stage": value["completed_stage"],
+        "elapsed_milliseconds": value["elapsed_milliseconds"],
+    }
+
+
 def add_record_error(record: dict[str, Any], message: str) -> None:
     record["status"] = "failure"
     record["error"] = f'{record["error"]}; {message}' if record.get("error") else message
@@ -799,7 +840,8 @@ def write_private_json_atomic(path: pathlib.Path, value: Any) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def read_regular_bytes(path: pathlib.Path, *, private: bool = False) -> bytes:
+def read_regular_bytes(path: pathlib.Path, *, private: bool = False,
+                       max_bytes: int | None = None) -> bytes:
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except OSError as error:
@@ -808,11 +850,18 @@ def read_regular_bytes(path: pathlib.Path, *, private: bool = False) -> bytes:
         metadata = os.fstat(fd)
         if not stat.S_ISREG(metadata.st_mode) or (private and metadata.st_mode & 0o077):
             fail(f"regular file has unsafe type or permissions: {path}")
+        if max_bytes is not None and metadata.st_size > max_bytes:
+            fail(f"regular file exceeds its size bound: {path}")
         chunks = []
+        total = 0
         while True:
-            chunk = os.read(fd, 1024 * 1024)
+            remaining = (max_bytes - total + 1) if max_bytes is not None else 1024 * 1024
+            chunk = os.read(fd, min(1024 * 1024, remaining))
             if not chunk:
                 return b"".join(chunks)
+            total += len(chunk)
+            if max_bytes is not None and total > max_bytes:
+                fail(f"regular file exceeds its size bound: {path}")
             chunks.append(chunk)
     finally:
         os.close(fd)
@@ -1308,8 +1357,16 @@ def capture_sample(active_plan: dict[str, Any], sample: dict[str, Any], app: Any
         if executor.poll(app_process) is not None:
             fail(f"app PID {pid} exited at launch")
         driver_output = raw_dir / "artifact-0002.json"
-        executor.run([str(driver_binary), "--pid", str(pid),
-                      "--workload-spec", str(spec_path), "--output", str(driver_output)])
+        try:
+            executor.run([str(driver_binary), "--pid", str(pid),
+                          "--workload-spec", str(spec_path), "--output", str(driver_output)])
+        except subprocess.CalledProcessError:
+            driver_failure = safe_driver_failure(
+                driver_output, pid=pid, scenario=active_plan["scenario"])
+            record["driver_failure"] = driver_failure
+            fail("AX driver failed: " + " ".join(
+                f"{key}={driver_failure[key]}" for key in
+                ("error_code", "completed_stage", "elapsed_milliseconds")))
         validate_driver_result(driver_output, pid=pid, scenario=active_plan["scenario"])
         if executor.poll(app_process) is not None:
             fail(f"app PID {pid} exited during AX workload")
