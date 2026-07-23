@@ -824,6 +824,50 @@ struct ArtworkPipelineTests {
         #expect(captured.value?.cachePolicy == .reloadIgnoringLocalAndRemoteCacheData)
     }
 
+    @Test func productionStyleTransportCreatesOneSessionOnlyForRemoteWork() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory,
+                                                withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let localURL = directory.appendingPathComponent("local-only.png")
+        try Self.validPNG.write(to: localURL)
+        let local = try #require(ArtworkRequestDescriptor.localFile(
+            localURL,
+            backend: .emby,
+            ownerData: Data("lazy-session-owner".utf8),
+            generation: 1,
+            pixelWidth: 80,
+            pixelHeight: 80))
+
+        let factoryCalls = TestLockedBox(0)
+        let stub = TestURLProtocolStub { request in
+            (Self.response(for: request, status: 200), Self.squarePNG)
+        }
+        let pipeline = ArtworkPipeline(sessionFactory: {
+            factoryCalls.withValue { $0 += 1 }
+            return URLSession(configuration: stub.configuration)
+        })
+
+        #expect(factoryCalls.value == 0)
+        _ = try await pipeline.fetch(local)
+        #expect(factoryCalls.value == 0)
+
+        let first = try makePlexDescriptor(path: "/lazy-session-first", pixels: 80)
+        let second = try makePlexDescriptor(path: "/lazy-session-second", pixels: 80)
+        async let firstResponse = pipeline.fetch(first)
+        async let secondResponse = pipeline.fetch(second)
+        let responses = try await (firstResponse, secondResponse)
+        #expect(responses.0.statusCode == 200)
+        #expect(responses.1.statusCode == 200)
+        #expect(factoryCalls.value == 1)
+
+        await pipeline.clear()
+        let afterClear = try makePlexDescriptor(path: "/lazy-session-after-clear", pixels: 80)
+        _ = try await pipeline.fetch(afterClear)
+        #expect(factoryCalls.value == 1)
+    }
+
     @Test func negativePolicyCachesOnlyClientFailuresAndClearResetsAllMemoryState() async throws {
         let descriptor = try makePlexDescriptor(path: "/negative", pixels: 80)
         let now = TestLockedBox<UInt64>(1_000)
