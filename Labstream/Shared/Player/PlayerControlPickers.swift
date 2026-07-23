@@ -144,6 +144,7 @@ struct ChapterCard: View {
     /// `PosterImage` relies on, so the authenticated request is vended by
     /// `PlaybackController` instead).
     let thumbnailRequest: URLRequest?
+    let thumbnailCache: ChapterThumbnailImageCache
     var onTap: (Int) -> Void
 
     @Environment(\.labstreamCompactWidth) private var compactWidth
@@ -202,6 +203,7 @@ struct ChapterCard: View {
     @ViewBuilder private var thumbnail: some View {
         if let thumbnailRequest {
             RequestBackedChapterImage(request: thumbnailRequest,
+                                      cache: thumbnailCache,
                                       placeholder: AnyView(placeholder))
         } else {
             placeholder
@@ -233,18 +235,23 @@ struct ChapterCard: View {
 /// `AppModel` while still supporting header-authenticated chapter thumbnails.
 private struct RequestBackedChapterImage: View {
     let request: URLRequest
+    let cache: ChapterThumbnailImageCache
     let placeholder: AnyView
 
     @State private var image: DecodedImage?
     @State private var didFail = false
 
     var body: some View {
+        let key = ChapterThumbnailImageCache.key(for: request)
+        let displayedImage = image ?? cache.peek(key)
         ZStack {
-            if let image {
-                Image(decodedImage: image)
+            if let displayedImage {
+                Image(decodedImage: displayedImage)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
-                    .transition(.opacity)
+                    // Only a newly completed load fades. A recreated lazy card reads the decoded
+                    // image synchronously above and has no loading/fade frame to replay.
+                    .transition(image == nil ? .identity : .opacity)
             } else if didFail {
                 placeholder
             } else {
@@ -252,44 +259,27 @@ private struct RequestBackedChapterImage: View {
             }
         }
         .animation(.easeOut(duration: 0.35), value: image != nil)
-        .task(id: cacheKey) {
+        .task(id: key) {
             await load()
         }
     }
 
-    private var cacheKey: String {
-        [
-            request.httpMethod ?? "GET",
-            request.url?.absoluteString ?? "",
-            request.value(forHTTPHeaderField: "Authorization") == nil ? "no-auth" : "auth",
-            request.value(forHTTPHeaderField: "X-Emby-Token") == nil ? "no-emby-token" : "emby-token",
-        ].joined(separator: "|")
-    }
-
     @MainActor
     private func load() async {
-        image = nil
         didFail = false
         do {
-            let data = try await Self.data(for: request)
-            guard let decoded = DecodedImage(data: data) else {
+            guard let decoded = try await ChapterThumbnailLoader.image(
+                for: request, cache: cache
+            ) else {
                 didFail = true
                 return
             }
             image = decoded
+        } catch is CancellationError {
+            // Lazy realization cancellation is normal. Do not turn it into a failure frame.
         } catch {
             didFail = true
         }
-    }
-
-    private nonisolated static func data(for request: URLRequest) async throws -> Data {
-        if let url = request.url, url.isFileURL {
-            return try Data(contentsOf: url)
-        }
-        return try await SideAssetFetchCoordinator.shared.fetch(
-            request: request,
-            owner: SideAssetOwner(rawValue: "player-chapter-thumbnails")
-        )
     }
 }
 
@@ -318,6 +308,7 @@ struct ChaptersTabView: View {
     #endif
 
     @State private var currentIndex: Int?
+    @State private var thumbnailCache = ChapterThumbnailImageCache()
 
     var body: some View {
         if chapters.isEmpty {
@@ -336,6 +327,7 @@ struct ChaptersTabView: View {
                                         index: index,
                                         isCurrent: index == currentIndex,
                                         thumbnailRequest: thumbnailRequest(index, chapter.thumb),
+                                        thumbnailCache: thumbnailCache,
                                         onTap: { startMs in
                                             // Immediate in-panel feedback: ring + center the
                                             // picked card (the panel may stay up — programmatic
