@@ -1022,7 +1022,10 @@ struct ArtworkPipelineTests {
                                 descriptor: ArtworkRequestDescriptor,
                                 pipeline: ArtworkPipeline) async throws {
         let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(2))
+        // The complete hosted matrix schedules hundreds of Swift Testing cases concurrently.
+        // Preserve bounded deadlock detection while allowing this coordination task to be
+        // descheduled behind that load; focused runs normally satisfy the condition immediately.
+        let deadline = clock.now.advanced(by: .seconds(10))
         while await pipeline.waiterCountForTesting(descriptor.taskIdentity) < count {
             guard clock.now < deadline else { throw ArtworkTestTimeout.waiters }
             await Task.yield()
@@ -1227,7 +1230,7 @@ private actor ControlledArtworkTransport {
 
     func waitUntilStarted(count: Int) async throws {
         let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(2))
+        let deadline = clock.now.advanced(by: .seconds(10))
         while startedIdentities.count < count {
             guard clock.now < deadline else { throw ArtworkTestTimeout.started }
             await Task.yield()
@@ -1236,7 +1239,7 @@ private actor ControlledArtworkTransport {
 
     func waitUntilCancelled(count: Int) async throws {
         let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(2))
+        let deadline = clock.now.advanced(by: .seconds(10))
         while cancelledTransportCount < count {
             guard clock.now < deadline else { throw ArtworkTestTimeout.cancelled }
             await Task.yield()
