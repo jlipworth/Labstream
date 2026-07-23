@@ -860,7 +860,9 @@ struct DownloadOptionsSheet: View {
                 if let p = downloadManager.optimizeProgress[record.ratingKey] {
                     ProgressView(value: p)
                     Text("\(Int(p * 100))%")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption)
+                        .stableHotMetric(.percent, alignment: .leading)
+                        .foregroundStyle(.secondary)
                 } else {
                     ProgressView()
                 }

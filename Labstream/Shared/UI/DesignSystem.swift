@@ -168,6 +168,65 @@ extension EnvironmentValues {
 
 // MARK: - Reusable view modifiers
 
+/// Display envelopes for numeric values that update in place. These are deliberately semantic:
+/// callers choose the largest honest shape their field supports rather than scattering unrelated
+/// magic widths. Widths scale with Dynamic Type and reserve punctuation/unit transitions that
+/// `.monospacedDigit()` alone cannot reserve.
+enum HotMetricEnvelope: Sendable {
+    case percent
+    case rate
+    case annotatedRate
+    case bytes
+    case storageTotal
+    case duration
+    case bitrate
+    case annotatedBitrate
+    case counter
+
+    var baseWidth: CGFloat {
+        switch self {
+        case .percent: 42       // "~100%"
+        case .rate: 82          // "999.9 MB/s"
+        case .annotatedRate: 132 // "999.9 MB/s server-paced"
+        case .bytes: 108        // "999.9 GB media/extras"
+        case .storageTotal: 72  // "999.9 GB"
+        case .duration: 82      // "~23h 59m"
+        case .bitrate: 96       // "999.9 Mbps"
+        case .annotatedBitrate: 150 // "idle (last 999.9 Mbps)"
+        case .counter: 52       // common 4–5 digit counters
+        }
+    }
+}
+
+private struct StableHotMetricModifier: ViewModifier {
+    let envelope: HotMetricEnvelope
+    let alignment: Alignment
+    @ScaledMetric(relativeTo: .caption) private var scale = 1.0
+
+    func body(content: Content) -> some View {
+        // Width grows for accessibility sizes, but a semantic field must not become wider than
+        // the compact phone row that is meant to stack it. Text may scale down visually inside
+        // this capped envelope; call sites retain the full accessibility value.
+        let boundedScale = min(scale, 1.35)
+        content
+            .monospacedDigit()
+            .frame(width: envelope.baseWidth * boundedScale, alignment: alignment)
+    }
+}
+
+extension View {
+    /// Stabilize an in-place numeric field, including decimal separators and unit shape.
+    ///
+    /// Keep the full value in `accessibilityValue` at the call site when a visual field also uses
+    /// line limiting or abbreviation for a compact presentation.
+    func stableHotMetric(
+        _ envelope: HotMetricEnvelope,
+        alignment: Alignment = .trailing
+    ) -> some View {
+        modifier(StableHotMetricModifier(envelope: envelope, alignment: alignment))
+    }
+}
+
 /// Lifts a poster/card on visionOS hover: a subtle scale + brighten that gives the
 /// browse grid the same tactile, gaze-responsive feel as Apple's own media apps.
 /// Hover is the primary "where am I looking" cue on visionOS, so every tappable
