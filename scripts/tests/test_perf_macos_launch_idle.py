@@ -825,6 +825,50 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(len(list(paired_root.glob("pair-*"))), 1)
             self.assertEqual(list(paired_root.glob(".pending-pair-*")), [])
 
+    def test_second_warmup_pair_resume_validates_retained_plus_pending_corpus(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            apps, plan, calibration, calibration_output, frozen = self.integrated_fixture(
+                root, cooldown=0)
+            plan["warmups"] = 2
+            plan["measured"] = 0
+            plan["samples"] = runner.schedule("launch", 2, 0, plan["seed"])
+            fake = FakeExecutor()
+            real_capture = runner.capture_launch_sample
+            interrupted = False
+
+            def crash_second_pair_arm_two(active_plan, sample, app, run_dir, executor, active_path):
+                nonlocal interrupted
+                if sample["sample_index"] == 1 and run_dir.name == "arm-2" and not interrupted:
+                    interrupted = True
+                    raise KeyboardInterrupt()
+                return real_capture(active_plan, sample, app, run_dir, executor, active_path)
+
+            with mock.patch.object(runner, "validate_integrated_plan"), \
+                    mock.patch.object(runner, "calibration_artifact", side_effect=self.fake_frozen), \
+                    mock.patch.object(runner.compare, "load_frozen", return_value={"ok": True}), \
+                    mock.patch.object(runner, "capture_launch_sample",
+                                      side_effect=crash_second_pair_arm_two):
+                with self.assertRaises(KeyboardInterrupt):
+                    runner.capture_integrated(
+                        plan, calibration, apps, fake, calibration_output=calibration_output,
+                        frozen_output=frozen, resume=False, max_pair_gap_seconds=120)
+
+            paired_root = root.resolve() / "paired-logs"
+            self.assertEqual([path.name for path in paired_root.glob("pair-*")], ["pair-0001"])
+            self.assertTrue((paired_root / ".pending-pair-0002").is_dir())
+            with mock.patch.object(runner, "validate_integrated_plan"), \
+                    mock.patch.object(runner, "calibration_artifact", side_effect=self.fake_frozen), \
+                    mock.patch.object(runner.compare, "load_frozen", return_value={"ok": True}):
+                result = runner.capture_integrated(
+                    plan, calibration, apps, fake, calibration_output=calibration_output,
+                    frozen_output=frozen, resume=True, max_pair_gap_seconds=120)
+
+            self.assertEqual(len(result["records"]), 4)
+            self.assertEqual(sorted(path.name for path in paired_root.glob("pair-*")),
+                             ["pair-0001", "pair-0002"])
+            self.assertFalse((paired_root / ".pending-pair-0002").exists())
+
     def test_resume_rejects_tampered_retained_manifest(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)

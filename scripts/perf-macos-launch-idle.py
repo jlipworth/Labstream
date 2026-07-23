@@ -1673,9 +1673,17 @@ def capture_integrated(plan: dict[str, Any], calibration: dict[str, Any],
                     if state["paired_records"] else
                     _recorded_sample(state["calibration_records"][-1], "control"))
         validate_new_evidence_chronology(loaded, previous)
+        # Pairing validation requires zero-based consecutive indexes for each sample kind. Validate
+        # the retained corpus plus this unpublished pair: validating pair N alone would incorrectly
+        # reject every N > 1 because its local sample index does not begin at zero.
+        retained = [_recorded_sample(record, record["role"])
+                    for record in state["paired_records"]]
+        pending_corpus = [*retained, *loaded]
         compare._validate_pairing(
-            [sample for sample in loaded if sample.manifest["run"]["artifact_role"] == "control"],
-            [sample for sample in loaded if sample.manifest["run"]["artifact_role"] == "candidate"],
+            [sample for sample in pending_corpus
+             if sample.manifest["run"]["artifact_role"] == "control"],
+            [sample for sample in pending_corpus
+             if sample.manifest["run"]["artifact_role"] == "candidate"],
             calibration["max_free_storage_drift_bytes"], max_pair_gap_seconds)
         destination = paired_root / f"pair-{pair_index:04d}"
         publish_evidence_directory(pending, destination)
