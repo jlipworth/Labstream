@@ -187,7 +187,10 @@ the final server mutation as well as the final local selection.
 Completed downloads play from local file URLs. Local playback has no remote progress stream,
 server session, or transcode cleanup path. Its playhead is persisted on the offline record,
 and its typed offline session still shares player UI, diagnostics, chapters/subtitles, Cinema,
-and error surfaces with remote playback.
+and error surfaces with remote playback. Transport-status presentation is source-aware:
+`PlaybackTransportPresentationPolicy` maps AVPlayer's shared waiting state to local-preparation
+wording for `.localFile` sessions instead of remote buffering language, while stall-watchdog
+mechanics remain shared with remote playback.
 
 ## HDR and Dolby Vision
 
@@ -249,7 +252,10 @@ The chapter info tab is the deliberate exception: AVKit hosts it in an independe
 per-position frames, Emby online/offline chapter fallback, and the player nearest-frame cache remain
 provider-scoped time-indexed exceptions rather than `ArtworkPipeline` consumers. Authenticated
 requests use the nonpersistent side-asset transport, and their leaf caches are memory-only and
-bounded by both byte cost and entry count. Sprite sheets and final scrub previews cross a detached,
+bounded by both byte cost and entry count. The Chapters panel additionally holds a panel-session-scoped `ChapterThumbnailImageCache` — a
+MainActor cost-bounded LRU (48 images / 48 MB) keyed by opaque side-asset request digest — that
+keeps decoded thumbnails warm across lazy card reuse and releases all pixels when the panel closes
+or under memory pressure. Sprite sheets and final scrub previews cross a detached,
 eager ImageIO decode boundary before entering provider or MainActor cache state. A parsed BIF retains
 one backing payload, maps safe offline files, and normal seek lookup copies only the selected frame;
 the source-compatible `frames` accessor materializes all payloads only when explicitly read. Largest-real-BIF and

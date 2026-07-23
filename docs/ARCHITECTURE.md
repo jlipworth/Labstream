@@ -44,7 +44,8 @@ flowchart TD
 ## Native targets and release trains
 
 The repository contains four native application targets. Vision Pro and mobile are the
-supported product paths; the native Mac target is a local-build development preview. All four
+supported product paths; the native Mac target is a local-build development preview, and the
+streaming-only tvOS target is in development. All four
 attach the file-system-synchronized `Labstream/Shared/` root plus exactly one root under
 `Labstream/Platforms/`. Vision Pro, mobile, and Mac additionally attach the non-overlapping
 `Labstream/Capabilities/Downloads/` root; tvOS cannot compile or construct that capability.
@@ -247,9 +248,12 @@ memory-only and bounded by both byte cost and entry count. Sprite sheets and fin
 cross a detached, eager ImageIO decode boundary before provider or MainActor cache publication; one
 BIF backing payload is retained, safe offline files are mapped, and normal seek lookup copies only
 the selected frame; the source-compatible `frames` accessor materializes all payloads only when
-explicitly read. Largest-real-BIF and tile-sheet peak-RSS validation remains a Phase 5 measurement gate.
-Their `DecodedImage` conversion is not shared-pipeline migration. Validation of
-downloaded poster/chapter payloads before promotion remains a Wave 4 download-side-asset obligation.
+explicitly read. Largest-real-BIF and tile-sheet peak-RSS measurement was a planned Wave 5 gate that the operator
+explicitly elected to forgo; no measurement gate remains outstanding (see
+docs/archive/plans/2026-07-21-simplification-performance.md).
+Their `DecodedImage` conversion is not shared-pipeline migration. Downloaded poster/chapter/BIF/subtitle
+payloads are validated before promotion: `DownloadSideAssetService.validate` decodes and structurally
+checks each payload kind ahead of the atomic staging write.
 
 ## Video playback and theater surfaces
 

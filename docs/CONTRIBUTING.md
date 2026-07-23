@@ -8,6 +8,8 @@ Thanks for helping improve Labstream. This project touches private media servers
 - Skim the [Architecture overview](ARCHITECTURE.md) and [Code map](CODE-MAP.md).
 - For host-Mac work, read [macOS development preview](MACOS.md); it is a local-build preview,
   not a released support target.
+- For tvOS work, read [tvOS development](TVOS.md); `LabstreamTV` is a streaming-only,
+  in-development target with the Downloads capability compiled out.
 - Check open issues to avoid duplicating work.
 
 ## Local workflow
@@ -31,12 +33,14 @@ A good PR includes:
 - tests for pure policies or request builders when applicable;
 - notes about simulator, device, or live-server validation when relevant;
 - Mac host build/smoke notes when a change touches the `LabstreamMac` preview;
+- tvOS build/smoke notes when a change touches the `LabstreamTV` target;
 - screenshots only when they do not reveal private server or media details.
 
 Run the [core validation commands](DEVELOPMENT.md#core-validation-commands) before opening or
-updating a PR. For app-owned changes, also run the affected host-app unit suite: `LabstreamTests`
-through the `LabstreamMobile` scheme on an iOS simulator and/or `LabstreamMacTests` through the
-`LabstreamMac` scheme on the host. Exact commands and test-plan names are in
+updating a PR. For app-owned changes, also run the affected host-app unit suite(s): `LabstreamTests`
+through the `LabstreamMobile` scheme on an iOS simulator, `LabstreamMacTests` through the
+`LabstreamMac` scheme on the host, and/or `LabstreamTVTests` (with `LabstreamTVUITests`) through
+the `LabstreamTV` scheme on a tvOS simulator. Exact commands and test-plan names are in
 [Development setup](DEVELOPMENT.md). Shared app infrastructure should exercise both hosts; these
 tests supplement rather than replace the affected app build and
 [observable simulator smoke](DEVELOPMENT.md#install-and-observe-a-simulator-smoke).

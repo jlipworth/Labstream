@@ -412,6 +412,20 @@ The development build uses the same bundle identifier as the intended App Store 
 install can replace another installed build and its app state. Development provisioning profiles can
 also expire; review the profile lifetime printed by the wrapper before relying on an offline install.
 
+For an install that must outlive a development provisioning profile (for example, offline use away
+from the development Mac), use the distribution-signed Ad Hoc wrapper instead. It requires an Apple
+Distribution certificate and a non-expired Ad Hoc provisioning profile that includes the headset's UDID:
+
+```sh
+scripts/deploy-ad-hoc-to-device.sh                 # distribution-signed build + install
+scripts/deploy-ad-hoc-to-device.sh --launch        # also launch
+scripts/deploy-ad-hoc-to-device.sh --list-profiles # inspect installed Ad Hoc profiles
+scripts/deploy-ad-hoc-to-device.sh --profile "<name-or-uuid>"
+```
+
+Select a device or team explicitly with VP_DEVICE_ID, VP_DISTRIBUTION_TEAM, or
+VP_AD_HOC_PROFILE_SPECIFIER when the defaults are ambiguous.
+
 ## Physical iPhone or iPad install
 
 Use the mobile wrapper for a signed `iphoneos` build:

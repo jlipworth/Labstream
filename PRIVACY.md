@@ -2,7 +2,7 @@
 
 _Last updated: 2026-07-15_
 
-Labstream is a personal media client for Apple Vision Pro, iPhone, and iPad that connects to a Plex Media Server, Jellyfin server, or Emby server **that you choose and control**. The source repository also contains a native Mac local-build development preview. Labstream is designed to collect as little as possible.
+Labstream is a personal media client for Apple Vision Pro, iPhone, and iPad that connects to a Plex Media Server, Jellyfin server, or Emby server **that you choose and control**. The source repository also contains native Mac and tvOS local-build development previews. Labstream is designed to collect as little as possible.
 
 ## What Labstream does not do
 

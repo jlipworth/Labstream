@@ -12,6 +12,11 @@ The repository also contains `LabstreamMac` as a local-build development preview
 separately in [macOS development preview](MACOS.md) and is not part of the supported mobile product
 path.
 
+The repository also contains `LabstreamTV`, a streaming-only Apple TV development target (no
+Downloads/Offline capability at compile time). It is documented separately in
+[tvOS development target](TVOS.md) and is not part of the iOS/iPadOS mobile product path described
+here.
+
 `LabstreamMobile` is the universal iPhone/iPad target. It compiles `Labstream/Shared/`,
 `Labstream/Capabilities/Downloads/`, and its exclusive `Labstream/Platforms/Mobile/` owner
 root, plus the shared `PMSKit` package. The public mobile support floor is iOS/iPadOS 26.1+.
