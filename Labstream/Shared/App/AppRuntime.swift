@@ -67,9 +67,16 @@ struct AppRuntime {
             bootstrap: bootstrap
         )
         #else
+        #if PERFORMANCE_AUDIT
+        let downloadManagerSpan = PerformanceInstrumentation.begin(.runtimeDownloadManager,
+                                                                    backend: "App")
+        #endif
         let downloadManager = DownloadManager(
             appModel: model,
             registerForBackgroundEvents: true)
+        #if PERFORMANCE_AUDIT
+        downloadManagerSpan.end(fields: ["background_events": 1])
+        #endif
         // Sign-out is the one lifecycle edge where an already-open URLSession request can retain
         // a just-revoked authorization header. Pause that backend's work before AuthManager
         // clears its runtime session; weak capture keeps the service graph acyclic.

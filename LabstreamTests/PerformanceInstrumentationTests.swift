@@ -7,6 +7,12 @@ import Testing
 struct PerformanceInstrumentationTests {
     @Test("Browse measurement phases have stable closed names")
     func browsePhaseNames() {
+        #expect(PerformanceInstrumentation.Phase.runtimeComposition.rawValue
+                == "runtime.composition")
+        #expect(PerformanceInstrumentation.Phase.runtimeDownloadManager.rawValue
+                == "runtime.download_manager")
+        #expect(PerformanceInstrumentation.Phase.runtimeDownloadStore.rawValue
+                == "runtime.download_store")
         #expect(PerformanceInstrumentation.Phase.homeFirstContent.rawValue == "home.first_content")
         #expect(PerformanceInstrumentation.Phase.searchLoad.rawValue == "search.load")
         #expect(PerformanceInstrumentation.Phase.libraryGridFirstContent.rawValue
