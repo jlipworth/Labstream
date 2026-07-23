@@ -150,11 +150,7 @@ private enum AppKeychainService {
 
 enum DevelopmentCredentialStoragePolicy {
     static func allowsFileStorage(isCanonicalService: Bool) -> Bool {
-        #if DEBUG && os(macOS)
-        !isCanonicalService
-        #else
-        false
-        #endif
+        !isCanonicalService && KeychainStore.supportsDevelopmentFileStorage
     }
 }
 

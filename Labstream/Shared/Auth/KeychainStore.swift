@@ -47,6 +47,17 @@ final class KeychainStore {
     static let embyUserIDKey = "embyUserID"
     static let embyServerIDKey = "embyServerID"
 
+    /// Compile-time admission for the explicitly requested macOS development credential
+    /// store. PerformanceAudit is nonshipping but otherwise Release-equivalent, so it needs
+    /// the same deterministic storage as Debug without opening this path to shipping builds.
+    static var supportsDevelopmentFileStorage: Bool {
+        #if (DEBUG || PERFORMANCE_AUDIT) && os(macOS)
+        true
+        #else
+        false
+        #endif
+    }
+
     /// Accounts stored as iCloud-synchronizable keychain items (see the type doc for the
     /// rationale). Everything else stays device-local.
     private static let synchronizedAccounts: Set<String> = [tokenKey]
@@ -72,13 +83,11 @@ final class KeychainStore {
         self.synchronizesPlexToken = synchronizesPlexToken
         self.fallbackPolicy = fallbackPolicy
         self.fileManager = fileManager
-        #if DEBUG && os(macOS)
+        // File-backed credentials are a local Mac development/performance-measurement
+        // affordance only. Shipping binaries fail closed on Keychain errors even if a caller
+        // accidentally requests it.
         self.usesDevelopmentFileStorage = usesDevelopmentFileStorage
-        #else
-        // File-backed credentials are a local Mac development affordance only. A Release
-        // binary fails closed on Keychain errors even if a caller accidentally requests it.
-        self.usesDevelopmentFileStorage = false
-        #endif
+            && Self.supportsDevelopmentFileStorage
         self.writeInterceptor = writeInterceptor
         self.deleteInterceptor = deleteInterceptor
     }
@@ -228,7 +237,7 @@ final class KeychainStore {
         // keychain then prompts once per touched generic-password item (and often again after the
         // next rebuild), which makes real backend testing unusable. This path is deliberately
         // opt-in from AppRuntime for non-canonical macOS dev bundle IDs only; production and all
-        // shipping iOS/visionOS paths continue to use Keychain.
+        // canonical production and all non-macOS paths continue to use Keychain.
         saveFallback(data, for: account)
     }
 

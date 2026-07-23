@@ -84,17 +84,19 @@ struct AuthSecureStorageTests {
         #expect(authority.isIdle)
     }
 
-    @Test func developmentCredentialFilesAreDebugMacOnly() {
-        #if DEBUG && os(macOS)
+    @Test func developmentCredentialFilesAreNonshippingMacOnly() {
+        #if (DEBUG || PERFORMANCE_AUDIT) && os(macOS)
+        #expect(KeychainStore.supportsDevelopmentFileStorage)
         #expect(DevelopmentCredentialStoragePolicy.allowsFileStorage(isCanonicalService: false))
         #else
+        #expect(!KeychainStore.supportsDevelopmentFileStorage)
         #expect(!DevelopmentCredentialStoragePolicy.allowsFileStorage(isCanonicalService: false))
         #endif
         #expect(!DevelopmentCredentialStoragePolicy.allowsFileStorage(isCanonicalService: true))
     }
 
     @Test func releasePolicyDoesNotImportDebugDevelopmentCredentialFile() {
-        #if DEBUG && os(macOS)
+        #if (DEBUG || PERFORMANCE_AUDIT) && os(macOS)
         let service = "com.visionplay.tests.release-file-closed.\(UUID().uuidString)"
         let debugStore = KeychainStore(service: service,
                                        synchronizesPlexToken: false,
