@@ -123,6 +123,29 @@ class IdleSummaryTests(unittest.TestCase):
                               expected_duration_ns=DURATION_NS, window_tolerance_ns=0), metrics,
         )
 
+    def test_native_normalizer_accepts_terminated_as_non_running_non_wakeup_state(self):
+        native = thread_state_xml().replace(
+            b'<thread-state ref="31"/>',
+            b'<thread-state id="33" fmt="Terminated">Terminated</thread-state>',
+        )
+        _, metrics = idle.normalize_native(
+            ET.fromstring(toc_xml()), ET.fromstring(native), expected_pid=PID,
+            expected_xcode_build=BUILD, expected_duration_ns=DURATION_NS, tolerance_ns=0,
+        )
+        self.assertEqual(metrics["cpu_running_ns"], 650_000_000)
+        self.assertEqual(metrics["wakeups_count"], 1)
+
+    def test_native_normalizer_rejects_mismatched_state_format(self):
+        native = thread_state_xml().replace(
+            b'<thread-state id="30" fmt="Running">Running</thread-state>',
+            b'<thread-state id="30" fmt="Terminated">Running</thread-state>',
+        )
+        with self.assertRaisesRegex(idle.IdleSummaryError, "formatted value"):
+            idle.normalize_native(
+                ET.fromstring(toc_xml()), ET.fromstring(native), expected_pid=PID,
+                expected_xcode_build=BUILD, expected_duration_ns=DURATION_NS, tolerance_ns=0,
+            )
+
     def test_normalized_parser_accepts_only_closed_table_and_binding(self):
         parsed = idle.parse_export(
             normalized_xml(), expected_xcode_build=BUILD, expected_pid=PID,
