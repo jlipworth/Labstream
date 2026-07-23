@@ -221,6 +221,9 @@ are backend-scoped and cross-backend.
   visionOS video does not use this lease path.
 - `Labstream/Shared/Player/NowPlayingArtwork.swift` provides the shared MediaPlayer artwork wrapper
   used by both system-media approaches.
+- `Labstream/Shared/Player/PlaybackTransportPresentationPolicy.swift` owns transport/resume-button
+  presentation decisions for Offline playback based on local preparation status, extracted out of
+  `PlaybackController`/`PlayerChromeComponents`.
 
 Pure playback policies and request builders live primarily in
 `PMSKit/Sources/PMSKit/Playback/`, `PMSKit/Sources/PMSKit/Transcode/`,
@@ -388,5 +391,8 @@ paths, filenames, client identifiers, or media titles to diagnostics.
   iPhone/iPad and Apple TV simulators.
 - `scripts/deploy-mobile-to-device.sh` deploys the signed mobile target to iPhone/iPad;
   `scripts/deploy-to-device.sh` deploys the signed visionOS target.
+- `scripts/deploy-macos-to-host.sh` builds/installs/cleans up the native Mac host app (no
+  simulator); `scripts/deploy-ad-hoc-to-device.sh` deploys an Ad Hoc/distribution-profile
+  build to a device.
 - `scripts/` also contains docs, hygiene, version stamping, and optional live-probe tools.
 - `.woodpecker/` contains portable CI definitions.

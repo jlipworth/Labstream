@@ -194,8 +194,9 @@ scripts/perf-compare.py compare \
 ## Simulator and worktree helpers
 
 - `worktree-sim.sh` — provisions one simulator per worktree. The default is visionOS
-  (`vpwt-*`, `.simid`); opt into iPhone or iPad with `--platform`,
-  `LABSTREAM_SIM_PLATFORM`, or a gitignored `.simplatform` file. Resolve a concrete ID and never
+  (`vpwt-*`, `.simid`); opt into iPhone, iPad, or tvOS with `--platform`,
+  `LABSTREAM_SIM_PLATFORM`, or a gitignored `.simplatform` file (`iphonewt-*`/`.simid-iphone`,
+  `ipadwt-*`/`.simid-ipad`, `tvwt-*`/`.simid-tvos`). Resolve a concrete ID and never
   target `booted`.
 - `agent-sim-run.sh` — bounded visionOS agent scenarios with build/install/launch, screenshots,
   video, logs, and a machine-readable run result.
@@ -209,6 +210,8 @@ scripts/perf-compare.py compare \
 - `smoke-macos-host.sh` — bounded signed-out host launch smoke under an isolated identity.
 - `validate-macos-228.sh` — repeatable Mac-preview validation sweep. The filename is retained from
   the implementation issue; it also builds shared targets and runs focused diagnostics checks.
+- `validate-macos-pipeline.py` — enforces the trust-boundary/label rules (`platform: darwin/arm64`,
+  `backend: local`, `purpose: mac-ci`) for the native Woodpecker CI workflow file.
 - `perf-macos-launch-idle.py` — external paired runner for two already-built Mac
   `PerformanceAudit` apps using the same dedicated `com.jlipworth.Labstream.perf.*` identity. It validates both
   products with `performance-audit-contract.py`, preserves the system-managed container root while
@@ -327,6 +330,9 @@ gitignored. `live-test-filter.sh` is the shared output/exit-status filter used b
   proof, and live response decoding. Copy `emby-live.env.example`. Timeline acceptance always
   mutates a TEST ACCOUNT resume point and requires both the explicit write opt-in and a distinct
   offset; the probe verifies the write and verifies restoration before reporting PASS.
+- `live-emby-trickplay-probe.sh` — GET-only Emby ThumbnailSet/Thumbnail/index.bif trick-play
+  preview probe; copy `emby-live.env.example` and follows the same ignored-env-file/VERDICT-SKIP
+  convention.
 
 ### Jellyfin
 

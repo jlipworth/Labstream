@@ -73,6 +73,12 @@ skipping them.
 - [ ] Leave queued work for an inactive backend, relaunch, and confirm restore hydrates that
       saved lane sufficiently for its own download recovery without changing the visible
       active backend.
+- [ ] With 2+ backends signed in, use Sign Out of All Backends (Settings, or the macOS
+      Account menu). Confirm the confirmation dialog names exactly the affected backends,
+      Jellyfin/Emby remote sessions are revoked, all three backends' credentials are
+      cleared, the active backend resets to Plex, Spotlight index is cleared, and in-flight
+      downloads for every backend pause without losing records or files. Also confirm the
+      action is hidden/disabled when only one backend has a saved session.
 
 ## 3. Browse, search, and detail
 
@@ -103,7 +109,8 @@ layout code changed.
       privacy-safe placeholder without logging a token-bearing URL.
 - [ ] On a physical iPhone against Emby, Recently Added TV Shows prefers a season/series Primary
       poster when available; a Thumb-only episode uses a 16:9 card/request without warping. Also
-      regression-check one movie rail and one missing-parent episode fallback before closing #245.
+      regression-check one movie rail and one missing-parent episode fallback (regression
+      coverage for the fixed #245 warped-artwork defect).
 
 ## 4. Shared video playback
 

@@ -254,7 +254,12 @@ transport, recovery work, persistence barriers, or background-completion durabil
 
 - adopts only current task markers whose exact attempt matches the durable row;
 - keeps current malformed/ownerless active rows fail-closed rather than guessing ownership;
-- resumes/retries recoverable transfers and surfaces terminal failures in the row;
+- resumes/retries recoverable transfers and surfaces terminal failures in the row. A row whose
+  last failure was storage-full is not automatically redriven: every automatic static-range
+  redrive (rebuilds, backend-ready drains, launch recovery) first re-measures free space —
+  counting iOS purgeable space, matching the Settings storage gauge — and, if the volume still
+  cannot hold the remaining bytes plus headroom, parks the row as a pending resume instead of
+  retrying. A user-initiated Retry always dispatches regardless of this gate;
 - replays required server cleanup from the independent journal when the matching backend
   session is available;
 - inventories and repairs missing posters, subtitles, chapters, Plex/Emby BIF, and Jellyfin

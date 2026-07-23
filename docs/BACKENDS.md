@@ -113,8 +113,8 @@ folders rather than a `Plex/` directory.
 
 For Emby Home artwork, synthetic season/series Primary sources are treated as portrait posters;
 Thumb and Backdrop fallbacks retain 16:9 request and presentation geometry. Automated policy,
-request, mapping, and hosted checks cover this fix, but GitHub issue #245 still requires its
-physical-iPhone Emby regression check before comment/closure.
+request, mapping, and hosted checks cover this fix; GitHub issue #245 was verified on
+physical iPhone/Emby and closed (see commit 82025875).
 
 ## Package boundary
 

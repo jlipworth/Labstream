@@ -28,9 +28,9 @@ publishing code changes.
 
 Production changes should also run focused tests from the owning layer. Pure request/model/policy
 coverage belongs in `PMSKit/Tests/PMSKitTests`. App-owned deterministic coverage lives in
-`LabstreamTests/`; the same sources are hosted by `LabstreamTests` on an iOS simulator and
-`LabstreamMacTests` on macOS. Run the affected host, or both hosts for shared app infrastructure,
-using the exact test-plan commands in Development setup.
+`LabstreamTests/`; the same sources are hosted by `LabstreamTests` on an iOS simulator,
+`LabstreamMacTests` on macOS, and `LabstreamTVTests` on tvOS. Run the affected host(s), or all
+three for shared app infrastructure, using the exact test-plan commands in Development setup.
 
 The app suites are host-app unit tests. They do not replace the canonical
 [install/launch/log/screenshot smoke](DEVELOPMENT.md#install-and-observe-a-simulator-smoke),
@@ -137,9 +137,10 @@ artwork joining, priority, downsampling, privacy, cache cost, and clear epochs.
 These hosted/package checks are not all-target or live-backend acceptance. Shared source still
 requires the affected native matrix builds and isolated host/simulator smokes, and live Plex,
 Jellyfin, and Emby request behavior remains an opt-in credentialed gate where a hermetic fixture
-cannot establish server truth. In particular, the Emby Home poster correction for GitHub issue
-#245 requires a physical iPhone signed into Emby: verify Recently Added TV Shows portrait art, a
-movie rail, and the episode Thumb/Backdrop fallback before commenting on or closing the issue.
+cannot establish server truth. Emby Home poster/rail corrections needing physical-device
+confirmation should be verified on a physical iPhone signed into Emby: check Recently Added TV
+Shows portrait art, a movie rail, and the episode Thumb/Backdrop fallback before closing the
+tracking issue.
 
 ### visionOS hosted-test migration
 
