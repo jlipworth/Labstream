@@ -1,6 +1,6 @@
 # Emby BIF trick-play implementation plan and acceptance journal
 
-Status: **implementation complete; generated-preview real-server proof accepted, offline and no-generated-preview acceptance remain open** for [GitHub issue #238](https://github.com/jlipworth/Labstream/issues/238). The [approved post-audit implementation direction](https://github.com/jlipworth/Labstream/issues/238#issuecomment-5024007573) is authoritative. Keep the issue open until real Emby behavior is healthy; automated tests and Apple-platform builds do not replace that gate.
+Status: **completed and accepted; archived after [GitHub issue #238](https://github.com/jlipworth/Labstream/issues/238) closed**. Real generated-preview behavior was accepted online and offline; the no-generated-preview chapter fallback was accepted from comprehensive automated coverage rather than a specially configured second real-server library. The [approved post-audit implementation direction](https://github.com/jlipworth/Labstream/issues/238#issuecomment-5024007573) remains the historical implementation contract.
 
 Baseline: 2026-07-20 at repository commit `7fc0cc63`. This document is both the implementation plan and durable acceptance journal. Promote proven behavior into current architecture/testing documentation as needed, then archive this plan only after every gate below is complete or explicitly transferred to a linked follow-up.
 
@@ -69,8 +69,8 @@ All work is optional, playback-passive, cancellable, privacy-safe, Wi-Fi-policy-
 ## Acceptance gates
 
 - [x] Online real Emby item with generated preview thumbnails proves non-empty `ThumbnailSet`, authenticated parseable BIF for the selected source, and healthy provider selection.
-- [ ] Real Emby item/library without generated preview thumbnails proves the empty/unavailable shape and silent chapter fallback.
-- [ ] Offline download from a generated-preview source proves selected-source BIF caching and cached-BIF playback preference, with chapters retained as fallback.
+- [x] The empty/unavailable generated-preview shape and silent chapter fallback are accepted from comprehensive automated coverage; the owner explicitly waived a second specially configured real-server library.
+- [x] A real offline generated-preview download proved selected-source BIF publication, persistence, valid parsing, cached-BIF-first playback selection, visible hover previews, and retained cached chapters.
 - [x] Automated compatibility coverage remains green for Plex BIF, Jellyfin tiles, Emby chapters, legacy records, cancellation, replacement fencing, deletion, and accounting.
 - [x] All current player platforms compile against the shared hierarchy without seek-semantic changes.
 - [x] Issue #238 contains the final commit, tests/builds, live-probe evidence, fallback outcome, plan status, and any remaining real-server gate.
@@ -111,6 +111,18 @@ All work is optional, playback-passive, cancellable, privacy-safe, Wi-Fi-policy-
 - Posted the privacy-safe [implementation and acceptance update](https://github.com/jlipworth/Labstream/issues/238#issuecomment-5024396927) with tests, builds, live proof, fallback results, plan status, and both remaining real gates.
 - Left #238 open; did not merge to `main` or claim simulator, physical-device, empty-library, or offline-download proof that was not performed.
 
-## Remaining external truth
+### 2026-07-21 — offline acceptance and closure
 
-Two live gates remain deliberately open: (1) a real item/library with preview extraction absent must confirm the empty/unavailable `ThumbnailSet` and silent chapter fallback shape; (2) a real offline download must prove selected-source BIF publication and cached-BIF playback preference while retaining chapter fallback. The automated empty/malformed/fallback, source-identity, deletion, accounting, and attempt-replacement paths are green, but they do not fabricate either real-server result. Issue #238 remains open and this plan stays active/resumable.
+- A real Emby optimized download completed and played offline in a macOS production-identity build.
+- Its persisted selected-source BIF was promoted as a 5,568,427-byte, valid 748-frame index and
+  selected ahead of all 15 retained cached chapter thumbnails.
+- The user directly accepted the visible offline hover scrub-preview behavior.
+- The issue owner accepted the comprehensive automated empty/malformed/unavailable and chapter
+  fallback coverage instead of requiring a second specially configured real-server library.
+- [Issue #238 was closed as accepted](https://github.com/jlipworth/Labstream/issues/238#issuecomment-5035318355).
+
+## Final disposition
+
+No acceptance gate remains. Current architecture and testing contracts live in the published
+architecture, playback, downloads, code-map, and testing documentation; this journal is retained
+only as historical issue and acceptance evidence.
