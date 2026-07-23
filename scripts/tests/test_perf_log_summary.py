@@ -110,6 +110,14 @@ class PerfLogSummaryTests(unittest.TestCase):
             "perf.span phase=runtime.composition backend=App result=success duration_ms=4 "
             "downloads_capable=1"
         )
+        download_manager = perf.parse_span_line(
+            "perf.span phase=runtime.download_manager backend=App result=success duration_ms=3 "
+            "background_events=1"
+        )
+        download_store = perf.parse_span_line(
+            "perf.span phase=runtime.download_store backend=App result=success duration_ms=2 "
+            "default_store=1"
+        )
         restore = perf.parse_span_line(
             "perf.span phase=session.restore backend=Emby result=partial duration_ms=7 "
             "restored=0"
@@ -119,6 +127,8 @@ class PerfLogSummaryTests(unittest.TestCase):
         )
 
         self.assertEqual(composition.fields, {"downloads_capable": "1"})
+        self.assertEqual(download_manager.fields, {"background_events": "1"})
+        self.assertEqual(download_store.fields, {"default_store": "1"})
         self.assertEqual(restore.fields, {"restored": "0"})
         self.assertEqual(cancelled.result, "cancelled")
         self.assertEqual(
@@ -126,6 +136,18 @@ class PerfLogSummaryTests(unittest.TestCase):
                 "runtime.composition", "App", ["downloads_capable"]
             ),
             ("downloads_capable",),
+        )
+        self.assertEqual(
+            perf.evidence_schema.validate_correctness_fields(
+                "runtime.download_manager", "App", ["background_events"]
+            ),
+            ("background_events",),
+        )
+        self.assertEqual(
+            perf.evidence_schema.validate_correctness_fields(
+                "runtime.download_store", "App", ["default_store"]
+            ),
+            ("default_store",),
         )
         self.assertEqual(
             perf.evidence_schema.validate_correctness_fields(

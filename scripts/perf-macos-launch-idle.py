@@ -40,6 +40,20 @@ DEFAULTS = {
     "launch": {"warmups": 3, "measured": 20, "duration_seconds": 30, "settle_seconds": 0},
     "idle": {"warmups": 1, "measured": 5, "duration_seconds": 120, "settle_seconds": 10},
 }
+LAUNCH_PHASE_PROFILES = {
+    "runtime.composition": {
+        "field": "downloads_capable=1",
+        "correctness_field": "downloads_capable",
+    },
+    "runtime.download_manager": {
+        "field": "background_events=1",
+        "correctness_field": "background_events",
+    },
+    "runtime.download_store": {
+        "field": "default_store=1",
+        "correctness_field": "default_store",
+    },
+}
 IDLE_FAILURE_DETAIL_MAX_BYTES = 2 * 1024
 IDLE_TOOL_ERROR_PREFIXES = {
     str(IDLE_EXTRACTOR): "error: ",
@@ -150,6 +164,30 @@ def idle_failure_record(error: Exception) -> dict[str, str]:
         if detail:
             message += f": {detail}"
     return {"type": type(error).__name__, "message": message}
+
+
+def launch_profile(plan: dict[str, Any]) -> dict[str, str]:
+    """Return and validate the exact closed launch span selected by this plan."""
+    profile = plan.get("launch_profile")
+    if not isinstance(profile, dict):
+        fail("launch plan is missing its exact attribution profile")
+    phase = profile.get("phase")
+    expected = ({"phase": phase, **LAUNCH_PHASE_PROFILES[phase]}
+                if isinstance(phase, str) and phase in LAUNCH_PHASE_PROFILES else None)
+    if profile != expected:
+        fail("launch profile is not one exact closed attribution profile")
+    return profile
+
+
+def launch_summary_arguments(plan: dict[str, Any]) -> list[str]:
+    profile = launch_profile(plan)
+    return [
+        "--phase", profile["phase"], "--backend", "App",
+        "--field", profile["field"],
+        "--correctness-field", profile["correctness_field"],
+        "--expected-span-count", "1",
+    ]
+
 
 def validate_app(role: str, raw_path: pathlib.Path) -> App:
     path = raw_path.expanduser().absolute()
@@ -262,10 +300,11 @@ def launch_manifest(plan: dict[str, Any], sample: dict[str, Any], app: App,
     commits = plan["commits"]
     seed = plan["seed"]
     identities = plan.get("identities", {})
+    launch_phase = launch_profile(plan)["phase"]
     comparison = identities.get(
         "comparison_id", opaque("comparison", seed, commits["control"], commits["candidate"]))
     workload = identities.get(
-        "workload_id", opaque("workload", seed, *commits.values(), "runtime.composition"))
+        "workload_id", opaque("workload", seed, *commits.values(), launch_phase))
     scenario = identities.get(
         "scenario_id", opaque("scenario", seed, *commits.values(), "launch"))
     fixture = identities.get(
@@ -427,7 +466,12 @@ def command_plan(apps: tuple[App, App], scenario: str, warmups: int, measured: i
                  containers_root: pathlib.Path | None = None, control_commit: str = "0" * 40,
                  candidate_commit: str = "1" * 40, device_label: str = "local-device-01",
                  retention_deadline: str = "2099-01-01T00:00:00Z",
-                 cooldown_seconds: float = 0) -> dict[str, Any]:
+                 cooldown_seconds: float = 0, launch_phase: str | None = None) -> dict[str, Any]:
+    if scenario == "idle" and launch_phase is not None:
+        fail("launch phase selection is not valid for the idle scenario")
+    selected_launch_phase = "runtime.composition" if launch_phase is None else launch_phase
+    if scenario == "launch" and selected_launch_phase not in LAUNCH_PHASE_PROFILES:
+        fail("launch phase is not a supported closed attribution profile")
     if (not re.fullmatch(r"[a-f0-9]{40}", control_commit) or
             not re.fullmatch(r"[a-f0-9]{40}", candidate_commit) or control_commit == candidate_commit):
         fail("control and candidate commits must be distinct exact lowercase hashes")
@@ -478,16 +522,20 @@ def command_plan(apps: tuple[App, App], scenario: str, warmups: int, measured: i
                               "{exact_pid}"] if scenario == "idle" else None),
             "terminate": ["SIGTERM", "{exact_pid}"],
         }
+    identity_suffix = (() if selected_launch_phase == "runtime.composition"
+                       else (selected_launch_phase,))
     identities = {
-        "comparison_id": opaque("comparison", seed, control_commit, candidate_commit),
+        "comparison_id": opaque("comparison", seed, control_commit, candidate_commit,
+                                *identity_suffix),
         "workload_id": opaque("workload", seed, control_commit, candidate_commit,
-                              "runtime.composition" if scenario == "launch" else "idle.metrics"),
-        "scenario_id": opaque("scenario", seed, control_commit, candidate_commit, scenario),
+                              selected_launch_phase if scenario == "launch" else "idle.metrics"),
+        "scenario_id": opaque("scenario", seed, control_commit, candidate_commit, scenario,
+                              *identity_suffix),
         "fixture_id": opaque("fixture", seed, control_commit, candidate_commit,
                              CANONICAL_INDEX_SHA256),
         "order_seed": opaque("seed", seed, length=16),
     }
-    return {
+    result = {
         "schema_version": 1,
         "artifact_status": ("planned_admissible_per_run_manifests" if scenario == "launch"
                             else "planned_typed_idle_per_run_manifests"),
@@ -513,6 +561,12 @@ def command_plan(apps: tuple[App, App], scenario: str, warmups: int, measured: i
         "output": str(output.absolute()),
         "samples": samples,
     }
+    if scenario == "launch":
+        result["launch_profile"] = {
+            "phase": selected_launch_phase,
+            **LAUNCH_PHASE_PROFILES[selected_launch_phase],
+        }
+    return result
 
 def seed_container(container: pathlib.Path, executor: Executor) -> None:
     del executor  # Seeding is intentionally descriptor-anchored rather than shell/path based.
@@ -871,9 +925,7 @@ def capture(plan: dict[str, Any], apps: tuple[App, App], executor: Executor) -> 
             with summary.open("wb") as output:
                 executor.run([sys.executable, str(SUMMARY), "--json", "--strict", "--manifest",
                               str(manifest_path), "--raw-artifact", str(raw), "--workload-id", workload,
-                              "--phase", "runtime.composition", "--backend", "App", "--field",
-                              "downloads_capable=1", "--correctness-field", "downloads_capable",
-                              "--expected-span-count", "1"], stdout=output)
+                              *launch_summary_arguments(plan)], stdout=output)
             manifest["evidence"]["redacted_summary"]["sha256"] = hashlib.sha256(summary.read_bytes()).hexdigest()
             manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
             if bundle_sha256(app.path) != manifest["product"]["sha256"]:
@@ -1341,9 +1393,7 @@ def capture_launch_sample(plan: dict[str, Any], sample: dict[str, Any], app: App
         with summary.open("wb") as output:
             executor.run([sys.executable, str(SUMMARY), "--json", "--strict", "--manifest",
                           str(manifest_path), "--raw-artifact", str(raw), "--workload-id", workload,
-                          "--phase", "runtime.composition", "--backend", "App", "--field",
-                          "downloads_capable=1", "--correctness-field", "downloads_capable",
-                          "--expected-span-count", "1"], stdout=output)
+                          *launch_summary_arguments(plan)], stdout=output)
         manifest["evidence"]["redacted_summary"]["sha256"] = hashlib.sha256(
             summary.read_bytes()).hexdigest()
         manifest_path.write_bytes(_json_bytes(manifest))
@@ -1403,6 +1453,7 @@ def validate_records(records: Any, samples: list[dict[str, Any]], raw_root: path
                 or document["run"]["order_seed"] != plan["identities"]["order_seed"]
                 or document["scenario"]["id"] != plan["identities"]["scenario_id"]
                 or loaded.workload["id"] != plan["identities"]["workload_id"]
+                or loaded.workload["phase"] != launch_profile(plan)["phase"]
                 or document["product"]["commit"] != plan["commits"][sample["role"]]
                 or document["product"]["sha256"] != app_hashes[sample["role"]]):
             fail("resume evidence identity drift detected")
@@ -1453,6 +1504,8 @@ def integrated_result(plan: dict[str, Any], calibration: dict[str, Any], state: 
 
 
 def validate_integrated_plan(plan: dict[str, Any], calibration: dict[str, Any]) -> None:
+    paired_profile = launch_profile(plan)
+    calibration_profile = launch_profile(calibration)
     expected_pairs = schedule("launch", 3, 20, plan["seed"])
     expected_calibration = [sample for sample in expected_pairs if sample["role"] == "control"]
     sample_keys = ("scenario", "sample_kind", "sample_index", "pair_order", "role")
@@ -1466,7 +1519,8 @@ def validate_integrated_plan(plan: dict[str, Any], calibration: dict[str, Any]) 
             or any(sample["role"] != "control" for sample in calibration["samples"])
             or calibration["identities"]["comparison_id"] == plan["identities"]["comparison_id"]
             or calibration["identities"]["order_seed"] != plan["identities"]["order_seed"]
-            or calibration["identities"]["workload_id"] != plan["identities"]["workload_id"]):
+            or calibration["identities"]["workload_id"] != plan["identities"]["workload_id"]
+            or calibration_profile != paired_profile):
         fail("integrated launch plan violates the fixed short-policy schedule")
 
 
@@ -1707,6 +1761,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--device-label", required=True)
     parser.add_argument("--retention-deadline", required=True)
     parser.add_argument("--scenario", choices=sorted(DEFAULTS), default="launch")
+    parser.add_argument("--launch-phase", choices=sorted(LAUNCH_PHASE_PROFILES),
+                        help="exact launch attribution span (default: runtime.composition; launch only)")
     parser.add_argument("--warmups", type=int)
     parser.add_argument("--measured", type=int)
     parser.add_argument("--duration-seconds", type=int)
@@ -1736,6 +1792,8 @@ def main(argv: list[str] | None = None, *, executor: Executor | None = None) -> 
     duration = defaults["duration_seconds"] if args.duration_seconds is None else args.duration_seconds
     if args.scenario != "idle" and args.idle_settle_seconds is not None:
         fail("--idle-settle-seconds is valid only for the idle scenario")
+    if args.scenario == "idle" and args.launch_phase is not None:
+        fail("--launch-phase is valid only for the launch scenario")
     settle = defaults["settle_seconds"] if args.idle_settle_seconds is None else args.idle_settle_seconds
     if (warmups < 0 or measured < 1 or not 1 <= duration <= 86_400 or settle < 0
             or not math.isfinite(args.cooldown_seconds) or args.cooldown_seconds < 0
@@ -1758,7 +1816,7 @@ def main(argv: list[str] | None = None, *, executor: Executor | None = None) -> 
                         settle_seconds=settle, control_commit=args.control_commit,
                         candidate_commit=args.candidate_commit, device_label=args.device_label,
                         retention_deadline=args.retention_deadline,
-                        cooldown_seconds=args.cooldown_seconds)
+                        cooldown_seconds=args.cooldown_seconds, launch_phase=args.launch_phase)
     calibration = (calibration_plan_for(
         plan, args.calibration_output, args.max_calibration_storage_drift_bytes)
         if integrated else None)

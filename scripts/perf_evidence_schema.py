@@ -23,6 +23,8 @@ KNOWN_BACKENDS = {"App", "Plex", "Jellyfin", "Emby"}
 BACKEND_LABELS = {"plex": "Plex", "jellyfin": "Jellyfin", "emby": "Emby", "none": "App"}
 PHASE_FIELDS: dict[str, set[str]] = {
     "runtime.composition": {"downloads_capable"},
+    "runtime.download_manager": {"background_events"},
+    "runtime.download_store": {"default_store"},
     "session.restore": {"restored"},
     "home.first_content": {"content_present", "rail_count", "item_count", "publication_count", "error"},
     "home.load": {
@@ -50,11 +52,13 @@ PHASE_FIELDS: dict[str, set[str]] = {
 }
 MEDIA_BACKENDS = {"Plex", "Jellyfin", "Emby"}
 PHASE_BACKENDS: dict[str, set[str]] = {
-    phase: ({"App"} if phase == "runtime.composition" else MEDIA_BACKENDS)
+    phase: ({"App"} if phase.startswith("runtime.") else MEDIA_BACKENDS)
     for phase in PHASE_FIELDS
 }
 REQUIRED_CORRECTNESS_FIELDS: dict[tuple[str, str], tuple[str, ...]] = {
     ("runtime.composition", "App"): ("downloads_capable",),
+    ("runtime.download_manager", "App"): ("background_events",),
+    ("runtime.download_store", "App"): ("default_store",),
     ("session.restore", "Plex"): ("restored",),
     ("session.restore", "Jellyfin"): ("restored",),
     ("session.restore", "Emby"): ("restored",),
@@ -109,7 +113,8 @@ INTEGER_FIELDS = {
     "status", "width", "height", "pixel_width", "pixel_height",
 }
 BOOLEAN_FIELDS = {
-    "content_present", "downloads_capable", "restored", "degraded", "swr_refresh", "scoped",
+    "background_events", "content_present", "default_store", "downloads_capable", "restored",
+    "degraded", "swr_refresh", "scoped",
 }
 ENUM_FIELDS = {
     "path_mode": {"local_file", "remote_stream", "plex_stream"},

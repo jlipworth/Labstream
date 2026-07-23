@@ -438,10 +438,17 @@ public final class DownloadManager {
         Self.debugConstructionCount += 1
         #endif
         self.appModel = appModel
+        #if PERFORMANCE_AUDIT
+        let downloadStoreSpan = PerformanceInstrumentation.begin(.runtimeDownloadStore,
+                                                                  backend: "App")
+        #endif
         let store = injectedStore ?? DownloadStore()
         // Commit typed row ownership before the background session can be constructed/activated.
         // A failure remains explicit and leaves session admission dormant.
         let startupAdmission = store.startupIndexAdmission()
+        #if PERFORMANCE_AUDIT
+        downloadStoreSpan.end(fields: ["default_store": injectedStore == nil ? 1 : 0])
+        #endif
         self.store = store
         self.session = injectedSession ?? BackgroundDownloadSession(store: store)
         self.keepaliveCoordinator = DownloadKeepaliveCoordinator(appModel: appModel, store: store)

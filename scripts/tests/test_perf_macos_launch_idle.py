@@ -68,7 +68,7 @@ def native_thread_state(pid):
 
 
 class FakeExecutor:
-    def __init__(self, fail_sleep=False):
+    def __init__(self, fail_sleep=False, launch_phase="runtime.composition"):
         self.actions = []
         self.next_pid = 100
         self.fail_sleep = fail_sleep
@@ -76,6 +76,7 @@ class FakeExecutor:
         self.processes = {}
         self.trace_pid = None
         self.trace_duration = None
+        self.launch_phase = launch_phase
 
     def run(self, argv, *, stdout=-1):
         self.actions.append(("run", argv))
@@ -93,8 +94,11 @@ class FakeExecutor:
             subprocess.run(argv, check=True, stdout=stdout, stderr=subprocess.STDOUT)
         elif argv[:4] == ["/usr/bin/log", "show", "--info", "--style"]:
             self.assert_ndjson(argv)
-            stdout.write(b"perf.span phase=runtime.composition backend=App result=success "
-                         b"duration_ms=4 downloads_capable=1\n")
+            profile = runner.LAUNCH_PHASE_PROFILES[self.launch_phase]
+            stdout.write(
+                f"perf.span phase={self.launch_phase} backend=App result=success "
+                f"duration_ms=4 {profile['field']}\n".encode()
+            )
 
     def assert_ndjson(self, argv):
         if argv[4] != "ndjson":
@@ -274,6 +278,63 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(sorted({r["sample_index"] for r in rows if r["sample_kind"] == "measured"}),
                              list(range(20 if rows is launch else 5)))
         self.assertEqual(launch, runner.schedule("launch", 3, 20, 7))
+
+    def test_launch_attribution_profiles_are_exact_identity_bound_and_idle_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            apps = (runner.validate_app("control", self.make_app(root, "A.app")),
+                    runner.validate_app("candidate", self.make_app(root, "B.app")))
+            common = dict(
+                containers_root=root / "Containers", control_commit="a" * 40,
+                candidate_commit="b" * 40, device_label="local-device-07",
+            )
+            composition = runner.command_plan(
+                apps, "launch", 0, 1, 1, 7, root / "composition.json", **common)
+            manager = runner.command_plan(
+                apps, "launch", 0, 1, 1, 7, root / "manager.json",
+                launch_phase="runtime.download_manager", **common)
+
+            self.assertEqual(composition["launch_profile"], {
+                "phase": "runtime.composition",
+                "field": "downloads_capable=1",
+                "correctness_field": "downloads_capable",
+            })
+            self.assertEqual(runner.launch_summary_arguments(manager), [
+                "--phase", "runtime.download_manager", "--backend", "App",
+                "--field", "background_events=1",
+                "--correctness-field", "background_events",
+                "--expected-span-count", "1",
+            ])
+            self.assertNotEqual(composition["identities"]["comparison_id"],
+                                manager["identities"]["comparison_id"])
+            self.assertNotEqual(composition["identities"]["workload_id"],
+                                manager["identities"]["workload_id"])
+            with self.assertRaisesRegex(runner.RunnerError, "idle scenario"):
+                runner.command_plan(
+                    apps, "idle", 0, 1, 1, 7, root / "idle.json",
+                    launch_phase="runtime.download_store", **common)
+
+    def test_launch_child_profile_selects_exact_span_for_strict_summary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            apps = (runner.validate_app("control", self.make_app(root, "A.app")),
+                    runner.validate_app("candidate", self.make_app(root, "B.app")))
+            plan = runner.command_plan(
+                apps, "launch", 0, 1, 1, 9, root / "result.json",
+                containers_root=root / "Containers",
+                control_commit="a" * 40, candidate_commit="b" * 40,
+                device_label="local-device-07", launch_phase="runtime.download_store")
+            self.prepare_container(plan)
+
+            result = runner.capture(
+                plan, apps, FakeExecutor(launch_phase="runtime.download_store"))
+
+            self.assertEqual(result["capture_status"], "success")
+            for record in result["records"]:
+                summary = json.loads(
+                    (pathlib.Path(record["manifest"]).parent / "summary/redacted.json").read_text())
+                self.assertEqual(summary["workload"]["phase"], "runtime.download_store")
+                self.assertEqual(summary["workload"]["fields"], {"default_store": "1"})
 
     def test_app_validation_rejects_production_mismatch_and_symlinks(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -747,6 +808,25 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(calibration["identities"]["workload_id"],
                              plan["identities"]["workload_id"])
 
+    def test_integrated_plan_rejects_launch_profile_identity_drift(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            apps = (runner.validate_app("control", self.make_app(root, "A.app")),
+                    runner.validate_app("candidate", self.make_app(root, "B.app")))
+            plan = runner.command_plan(
+                apps, "launch", 3, 20, 30, 9, root / "paired.json",
+                containers_root=root / "Containers", control_commit="a" * 40,
+                candidate_commit="b" * 40, cooldown_seconds=10,
+                launch_phase="runtime.download_manager")
+            calibration = runner.calibration_plan_for(plan, root / "calibration.json", 1024)
+            calibration["launch_profile"] = {
+                "phase": "runtime.download_store",
+                **runner.LAUNCH_PHASE_PROFILES["runtime.download_store"],
+            }
+
+            with self.assertRaisesRegex(runner.RunnerError, "fixed short-policy schedule"):
+                runner.validate_integrated_plan(plan, calibration)
+
     def test_integrated_capture_cools_at_safe_boundaries_and_completion_is_idempotent(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
@@ -887,6 +967,30 @@ class RunnerTests(unittest.TestCase):
                     runner.capture_integrated(
                         plan, calibration, apps, fake, calibration_output=calibration_output,
                         frozen_output=frozen, resume=True, max_pair_gap_seconds=120)
+
+    def test_resume_validation_rejects_launch_phase_identity_drift(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            apps, plan, calibration, calibration_output, frozen = self.integrated_fixture(
+                root, cooldown=0)
+            fake = FakeExecutor()
+            with mock.patch.object(runner, "validate_integrated_plan"), \
+                    mock.patch.object(runner, "calibration_artifact", side_effect=self.fake_frozen), \
+                    mock.patch.object(runner.compare, "load_frozen", return_value={"ok": True}):
+                result = runner.capture_integrated(
+                    plan, calibration, apps, fake, calibration_output=calibration_output,
+                    frozen_output=frozen, resume=False, max_pair_gap_seconds=120)
+            drifted = json.loads(json.dumps(plan))
+            drifted["launch_profile"] = {
+                "phase": "runtime.download_manager",
+                **runner.LAUNCH_PHASE_PROFILES["runtime.download_manager"],
+            }
+
+            with self.assertRaisesRegex(runner.RunnerError, "identity drift"):
+                runner.validate_records(
+                    result["records"], plan["samples"],
+                    pathlib.Path(plan["output"]).parent / "paired-logs",
+                    drifted, apps, paired=True)
 
     def test_integrated_capture_rejects_symlinked_output_ancestor_before_mutation(self):
         with tempfile.TemporaryDirectory() as temporary:
