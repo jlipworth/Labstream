@@ -1,6 +1,6 @@
 # Cross-platform simplification and performance program
 
-Status: **Waves 0–4 implemented and validated; the independent Wave 6 simplification pass is complete; Wave 5 Mac browse and launch calibration/resume tooling plus the typed idle evidence foundation are operational, and full sampling/runtime integration are the next gates**
+Status: **Waves 0–4 implemented and validated; the independent Wave 6 simplification pass is complete; Wave 5 now has an admissible Mac launch baseline, while browse foreground admission, long idle thresholds/capture, compile and artwork evidence, and physical acceptance remain open**
 
 Audit baseline: `b3045bc0` (`Record tvOS merge checkpoint`) on
 `codex/audit-simplification-performance`
@@ -1174,20 +1174,26 @@ policy:
    exceed the closed schema, begin-only dimensions disappear from comparable records, several stale
    returns can leave spans open, and a value-type span can be ended more than once. Instrumentation
    and deterministic workloads must be applied identically to both artifacts before paired evidence.
-3. Runtime comparisons use `ead62213` as the instrumented post-safety control: it is a
+3. Runtime comparisons began with `ead62213` as the instrumented post-safety control: it is a
    measurement-only child of benchmark-ready `40af93f3` on `codex/audit-performance-control`.
    The simplified candidate begins structurally at `cf2ceeb3` and has matching launch/span
-   instrumentation at `e191ce46`. Compile topology may additionally report the original
-   `b3045bc0` control, but must label the different provenance rather than mixing controls inside
-   one paired result.
+   instrumentation at `e191ce46`. The first full launch comparison using control `ead62213` and
+   candidate artifact `e7d90e64` is not admissible for a performance conclusion: the control used
+   development file credentials while the candidate synchronously accessed Keychain, so the two
+   products did not execute equivalent startup work. Corrected launch evidence uses the closed
+   nonshipping macOS `PerformanceAudit` file-storage gate in control `27371cc3` and candidate
+   `b6d02a77`; canonical Release, non-Mac, and canonical-service paths remain Keychain-backed and
+   fail closed. Compile topology may additionally report the original `b3045bc0` control, but must
+   label the different provenance rather than mixing controls inside one paired result.
 4. Highest-priority hypotheses to measure, not assume, are synchronous launch-time download-store
    I/O; Plex restore waiting beyond first usable connection; zero-work recovery wakeups; load-all
    movie grids; whole-snapshot Home/Search publication; shimmer invalidation; store-and-forward media
    proxy bodies; unowned proxy connection tasks; redundant playback/diagnostics/Cinema clocks; HDR
    probe overlap; ungated download-health temp scans; main-actor row/task refresh; full-index fsync;
    and large side-asset/finalizer memory and I/O.
-5. No statistically admissible paired runtime result or five-sample compile artifact exists yet. The first implementation
-   slices are measurement-only: exact-once/schema-compatible spans, deterministic fixture/counter
+5. A statistically admissible paired Mac launch result now exists, but no full browse, long-idle,
+   artwork, playback, download, memory/energy, or five-sample compile result does. The first implementation
+   slices remain measurement-only: exact-once/schema-compatible spans, deterministic fixture/counter
    contracts, a paired seeded compile runner with five samples and PMSKit incremental coverage, and
    explicit test-tier timing/failure taxonomy. Expensive captures remain serialized with cooling,
    stable power/thermal/storage covariates, raw artifacts local, and physical-only cells reported as
@@ -1405,6 +1411,35 @@ policy:
     one-pair `insufficient_data` result. The validated full Home plan remains 69 serialized arms; it
     must not start until a fresh two-arm admission smoke succeeds in the current foreground session.
 
+19. Full launch sampling is now complete. The first integrated attempt found that pair two was
+    incorrectly validated without the retained pair-one corpus; commit `6474e3eb` fixed resume to
+    validate retained evidence together with the pending whole pair. A subsequent 3+20 calibration
+    and 3+20 paired run reported 5 ms control versus 46.5 ms candidate medians, but that result is
+    discarded because of the credential-policy asymmetry described above. The corrected full run
+    `mac-launch-full-20260723-v3` used control `27371cc3` and candidate `b6d02a77`, completed all 23
+    calibration and 46 paired arms without failure, and produced an admissible regression: control
+    median 5 ms / p95 6.2 ms versus candidate median 8 ms / p95 9 ms, with a +60% paired median and
+    95% bootstrap interval `[60%, 60%]`.
+
+    A focused hypothesis attributed the approximately 3 ms gap to eager construction of the
+    artwork pipeline's ephemeral transport. Commit `2cce384e` changed that transport to lazy,
+    lock-protected, exactly-once construction and passed 32 artwork tests plus a Release build and
+    adversarial review. Its independent full verification,
+    `mac-launch-artwork-opt-full-20260723`, completed another 23 calibration and 46 paired arms:
+    baseline and candidate both measured 8 ms median / 9 ms p95 (baseline p95 9.1 ms), with a 0%
+    paired median and `[0%, 0%]` interval. The comparator classified the change as noise, so commit
+    `bce3ef21` removes the 89-line experiment rather than retaining unproven complexity. The original
+    admissible composition regression remains open for a separately attributable hypothesis.
+
+    Remaining Wave 5 evidence is intentionally serialized. Home, Catalog, and Search each require a
+    fresh two-arm foreground AX admission before their 69-arm full run. Long idle requires a closed,
+    independently justified threshold artifact before its 1-warmup/5-measured 120-second pairs.
+    Artwork requires a deterministic loaded-cardinality milestone and comparable control, while the
+    five-pair PMSKit/four-app-target compile matrix is reserved for a cooled, otherwise idle host.
+    The broader playback, transport, download, memory/energy, largest-BIF, and physical-device matrix
+    remains explicit follow-up work; one available AVP can close single-headset cells, while
+    two-participant SharePlay is hardware-blocked rather than failed.
+
 ### Wave 6 — Optimize measured bottlenecks
 
 - Land one attributable optimization per slice.
@@ -1420,7 +1455,7 @@ policy:
   makes no runtime-performance claim. Measured optimizations remain blocked on comparable paired
   evidence and must not be smuggled into deletion slices.
 
-#### Wave 6 deletion checkpoint journal
+#### Wave 6 simplification and measured-optimization journal
 
 1. Commits `78f2df3a` through `3068b04e` remove **992 net production LOC** and **207
    net test LOC**; the only configuration change is one stale Xcode test-membership exception.
@@ -1491,9 +1526,11 @@ policy:
    A pre-existing `DownloadStorePersistenceTests` order/isolation failure still reproduces when its
    class runs as a group (`57/58` pass) but the named failing test passes alone; track that harness
    defect separately rather than attributing it to definition-only deletion.
-13. No measured optimization has landed. Wave 5 still lacks the identical external UI workload and
-   statistically eligible paired samples needed for launch, browse, artwork, playback, download,
-   memory, energy, or compile-time claims.
+13. No measured optimization is retained. The first eligible launch baseline found a 3 ms
+   composition regression, but the first focused artwork-transport hypothesis measured as noise in
+   a separate full paired run and was reverted rather than adding 89 lines without evidence. Wave 5
+   still lacks statistically eligible full browse, artwork, playback, download, memory/energy, and
+   compile-time results; the launch regression remains an open measurement-led optimization target.
 
 ### Wave 7 — Acceptance and closeout
 
