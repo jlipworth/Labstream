@@ -1,6 +1,6 @@
 # Cross-platform simplification and performance program
 
-Status: **Waves 0–4 implemented and validated; the independent Wave 6 simplification pass is complete; Wave 5 has resolved the admissible Mac composition regression, while browse foreground admission, long idle thresholds/capture, compile and artwork evidence, and physical acceptance remain open**
+Status: **Waves 0–4 implemented and validated; the independent Wave 6 simplification pass is complete; Wave 5 resolved the admissible Mac composition regression and is now intentionally paused with foreground browse/artwork, long-idle, compile, and broader performance evidence still open; Wave 7 documentation reconciliation and acceptance disposition are in progress**
 
 Audit baseline: `b3045bc0` (`Record tvOS merge checkpoint`) on
 `codex/audit-simplification-performance`
@@ -1606,6 +1606,37 @@ policy:
 - Report the final net diff for production sources separately from tests, performance tooling,
   documentation, assets, and configuration. Explain any remaining production net addition so the
   architectural simplification is not incorrectly presented as raw LOC reduction.
+
+#### Wave 7 reconciliation journal
+
+1. Phase 5 was paused at the operator's direction after its long-idle admission succeeded but
+   before an admissible pilot or verdict completed. The active pilot was interrupted through its
+   owning runner, which removed its exact app and `xctrace` children and left both worktrees clean.
+   Commits `6ca1566a`, `4a00bdab`, and `ef4fd211` retain the Xcode 27 `Terminated` state contract,
+   the control-only two-pass idle-threshold freeze, and a bounded fail-closed long-trace
+   finalization window. These are tooling results, not long-idle performance evidence.
+2. Current-document reconciliation found three material tooling gaps and two architecture gaps:
+   the two-pass idle freeze/verdict procedure, the closed launch-attribution profiles, the exact
+   first-poster artwork admission, the bounded deferred download-startup edge, and cross-snapshot
+   compile-path resolution. Wave 7 promotes those durable contracts into current docs without
+   rewriting dated evidence, research, or archived plans. This plan remains active because paused
+   Phase 5 and physical acceptance gates are still open.
+3. Current accounting for parent candidate `ef4fd211` plus this Wave 7 documentation checkpoint
+   against original control `b3045bc0` covers 502 changed files: production
+   `+20,898/-13,514` (net `+7,384`), product tests `+12,618/-1,699` (net `+10,919`),
+   performance/tooling `+16,641/-225` (net `+16,416`), current docs `+2,796/-289`
+   (net `+2,507`), historical/evidence docs `+7/-1`, 63 asset-only
+   moves, and configuration/project/privacy `+311/-13` (net `+298`). The totals reconcile to
+   `+53,271/-15,741`; this is a checkpoint, not a claim that the still-open program is complete.
+   Production net addition is principally the shared artwork/UI pipeline, repositories and paging,
+   platform shells, app-lifecycle composition, durability, and auth added by the larger program,
+   not duplicated player presentation. Wave 6's independently measured simplification checkpoint
+   removed 992 production lines within that broader feature-and-remediation branch.
+4. Wave 7 can reconcile docs, run repository validation, and disposition available acceptance
+   cells while Phase 5 is paused. It cannot claim the program Definition of Done until the paused
+   browse/artwork, long-idle, compile, and broader performance matrices are resumed or explicitly
+   deferred, available one-device physical cells are resolved, and two-participant SharePlay is
+   recorded as hardware-blocked with the single available Vision Pro rather than failed.
 
 ## Pull request / commit slicing
 

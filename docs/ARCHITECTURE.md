@@ -295,6 +295,16 @@ daemon is unreliable. Every downloads-capable platform uses the same static-rang
 the bounded closed-segment train, while unknown totals retain one open-ended request from
 the attempt-owned durable checkpoint.
 
+Download startup installs every session callback and registers the dormant session with the
+background-completion registry before transport activation can submit work. For a healthy current
+store only, initial transport submission crosses one bounded MainActor turn; that task retains the
+manager until submission, and an explicit retry before the turn cancels the deferred edge and owns
+the sole immediate submission rather than overtaking it. Unsupported, unreadable, or malformed
+recovery does not enter that deferred edge: unsupported schemas retain their explicit reset path,
+while unreadable indexes and malformed current ownership remain fail-closed. This is critical-path
+scheduling of the existing app-owned transport, not removal of transport work or any persistence,
+recovery, or background-completion durability.
+
 ## System integration and diagnostics
 
 `SystemEntryRouter` bridges App Intents, Spotlight, Cinema exit, and SharePlay launches that

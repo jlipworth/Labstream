@@ -31,27 +31,45 @@ media details out of commits and public issues.
   Its primary input is the complete runner result rather than manifest globs, so failed arms cannot
   disappear. It revalidates every successful manifest and typed archive/XML/extraction/summary chain,
   enforces the runner-declared complete seeded schedule and requires the exact long policy (one
-  warmup and five measured pairs) for a verdict, plus chronology,
-  identity, environment, stable external-power/thermal covariates, caller-declared storage/start-gap/
-  trace-window tolerances, and reports both raw `cpu_running_ns`/`wakeups_count` and duration-normalized
-  CPU ns/s and wakeups/minute. Relative deltas are deliberately `null` at a zero control baseline;
-  the absolute normalized delta remains authoritative.
+  warmup, five measured pairs, and 120-second arms) for both the threshold pilot and verdict, plus
+  chronology, identity, environment, stable external-power/thermal covariates, caller-declared
+  storage/start-gap/trace-window tolerances, and reports both raw
+  `cpu_running_ns`/`wakeups_count` and duration-normalized CPU ns/s and wakeups/minute. Relative
+  deltas are deliberately `null` at a zero control baseline; the absolute normalized delta remains
+  authoritative.
 
-  A verdict requires a separate, checksummed threshold artifact registered before candidate capture.
-  It has the closed tool identity `labstream-perf-idle-thresholds` version 1, `sample_policy: long`, the
-  exact capture duration, a bounded rationale, and `absolute_mde` plus `relative_mde_percent` for both
-  `cpu_running_ns_per_second` and `wakeups_per_minute`. Each effective threshold is the larger of the
-  absolute floor and the pre-registered relative percentage of the measured control median. Without
-  that artifact, the tool still emits descriptive paired statistics but exits 3 with
-  `insufficient_data`; it never derives a post-candidate threshold from five pairs. The current
-  manifest does not bind the threshold checksum before capture, so temporal ordering is explicitly
+  Idle uses a two-pass protocol, not the latency comparator's ordinary control-calibration flow:
+
+  1. Complete a successful 1+5 paired, 120-second pilot with `perf-macos-launch-idle.py`.
+  2. Freeze thresholds from that complete pilot. The freeze derives its guardrail only from the five
+     measured control arms, records the pilot result, manifest, control commit, and product checksums,
+     and prints the threshold-artifact checksum.
+  3. After recording that checksum, capture a fresh, non-overlapping 1+5 paired verdict run with the
+     same control product.
+  4. Compare the fresh result with the frozen artifact and its exact checksum. The comparator rejects
+     a reused pilot result, comparison/order identity, run ID, or manifest, and rejects a changed
+     control commit or product.
+
+  The threshold artifact has the closed tool identity `labstream-perf-idle-thresholds` version 1,
+  `sample_policy: long`, the exact capture duration, a bounded rationale, control provenance, and
+  `absolute_mde` plus `relative_mde_percent` for both `cpu_running_ns_per_second` and
+  `wakeups_per_minute`. Each effective threshold is the larger of the absolute floor and the frozen
+  relative percentage of the fresh control median. Without that artifact, the tool still emits
+  descriptive paired statistics but exits 3 with `insufficient_data`. The manifest does not bind the
+  threshold checksum before verdict capture, so temporal ordering remains explicitly
   operator-attested.
 
   ```sh
-  SHA=$(shasum -a 256 preregistered-idle-thresholds.json | awk '{print $1}')
+  # First complete a distinct 1+5/120-second pilot runner result, then freeze it.
+  scripts/perf-idle-compare.py freeze \
+    --runner-result artifacts/performance-audit/mac-idle-pilot.json \
+    --thresholds-out frozen-idle-thresholds.json
+  SHA=$(shasum -a 256 frozen-idle-thresholds.json | awk '{print $1}')
+
+  # Capture a fresh non-overlapping 1+5/120-second verdict result before comparing.
   scripts/perf-idle-compare.py \
-    --runner-result artifacts/performance-audit/mac-idle-long.json \
-    --thresholds preregistered-idle-thresholds.json --thresholds-sha256 "$SHA" \
+    --runner-result artifacts/performance-audit/mac-idle-verdict.json \
+    --thresholds frozen-idle-thresholds.json --thresholds-sha256 "$SHA" \
     --max-free-storage-drift-bytes 5368709120 \
     --max-pair-start-gap-seconds 300 --max-actual-window-drift-ms 1000 \
     --json-out artifacts/performance-audit/mac-idle-comparison.json \
@@ -167,11 +185,11 @@ scripts/perf-compare.py compare \
   and candidate commits across PMSKit and all app schemes; it enforces at least five alternating
   same-index repetitions and records integrity/covariate metadata. See
   [`docs/COMPILE-PERFORMANCE.md`](../docs/COMPILE-PERFORMANCE.md).
-- `tests/test_compile_audit.py`, `tests/test_docs_mermaid.py`,
-  `tests/test_perf_log_summary.py`, `tests/test_perf_compare.py`, and
-  `tests/test_tooling_hardening.py` —
-  script/tooling tests. They run as part of
-  `scripts/ci-hygiene.sh` when `pyproject.toml` is present.
+- `tests/test_*.py` — the complete, discoverable script/tooling test inventory, including native
+  matrix, publication/docs, performance contract/comparator/runner/fixture/AX/trace, diagnostics,
+  compile-audit, macOS-CI, source-topology, and hardening coverage. `scripts/ci-hygiene.sh` runs the
+  inventory with `python -m unittest discover -s scripts/tests -v` when `pyproject.toml` is present,
+  so newly added matching test modules do not require this catalog to be hand-enumerated.
 
 ## Simulator and worktree helpers
 
@@ -198,14 +216,21 @@ scripts/perf-compare.py compare \
   canonical empty download index, and records adjacent A/B launch logs or exact-PID 120-second
   System Trace captures after a bounded 10-second readiness/settle interval. Unified-log bounds
   still begin before launch. Start with `--plan` and supply exact distinct artifact commits, an
-  opaque device label, and retention deadline. Successful launch samples atomically publish a
-  validated manifest, raw log, and strict `runtime.composition` summary consumable by
-  `perf-compare.py`. The idle path cleanly stops the exact app, privately exports the native
-  System Trace TOC and `thread-state` table, creates a deterministic no-follow `.trace.zip`, and
-  normalizes the native id/ref XML into the closed typed XML artifact. Native exports can contain
-  paths and environment values, so they are deleted before atomic publication; the archived trace
-  remains the authoritative raw evidence. Schema, build, PID, reference, state, and timing drift
-  fail closed.
+  opaque device label, and retention deadline. Launch capture also selects one exact
+  `--launch-phase` profile: `runtime.composition`, `runtime.download_manager`,
+  `runtime.download_store`, `runtime.download_transport_construct`, or
+  `runtime.download_transport_submission`. The profile closes the span, selector, and correctness
+  field used by every sample; it cannot drift on resume or be inferred after capture. Successful
+  launch samples atomically publish a validated manifest, raw log, and strict selected-profile
+  summary consumable by `perf-compare.py`. The idle path cleanly stops the exact app, privately
+  exports the native System Trace TOC and `thread-state` table, creates a deterministic no-follow
+  `.trace.zip`, and normalizes the native id/ref XML into the closed typed XML artifact. Native
+  exports can contain paths and environment values, so they are deleted before atomic publication;
+  the archived trace remains the authoritative raw evidence. Xcode 27 can take materially longer
+  than the trace window to finalize a System Trace, so the runner allows a separate bounded
+  120-second finalization wait.
+  A timeout stops the exact app and trace processes, exports nothing, and publishes no run directory.
+  Schema, build, PID, reference, state, and timing drift fail closed.
   Failures publish no run directory, remain in the complete runner result, and make the runner
   nonzero. The runner itself deliberately retains an `insufficient_data` verdict; pass that result to
   `perf-idle-compare.py` for the separate paired verdict rather than treating capture success as a
@@ -215,10 +240,12 @@ scripts/perf-compare.py compare \
   boundary and sums only the in-window portion of target-process `Running` rows as
   `cpu_running_ns`; `wakeups_count` is the number of target-process `Runnable` transitions whose
   start lies inside that window and whose `made-runnable-by-thread` source is non-sentinel. It
-  rejects zero-length or wholly out-of-window intervals plus Xcode/table/column/type/PID/window/state
-  and id/ref drift, then writes the closed normalized XML, typed extraction, and privacy-safe idle
+  treats Xcode 27's typed `Terminated` state as a known non-running, non-wakeup state, while an
+  unknown state or a mismatch between a state's formatted and typed values fails closed. It also
+  rejects zero-length or wholly out-of-window intervals plus Xcode/table/column/type/PID/window and
+  id/ref drift, then writes the closed normalized XML, typed extraction, and privacy-safe idle
   summary bound to the regular `.trace.zip`. It makes no paired performance claim.
-- `perf-macos-emby-browse.py` — paired external Home, catalog, and Search runner for the same
+- `perf-macos-emby-browse.py` — paired external Home, catalog, Search, and artwork runner for the same
   dedicated Mac `PerformanceAudit` artifacts. It launches the loopback-only Emby fixture, resets
   that performance identity's closed Keychain account set (including per-arm routing identity) and
   mutable sandbox data, compiles
@@ -226,8 +253,15 @@ scripts/perf-compare.py compare \
   accessibility selectors without coordinates or app arguments/environment. Each successful arm
   waits for its exact terminal span, validates the aggregate fixture ledger, and publishes a
   contract-validated manifest plus strict summary whose automation hashes bind the fixture,
-  compiled driver, and private workload spec. Begin with `--plan`; `artwork` is intentionally
-  rejected until a precise loaded-artwork milestone and comparable cardinality exist.
+  compiled driver, and private workload spec. Begin with `--plan`. `artwork` is now an admitted
+  scenario for the exact scoped `library_first_poster` milestone: the AX tree must contain one
+  uniquely identified loaded poster image, the selected capture must contain exactly one successful
+  scoped `artwork.load` span, and the fixture ledger must prove at least one successful image route.
+  This proves only that first poster's loaded milestone and comparable scoped work; it does not prove
+  a full viewport, cache warming, or all-artwork completion. Home, catalog, Search, and artwork AX
+  captures require an unlocked interactive Mac session in which the audit app can become active and
+  the invoking process already has Accessibility trust. A locked/background-only session or failed
+  activation is an admission failure, not a performance sample.
 
 There is no macOS simulator lane. See [`docs/MACOS.md`](../docs/MACOS.md).
 

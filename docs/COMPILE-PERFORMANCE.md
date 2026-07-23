@@ -23,6 +23,13 @@ neither measured nor mutated. The output directory must not already exist and is
 the current user. Each commit gets independent SwiftPM scratch and Xcode DerivedData directories;
 all commands use arm64, Debug, fixed generic destinations, and no simulator boot.
 
+Representative app edits are logical scenarios rather than one worktree-relative path. Before
+export, the runner resolves each scenario independently against each committed snapshot and
+requires exactly one known path for that snapshot; missing or ambiguous topology fails before
+capture. After `git archive`, it revalidates that each exported tree contains exactly the resolved
+path and no alternate candidate. This permits an intentional source move between control and
+candidate without editing the wrong file or requiring both snapshots to share the current path.
+
 ## Pairing and scenarios
 
 The numeric seed is recorded and deterministically chooses which variant runs first at paired
@@ -34,9 +41,13 @@ it. Do not compare an unpaired control run from one invocation with a candidate 
 PMSKit measures a cold build, a no-op build, an incremental edit to
 `PlaybackFailurePolicy.swift`, and a code-coverage test build. App lanes measure clean and no-op
 builds plus representative edits to a PMSKit playback policy, shared UI leaf, and playback
-coordinator. After every temporary edit, the original bytes are restored and a **checked** settle
-build runs before the next scenario. A failed settle is recorded as a run failure instead of being
-silently ignored.
+coordinator. The latter two scenarios resolve across their old
+`Labstream/UI/ProgressSliver.swift` / `Labstream/Player/PlaybackController.swift` and current
+`Labstream/Shared/UI/ProgressSliver.swift` /
+`Labstream/Shared/Player/PlaybackController.swift` locations per snapshot. After every temporary
+edit, the selected file's original bytes are restored exactly and a **checked** settle build runs
+before the next scenario. A failed restoration or settle is recorded as a run failure instead of
+being silently ignored.
 
 This is a representative compile-cost audit, not exhaustive dependency coverage. In particular,
 it does not currently measure release/LTO builds, Intel compilation, physical-device signing,
@@ -49,7 +60,7 @@ The ignored output directory contains:
 - `metadata.json`: full control/candidate hashes, requested refs, seed and per-index order, full
   Xcode/Swift/Git versions and selected toolchain environment, fixed destinations,
   architecture/configuration, timestamps, relevant start/end host/power/load/disk covariates, and
-  command/restoration failures;
+  command/restoration failures, plus the representative edit path resolved for each snapshot;
 - `runner-source.py`: the exact runner source used; metadata also records its SHA-256, repository
   commit, and worktree status, and the result manifest checksums the copy;
 - `measurements.csv`: every raw measurement and its private-log filename;
