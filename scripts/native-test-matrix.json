@@ -167,7 +167,7 @@
       "exclusive": true
     },
     {
-      "patterns": ["Labstream/Platforms/iOS/**", "Labstream/Platforms/iPadOS/**", "Labstream/Platforms/Mobile/**"],
+      "patterns": ["Labstream/Platforms/Mobile/**"],
       "lanes": ["mobile-build", "mobile-hosted"],
       "exclusive": true
     },
