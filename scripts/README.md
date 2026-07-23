@@ -27,6 +27,40 @@ media details out of commits and public issues.
   produces strict, raw-artifact-bound comparison summaries.
 - `perf-compare.py` — freezes a control-only minimum detectable effect, then validates and compares
   seeded paired control/candidate runs with correctness, provenance, failure, and covariate gates.
+- `perf-idle-compare.py` — separately compares the Mac runner's typed System Trace idle evidence.
+  Its primary input is the complete runner result rather than manifest globs, so failed arms cannot
+  disappear. It revalidates every successful manifest and typed archive/XML/extraction/summary chain,
+  enforces the runner-declared complete seeded schedule and requires the exact long policy (one
+  warmup and five measured pairs) for a verdict, plus chronology,
+  identity, environment, stable external-power/thermal covariates, caller-declared storage/start-gap/
+  trace-window tolerances, and reports both raw `cpu_running_ns`/`wakeups_count` and duration-normalized
+  CPU ns/s and wakeups/minute. Relative deltas are deliberately `null` at a zero control baseline;
+  the absolute normalized delta remains authoritative.
+
+  A verdict requires a separate, checksummed threshold artifact registered before candidate capture.
+  It has the closed tool identity `labstream-perf-idle-thresholds` version 1, `sample_policy: long`, the
+  exact capture duration, a bounded rationale, and `absolute_mde` plus `relative_mde_percent` for both
+  `cpu_running_ns_per_second` and `wakeups_per_minute`. Each effective threshold is the larger of the
+  absolute floor and the pre-registered relative percentage of the measured control median. Without
+  that artifact, the tool still emits descriptive paired statistics but exits 3 with
+  `insufficient_data`; it never derives a post-candidate threshold from five pairs. The current
+  manifest does not bind the threshold checksum before capture, so temporal ordering is explicitly
+  operator-attested.
+
+  ```sh
+  SHA=$(shasum -a 256 preregistered-idle-thresholds.json | awk '{print $1}')
+  scripts/perf-idle-compare.py \
+    --runner-result artifacts/performance-audit/mac-idle-long.json \
+    --thresholds preregistered-idle-thresholds.json --thresholds-sha256 "$SHA" \
+    --max-free-storage-drift-bytes 5368709120 \
+    --max-pair-start-gap-seconds 300 --max-actual-window-drift-ms 1000 \
+    --json-out artifacts/performance-audit/mac-idle-comparison.json \
+    --csv-out artifacts/performance-audit/mac-idle-pairs.csv
+  ```
+
+  The start-gap limit must exceed the capture duration: manifest timestamps precede settle, capture,
+  export, and packaging, so the latency comparator's 120-second gap is not valid for a 120-second idle
+  arm. Threshold values and all tolerances are audit decisions, not defaults supplied by the tool.
 - `perf-emby-browse-fixture.py` — external deterministic Emby-compatible browse/artwork fixture for
   paired performance workloads. It binds only to literal `127.0.0.1` (ephemeral port by default),
   accepts no token/password/public-bind configuration, and is outside every Xcode synchronized
@@ -172,8 +206,10 @@ scripts/perf-compare.py compare \
   paths and environment values, so they are deleted before atomic publication; the archived trace
   remains the authoritative raw evidence. Schema, build, PID, reference, state, and timing drift
   fail closed.
-  Failures publish no run directory and make the runner nonzero. Idle remains `insufficient_data`
-  until typed paired comparison support lands.
+  Failures publish no run directory, remain in the complete runner result, and make the runner
+  nonzero. The runner itself deliberately retains an `insufficient_data` verdict; pass that result to
+  `perf-idle-compare.py` for the separate paired verdict rather than treating capture success as a
+  performance conclusion.
 - `perf-xctrace-idle-summary.py` — strict measurement-only normalizer for Xcode's native System
   Trace TOC and 16-column `thread-state` XML. It clips native intervals that cross the exact TOC
   boundary and sums only the in-window portion of target-process `Running` rows as

@@ -1369,8 +1369,35 @@ policy:
     `27A5218g`: both exact-PID arms produced contract-valid manifests. The candidate recorded
     1,122,126 CPU-running nanoseconds and 44 wakeups; control recorded 1,186,376 nanoseconds and 44
     wakeups over the short two-second compatibility window. This one pair remains
-    `insufficient_data`; typed paired comparison support is still required before the expensive
-    1-warmup/5-measured 120-second idle sequence can produce a verdict.
+    `insufficient_data`; the dedicated comparator described next is now available, but the expensive
+    1-warmup/5-measured 120-second sequence and its pre-registered thresholds have not been run.
+
+18. The dedicated idle comparator now keeps idle resource evidence out of the latency-span model.
+    It consumes the complete paired runner result so failed arms remain visible, independently
+    revalidates every successful typed manifest/evidence chain and its complete runner-declared
+    seeded schedule. Non-long admission smokes remain descriptive `insufficient_data`; a verdict
+    requires the exact one-warmup/five-measured-pair long schedule with adjacent chronology,
+    globally unique identities,
+    fixed per-role products, matching environments, stable external power and acceptable thermal
+    state. Caller-declared storage, pair-start-gap, and actual trace-window tolerances fail closed;
+    pair-start gap is intentionally distinct from the latency gap because each 120-second arm must
+    finish capture and packaging before its peer starts.
+
+    Raw CPU-running nanoseconds and wakeup counts remain in every pair row, while decisions use CPU
+    nanoseconds per second and wakeups per minute so small Xcode trace-window differences do not look
+    like app regressions. Absolute deltas remain defined at a zero baseline and relative deltas become
+    `null`. Five paired deltas receive a deterministic seeded bootstrap interval, but no threshold is
+    learned from those five post-candidate observations: a regression/improvement/noise verdict
+    requires a closed, checksummed, pre-registered artifact with absolute and relative MDE floors for
+    both metrics. Without it, the output remains descriptive `insufficient_data`; threshold timing is
+    honestly operator-attested because the current sample manifests do not bind its checksum.
+
+    Focused tests cover exact long-policy admission, strong regression/improvement and deterministic
+    bootstrap behavior, zero baselines, missing/tampered thresholds, retained capture and warmup
+    failures, seeded schedule/chronology/identity drift, environment and power/thermal/storage/gap/
+    window rejection, manifest contract/checksum failures, protected-output collisions, atomic
+    publication, and CLI insufficient-data behavior. The runner is not yet coupled to invoke the
+    comparator automatically, so live long-policy capture remains an explicit later gate.
 
     A fresh Home admission retry (`mac-emby-home-smoke-20260722-v13`) again failed inside the AX
     workload before producing admissible evidence, with no app, fixture, build, or simulator process
