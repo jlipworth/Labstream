@@ -204,12 +204,20 @@ done
 # from git history. They survive here ONLY as one-way SHA-256 fingerprints: the
 # plaintext exists nowhere in this repo, yet any tracked file that reintroduces
 # the exact hostname or IP will hash to a listed digest and fail the build.
-sha256_hex() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum | cut -d' ' -f1
-  else
-    shasum -a 256 | cut -d' ' -f1
-  fi
+# Hashes every candidate token on stdin (one per line, lowercased) in a single
+# process and exits non-zero if any digest is in the forbidden list. A per-token
+# `printf | tr | shasum` loop here forks ~50k processes over the repo's ~18k
+# unique matches and takes minutes; this pass takes well under a second.
+scan_forbidden_digests() {
+  local digests="$1" message="$2"
+  python3 -c '
+import hashlib, sys
+forbidden = set(sys.argv[1].split())
+for line in sys.stdin:
+    token = line.rstrip("\n")
+    if token and hashlib.sha256(token.lower().encode()).hexdigest() in forbidden:
+        sys.exit(1)
+' "$digests" || fail "$message"
 }
 
 forbidden_digests='
@@ -219,16 +227,10 @@ ab73d7c622719b37d8ea581bff9feccc782de51f8dcc39552d61de82a55e026d
 
 host_ip_re='([a-z0-9-]+\.)+[a-z]{2,}|([0-9]{1,3}\.){3}[0-9]{1,3}'
 if ((${#scan_paths[@]} > 0)); then
-  while IFS= read -r candidate; do
-    [[ -n "$candidate" ]] || continue
-    digest="$(printf '%s' "$candidate" | tr '[:upper:]' '[:lower:]' | sha256_hex)"
-    if printf '%s\n' "$forbidden_digests" | grep -qxF "$digest"; then
-      fail "reintroduced a scrubbed server hostname/IP (matched a forbidden fingerprint)"
-    fi
-  done < <(
-    git grep -I -hE -- "$host_ip_re" -- "${scan_paths[@]}" 2>/dev/null \
-      | grep -oiE "$host_ip_re" | sort -u
-  )
+  { git grep -I -hE -- "$host_ip_re" -- "${scan_paths[@]}" 2>/dev/null \
+      | grep -oiE "$host_ip_re" | sort -u || true; } \
+    | scan_forbidden_digests "$forbidden_digests" \
+        "reintroduced a scrubbed server hostname/IP (matched a forbidden fingerprint)"
 fi
 
 # Scrubbed signing identity — fingerprint guard (Apple Team ID OU + cert id).
@@ -242,16 +244,10 @@ e8ca5e1278c94c76b351af689f194cd28094ecd15bbb8ea4d055a4579bfa2dfe
 '
 signing_id_re='[A-Za-z0-9]{10}'
 if ((${#scan_paths[@]} > 0)); then
-  while IFS= read -r candidate; do
-    [[ -n "$candidate" ]] || continue
-    digest="$(printf '%s' "$candidate" | tr '[:upper:]' '[:lower:]' | sha256_hex)"
-    if printf '%s\n' "$forbidden_id_digests" | grep -qxF "$digest"; then
-      fail "reintroduced a scrubbed Apple Team ID / signing cert id (matched a forbidden fingerprint)"
-    fi
-  done < <(
-    git grep -I -hE -- "$signing_id_re" -- "${scan_paths[@]}" 2>/dev/null \
-      | grep -oE "$signing_id_re" | sort -u
-  )
+  { git grep -I -hE -- "$signing_id_re" -- "${scan_paths[@]}" 2>/dev/null \
+      | grep -oE "$signing_id_re" | sort -u || true; } \
+    | scan_forbidden_digests "$forbidden_id_digests" \
+        "reintroduced a scrubbed Apple Team ID / signing cert id (matched a forbidden fingerprint)"
 fi
 
 # Archive docs are historical, so they are allowed to mention retired decisions and
