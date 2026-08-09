@@ -39,6 +39,26 @@ struct MacMainWindowLifecycleTests {
     }
 
     @Test
+    func coldLaunchActivationWaitsForSwiftUIWindowRegistration() {
+        let controller = MacMainWindowController()
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        defer { window.close() }
+
+        controller.presentMainWindowWhenRegistered()
+        #expect(!window.isVisible)
+
+        controller.register(window)
+
+        #expect(window.isVisible)
+        #expect(controller.mainWindow === window)
+    }
+
+    @Test
     func closingTheOnlyWindowDoesNotTerminateTheApplication() {
         let delegate = MacAppDelegate()
         #expect(!delegate.applicationShouldTerminateAfterLastWindowClosed(NSApp))

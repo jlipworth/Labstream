@@ -15,6 +15,10 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
         SystemEntryRouter.shared.registerMainWindowActivation {
             MacMainWindowController.shared.activateMainWindow()
         }
+        // SwiftUI can remember the main WindowGroup as ordered out across a normal quit/restart.
+        // Request presentation on every cold launch; if the scene bridge has not mounted yet,
+        // MacMainWindowController carries the request forward until it registers the NSWindow.
+        MacMainWindowController.shared.presentMainWindowWhenRegistered()
         AppDiagnostics.record(.downloads, "app.mac_lifecycle", fields: [
             "phase": .label("did_finish_launching"),
         ])
@@ -66,6 +70,8 @@ final class MacMainWindowController: NSObject {
 
     @ObservationIgnored
     private(set) weak var mainWindow: NSWindow?
+    @ObservationIgnored
+    private var shouldActivateWhenRegistered = false
     /// Retained until RootView acknowledges each request. Commands therefore cannot disappear in
     /// the brief interval while the main scene is being restored or its task observers remount.
     private(set) var pendingCommands: [CommandRequest] = []
@@ -82,6 +88,10 @@ final class MacMainWindowController: NSObject {
             closeButton.target = self
             closeButton.action = #selector(hideMainWindow(_:))
         }
+
+        if shouldActivateWhenRegistered {
+            present(window)
+        }
     }
 
     @discardableResult
@@ -97,12 +107,29 @@ final class MacMainWindowController: NSObject {
             register(restoredMainWindow)
         }
         if let mainWindow {
-            NSApp.activate(ignoringOtherApps: true)
-            mainWindow.makeKeyAndOrderFront(nil)
+            present(mainWindow)
             return true
         }
 
+        shouldActivateWhenRegistered = true
         return false
+    }
+
+    /// Cold launch can complete before SwiftUI mounts the registration bridge. Unlike reopen,
+    /// launch presentation must not adopt some other AppKit window from the test host or a
+    /// transient scene; carry the request until this controller's main window registers.
+    func presentMainWindowWhenRegistered() {
+        if let mainWindow {
+            present(mainWindow)
+        } else {
+            shouldActivateWhenRegistered = true
+        }
+    }
+
+    private func present(_ window: NSWindow) {
+        shouldActivateWhenRegistered = false
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
     }
 
     func issue(_ command: Command) {
