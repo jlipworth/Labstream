@@ -52,13 +52,15 @@ struct DownloadItemPlanner {
                  partIndex: Int = 0,
                  audioStreamIndexOverride: Int? = nil,
                  preferredAudioLanguage: String? = nil,
+                 preferredAudioRole: AudioStreamRole = .main,
                  backend: DownloadBackendKind) async -> DownloadItemPlanningOptions {
         let selection = DownloadMediaSelectionPolicy.selection(
             item: item, mediaIndex: mediaIndex, partIndex: partIndex)
         let audioStreamIndex = DownloadAudioSelectionPolicy.selectedAudioStreamIndex(
             part: selection.part,
             overrideStreamIndex: audioStreamIndexOverride,
-            preferredLanguage: preferredAudioLanguage)
+            preferredLanguage: preferredAudioLanguage,
+            preferredRole: preferredAudioRole)
         switch backend {
         case .plex:
             return await plexOptions(for: item, mediaIndex: mediaIndex, partIndex: partIndex)

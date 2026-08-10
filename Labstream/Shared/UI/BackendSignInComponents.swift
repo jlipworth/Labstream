@@ -198,6 +198,8 @@ struct BackendAuthErrorBanner: View {
 struct PlexLinkCodeView: View {
     let code: String
     let onOpenOnDevice: () -> Void
+    @Environment(\.openURL) private var openURL
+    @State private var copied = false
 
     var body: some View {
         VStack(spacing: DS.Space.lg) {
@@ -220,6 +222,16 @@ struct PlexLinkCodeView: View {
             }
 
             PairingCodeCells(code: code, width: 76, height: 96, fontSize: 54)
+
+            #if !os(tvOS)
+            Button(action: copyCode) {
+                Label(copied ? "Code copied" : "Copy code",
+                      systemImage: copied ? "checkmark" : "doc.on.doc")
+            }
+            .labstreamGlassButtonStyle()
+            .accessibilityLabel("Copy Plex pairing code")
+            .accessibilityHint("Copies the displayed short code for five minutes")
+            #endif
 
             HStack(spacing: DS.Space.sm) {
                 ProgressView()
@@ -249,11 +261,27 @@ struct PlexLinkCodeView: View {
             .fontWeight(.semibold)
             .foregroundStyle(DS.Brand.amber)
         #else
-        Link("plex.tv/link", destination: URL(string: "https://plex.tv/link")!)
+        Button("plex.tv/link") {
+            guard case .copyAndOpen(let url) = PairingCodeActionPolicy.browserHandoff(for: .plex)
+            else { return }
+            copyCode()
+            openURL(url)
+        }
+            .buttonStyle(.plain)
             .fontWeight(.semibold)
             .foregroundStyle(DS.Brand.amber)
             .accessibilityHint("Opens Plex sign-in in your default browser")
         #endif
+    }
+
+    private func copyCode() {
+        PlatformPasteboard.copyPairingCode(code)
+        copied = true
+        PlatformAccessibility.announce("Code copied")
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            copied = false
+        }
     }
 }
 
@@ -332,6 +360,7 @@ struct JellyfinQuickConnectCodeView: View {
     var body: some View {
         PairingCodeView(
             code: code,
+            backendName: "Jellyfin",
             fallbackTitle: "Use username and password instead",
             onFallback: onUseCredentials) {
                 VStack(spacing: DS.Space.xs) {
@@ -350,10 +379,13 @@ struct JellyfinQuickConnectCodeView: View {
 struct EmbyConnectPinCodeView: View {
     let code: String
     let onUseServerURL: () -> Void
+    @Environment(\.openURL) private var openURL
+    @State private var linkCopied = false
 
     var body: some View {
         PairingCodeView(
             code: code,
+            backendName: "Emby",
             fallbackTitle: "Use a server URL instead",
             onFallback: onUseServerURL) {
                 VStack(spacing: DS.Space.xs) {
@@ -374,6 +406,11 @@ struct EmbyConnectPinCodeView: View {
                         .backendAuthSupportingTextStyle()
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: BackendAuthMetrics.fieldWidth)
+                    if linkCopied {
+                        Label("Code copied", systemImage: "checkmark")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
     }
@@ -386,7 +423,19 @@ struct EmbyConnectPinCodeView: View {
             .fontWeight(.semibold)
             .foregroundStyle(DS.Brand.amber)
         #else
-        Link("emby.media/pin.html", destination: URL(string: "https://emby.media/pin.html")!)
+        Button("emby.media/pin.html") {
+            guard case .copyAndOpen(let url) = PairingCodeActionPolicy.browserHandoff(for: .emby)
+            else { return }
+            PlatformPasteboard.copyPairingCode(code)
+            linkCopied = true
+            PlatformAccessibility.announce("Code copied")
+            openURL(url)
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(2))
+                linkCopied = false
+            }
+        }
+            .buttonStyle(.plain)
             .fontWeight(.semibold)
             .foregroundStyle(DS.Brand.amber)
             .accessibilityHint("Opens Emby Connect sign-in in your default browser")

@@ -446,6 +446,9 @@ struct DownloadOptionsSheet: View {
                      audioStreamIndexOverride: audioStreamIndexOverride,
                      preferredAudioLanguage: UserDefaults.standard.string(
                         forKey: PlaybackPreferences.Keys.preferredAudioLanguage),
+                     preferredAudioRole: UserDefaults.standard.string(
+                        forKey: PlaybackPreferences.Keys.preferredAudioRole)
+                        .flatMap(AudioStreamRole.init(rawValue:)) ?? .main,
                      backend: sheetBackend)
         let original = result.original.map {
             OriginalOption(sizeBytes: $0.sizeBytes, resolution: $0.resolution)

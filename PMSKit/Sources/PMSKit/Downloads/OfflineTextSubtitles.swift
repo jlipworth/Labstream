@@ -7,14 +7,17 @@ public struct OfflineTextSubtitleTrack: Codable, Sendable, Equatable, Identifiab
     public var displayName: String
     public var language: String?
     public var codec: String?
+    public var role: SubtitleStreamRole?
     public var relativePath: String
 
     public init(id: Int, displayName: String, language: String? = nil,
-                codec: String? = nil, relativePath: String) {
+                codec: String? = nil, role: SubtitleStreamRole? = nil,
+                relativePath: String) {
         self.id = id
         self.displayName = displayName
         self.language = language
         self.codec = codec
+        self.role = role
         self.relativePath = relativePath
     }
 }
@@ -117,8 +120,15 @@ public enum OfflineTextSubtitleCachePlanner {
             ?? stream.language
             ?? stream.languageCode
             ?? "Subtitle \(fallbackIndex + 1)"
-        let forced = stream.forced == true && !base.lowercased().contains("forced") ? " (Forced)" : ""
-        return base + forced
+        var label = base
+        if stream.subtitleRole != .full, let role = stream.roleLabel,
+           !label.lowercased().contains(role.lowercased()) {
+            label += " (\(role))"
+        }
+        if stream.external == true, !label.lowercased().contains("external") {
+            label += " (External)"
+        }
+        return label
     }
 
     public static func track(for stream: Stream, relativePath: String, fallbackIndex: Int) -> OfflineTextSubtitleTrack? {
@@ -127,6 +137,7 @@ public enum OfflineTextSubtitleCachePlanner {
                                         displayName: displayName(for: stream, fallbackIndex: fallbackIndex),
                                         language: stream.languageCode ?? stream.languageTag ?? stream.language,
                                         codec: stream.codec,
+                                        role: stream.subtitleRole,
                                         relativePath: relativePath)
     }
 }
