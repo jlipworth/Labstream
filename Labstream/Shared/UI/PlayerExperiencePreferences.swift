@@ -26,7 +26,9 @@ enum PlaybackPreferences {
         // `PlaybackPreferenceKeys` namespace). Raw strings preserved exactly so existing
         // @AppStorage declarations and persisted values are untouched.
         static let preferredAudioLanguage = "preferredAudioLanguage"
+        static let preferredAudioRole = "preferredAudioRole"
         static let preferredSubtitleLanguage = "preferredSubtitleLanguage"
+        static let preferredSubtitleRole = "preferredSubtitleRole"
         static let subtitlesOff = "subtitlesOff"
         static let subtitleAutoSelectMode = "subtitleAutoSelectMode"
         static let subtitleBurnMode = "subtitleBurnMode"

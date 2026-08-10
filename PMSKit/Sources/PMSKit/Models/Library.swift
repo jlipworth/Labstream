@@ -820,6 +820,19 @@ public enum StreamType: Int, Sendable, Equatable {
     case subtitle = 3
 }
 
+/// Semantic roles are stable across items and backends; stream ids are not.
+public enum AudioStreamRole: String, Codable, Sendable, Equatable {
+    case main
+    case commentary
+    case audioDescription
+}
+
+public enum SubtitleStreamRole: String, Codable, Sendable, Equatable {
+    case full
+    case forced
+    case hearingImpaired
+}
+
 /// One media track inside a `Part` (`Stream` element): a video, audio or subtitle
 /// track. PMS attaches many optional attributes depending on the request and the
 /// track kind, so every field beyond `id`/`streamType` is optional and lenient.
@@ -850,6 +863,11 @@ public struct Stream: Decodable, Sendable, Identifiable {
     public let isDefault: Bool?
     /// Whether this is a forced subtitle track.
     public let forced: Bool?
+    public let hearingImpaired: Bool?
+    public let visualImpaired: Bool?
+    public let commentary: Bool?
+    public let external: Bool?
+    public let textSubtitle: Bool?
     /// Audio channel count (audio tracks only).
     public let channels: Int?
     /// Free-form track title, when present.
@@ -920,6 +938,11 @@ public struct Stream: Decodable, Sendable, Identifiable {
         case selected
         case isDefault = "default"
         case forced
+        case hearingImpaired
+        case visualImpaired
+        case commentary
+        case external
+        case textSubtitle
         case channels
         case title
         case profile
@@ -952,6 +975,11 @@ public struct Stream: Decodable, Sendable, Identifiable {
         self.selected = try c.decodeIfPresent(Bool.self, forKey: .selected)
         self.isDefault = try c.decodeIfPresent(Bool.self, forKey: .isDefault)
         self.forced = try c.decodeIfPresent(Bool.self, forKey: .forced)
+        self.hearingImpaired = Self.decodeLenientBool(c, .hearingImpaired)
+        self.visualImpaired = Self.decodeLenientBool(c, .visualImpaired)
+        self.commentary = Self.decodeLenientBool(c, .commentary)
+        self.external = Self.decodeLenientBool(c, .external)
+        self.textSubtitle = Self.decodeLenientBool(c, .textSubtitle)
         self.channels = try c.decodeIfPresent(Int.self, forKey: .channels)
         self.title = try c.decodeIfPresent(String.self, forKey: .title)
         self.profile = try c.decodeIfPresent(String.self, forKey: .profile)
@@ -999,6 +1027,11 @@ public struct Stream: Decodable, Sendable, Identifiable {
                 selected: Bool? = nil,
                 isDefault: Bool? = nil,
                 forced: Bool? = nil,
+                hearingImpaired: Bool? = nil,
+                visualImpaired: Bool? = nil,
+                commentary: Bool? = nil,
+                external: Bool? = nil,
+                textSubtitle: Bool? = nil,
                 channels: Int? = nil,
                 title: String? = nil,
                 profile: String? = nil,
@@ -1028,6 +1061,11 @@ public struct Stream: Decodable, Sendable, Identifiable {
         self.selected = selected
         self.isDefault = isDefault
         self.forced = forced
+        self.hearingImpaired = hearingImpaired
+        self.visualImpaired = visualImpaired
+        self.commentary = commentary
+        self.external = external
+        self.textSubtitle = textSubtitle
         self.channels = channels
         self.title = title
         self.profile = profile
@@ -1044,6 +1082,111 @@ public struct Stream: Decodable, Sendable, Identifiable {
         self.doviELPresent = doviELPresent
         self.doviRPUPresent = doviRPUPresent
         self.hdr10PlusPresent = hdr10PlusPresent
+    }
+}
+
+public extension Stream {
+    /// Explicit backend flags win. Title parsing is intentionally the final fallback for older
+    /// servers which expose a role only in a human-readable track title.
+    var audioRole: AudioStreamRole {
+        if commentary == true { return .commentary }
+        if visualImpaired == true { return .audioDescription }
+        let text = roleFallbackText
+        if commentary == nil, text.contains("commentary") { return .commentary }
+        if visualImpaired == nil,
+           text.contains("audio description") || text.contains("descriptive audio")
+            || text.contains("describes video") { return .audioDescription }
+        return .main
+    }
+
+    var subtitleRole: SubtitleStreamRole {
+        if forced == true { return .forced }
+        if hearingImpaired == true { return .hearingImpaired }
+        let text = roleFallbackText
+        if forced == nil, text.contains("forced") { return .forced }
+        if hearingImpaired == nil,
+           text.contains("sdh") || text.contains("closed caption") || text.contains(" cc") {
+            return .hearingImpaired
+        }
+        return .full
+    }
+
+    var roleLabel: String? {
+        switch kind {
+        case .audio:
+            switch audioRole {
+            case .main: return nil
+            case .commentary: return "Commentary"
+            case .audioDescription: return "Audio Description"
+            }
+        case .subtitle:
+            switch subtitleRole {
+            case .full: return "Full"
+            case .forced: return "Forced"
+            case .hearingImpaired: return "SDH/CC"
+            }
+        default: return nil
+        }
+    }
+
+    func pickerLabel(fallback: String) -> String {
+        var label = displayTitle ?? extendedDisplayTitle ?? language ?? languageCode ?? fallback
+        let qualifier: String? = switch kind {
+        case .audio:
+            switch audioRole {
+            case .main: "Main"
+            case .commentary: "Commentary"
+            case .audioDescription: "Audio Description"
+            }
+        case .subtitle:
+            switch subtitleRole {
+            case .full: "Full"
+            case .forced: "Forced"
+            case .hearingImpaired: "SDH/CC"
+            }
+        default: nil
+        }
+        let lower = label.lowercased()
+        let alreadyQualified: Bool = switch kind {
+        case .audio where audioRole == .commentary: lower.contains("commentary")
+        case .audio where audioRole == .audioDescription:
+            lower.contains("audio description") || lower.contains("descriptive audio")
+                || lower.contains(" ad")
+        case .audio: lower.contains("main")
+        case .subtitle where subtitleRole == .forced: lower.contains("forced")
+        case .subtitle where subtitleRole == .hearingImpaired:
+            lower.contains("sdh") || lower.contains("closed caption") || lower.contains(" cc")
+        case .subtitle: lower.contains("full")
+        default: false
+        }
+        if let qualifier, !alreadyQualified {
+            label += " (\(qualifier))"
+        }
+        if kind == .subtitle, (external == true || key != nil),
+           !label.lowercased().contains("external") {
+            label += " (External)"
+        }
+        if kind == .subtitle {
+            let knownTextCodecs = ["srt", "subrip", "webvtt", "vtt", "ass", "ssa", "ttml"]
+            let knownImageCodecs = ["pgs", "vobsub", "dvdsub", "hdmv_pgs_subtitle"]
+            let codec = codec?.lowercased()
+            let isText = textSubtitle
+                ?? (codec.map(knownTextCodecs.contains) == true ? true
+                    : codec.map(knownImageCodecs.contains) == true ? false : nil)
+            if let isText {
+                let format = isText ? "Text" : "Image"
+                if !label.lowercased().contains(format.lowercased()) {
+                    label += " (\(format))"
+                }
+            }
+        }
+        return label
+    }
+
+    private var roleFallbackText: String {
+        [title, displayTitle, extendedDisplayTitle]
+            .compactMap { $0?.lowercased() }
+            .joined(separator: " ")
     }
 }
 

@@ -49,9 +49,14 @@ enum MediaBrowserPlaybackPreferencePolicy {
             return preferred
         }
         guard let part = sourcePart(for: item, mediaIndex: mediaIndex) else { return nil }
-        return part.audioStreams.first(where: { $0.selected == true })?.id
-            ?? part.audioStreams.first(where: { $0.isDefault == true })?.id
-            ?? part.audioStreams.first?.id
+        let hasLanguagePreference = defaults.string(forKey: PlaybackPreferences.Keys.preferredAudioLanguage)
+            .map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } == true
+        let desiredRole = defaults.string(forKey: PlaybackPreferences.Keys.preferredAudioRole)
+            .flatMap(AudioStreamRole.init(rawValue:)) ?? .main
+        let fallbackStreams = hasLanguagePreference
+            ? part.audioStreams.filter { $0.audioRole == desiredRole }
+            : part.audioStreams
+        return fallbackStream(in: fallbackStreams)?.id ?? fallbackStream(in: part.audioStreams)?.id
     }
 
     static func preferredAudioStreamIndex(for item: MediaItem,
@@ -62,12 +67,15 @@ enum MediaBrowserPlaybackPreferencePolicy {
               let part = sourcePart(for: item, mediaIndex: mediaIndex) else {
             return nil
         }
-        return part.audioStreams.first {
+        let role = defaults.string(forKey: PlaybackPreferences.Keys.preferredAudioRole)
+            .flatMap(AudioStreamRole.init(rawValue:)) ?? .main
+        let matching = part.audioStreams.filter {
             languageMatches(languageTag: $0.languageTag,
                             languageCode: $0.languageCode,
                             language: $0.language,
                             preferredLanguage: preferred)
-        }?.id
+        }
+        return bestStream(in: matching.filter { $0.audioRole == role })?.id
     }
 
     /// Resolve the subtitle stream index to send on a stream open/reopen. Always concrete —
@@ -97,12 +105,23 @@ enum MediaBrowserPlaybackPreferencePolicy {
               !preferred.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return subtitleOffStreamIndex
         }
-        return part.subtitleStreams.first {
+        let matching = part.subtitleStreams.filter {
             languageMatches(languageTag: $0.languageTag,
                             languageCode: $0.languageCode,
                             language: $0.language,
                             preferredLanguage: preferred)
-        }?.id ?? subtitleOffStreamIndex
+        }
+        let role: SubtitleStreamRole
+        if mode == .foreignAudio {
+            // Foreign-audio mode expresses forced/narrative intent. Do not silently promote
+            // a full or accessibility caption track when a forced rendition is unavailable.
+            role = .forced
+        } else {
+            role = defaults.string(forKey: PlaybackPreferences.Keys.preferredSubtitleRole)
+                .flatMap(SubtitleStreamRole.init(rawValue:)) ?? .full
+        }
+        return bestStream(in: matching.filter { $0.subtitleRole == role })?.id
+            ?? subtitleOffStreamIndex
     }
 
     /// Whether the source's active (selected/default/first) audio track differs from the
@@ -129,6 +148,24 @@ enum MediaBrowserPlaybackPreferencePolicy {
             return mediaItems.first
         }
         return media?.part.first
+    }
+
+    /// Stable tie-breaking for same-language/same-role variants. Metadata order is the last
+    /// authority only after the selected/default facts; id breaks otherwise identical fixtures.
+    static func bestStream(in streams: [PlexStream]) -> PlexStream? {
+        streams.enumerated().min { lhs, rhs in
+            let l = (lhs.element.selected == true ? 0 : lhs.element.isDefault == true ? 1 : 2,
+                     lhs.element.id, lhs.offset)
+            let r = (rhs.element.selected == true ? 0 : rhs.element.isDefault == true ? 1 : 2,
+                     rhs.element.id, rhs.offset)
+            return l < r
+        }?.element
+    }
+
+    private static func fallbackStream(in streams: [PlexStream]) -> PlexStream? {
+        streams.first(where: { $0.selected == true })
+            ?? streams.first(where: { $0.isDefault == true })
+            ?? streams.first
     }
 
     /// Internal (not private) so `PlaybackController` shares this single implementation —

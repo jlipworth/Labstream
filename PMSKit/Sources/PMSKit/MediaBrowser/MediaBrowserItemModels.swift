@@ -549,7 +549,13 @@ public struct MediaBrowserItemMediaStreamDto: Decodable, Sendable, Equatable {
     public let deliveryURL: String?
     public let displayTitle: String?
     public let isDefault: Bool?
+    public let isSelected: Bool?
     public let isForced: Bool?
+    public let isHearingImpaired: Bool?
+    public let isVisualImpaired: Bool?
+    public let isCommentary: Bool?
+    public let isExternal: Bool?
+    public let isTextSubtitleStream: Bool?
     public let channels: Int?
     public let title: String?
     public let width: Int?
@@ -585,7 +591,13 @@ public struct MediaBrowserItemMediaStreamDto: Decodable, Sendable, Equatable {
         case deliveryURL = "DeliveryUrl"
         case displayTitle = "DisplayTitle"
         case isDefault = "IsDefault"
+        case isSelected = "IsSelected"
         case isForced = "IsForced"
+        case isHearingImpaired = "IsHearingImpaired"
+        case isVisualImpaired = "IsVisualImpaired"
+        case isCommentary = "IsCommentary"
+        case isExternal = "IsExternal"
+        case isTextSubtitleStream = "IsTextSubtitleStream"
         case channels = "Channels"
         case title = "Title"
         case width = "Width"
@@ -620,7 +632,13 @@ public struct MediaBrowserItemMediaStreamDto: Decodable, Sendable, Equatable {
         deliveryURL = try c.decodeIfPresent(String.self, forKey: .deliveryURL)
         displayTitle = try c.decodeIfPresent(String.self, forKey: .displayTitle)
         isDefault = try c.decodeIfPresent(Bool.self, forKey: .isDefault)
+        isSelected = try c.decodeIfPresent(Bool.self, forKey: .isSelected)
         isForced = try c.decodeIfPresent(Bool.self, forKey: .isForced)
+        isHearingImpaired = try c.decodeIfPresent(Bool.self, forKey: .isHearingImpaired)
+        isVisualImpaired = try c.decodeIfPresent(Bool.self, forKey: .isVisualImpaired)
+        isCommentary = try c.decodeIfPresent(Bool.self, forKey: .isCommentary)
+        isExternal = try c.decodeIfPresent(Bool.self, forKey: .isExternal)
+        isTextSubtitleStream = try c.decodeIfPresent(Bool.self, forKey: .isTextSubtitleStream)
         channels = try c.decodeIfPresent(Int.self, forKey: .channels)
         title = try c.decodeIfPresent(String.self, forKey: .title)
         width = try c.decodeIfPresent(Int.self, forKey: .width)
@@ -757,9 +775,14 @@ public struct MediaBrowserItemMediaStreamDto: Decodable, Sendable, Equatable {
                       key: deliveryURL ?? externalURL,
                       displayTitle: displayTitle,
                       extendedDisplayTitle: displayTitle,
-                      selected: nil,
+                      selected: isSelected,
                       isDefault: isDefault,
                       forced: isForced,
+                      hearingImpaired: isHearingImpaired,
+                      visualImpaired: isVisualImpaired,
+                      commentary: isCommentary,
+                      external: isExternal,
+                      textSubtitle: isTextSubtitleStream,
                       channels: channels,
                       title: title,
                       profile: profile,

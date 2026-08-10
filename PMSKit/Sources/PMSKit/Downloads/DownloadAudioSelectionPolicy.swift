@@ -21,14 +21,17 @@ public struct DownloadAudioTrackSelection: Sendable, Equatable {
 public enum DownloadAudioSelectionPolicy {
     public static func selectedAudioStreamIndex(part: Part?,
                                                 overrideStreamIndex: Int? = nil,
-                                                preferredLanguage: String? = nil) -> Int? {
+                                                preferredLanguage: String? = nil,
+                                                preferredRole: AudioStreamRole = .main) -> Int? {
         selectedAudioTrack(part: part, overrideStreamIndex: overrideStreamIndex,
-                           preferredLanguage: preferredLanguage)?.streamIndex
+                           preferredLanguage: preferredLanguage,
+                           preferredRole: preferredRole)?.streamIndex
     }
 
     public static func selectedAudioTrack(part: Part?,
                                           overrideStreamIndex: Int? = nil,
-                                          preferredLanguage: String? = nil) -> DownloadAudioTrackSelection? {
+                                          preferredLanguage: String? = nil,
+                                          preferredRole: AudioStreamRole = .main) -> DownloadAudioTrackSelection? {
         let streams = part?.audioStreams ?? []
         if let overrideStreamIndex, overrideStreamIndex >= 0 {
             let match = streams.first { stream in
@@ -38,16 +41,32 @@ public enum DownloadAudioSelectionPolicy {
         }
 
         let preferred = preferredLanguage.flatMap { language in
-            streams.first { languageMatches($0, preferredLanguage: language) }
+            best(in: streams.filter {
+                languageMatches($0, preferredLanguage: language) && $0.audioRole == preferredRole
+            })
         }
-        guard let selected = preferred
+        let fallback = preferredLanguage == nil ? streams : streams.filter { $0.audioRole == preferredRole }
+        let existingFallback = fallback.first(where: { $0.selected == true })
+            ?? fallback.first(where: { $0.isDefault == true })
+            ?? fallback.first
             ?? streams.first(where: { $0.selected == true })
             ?? streams.first(where: { $0.isDefault == true })
-            ?? streams.first else {
+            ?? streams.first
+        guard let selected = preferred ?? existingFallback else {
             return nil
         }
         let position = streams.firstIndex(where: { $0.id == selected.id }).map { $0 + 1 }
         return makeSelection(streamIndex: selected.id, stream: selected, position: position)
+    }
+
+    private static func best(in streams: [Stream]) -> Stream? {
+        streams.enumerated().min { lhs, rhs in
+            let l = (lhs.element.selected == true ? 0 : lhs.element.isDefault == true ? 1 : 2,
+                     lhs.element.id, lhs.offset)
+            let r = (rhs.element.selected == true ? 0 : rhs.element.isDefault == true ? 1 : 2,
+                     rhs.element.id, rhs.offset)
+            return l < r
+        }?.element
     }
 
     private static func languageMatches(_ stream: Stream, preferredLanguage: String) -> Bool {
@@ -87,6 +106,10 @@ public enum DownloadAudioSelectionPolicy {
                                     streamIndex: Int,
                                     position: Int?) -> String {
         if let label = firstNonEmpty(stream?.displayTitle, stream?.extendedDisplayTitle) {
+            if let stream, stream.audioRole != .main,
+               let role = stream.roleLabel, !label.lowercased().contains(role.lowercased()) {
+                return label + " (\(role))"
+            }
             return label
         }
 

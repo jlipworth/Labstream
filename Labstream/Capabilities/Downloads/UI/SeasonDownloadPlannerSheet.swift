@@ -225,10 +225,14 @@ struct SeasonDownloadPlannerSheet: View {
             guard dispositions[option.item.ratingKey]?.action == .add else { return nil }
             let preferredLanguage = UserDefaults.standard.string(
                 forKey: PlaybackPreferences.Keys.preferredAudioLanguage)
+            let preferredRole = UserDefaults.standard.string(
+                forKey: PlaybackPreferences.Keys.preferredAudioRole)
+                .flatMap(AudioStreamRole.init(rawValue:)) ?? .main
             let sourceSelection = DownloadMediaSelectionPolicy.selection(
                 item: option.item, mediaIndex: 0, partIndex: 0)
             let audio = DownloadAudioSelectionPolicy.selectedAudioStreamIndex(
-                part: sourceSelection.part, preferredLanguage: preferredLanguage)
+                part: sourceSelection.part, preferredLanguage: preferredLanguage,
+                preferredRole: preferredRole)
             var choice: DownloadIntentChoice
             var mediaIndex = 0
             var mediaSourceID: String?
@@ -378,13 +382,17 @@ struct SeasonDownloadPlannerSheet: View {
         let planner = DownloadItemPlanner(appModel: appModel, downloadManager: downloadManager)
         let preferred = UserDefaults.standard.string(
             forKey: PlaybackPreferences.Keys.preferredAudioLanguage)
+        let preferredRole = UserDefaults.standard.string(
+            forKey: PlaybackPreferences.Keys.preferredAudioRole)
+            .flatMap(AudioStreamRole.init(rawValue:)) ?? .main
         // Deliberately bounded at one: probing may mint/refresh backend state, while actual work is
         // admitted later by the separate lane-aware window.
         let results = await SeasonPlanResolutionSequence.map(
             indices: selectedEpisodeIndices, elements: episodes) { child in
             let item = (try? await planner.refreshedItem(child, backend: backend)) ?? child
             return await planner.options(
-                for: item, preferredAudioLanguage: preferred, backend: backend)
+                for: item, preferredAudioLanguage: preferred,
+                preferredAudioRole: preferredRole, backend: backend)
         }
         guard let results, !Task.isCancelled else { return }
         resolvedOptions = results

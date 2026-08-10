@@ -85,4 +85,20 @@ struct DownloadMediaSelectionPolicyTests {
         #expect(selected?.displayName == "Track 7")
         #expect(DownloadAudioSelectionPolicy.selectedAudioStreamIndex(part: nil) == nil)
     }
+
+    @Test("Download audio selection keeps explicit semantic role")
+    func audioRoleSelection() {
+        let part = Part(id: 1, key: "/fixture", streams: [
+            Stream(id: 5, streamType: StreamType.audio.rawValue,
+                   languageCode: "eng", displayTitle: "English", commentary: true),
+            Stream(id: 2, streamType: StreamType.audio.rawValue,
+                   languageCode: "eng", displayTitle: "English"),
+        ])
+        #expect(DownloadAudioSelectionPolicy.selectedAudioStreamIndex(
+            part: part, preferredLanguage: "en") == 2)
+        let commentary = DownloadAudioSelectionPolicy.selectedAudioTrack(
+            part: part, preferredLanguage: "en", preferredRole: .commentary)
+        #expect(commentary?.streamIndex == 5)
+        #expect(commentary?.displayName == "English (Commentary)")
+    }
 }

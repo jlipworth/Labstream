@@ -79,6 +79,72 @@ struct MediaBrowserPlaybackPreferencePolicyTests {
             for: item, mediaIndex: 0, defaults: defaults) == 2)
     }
 
+    @Test func ordinaryAudioPreferenceRejectsCommentaryAndDescriptionDeterministically() throws {
+        let defaults = try makeDefaults()
+        defaults.set("en", forKey: PlaybackPreferences.Keys.preferredAudioLanguage)
+        let item = itemWithAudioStreams([
+            audio(id: 8, languageCode: "eng", commentary: true, isDefault: true),
+            audio(id: 7, languageCode: "eng", visualImpaired: true),
+            audio(id: 4, languageCode: "eng"),
+            audio(id: 2, languageCode: "eng"),
+        ])
+        #expect(MediaBrowserPlaybackPreferencePolicy.preferredAudioStreamIndex(
+            for: item, defaults: defaults) == 2)
+    }
+
+    @Test func explicitAudioRoleSurvivesSameLanguageOnLaterItem() throws {
+        let defaults = try makeDefaults()
+        defaults.set("en", forKey: PlaybackPreferences.Keys.preferredAudioLanguage)
+        defaults.set(AudioStreamRole.commentary.rawValue,
+                     forKey: PlaybackPreferences.Keys.preferredAudioRole)
+        let item = itemWithAudioStreams([
+            audio(id: 1, languageCode: "eng"),
+            audio(id: 9, languageCode: "eng", commentary: true),
+        ])
+        #expect(MediaBrowserPlaybackPreferencePolicy.preferredAudioStreamIndex(
+            for: item, defaults: defaults) == 9)
+    }
+
+    @Test func subtitleModesRespectRolesAndManualOff() throws {
+        let defaults = try makeDefaults()
+        defaults.set("en", forKey: PlaybackPreferences.Keys.preferredAudioLanguage)
+        defaults.set("en", forKey: PlaybackPreferences.Keys.preferredSubtitleLanguage)
+        let item = itemWithAudioStreams([
+            audio(id: 1, languageCode: "jpn", isDefault: true),
+            subtitle(id: 8, languageCode: "eng", hearingImpaired: true),
+            subtitle(id: 6, languageCode: "eng"),
+            subtitle(id: 7, languageCode: "eng", forced: true),
+        ])
+        #expect(MediaBrowserPlaybackPreferencePolicy.preferredSubtitleStreamIndex(
+            for: item, defaults: defaults) == MediaBrowserPlaybackPreferencePolicy.subtitleOffStreamIndex)
+
+        defaults.set(SubtitleAutoSelectMode.foreignAudio.rawValue,
+                     forKey: PlaybackPreferences.Keys.subtitleAutoSelectMode)
+        #expect(MediaBrowserPlaybackPreferencePolicy.preferredSubtitleStreamIndex(
+            for: item, defaults: defaults) == 7)
+
+        defaults.set(SubtitleAutoSelectMode.always.rawValue,
+                     forKey: PlaybackPreferences.Keys.subtitleAutoSelectMode)
+        defaults.set(SubtitleStreamRole.hearingImpaired.rawValue,
+                     forKey: PlaybackPreferences.Keys.preferredSubtitleRole)
+        #expect(MediaBrowserPlaybackPreferencePolicy.preferredSubtitleStreamIndex(
+            for: item, defaults: defaults) == 8)
+    }
+
+    @Test func foreignAudioDoesNotSubstituteFullCaptionsWhenForcedIsMissing() throws {
+        let defaults = try makeDefaults()
+        defaults.set("en", forKey: PlaybackPreferences.Keys.preferredAudioLanguage)
+        defaults.set("en", forKey: PlaybackPreferences.Keys.preferredSubtitleLanguage)
+        defaults.set(SubtitleAutoSelectMode.foreignAudio.rawValue,
+                     forKey: PlaybackPreferences.Keys.subtitleAutoSelectMode)
+        let item = itemWithAudioStreams([
+            audio(id: 1, languageCode: "jpn", isDefault: true),
+            subtitle(id: 2, languageCode: "eng"),
+        ])
+        #expect(MediaBrowserPlaybackPreferencePolicy.preferredSubtitleStreamIndex(
+            for: item, defaults: defaults) == MediaBrowserPlaybackPreferencePolicy.subtitleOffStreamIndex)
+    }
+
     private func makeDefaults() throws -> UserDefaults {
         let suite = "MediaBrowserPlaybackPreferencePolicyTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -95,17 +161,25 @@ struct MediaBrowserPlaybackPreferencePolicyTests {
     private func audio(id: Int,
                        languageCode: String? = nil,
                        selected: Bool? = nil,
+                       commentary: Bool? = nil,
+                       visualImpaired: Bool? = nil,
                        isDefault: Bool? = nil) -> Stream {
         Stream(id: id,
                streamType: StreamType.audio.rawValue,
                languageCode: languageCode,
                selected: selected,
-               isDefault: isDefault)
+               isDefault: isDefault,
+               visualImpaired: visualImpaired,
+               commentary: commentary)
     }
 
-    private func subtitle(id: Int, languageCode: String) -> Stream {
+    private func subtitle(id: Int, languageCode: String,
+                          forced: Bool? = nil,
+                          hearingImpaired: Bool? = nil) -> Stream {
         Stream(id: id,
                streamType: StreamType.subtitle.rawValue,
-               languageCode: languageCode)
+               languageCode: languageCode,
+               forced: forced,
+               hearingImpaired: hearingImpaired)
     }
 }

@@ -1,4 +1,22 @@
+import PMSKit
 import SwiftUI
+
+enum PairingCodeActionPolicy: Equatable {
+    case copyOnly
+    case copyAndOpen(URL)
+    case openEmbeddedCodeURL(URL)
+
+    static func browserHandoff(for backend: MediaBackendID) -> PairingCodeActionPolicy {
+        switch backend {
+        case .plex: .copyAndOpen(URL(string: "https://plex.tv/link")!)
+        case .jellyfin: .copyOnly
+        case .emby: .copyAndOpen(URL(string: "https://emby.media/pin.html")!)
+        }
+    }
+    static func plexEmbeddedHandoff(url: URL) -> PairingCodeActionPolicy {
+        .openEmbeddedCodeURL(url)
+    }
+}
 
 /// Shared glass pairing-code presentation for Plex link, Jellyfin Quick Connect,
 /// and Emby Connect PIN flows.
@@ -58,12 +76,15 @@ struct PairingCodeView<Header: View>: View {
     let fontSize: CGFloat
     let fallbackTitle: String?
     let onFallback: (() -> Void)?
+    let backendName: String
     @ViewBuilder let header: Header
+    @State private var copied = false
 
     init(code: String,
          cellWidth: CGFloat = 64,
          cellHeight: CGFloat = 82,
          fontSize: CGFloat = 44,
+         backendName: String,
          fallbackTitle: String? = nil,
          onFallback: (() -> Void)? = nil,
          @ViewBuilder header: () -> Header) {
@@ -71,6 +92,7 @@ struct PairingCodeView<Header: View>: View {
         self.cellWidth = cellWidth
         self.cellHeight = cellHeight
         self.fontSize = fontSize
+        self.backendName = backendName
         self.fallbackTitle = fallbackTitle
         self.onFallback = onFallback
         self.header = header()
@@ -81,6 +103,18 @@ struct PairingCodeView<Header: View>: View {
             header
 
             PairingCodeCells(code: code, width: cellWidth, height: cellHeight, fontSize: fontSize)
+
+            #if !os(tvOS)
+            Button {
+                copyCode()
+            } label: {
+                Label(copied ? "Code copied" : "Copy code",
+                      systemImage: copied ? "checkmark" : "doc.on.doc")
+            }
+            .labstreamGlassButtonStyle()
+            .accessibilityLabel("Copy \(backendName) pairing code")
+            .accessibilityHint("Copies the displayed short code for five minutes")
+            #endif
 
             HStack(spacing: DS.Space.sm) {
                 ProgressView()
@@ -96,6 +130,16 @@ struct PairingCodeView<Header: View>: View {
                     .controlSize(.regular)
                     #endif
             }
+        }
+    }
+
+    private func copyCode() {
+        PlatformPasteboard.copyPairingCode(code)
+        copied = true
+        PlatformAccessibility.announce("Code copied")
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            copied = false
         }
     }
 }

@@ -413,6 +413,7 @@ final class PlaybackController {
     private enum SubtitlePrefKey {
         /// BCP-47 / ISO language code of the user's last chosen subtitle track (e.g. "en").
         static let language = PlaybackPreferences.Keys.preferredSubtitleLanguage
+        static let role = PlaybackPreferences.Keys.preferredSubtitleRole
         /// `true` once the user has explicitly chosen "Off"; suppresses auto-select.
         static let off = PlaybackPreferences.Keys.subtitlesOff
     }
@@ -422,6 +423,7 @@ final class PlaybackController {
     private enum AudioPrefKey {
         /// BCP-47 / ISO language code of the user's last chosen audio track (e.g. "en").
         static let language = PlaybackPreferences.Keys.preferredAudioLanguage
+        static let role = PlaybackPreferences.Keys.preferredAudioRole
     }
 
     /// Every UserDefaults key this controller persists across sessions, for the Settings
@@ -430,8 +432,10 @@ final class PlaybackController {
     static let persistedPreferenceKeys: [String] = [
         playbackSpeedKey,
         SubtitlePrefKey.language,
+        SubtitlePrefKey.role,
         SubtitlePrefKey.off,
         AudioPrefKey.language,
+        AudioPrefKey.role,
         PlaybackPreferences.Keys.subtitleAutoSelectMode,
         PlaybackPreferences.Keys.subtitleBurnMode,
         PlaybackPreferences.Keys.mobileVideoDisplayMode,
@@ -1289,12 +1293,14 @@ final class PlaybackController {
         guard let track else {
             defaults.set(true, forKey: SubtitlePrefKey.off)
             defaults.removeObject(forKey: SubtitlePrefKey.language)
+            defaults.removeObject(forKey: SubtitlePrefKey.role)
             return
         }
         defaults.set(false, forKey: SubtitlePrefKey.off)
         if let language = track.language, !language.isEmpty {
             defaults.set(language, forKey: SubtitlePrefKey.language)
         }
+        defaults.set((track.role ?? .full).rawValue, forKey: SubtitlePrefKey.role)
     }
 
     /// Build the Subtitles tab from part metadata for backends whose HLS carries no legible group
@@ -1315,11 +1321,7 @@ final class PlaybackController {
             mechanism: .mediaBrowserOff)]
         var seenCounts: [String: Int] = [:]
         for (index, stream) in streams.enumerated() {
-            var label = stream.displayTitle
-                ?? stream.extendedDisplayTitle
-                ?? stream.language
-                ?? "Subtitle \(index + 1)"
-            if stream.forced == true, !label.lowercased().contains("forced") { label += " (Forced)" }
+            var label = stream.pickerLabel(fallback: "Subtitle \(index + 1)")
             let priorCount = seenCounts[label, default: 0]
             seenCounts[label] = priorCount + 1
             if priorCount > 0 { label += " \(priorCount + 1)" }
@@ -1356,11 +1358,7 @@ final class PlaybackController {
             mechanism: .plexOff)]
         var seenCounts: [String: Int] = [:]
         for (index, stream) in streams.enumerated() {
-            var label = stream.displayTitle
-                ?? stream.extendedDisplayTitle
-                ?? stream.language
-                ?? "Subtitle \(index + 1)"
-            if stream.forced == true, !label.lowercased().contains("forced") { label += " (Forced)" }
+            var label = stream.pickerLabel(fallback: "Subtitle \(index + 1)")
             let priorCount = seenCounts[label, default: 0]
             seenCounts[label] = priorCount + 1
             if priorCount > 0 { label += " \(priorCount + 1)" }
@@ -1424,14 +1422,28 @@ final class PlaybackController {
         }
         if name.isEmpty { name = "Unknown" }
 
-        if option.hasMediaCharacteristic(.containsOnlyForcedSubtitles) {
-            name += " (Forced)"
-        } else if option.hasMediaCharacteristic(.transcribesSpokenDialogForAccessibility)
-                    || option.hasMediaCharacteristic(.describesMusicAndSoundForAccessibility) {
-            name += " (SDH)"
+        let role = switch subtitleRole(for: option) {
+        case .full: "Full"
+        case .forced: "Forced"
+        case .hearingImpaired: "SDH/CC"
         }
+        if !name.lowercased().contains(role.lowercased()) { name += " (\(role))" }
 
         return name
+    }
+
+    private static func subtitleRole(for option: AVMediaSelectionOption) -> SubtitleStreamRole {
+        if option.hasMediaCharacteristic(.containsOnlyForcedSubtitles) { return .forced }
+        if option.hasMediaCharacteristic(.transcribesSpokenDialogForAccessibility)
+            || option.hasMediaCharacteristic(.describesMusicAndSoundForAccessibility) {
+            return .hearingImpaired
+        }
+        let label = option.displayName.lowercased()
+        if label.contains("forced") { return .forced }
+        if label.contains("sdh") || label.contains("closed caption") || label == "cc" {
+            return .hearingImpaired
+        }
+        return .full
     }
 
     /// Persist the user's subtitle choice so it can be reapplied to a later item. Storing the
@@ -1443,6 +1455,7 @@ final class PlaybackController {
             // User picked "Off": remember that and clear any language preference.
             defaults.set(true, forKey: SubtitlePrefKey.off)
             defaults.removeObject(forKey: SubtitlePrefKey.language)
+            defaults.removeObject(forKey: SubtitlePrefKey.role)
             return
         }
         defaults.set(false, forKey: SubtitlePrefKey.off)
@@ -1453,6 +1466,7 @@ final class PlaybackController {
         } else {
             defaults.removeObject(forKey: SubtitlePrefKey.language)
         }
+        defaults.set(Self.subtitleRole(for: option).rawValue, forKey: SubtitlePrefKey.role)
     }
 
     /// Apply the subtitle preference to the current item's legible group, once per item
@@ -1491,9 +1505,16 @@ final class PlaybackController {
         if !wantsOff, mode != .manual,
            let saved = savedLang, !saved.isEmpty,
            mode == .always || sourceAudioIsForeign(toPreferredLanguage: defaults) {
+            let desiredRole: SubtitleStreamRole = mode == .foreignAudio
+                ? .forced
+                : defaults.string(forKey: SubtitlePrefKey.role)
+                    .flatMap(SubtitleStreamRole.init(rawValue:)) ?? .full
             selection = group.options.first { option in
-                option.extendedLanguageTag == saved
-                    || option.locale?.language.languageCode?.identifier == saved
+                Self.languageMatches(languageTag: option.extendedLanguageTag,
+                                     languageCode: option.locale?.language.languageCode?.identifier,
+                                     language: nil,
+                                     preferredLanguage: saved)
+                    && Self.subtitleRole(for: option) == desiredRole
             }
         }
         playerItem.select(selection, in: group)
@@ -1604,12 +1625,14 @@ final class PlaybackController {
               let stream = streamingPart?.subtitleStreams.first(where: { $0.id == streamIndex }) else {
             defaults.set(true, forKey: SubtitlePrefKey.off)
             defaults.removeObject(forKey: SubtitlePrefKey.language)
+            defaults.removeObject(forKey: SubtitlePrefKey.role)
             return
         }
         defaults.set(false, forKey: SubtitlePrefKey.off)
         if let lang = stream.languageTag ?? stream.language, !lang.isEmpty {
             defaults.set(lang, forKey: SubtitlePrefKey.language)
         }
+        defaults.set(stream.subtitleRole.rawValue, forKey: SubtitlePrefKey.role)
     }
 
     // MARK: - Audio (soundtrack / language)
@@ -1687,11 +1710,24 @@ final class PlaybackController {
         }
         if name.isEmpty { name = "Unknown" }
 
-        if option.hasMediaCharacteristic(.describesVideoForAccessibility) {
-            name += " (AD)"
+        let role = switch audioRole(for: option) {
+        case .main: "Main"
+        case .commentary: "Commentary"
+        case .audioDescription: "Audio Description"
         }
+        if !name.lowercased().contains(role.lowercased()) { name += " (\(role))" }
 
         return name
+    }
+
+    private static func audioRole(for option: AVMediaSelectionOption) -> AudioStreamRole {
+        if option.hasMediaCharacteristic(.describesVideoForAccessibility) { return .audioDescription }
+        let label = option.displayName.lowercased()
+        if label.contains("commentary") { return .commentary }
+        if label.contains("audio description") || label.contains("descriptive audio") {
+            return .audioDescription
+        }
+        return .main
     }
 
     /// Persist the user's audio-language choice so it can be reapplied to a later item. Stores the
@@ -1709,6 +1745,7 @@ final class PlaybackController {
         } else {
             defaults.removeObject(forKey: AudioPrefKey.language)
         }
+        defaults.set(Self.audioRole(for: option).rawValue, forKey: AudioPrefKey.role)
     }
 
     /// Auto-apply the persisted audio-language preference to the current item's audible group,
@@ -1738,9 +1775,14 @@ final class PlaybackController {
 
         // Select the first audible option whose language matches the saved code. No match →
         // leave the HLS default selection in place.
+        let desiredRole = UserDefaults.standard.string(forKey: AudioPrefKey.role)
+            .flatMap(AudioStreamRole.init(rawValue:)) ?? .main
         let match = group.options.first { option in
-            option.extendedLanguageTag == savedLang
-                || option.locale?.language.languageCode?.identifier == savedLang
+            Self.languageMatches(languageTag: option.extendedLanguageTag,
+                                 languageCode: option.locale?.language.languageCode?.identifier,
+                                 language: nil,
+                                 preferredLanguage: savedLang)
+                && Self.audioRole(for: option) == desiredRole
         }
         if let match {
             playerItem.select(match, in: group)
@@ -1778,13 +1820,10 @@ final class PlaybackController {
             return nil
         }
 
-        let preferredSubtitle = defaults.string(forKey: SubtitlePrefKey.language)
-        let stream = preferredSubtitle.flatMap { preferred in
-            part.subtitleStreams.first { Self.languageMatches(languageTag: $0.languageTag,
-                                                              languageCode: $0.languageCode,
-                                                              language: $0.language,
-                                                              preferredLanguage: preferred) }
-        } ?? (burnMode == .always ? part.subtitleStreams.first : nil)
+        let preferredID = MediaBrowserPlaybackPreferencePolicy.preferredSubtitleStreamIndex(
+            for: item, mediaIndex: mediaIndex, defaults: defaults)
+        let stream = part.subtitleStreams.first { $0.id == preferredID }
+            ?? (burnMode == .always ? part.subtitleStreams.first { $0.subtitleRole == .full } : nil)
         guard let stream else { return nil }
 
         switch burnMode {
@@ -1911,10 +1950,7 @@ final class PlaybackController {
         var choices: [PlaybackAudioTrack] = []
         var seenCounts: [String: Int] = [:]
         for (index, stream) in streams.enumerated() {
-            var label = stream.displayTitle
-                ?? stream.extendedDisplayTitle
-                ?? stream.language
-                ?? "Track \(index + 1)"
+            var label = stream.pickerLabel(fallback: "Track \(index + 1)")
             let priorCount = seenCounts[label, default: 0]
             seenCounts[label] = priorCount + 1
             if priorCount > 0 { label += " \(priorCount + 1)" }
@@ -2018,6 +2054,9 @@ final class PlaybackController {
            let lang = MediaBrowserPlaybackPreferencePolicy.persistableLanguageCode(
                languageTag: stream.languageTag, languageCode: stream.languageCode) {
             UserDefaults.standard.set(lang, forKey: AudioPrefKey.language)
+        }
+        if let stream = part.audioStreams.first(where: { $0.id == streamID }) {
+            UserDefaults.standard.set(stream.audioRole.rawValue, forKey: AudioPrefKey.role)
         }
 
         // Restart/reopen where the viewer is — same UX as Quality reload. Plex persists the

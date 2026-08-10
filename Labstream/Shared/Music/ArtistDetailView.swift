@@ -77,6 +77,10 @@ struct ArtistDetailView: View {
                     }
                 }
             }
+            // Loading and loaded states both occupy the navigation viewport. In particular,
+            // never let a row of authored-width placeholders become the vertical ScrollView's
+            // ideal width and briefly widen the whole artist destination.
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.vertical, DS.Space.xl)
         }
         .navigationTitle(artist.title)
@@ -205,19 +209,46 @@ struct ArtistDetailView: View {
         .padding(.horizontal, DS.pagePadding(compact: compactWidth))
     }
 
-    /// Shimmering shelf placeholders while everything loads.
+    /// First-frame loading structure mirrors the two leading loaded sections. The albums
+    /// placeholders own their horizontal overflow, while the Popular card remains viewport
+    /// bounded; this avoids both the old title-row flash and its oversized intrinsic width.
     private var shelfSkeleton: some View {
-        HStack(spacing: compactWidth ? DS.Space.md : DS.Space.xl) {
-            ForEach(0..<6, id: \.self) { _ in
-                RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous)
-                    .fill(.regularMaterial)
-                    .frame(width: MusicArt.railSize(compact: compactWidth),
-                           height: MusicArt.railSize(compact: compactWidth))
-                    .overlay { ShimmerView() }
-                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous))
+        VStack(alignment: .leading, spacing: DS.Space.xxl) {
+            VStack(alignment: .leading, spacing: DS.Space.lg) {
+                Text("Popular").font(.title2.bold())
+                VStack(spacing: 0) {
+                    ForEach(0..<4, id: \.self) { index in
+                        RoundedRectangle(cornerRadius: DS.Radius.chip, style: .continuous)
+                            .fill(.regularMaterial)
+                            .frame(maxWidth: .infinity, minHeight: 54)
+                            .overlay { ShimmerView() }
+                        if index < 3 { Divider() }
+                    }
+                }
+                .padding(DS.Space.sm)
+                .background(.regularMaterial,
+                            in: RoundedRectangle(cornerRadius: DS.Radius.card, style: .continuous))
+            }
+            .padding(.horizontal, DS.pagePadding(compact: compactWidth))
+
+            VStack(alignment: .leading, spacing: DS.Space.lg) {
+                Text("Albums").font(.title2.bold())
+                    .padding(.horizontal, DS.pagePadding(compact: compactWidth))
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: compactWidth ? DS.Space.md : DS.Space.xl) {
+                        ForEach(0..<6, id: \.self) { _ in
+                            RoundedRectangle(cornerRadius: DS.Radius.poster, style: .continuous)
+                                .fill(.regularMaterial)
+                                .frame(width: MusicArt.railSize(compact: compactWidth),
+                                       height: MusicArt.railSize(compact: compactWidth))
+                                .overlay { ShimmerView() }
+                        }
+                    }
+                    .padding(.horizontal, DS.pagePadding(compact: compactWidth))
+                }
             }
         }
-        .padding(.horizontal, DS.pagePadding(compact: compactWidth))
+        .accessibilityIdentifier("artist.loading.stable")
     }
 
     private func load() async {
