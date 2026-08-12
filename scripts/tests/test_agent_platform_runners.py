@@ -1,4 +1,5 @@
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -45,6 +46,30 @@ class AgentPlatformRunnerTests(unittest.TestCase):
             self.assertIn("xcresulttool export attachments", source)
             self.assertIn("test-summary.json", source)
             self.assertIn("run.json", source)
+            self.assertIn("log_start=$(date '+%Y-%m-%d %H:%M:%S')", source)
+            self.assertIn('log show --start "$log_start"', source)
+
+    def test_bounded_command_records_output_and_times_out_process_group(self) -> None:
+        runner = ROOT / "scripts" / "run-bounded-command.py"
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "command.log"
+            passed = subprocess.run(
+                [str(runner), "--timeout", "2", "--output", str(output), "--",
+                 "/bin/sh", "-c", "echo bounded-pass"],
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(passed.returncode, 0, passed.stderr)
+            self.assertEqual(output.read_text(), "bounded-pass\n")
+
+            timed_out = subprocess.run(
+                [str(runner), "--timeout", "1", "--output", str(output), "--",
+                 "/bin/sh", "-c", "sleep 10"],
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(timed_out.returncode, 124, timed_out.stderr)
+            self.assertIn("timed out after 1 seconds", output.read_text())
 
 
 if __name__ == "__main__":
