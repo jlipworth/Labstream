@@ -341,6 +341,8 @@ uv run --with-requirements requirements.txt mkdocs build --strict
 
 - `LabstreamTests`, selected by the `LabstreamMobile` scheme and `LabstreamTests.xctestplan`, runs
   on an iPhone/iPad simulator;
+- `LabstreamMobileUITests`, selected by the same scheme/test plan, owns the credential-free
+  semantic Home-to-detail regression used by the mobile agent loop;
 - `LabstreamMacTests`, selected by the `LabstreamMac` scheme and
   `LabstreamMacTests.xctestplan`, runs on the macOS host;
 - `LabstreamTVTests`, selected together with `LabstreamTVUITests` by the `LabstreamTV` scheme and
