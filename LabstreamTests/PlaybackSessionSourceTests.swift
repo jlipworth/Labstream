@@ -24,6 +24,7 @@ struct PlaybackSessionSourceTests {
             playMethod: .transcode)
         let mediaBrowser = MediaBrowserPlaybackSession(
             streamURL: try #require(URL(string: "https://media.example.test/master.m3u8")),
+            backend: .jellyfin,
             backendLabel: "Jellyfin",
             httpHeaders: ["X-MediaBrowser-Token": "token"],
             playSessionID: "play-1",
@@ -46,6 +47,7 @@ struct PlaybackSessionSourceTests {
         #expect(plex.pathMode == "plex_stream")
         #expect(plex.supportsStreamReopen)
         #expect(remote.kind == .mediaBrowser)
+        #expect(mediaBrowser.backend == .jellyfin)
         #expect(remote.pathMode == "remote_stream")
         #expect(remote.supportsStreamReopen)
         #expect(offline.kind == .offline)
@@ -103,6 +105,7 @@ struct PlaybackSessionSourceTests {
         var stopped = false
         let session = MediaBrowserPlaybackSession(
             streamURL: stream,
+            backend: .emby,
             backendLabel: "Emby",
             httpHeaders: ["X-Emby-Token": "token"],
             playSessionID: "play-1",
@@ -117,6 +120,7 @@ struct PlaybackSessionSourceTests {
             })
 
         #expect(session.initialStreamURL == stream)
+        #expect(session.backend == .emby)
         #expect(session.progressSession == progress)
         #expect(session.playSessionID == "play-1")
         _ = try await session.reopener(RemoteStreamReopenRequest(offsetMs: 42_000,

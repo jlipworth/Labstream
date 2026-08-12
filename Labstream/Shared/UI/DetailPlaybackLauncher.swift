@@ -134,6 +134,7 @@ enum DetailPlaybackLauncher {
             playMethod: remote.playMethod)
         let session = MediaBrowserPlaybackSession(
             streamURL: remote.url,
+            backend: remote.backend,
             backendLabel: remote.backend.displayName,
             httpHeaders: remote.headers,
             playSessionID: remote.playSessionId,

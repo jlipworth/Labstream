@@ -94,8 +94,10 @@ class ToolingHardeningTests(unittest.TestCase):
             subprocess.run(["scripts/deploy-macos-to-host.sh"], cwd=root, check=True,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             args = args_file.read_text()
-            self.assertIn("INFOPLIST_KEY_CFBundleDisplayName=Labstream Dev — master", args)
-            staged = root / "build" / "macos-host" / "master" / "Labstream.app"
+            branch = subprocess.run(["git", "branch", "--show-current"], cwd=root,
+                                    check=True, capture_output=True, text=True).stdout.strip()
+            self.assertIn(f"INFOPLIST_KEY_CFBundleDisplayName=Labstream Dev — {branch}", args)
+            staged = root / "build" / "macos-host" / branch / "Labstream.app"
             self.assertTrue(staged.is_dir())
 
             extra = root / "build" / "macos-host" / "other" / "Labstream.app"

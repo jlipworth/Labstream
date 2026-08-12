@@ -554,7 +554,8 @@ private struct CustomCinemaScreen: View {
             Color.black
 
             if let controller = session.controller {
-                PlayerLayerView(player: controller.player)
+                PlayerLayerView(player: controller.player,
+                                captionAppearance: controller.captionAppearance)
                     .ignoresSafeArea()
 
                 CustomPlayerChrome(controller: controller,

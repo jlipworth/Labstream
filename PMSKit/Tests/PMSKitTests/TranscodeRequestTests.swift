@@ -440,6 +440,7 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     let r = try JSONDecoder().decode(DecisionResponse.self, from: json)
     #expect(r.videoDecision == "copy")
     #expect(r.audioDecision == "transcode")
+    #expect(r.subtitleDecision == "burn")
     #expect(r.mdeDecisionText == "Convert to HLS, copy video, transcode audio")
     // Video is copied -> the expensive re-encode is saved.
     #expect(r.savesVideoEncode == true)

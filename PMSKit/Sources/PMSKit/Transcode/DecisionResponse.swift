@@ -42,6 +42,9 @@ public struct DecisionResponse: Decodable, Sendable, Equatable {
     public let videoDecision: String?
     /// Per-stream `decision` for the audio stream (streamType 2) of the first part.
     public let audioDecision: String?
+    /// Per-stream subtitle decision (commonly `copy` or `burn`). This is the structured server
+    /// truth used by the picker; human-readable MDE prose is never parsed for capability claims.
+    public let subtitleDecision: String?
 
     enum RootKeys: String, CodingKey { case mediaContainer = "MediaContainer" }
     enum ContainerKeys: String, CodingKey {
@@ -65,7 +68,8 @@ public struct DecisionResponse: Decodable, Sendable, Equatable {
                 mdeDecisionCode: Int? = nil,
                 mdeDecisionText: String? = nil,
                 partDecision: String? = nil,
-                videoDecision: String? = nil, audioDecision: String? = nil) {
+                videoDecision: String? = nil, audioDecision: String? = nil,
+                subtitleDecision: String? = nil) {
         self.generalDecisionCode = generalDecisionCode
         self.generalDecisionText = generalDecisionText
         self.mdeDecisionCode = mdeDecisionCode
@@ -73,6 +77,7 @@ public struct DecisionResponse: Decodable, Sendable, Equatable {
         self.partDecision = partDecision
         self.videoDecision = videoDecision
         self.audioDecision = audioDecision
+        self.subtitleDecision = subtitleDecision
     }
 
     public init(from decoder: Decoder) throws {
@@ -88,6 +93,7 @@ public struct DecisionResponse: Decodable, Sendable, Equatable {
         let streams = part?.Stream ?? []
         self.videoDecision = streams.first { $0.streamType == 1 }?.decision
         self.audioDecision = streams.first { $0.streamType == 2 }?.decision
+        self.subtitleDecision = streams.first { $0.streamType == 3 }?.decision
     }
 
     /// The interpreted decision. Falls back to `.unsupported(-1)` when PMS omits a code.

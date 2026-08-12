@@ -1747,7 +1747,7 @@ public final class DownloadManager {
 
     /// Resume queue processing with no memory of which rows the last global pause touched.
     ///
-    /// "Resume Queue" is intentionally snowball-style: clear the persisted queue gate, retry every
+    /// "Resume All" is intentionally snowball-style: clear the persisted queue gate, retry every
     /// idle incomplete row (`.paused` and `.failed`), then let queued/preparing server-side work
     /// resume through its normal poller. Already-active rows are left alone so we do not duplicate
     /// URLSession tasks.

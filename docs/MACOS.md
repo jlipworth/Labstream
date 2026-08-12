@@ -33,9 +33,17 @@ focuses it, Escape or a source-list selection dismisses it, and the prior detail
 The source list collapses to detail-only below 900 points while retaining the native toggle; the
 window minimum is 760 by 640 points. Account-menu sign-out always requires confirmation.
 
-Offline may show a progress percentage only for active byte transfers when every active transfer
-has an exact expected byte total. The value is byte-weighted; estimated or partially known totals
-intentionally suppress it.
+The Mac music mini-player is a bounded native control card rather than a window-wide media strip.
+It keeps title/artist/album context, a real scrubber, previous/play/next controls, queue and expand
+actions, and an explicit stop-and-dismiss action available while the user browses. Pointer help,
+keyboard shortcuts, accessibility labels, and truncation preserve the primary controls at narrow
+window sizes; opening Now Playing is separate from stopping playback.
+
+The Offline source-list row shows a single transfer's byte progress directly. With multiple active
+transfers it labels the count explicitly and uses a byte-weighted aggregate only when every active
+transfer has an exact expected byte total. Unknown or estimated totals suppress the percentage.
+The queue toolbar's `Pause All` / `Resume All` action is intentionally distinct from per-item pause
+and retry controls.
 
 Treat this as source-build coverage rather than a compatibility promise. Real Plex, Jellyfin,
 and Emby authentication, media-key behavior, playback, and background-download recovery still
