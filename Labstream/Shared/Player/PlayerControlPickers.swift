@@ -546,7 +546,7 @@ struct SubtitlesTabView: View {
         }
         .playerPickerButtonStyle()
 
-        Text("Applying a style changes the system caption profile for every app.")
+        Text("Caption styles apply system-wide.")
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
