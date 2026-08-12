@@ -87,6 +87,27 @@ result_code=1
 app_path=
 app_pid=
 
+bounded_screenshot() {
+  local destination=$1
+  SIMID="$simid" DESTINATION="$destination" python3 - <<'PY'
+import os, subprocess, sys
+try:
+    result = subprocess.run(
+        ["xcrun", "simctl", "io", os.environ["SIMID"], "screenshot", os.environ["DESTINATION"]],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=15,
+    )
+except subprocess.TimeoutExpired as error:
+    output = error.stdout or ""
+    if isinstance(output, bytes):
+        output = output.decode("utf-8", errors="replace")
+    sys.stdout.write(output)
+    print("screenshot timed out after 15 seconds")
+    raise SystemExit(1)
+sys.stdout.write(result.stdout)
+raise SystemExit(result.returncode)
+PY
+}
+
 write_result() {
   OUTDIR="$outdir" PLATFORM="$platform" SCENARIO="$scenario" BACKEND="$backend" \
   STATUS="$status" RESULT_CODE="$result_code" SIMID="$simid" STARTED_AT="$started_at" \
@@ -138,12 +159,14 @@ cleanup() {
     kill -INT "$video_pid" 2>/dev/null || true
     wait "$video_pid" 2>/dev/null || true
   fi
-  xcrun simctl io "$simid" screenshot "$outdir/screen-end.png" >>"$outdir/screenshot.log" 2>&1 || true
   xcrun simctl spawn "$simid" log show --start "$started_at" --style compact \
     --predicate 'process == "Labstream"' >"$outdir/app.log" 2>&1 || true
   xcrun simctl spawn "$simid" log show --last 30s --style compact \
     --predicate 'process == "SpringBoard" OR eventMessage CONTAINS[c] "Labstream"' \
     >"$outdir/simulator.log" 2>&1 || true
+  if [[ ! -s $outdir/screen-end.png ]]; then
+    bounded_screenshot "$outdir/screen-end.png" >>"$outdir/screenshot.log" 2>&1 || true
+  fi
   if ((keep_booted == 0)); then xcrun simctl shutdown "$simid" >/dev/null 2>&1 || true; fi
   if ((ec != 0)) && ((result_code == 0)); then result_code=$ec; status=failed; fi
   write_result
@@ -168,7 +191,7 @@ installed_uuid=$(xcrun dwarfdump --uuid "$installed_app/Labstream" | awk '{print
   printf 'Installed executable does not match built product.\n' >&2; exit 1;
 }
 
-xcrun simctl io "$simid" screenshot "$outdir/screen-start.png" >"$outdir/screenshot.log" 2>&1
+bounded_screenshot "$outdir/screen-start.png" >"$outdir/screenshot.log" 2>&1
 xcrun simctl io "$simid" recordVideo "$outdir/screen-recording.mp4" >"$outdir/record-video.log" 2>&1 &
 video_pid=$!
 xcrun simctl terminate "$simid" com.jlipworth.Labstream >/dev/null 2>&1 || true
@@ -177,12 +200,12 @@ xcrun simctl launch "$simid" com.jlipworth.Labstream \
   >"$outdir/launch.log" 2>&1
 app_pid=$(awk -F': ' '/com\.jlipworth\.Labstream:/{print $2}' "$outdir/launch.log" | tail -1)
 sleep "$duration"
-[[ $app_pid =~ ^[0-9]+$ ]] && xcrun simctl spawn "$simid" ps -p "$app_pid" -o pid= | grep -q "$app_pid"
+[[ $app_pid =~ ^[0-9]+$ ]] && xcrun simctl spawn "$simid" /bin/kill -0 "$app_pid"
 
 kill -INT "$video_pid" 2>/dev/null || true
 wait "$video_pid" 2>/dev/null || true
 video_pid=
-xcrun simctl io "$simid" screenshot "$outdir/screen-end.png" >>"$outdir/screenshot.log" 2>&1
+bounded_screenshot "$outdir/screen-end.png" >>"$outdir/screenshot.log" 2>&1
 [[ -s $outdir/screen-start.png && -s $outdir/screen-end.png && -s $outdir/screen-recording.mp4 ]]
 
 status=passed
