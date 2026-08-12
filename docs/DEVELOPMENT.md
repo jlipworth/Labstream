@@ -277,6 +277,10 @@ Shut the simulator down as soon as the check finishes:
 
 ```sh
 xcrun simctl shutdown "$SIMID"
+
+# Credential-free semantic mobile evidence (run one platform at a time under the lease).
+scripts/agent-mobile-run.sh iphone fixture-detail-semantic --allow-simulator
+scripts/agent-mobile-run.sh ipad fixture-detail-semantic --allow-simulator
 ```
 
 Shutting down preserves the simulator and its app state. Do not use `teardown` for the main
@@ -378,11 +382,17 @@ scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
 
 # tvOS unit and UI suites (requires the worktree's concrete tvOS simulator).
 scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
-  -scheme LabstreamTV -destination "platform=tvOS Simulator,id=$SIMID" \
+  -scheme LabstreamTV -testPlan LabstreamTVTests \
+  -destination "platform=tvOS Simulator,id=$SIMID" \
   -only-testing:LabstreamTVTests test CODE_SIGNING_ALLOWED=NO -enableCodeCoverage NO
 scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
-  -scheme LabstreamTV -destination "platform=tvOS Simulator,id=$SIMID" \
+  -scheme LabstreamTV -testPlan LabstreamTVUITests \
+  -destination "platform=tvOS Simulator,id=$SIMID" \
   -only-testing:LabstreamTVUITests test CODE_SIGNING_ALLOWED=NO -enableCodeCoverage NO
+
+# Credential-free TV evidence wrappers.
+scripts/agent-tvos-run.sh fixture-home-semantic --allow-simulator
+scripts/agent-tvos-run.sh fixture-player-basic --allow-simulator
 ```
 
 The shared app suites are host-app unit tests, not live-server acceptance tests. Keep policy and

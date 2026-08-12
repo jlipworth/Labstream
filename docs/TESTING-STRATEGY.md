@@ -218,6 +218,28 @@ with `--tv-input-evidence` enable it; the exhaustive player UI fixture opts in e
 Debug launches, unit tests, and the small UI smoke plan therefore exercise the unswizzled event
 path. Release builds still compile the recorder out entirely.
 
+### Named agent evidence runners
+
+The native matrix is the selection/execution authority; the named runners are the evidence-bundle
+boundary for repeatable agent scenarios:
+
+```sh
+scripts/agent-mobile-run.sh iphone fixture-detail-semantic --allow-simulator
+scripts/agent-mobile-run.sh ipad fixture-detail-semantic --allow-simulator
+scripts/agent-tvos-run.sh fixture-home-semantic --allow-simulator
+scripts/agent-tvos-run.sh fixture-player-basic --allow-simulator
+scripts/agent-macos-run.sh fixture-detail
+scripts/agent-sim-run.sh launch-fixture-home-passive
+```
+
+Simulator runners refuse a foreign booted device and require an explicit lease assertion where
+applicable. Mobile and TV semantic scenarios retain XCTest attachments and result bundles in
+addition to video, screenshots, logs, and `run.json`. macOS uses semantic Accessibility against an
+isolated development identity. visionOS remains passive/probe-first because Xcode 27 Device
+Interaction does not support its simulator; gaze, pinch-drag, immersive, and hardware-only checks
+remain human/headset gates. Real backend credentials supplement these fixture loops but are never a
+precondition for platform-loop closure.
+
 ## macOS development-preview checks
 
 macOS has no simulator lane. The native `LabstreamMac` target runs on the host under a
