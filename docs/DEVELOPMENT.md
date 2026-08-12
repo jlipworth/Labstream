@@ -345,11 +345,10 @@ uv run --with-requirements requirements.txt mkdocs build --strict
   semantic Home-to-detail regression used by the mobile agent loop;
 - `LabstreamMacTests`, selected by the `LabstreamMac` scheme and
   `LabstreamMacTests.xctestplan`, runs on the macOS host;
-- `LabstreamTVTests`, selected together with `LabstreamTVUITests` by the `LabstreamTV` scheme and
-  `LabstreamTVTests.xctestplan`, runs the applicable shared app tests for tvOS while excluding the
-  approved download-only exception. The UI target exercises deterministic authentication and the
-  initial remote-only Home-to-detail browse journey; broader focus/remote coverage remains part of
-  the active tvOS implementation plan.
+- `LabstreamTVTests`, selected by `LabstreamTVTests.xctestplan`, runs the applicable shared app
+  tests for tvOS while excluding the approved download-only exception;
+  `LabstreamTVUITests.xctestplan` isolates deterministic authentication and the initial
+  remote-only Home-to-detail browse journey so unrelated hosted sources cannot block UI execution.
 
 Run the app suite for the platform affected by a change (both for shared app infrastructure):
 
