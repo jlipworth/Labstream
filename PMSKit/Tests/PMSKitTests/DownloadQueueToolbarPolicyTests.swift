@@ -4,24 +4,24 @@ import Testing
 @Suite("Download queue toolbar policy")
 struct DownloadQueueToolbarPolicyTests {
 
-    @Test("active downloads show Pause Queue")
-    func activeDownloadsShowPauseQueue() throws {
+    @Test("active downloads show Pause All")
+    func activeDownloadsShowPauseAll() throws {
         for active in [DownloadStatus.queued, .preparing, .downloading] {
             let action = try #require(DownloadQueueToolbarPolicy.action(isQueuePaused: false,
                                                                         statuses: [active]))
             #expect(action == .pauseQueue)
-            #expect(action.title == "Pause Queue")
+            #expect(action.title == "Pause All")
             #expect(action.systemImage == "pause.circle")
         }
     }
 
-    @Test("idle incomplete downloads show Resume Queue")
-    func idleIncompleteDownloadsShowResumeQueue() throws {
+    @Test("idle incomplete downloads show Resume All")
+    func idleIncompleteDownloadsShowResumeAll() throws {
         for incomplete in [DownloadStatus.paused, .failed] {
             let action = try #require(DownloadQueueToolbarPolicy.action(isQueuePaused: false,
                                                                         statuses: [incomplete]))
             #expect(action == .resumeQueue)
-            #expect(action.title == "Resume Queue")
+            #expect(action.title == "Resume All")
             #expect(action.systemImage == "play.circle")
         }
     }
@@ -36,8 +36,8 @@ struct DownloadQueueToolbarPolicyTests {
                                                   statuses: [.paused, .queued]) == .resumeQueue)
     }
 
-    @Test("queue-paused state always shows Resume Queue")
-    func queuePausedAlwaysShowsResumeQueue() {
+    @Test("queue-paused state always shows Resume All")
+    func queuePausedAlwaysShowsResumeAll() {
         #expect(DownloadQueueToolbarPolicy.action(isQueuePaused: true,
                                                   statuses: [DownloadStatus.complete, .failed]) == .resumeQueue)
         #expect(DownloadQueueToolbarPolicy.action(isQueuePaused: true,

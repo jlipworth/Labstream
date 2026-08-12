@@ -182,6 +182,19 @@ audio PUTs also run through a serialized latest-intent tail: an in-flight mutati
 the newest choice is sent, while superseded queued choices are skipped, making the newest intent
 the final server mutation as well as the final local selection.
 
+Subtitle delivery risk and caption styling are separate typed policies. `SubtitleBurnRiskPolicy`
+maps backend evidence (including Plex's decision response and MediaBrowser transcode reasons) to
+none, uncertain, or confirmed burn/transcode risk; only confirmed new risk interrupts selection
+with a consequence-and-alternatives confirmation. `SubtitleStyleCapabilityPolicy` independently
+decides whether the selected route can use an Apple caption appearance profile, is an app-rendered
+offline sidecar, or is server/image rendered and therefore cannot be restyled.
+
+The playback-owned caption appearance controller observes system Media Accessibility changes,
+applies profiles system-wide only after explicit selection, and uses `AVPlayerLayer`'s native
+profile preview on OS 26.4 and later. Preview is stopped before layer replacement and on picker,
+item, playback, and Cinema teardown. The app-owned offline subtitle overlay mirrors the active
+system profile's supported font, size, colors, opacity, edge, window, and corner settings.
+
 ## Local/offline playback
 
 Completed downloads play from local file URLs. Local playback has no remote progress stream,

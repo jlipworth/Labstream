@@ -98,6 +98,7 @@ typealias RemoteStreamReopener = (RemoteStreamReopenRequest) async throws -> Rem
 @MainActor
 final class MediaBrowserPlaybackSession {
     let initialStreamURL: URL
+    let backend: MediaBackendID
     let backendLabel: String
     let reopener: RemoteStreamReopener
 
@@ -111,6 +112,7 @@ final class MediaBrowserPlaybackSession {
     var didStop = false
 
     init(streamURL: URL,
+         backend: MediaBackendID? = nil,
          backendLabel: String,
          httpHeaders: [String: String],
          playSessionID: String,
@@ -121,6 +123,11 @@ final class MediaBrowserPlaybackSession {
          onStop: @escaping () -> Void,
          reopener: @escaping RemoteStreamReopener) {
         self.initialStreamURL = streamURL
+        self.backend = backend
+            ?? MediaBackendID.allCases.first(where: {
+                $0.displayName.caseInsensitiveCompare(backendLabel) == .orderedSame
+            })
+            ?? .jellyfin
         self.backendLabel = backendLabel
         self.httpHeaders = httpHeaders
         self.playSessionID = playSessionID

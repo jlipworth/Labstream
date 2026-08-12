@@ -156,6 +156,7 @@ struct CustomPlayerView: View {
             if !isDetachedToCinema {
                 #if os(iOS)
                 PlayerLayerView(player: controller?.player,
+                                captionAppearance: controller?.captionAppearance,
                                 displayMode: mobileVideoDisplayMode,
                                 mobileSystemCoordinator: mobileSystemCoordinator)
                     .ignoresSafeArea()
@@ -164,7 +165,8 @@ struct CustomPlayerView: View {
                     // deterministic priority on iPhone/iPad.
                     .allowsHitTesting(false)
                 #else
-                PlayerLayerView(player: controller?.player)
+                PlayerLayerView(player: controller?.player,
+                                captionAppearance: controller?.captionAppearance)
                     .ignoresSafeArea()
                 #endif
 
@@ -416,16 +418,33 @@ func maintainWatchTogetherAttachment(coordinator: WatchTogetherCoordinator,
 /// Minimal AppKit bridge whose backing layer is AVPlayerLayer.
 struct PlayerLayerView: NSViewRepresentable {
     let player: AVPlayer?
+    var captionAppearance: CaptionAppearanceController? = nil
+
+    final class Coordinator {
+        weak var captionAppearance: CaptionAppearanceController?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> PlayerLayerHostView {
         let view = PlayerLayerHostView()
         view.playerLayer.videoGravity = .resizeAspect
         view.setPlayer(player)
+        captionAppearance?.attachPlayerLayer(view.playerLayer)
+        context.coordinator.captionAppearance = captionAppearance
         return view
     }
 
     func updateNSView(_ nsView: PlayerLayerHostView, context: Context) {
         nsView.setPlayer(player)
+        captionAppearance?.attachPlayerLayer(nsView.playerLayer)
+        context.coordinator.captionAppearance = captionAppearance
+    }
+
+    static func dismantleNSView(_ nsView: PlayerLayerHostView, coordinator: Coordinator) {
+        coordinator.captionAppearance?.stopPreview()
+        coordinator.captionAppearance?.attachPlayerLayer(nil)
+        nsView.playerLayer.player = nil
     }
 }
 
@@ -487,10 +506,17 @@ final class PlayerLayerHostView: NSView {
 /// Minimal UIKit bridge whose backing layer is AVPlayerLayer.
 struct PlayerLayerView: UIViewRepresentable {
     let player: AVPlayer?
+    var captionAppearance: CaptionAppearanceController? = nil
     #if os(iOS)
     var displayMode: MobileVideoDisplayMode = .fit
     var mobileSystemCoordinator: MobilePlayerSystemCoordinator?
     #endif
+
+    final class Coordinator {
+        weak var captionAppearance: CaptionAppearanceController?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIView(context: Context) -> UIView {
         let view = PlayerLayerHostView()
@@ -500,6 +526,8 @@ struct PlayerLayerView: UIViewRepresentable {
         view.playerLayer.videoGravity = .resizeAspect
         #endif
         view.playerLayer.player = player
+        captionAppearance?.attachPlayerLayer(view.playerLayer)
+        context.coordinator.captionAppearance = captionAppearance
         #if os(iOS)
         mobileSystemCoordinator?.attach(playerLayer: view.playerLayer)
         #endif
@@ -509,10 +537,19 @@ struct PlayerLayerView: UIViewRepresentable {
     func updateUIView(_ uiView: UIView, context: Context) {
         guard let hostView = uiView as? PlayerLayerHostView else { return }
         hostView.playerLayer.player = player
+        captionAppearance?.attachPlayerLayer(hostView.playerLayer)
+        context.coordinator.captionAppearance = captionAppearance
         #if os(iOS)
         hostView.playerLayer.videoGravity = displayMode == .fill ? .resizeAspectFill : .resizeAspect
         mobileSystemCoordinator?.attach(playerLayer: hostView.playerLayer)
         #endif
+    }
+
+    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
+        coordinator.captionAppearance?.stopPreview()
+        coordinator.captionAppearance?.attachPlayerLayer(nil)
+        guard let hostView = uiView as? PlayerLayerHostView else { return }
+        hostView.playerLayer.player = nil
     }
 }
 

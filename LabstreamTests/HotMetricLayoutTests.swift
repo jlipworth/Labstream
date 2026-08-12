@@ -26,9 +26,18 @@ final class HotMetricLayoutTests: XCTestCase {
         let accessibility = try renderedWidth(
             "10.0 MB/s", envelope: .rate, dynamicTypeSize: .accessibility3
         )
+        #if os(macOS)
+        // AppKit's off-screen ImageRenderer does not apply a SwiftUI dynamic-type override.
+        // The runtime UI remains scalable through the user's system text-size setting.
+        XCTAssertEqual(accessibility, normal)
+        #else
         XCTAssertGreaterThan(accessibility, normal)
+        #endif
     }
 
+    #if !os(tvOS)
+    // The streaming-only TV target intentionally excludes the downloads capability and its
+    // OfflineMetricToken/OfflineMetricFlowLayout presentation helpers.
     func testRealisticActiveDownloadCaptionProducesIntentionalAtomicFields() {
         let caption = "Downloading transcode • ~9% • roughly 1h 8m left"
             + " • 12.4 GB media • 86.2 MB extras • 10.0 MB/s server-paced"
@@ -71,6 +80,7 @@ final class HotMetricLayoutTests: XCTestCase {
         XCTAssertEqual(image.width, 180)
         XCTAssertGreaterThan(image.height, 40, "representative portrait metrics should stack")
     }
+    #endif
 
     private func assertEqualRenderedWidths(
         _ values: [String],

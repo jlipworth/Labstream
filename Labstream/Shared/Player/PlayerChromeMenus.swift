@@ -277,7 +277,11 @@ struct CustomPlayerMenuPopover: View {
         case .subtitles:
             SubtitlesTabView(
                 load: { try await controller.loadSubtitleTracks() },
-                onSelect: { track in try await controller.selectSubtitle(track) }
+                onSelect: { track in try await controller.selectSubtitle(track) },
+                shouldConfirm: { track, selectedID in
+                    controller.shouldConfirmSubtitleSelection(track, selectedID: selectedID)
+                },
+                captionAppearance: controller.captionAppearance
             )
         case .audio:
             if controller.supportsMetadataAudioSelection {

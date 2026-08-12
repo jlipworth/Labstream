@@ -383,7 +383,16 @@ public struct OfflineLibraryView: View {
                 .padding(.vertical, 3)
             #endif
         }
+        #if os(macOS)
+        // This is a queue-wide command, not another transfer statistic. Native bordered chrome
+        // keeps it visually and semantically separate from the adjacent rate/storage readouts.
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .help(action.title)
+        .keyboardShortcut(action == .pauseQueue ? "p" : "r", modifiers: [.command, .option])
+        #else
         .buttonStyle(.plain)
+        #endif
         .accessibilityLabel(action.title)
     }
 

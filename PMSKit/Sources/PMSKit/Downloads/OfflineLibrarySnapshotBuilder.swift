@@ -63,13 +63,14 @@ public enum OfflineLibrarySnapshotBuilder {
             displayBytes(record).map { (record.ratingKey, $0) }
         })
 
-        let activeTransferPercentage = OfflineActiveTransferPercentage.integerPercent(records.map { record in
+        let activeSamples = records.map { record in
             OfflineActiveTransferPercentage.Sample(
                 status: record.status,
                 transferredBytes: max(record.bytes, displayBytesByRatingKey[record.ratingKey] ?? 0),
                 trustworthyExpectedBytes: trustworthyExpectedBytes(record)
             )
-        })
+        }
+        let activeTransferPercentage = OfflineActiveTransferPercentage.integerPercent(activeSamples)
 
         return OfflineLibrarySnapshot(
             rows: rows,
@@ -81,7 +82,8 @@ public enum OfflineLibrarySnapshotBuilder {
             aggregateStats: OfflineDownloadAggregateStats.make(records: records,
                                                                speedsByRatingKey: downloadSpeed,
                                                                displayBytesByRatingKey: displayBytesByRatingKey),
-            activeTransferPercentage: activeTransferPercentage
+            activeTransferPercentage: activeTransferPercentage,
+            sidebarStatus: OfflineSidebarStatusPolicy.presentation(activeSamples)
         )
     }
 

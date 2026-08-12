@@ -9,24 +9,28 @@ import Foundation
 public struct OfflineLibrarySnapshot: Sendable, Equatable {
     public static let empty = OfflineLibrarySnapshot(rows: [], queueToolbarAction: nil, isQueuePaused: false,
                                                      aggregateStats: .empty,
-                                                     activeTransferPercentage: nil)
+                                                     activeTransferPercentage: nil,
+                                                     sidebarStatus: nil)
 
     public let rows: [OfflineDownloadRowSnapshot]
     public let queueToolbarAction: DownloadQueueToolbarPolicy.Action?
     public let isQueuePaused: Bool
     public let aggregateStats: OfflineDownloadAggregateStats
     public let activeTransferPercentage: Int?
+    public let sidebarStatus: OfflineSidebarStatusPolicy.Presentation?
 
     public init(rows: [OfflineDownloadRowSnapshot],
                 queueToolbarAction: DownloadQueueToolbarPolicy.Action?,
                 isQueuePaused: Bool,
                 aggregateStats: OfflineDownloadAggregateStats,
-                activeTransferPercentage: Int? = nil) {
+                activeTransferPercentage: Int? = nil,
+                sidebarStatus: OfflineSidebarStatusPolicy.Presentation? = nil) {
         self.rows = rows
         self.queueToolbarAction = queueToolbarAction
         self.isQueuePaused = isQueuePaused
         self.aggregateStats = aggregateStats
         self.activeTransferPercentage = activeTransferPercentage
+        self.sidebarStatus = sidebarStatus
     }
 
     public var footerText: String {

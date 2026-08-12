@@ -360,16 +360,10 @@ struct ChaptersTabView: View {
     }
 }
 
-/// Subtitles menu: pick a soft subtitle rendition (or "Off") from the HLS
-/// legible `AVMediaSelectionGroup`.
-///
-/// WHY soft renditions (and not Plex metadata / burn-in): the transcode requests
-/// `subtitles=auto`, so PMS delivers the subtitle tracks muxed into the HLS as selectable
-/// legible renditions. Switching between them is instantaneous via `playerItem.select(_:in:)`
-/// — no transcode reload and no playhead snapshot, unlike the Quality tab. Burn-in (which
-/// WOULD need a reload) is deliberately not wired here because the Plex `Part` model does
-/// not currently decode subtitle `Stream` elements, so there's no clean source of stream
-/// ids to burn; the soft picker covers the common case the official players surface inline.
+/// Subtitles menu: presents the current backend's selectable tracks and keeps two independent
+/// policies visible: whether selection requires server-side burn/transcode work, and whether
+/// an Apple caption appearance profile can affect the selected route. Only confirmed burn
+/// evidence prompts; an uncertain route remains labelled without blocking selection.
 ///
 /// The track list is loaded asynchronously (`load`) on appear because legible options only
 /// become known once AVFoundation parses the HLS master playlist — and the list can change
@@ -385,11 +379,16 @@ struct SubtitlesTabView: View {
     /// the data race the compiler would otherwise flag.
     let load: @MainActor () async throws -> PlaybackTrackSnapshot<PlaybackSubtitleTrack>??
     let onSelect: @MainActor (PlaybackSubtitleTrack) async throws -> Void
+    let shouldConfirm: @MainActor (PlaybackSubtitleTrack, PlaybackSubtitleTrack.ID?) -> Bool
+    let captionAppearance: CaptionAppearanceController
 
     @State private var tracks: [PlaybackSubtitleTrack] = []
     @State private var selectedID: PlaybackSubtitleTrack.ID?
     @State private var didLoad = false
     @State private var loadError: String?
+    @State private var pendingConfirmation: PlaybackSubtitleTrack?
+    @State private var showingStyles = false
+    @FocusState private var focusedProfileID: CaptionAppearanceProfile.ID?
 
     var body: some View {
         // ScrollView + VStack, NOT List — see QualityTabView for why: content with many
@@ -397,7 +396,9 @@ struct SubtitlesTabView: View {
         // Matches the Quality/Speed/Audio menus.
         ScrollView {
             VStack(alignment: .leading, spacing: PlayerPickerMetrics.rowSpacing) {
-                if !didLoad {
+                if showingStyles {
+                    captionStyleRows
+                } else if !didLoad {
                     HStack {
                         ProgressView()
                         Text("Loading…")
@@ -419,24 +420,60 @@ struct SubtitlesTabView: View {
                         .foregroundStyle(.secondary)
                         .padding(.vertical, PlayerPickerMetrics.rowVerticalPadding)
                 } else {
-                    ForEach(tracks) { track in
+                    if let selectedTrack,
+                       styleDestinationAvailable(for: selectedTrack.styleCapability),
+                       !captionAppearance.profiles.isEmpty {
                         Button {
-                            // Optimistically reflect the pick, then apply it; re-sync from
-                            // the player afterward in case the selection didn't take.
-                            selectedID = track.id
-                            Task {
-                                do {
-                                    try await onSelect(track)
-                                    await refreshWithRetry()
-                                } catch {
-                                    loadError = error.localizedDescription
-                                    didLoad = true
-                                }
-                            }
+                            showingStyles = true
                         } label: {
                             HStack {
-                                Text(track.displayName)
+                                Label("Style", systemImage: "textformat")
                                 Spacer()
+                                Text(activeProfileName)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                Image(systemName: "chevron.right")
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .frame(minHeight: PlayerPickerMetrics.rowHeight)
+                            .contentShape(Rectangle())
+                        }
+                        .playerPickerButtonStyle()
+                        .accessibilityHint("Choose a system-wide caption appearance profile")
+
+                        Divider().opacity(0.35)
+                    } else if let explanation = selectedTrack?.styleCapability.explanatoryText {
+                        Label(explanation, systemImage: "paintbrush.slash")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.vertical, 4)
+                    }
+
+                    ForEach(tracks) { track in
+                        Button {
+                            if shouldConfirm(track, selectedID) {
+                                pendingConfirmation = track
+                            } else {
+                                apply(track)
+                            }
+                        } label: {
+                            HStack(alignment: .center) {
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(track.displayName)
+                                    if let badge = track.burnRisk.badgeText {
+                                        Text(badge)
+                                            .font(.caption2)
+                                            .foregroundStyle(track.burnRisk == .required
+                                                ? Color.orange : Color.secondary)
+                                    }
+                                }
+                                Spacer()
+                                if track.burnRisk == .required {
+                                    Image(systemName: "flame.fill")
+                                        .foregroundStyle(.orange)
+                                        .accessibilityHidden(true)
+                                }
                                 if track.id == selectedID {
                                     Image(systemName: "checkmark")
                                         .foregroundStyle(.tint)
@@ -455,6 +492,115 @@ struct SubtitlesTabView: View {
         }
         .task {
             await refreshWithRetry()
+        }
+        .onChange(of: focusedProfileID) { _, profileID in
+            if let profileID {
+                captionAppearance.preview(profileID: profileID)
+            } else {
+                captionAppearance.stopPreview()
+            }
+        }
+        .onDisappear { captionAppearance.stopPreview() }
+        .confirmationDialog(
+            "Requires Video Processing",
+            isPresented: Binding(
+                get: { pendingConfirmation != nil },
+                set: { if !$0 { pendingConfirmation = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Use Burned Captions") {
+                if let pendingConfirmation { apply(pendingConfirmation) }
+                pendingConfirmation = nil
+            }
+            Button("Cancel", role: .cancel) { pendingConfirmation = nil }
+        } message: {
+            Text("The server must process the video, which can start more slowly. These captions become part of the picture and cannot be restyled or toggled client-side. Choose a selectable text track or Off to avoid this when available.")
+        }
+    }
+
+    private var selectedTrack: PlaybackSubtitleTrack? {
+        tracks.first { $0.id == selectedID }
+    }
+
+    private var activeProfileName: String {
+        captionAppearance.profiles.first { $0.id == captionAppearance.activeProfileID }?.name
+            ?? "System"
+    }
+
+    private func styleDestinationAvailable(
+        for capability: SubtitleStyleCapabilityPolicy.Capability
+    ) -> Bool {
+        capability == .nativeAVFoundationPreview || capability == .offlineSystemProfile
+    }
+
+    @ViewBuilder private var captionStyleRows: some View {
+        Button {
+            captionAppearance.stopPreview()
+            showingStyles = false
+        } label: {
+            Label("Subtitle Tracks", systemImage: "chevron.left")
+                .frame(maxWidth: .infinity, minHeight: PlayerPickerMetrics.rowHeight,
+                       alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .playerPickerButtonStyle()
+
+        Text("Applying a style changes the system caption profile for every app.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.vertical, 3)
+
+        ForEach(captionAppearance.profiles) { profile in
+            Button {
+                captionAppearance.apply(profileID: profile.id)
+            } label: {
+                HStack {
+                    Text(profile.name)
+                    Spacer()
+                    if profile.id == captionAppearance.activeProfileID {
+                        Image(systemName: "checkmark")
+                            .foregroundStyle(.tint)
+                    }
+                }
+                .frame(minHeight: PlayerPickerMetrics.rowHeight)
+                .contentShape(Rectangle())
+            }
+            .playerPickerButtonStyle()
+            .accessibilityLabel(profile.name)
+            .accessibilityValue(profile.id == captionAppearance.activeProfileID ? "Active" : "Not active")
+            .accessibilityHint("Applies this caption style system-wide")
+            .focused($focusedProfileID, equals: profile.id)
+            #if os(macOS)
+            .onHover { hovering in
+                if hovering { captionAppearance.preview(profileID: profile.id) }
+                else if captionAppearance.previewedProfileID == profile.id {
+                    captionAppearance.stopPreview()
+                }
+            }
+            #endif
+        }
+
+        if !captionAppearance.supportsNativePreview {
+            Text("Live preview requires OS 26.4 or later. Styles can still be applied.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func apply(_ track: PlaybackSubtitleTrack) {
+        // Optimistically reflect the pick, then re-sync after any item rebuild/decision.
+        selectedID = track.id
+        captionAppearance.stopPreview()
+        Task {
+            do {
+                try await onSelect(track)
+                await refreshWithRetry()
+            } catch {
+                loadError = error.localizedDescription
+                didLoad = true
+            }
         }
     }
 

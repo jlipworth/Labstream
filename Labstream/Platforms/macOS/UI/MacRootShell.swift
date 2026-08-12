@@ -31,8 +31,9 @@ struct PlatformRootShell: View {
           if musicPlayer.current != nil, !macPlayerPresenter.isPresented {
             MiniPlayerBar(presentation: $navigation.nowPlayingPresentation)
               .padding(.horizontal, 16)
-              .padding(.vertical, 8)
-              .background(.regularMaterial)
+              .padding(.top, 6)
+              .padding(.bottom, 10)
+              .frame(maxWidth: .infinity, alignment: .center)
           }
         }
         .searchable(
@@ -405,11 +406,15 @@ struct PlatformRootShell: View {
     HStack {
       Label("Offline", systemImage: "arrow.down.circle")
       Spacer()
-      if let percent = downloadManager.offlineLibrarySnapshot.activeTransferPercentage {
-        Text("\(percent)%")
+      if let status = downloadManager.offlineLibrarySnapshot.sidebarStatus {
+        Text(status.visibleText)
           .foregroundStyle(.secondary)
-          .stableHotMetric(.percent)
-          .accessibilityLabel("\(percent) percent downloaded")
+          .font(.caption.monospacedDigit())
+          .lineLimit(1)
+          .minimumScaleFactor(0.75)
+          .accessibilityLabel("Offline downloads")
+          .accessibilityValue(status.accessibilityValue)
+          .help(status.accessibilityValue)
       }
     }
     .tag(MacSidebarDestination.offline)

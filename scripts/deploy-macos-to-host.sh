@@ -155,7 +155,7 @@ if [ "$BUILD" -eq 1 ]; then
   mkdir -p "$DERIVED_DATA" "$STAGE_DIR"
   echo "building (Debug, macOS host arm64)…"
   BUILD_LOG="$STAGE_DIR/build.log"
-  SIGNING_ARGS=()
+  SIGNING_ARGS=(CODE_SIGNING_ALLOWED=NO)
   if [ "$USE_PRODUCTION" -eq 1 ]; then
     # A canonical-service build uses a synchronizable Plex token. An ad-hoc signature has no
     # application identifier/keychain group and Security rejects it with errSecMissingEntitlement

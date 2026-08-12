@@ -430,14 +430,25 @@ struct CustomPlayerChrome: View {
 
     @ViewBuilder var offlineSubtitleOverlay: some View {
         if let text = controller.offlineSubtitleOverlay.text, !text.isEmpty {
+            let presentation = controller.captionAppearance.offlinePresentation
             Text(text)
-                .font(.title3.weight(.semibold))
+                .font(presentation.fontName.map {
+                    Font.custom($0, size: 22 * presentation.relativeCharacterSize)
+                } ?? .system(size: 22 * presentation.relativeCharacterSize,
+                             weight: .semibold))
                 .multilineTextAlignment(.center)
-                .foregroundStyle(.white)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 10)
-                .background(.black.opacity(0.62), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .shadow(radius: 8)
+                .foregroundStyle(presentation.foreground.color)
+                .captionEdge(presentation.edge)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(presentation.background.color,
+                            in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(presentation.window.color,
+                            in: RoundedRectangle(
+                                cornerRadius: presentation.windowCornerRadius,
+                                style: .continuous))
                 .transition(.opacity)
         }
     }
@@ -1475,5 +1486,25 @@ struct CustomPlayerChrome: View {
             return String(format: "%d:%02d:%02d", hours, minutes, seconds)
         }
         return String(format: "%d:%02d", minutes, seconds)
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func captionEdge(_ edge: CaptionTextEdgePresentation) -> some View {
+        switch edge {
+        case .none:
+            self
+        case .raised:
+            self.shadow(color: .white.opacity(0.65), radius: 0, x: -1, y: -1)
+                .shadow(color: .black.opacity(0.8), radius: 0, x: 1, y: 1)
+        case .depressed:
+            self.shadow(color: .black.opacity(0.8), radius: 0, x: -1, y: -1)
+                .shadow(color: .white.opacity(0.5), radius: 0, x: 1, y: 1)
+        case .uniform:
+            self.shadow(color: .black, radius: 1.2, x: 0, y: 0)
+        case .dropShadow:
+            self.shadow(color: .black.opacity(0.9), radius: 2, x: 2, y: 2)
+        }
     }
 }

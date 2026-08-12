@@ -81,6 +81,10 @@ struct MiniPlayerBar: View {
     @Environment(\.labstreamCompactWidth) private var compactWidth
 
     @Binding private var presentation: NowPlayingPresentationState
+    #if os(macOS)
+    @State private var macIsScrubbing = false
+    @State private var macScrubSeconds: Double = 0
+    #endif
 
     init(presentation: Binding<NowPlayingPresentationState>) {
         _presentation = presentation
@@ -161,7 +165,9 @@ struct MiniPlayerBar: View {
 
     @ViewBuilder
     private func bar(for current: MediaItem) -> some View {
-        #if os(visionOS)
+        #if os(macOS)
+        nativeMacBar(for: current)
+        #elseif os(visionOS)
         barContent(for: current)
             .padding(.horizontal, DS.Space.lg)
             .frame(height: 64)
@@ -189,6 +195,148 @@ struct MiniPlayerBar: View {
             .onTapGesture { presentation.present() }
         #endif
     }
+
+    #if os(macOS)
+    /// A compact AppKit-native control card rather than the old full-width dark strip. It keeps
+    /// metadata and transport in separate visual groups, exposes a real scrubber, and compresses
+    /// by dropping album text before it ever clips primary controls.
+    private func nativeMacBar(for current: MediaItem) -> some View {
+        HStack(spacing: 12) {
+            Button { presentation.present() } label: {
+                PosterImage(path: current.musicArtPath,
+                            width: 52, height: 52,
+                            cornerRadius: 7)
+            }
+            .buttonStyle(.plain)
+            .help("Open Now Playing")
+            .accessibilityLabel("Open Now Playing")
+
+            VStack(alignment: .leading, spacing: 5) {
+                Button { presentation.present() } label: {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(current.title)
+                            .font(.headline)
+                            .lineLimit(1)
+                        Text(macMetadataLine(current))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Open Now Playing")
+
+                Slider(value: Binding(
+                    get: { macIsScrubbing ? macScrubSeconds : player.elapsedSeconds },
+                    set: { macScrubSeconds = $0 }
+                ), in: 0...max(player.durationSeconds, 1), onEditingChanged: { editing in
+                    if editing {
+                        macScrubSeconds = player.elapsedSeconds
+                        macIsScrubbing = true
+                    } else {
+                        player.seek(to: macScrubSeconds)
+                        macIsScrubbing = false
+                    }
+                })
+                .controlSize(.small)
+                .accessibilityLabel("Playback position")
+                .accessibilityValue(macTimeValue)
+                .help("Scrub track")
+            }
+            .frame(minWidth: 180, idealWidth: 280, maxWidth: 360)
+
+            Divider().frame(height: 38)
+
+            HStack(spacing: 2) {
+                macTransportButton("Previous track", systemImage: "backward.fill",
+                                   shortcut: .leftArrow) { player.previous() }
+                macTransportButton(player.isPlaying ? "Pause" : "Play",
+                                   systemImage: player.isPlaying ? "pause.fill" : "play.fill",
+                                   shortcut: .space) { player.togglePlayPause() }
+                macTransportButton("Next track", systemImage: "forward.fill",
+                                   shortcut: .rightArrow) { player.next() }
+            }
+
+            Button { presentation.present(scrollToQueue: true) } label: {
+                Label("Queue", systemImage: "list.bullet")
+                    .labelStyle(.iconOnly)
+                    .overlay(alignment: .topTrailing) {
+                        if player.queue.count > 1 {
+                            Text(String(player.queue.count))
+                                .font(.system(size: 8, weight: .bold))
+                                .padding(2)
+                                .foregroundStyle(.white)
+                                .background(.tint, in: Circle())
+                                .offset(x: 6, y: -6)
+                        }
+                    }
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.borderless)
+            .help("Show Queue (\(player.queue.count) tracks)")
+            .accessibilityLabel("Queue, \(player.queue.count) tracks")
+
+            Button { presentation.present() } label: {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.borderless)
+            .help("Open Now Playing")
+            .accessibilityLabel("Open Now Playing")
+
+            Button { player.stop() } label: {
+                Image(systemName: "xmark")
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.borderless)
+            .help("Stop Music and Dismiss")
+            .accessibilityLabel("Stop music and dismiss mini-player")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .frame(maxWidth: 760)
+        .background(.regularMaterial,
+                    in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(.primary.opacity(0.12), lineWidth: 0.5)
+        }
+        .shadow(color: .black.opacity(0.18), radius: 12, y: 5)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func macMetadataLine(_ current: MediaItem) -> String {
+        let values = [current.grandparentTitle, current.parentTitle]
+            .compactMap { value -> String? in
+                guard let value, !value.isEmpty else { return nil }
+                return value
+            }
+        return values.isEmpty ? "Unknown artist" : values.joined(separator: " · ")
+    }
+
+    private var macTimeValue: String {
+        let current = Int(macIsScrubbing ? macScrubSeconds : player.elapsedSeconds)
+        let duration = Int(player.durationSeconds)
+        return "\(current / 60):\(String(format: "%02d", current % 60)) of \(duration / 60):\(String(format: "%02d", duration % 60))"
+    }
+
+    private func macTransportButton(_ label: String,
+                                    systemImage: String,
+                                    shortcut: KeyEquivalent,
+                                    action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .frame(width: 30, height: 30)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .keyboardShortcut(shortcut, modifiers: [])
+        .help(label)
+        .accessibilityLabel(label)
+    }
+    #endif
 
     private func barContent(for current: MediaItem) -> some View {
         HStack(spacing: DS.Space.md) {

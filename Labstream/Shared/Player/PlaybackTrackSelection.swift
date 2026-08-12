@@ -44,6 +44,18 @@ struct PlaybackSubtitleTrack: @MainActor Identifiable {
 
     let displayName: String
     let mechanism: Mechanism
+    let burnRisk: SubtitleBurnRiskPolicy.Verdict
+    let styleCapability: SubtitleStyleCapabilityPolicy.Capability
+
+    init(displayName: String,
+         mechanism: Mechanism,
+         burnRisk: SubtitleBurnRiskPolicy.Verdict = .none,
+         styleCapability: SubtitleStyleCapabilityPolicy.Capability = .nativeAVFoundationPreview) {
+        self.displayName = displayName
+        self.mechanism = mechanism
+        self.burnRisk = burnRisk
+        self.styleCapability = styleCapability
+    }
 
     var id: ID {
         switch mechanism {

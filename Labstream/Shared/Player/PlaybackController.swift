@@ -112,6 +112,9 @@ final class PlaybackController {
     private var selectedOfflineSubtitleTrackID: Int?
     private var offlineSubtitleSelectionAuthority = OfflineSubtitleSelectionAuthority()
     private let offlineSubtitleCueLoader: OfflineSubtitleCueLoader
+    /// Most recent structured Plex decision. Replaced on every stream rebuild so subtitle rows
+    /// and Stats for Nerds describe the same active lane (#248).
+    private var lastPlexDecision: DecisionResponse?
     private var metadataAudioSelectionAuthority = MetadataAudioSelectionAuthority()
     private var metadataAudioSelectionTail: Task<Void, Never>?
     private let plexAudioStreamSelector: PlexAudioStreamSelector?
@@ -220,6 +223,9 @@ final class PlaybackController {
 
     /// Observable text overlay for locally cached offline sidecar subtitles (#80).
     let offlineSubtitleOverlay = OfflineSubtitleOverlayState()
+    /// Playback-lifetime owner for system caption profiles, native layer preview, and the
+    /// Media Accessibility presentation used by offline text sidecars (#260).
+    let captionAppearance = CaptionAppearanceController()
 
     /// The user's chosen playback rate, persisted across launches and reapplied to each new
     /// item once it reaches `.readyToPlay` (so a Quality reload — which swaps the
@@ -1022,6 +1028,7 @@ final class PlaybackController {
     /// Tear down observers and report a final `stopped` timeline. Call from the
     /// view's `dismantle`.
     func stop() {
+        captionAppearance.stopPreview()
         // Invalidate callbacks before doing any final reporting. Observer removal cannot retract
         // a KVO/notification/time callback that has already queued its MainActor continuation.
         playbackGeneration += 1
@@ -1203,9 +1210,10 @@ final class PlaybackController {
               group.options.count, playerItem.status.rawValue)
 
         // "Off" is always offered first. It maps to deselecting the group entirely.
-        var tracks: [PlaybackSubtitleTrack] = [PlaybackSubtitleTrack(
-            displayName: "Off",
-            mechanism: .avFoundationOff)]
+        let current = playerItem.currentMediaSelection.selectedMediaOption(in: group)
+        var tracks: [PlaybackSubtitleTrack] = [makeSubtitleTrack(
+            displayName: "Off", mechanism: .avFoundationOff,
+            route: .avFoundationSoft, isCurrentSelection: current == nil)]
         // Build human-readable labels from each option, de-duplicating collisions (e.g. two
         // distinct "English" renditions) with a trailing index only when needed.
         var seenCounts: [String: Int] = [:]
@@ -1214,14 +1222,15 @@ final class PlaybackController {
             let priorCount = seenCounts[label, default: 0]
             seenCounts[label] = priorCount + 1
             if priorCount > 0 { label += " \(priorCount + 1)" }
-            tracks.append(PlaybackSubtitleTrack(
+            tracks.append(makeSubtitleTrack(
                 displayName: label,
-                mechanism: .avFoundation(index: index, option: option)))
+                mechanism: .avFoundation(index: index, option: option),
+                route: .avFoundationSoft,
+                isCurrentSelection: current == option))
         }
 
         // Resolve the active selection so the tab can render a checkmark. A `nil`
         // selected option (or a group not currently selected) means the typed Off row.
-        let current = playerItem.currentMediaSelection.selectedMediaOption(in: group)
         let selectedID: PlaybackSubtitleTrack.ID = current.flatMap { selected in
             group.options.firstIndex(of: selected).map(PlaybackSubtitleTrack.ID.avFoundation)
         } ?? .avFoundationOff
@@ -1230,13 +1239,16 @@ final class PlaybackController {
     }
 
     private func loadOfflineSubtitleTracks() async -> PlaybackTrackSnapshot<PlaybackSubtitleTrack>? {
-        var tracks: [PlaybackSubtitleTrack] = [PlaybackSubtitleTrack(
-            displayName: "Off",
-            mechanism: .offlineOff)]
+        var tracks: [PlaybackSubtitleTrack] = [makeSubtitleTrack(
+            displayName: "Off", mechanism: .offlineOff,
+            route: .offlineTextSidecar,
+            isCurrentSelection: selectedOfflineSubtitleTrackID == nil)]
         for track in offlineTextSubtitles {
-            tracks.append(PlaybackSubtitleTrack(
+            tracks.append(makeSubtitleTrack(
                 displayName: track.displayName,
-                mechanism: .offlineSidecar(track)))
+                mechanism: .offlineSidecar(track),
+                route: .offlineTextSidecar,
+                isCurrentSelection: selectedOfflineSubtitleTrackID == track.id))
         }
         guard tracks.count > 1 else { return nil }
         let candidateID = selectedOfflineSubtitleTrackID.map(PlaybackSubtitleTrack.ID.offlineSidecar)
@@ -1314,28 +1326,33 @@ final class PlaybackController {
         let streams = part.subtitleStreams
         guard !streams.isEmpty else { return nil }
 
-        // "Off" first. Carry Jellyfin's explicit off sentinel through the same backend-reopen
-        // path as real subtitle streams; nil would mean "omit" and can inherit server defaults.
-        var tracks: [PlaybackSubtitleTrack] = [PlaybackSubtitleTrack(
-            displayName: "Off",
-            mechanism: .mediaBrowserOff)]
-        var seenCounts: [String: Int] = [:]
-        for (index, stream) in streams.enumerated() {
-            var label = stream.pickerLabel(fallback: "Subtitle \(index + 1)")
-            let priorCount = seenCounts[label, default: 0]
-            seenCounts[label] = priorCount + 1
-            if priorCount > 0 { label += " \(priorCount + 1)" }
-            tracks.append(PlaybackSubtitleTrack(
-                displayName: label,
-                mechanism: .mediaBrowserStream(stream.id)))
-        }
-
         let selection = subtitleSelectionOverride
             ?? BackendSubtitleSelection.mediaBrowserWireValue(
                 MediaBrowserPlaybackPreferencePolicy.preferredSubtitleStreamIndex(
                     for: item,
                     mediaIndex: mediaIndex))
             ?? .off
+        let route: SubtitleDeliveryRoute = mediaBrowserSession?.backend == .emby
+            ? .embyEncodedSelection : .jellyfinMetadata
+
+        // "Off" first. Carry Jellyfin's explicit off sentinel through the same backend-reopen
+        // path as real subtitle streams; nil would mean "omit" and can inherit server defaults.
+        var tracks: [PlaybackSubtitleTrack] = [makeSubtitleTrack(
+            displayName: "Off", mechanism: .mediaBrowserOff,
+            route: .off, isCurrentSelection: selection == .off)]
+        var seenCounts: [String: Int] = [:]
+        for (index, stream) in streams.enumerated() {
+            var label = stream.pickerLabel(fallback: "Subtitle \(index + 1)")
+            let priorCount = seenCounts[label, default: 0]
+            seenCounts[label] = priorCount + 1
+            if priorCount > 0 { label += " \(priorCount + 1)" }
+            tracks.append(makeSubtitleTrack(
+                displayName: label,
+                mechanism: .mediaBrowserStream(stream.id),
+                route: route,
+                isCurrentSelection: selection == .stream(stream.id),
+                streamCodec: stream.codec))
+        }
         let selectedID: PlaybackSubtitleTrack.ID = switch selection {
         case .off: .mediaBrowserOff
         case .stream(let streamIndex): .mediaBrowserStream(streamIndex)
@@ -1353,18 +1370,26 @@ final class PlaybackController {
         let streams = part.subtitleStreams
         guard !streams.isEmpty else { return nil }
 
-        var tracks: [PlaybackSubtitleTrack] = [PlaybackSubtitleTrack(
-            displayName: "Off",
-            mechanism: .plexOff)]
+        let selection: BackendSubtitleSelection = subtitleSelectionOverride
+            ?? part.subtitleStreams.first(where: { $0.selected == true }).map {
+                BackendSubtitleSelection.stream($0.id)
+            }
+            ?? .off
+        var tracks: [PlaybackSubtitleTrack] = [makeSubtitleTrack(
+            displayName: "Off", mechanism: .plexOff,
+            route: .off, isCurrentSelection: selection == .off)]
         var seenCounts: [String: Int] = [:]
         for (index, stream) in streams.enumerated() {
             var label = stream.pickerLabel(fallback: "Subtitle \(index + 1)")
             let priorCount = seenCounts[label, default: 0]
             seenCounts[label] = priorCount + 1
             if priorCount > 0 { label += " \(priorCount + 1)" }
-            tracks.append(PlaybackSubtitleTrack(
+            tracks.append(makeSubtitleTrack(
                 displayName: label,
-                mechanism: .plexStream(stream.id)))
+                mechanism: .plexStream(stream.id),
+                route: .plexMetadata,
+                isCurrentSelection: selection == .stream(stream.id),
+                streamCodec: stream.codec))
         }
 
         let selectedID: PlaybackSubtitleTrack.ID
@@ -1380,6 +1405,53 @@ final class PlaybackController {
         }
         let resolvedID = tracks.contains(where: { $0.id == selectedID }) ? selectedID : .plexOff
         return PlaybackTrackSnapshot(tracks: tracks, selectedID: resolvedID)
+    }
+
+    private func makeSubtitleTrack(displayName: String,
+                                   mechanism: PlaybackSubtitleTrack.Mechanism,
+                                   route: SubtitleDeliveryRoute,
+                                   isCurrentSelection: Bool,
+                                   streamCodec: String? = nil) -> PlaybackSubtitleTrack {
+        let evidence = subtitleServerEvidence
+        let risk = SubtitleBurnRiskPolicy.verdict(route: route,
+                                                  isCurrentSelection: isCurrentSelection,
+                                                  serverEvidence: evidence)
+        let normalizedCodec = streamCodec?.lowercased() ?? ""
+        let isImageOrAuthored = normalizedCodec.contains("pgs")
+            || normalizedCodec.contains("vobsub")
+            || normalizedCodec.contains("dvdsub")
+            || normalizedCodec == "ass"
+            || normalizedCodec == "ssa"
+        return PlaybackSubtitleTrack(
+            displayName: displayName,
+            mechanism: mechanism,
+            burnRisk: risk,
+            styleCapability: SubtitleStyleCapabilityPolicy.capability(
+                route: route,
+                burnVerdict: risk,
+                isImageOrAuthoredStyle: isImageOrAuthored))
+    }
+
+    private var subtitleServerEvidence: SubtitleServerEvidence {
+        if let decision = lastPlexDecision {
+            if decision.savesVideoEncode { return .videoCopyOrDirect }
+            return .videoTranscode(subtitleDecision: decision.subtitleDecision, reasons: [])
+        }
+        switch remotePlayMethod {
+        case .directPlay?, .directStream?:
+            return .videoCopyOrDirect
+        case .transcode?:
+            return .videoTranscode(subtitleDecision: nil, reasons: remoteTranscodeReasons)
+        case nil:
+            return .unavailable
+        }
+    }
+
+    func shouldConfirmSubtitleSelection(_ track: PlaybackSubtitleTrack,
+                                        selectedID: PlaybackSubtitleTrack.ID?) -> Bool {
+        SubtitleBurnRiskPolicy.shouldConfirm(candidate: track.burnRisk,
+                                              isAlreadySelected: track.id == selectedID,
+                                              activeVideoIsTranscoding: diagnostics.isTranscoding)
     }
 
     /// Derive a human-readable label for a legible `AVMediaSelectionOption`.
@@ -1559,6 +1631,10 @@ final class PlaybackController {
             default: return
             }
             subtitleSelectionOverride = selection
+            // Do not attribute the predecessor stream's decision to the newly selected row while
+            // the replacement item is negotiating. The picker reports uncertainty until the new
+            // structured decision arrives.
+            lastPlexDecision = nil
             persistMetadataSubtitlePreference(selection)
             didApplySavedSubtitle = true
             NSLog("LabstreamSubtitles: Plex metadata selection requested streamID=%d",
@@ -1587,6 +1663,8 @@ final class PlaybackController {
                 playerItem.select(nil, in: group)
             }
             subtitleSelectionOverride = selection
+            remotePlayMethod = nil
+            remoteTranscodeReasons = []
             persistMetadataSubtitlePreference(selection)
             didApplySavedSubtitle = true
             let resumeMs = playheadSnapshotForRestart(cause: .subtitleReload).positionMs
@@ -2390,6 +2468,7 @@ final class PlaybackController {
             // first segments never appear and the rebuild dies on startup deadlines. Once the
             // transcode is stopped the old item can only ever 404; cut its network now.
             if player.currentItem != nil {
+                captionAppearance.stopPreview()
                 removeObservers()
                 player.replaceCurrentItem(with: nil)
             }
@@ -2693,6 +2772,7 @@ final class PlaybackController {
                                 subtitleBurnRequested: burnSubtitleStreamID != nil,
                                 dolbyVisionGuardActive: dvGuardReason != nil,
                                 decisionUnavailableMeansTranscode: true)
+        lastPlexDecision = decision
         var selectedFields: [String: DiagnosticFieldValue] = [
             "stream_url_shape": .urlShape(streamURL),
             "direct_play_fallback_armed": .bool(directPlayFallbackArmed),
@@ -3338,6 +3418,7 @@ final class PlaybackController {
         currentPlayerItemGeneration = nextPlayerItemGeneration
         ignoredRecoverableFailedToEndCount = 0
         let itemGeneration = currentPlayerItemGeneration
+        captionAppearance.stopPreview()
         player.replaceCurrentItem(with: playerItem)
         refreshVideoNowPlayingMetadata(elapsedMillisecondsOverride: resumeOffsetMs)
         // Resolve Up Next under the replacement item's lifecycle. A response released after
@@ -4799,6 +4880,7 @@ final class PlaybackController {
         removeObservers()
         // The abandoned item is dead weight; detach it so nothing it still requests can
         // disturb the warm session the retry is about to reuse.
+        captionAppearance.stopPreview()
         player.replaceCurrentItem(with: nil)
         beginStreaming(resumeOffsetMsOverride: resumeMs, stoppingPreviousTranscode: false)
         return true
@@ -5086,6 +5168,7 @@ final class PlaybackController {
         // loads from racing with the new playlist.
         removeObservers()
         player.pause()
+        captionAppearance.stopPreview()
         player.replaceCurrentItem(with: nil)
         playbackLog.notice("seek: remote stream re-open targetMs=\(offsetMs, privacy: .public) bitrateKbps=\(bitrateKbps, privacy: .public)")
         recordPlaybackDiagnostic("playback.remote_reopen", fields: [
