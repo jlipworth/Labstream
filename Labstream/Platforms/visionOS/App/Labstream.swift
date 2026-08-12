@@ -19,7 +19,14 @@ struct Labstream: App {
     init() {
         AppStartup.prepareForLaunch()
 
-        _runtime = State(initialValue: AppRuntime.make())
+        let runtime = AppRuntime.make()
+        _runtime = State(initialValue: runtime)
+        #if DEBUG
+        if let runtime {
+            DebugUITestLaunchConfiguration.configure(appModel: runtime.appModel,
+                                                     bootstrap: runtime.bootstrap)
+        }
+        #endif
     }
 
     var body: some Scene {

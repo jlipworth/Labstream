@@ -1,3 +1,4 @@
+import AppKit
 import PMSKit
 import SwiftUI
 
@@ -13,7 +14,15 @@ struct LabstreamMac: App {
             return
         }
         AppStartup.prepareForLaunch()
-        _runtime = State(initialValue: AppRuntime.make())
+        let runtime = AppRuntime.make()
+        _runtime = State(initialValue: runtime)
+        #if DEBUG
+        if let runtime {
+            DebugUITestLaunchConfiguration.configure(appModel: runtime.appModel,
+                                                     bootstrap: runtime.bootstrap)
+            DebugMacAgentFixtureWindow.scheduleFallbackIfNeeded(runtime: runtime)
+        }
+        #endif
     }
 
     var body: some Scene {
@@ -95,3 +104,35 @@ struct LabstreamMac: App {
         }
     }
 }
+
+#if DEBUG
+/// Xcode 27 can launch a fresh isolated macOS bundle without asking SwiftUI to instantiate its
+/// restorable WindowGroup. The normal scene remains authoritative; this fallback mounts the same
+/// shipping ContentView only when the fixture launch still has no registered window after settle.
+@MainActor
+private enum DebugMacAgentFixtureWindow {
+    private static var retainedWindow: NSWindow?
+
+    static func scheduleFallbackIfNeeded(runtime: AppRuntime) {
+        guard DebugUITestLaunchConfiguration.usesBrowseFixture else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            guard MacMainWindowController.shared.mainWindow == nil else { return }
+            let root = ContentView(runtime: runtime)
+                .frame(minWidth: 760, minHeight: 640)
+                .reportsAppSceneActivity(runtime.sceneActivity, role: .mainWindow)
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 1_180, height: 760),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "Labstream"
+            window.contentViewController = NSHostingController(rootView: root)
+            window.center()
+            retainedWindow = window
+            MacMainWindowController.shared.register(window)
+            MacMainWindowController.shared.activateMainWindow()
+        }
+    }
+}
+#endif

@@ -180,8 +180,8 @@ struct LibrariesView: View {
         let generation = loadGeneration
         loadState = .loading
 
-        #if os(tvOS) && DEBUG
-        if let fixtureItems = TVUIFixtureCatalog.libraryRootItems(for: appModel.activeBackend) {
+        #if DEBUG
+        if let fixtureItems = DebugUIFixtureCatalog.libraryRootItems(for: appModel.activeBackend) {
             rootItems = fixtureItems
             loadedIdentity = activeIdentity
             loadState = .loaded

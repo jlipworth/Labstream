@@ -15,8 +15,8 @@ struct LabstreamTV: App {
         _runtime = State(initialValue: runtime)
         #if DEBUG
         if let runtime {
-            TVUITestLaunchConfiguration.configure(appModel: runtime.appModel,
-                                                  bootstrap: runtime.bootstrap)
+            DebugUITestLaunchConfiguration.configure(appModel: runtime.appModel,
+                                                     bootstrap: runtime.bootstrap)
         }
         TVInputEvidence.installIfNeeded()
         #endif
@@ -28,7 +28,7 @@ struct LabstreamTV: App {
                 ContentView(runtime: runtime)
                     #if DEBUG
                     .overlay(alignment: .topTrailing) {
-                        if TVUITestLaunchConfiguration.requestsDownloadCompositionEvidence {
+                        if DebugUITestLaunchConfiguration.requestsDownloadCompositionEvidence {
                             // Download sources are absent from the tvOS target, enforced by the
                             // synchronized-root topology test and the compile-input gate. This UI
                             // marker proves the streaming-only launch reaches first render.
