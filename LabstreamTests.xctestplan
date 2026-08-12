@@ -22,6 +22,13 @@
         "identifier" : "AA0000000000000000000040",
         "name" : "LabstreamTests"
       }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:Labstream.xcodeproj",
+        "identifier" : "AA0000000000000000000070",
+        "name" : "LabstreamMobileUITests"
+      }
     }
   ],
   "version" : 1

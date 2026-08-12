@@ -59,7 +59,7 @@ scripts/native-test-matrix.py full
 ```
 
 The driver reads `scripts/native-test-matrix.json`. The current source topology is explicit:
-`Labstream/Shared/` selects all four app builds and every available hosted suite;
+`Labstream/Shared/` selects all four app builds and every available hosted/UI suite;
 `Labstream/Capabilities/Downloads/` selects visionOS, mobile, and Mac but not tvOS; and each
 `Labstream/Platforms/<platform>/` root selects only its owning product lanes. A conservative
 fallback still selects all app lanes for an unclassified path under `Labstream/`. Update the

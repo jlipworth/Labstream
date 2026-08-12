@@ -34,6 +34,7 @@ class NativeTestMatrixTests(unittest.TestCase):
     def test_manifest_is_valid_and_full_tier_keeps_vision_gap_visible(self) -> None:
         lanes = self.manifest["tiers"]["full"]
         self.assertIn("visionos-hosted", lanes)
+        self.assertIn("mobile-ui-smoke", lanes)
         self.assertEqual(self.manifest["lanes"]["visionos-hosted"]["status"], "planned")
 
     def test_platform_root_is_exclusive_after_source_split(self) -> None:
@@ -51,6 +52,7 @@ class NativeTestMatrixTests(unittest.TestCase):
             "visionos-hosted",
             "mobile-build",
             "mobile-hosted",
+            "mobile-ui-smoke",
             "tvos-build",
             "tvos-hosted",
             "tvos-ui-smoke",
@@ -58,6 +60,13 @@ class NativeTestMatrixTests(unittest.TestCase):
             "macos-hosted",
         ):
             self.assertIn(expected, lanes)
+
+    def test_mobile_ui_test_root_selects_semantic_smoke_lane(self) -> None:
+        lanes = matrix.affected_lanes(
+            self.manifest,
+            ["LabstreamMobileUITests/LabstreamMobileFixtureUITests.swift"],
+        )
+        self.assertEqual(lanes, ["mobile-build", "mobile-ui-smoke"])
 
     def test_download_capability_excludes_tvos_lanes(self) -> None:
         lanes = matrix.affected_lanes(
