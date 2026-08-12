@@ -283,6 +283,7 @@ if [[ -f mkdocs.yml ]]; then
   printf '== Published documentation ==\n'
   [[ -f requirements.txt ]] || fail "mkdocs.yml present but requirements.txt missing; docs build cannot run"
   uv run --with-requirements requirements.txt mkdocs build --strict
+  uv run python scripts/check-doc-links.py
   uv run python scripts/check-docs-mermaid.py
 fi
 

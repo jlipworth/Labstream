@@ -158,8 +158,9 @@ sequenceDiagram
 - **Closed train segments never persist or adopt URLSession resume data, including the head.**
   CFNetwork can replay a resumed closed request past its original end, so pausing a segment train
   clears any old blob/watermark and plain-cancels unfinished segments. The app-owned durable partial
-  remains authoritative, completed held bodies remain reusable during that process lifetime, and
-  unfinished ranges are planned again on Resume.
+  remains authoritative. Completed held bodies are durably manifested and may be rehydrated across
+  relaunch only when their exact attempt, length, and validator checks still match; mismatches fail
+  closed and re-fetch. Unfinished ranges are planned again on Resume.
 - **The durable partial is the fallback.** A rejected old-format closed-range blob, or an open-ended blob that is
   missing, malformed, stale, exhausted, or backed by a deleted temp file, is rejected and cleared
   together with its display watermark. Recovery then re-plans from the durable partial's current

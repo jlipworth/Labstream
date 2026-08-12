@@ -71,7 +71,8 @@ Avoid HTML labels, click directives, custom colors, and meaning conveyed only by
 style. Keep diagrams readable at mobile widths and do not add a separate Mermaid dependency,
 external script, or generated image copy. After content or path changes, run the strict MkDocs
 build, repository-wide link validation, Mermaid structural check, and `scripts/ci-hygiene.sh` as
-described in [Testing strategy](TESTING-STRATEGY.md).
+described in [Testing strategy](TESTING-STRATEGY.md). Run the repository-wide local link and anchor
+check directly with `scripts/check-doc-links.py` when iterating on documentation.
 
 ## Privacy and secrets
 

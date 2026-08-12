@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deploy Mobile to Device"
+  short_description: "Install Labstream on a physical iPhone or iPad"
+  default_prompt: "Build and install Labstream on my physical iPhone or iPad."

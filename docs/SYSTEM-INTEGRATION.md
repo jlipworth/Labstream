@@ -67,7 +67,7 @@ those authoritative elapsed-time/rate snapshots. The process-wide observer is to
 late coordinator teardown cannot unregister a newer video owner; artwork completion retains its
 independent lease/generation fence.
 
-## SharePlay / Watch Together
+## SharePlay / Watch Together {#shareplay-watch-together}
 
 Watch Together is currently a visionOS GroupActivity surface. Its app-generated cross-device
 payload is intentionally not a backend playback descriptor: it contains a random activity id

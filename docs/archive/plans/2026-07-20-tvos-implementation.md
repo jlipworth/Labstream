@@ -9,14 +9,14 @@ platform root, visionOS Cinema, or SharePlay. The unrelated Reality Theater prot
 shipping Custom Cinema remains visionOS-only. Older source-tree and prototype statements below are
 preserved as dated research/checkpoint context rather than current implementation instructions.
 These ownership changes do not close the physical-device, parity, accessibility, system-integration,
-performance, or release gates in this plan. See the current [tvOS target guide](../TVOS.md).
+performance, or release gates in this plan. See the current [tvOS target guide](../../TVOS.md).
 
 Research baseline: 2026-07-20 against repository commit `44839793`, with parity scope reconciled against `main` at `6d5851fb`, current Apple developer documentation, current Apple TV 4K specifications, and a live GitHub duplicate/dependency audit. Recheck SDK requirements, hardware specifications, issue state, and source line locations when implementation begins because these facts may drift.
 
 This document is the durable repository plan. Keep its phase status synchronized with issue #246 during implementation, then promote proven behavior into the current architecture, development, testing, and platform documentation. Archive this note only after every required acceptance gate is complete or explicitly moved to a linked follow-up.
 
 The per-screen visual and remote-interaction inventory lives in
-[`2026-07-20-tvos-screen-audit.md`](../research/2026-07-20-tvos-screen-audit.md). A phase item cannot be treated
+[`2026-07-20-tvos-screen-audit.md`](../../research/2026-07-20-tvos-screen-audit.md). A phase item cannot be treated
 as visually checked merely because it inherited shared metrics; the corresponding audit rows need
 actual tvOS evidence.
 

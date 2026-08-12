@@ -109,9 +109,10 @@ Current invariants:
 ## Buffering and stalls
 
 Plex universal-transcode playlists are live-ish while their server session is open, even
-for video-copy routes. Any remote `.m3u8` therefore enables
+for video-copy routes. In steady-state remote HLS playback, Labstream enables
 `canUseNetworkResourcesForLiveStreamingWhilePaused`; otherwise pause-to-buffer can stop
-network loading completely. Jellyfin/Emby progressive direct streams are ordinary VOD.
+network loading completely. An explicit out-of-buffer HLS seek temporarily uses the bounded
+reopen/buffer path instead. Jellyfin/Emby progressive direct streams are ordinary VOD.
 
 HLS buffer-ahead values advance by completed segment, so a high-bitrate stream can remain at
 0 seconds for a while and then jump by the segment duration. That staircase is not itself a

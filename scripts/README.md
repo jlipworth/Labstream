@@ -12,6 +12,8 @@ media details out of commits and public issues.
 - `ci-hygiene.sh` — repository privacy, signing, placeholder, and tooling guardrails.
 - `check-docs-mermaid.py` — verifies that published Mermaid source fences become
   generated Mermaid containers without external script dependencies.
+- `check-doc-links.py` — validates repository-local links and Markdown heading anchors across all
+  tracked Markdown, including unpublished research, evidence, and archive lanes.
 - `ci-macos-apple-platforms.sh` — native-runner preflight, isolated unsigned
   visionOS/iOS/iPadOS builds, PMSKit tests, evidence, and cleanup. See
   [`docs/MACOS-CI.md`](../docs/MACOS-CI.md).
@@ -204,10 +206,11 @@ scripts/perf-compare.py compare \
 - `agent-mobile-run.sh` — credential-free iPhone/iPad fixture launch and evidence bundle. It
   requires `--allow-simulator` as the caller's one-simulator lease assertion and publishes the
   stable semantic targets that Xcode 27 Device Interaction should use for the next action step.
+- `agent-tvos-run.sh` — credential-free tvOS semantic Home-to-detail and deterministic local-player evidence; it requires `--allow-simulator` as the lease assertion.
 - `agent-macos-run.sh` / `agent-macos-ax-driver.swift` — isolated credential-free macOS fixture
   run using semantic Accessibility actions and Labstream-window-only screenshots.
-- `simclick.swift` — low-level simulator coordinate click helper used only by controlled local
-  automation.
+- `simclick.swift` — retained low-level helper for the legacy visionOS click scenario. It is not a
+  supported Xcode 27/Device Hub validation path; current visionOS closure is passive/probe-first.
 
 ## Local Mac development preview
 

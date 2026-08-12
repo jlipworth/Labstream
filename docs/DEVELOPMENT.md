@@ -329,11 +329,10 @@ and deferred licensing/release decisions.
 ## Core validation commands
 
 ```sh
-# Pure Swift package tests
-cd PMSKit && swift test
+# Hermetic Swift package correctness; live probes remain separate and opt-in
+swift test --package-path PMSKit --no-parallel --skip 'Live.*ProbeTests'
 
 # Repository hygiene, redaction, and tooling tests
-cd ..
 scripts/ci-hygiene.sh
 
 # Documentation build
@@ -381,6 +380,9 @@ scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
   -destination 'generic/platform=tvOS Simulator' build-for-testing CODE_SIGNING_ALLOWED=NO
 
 # tvOS unit and UI suites (requires the worktree's concrete tvOS simulator).
+scripts/worktree-sim.sh --platform tvos setup
+SIMID=$(scripts/worktree-sim.sh --platform tvos id)
+xcrun simctl boot "$SIMID" 2>/dev/null || true
 scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
   -scheme LabstreamTV -testPlan LabstreamTVTests \
   -destination "platform=tvOS Simulator,id=$SIMID" \
@@ -393,6 +395,7 @@ scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
 # Credential-free TV evidence wrappers.
 scripts/agent-tvos-run.sh fixture-home-semantic --allow-simulator
 scripts/agent-tvos-run.sh fixture-player-basic --allow-simulator
+xcrun simctl shutdown "$SIMID"
 ```
 
 The shared app suites are host-app unit tests, not live-server acceptance tests. Keep policy and

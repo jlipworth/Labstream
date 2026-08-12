@@ -40,13 +40,15 @@ target an arbitrary `booted` simulator:
 scripts/worktree-sim.sh --platform tvos setup
 SIMID=$(scripts/worktree-sim.sh --platform tvos id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
+DD="$PWD/build/DerivedData-tvos"
+rm -rf "$DD"
 
 scripts/xcodebuild-versioned.sh \
   -project Labstream.xcodeproj \
   -scheme LabstreamTV \
   -destination "platform=tvOS Simulator,id=$SIMID" \
   -configuration Debug \
-  -derivedDataPath "$PWD/build/DerivedData-tvos" \
+  -derivedDataPath "$DD" \
   build CODE_SIGNING_ALLOWED=NO
 ```
 
@@ -75,7 +77,7 @@ screenshots, bounded logs, an
 `.xcresult`, exported XCTest attachments, `test-summary.json`, and `run.json`, then shut down their
 worktree simulator by default.
 
-On the current Xcode 27 beta, the local-player XCTest assertions can complete successfully while
+On Xcode 27, the local-player XCTest assertions can complete successfully while
 `xcodebuild` remains stuck finalizing the test log. The wrapper caps that phase at 90 seconds and
 reports `blocked` with `xcodebuild-test-log-finalization-timeout` rather than misclassifying the
 completed assertions as a product failure or claiming an incomplete result bundle as a pass.

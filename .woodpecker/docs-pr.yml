@@ -3,7 +3,7 @@
 when:
   - event: pull_request
     path:
-      include: [docs/**, scripts/check-docs-mermaid.py, mkdocs.yml, requirements.txt, .woodpecker/docs-pr.yml]
+      include: [docs/**, "*.md", scripts/check-doc-links.py, scripts/check-docs-mermaid.py, mkdocs.yml, requirements.txt, .woodpecker/docs-pr.yml]
 
 steps:
   - name: build-docs
@@ -11,4 +11,5 @@ steps:
     commands:
       - pip install --no-cache-dir -r requirements.txt
       - mkdocs build --strict
+      - python scripts/check-doc-links.py
       - python scripts/check-docs-mermaid.py
