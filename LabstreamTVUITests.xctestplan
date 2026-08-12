@@ -1,0 +1,22 @@
+{
+  "configurations" : [
+    {
+      "id" : "D3BCF64A-EF96-4C57-B675-56DE0B66592C",
+      "name" : "Default",
+      "options" : {
+      }
+    }
+  ],
+  "defaultOptions" : {
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:Labstream.xcodeproj",
+        "identifier" : "A635D3631C20FC5BD7D78D94",
+        "name" : "LabstreamTVUITests"
+      }
+    }
+  ],
+  "version" : 1
+}

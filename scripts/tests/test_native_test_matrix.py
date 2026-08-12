@@ -95,6 +95,12 @@ class NativeTestMatrixTests(unittest.TestCase):
         self.assertNotIn('arguments.contains("--no-tv-input-evidence")', source)
         self.assertIn('"--tv-input-evidence"', player_tests)
 
+    def test_tv_ui_lanes_use_the_ui_only_test_plan(self) -> None:
+        for lane in ("tvos-ui-smoke", "tvos-ui-full"):
+            command = self.manifest["lanes"][lane]["command"]
+            self.assertIn("-testPlan", command)
+            self.assertIn("LabstreamTVUITests", command)
+
     def test_affected_json_reports_simulator_lane_as_blocked_without_id(self) -> None:
         result = self.run_script(
             "affected",

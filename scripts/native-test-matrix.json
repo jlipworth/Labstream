@@ -108,7 +108,7 @@
       "simulator": "tvos",
       "command": [
         "scripts/xcodebuild-versioned.sh", "-project", "Labstream.xcodeproj",
-        "-scheme", "LabstreamTV",
+        "-scheme", "LabstreamTV", "-testPlan", "LabstreamTVUITests",
         "-destination", "platform=tvOS Simulator,id={tvos_sim_id}",
         "-derivedDataPath", "{output_dir}/tvos-ui-smoke",
         "-only-testing:LabstreamTVUITests/LabstreamTVLaunchTests/testAppLaunches",
@@ -121,7 +121,7 @@
       "simulator": "tvos",
       "command": [
         "scripts/xcodebuild-versioned.sh", "-project", "Labstream.xcodeproj",
-        "-scheme", "LabstreamTV",
+        "-scheme", "LabstreamTV", "-testPlan", "LabstreamTVUITests",
         "-destination", "platform=tvOS Simulator,id={tvos_sim_id}",
         "-derivedDataPath", "{output_dir}/tvos-ui-full",
         "-only-testing:LabstreamTVUITests",
