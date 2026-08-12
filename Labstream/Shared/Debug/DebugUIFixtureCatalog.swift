@@ -2,11 +2,11 @@
 import Foundation
 import PMSKit
 
-/// Small synthetic catalog used only by tvOS UI-test launches. It exercises the real Home,
-/// Libraries, navigation, detail, and backend-switching views without network credentials or a
-/// parallel mock UI. Production launches never consult this catalog.
+/// Small synthetic catalog used only by DEBUG agent/UI-test launches. It exercises the real Home,
+/// Libraries, navigation, and detail views without network credentials or a parallel mock UI.
+/// Production launches never compile this catalog.
 @MainActor
-enum TVUIFixtureCatalog {
+enum DebugUIFixtureCatalog {
     struct HomeContent {
         let hubs: [Hub]
         let mediaBrowserLibraries: [MediaBrowserHomeLibraryLink]
@@ -14,7 +14,7 @@ enum TVUIFixtureCatalog {
     }
 
     static var isBrowseEnabled: Bool {
-        TVUITestLaunchConfiguration.usesBrowseFixture
+        DebugUITestLaunchConfiguration.usesBrowseFixture
     }
 
     /// Container and rows used by the real `ContainerBrowserView` in the season-surface UI
@@ -30,7 +30,7 @@ enum TVUIFixtureCatalog {
     )
 
     static func containerChildren(for container: MediaItem) -> [MediaItem]? {
-        guard TVUITestLaunchConfiguration.fixtureKind == .season,
+        guard DebugUITestLaunchConfiguration.fixtureKind == .season,
               container.ratingKey == seasonContainer.ratingKey else { return nil }
         return [
             MediaItem(ratingKey: "tv-season-surface-e1", title: "The First Stream",

@@ -175,6 +175,11 @@ if [ "$BUILD" -eq 1 ]; then
       CODE_SIGN_STYLE=Automatic
       "CODE_SIGN_IDENTITY=Apple Development"
     )
+  else
+    # The worktree-isolated identity must not inherit the canonical keychain access group.
+    # Keeping sandbox/network entitlements makes the staged app representative while allowing
+    # local ad-hoc signing without a provisioning profile for the synthetic bundle identifier.
+    SIGNING_ARGS=("CODE_SIGN_ENTITLEMENTS=Config/LabstreamMacDevelopment.entitlements")
   fi
   if ! scripts/xcodebuild-versioned.sh \
     -project Labstream.xcodeproj \

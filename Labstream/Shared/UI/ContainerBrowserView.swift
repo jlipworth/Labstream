@@ -277,8 +277,8 @@ struct ContainerBrowserView: View {
         // avoids keeping a stale, duplicated child snapshot alive across navigation restoration
         // or backend/model changes.
         children = []
-        #if os(tvOS) && DEBUG
-        if let fixtureChildren = TVUIFixtureCatalog.containerChildren(for: container) {
+        #if DEBUG
+        if let fixtureChildren = DebugUIFixtureCatalog.containerChildren(for: container) {
             children = fixtureChildren.normalizedForContainerBrowser(
                 childrenAreEpisodes: childrenAreEpisodes)
             loadState = .loaded

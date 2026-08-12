@@ -58,7 +58,7 @@ struct TVPlayerFixtureView: View {
     @ViewBuilder
     private func fixturePlayer(url: URL) -> some View {
         let item = TVPlayerFixtureMedia.item
-        if TVUITestLaunchConfiguration.playerFixtureStartsBuffering {
+        if DebugUITestLaunchConfiguration.playerFixtureStartsBuffering {
             // The buffering-review variant needs the controller instance so it can hold
             // `transportStatus` in `.buffering` against the KVO-driven transitions that would
             // otherwise clear it as local playback primes instantly.

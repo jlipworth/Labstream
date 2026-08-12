@@ -28,10 +28,10 @@ struct ContentView: View {
         #if os(tvOS) && DEBUG
         // Deterministic tvOS UI-test fixtures (season browser, player chrome, system keyboard)
         // bypass the restore/login/browse gate entirely; production launches never set one.
-        switch TVUITestLaunchConfiguration.fixtureKind {
+        switch DebugUITestLaunchConfiguration.fixtureKind {
         case .season:
             NavigationStack {
-                ContainerBrowserView(container: TVUIFixtureCatalog.seasonContainer)
+                ContainerBrowserView(container: DebugUIFixtureCatalog.seasonContainer)
             }
             .environment(appModel)
         case .player:

@@ -198,8 +198,8 @@ struct HomeView: View {
         loadGeneration += 1
         let generation = loadGeneration
 
-        #if os(tvOS) && DEBUG
-        if let fixture = TVUIFixtureCatalog.homeContent(for: appModel.activeBackend) {
+        #if DEBUG
+        if let fixture = DebugUIFixtureCatalog.homeContent(for: appModel.activeBackend) {
             hubs = fixture.hubs
             mediaBrowserLibraries = fixture.mediaBrowserLibraries
             mediaBrowserRails = fixture.mediaBrowserRails
@@ -435,8 +435,8 @@ private struct HubRail: View {
                         NavigationLink(value: item) {
                             RailMediaCell(item: item, context: .home)
                         }
+                        .accessibilityIdentifier("labstream.home.\(hub.id).\(item.ratingKey)")
                         #if os(tvOS)
-                        .accessibilityIdentifier("tv.home.\(hub.id).\(item.ratingKey)")
                         .tvPrefersDefaultFocus(item.id == hub.metadata.first?.id,
                                                in: tvDefaultFocusNamespace)
                         .tvFocusTracked(tvFocusBinding,

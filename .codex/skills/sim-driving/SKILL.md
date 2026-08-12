@@ -1,38 +1,37 @@
 ---
 name: sim-driving
-description: Drive the visionOS simulator hands-free — synthetic clicks, screenshots, coordinate mapping, and log reading for live-testing Labstream without asking the user to interact.
+description: Run bounded visionOS simulator evidence scenarios and know when Xcode 27 requires a human or headset gate.
 ---
 
 # Driving the visionOS simulator
 
-> **STATUS: bounded harness only (reopened 2026-07-04).** Free-form synthetic clicking
-> is still not allowed: it caused misses/swallowed clicks and mouse takeover. Synthetic
-> clicks may be used only through repo scenarios such as `scripts/agent-sim-run.sh`, which
-> open/activate Simulator, capture before/after screenshots/video/logs, write `run.json`,
-> stop on no UI delta, and shut the worktree simulator down by default. If the required
-> auth/simulator state is missing, stop and ask the user to fix it rather than inventing
-> credentials or silently falling back to a different state.
+> **STATUS on Xcode 27: passive harness only for visionOS.** Free-form synthetic clicking
+> is not allowed: it caused misses/swallowed clicks and mouse takeover. The bounded click
+> scenario also still addresses the retired standalone Simulator app and has not been proven
+> against Device Hub, so do not invoke it on Xcode 27. Official Xcode Device Interaction is
+> currently an iOS Simulator path, not a visionOS path. Use the passive harness and app-side
+> probes for visionOS; ask for human/headset confirmation when they cannot prove the result.
 
-Within a bounded scenario, an agent may exercise reachable tap targets with the loop:
-screenshot/crop → locate target → synthetic click → screenshot/logs to verify. Keep this
-for small, deterministic steps. Hand off to the user for auth setup, gaze-hover effects
-(a real cursor hover ≠ gaze highlight rendering in all cases), pinch-drag gestures, or
-any flow where the harness cannot prove the UI changed.
+If a future Device Hub-compatible click path is added, it must first re-prove the bounded loop:
+screenshot/crop → locate target → synthetic click → screenshot/logs to verify. Hand off to the
+user for auth setup, gaze-hover effects (a real cursor hover ≠ gaze highlight rendering in all
+cases), pinch-drag gestures, or any flow where the harness cannot prove the UI changed.
 
 ## Repo scenario harness
 
 Prefer the bounded harness over ad hoc clicks:
 
 ```sh
-scripts/agent-sim-run.sh launch-home-passive
-scripts/agent-sim-run.sh click-login-jellyfin-tab
+scripts/agent-sim-run.sh launch-fixture-home-passive
 ```
 
 The harness resolves the worktree simulator via `scripts/worktree-sim.sh id`, records
 artifacts under `artifacts/agent-sim-runs/`, and shuts the simulator down unless
 `--keep-booted` is passed. Use scenario artifacts for issue comments and debugging notes.
 
-## The click helper
+`click-login-jellyfin-tab` is retained as legacy evidence, not as an Xcode 27-supported scenario.
+
+## Legacy click helper (do not use on Xcode 27)
 
 `scripts/simclick.swift` posts a real CGEvent mouse move + left click at **screen**
 coordinates (a click = gaze+pinch in the visionOS sim). Compile once per session:

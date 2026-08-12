@@ -199,7 +199,13 @@ scripts/perf-compare.py compare \
   `ipadwt-*`/`.simid-ipad`, `tvwt-*`/`.simid-tvos`). Resolve a concrete ID and never
   target `booted`.
 - `agent-sim-run.sh` — bounded visionOS agent scenarios with build/install/launch, screenshots,
-  video, logs, and a machine-readable run result.
+  video, logs, and a machine-readable run result. Prefer `launch-fixture-home-passive` for a
+  credential-free browse surface.
+- `agent-mobile-run.sh` — credential-free iPhone/iPad fixture launch and evidence bundle. It
+  requires `--allow-simulator` as the caller's one-simulator lease assertion and publishes the
+  stable semantic targets that Xcode 27 Device Interaction should use for the next action step.
+- `agent-macos-run.sh` / `agent-macos-ax-driver.swift` — isolated credential-free macOS fixture
+  run using semantic Accessibility actions and Labstream-window-only screenshots.
 - `simclick.swift` — low-level simulator coordinate click helper used only by controlled local
   automation.
 

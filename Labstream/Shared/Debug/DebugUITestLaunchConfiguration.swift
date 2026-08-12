@@ -1,23 +1,33 @@
 #if DEBUG
 import Foundation
 
-/// Production-isolated launch configuration for deterministic tvOS UI tests. These arguments
-/// never mint credentials or alter the release path; they only choose a signed-out backend and
-/// bypass asynchronous Keychain restore so focus tests always start from the same surface.
+/// Production-isolated launch configuration for deterministic agent and UI-test runs.
+///
+/// The shared browse fixture lets every product exercise its real Home/Libraries/Detail composition
+/// without a server or credentials. The remaining fixture kinds are tvOS-only surfaces selected by
+/// `ContentView`. Release builds cannot see this type, and the placeholder session below is never
+/// persisted.
 @MainActor
-enum TVUITestLaunchConfiguration {
+enum DebugUITestLaunchConfiguration {
     nonisolated static let enabledFlag = "--ui-testing"
     nonisolated static let backendFlag = "--ui-testing-backend"
     nonisolated static let fixtureFlag = "--ui-testing-fixture"
     nonisolated static let downloadCompositionEvidenceFlag = "--ui-testing-download-composition-evidence"
 
     static var isEnabled: Bool {
-        ProcessInfo.processInfo.arguments.contains(enabledFlag)
+        isEnabled(in: ProcessInfo.processInfo.arguments)
     }
 
     static var initialBackend: MediaBackendKind? {
-        guard isEnabled else { return nil }
-        let arguments = ProcessInfo.processInfo.arguments
+        initialBackend(in: ProcessInfo.processInfo.arguments)
+    }
+
+    nonisolated static func isEnabled(in arguments: [String]) -> Bool {
+        arguments.contains(enabledFlag)
+    }
+
+    nonisolated static func initialBackend(in arguments: [String]) -> MediaBackendKind? {
+        guard isEnabled(in: arguments) else { return nil }
         guard let index = arguments.firstIndex(of: backendFlag),
               arguments.indices.contains(index + 1) else { return .plex }
         return MediaBackendKind(rawValue: arguments[index + 1]) ?? .plex
@@ -42,8 +52,11 @@ enum TVUITestLaunchConfiguration {
     }
 
     static var fixtureKind: FixtureKind? {
-        let arguments = ProcessInfo.processInfo.arguments
-        guard isEnabled,
+        fixtureKind(in: ProcessInfo.processInfo.arguments)
+    }
+
+    nonisolated static func fixtureKind(in arguments: [String]) -> FixtureKind? {
+        guard isEnabled(in: arguments),
               let index = arguments.firstIndex(of: fixtureFlag),
               arguments.indices.contains(index + 1) else { return nil }
         return FixtureKind(rawValue: arguments[index + 1])

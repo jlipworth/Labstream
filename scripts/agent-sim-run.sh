@@ -7,6 +7,8 @@ Usage: scripts/agent-sim-run.sh <scenario> [options]
 
 Scenarios:
   launch-home-passive        Build/install/launch visionOS app, capture video/screenshots/logs/run.json.
+  launch-fixture-home-passive
+                             Same evidence loop with credential-free synthetic browse content.
   click-login-jellyfin-tab   Launch, click the Jellyfin tab on the login panel, verify UI pixels changed.
 
 Options:
@@ -44,7 +46,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$scenario" in
-  launch-home-passive|click-login-jellyfin-tab) ;;
+  launch-home-passive|launch-fixture-home-passive|click-login-jellyfin-tab) ;;
   *) echo "unknown scenario: $scenario" >&2; usage >&2; exit 2 ;;
 esac
 
@@ -270,8 +272,13 @@ xcrun simctl install "$simid" "$app" >>"$outdir/install.log" 2>&1 || {
 
 log_note "Launching Labstream..."
 xcrun simctl terminate "$simid" com.jlipworth.Labstream >/dev/null 2>&1 || true
+launch_args=()
+if [ "$scenario" = "launch-fixture-home-passive" ]; then
+  launch_args=(--ui-testing --ui-testing-backend plex --ui-testing-fixture browse)
+fi
 set +e
-xcrun simctl launch "$simid" com.jlipworth.Labstream >"$outdir/launch.log" 2>&1
+xcrun simctl launch "$simid" com.jlipworth.Labstream "${launch_args[@]}" \
+  >"$outdir/launch.log" 2>&1
 launch_exit_code=$?
 set -e
 if [ "$launch_exit_code" -ne 0 ]; then

@@ -67,7 +67,7 @@ Debug-only launch arguments provide production-isolated signed-out and synthetic
 They do not read or persist production credentials:
 
 ```sh
-xcrun simctl launch "$SIMID" com.jlipworth.Labstream --args \
+xcrun simctl launch "$SIMID" com.jlipworth.Labstream \
   --ui-testing --ui-testing-backend plex --ui-testing-fixture browse
 ```
 

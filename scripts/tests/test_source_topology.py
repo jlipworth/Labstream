@@ -131,8 +131,6 @@ class SourceTopologyTests(unittest.TestCase):
                 "App/LabstreamTV.swift",
                 "Debug/TVInputEvidence.swift",
                 "Debug/TVPlayerFixture.swift",
-                "Debug/TVUIFixtureCatalog.swift",
-                "Debug/TVUITestLaunchConfiguration.swift",
                 "Player/TVPlayerChrome.swift",
                 "UI/TVRootShell.swift",
             ),

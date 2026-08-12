@@ -175,6 +175,21 @@ The visionOS and mobile targets use `com.jlipworth.Labstream` for the intended u
 identity. Local installs with that bundle identifier can replace an existing install and its app
 state.
 
+Debug mobile builds also accept the credential-free browse fixture described in the tvOS section
+below. For a bounded agent smoke that builds, installs, launches, records screenshots/video/logs,
+and shuts down the leased simulator, use:
+
+```sh
+scripts/agent-mobile-run.sh iphone fixture-home-passive --allow-simulator
+# Use `ipad` to exercise the regular-width layout.
+```
+
+The runner deliberately requires `--allow-simulator` as an assertion that its caller owns the
+repository's single-simulator lease. It writes an ignored evidence bundle beneath
+`artifacts/agent-platform-runs/`. The fixture exposes stable accessibility targets including
+`labstream.fixture.browse.root` and `labstream.home.fixture-resume.<backend>-orbit`, so Xcode 27
+Device Interaction can inspect and drive it semantically rather than by free-form coordinates.
+
 ## Build for an Apple TV simulator
 
 The in-progress tvOS target is named/schemed `LabstreamTV`. It supports only the current Apple TV
@@ -216,13 +231,13 @@ Continue with [Install and observe a simulator smoke](#install-and-observe-a-sim
 when a concrete tvOS simulator runtime and `$SIMID` are available. The tvOS product deliberately has
 no downloads, Offline destination, or download-storage settings.
 
-Debug builds also expose production-isolated launch arguments for deterministic tvOS UI work. They
-never read or persist production credentials: `--ui-testing` starts signed out,
+Debug builds on every platform expose production-isolated launch arguments for deterministic UI
+work. They never read or persist production credentials: `--ui-testing` starts signed out,
 `--ui-testing-backend plex|jellyfin|emby` selects the authentication surface, and
 `--ui-testing-fixture browse` supplies synthetic data to the real Home/Libraries/Detail views:
 
 ```sh
-xcrun simctl launch "$SIMID" com.jlipworth.Labstream --args \
+xcrun simctl launch "$SIMID" com.jlipworth.Labstream \
   --ui-testing --ui-testing-backend plex --ui-testing-fixture browse
 ```
 
@@ -290,6 +305,18 @@ Use the host helper so builds are staged under a per-worktree development identi
 ```sh
 scripts/deploy-macos-to-host.sh --launch
 ```
+
+For a credential-free semantic agent check, the bounded runner stages an isolated bundle, mounts
+the real browse/detail UI with synthetic data, presses the stable home-item Accessibility target,
+asserts the detail tagline, captures only the Labstream window, and stops its exact process:
+
+```sh
+scripts/agent-macos-run.sh fixture-detail
+```
+
+Evidence is written beneath ignored `artifacts/agent-platform-runs/`. Exit code `2` means a host
+precondition such as Accessibility or Screen Recording permission is unavailable; the runner does
+not fall back to coordinates or full-desktop capture.
 
 The Mac target is a local-build development preview, not a released or supported App Store
 product. See [macOS development preview](MACOS.md) for identity isolation, cleanup, validation,

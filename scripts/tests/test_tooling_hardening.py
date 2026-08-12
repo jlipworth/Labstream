@@ -17,7 +17,10 @@ class ToolingHardeningTests(unittest.TestCase):
     def make_repo(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            # Keep branch-derived bundle-id assertions independent of the user's global
+            # init.defaultBranch setting.
+            subprocess.run(["git", "init", "-q", "--initial-branch=master"],
+                           cwd=root, check=True)
             subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, check=True)
             subprocess.run(["git", "config", "user.name", "Tooling Test"], cwd=root, check=True)
             (root / "scripts").mkdir()

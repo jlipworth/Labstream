@@ -16,6 +16,7 @@ struct RootView: View {
 
   var body: some View {
     PlatformRootShell(runtime: runtime, navigation: navigation)
+      .debugAgentFixtureRootAccessibility()
       .environment(\.metadataRepository, runtime.metadataRepository)
       // Browse-session switch: discard only online navigation. Offline is deliberately
       // cross-backend because every DownloadRecord retains its own backend authority.
@@ -70,5 +71,20 @@ struct RootView: View {
       let destination = AppDestination.home
     #endif
     navigation.handleSystemEntry(route, target: destination, runtime: runtime)
+  }
+}
+
+private extension View {
+  @ViewBuilder
+  func debugAgentFixtureRootAccessibility() -> some View {
+    #if DEBUG
+      if DebugUIFixtureCatalog.isBrowseEnabled {
+        accessibilityIdentifier("labstream.fixture.browse.root")
+      } else {
+        self
+      }
+    #else
+      self
+    #endif
   }
 }

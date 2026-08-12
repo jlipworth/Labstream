@@ -547,8 +547,8 @@ struct DetailView: View {
         // exactly once as before. The autoplay token is one-shot, so a later version switch
         // can't re-trigger it.
         .task(id: activeVersionRatingKey) {
-            #if os(tvOS) && DEBUG
-            if TVUIFixtureCatalog.isBrowseEnabled { return }
+            #if DEBUG
+            if DebugUIFixtureCatalog.isBrowseEnabled { return }
             #endif
             let autoPlay = SystemEntryRouter.shared.consumeAutoPlay(for: activeVersionRatingKey)
             if let handoff = autoPlay?.snapshot,
@@ -579,8 +579,8 @@ struct DetailView: View {
         // detail), so it runs once and never blocks the rest of the screen. No-op for items
         // with a single version.
         .task(id: item.ratingKey) {
-            #if os(tvOS) && DEBUG
-            if TVUIFixtureCatalog.isBrowseEnabled { return }
+            #if DEBUG
+            if DebugUIFixtureCatalog.isBrowseEnabled { return }
             #endif
             await resolveMovieVersionLabels()
         }

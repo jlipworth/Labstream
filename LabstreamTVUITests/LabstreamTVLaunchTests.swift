@@ -79,7 +79,7 @@ final class LabstreamTVLaunchTests: XCTestCase {
         XCUIRemote.shared.press(.down)
         XCUIRemote.shared.press(.left)
         XCUIRemote.shared.press(.left)
-        XCTAssertTrue(app.buttons["tv.home.fixture-resume.plex-orbit"].hasFocus)
+        XCTAssertTrue(app.buttons["labstream.home.fixture-resume.plex-orbit"].hasFocus)
         attachScreen(named: "focused home card", app: app)
         XCUIRemote.shared.press(.select)
         XCTAssertTrue(app.staticTexts["Some signals should stay distant."].waitForExistence(timeout: 3))
