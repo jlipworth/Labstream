@@ -9,7 +9,11 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/agent-mobile-run.sh <iphone|ipad> fixture-home-passive --allow-simulator [options]
+Usage: scripts/agent-mobile-run.sh <iphone|ipad> <scenario> --allow-simulator [options]
+
+Scenarios:
+  fixture-home-passive    Launch fixture and collect passive evidence.
+  fixture-detail-semantic Run the durable accessibility-targeted XCUITest and collect evidence.
 
 Options:
   --backend plex|jellyfin|emby  Synthetic browse lane. Default: plex.
@@ -26,7 +30,9 @@ platform=${1:-}
 scenario=${2:-}
 if [[ $platform == -h || $platform == --help || -z $platform ]]; then usage; exit 0; fi
 [[ $platform == iphone || $platform == ipad ]] || { usage >&2; exit 2; }
-[[ $scenario == fixture-home-passive ]] || { usage >&2; exit 2; }
+[[ $scenario == fixture-home-passive || $scenario == fixture-detail-semantic ]] || {
+  usage >&2; exit 2;
+}
 shift 2
 
 backend=plex
@@ -86,6 +92,9 @@ status=failed
 result_code=1
 app_path=
 app_pid=
+test_result=
+test_summary=
+attachments_dir=
 
 bounded_screenshot() {
   local destination=$1
@@ -136,7 +145,8 @@ payload={
   "startedAt": os.environ["STARTED_AT"],
   "appPath": os.environ["APP_PATH"],
   "appPID": int(os.environ["APP_PID"]) if os.environ["APP_PID"].isdigit() else None,
-  "driver": "simctl-passive-fixture",
+  "driver": ("xcuitest-accessibility" if os.environ["SCENARIO"] == "fixture-detail-semantic"
+             else "simctl-passive-fixture"),
   "nextSemanticDriver": "xcode-device-interaction",
   "launchArguments": ["--ui-testing", "--ui-testing-backend", os.environ["BACKEND"],
                       "--ui-testing-fixture", "browse"],
@@ -147,6 +157,20 @@ payload={
   },
   "artifacts": artifacts,
 }
+if os.environ["SCENARIO"] == "fixture-detail-semantic":
+  payload["testResult"] = f"{out}/Test.xcresult"
+  payload["testSummary"] = f"{out}/test-summary.json"
+  payload["attachments"] = f"{out}/attachments"
+  try:
+    with open(payload["testSummary"]) as handle:
+      summary = json.load(handle)
+    payload["assertions"] = {
+      "result": summary.get("result"),
+      "passedTests": summary.get("passedTests"),
+      "failedTests": summary.get("failedTests"),
+    }
+  except (OSError, json.JSONDecodeError):
+    payload["assertions"] = None
 with open(f"{out}/run.json", "w") as f:
     json.dump(payload, f, indent=2, sort_keys=True)
     f.write("\n")
@@ -175,6 +199,52 @@ trap cleanup EXIT
 
 xcrun simctl boot "$simid" >/dev/null 2>&1 || true
 xcrun simctl bootstatus "$simid" -b >/dev/null
+
+if [[ $scenario == fixture-detail-semantic ]]; then
+  test_result="$outdir/Test.xcresult"
+  test_summary="$outdir/test-summary.json"
+  attachments_dir="$outdir/attachments"
+  bounded_screenshot "$outdir/screen-start.png" >"$outdir/screenshot.log" 2>&1
+  xcrun simctl io "$simid" recordVideo "$outdir/screen-recording.mp4" \
+    >"$outdir/record-video.log" 2>&1 &
+  video_pid=$!
+  set +e
+  scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamMobile \
+    -testPlan LabstreamTests -destination "platform=iOS Simulator,id=$simid" \
+    -derivedDataPath "$derived_data-ui" -resultBundlePath "$test_result" \
+    -only-testing:LabstreamMobileUITests/LabstreamMobileFixtureUITests/testFixtureHomeOpensDetailSemantically \
+    test CODE_SIGNING_ALLOWED=NO -enableCodeCoverage NO >"$outdir/xcodebuild.log" 2>&1
+  test_code=$?
+  set -e
+  kill -INT "$video_pid" 2>/dev/null || true
+  wait "$video_pid" 2>/dev/null || true
+  video_pid=
+  bounded_screenshot "$outdir/screen-end.png" >>"$outdir/screenshot.log" 2>&1 || true
+  if [[ -d $test_result ]]; then
+    xcrun xcresulttool get test-results summary --path "$test_result" \
+      >"$test_summary" 2>"$outdir/xcresult-summary.log" || true
+    mkdir -p "$attachments_dir"
+    xcrun xcresulttool export attachments --path "$test_result" --output-path "$attachments_dir" \
+      >"$outdir/xcresult-attachments.log" 2>&1 || true
+  fi
+  app_path="$derived_data-ui/Build/Products/Debug-iphonesimulator/Labstream.app"
+  [[ $test_code -eq 0 && -s $test_summary && -s $outdir/screen-recording.mp4 ]] || {
+    result_code=$test_code
+    ((result_code != 0)) || result_code=1
+    exit "$result_code"
+  }
+  TEST_SUMMARY="$test_summary" python3 - <<'PY'
+import json, os
+with open(os.environ["TEST_SUMMARY"]) as handle:
+    summary = json.load(handle)
+if summary.get("result") != "Passed" or summary.get("failedTests") != 0 or summary.get("passedTests") != 1:
+    raise SystemExit(1)
+PY
+  status=passed
+  result_code=0
+  printf 'PASS: %s\n' "$outdir"
+  exit 0
+fi
 
 scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamMobile \
   -configuration Debug -destination "platform=iOS Simulator,id=$simid" \

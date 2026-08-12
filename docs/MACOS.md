@@ -109,6 +109,18 @@ The current repeatable Mac sweep is:
 scripts/validate-macos-228.sh
 ```
 
+For the credential-free semantic app loop itself, run:
+
+```sh
+scripts/agent-macos-run.sh fixture-detail
+```
+
+That runner stages an isolated development identity, launches the shared synthetic browse fixture,
+uses Accessibility to activate the stable Home item, asserts the detail text, and records
+window-scoped before/after screenshots, bounded logs, `driver.json`, and `run.json`. It terminates
+the exact staged process it launched and does not read or mutate the production Labstream
+container.
+
 The script retains its issue-era filename for now. It covers static identity checks, the Mac
 build, visionOS and iPhone-simulator builds, focused PMSKit diagnostics tests, and a bounded host
 launch smoke through `scripts/smoke-macos-host.sh`. It does not prove real sign-in, subjective UI

@@ -61,6 +61,19 @@ Execution is lane-at-a-time and requires the repository's one-simulator lease. T
 the focused hosted and UI lanes, while [Development setup](DEVELOPMENT.md#build-for-an-apple-tv-simulator)
 contains the direct build, install, launch, fixture, test, and shutdown commands.
 
+For complete agent-readable evidence, use the named wrapper after acquiring that lease:
+
+```sh
+scripts/agent-tvos-run.sh fixture-home-semantic --allow-simulator
+scripts/agent-tvos-run.sh fixture-player-basic --allow-simulator
+```
+
+The first scenario uses semantic XCTest targets and `XCUIRemote` for Home-to-detail navigation.
+The second uses the deterministic local-file player fixture, so it proves basic playback-chrome and
+Back behavior without backend credentials. Both preserve video, screenshots, bounded logs, an
+`.xcresult`, exported XCTest attachments, `test-summary.json`, and `run.json`, then shut down their
+worktree simulator by default.
+
 ## Deterministic fixtures
 
 Debug-only launch arguments provide production-isolated signed-out and synthetic browse fixtures.
@@ -71,7 +84,9 @@ xcrun simctl launch "$SIMID" com.jlipworth.Labstream \
   --ui-testing --ui-testing-backend plex --ui-testing-fixture browse
 ```
 
-The small UI smoke tier covers launch and the fixture-backed remote Home-to-detail journey.
+`LabstreamTVUITests.xctestplan` isolates the UI target from hosted test sources that may not belong
+to tvOS's streaming-only compile boundary. The small UI smoke tier covers launch and the
+fixture-backed remote Home-to-detail journey.
 Exhaustive focus, keyboard, player auto-hide/scrubbing, and menu traversal belong to the full TV
 lane. Raw input evidence swizzling remains explicit opt-in and is never part of an ordinary launch
 or Release build.

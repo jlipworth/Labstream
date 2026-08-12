@@ -68,11 +68,28 @@ code compiles; install the matching platform/runtime in Xcode Settings before tr
 target as broken. Shut the selected simulator down when the smoke finishes, as described in the
 canonical procedure.
 
+For a credential-free agent loop, acquire the one-simulator lease and use the named runner rather
+than driving coordinates:
+
+```sh
+scripts/agent-mobile-run.sh iphone fixture-detail-semantic --allow-simulator
+scripts/agent-mobile-run.sh ipad fixture-detail-semantic --allow-simulator
+```
+
+The semantic scenario runs `LabstreamMobileFixtureUITests` against the shared synthetic browse
+fixture, activates `labstream.home.fixture-resume.plex-orbit`, and asserts the detail summary. Its
+artifact directory contains a screen recording, host screenshots, bounded logs, the `.xcresult`,
+exported XCTest attachments, `test-summary.json`, and machine-readable `run.json`. Use
+`fixture-home-passive` only when launch/render evidence is sufficient. Xcode Device Interaction is
+the preferred exploratory iOS 27 driver when available, but XCUITest is the durable regression
+contract. Neither path needs or may invent real backend credentials.
+
 ## App-hosted unit tests
 
-`LabstreamMobile` owns the `LabstreamTests` test target through `LabstreamTests.xctestplan`.
-The test sources live in `LabstreamTests/` and cover app-owned deterministic behavior rather than
-UI automation or live-server acceptance. Use the exact test command and simulator shutdown in
+`LabstreamMobile` owns the `LabstreamTests` and `LabstreamMobileUITests` targets through
+`LabstreamTests.xctestplan`. The hosted sources live in `LabstreamTests/`; the UI target owns the
+credential-free semantic fixture regression. Neither is live-server acceptance. Use the exact test
+command and simulator shutdown in
 [Core validation commands](DEVELOPMENT.md#core-validation-commands). Select an iPad worktree
 simulator instead for platform-specific regular-width cases. Shared app infrastructure should also
 run the macOS-hosted counterpart described in [Testing strategy](TESTING-STRATEGY.md).
