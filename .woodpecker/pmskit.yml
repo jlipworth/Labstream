@@ -16,6 +16,6 @@ steps:
       # BOTH XCTest and Swift Testing deadlocks under swift-corelibs-foundation on Linux
       # (each runner passes fine on its own; the hang is in SwiftPM's combined-runner handoff).
       # macOS runs the combined suite fine. --no-parallel keeps the Swift Testing runner off
-      # its Linux-flaky parallel path. Each step finishes in ~0.1s.
-      - swift test --no-parallel --disable-swift-testing   # XCTest only (64 tests)
-      - swift test --no-parallel --disable-xctest          # Swift Testing only (581 tests)
+      # its Linux-flaky parallel path. Keep counts out of this file; the suites grow frequently.
+      - swift test --no-parallel --disable-swift-testing   # XCTest only
+      - swift test --no-parallel --disable-xctest          # Swift Testing only

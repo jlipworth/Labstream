@@ -34,31 +34,21 @@ xcrun simctl boot "$SIMID" 2>/dev/null || true   # no-op if already booted
 # still valid for ONE thing: confirming the INSTALLED copy == the copy you just built
 # (same build → same UUID), i.e. the STALE-PROCESS/wrong-install guard, NOT staleness vs
 # the source.
-# ⚠️ PARALLEL-WORKTREE DerivedData TRAP (bit us live): the `Labstream-*` globs below span
-# EVERY worktree's DerivedData dir. With a single job that's fine (newest wins), but when
-# several worktrees build concurrently (fan-out agents), one job's `rm -rf` deletes another
-# job's product and the newest-glob then installs the WRONG worktree's binary. Each worktree
-# has its own deterministic DerivedData dir; whenever parallel builds may be running, resolve
-# YOURS first and scope both the rm and the APP= glob to it:
-#   DD=$(grep -l ">$(git rev-parse --show-toplevel)/Labstream.xcodeproj<" \
-#     $HOME/Library/Developer/Xcode/DerivedData/Labstream-*/info.plist | xargs dirname)
-#   # then use $DD/Build/Products/... in place of Labstream-*/Build/Products/... below
-# The install UUID_MATCH guard is what catches a mixup — never skip it under parallelism.
-rm -rf $HOME/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-xrsimulator/Labstream.app
+# Use a worktree-local DerivedData path; never delete or select another worktree's product.
+DD="$PWD/build/DerivedData-visionos"
+rm -rf "$DD"
 scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme Labstream \
   -destination "platform=visionOS Simulator,id=$SIMID" \
-  -configuration Debug build CODE_SIGNING_ALLOWED=NO -quiet
+  -configuration Debug -derivedDataPath "$DD" build CODE_SIGNING_ALLOWED=NO -quiet
 
 # Install + relaunch on this worktree's simulator (upgrade in place — login survives).
-# Multiple stale Labstream-* DerivedData dirs exist — always pick the newest, and use
-# /bin/ls (plain `ls` is aliased to eza, whose output breaks the substitution).
-# Under parallel jobs, newest is NOT yours — see the PARALLEL-WORKTREE trap above ($DD).
-APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-xrsimulator/Labstream.app | head -1)
+# Install only the exact product from this worktree-local DerivedData path.
+APP="$DD/Build/Products/Debug-xrsimulator/Labstream.app"
 xcrun simctl install "$SIMID" "$APP"
 xcrun simctl terminate "$SIMID" com.jlipworth.Labstream; xcrun simctl launch "$SIMID" com.jlipworth.Labstream
 
-# PMSKit unit tests
-cd PMSKit && swift test
+# Hermetic PMSKit correctness (live probes are always opt-in and excluded here)
+swift test --package-path PMSKit --no-parallel --skip 'Live.*ProbeTests'
 ```
 
 New Swift files are picked up automatically (file-system-synchronized groups) — never
@@ -74,12 +64,13 @@ printf 'iphone\n' > .simplatform # gitignored per-worktree default; use ipad for
 SIMID=$(scripts/worktree-sim.sh id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
 
+DD="$PWD/build/DerivedData-mobile"
+rm -rf "$DD"
 scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamMobile \
   -destination "platform=iOS Simulator,id=$SIMID" \
-  -configuration Debug build CODE_SIGNING_ALLOWED=NO -quiet
+  -configuration Debug -derivedDataPath "$DD" build CODE_SIGNING_ALLOWED=NO -quiet
 
-# Same PARALLEL-WORKTREE trap as above: scope to $DD instead when other jobs may be building.
-APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-iphonesimulator/Labstream.app | head -1)
+APP="$DD/Build/Products/Debug-iphonesimulator/Labstream.app"
 xcrun simctl install "$SIMID" "$APP"
 xcrun simctl terminate "$SIMID" com.jlipworth.Labstream 2>/dev/null || true
 xcrun simctl launch "$SIMID" com.jlipworth.Labstream
@@ -184,8 +175,8 @@ to do it:
 ```sh
 SIMID=$(scripts/worktree-sim.sh --platform visionos id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
-# PARALLEL-WORKTREE trap applies here too (see Build block): scope to $DD under parallel jobs.
-APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-xrsimulator/Labstream.app | head -1)
+DD="$PWD/build/DerivedData-visionos"
+APP="$DD/Build/Products/Debug-xrsimulator/Labstream.app"
 xcrun simctl install "$SIMID" "$APP"
 # install guard (see STALE-PROCESS trap): installed UUID must match the build you just made.
 # NOTE: LC_UUID is deterministic here (see DETERMINISTIC LC_UUID above), so this proves
@@ -345,10 +336,14 @@ as historical context at `docs/archive/macos/MACOS-HOST-DEPLOYMENT.md`.
 
 ## Live-testing workflow
 
-Claude self-serves screenshots and logs and may use only the bounded scenarios documented in the
-**`sim-driving` skill** for deterministic synthetic interaction. Free-form clicking remains
-disallowed; hand off authentication, gaze/hover, drag gestures, and flows whose UI change the
-harness cannot prove. Don't ask the user for screenshots or log dumps:
+Use the named platform runners in `docs/TESTING-STRATEGY.md`: semantic XCUITest for iPhone/iPad,
+the isolated Accessibility runner for macOS, XCUITest/XCUIRemote for tvOS, and the passive/probe-first
+runner documented by the **`sim-driving` skill** for visionOS. Xcode Device Interaction is an
+iPhone/iPad exploratory path only; it is not the durable regression contract and does not support
+the visionOS simulator. On Xcode 27, do not invoke the retained visionOS click scenario or use
+free-form/coordinate clicking. Hand off authentication, gaze/hover, pinch-drag, immersive UI, and
+hardware-only checks to the user/headset. Self-serve runner artifacts, screenshots, and logs rather
+than asking the user to collect them.
 
 For post-reproduction logs or evidence bundles, use the **`diagnostic-triage` skill**. Do not
 open or paste complete diagnostic JSONL directories or broad unified logs into conversation

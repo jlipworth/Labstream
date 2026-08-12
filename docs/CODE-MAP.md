@@ -143,9 +143,10 @@ not necessarily the backend currently visible in the UI.
   memory-only and bounded by byte cost plus entry count. Sprite sheets and final scrub previews cross
   the eager off-main `DecodedImage` boundary before cache publication; BIF indexes retain/map one
   backing payload and normal seek lookup copies only a selected frame (`frames` remains an explicit,
-  source-compatible materializing accessor). Largest-real-BIF and tile-sheet peak-RSS validation
-  remains a Phase 5 measurement gate. Using `DecodedImage` there is not pipeline adoption. Downloaded image-payload
-  validation remains in the Wave 4 side-asset work.
+  source-compatible materializing accessor). Largest-real-BIF and tile-sheet peak-RSS measurement
+  remains useful follow-up evidence rather than a completed acceptance claim. Using `DecodedImage`
+  there is not pipeline adoption. `DownloadSideAssetService` validates downloaded poster, chapter,
+  BIF, and subtitle payloads before promotion.
 
 Request/DTO implementations live under `PMSKit/Sources/PMSKit/Auth/`,
 `PMSKit/Sources/PMSKit/Jellyfin/`, `PMSKit/Sources/PMSKit/Emby/`,

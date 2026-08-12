@@ -40,7 +40,7 @@ root, plus the shared `PMSKit` package. The public mobile support floor is iOS/i
   Quality/Chapters/Speed/Stats as labeled glass pills, and lets the pill strip scroll
   horizontally when the row is too narrow instead of hiding controls behind an ellipsis
   menu. It also registers hardware-keyboard shortcuts (Space play/pause, ←/→ skip
-  10s/30s, Esc close). `UIBackgroundModes = audio`
+  10s, Shift-←/Shift-→ skip 30s, Esc close). `UIBackgroundModes = audio`
   is set on `LabstreamMobile`; playback still pauses when the app backgrounds unless it is
   continuing through PiP or an external AirPlay route.
 - Cellular downloads default to **off**. The Settings download toggle controls the

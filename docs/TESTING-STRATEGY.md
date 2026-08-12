@@ -232,8 +232,10 @@ scripts/agent-macos-run.sh fixture-detail
 scripts/agent-sim-run.sh launch-fixture-home-passive
 ```
 
-Simulator runners refuse a foreign booted device and require an explicit lease assertion where
-applicable. Their Xcode invocations also have a platform-specific wall-clock bound, including
+The mobile and TV runners refuse a foreign booted device and require `--allow-simulator` as an
+explicit lease assertion. Invoke the visionOS passive runner only after acquiring the same
+repository lease; it resolves the worktree-owned simulator and shuts it down by default. The
+platform runners' Xcode invocations have a platform-specific wall-clock bound, including
 result-log finalization. Mobile and TV semantic scenarios retain XCTest attachments and result bundles in
 addition to video, screenshots, logs, and `run.json`. macOS uses semantic Accessibility against an
 isolated development identity. visionOS remains passive/probe-first because Xcode 27 Device

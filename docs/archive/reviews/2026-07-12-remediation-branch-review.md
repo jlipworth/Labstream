@@ -9,7 +9,7 @@
 > background-redelivery gates remain open and are not claimed complete by this update.
 >
 > This file is archived review evidence, not a current work list. Current remediation status and
-> acceptance gates live in the [`codebase remediation` plan](../../plans/2026-07-10-codebase-remediation.md).
+> acceptance gates live in the [`codebase remediation` plan](../plans/2026-07-10-codebase-remediation.md).
 
 ## Resume checkpoint after remediation
 

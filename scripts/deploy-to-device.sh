@@ -2,7 +2,7 @@
 # Deploy the locally-built Labstream app to a physical Apple Vision Pro over Wi-Fi.
 #
 # This is the single source of truth for on-device (NOT simulator) deploys; the
-# `deploy-to-device` skill (.claude/skills/) just drives this script. It builds a
+# `deploy-to-device` repo skill just drives this script. It builds a
 # Debug, development-signed visionOS *device* build and installs it with `devicectl`.
 #
 # Why a script: device signing has two non-obvious traps that bit us repeatedly —

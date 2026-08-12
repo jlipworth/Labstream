@@ -7,7 +7,7 @@
 [![tvOS 26 preview](https://img.shields.io/badge/tvOS-26%20development%20preview-lightgrey.svg)](docs/TVOS.md)
 [![macOS 26 preview](https://img.shields.io/badge/macOS-26%20development%20preview-lightgrey.svg)](docs/MACOS.md)
 [![Swift 6](https://img.shields.io/badge/Swift-6-orange.svg)](https://www.swift.org/)
-[![Xcode 26](https://img.shields.io/badge/Xcode-26-blue.svg)](https://developer.apple.com/xcode/)
+[![Xcode 27](https://img.shields.io/badge/Xcode-27-blue.svg)](https://developer.apple.com/xcode/)
 
 **Labstream is a native Apple-platform media client for your own Plex, Jellyfin, or Emby server.**
 
@@ -26,7 +26,8 @@ local-build development preview. They share the SwiftUI app core, custom AVFound
 > **Development status:** This is an active, pre-release project rather than a compatibility
 > promise. Plex, Jellyfin, and Emby paths are implemented, but backend, server-version, media,
 > and platform combinations do not all have equal live-device validation. Expect incomplete
-> behavior and regressions while the current architecture remediation and platform work continue.
+> behavior and regressions while platform parity, hardware validation, performance measurement,
+> and release acceptance remain ongoing work.
 
 ## Contents
 
@@ -108,15 +109,15 @@ Labstream is unofficial and independent. It is not affiliated with, endorsed by,
 - Custom AVFoundation playback and offline playback paths.
 - `PMSKit`, a local Swift package for Plex/Jellyfin/Emby request builders, models,
   diagnostics primitives, policy state machines, and narrow reusable networking/storage infrastructure.
-- MkDocs Material documentation published at <https://jlipworth.github.io/Labstream/>.
+- MkDocs Material documentation built from the checked-in `docs/` source.
 
 ## Quick start
 
 ### Requirements
 
-- macOS with Xcode 26 plus the SDK/runtime for each target being built: visionOS 26, iOS/iPadOS 26.1+, or tvOS 26+.
+- macOS with Xcode 27 plus the SDK/runtime for each target being built: visionOS 26, iOS/iPadOS 26.1+, or tvOS 26+.
 - A compatible simulator runtime for visionOS, iPhone/iPad, or Apple TV work, or paired physical hardware for the device acceptance being performed.
-- Python 3 and [`uv`](https://docs.astral.sh/uv/getting-started/installation/) for documentation and repository tooling checks.
+- Python 3.11+ and [`uv`](https://docs.astral.sh/uv/getting-started/installation/) for documentation and repository tooling checks.
 - A Plex, Jellyfin, or Emby server you control or have permission to access.
 
 The optional `LabstreamMac` development preview builds directly for an Apple-silicon Mac running
@@ -156,14 +157,14 @@ Labstream/
 │       ├── macOS/         # single-window Mac entry point and desktop player integration
 │       └── tvOS/          # streaming-only TV entry point and Debug fixture ownership
 ├── PMSKit/                # reusable requests, models, policies, infrastructure, and tests
-├── docs/                  # published docs plus plans, research, evidence, and archive lanes
+├── docs/                  # current docs plus plans, research, evidence, and archive lanes
 ├── scripts/               # local validation, simulator, deploy, and probe helpers
 └── .woodpecker/           # portable CI definitions
 ```
 
 ## Documentation
 
-- Published docs: <https://jlipworth.github.io/Labstream/>
+- Documentation source and local site build: [`docs/`](docs/)
 - Development setup: [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)
 - iOS/iPadOS target: [`docs/MOBILE-IOS.md`](docs/MOBILE-IOS.md)
 - tvOS target: [`docs/TVOS.md`](docs/TVOS.md)
