@@ -23,6 +23,25 @@ final class LabstreamTVPlayerTests: XCTestCase {
         attachScreen(named: "chrome revealed by down press", app: app)
     }
 
+    /// Bounded agent evidence path: prove local playback accepts a semantic remote reveal, then
+    /// close playback so Xcode can finalize the result bundle without an active media session.
+    func testBasicPlaybackRevealAndExit() throws {
+        let app = launchPlayerFixture()
+        try awaitAutoHide(app)
+
+        XCUIRemote.shared.press(.down)
+        let timeline = app.buttons["tv.player.timeline"]
+        XCTAssertTrue(timeline.waitForExistence(timeout: 4),
+                      "directional press should reveal hidden playback chrome")
+        attachScreen(named: "basic playback chrome revealed", app: app)
+
+        try awaitAutoHide(app)
+        XCUIRemote.shared.press(.menu)
+        XCTAssertTrue(app.staticTexts["tv.fixture.player.closed"].waitForExistence(timeout: 4),
+                      "bounded playback evidence must close the local player")
+        app.terminate()
+    }
+
     /// Select on hidden chrome must reveal it (and not activate a control or seek).
     func testSelectPressRevealsHiddenChrome() throws {
         let app = launchPlayerFixture()

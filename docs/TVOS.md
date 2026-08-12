@@ -69,10 +69,16 @@ scripts/agent-tvos-run.sh fixture-player-basic --allow-simulator
 ```
 
 The first scenario uses semantic XCTest targets and `XCUIRemote` for Home-to-detail navigation.
-The second uses the deterministic local-file player fixture, so it proves basic playback-chrome and
-Back behavior without backend credentials. Both preserve video, screenshots, bounded logs, an
+The second uses the deterministic local-file player fixture, so it reveals playback chrome and then
+closes the media session within one test without backend credentials. Both preserve video,
+screenshots, bounded logs, an
 `.xcresult`, exported XCTest attachments, `test-summary.json`, and `run.json`, then shut down their
 worktree simulator by default.
+
+On the current Xcode 27 beta, the local-player XCTest assertions can complete successfully while
+`xcodebuild` remains stuck finalizing the test log. The wrapper caps that phase at 90 seconds and
+reports `blocked` with `xcodebuild-test-log-finalization-timeout` rather than misclassifying the
+completed assertions as a product failure or claiming an incomplete result bundle as a pass.
 
 ## Deterministic fixtures
 

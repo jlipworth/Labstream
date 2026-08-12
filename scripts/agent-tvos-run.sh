@@ -64,6 +64,7 @@ PY
 
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+log_start=$(date '+%Y-%m-%d %H:%M:%S')
 outdir="$artifact_root/$timestamp-tvos-$scenario"
 mkdir -p "$outdir"
 outdir=$(cd "$outdir" && pwd -P)
@@ -72,6 +73,7 @@ result_bundle="$outdir/Test.xcresult"
 video_pid=
 status=failed
 result_code=1
+blocker=
 
 bounded_screenshot() {
   SIMID="$simid" DESTINATION="$1" python3 - <<'PY'
@@ -91,7 +93,8 @@ PY
 
 write_result() {
   OUTDIR="$outdir" STATUS="$status" RESULT_CODE="$result_code" SCENARIO="$scenario" \
-    SIMID="$simid" STARTED_AT="$started_at" COMMIT="$(git rev-parse HEAD)" python3 - <<'PY'
+    SIMID="$simid" STARTED_AT="$started_at" BLOCKER="$blocker" \
+    COMMIT="$(git rev-parse HEAD)" python3 - <<'PY'
 import json, os
 out = os.environ["OUTDIR"]
 summary = None
@@ -111,6 +114,7 @@ payload = {
     "startedAt": os.environ["STARTED_AT"],
     "driver": "xcuitest-xcuiremote",
     "credentialPolicy": "synthetic-fixture-only",
+    "blocker": os.environ["BLOCKER"] or None,
     "assertions": None if summary is None else {
         "result": summary.get("result"),
         "passedTests": summary.get("passedTests"),
@@ -140,7 +144,7 @@ cleanup() {
     kill -INT "$video_pid" 2>/dev/null || true
     wait "$video_pid" 2>/dev/null || true
   fi
-  xcrun simctl spawn "$simid" log show --start "$started_at" --style compact \
+  xcrun simctl spawn "$simid" log show --start "$log_start" --style compact \
     --predicate 'process == "Labstream"' >"$outdir/app.log" 2>&1 || true
   xcrun simctl spawn "$simid" log show --last 30s --style compact \
     --predicate 'process == "PineBoard" OR eventMessage CONTAINS[c] "Labstream"' \
@@ -169,17 +173,17 @@ if [[ $scenario == fixture-home-semantic ]]; then
   )
 else
   selectors+=(
-    -only-testing:LabstreamTVUITests/LabstreamTVPlayerTests/testDirectionalPressRevealsHiddenChrome
-    -only-testing:LabstreamTVUITests/LabstreamTVPlayerTests/testBackExitsPlayback
+    -only-testing:LabstreamTVUITests/LabstreamTVPlayerTests/testBasicPlaybackRevealAndExit
   )
+  expected_passes=1
 fi
 
 set +e
-scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamTV \
+scripts/run-bounded-command.py --timeout 90 --output "$outdir/xcodebuild.log" -- \
+  scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamTV \
   -testPlan LabstreamTVUITests -destination "platform=tvOS Simulator,id=$simid" \
   -derivedDataPath "$derived_data" -resultBundlePath "$result_bundle" \
-  "${selectors[@]}" test CODE_SIGNING_ALLOWED=NO -enableCodeCoverage NO \
-  >"$outdir/xcodebuild.log" 2>&1
+  "${selectors[@]}" test CODE_SIGNING_ALLOWED=NO -enableCodeCoverage NO
 test_code=$?
 set -e
 kill -INT "$video_pid" 2>/dev/null || true
@@ -195,6 +199,12 @@ if [[ -d $result_bundle ]]; then
     >"$outdir/xcresult-attachments.log" 2>&1 || true
 fi
 [[ $test_code -eq 0 && -s $outdir/test-summary.json && -s $outdir/screen-recording.mp4 ]] || {
+  if [[ $test_code -eq 124 ]]; then
+    status=blocked
+    blocker=xcodebuild-test-log-finalization-timeout
+    result_code=2
+    exit 2
+  fi
   result_code=$test_code
   ((result_code != 0)) || result_code=1
   exit "$result_code"

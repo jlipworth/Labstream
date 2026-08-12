@@ -83,6 +83,7 @@ PY
 
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
 started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+log_start=$(date '+%Y-%m-%d %H:%M:%S')
 outdir="$artifact_root/$timestamp-$platform-$scenario-$backend"
 mkdir -p "$outdir"
 outdir=$(cd "$outdir" && pwd -P)
@@ -183,7 +184,7 @@ cleanup() {
     kill -INT "$video_pid" 2>/dev/null || true
     wait "$video_pid" 2>/dev/null || true
   fi
-  xcrun simctl spawn "$simid" log show --start "$started_at" --style compact \
+  xcrun simctl spawn "$simid" log show --start "$log_start" --style compact \
     --predicate 'process == "Labstream"' >"$outdir/app.log" 2>&1 || true
   xcrun simctl spawn "$simid" log show --last 30s --style compact \
     --predicate 'process == "SpringBoard" OR eventMessage CONTAINS[c] "Labstream"' \
@@ -209,11 +210,12 @@ if [[ $scenario == fixture-detail-semantic ]]; then
     >"$outdir/record-video.log" 2>&1 &
   video_pid=$!
   set +e
-  scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamMobile \
+  scripts/run-bounded-command.py --timeout 300 --output "$outdir/xcodebuild.log" -- \
+    scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamMobile \
     -testPlan LabstreamTests -destination "platform=iOS Simulator,id=$simid" \
     -derivedDataPath "$derived_data-ui" -resultBundlePath "$test_result" \
     -only-testing:LabstreamMobileUITests/LabstreamMobileFixtureUITests/testFixtureHomeOpensDetailSemantically \
-    test CODE_SIGNING_ALLOWED=NO -enableCodeCoverage NO >"$outdir/xcodebuild.log" 2>&1
+    test CODE_SIGNING_ALLOWED=NO -enableCodeCoverage NO
   test_code=$?
   set -e
   kill -INT "$video_pid" 2>/dev/null || true

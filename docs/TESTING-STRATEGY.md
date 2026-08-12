@@ -233,7 +233,8 @@ scripts/agent-sim-run.sh launch-fixture-home-passive
 ```
 
 Simulator runners refuse a foreign booted device and require an explicit lease assertion where
-applicable. Mobile and TV semantic scenarios retain XCTest attachments and result bundles in
+applicable. Their Xcode invocations also have a platform-specific wall-clock bound, including
+result-log finalization. Mobile and TV semantic scenarios retain XCTest attachments and result bundles in
 addition to video, screenshots, logs, and `run.json`. macOS uses semantic Accessibility against an
 isolated development identity. visionOS remains passive/probe-first because Xcode 27 Device
 Interaction does not support its simulator; gaze, pinch-drag, immersive, and hardware-only checks
