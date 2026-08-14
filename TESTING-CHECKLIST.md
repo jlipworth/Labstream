@@ -93,8 +93,10 @@ layout code changed.
 - [ ] Library roots open the correct backend, paging fills sparse grids without duplicate or
       missing cells, prefetch does not reorder content, and pull-to-refresh retains a valid
       state.
-- [ ] With alphabetical sorting, the A–Z rail lands near the requested section and does not
-      cover or steal taps from the last poster column. Nonalphabetical sorts hide it.
+- [ ] With alphabetical sorting on iPhone/iPad (and Mac when that surface is in play), the
+      trailing A–Z rail lands near the requested section and does not cover or steal taps
+      from the last poster column. Nonalphabetical sorts hide it. visionOS and tvOS use the
+      Jump control instead of that trailing rail.
 - [ ] Shows open seasons and seasons open numerically ordered episodes. Multiple physical
       versions of the same visible episode produce one understandable row rather than
       indistinguishable duplicates.
@@ -154,7 +156,7 @@ Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The 
 | Video transcode identifies a normalized codec/profile/resolution/range cause when the server reports one | [ ] | [ ] | [ ] |
 | A numeric quality choice reports a **Labstream-requested** quality cap without claiming unrelated runtime proof | [ ] | [ ] | [ ] |
 | Selected subtitle burn/compatibility explains the active result after selection; it does not duplicate #248's pre-selection warning | [ ] | [ ] | [ ] |
-| No-fallback Dolby Vision guard reports the **Labstream-requested** server tone-map; visual correctness remains a physical Vision Pro gate | [ ] | [ ] | [ ] |
+| No-fallback Dolby Vision: Plex/Jellyfin report the **Labstream-requested** server tone-map; Emby **blocks** Profile 5 instead of requesting a tone-map (a refused/failed open is the correct result). Visual correctness remains a physical Vision Pro gate | [ ] | [ ] | [ ] |
 | Missing/unknown backend reasons degrade to a short unknown explanation without crashing | [ ] | [ ] | [ ] |
 
 - [ ] Export privacy-safe diagnostics for at least one lane per backend. Confirm only the
@@ -320,10 +322,10 @@ claiming background durability.
       row repairs only missing assets without re-downloading media or replacing files already cached
       successfully.
 - [ ] Keep one completed row's poster permanently unavailable through repeated ready/foreground
-      scans. That `(row, poster)` pair is offered for rehydrate at most five times in one process;
-      scans consume offers even when no matching backend session is available, the row's
-      chapter-image kind and posters on other rows retain independent budgets, and a new process
-      receives fresh counts.
+      scans. That `(row, poster)` pair is dispatched for rehydrate at most five times in one
+      process. The budget is charged only immediately before transport; scans and a missing
+      backend session do not consume it. Chapter-image kind and posters on other rows retain
+      independent budgets, and a new process receives fresh counts.
 - [ ] Offline playback works with the server unreachable, persists a local playhead, uses local
       side assets only, and never attempts online timeline reporting.
 - [ ] Relaunch reconciliation demotes missing, truncated, or unplayable files and preserves
@@ -390,8 +392,11 @@ Run the common music rows against Plex and at least one Jellyfin and Emby librar
 - [ ] Mini Player and Now Playing survive normal navigation and route artist/album taps back
       into the Music stack.
 - [ ] Background audio, interruptions, route changes, Control Center/media keys, and artwork
-      work on the physical platform. Starting video pauses music and hands system transport
-      ownership to video; returning to music reclaims it.
+      work on the physical platform. Starting video pauses music. On iOS/iPadOS and macOS,
+      video takes the process-wide system-media lease and returning to music restores it. On
+      visionOS, video uses a scoped `MPNowPlayingSession` and music keeps the process-wide
+      lease; `pauseForVideo()` only parks music commands. tvOS does not publish video Now
+      Playing.
 - [ ] Changing backend/server/user/auth session clears the old queue before any stale track ID
       can resolve against the new session.
 - [ ] Plex music timeline/scrobble updates server progress. Record the current limitation for

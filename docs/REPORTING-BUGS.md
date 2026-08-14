@@ -11,10 +11,12 @@ diagnostic report to make that easy and safe.
 1. **Reproduce with logging on.** In Labstream, open
    **Settings ▸ Diagnostics** and turn on **Enable diagnostic logging**. Then
    make the problem happen once.
-2. **Grab the report.** Tap **Send feedback to developer** to review the redacted
-   report and share it via the system share sheet, **Copy diagnostic report**
-   to copy it to the clipboard, or **Export diagnostic report file** if you want
-   a text file.
+2. **Grab the report.** On visionOS, iPhone, iPad, or Mac, tap **Send feedback to
+   developer** to review the redacted report and share it via the system share
+   sheet, **Copy diagnostic report** to copy it to the clipboard, or **Export
+   diagnostic report file** if you want a text file. On Apple TV, Copy and Export
+   are not compiled in; use **Send feedback to developer** or **Open a GitHub
+   issue** and review the on-screen preview.
 3. **Review it.** The report is redacted for you (see below) — but give it a
    quick read so you're comfortable with what it contains.
 4. **Open a bug.** Go to the
@@ -27,9 +29,9 @@ That's it. The form will also ask for your Labstream version and build
 (**Settings ▸ About**), your OS version, and which backend you use
 (Plex / Jellyfin / Emby).
 
-If you are testing the local-build Mac or tvOS development preview, say so explicitly and include
-macOS or tvOS as the platform. These previews are not released support targets, but reproducible
-source-build reports are still useful.
+If you are testing the local-build Mac development preview or the in-development Apple TV
+target, say so explicitly and include macOS or tvOS as the platform. These are not released
+support targets, but reproducible source-build reports are still useful.
 
 ## What's in the diagnostic report — and what isn't
 

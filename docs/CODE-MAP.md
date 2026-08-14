@@ -3,7 +3,8 @@
 Use this as the current “where do I change X?” guide. App lifecycle, UI, and most live
 orchestration live in `Labstream/`; reusable requests, models, and policies live in
 `PMSKit/`. PMSKit is mostly pure, with narrow effectful infrastructure such as its
-loopback media-session proxy and protected credential-artifact writer.
+MediaBrowser request executor, loopback media-session proxy, diagnostic ring
+buffer, and protected credential-artifact writer.
 
 The directory names below are the stable first stop. Use symbol search and the ownership
 tables in the subsystem pages for current file-level detail; a duplicated per-file diagram
@@ -26,7 +27,9 @@ would become stale as implementations move.
 - `Labstream/Shared/App/ContentView.swift` registers system routing, runs the one-time restore,
   and switches between restore, login, and browse states.
 - `Labstream/Capabilities/Downloads/App/AppDelegate.swift` bridges iOS/visionOS background URLSession relaunch
-  events; `MacAppDelegate.swift` owns the small native Mac lifecycle adapter.
+  events. `Labstream/Platforms/macOS/App/MacAppDelegate.swift` owns Mac launch, reopen, and
+  window presentation; it is not a Downloads session adapter and does not handle UIKit
+  background URLSession relaunch.
 - `Labstream/Shared/App/PlatformClientIdentity.swift` maps the target to its Plex client/device
   identity.
 
@@ -66,8 +69,10 @@ not necessarily the backend currently visible in the UI.
 
 ## Browse, paging, search, and artwork
 
-- `PMSKit/Sources/PMSKit/Models/PlexBrowseRequest.swift` contains pure Plex browse request
-  builders; `Labstream/Shared/Backend/PlexBrowseAPI.swift` is their source-compatible app facade.
+- `PMSKit/Sources/PMSKit/Models/PlexBrowseRequest.swift` contains hubs, search, and metadata
+  browse builders. Video-library section pages, filters, and sorts use
+  `PMSKit/Sources/PMSKit/PlexLibraryBrowseRequest.swift`.
+  `Labstream/Shared/Backend/PlexBrowseAPI.swift` is the source-compatible app facade over both.
   `Labstream/Shared/Backend/PlexBrowseService.swift` pins one immutable Plex session and owns
   execution. Its `PlexBrowseResponseExecutor` moves JSON decoding and normalized-result mapping off
   the main actor while preserving the existing MainActor transport callback and typed errors.
@@ -109,8 +114,10 @@ not necessarily the backend currently visible in the UI.
   single four-request ceiling and runs one failed-key-only retry while preserving successful and
   empty-success rails; only a complete, non-degraded result pins Home's loaded identity. Plex
   remains on native `/hubs`.
-  `HomeRailArtworkPolicy` classifies synthetic Primary artwork as portrait and Thumb/Backdrop as
-  landscape so Home request dimensions match the selected source instead of reshaping it.
+  `PMSKit/Sources/PMSKit/UI/HomeRailArtworkPolicy.swift` classifies MediaBrowser synthetic
+  Primary artwork as portrait and Thumb/Backdrop as landscape so Home request dimensions match
+  the selected source instead of reshaping it. The policy applies to Jellyfin and Emby Home,
+  not Emby alone.
 - `Labstream/Shared/UI/LibraryGridView.swift` owns library roots and the shared sparse grid;
   `LibraryAlphabetRail.swift` owns the A–Z interaction.
 - `Labstream/Shared/UI/ContainerBrowserView.swift` handles show/season child navigation and
@@ -159,8 +166,9 @@ root Plex request files such as `PlexRequest.swift` and `PlexPhotoTranscode.swif
   shared repositories/services and connects browse-session, music, system-entry, and Cinema-return
   events to `RootNavigationCoordinator.swift`.
 - `Labstream/Shared/UI/RootNavigationCoordinator.swift` owns destination selection, online/music
-  paths, Search return/focus transitions, exact-session system-entry routing, and the offline Cinema
-  return focus key. `BrowseNavigationStack.swift` is the repeated session-keyed stack/push boundary.
+  paths, Search return/focus transitions, exact-session system-entry routing, music Now Playing
+  presentation state, and the offline Cinema return focus key.
+  `BrowseNavigationStack.swift` is the repeated session-keyed stack/push boundary.
 - `Labstream/Platforms/visionOS/UI/VisionRootShell.swift`,
   `Labstream/Platforms/Mobile/UI/MobileRootShell.swift`,
   `Labstream/Platforms/macOS/UI/MacRootShell.swift`, and
@@ -186,7 +194,9 @@ are backend-scoped and cross-backend.
   shared item-observation, transport, diagnostics, seek, chapter, and chrome-facing state for
   Plex streams, negotiated Jellyfin/Emby streams, and local files. Source negotiation,
   reopen/progress callbacks, track behavior, retry mechanics, and server cleanup remain
-  lane-specific.
+  lane-specific. `PlaybackSessionSource.swift` is the typed construction lane;
+  `PlaybackRestartIntent.swift` owns reason-specific in-place restart plans;
+  `HLSStartupHardening.swift` owns `HLSSessionPrewarmer`.
 - `Labstream/Shared/Player/CustomPlayerView.swift` is the shipping windowed player presenter and
   hosts an `AVPlayerLayer` plus `CustomPlayerChrome`; `Labstream/Platforms/visionOS/Player/CustomCinemaMode.swift`
   owns the separate immersive presenter for the same live controller.
@@ -199,6 +209,9 @@ are backend-scoped and cross-backend.
 - `Labstream/Shared/Player/PlaybackDiagnostics.swift`,
   `PlaybackController+Diagnostics.swift`, `PlaybackHDRProbe.swift`, and
   `StatsForNerdsView.swift` own runtime diagnostics surfaces.
+  `PMSKit/Sources/PMSKit/Models/PlaybackExplanation.swift` owns the compact Stats **Why**
+  lane, at-most-two reasons, and provenance. `DolbyVisionGuard.swift` and
+  `CaptionAppearance.swift` own the P5 safety gate and caption-profile preview.
 - `Labstream/Shared/Player/TrickPlayThumbnailProviders.swift` owns remote and local Plex BIF,
   Jellyfin tile, and Emby chapter thumbnail providers; `Labstream/Shared/Support/CostBoundedLRU.swift`
   owns the cost-and-entry cache bound shared by trick-play and artwork memory caches.
@@ -235,9 +248,14 @@ upstream connection rotation used by `PlaybackController`.
 
 ## Cinema
 
-- `Labstream/Platforms/visionOS/Player/CustomCinemaMode.swift` is the user-visible visionOS Custom Cinema
-  implementation. It reuses the live `PlaybackController` and custom player chrome in an
-  immersive space and is absent from non-vision products at compile time.
+- `Labstream/Platforms/visionOS/App/Labstream.swift` owns the app-lifetime
+  `CustomCinemaSessionStore` that retains the live controller across window dismiss / Cinema
+  present. `Labstream/Platforms/visionOS/Player/CustomCinemaMode.swift` is the user-visible
+  immersive presenter for that retained controller and is absent from non-vision products at
+  compile time.
+- `Labstream/Platforms/visionOS/Player/CinemaTransitionCoordinator.swift` and
+  `CinemaTransitionPolicy.swift` own generation-fenced open/appear/detach/dismiss/disappear
+  transitions. Do not re-home the controller on the ImmersiveSpace view.
 - `Labstream/Platforms/visionOS/Player/CinemaAppRouting.swift` is the small app-action adapter between PMSKit's
   pure Cinema exit decision and the visionOS system-entry router. Its deterministic suite is now
   visionOS-only; the assertions are preserved but honestly remain unexecuted until the planned
@@ -259,14 +277,15 @@ upstream connection rotation used by `PlaybackController`.
 - `DownloadManager+Jellyfin.swift` owns Jellyfin original/transcode/remux behavior.
 - `DownloadManager+Emby.swift` and `DownloadManager+EmbyConvert.swift` own Emby source,
   remux, and Convert behavior.
-- `DownloadManager+SideCache.swift` caches posters, subtitles, chapters, Plex BIF, and
-  Jellyfin trick-play assets through `DownloadSideAssetService.swift`, which owns validated
-  off-main repair inventory/preparation and exact resource admission.
+- `DownloadManager+SideCache.swift` caches posters, subtitles, chapters, Plex BIF, Emby BIF,
+  Emby text subtitles, and Jellyfin trick-play assets through `DownloadSideAssetService.swift`,
+  which owns validated off-main repair inventory/preparation and exact resource admission.
 - `DownloadPlanningRequestExecutor.swift` is the injected nonpersistent request boundary for
   `DownloadItemPlanner`; same-origin 307/308 redirects preserve method/body/headers and every other
   redirect is rejected.
-- `DownloadOptionsModel.swift` owns typed option resolution; season planning captures immutable
-  drafts and exact retry attempts before one atomic Store transaction.
+- `DownloadOptionsModel.swift` owns typed per-item option resolution for the download sheet.
+  `DownloadManager+SeasonPlanner.swift` and `SeasonDownloadPlannerSheet.swift` own immutable
+  season drafts and the one atomic Store commit of new rows plus retry markers.
 - `DownloadTransferStartPlan.swift` is the common backend-to-transfer handoff contract.
 - `Labstream/Capabilities/Downloads/Core/BackgroundDownloadSession.swift` owns URLSession delegates,
   reattachment, progress, validation, background-wake release effects, and durable static
@@ -313,10 +332,12 @@ the documented foreground substitute.
   global MediaPlayer state independently of video.
 - `MusicLibraryView.swift`, `MediaBrowserMusicView.swift`, `MusicPagedGrid.swift`, and
   the album/artist/playlist detail views own presentation.
-- `MiniPlayerBar.swift` and `NowPlayingView.swift` are the compact/full playback surfaces;
-  `RootView.swift` owns their shared presentation state and app-owned visionOS backdrop
-  so a surround tap and the explicit leading-edge close control use the same dismissal
-  path without activating obscured content.
+- `MiniPlayerBar.swift` and `NowPlayingView.swift` are the compact/full playback surfaces.
+  `RootNavigationCoordinator.nowPlayingPresentation` owns shared presentation state;
+  `VisionRootShell` owns the app-owned visionOS backdrop and `VisionNowPlayingPanel` so a
+  surround tap and the explicit leading-edge close control use the same dismissal path
+  without activating obscured content. `RootView` only forwards artist/album navigation
+  requests.
 - `PMSKit/Sources/PMSKit/Music/` contains Plex music request builders and pure queue
   mutation behavior.
 

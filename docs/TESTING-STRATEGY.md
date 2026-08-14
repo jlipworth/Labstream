@@ -253,9 +253,13 @@ repeatable sweep:
 scripts/validate-macos-228.sh
 ```
 
-The script retains its issue-era filename, and combines static identity checks, a Mac host build,
-shared-platform compile coverage, focused diagnostics tests, and a bounded launch smoke through
-`scripts/smoke-macos-host.sh`. It does not prove real backend auth, subjective UI behavior,
+The script retains its issue-era filename. It combines static identity checks, a Mac host
+build, extra visionOS and iPhone `xcodebuild` compile steps against this worktree's concrete
+simulator IDs (those `id` lookups may provision sims; this is not a leased simulator test
+run and must not be treated as one), focused PMSKit diagnostics tests
+(`DiagnosticLoggingTests` only), and a bounded launch smoke through
+`scripts/smoke-macos-host.sh`. Shut down any simulator it left booted before another leased
+turn. It does not prove real backend auth, subjective UI behavior,
 media-key ownership, live playback, or background-download durability. See
 [macOS development preview](MACOS.md) for host identity and cleanup rules.
 
@@ -270,13 +274,17 @@ Use real hardware for behavior the simulator cannot prove reliably. Follow the c
 [iPhone/iPad install](DEVELOPMENT.md#physical-iphone-or-ipad-install) procedure first. Use Apple
 Vision Pro for visionOS media-plane and immersive/Cinema checks; use physical iPhone/iPad hardware
 for mobile background playback, PiP/AirPlay, cellular-transfer policy, Control Center/lock-screen
-behavior, and App Intents/Spotlight invocation.
+behavior, and App Intents/Spotlight invocation. Physical Apple TV is still required for Siri
+Remote, HDR, HDMI, audio-route, and long-play cells in [TVOS.md](TVOS.md) and the manual
+checklist; there is no `deploy-tvos` helper yet, so those cells stay open until a physical
+deploy/acceptance path exists. Simulator evidence cannot close them.
 
 - AVPlayer media-plane rendering, especially on Apple Vision Pro;
 - immersive/Cinema presentation on visionOS;
 - background, locked, off-head, and cellular download scheduling;
 - audio route/interruption behavior;
-- Spotlight, Shortcuts, and App Intents end-to-end.
+- Spotlight, Shortcuts, and App Intents end-to-end;
+- physical Apple TV remote, HDR/HDMI, and audio-route behavior (blocked until a deploy path exists).
 
 For the Mac development preview, use a real signed-in host session for keyboard/fullscreen
 behavior, menu commands, system media keys, live playback, and download reconciliation. Keep that

@@ -4,7 +4,7 @@
 [![visionOS 26](https://img.shields.io/badge/visionOS-26-black.svg)](https://developer.apple.com/visionos/)
 [![iOS 26.1+](https://img.shields.io/badge/iOS-26.1%2B-black.svg)](https://developer.apple.com/ios/)
 [![iPadOS 26.1+](https://img.shields.io/badge/iPadOS-26.1%2B-black.svg)](https://developer.apple.com/ipados/)
-[![tvOS 26 preview](https://img.shields.io/badge/tvOS-26%20development%20preview-lightgrey.svg)](docs/TVOS.md)
+[![tvOS 26 in development](https://img.shields.io/badge/tvOS-26%20in%20development-lightgrey.svg)](docs/TVOS.md)
 [![macOS 26 preview](https://img.shields.io/badge/macOS-26%20development%20preview-lightgrey.svg)](docs/MACOS.md)
 [![Swift 6](https://img.shields.io/badge/Swift-6-orange.svg)](https://www.swift.org/)
 [![Xcode 27](https://img.shields.io/badge/Xcode-27-blue.svg)](https://developer.apple.com/xcode/)

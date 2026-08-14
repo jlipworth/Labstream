@@ -45,7 +45,7 @@ flowchart TD
 ```mermaid
 stateDiagram-v2
   accTitle: Persisted download row states
-  accDescr: A persisted row begins queued, may prepare a server-side file, and downloads bytes. Interruption can pause it, errors can fail it, and validation ends as complete or unverified when the file is retained but the local playback probe is inconclusive.
+  accDescr: A persisted row begins queued. Emby Convert is the only route that serializes preparing. Plex optimize stays queued until the static handoff. Bytes download next. Interruption can pause a row, errors can fail it, and validation ends as complete or unverified when the file is retained but the local playback probe is inconclusive.
   state "queued" as Queued
   state "preparing" as Preparing
   state "downloading" as Downloading
@@ -54,7 +54,7 @@ stateDiagram-v2
   state "complete" as Complete
   state "unverified" as Unverified
   [*] --> Queued
-  Queued --> Preparing: server prep needed
+  Queued --> Preparing: Emby Convert job
   Queued --> Downloading: transfer starts
   Preparing --> Downloading: prepared source ready
   Preparing --> Paused: recoverable interruption
@@ -69,10 +69,15 @@ stateDiagram-v2
   Unverified --> [*]
 ```
 
-These labels are the serialized `DownloadStatus` values, not UI-only phases. In particular,
-there is no persisted `verifying` state: finalization transitions the active `downloading` row
-to `complete`, `unverified`, or `failed`. Both terminal success states retain the local file;
-`unverified` records that the startup probe could not prove playability.
+These labels are the serialized `DownloadStatus` values, not UI-only phases. `.preparing` is
+Emby Convert only: that row carries a server-side Sync job and launch reconciliation keeps
+polling it. Plex optimizer rows stay `.queued` until they hand off to a static transfer;
+recovery and pause treat that Plex prep as queued server-prep, not `.preparing`. In particular,
+there is no persisted `verifying` state: finalization rewrites HEVC `hev1` to `hvc1` and then
+transitions the active `downloading` row to `complete`, `unverified`, or `failed`. Both
+terminal success states retain the local file; `unverified` records that the startup probe
+could not prove playability. The opaque and static-range pipelines share that completion
+path.
 
 ## Background downloads and sleeping devices
 
@@ -213,6 +218,9 @@ User-facing expectations worth setting (the "downloads disclaimer"):
 | Backend-specific manager extensions | Plex/Jellyfin/Emby route setup and server-prep polling. |
 | `BackgroundDownloadSession` | URLSession tasks, segment-train enqueue/refill, transfer callbacks, finalization, and wake-release effects. |
 | `BackgroundDownloadWakeCoordinator` | Locked background-completion gate, atomic deferred-revalidation keys, and range-rebuild grace generations. |
+| `DownloadManager+SeasonPlanner` and `SeasonDownloadPlannerSheet` | Immutable season drafts and one atomic Store commit of new rows plus retry markers. |
+| `DownloadOptionsModel` | Typed per-item option resolution for the download sheet; it does not own season planning. |
+| `DownloadVolumeFreeSpace` | Purgeable-inclusive free-space measurement used by storage-full parking. |
 | `DownloadStore` | Schema-v4 index state, exact-attempt mutation admission, and transactional artifact state. |
 | `DownloadArtifactLifecycleCoordinator` and file-effect seams | Order attempt-scoped resume/checkpoint/promotion/deletion work with its terminal persistence outcome. |
 | `DownloadWorkRegistry` | Attempt-scoped side-cache and encoder-task ownership. |
@@ -271,7 +279,10 @@ transport, recovery work, persistence barriers, or background-completion durabil
   next eligible waiter. Playlist repair audits every locally referenced tile. Successful promotion,
   including a same-path replacement, advances the side-asset generation so byte accounting and
   storage-cap snapshots cannot retain stale cache values;
-- keeps completed media available without requiring the source server to be reachable.
+- keeps completed media available without requiring the source server to be reachable;
+- treats sign-out of a backend as a resumable pause of that backend's active rows. Records
+  and files stay; `DownloadManager.pauseDownloadsForBackendSignOut` runs while credentials
+  still exist so encoder teardown can use the right session. This is not cancel or delete.
 
 Season confirmation captures one immutable draft containing new rows and exact retry attempts. The
 Store validates every owner and commits insertions plus retry admission markers in one schema-v4

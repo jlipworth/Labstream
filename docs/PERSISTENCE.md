@@ -5,10 +5,10 @@ Labstream uses separate storage layers for secrets, preferences, and offline med
 ```mermaid
 flowchart TD
   accTitle: Persistence boundaries
-  accDescr: Credentials and client identity live in Keychain, preferences in UserDefaults, and offline media plus bounded diagnostic artifacts in Application Support.
+  accDescr: Credentials and client identity live in Keychain, preferences in UserDefaults, and offline media including durable held range bodies plus bounded diagnostic artifacts in Application Support.
   Keychain[Keychain] --> Sessions[Credentials, client identity, backend session selection]
   Defaults[UserDefaults] --> Prefs[Settings and lightweight state]
-  Support[Application Support] --> Downloads[Offline files, index, resume blobs, side assets]
+  Support[Application Support] --> Downloads[Offline files, index, resume blobs, held segments, side assets]
   Support --> Diagnostics[Bounded opt-in diagnostic files]
 ```
 
@@ -60,13 +60,18 @@ Use token-free, hashed, or backend-scoped identifiers when preferences need to b
 `Application Support/Labstream` stores:
 
 - `Downloads/index.json`, downloaded media, durable partials, protected URLSession resume
-  blobs, and cached posters/subtitles/trick-play/chapter assets;
+  blobs, completed held range bodies (`*.range-held-*` files manifested as
+  `heldRangeSegments`), and cached posters/subtitles/trick-play/chapter assets;
 - bounded, rotated, already-redacted diagnostic JSONL files when diagnostic logging is
   enabled.
 
-The app container's temporary directory also holds short-lived range-response and
-out-of-order segment stashes. They are transfer intermediates, not durable index state, and
-are consumed or swept rather than relied on across relaunch.
+Split in-flight staging from durable held bodies. The app container's temporary directory
+holds short-lived `vp-range-body-*` staging files for in-flight range responses; those
+intermediates are consumed or swept and are not relaunch-authoritative. Completed
+out-of-order segments are written under Downloads as `*.range-held-*` files and persisted
+on the row as `heldRangeSegments`. They may be rehydrated across relaunch only when their
+exact attempt, length, and validator checks still match; mismatches fail closed and
+re-fetch. Do not treat held bodies as disposable temp files.
 
 The download index is currently a schema-v4 versioned envelope. Schemas 1–3 are no longer
 migrated: startup probes without mutating the root, drains every old OS task, moves the opaque

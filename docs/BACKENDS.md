@@ -103,18 +103,19 @@ distinct. In particular:
 - A user-entered MediaBrowser base path such as `/emby` is part of server identity and must
   survive normalization and relative-stream URL resolution.
 
-Plex remains a separate request family. Pure native browse builders now live in
-`PlexBrowseRequest`; the app's `PlexBrowseService` pins an immutable Plex session and owns
+Plex remains a separate request family. Hubs, search, and metadata builders live in
+`PlexBrowseRequest`; video-library section pages, filters, and sorts live in
+`PlexLibraryBrowseRequest`. The app's `PlexBrowseService` pins an immutable Plex session and owns
 browse execution. Its transport callback retains the existing MainActor isolation, while a
 Sendable executor performs JSON decoding and response normalization off the main actor with
 cancellation fences. Other Plex request descriptors, canonical response DTOs,
 timeline, optimizer, and universal-transcode APIs remain spread across the root PMSKit
 folders rather than a `Plex/` directory.
 
-For Emby Home artwork, synthetic season/series Primary sources are treated as portrait posters;
-Thumb and Backdrop fallbacks retain 16:9 request and presentation geometry. Automated policy,
-request, mapping, and hosted checks cover this fix; GitHub issue #245 was verified on
-physical iPhone/Emby and closed (see commit 82025875).
+For MediaBrowser Home artwork (Jellyfin and Emby), synthetic season/series Primary sources are
+treated as portrait posters; Thumb and Backdrop fallbacks retain 16:9 request and presentation
+geometry. Automated policy, request, mapping, and hosted checks cover this; GitHub issue #245
+was the Emby/iPhone verification of that shared policy and is closed (see commit 82025875).
 
 ## Package boundary
 

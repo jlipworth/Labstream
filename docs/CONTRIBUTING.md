@@ -41,7 +41,8 @@ updating a PR. For app-owned changes, also run the affected host-app unit suite(
 through the `LabstreamMobile` scheme on an iOS simulator, `LabstreamMacTests` through the
 `LabstreamMac` scheme on the host, and/or `LabstreamTVTests` (with `LabstreamTVUITests`) through
 the `LabstreamTV` scheme on a tvOS simulator. Exact commands and test-plan names are in
-[Development setup](DEVELOPMENT.md). Shared app infrastructure should exercise both hosts; these
+[Development setup](DEVELOPMENT.md). Shared app infrastructure should exercise all affected
+hosts (iOS, macOS, and tvOS); these
 tests supplement rather than replace the affected app build and
 [observable simulator smoke](DEVELOPMENT.md#install-and-observe-a-simulator-smoke).
 
