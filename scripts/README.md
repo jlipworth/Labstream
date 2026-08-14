@@ -200,6 +200,8 @@ scripts/perf-compare.py compare \
   `LABSTREAM_SIM_PLATFORM`, or a gitignored `.simplatform` file (`iphonewt-*`/`.simid-iphone`,
   `ipadwt-*`/`.simid-ipad`, `tvwt-*`/`.simid-tvos`). Resolve a concrete ID and never
   target `booted`.
+- `run-bounded-command.py` — wall-clock timeout wrapper used by the mobile and tvOS agent
+  runners so a hung `xcodebuild` or simctl step cannot run unbounded.
 - `agent-sim-run.sh` — bounded visionOS agent scenarios with build/install/launch, screenshots,
   video, logs, and a machine-readable run result. Prefer `launch-fixture-home-passive` for a
   credential-free browse surface.

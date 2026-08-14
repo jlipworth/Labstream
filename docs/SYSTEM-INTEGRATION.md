@@ -3,7 +3,10 @@
 Labstream integrates with Apple system surfaces through one routing layer so external entry points
 behave like normal in-app navigation. The implementation is shared by the visionOS and mobile
 targets and reused by the Mac development preview where the platform surface is available;
-end-to-end validation remains platform-specific.
+end-to-end validation remains platform-specific. tvOS compiles the shared router and App Intents,
+but Spotlight indexing is a no-op, user-activity Spotlight handoff is compiled out, SharePlay and
+Cinema are absent, and video Now Playing is not published through the iOS/Mac lease or the
+visionOS `MPNowPlayingSession` path.
 
 ```mermaid
 flowchart TD

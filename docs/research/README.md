@@ -24,8 +24,10 @@ When the investigation resolves:
 ## Active research notes
 
 - [`2026-07-20-tvos-screen-audit.md`](2026-07-20-tvos-screen-audit.md) — exhaustive tvOS
-  screen/interaction audit for [issue #246](https://github.com/jlipworth/Labstream/issues/246),
-  tracking per-defect status; open items remain (search input, physical-device sweep).
+  screen/interaction audit for [issue #246](https://github.com/jlipworth/Labstream/issues/246).
+  The implementation plan and 2026-07-21 session report are archived; remaining open
+  questions are the physical-remote/keyboard/HDMI/HDR sweep, not the simulator search-keyboard
+  XCTest (that live test passed).
 The evidence-first tvOS session record now lives in
 [`docs/archive/research/2026-07-21-tvos-session-report.md`](../archive/research/2026-07-21-tvos-session-report.md);
 the completed tvOS implementation plan is archived at

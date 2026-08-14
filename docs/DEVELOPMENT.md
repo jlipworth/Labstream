@@ -10,7 +10,7 @@ This page is the shortest path from a clean checkout to a running Labstream buil
 - macOS 26 on an Apple-silicon host when testing the optional `LabstreamMac` development preview.
 - A visionOS 26 or newer Apple Vision Pro simulator runtime compatible with the active Xcode.
 - Swift Package Manager for `PMSKit` tests (included with Xcode).
-- Python 3 and [`uv`](https://docs.astral.sh/uv/getting-started/installation/) for the repository's
+- Python 3.11+ and [`uv`](https://docs.astral.sh/uv/getting-started/installation/) for the repository's
   documentation and Python tooling checks.
 
 ## Bootstrap the first visionOS simulator
@@ -112,6 +112,10 @@ scripts/worktree-sim.sh --platform visionos setup
 ```
 
 Always resolve a concrete UDID with the script rather than targeting `booted`.
+Booted simulators are not free: obtain the current simulator lease, use only one
+simulator at a time, shut it down before switching platforms, and release the lease
+before another agent boots a simulator. Do not leave the golden visionOS simulator
+booted while a linked-worktree simulator is running.
 
 ## Build for the visionOS simulator
 
@@ -171,15 +175,16 @@ If Xcode says the iOS platform/runtime is missing or warns that the deployment t
 the installed SDK, install the matching iOS Simulator runtime/platform in Xcode Settings. A newer
 simulator runtime may not be usable with an older installed iOS SDK.
 
-The visionOS and mobile targets use `com.jlipworth.Labstream` for the intended unified product
-identity. Local installs with that bundle identifier can replace an existing install and its app
-state.
+The visionOS, mobile, and tvOS targets use `com.jlipworth.Labstream` for the intended unified
+product identity. Local installs with that bundle identifier can replace an existing install
+and its app state, including a TV install replacing a visionOS or mobile simulator login.
 
 Debug mobile builds also accept the credential-free browse fixture described in the tvOS section
 below. For a bounded agent smoke that builds, installs, launches, records screenshots/video/logs,
 and shuts down the leased simulator, use:
 
 ```sh
+scripts/agent-sim-run.sh <scenario> --allow-simulator   # visionOS named runner
 scripts/agent-mobile-run.sh iphone fixture-home-passive --allow-simulator
 # Use `ipad` to exercise the regular-width layout.
 ```
@@ -353,7 +358,8 @@ uv run --with-requirements requirements.txt mkdocs build --strict
   `LabstreamTVUITests.xctestplan` isolates deterministic authentication and the initial
   remote-only Home-to-detail browse journey so unrelated hosted sources cannot block UI execution.
 
-Run the app suite for the platform affected by a change (both for shared app infrastructure):
+Run the app suite for the platform affected by a change (all three hosts — iOS, macOS,
+and tvOS — for shared app infrastructure):
 
 For a deterministic smoke, affected-platform, or full plan, use the checked
 [`native-test-matrix.py`](TESTING-STRATEGY.md#native-apple-matrix-driver) driver. The commands below

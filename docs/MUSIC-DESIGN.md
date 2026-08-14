@@ -88,13 +88,16 @@ progress or scrobble; do not claim otherwise in backend or playback documentatio
 The controller acquires a music lease from the shared `SystemMediaSessionCoordinator`,
 which publishes track metadata, artwork, duration, playhead, and rate to
 `MPNowPlayingInfoCenter` and installs play/pause/next/previous/scrub handlers on
-`MPRemoteCommandCenter`. Video can temporarily take the process-wide lease; when video
-releases it, the coordinator restores the surviving music owner and republishes its current
-state. Artwork decode values cross the same immutable CGImage-backed `DecodedImage` boundary as
-video; AppKit/UIKit conversion is confined to `MPMediaItemArtwork` and other native framework
-bridges. In-app Now Playing artist/album navigation returns to the Music tab. The current
-Spotlight and App Intent index deliberately excludes music items; those surfaces remain
-video-only. On visionOS, Now Playing uses an app-owned player panel and inert dimmed
-backdrop: its top-leading close control and a tap in the surround both dismiss without
-stopping playback or activating the obscured browse UI; Stop remains a distinct trailing
-playback action.
+`MPRemoteCommandCenter`. On iOS/iPadOS and macOS, video temporarily takes that process-wide
+lease; when video releases it, the coordinator restores the surviving music owner and
+republishes its current state. visionOS video must not take this lease: it uses a
+playback-scoped `MPNowPlayingSession` instead. Music still holds the process-wide lease on
+visionOS; `pauseForVideo()` only parks music commands. tvOS does not publish video Now
+Playing through either path. Artwork decode values cross the same immutable CGImage-backed
+`DecodedImage` boundary as video; AppKit/UIKit conversion is confined to `MPMediaItemArtwork`
+and other native framework bridges. In-app Now Playing artist/album navigation returns to
+the Music tab. The current Spotlight and App Intent index deliberately excludes music items;
+those surfaces remain video-only. On visionOS, Now Playing uses an app-owned player panel
+and inert dimmed backdrop: its top-leading close control and a tap in the surround both
+dismiss without stopping playback or activating the obscured browse UI; Stop remains a
+distinct trailing playback action.

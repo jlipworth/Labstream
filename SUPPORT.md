@@ -3,8 +3,9 @@
 Labstream is a native Apple-platform client for **your own Plex Media Server, Jellyfin server, or Emby server**.
 
 The supported product paths documented here are Apple Vision Pro, iPhone, and iPad. The source
-repository also contains native Mac and tvOS targets as local-build development previews; they are
-not yet released or supported App Store products. Contributors testing those previews should use
+repository also contains a native Mac local-build development preview and an in-development
+streaming-only Apple TV target; neither is a released or supported App Store product.
+Contributors testing those targets should use
 the [Mac development documentation](https://github.com/jlipworth/Labstream/blob/main/docs/MACOS.md)
 and [tvOS documentation](https://github.com/jlipworth/Labstream/blob/main/docs/TVOS.md).
 
@@ -45,8 +46,9 @@ The fastest path is the [bug report form](https://github.com/jlipworth/Labstream
 See the [bug reporting guide](https://github.com/jlipworth/Labstream/blob/main/docs/REPORTING-BUGS.md)
 for the step-by-step flow, including what the diagnostic report does and does not include.
 
-Open an issue with steps to reproduce, your device type (Apple Vision Pro, iPhone, iPad, or Mac
-development preview), OS version, and the app version from **Settings ▸ About**:
+Open an issue with steps to reproduce, your device type (Apple Vision Pro, iPhone, iPad, Mac
+development preview, or in-development Apple TV), OS version, and the app version from
+**Settings ▸ About**:
 
 <https://github.com/jlipworth/Labstream/issues>
 
@@ -56,8 +58,10 @@ diagnostic report if you're comfortable sharing the redacted preview:
 1. Open **Settings ▸ Diagnostics**.
 2. Turn on **Enable diagnostic logging**.
 3. Reproduce the problem once.
-4. Tap **Send feedback to developer**, **Copy diagnostic report**, or
-   **Export diagnostic report file**.
+4. On visionOS, iPhone, iPad, or Mac, tap **Send feedback to developer**,
+   **Copy diagnostic report**, or **Export diagnostic report file**. On Apple TV,
+   Copy and Export are not available; use **Send feedback to developer** or
+   **Open a GitHub issue** and review the on-screen preview.
 5. Review the redacted report before sharing it.
 6. Turn diagnostic logging off again if you no longer need it.
 

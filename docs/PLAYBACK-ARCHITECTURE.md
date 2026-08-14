@@ -21,7 +21,7 @@ already queued for the old item was cancelled.
 ```mermaid
 sequenceDiagram
   accTitle: Backend playback startup
-  accDescr: Jellyfin and Emby negotiate a stream before constructing the playback controller, while Plex lets the controller perform its universal-transcode decision and start requests. Both lanes then load one app-owned AVPlayer and retain lane-specific progress and cleanup.
+  accDescr: Jellyfin and Emby negotiate a stream before constructing the playback controller. Plex either probes a dedicated Direct Play start URL or uses the production universal-transcode decision and start.m3u8. Both lanes then load one app-owned AVPlayer and retain lane-specific progress and cleanup.
   participant UI
   participant Backend
   participant PC as PlaybackController
@@ -34,10 +34,14 @@ sequenceDiagram
     Server-->>Backend: stream URL + session metadata
     Backend-->>UI: negotiated remote stream + callbacks
     UI->>PC: construct with negotiated stream
-  else Plex
+  else Plex Direct Play / Maximum copy
     UI->>PC: construct and start with item + session
-    PC->>Backend: build decision/start requests
-    Backend->>Server: universal-transcode requests
+    PC->>Server: direct-play probe
+    Server-->>PC: copy decision
+    PC->>AV: dedicated direct-play start.m3u8 at 0
+  else Plex capped, HLS-max, burn, or DV-forced
+    UI->>PC: construct and start with item + session
+    PC->>Server: production decision and start.m3u8
     Server-->>PC: decision + stream URL
   end
   PC->>AV: create and replace player item
@@ -47,10 +51,26 @@ sequenceDiagram
 
 ## Plex
 
-Plex playback asks the universal-transcode decision endpoint whether video/audio should be
-played, copied, or transcoded, then loads the resulting `start.m3u8`. Quality settings can
-force a capped transcode; Direct Play / Maximum preserves the user's no-cap/copy intent and
-is not silently converted to a lower-quality transcode after a stall.
+Plex playback uses two start paths. Do not collapse them into a single
+“decision, then production `start.m3u8`” recipe.
+
+1. **Direct Play / Maximum copy.** When the selected quality is Direct Play /
+   Maximum, there is no subtitle burn, and Dolby Vision is not forcing a
+   transcode, the controller first sends `directPlayProbeRequest()`. If PMS will
+   copy video, it commits the dedicated `directPlayStartM3U8URL()`, preflights
+   that playlist, and arms one playback-time fallback to production HLS. That
+   copy-lane start omits `offset=`: the session starts at 0 and the playhead is
+   restored with a client seek. Putting `offset=` on a copy session was observed
+   to emit `#EXT-X-START:TIME-OFFSET` and then abandon the sole variant.
+2. **Production decision / `start.m3u8`.** Capped quality rungs, Maximum (HLS),
+   subtitle burn, and DV-forced transcodes skip the dedicated probe and use the
+   production universal-transcode decision plus `start.m3u8`. Capped transcodes
+   keep `offset=` priming so a deep resume does not wait on an unproduced
+   segment.
+
+Quality settings can force a capped transcode; Direct Play / Maximum preserves
+the user's no-cap/copy intent and is not silently converted to a lower-quality
+transcode after a stall.
 
 The profile and quality parameters are load-bearing. `TranscodeRequest` uses the built-in
 Plex profile name `Generic` plus explicit profile-extra directives. Unknown or missing
@@ -98,13 +118,20 @@ Current invariants:
   Jellyfin/Emby use an 8-second head start only for a transcoded stream with a nonzero resume
   or reopen target; progressive/direct streams and zero-offset remote starts attach without
   that prewarm. All outcomes are soft and AVPlayer still gets a chance to load.
+- After that MediaBrowser transcode prewarm, the controller stands up `MediaSessionProxy` to
+  strip `starttimeticks` from the playlist and inject a playlist start-time offset, then
+  attaches AVPlayer to the loopback URL. If proxy standup fails, it falls back to the original
+  remote URL. Zero-offset and progressive/direct streams skip both the prewarm and the proxy.
 - Failure handling scans the complete error log for the startup-deadline/variant-removal
   codes; a notification can cover more than its last appended event.
 - A startup-deadline abandonment gets at most one automatic warm retry. The allowance is
   re-armed by explicit user intent such as Retry, a quality/audio reload, or a new seek,
   not by a transient `.playing` callback. Exhaustion produces the visible Retry surface.
-- Preparation and reconnect watchdogs bound negotiations or rebuilds that produce neither
-  an AVPlayer failure nor a useful state transition.
+- Preparation and reconnect watchdogs are each 20 seconds. The preparation watchdog covers
+  attach after a poisoned `start.m3u8` that produces neither an AVPlayer failure nor a useful
+  `timeControlStatus` transition. The reconnect watchdog covers in-flight recovery that
+  replaces the player item. Both are progress-deferred so a slow-but-working prime is not
+  false-failed.
 
 ## Buffering and stalls
 
@@ -155,9 +182,10 @@ debounced into one settled final-target rebuild instead of restarting for every 
   replacing an item are suppressed when newer meaningful evidence exists, and terminal reporting
   uses the same typed evidence without regressing to a detached item's transient zero.
 - Track, quality, explicit-Retry, and adaptive-bitrate replacements enter the controller through
-  a typed `PlaybackRestartIntent`. Its value-only `PlaybackRestartPlan` fixes the preparation
-  order (final-target reset, reason-specific recovery reset, startup-deadline re-arm, error
-  handling, observer teardown) instead of letting callers assemble Boolean restart recipes.
+  a typed `PlaybackRestartIntent`. Its value-only `PlaybackRestartPlan` is reason-specific: every
+  intent resets the final target, rearms the startup-deadline retry, and tears down observers;
+  only `.explicitRetry` also clears the visible error and resets ABR. Callers must not assume
+  every restart clears failure state.
 - Every intentional Plex in-place restart that supersedes a transcode (quality/audio
   reload, Retry, or final-target rebuild) stops the old job first with a bounded wait before
   requesting the replacement under the reused session id.
@@ -272,8 +300,10 @@ keeps decoded thumbnails warm across lazy card reuse and releases all pixels whe
 or under memory pressure. Sprite sheets and final scrub previews cross a detached,
 eager ImageIO decode boundary before entering provider or MainActor cache state. A parsed BIF retains
 one backing payload, maps safe offline files, and normal seek lookup copies only the selected frame;
-the source-compatible `frames` accessor materializes all payloads only when explicitly read. Largest-real-BIF and
-tile-sheet peak-RSS validation remains a Phase 5 measurement gate.
+the source-compatible `frames` accessor materializes all payloads only when explicitly read.
+Largest-real-BIF and tile-sheet peak-RSS measurement was a planned Wave 5 gate that the
+operator explicitly elected to forgo; no measurement gate remains outstanding (see
+docs/archive/plans/2026-07-21-simplification-performance.md).
 Those paths use `DecodedImage` at their image boundary, but that conversion is not shared-pipeline
 migration.
 
@@ -283,7 +313,16 @@ The core acquires an identity-guarded video lease on the app-lifetime
 `SystemMediaSessionCoordinator` owned by `MusicPlayerController`. Video temporarily supersedes
 music's Now Playing and remote commands; releasing video restores the most recent surviving music
 owner, and stale artwork or teardown cannot clear a newer owner. visionOS video does not use this
-lease path.
+lease path. tvOS compiles neither `VideoNowPlayingCore` nor the visionOS
+`VideoNowPlayingCoordinator`; it does not publish video Now Playing through either path.
+
+## Playback explanation
+
+Stats for Nerds shows a compact **Why** line from `PlaybackExplanation`: one lane headline and
+at most two useful reasons, with provenance (backend-reported, app-requested, or inferred).
+The normal player must not show raw backend reason arrays, IDs, or URLs. Emby Profile 5 is
+blocked rather than forced through a tone-map, so an Emby no-fallback DV open should refuse; it
+is not a requested tone-map explanation.
 
 ## Cinema ownership
 
@@ -292,7 +331,9 @@ hosts the same `PlayerLayerView` and `CustomPlayerChrome` in one RealityView att
 attachment is scaled from its measured `visualBounds`; hard-coding points-to-meters density
 can make a present and hit-testable surface effectively invisible.
 
-The immersive session owns the active controller. `CinemaTransitionCoordinator` is the sole
+The visionOS `App` retains the active controller in `CustomCinemaSessionStore`. The immersive
+space presents that controller; it does not own it. Dropping the controller when the window
+dismisses is a regression. `CinemaTransitionCoordinator` is the sole
 presentation-transition owner: its pure reducer generation-fences open, appear, window-detach,
 dismiss, and disappear callbacks. Explicit Exit, Crown/system dismissal, EOF, and Up Next all
 converge on one exact-once finalizer ordered as SharePlay leave, controller stop, return routing,

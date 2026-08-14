@@ -60,11 +60,12 @@ The mobile app target/scheme is `LabstreamMobile`; its product/display name is
 `Labstream` and it shares the bundle id `com.jlipworth.Labstream`.
 
 ```sh
-printf 'iphone\n' > .simplatform # gitignored per-worktree default; use ipad for iPad smoke
-SIMID=$(scripts/worktree-sim.sh id)
+PLATFORM=iphone                    # change to ipad for the regular-width path
+printf '%s\n' "$PLATFORM" > .simplatform # gitignored per-worktree default
+SIMID=$(scripts/worktree-sim.sh --platform "$PLATFORM" id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
 
-DD="$PWD/build/DerivedData-mobile"
+DD="$PWD/build/DerivedData-ios-$PLATFORM"
 rm -rf "$DD"
 scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamMobile \
   -destination "platform=iOS Simulator,id=$SIMID" \
@@ -162,15 +163,18 @@ owns the build/install command once signing is unblocked.
 
 ### Verification expectation — a green build is NOT "done"
 
-Compiling is necessary but not sufficient. Any time you change app code — yourself OR via
-a workflow / subagent — use `scripts/native-test-matrix.py affected` to identify the affected
-targets, then headlessly verify the applicable product actually *runs* on **this worktree's own
-simulator** (or through the isolated Mac host path). Resolve the selected platform with
-`scripts/worktree-sim.sh id` or `--platform visionos|iphone|ipad|tvos`; boot it first because
-worktree simulators are created Shutdown, and never target `booted`. The command below is the
-minimum visionOS smoke; use the exact mobile/tvOS equivalents in `docs/DEVELOPMENT.md` for those
-products. Claude self-serves this passive half of the live-testing workflow—do not ask the user
-to do it:
+Compiling is necessary but not sufficient. Before publishing app or docs changes, run the
+canonical core checks from `docs/DEVELOPMENT.md`: hermetic PMSKit tests
+(`swift test --package-path PMSKit --no-parallel --skip 'Live.*ProbeTests'`),
+`scripts/ci-hygiene.sh`, and strict MkDocs. Any time you change app code — yourself OR via
+a workflow / subagent — also use `scripts/native-test-matrix.py affected` to identify the
+affected targets, then headlessly verify the applicable product actually *runs* on **this
+worktree's own simulator** (or through the isolated Mac host path). Resolve the selected
+platform with `scripts/worktree-sim.sh id` or `--platform visionos|iphone|ipad|tvos`; boot it
+first because worktree simulators are created Shutdown, and never target `booted`. The
+command below is the minimum visionOS smoke; use the exact mobile/tvOS equivalents in
+`docs/DEVELOPMENT.md` for those products. Claude self-serves this passive half of the
+live-testing workflow—do not ask the user to do it:
 
 ```sh
 SIMID=$(scripts/worktree-sim.sh --platform visionos id)

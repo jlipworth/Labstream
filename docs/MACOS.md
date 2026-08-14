@@ -130,8 +130,11 @@ the exact staged process it launched and does not read or mutate the production 
 container.
 
 The script retains its issue-era filename for now. It covers static identity checks, the Mac
-build, visionOS and iPhone-simulator builds, focused PMSKit diagnostics tests, and a bounded host
-launch smoke through `scripts/smoke-macos-host.sh`. It does not prove real sign-in, subjective UI
+build, extra visionOS and iPhone `xcodebuild` compile steps against this worktree's concrete
+simulator IDs (those lookups may provision sims; this is not a leased simulator test run),
+focused PMSKit `DiagnosticLoggingTests`, and a bounded host launch smoke through
+`scripts/smoke-macos-host.sh`. Shut down any simulator it left booted before another leased
+turn. It does not prove real sign-in, subjective UI
 quality, live media playback, system media keys, background-download durability, or the full
 app-hosted test plan.
 

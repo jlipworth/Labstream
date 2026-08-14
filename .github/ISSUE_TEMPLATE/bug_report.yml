@@ -102,9 +102,12 @@ body:
       description: >
         In the app, go to **Settings ▸ Diagnostics**, turn on **Enable diagnostic
         logging**, reproduce the problem once, then tap **Send feedback to developer**
-        (or **Copy diagnostic report**) and paste it here. The report is automatically
-        redacted — it omits tokens, client identifiers, hostnames/IP addresses, full
-        URLs, usernames, library paths, filenames, and media titles. See the
+        (or **Copy diagnostic report** on visionOS, iPhone, iPad, or Mac) and paste
+        it here. Copy and Export are not available on Apple TV; use Send feedback
+        or Open a GitHub issue and review the on-screen preview. The report is
+        automatically redacted — it omits tokens, client identifiers, hostnames/IP
+        addresses, full URLs, usernames, library paths, filenames, and media titles.
+        See the
         [Report a bug guide](https://github.com/jlipworth/Labstream/blob/main/docs/REPORTING-BUGS.md)
         for the full walkthrough. Optional, but it greatly speeds up a fix.
       render: text

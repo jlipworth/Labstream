@@ -80,11 +80,11 @@ identifier for that launch; credentials themselves still fail closed. `AppRuntim
 constructs the common long-lived services and the one launch bootstrap:
 
 - `AppModel`: active backend and the three live server/session lanes.
-- `AuthManager`: authentication, restore, backend switching, and Keychain writes.
-- `EmbyConnectAuthFlow`: secret-bearing pending Connect state and Emby server exchange/commit;
-  global attempt admission and polling-task lifetime remain in `AuthManager`.
-- `AuthorizationPollingCoordinator`: exact-attempt ownership and cancellation of the one live
-  Plex PIN, Jellyfin Quick Connect, or Emby Connect polling task.
+- `AuthManager`: authentication, restore, backend switching, and Keychain writes. It privately
+  owns `EmbyConnectAuthFlow` (secret-bearing pending Connect state and Emby server
+  exchange/commit) and `AuthorizationPollingCoordinator` (exact-attempt ownership of the one
+  live Plex PIN, Jellyfin Quick Connect, or Emby Connect polling task). Global attempt
+  admission remains on `AuthAttemptAuthority`.
 - `DownloadManager`: the cross-backend offline queue and transfer orchestration, absent on tvOS.
 - `MusicPlayerController`: the app-lifetime audio queue and player.
 - `SessionBootstrap`: one-time restore and browse-gate state shared across scene recreation.
@@ -94,6 +94,7 @@ constructs the common long-lived services and the one launch bootstrap:
   policies.
 - `ArtworkPipeline`: actor-owned authenticated/local artwork scheduling, joining, and bounded
   memory caches shared by presentation and system-media consumers.
+- `ArtworkShimmerClock`: one app-lifetime, reference-counted placeholder ticker.
 
 Only the visionOS entry point additionally owns the real `CustomCinemaSessionStore` and
 `WatchTogetherCoordinator`; it injects the same live instances into the main window and Custom
@@ -153,13 +154,15 @@ PMSKit primarily owns behavior that can be expressed as input-to-output decision
   policies;
 - state-machine decisions that can be exercised by `swift test`.
 
-There are deliberate package-side exceptions. Examples include the reusable, effectful
-loopback HLS proxy and upstream connection machinery in
-`PMSKit/Sources/PMSKit/MediaSession/`, and the shared protected-file writes in
+There are deliberate package-side exceptions. They include the MediaBrowser
+`URLSession` request executor, the reusable loopback HLS proxy and upstream connection
+machinery in `PMSKit/Sources/PMSKit/MediaSession/`, the locked diagnostic ring buffer, and
+the shared protected-file writes in
 `PMSKit/Sources/PMSKit/Security/CredentialArtifactStorage.swift`.
 These types keep framework effects behind narrow, injectable/testable APIs; they do not
 move SwiftUI, AVPlayer ownership, background-session delegation, or app persistence into
-the package.
+the package. The app still owns background-session delegates and most live URLSession
+work; “all live URLSession execution lives in the app” is not true.
 
 The boundary is not a mandate to erase backend differences. Plex has native hub,
 optimizer, and music behavior; Jellyfin and Emby share MediaBrowser-shaped providers
@@ -168,8 +171,9 @@ details remain explicit.
 
 ## Browse, search, and music
 
-- Pure Plex browse requests are built by `PlexBrowseRequest` in PMSKit (through the small
-  app facade in `Labstream/Shared/Backend/PlexBrowseAPI.swift`). `PlexBrowseService` pins one
+- Pure Plex hubs, search, and metadata requests are built by `PlexBrowseRequest` in PMSKit.
+  Video-library section pages, filters, and sorts use `PlexLibraryBrowseRequest`. The small
+  app facade in `Labstream/Shared/Backend/PlexBrowseAPI.swift` covers both. `PlexBrowseService` pins one
   immutable backend session and client identity, retains transport isolation through the shared
   `PlexClient`, and moves response decoding and normalization off the main actor before returning
   completed values to its MainActor callers.
