@@ -21,7 +21,7 @@ library screenshots into committed evidence.
 | iPad simulator | `LabstreamMobile` on an iPad simulator | Adaptive sidebar, regular-width grids/sheets, shared player UI; not physical background transfer or external-route behavior |
 | Physical iPhone/iPad | Signed mobile build with required trust/Developer Mode | PiP, AirPlay, Control Center/lock screen, audio routes, cellular policy, background transfers, Spotlight and App Intents |
 | Apple TV simulator | Exact worktree `LabstreamTV` simulator; signed-in test session or production-isolated fixture | Ten-foot shell, deterministic focus/navigation, custom-player remote paths, and absence of downloads; not physical Siri Remote, HDR/audio/HDMI, lifecycle, or performance |
-| Physical Apple TV | Signed `LabstreamTV` build on the supported hardware baseline with a real Siri Remote and display/audio chain | Remote-only operation, focus, system keyboard/dictation, HDR/DV, HDMI/audio, interruptions, lifecycle, accessibility, long-play performance, and release acceptance |
+| Physical Apple TV (future acceptance) | Signed `LabstreamTV` development build on explicitly selected hardware with a real Siri Remote and display/audio chain | Evidence for remote-only operation, focus, system keyboard/dictation, HDR/DV, HDMI/audio, interruptions, lifecycle, accessibility, and long-play performance; this open gate does not establish release acceptance |
 | macOS preview | `LabstreamMac` host build under the worktree development identity | Native split view, menus, Settings window, keyboard/full-screen/media-key behavior, live playback and download reconciliation; record as preview evidence |
 
 - [ ] Record the exact target/scheme, configuration, OS/runtime, app marketing/build ID,

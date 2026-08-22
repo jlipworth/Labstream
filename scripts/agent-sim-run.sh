@@ -16,6 +16,7 @@ Options:
   --duration SECONDS         Seconds to keep recording after scenario action. Default: 8.
   --artifact-root PATH       Artifact root. Default: artifacts/agent-sim-runs.
   --keep-booted              Do not shut down the visionOS worktree simulator after the run.
+  --allow-simulator          Required assertion that the caller owns the simulator lease.
 
 Exit codes:
   0 passed with artifacts
@@ -34,16 +35,23 @@ skip_build=0
 duration=8
 artifact_root="artifacts/agent-sim-runs"
 shutdown_on_exit=1
+allow_simulator=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --skip-build) skip_build=1; shift ;;
     --duration) duration="${2:-}"; [ -n "$duration" ] || { echo "missing --duration value" >&2; exit 2; }; shift 2 ;;
     --artifact-root) artifact_root="${2:-}"; [ -n "$artifact_root" ] || { echo "missing --artifact-root value" >&2; exit 2; }; shift 2 ;;
     --keep-booted) shutdown_on_exit=0; shift ;;
+    --allow-simulator) allow_simulator=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+[ "$allow_simulator" -eq 1 ] || {
+  echo "Refusing to boot a simulator without --allow-simulator (lease assertion)." >&2
+  exit 2
+}
 
 case "$scenario" in
   launch-home-passive|launch-fixture-home-passive|click-login-jellyfin-tab) ;;
@@ -52,6 +60,7 @@ esac
 
 repo_root=$(git rev-parse --show-toplevel)
 cd "$repo_root"
+derived_data="$repo_root/build/DerivedData-agent-visionos"
 
 simid=$(scripts/worktree-sim.sh --platform visionos id) || { echo "failed to resolve visionOS worktree simulator" >&2; exit 2; }
 commit=$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
@@ -239,16 +248,31 @@ if ! xcrun simctl list devices | grep -q "$simid"; then
   exit 2
 fi
 
+foreign_booted=$(SIMID="$simid" python3 - <<'PY'
+import json, os, subprocess
+data = json.loads(subprocess.check_output(["xcrun", "simctl", "list", "devices", "--json"]))
+wanted = os.environ["SIMID"]
+print(" ".join(device["udid"] for devices in data["devices"].values() for device in devices
+               if device.get("state") == "Booted" and device.get("udid") != wanted))
+PY
+)
+if [ -n "$foreign_booted" ]; then
+  log_note "Another simulator is booted; lease invariant violated: $foreign_booted"
+  status="blocked"
+  exit 2
+fi
+
 log_note "Booting simulator if needed..."
 xcrun simctl boot "$simid" 2>/dev/null || true
 xcrun simctl bootstatus "$simid" -b >/dev/null
 
 if [ "$skip_build" -eq 0 ]; then
   log_note "Building Labstream for simulator..."
-  rm -rf "$HOME"/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-xrsimulator/Labstream.app
+  rm -rf "$derived_data"
   scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme Labstream \
     -destination "platform=visionOS Simulator,id=$simid" \
-    -configuration Debug build CODE_SIGNING_ALLOWED=NO -quiet >"$outdir/xcodebuild.log" 2>&1 || {
+    -configuration Debug -derivedDataPath "$derived_data" \
+    build CODE_SIGNING_ALLOWED=NO -quiet >"$outdir/xcodebuild.log" 2>&1 || {
       log_note "Build failed; see xcodebuild.log."
       status="failed"
       exit 1
@@ -257,7 +281,7 @@ else
   log_note "Skipping build by request."
 fi
 
-app=$(/bin/ls -td "$HOME"/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-xrsimulator/Labstream.app 2>/dev/null | head -1 || true)
+app="$derived_data/Build/Products/Debug-xrsimulator/Labstream.app"
 if [ -z "$app" ] || [ ! -d "$app" ]; then
   log_note "No built Labstream.app found."
   status="blocked"

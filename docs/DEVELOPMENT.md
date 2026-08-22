@@ -175,23 +175,25 @@ If Xcode says the iOS platform/runtime is missing or warns that the deployment t
 the installed SDK, install the matching iOS Simulator runtime/platform in Xcode Settings. A newer
 simulator runtime may not be usable with an older installed iOS SDK.
 
-The visionOS, mobile, and tvOS targets use `com.jlipworth.Labstream` for the intended unified
-product identity. Local installs with that bundle identifier can replace an existing install
-and its app state, including a TV install replacing a visionOS or mobile simulator login.
+The visionOS, mobile, and tvOS targets use `com.jlipworth.Labstream` for the intended product
+identity on their respective platforms. A development install can replace another Labstream build
+with the same bundle identifier on the same compatible device, but separate simulator devices and
+operating-system platforms do not share or replace one another's app container or login state.
 
 Debug mobile builds also accept the credential-free browse fixture described in the tvOS section
 below. For a bounded agent smoke that builds, installs, launches, records screenshots/video/logs,
 and shuts down the leased simulator, use:
 
 ```sh
-scripts/agent-sim-run.sh <scenario> --allow-simulator   # visionOS named runner
+scripts/agent-sim-run.sh launch-fixture-home-passive   # visionOS named runner
 scripts/agent-mobile-run.sh iphone fixture-home-passive --allow-simulator
 # Use `ipad` to exercise the regular-width layout.
 ```
 
-The runner deliberately requires `--allow-simulator` as an assertion that its caller owns the
-repository's single-simulator lease. It writes an ignored evidence bundle beneath
-`artifacts/agent-platform-runs/`. The fixture exposes stable accessibility targets including
+The mobile runner requires `--allow-simulator` as an assertion that its caller owns the
+repository's single-simulator lease. The visionOS runner has no such flag, so its caller must still
+hold the lease before invocation. VisionOS evidence defaults to `artifacts/agent-sim-runs/`; mobile
+and tvOS runner evidence defaults to `artifacts/agent-platform-runs/`. The fixture exposes stable accessibility targets including
 `labstream.fixture.browse.root` and `labstream.home.fixture-resume.<backend>-orbit`, so Xcode 27
 Device Interaction can inspect and drive it semantically rather than by free-form coordinates.
 
@@ -326,6 +328,11 @@ scripts/agent-macos-run.sh fixture-detail
 Evidence is written beneath ignored `artifacts/agent-platform-runs/`. Exit code `2` means a host
 precondition such as Accessibility or Screen Recording permission is unavailable; the runner does
 not fall back to coordinates or full-desktop capture.
+
+Credential-free App Store capture composes these platform runners into a serial, exact-worktree-ID
+workflow and validates Apple's accepted dimensions, alpha prohibition, and checksums. See
+[App Store screenshot automation](APP-STORE-SCREENSHOTS.md). On Xcode 27 the visionOS lane is
+passive Home capture only; richer visionOS marketing states remain a human/headset gate.
 
 The Mac target is a local-build development preview, not a released or supported App Store
 product. See [macOS development preview](MACOS.md) for identity isolation, cleanup, validation,

@@ -3,6 +3,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -71,6 +72,7 @@ class ToolingHardeningTests(unittest.TestCase):
             args = (root / "xcodebuild-args.txt").read_text()
             self.assertRegex(args, r"LABSTREAM_BUILD_SLUG=.*-dirty")
 
+    @unittest.skipUnless(sys.platform == "darwin", "requires macOS host deployment tools")
     def test_macos_deploy_labels_dev_build_and_deletes_all_staged_apps(self):
         with self.make_repo() as root:
             self.copy_script(root, "deploy-macos-to-host.sh")

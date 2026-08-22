@@ -48,11 +48,13 @@ nav:
       - Support & troubleshooting: support.md
       - Report a bug: REPORTING-BUGS.md
       - Privacy policy: privacy.md
+      - Release and App Store status: RELEASES.md
       - License exception: app-store-exception.md
   - Developer guide:
       - Contributing: CONTRIBUTING.md
       - Development setup: DEVELOPMENT.md
       - Testing strategy: TESTING-STRATEGY.md
+      - App Store screenshots: APP-STORE-SCREENSHOTS.md
       - Compile performance: COMPILE-PERFORMANCE.md
       - iOS and iPadOS target: MOBILE-IOS.md
       - tvOS development target: TVOS.md

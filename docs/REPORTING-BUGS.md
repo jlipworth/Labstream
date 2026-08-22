@@ -15,8 +15,9 @@ diagnostic report to make that easy and safe.
    developer** to review the redacted report and share it via the system share
    sheet, **Copy diagnostic report** to copy it to the clipboard, or **Export
    diagnostic report file** if you want a text file. On Apple TV, Copy and Export
-   are not compiled in; use **Send feedback to developer** or **Open a GitHub
-   issue** and review the on-screen preview.
+   are not compiled in; use **Send feedback to developer** for the preview/GitHub handoff.
+   A long report may not fit in the issue URL, so treat this as a guided handoff rather than a
+   guaranteed full-report transfer.
 3. **Review it.** The report is redacted for you (see below) — but give it a
    quick read so you're comfortable with what it contains.
 4. **Open a bug.** Go to the

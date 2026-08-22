@@ -3,6 +3,7 @@ import os
 import pathlib
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -13,6 +14,10 @@ SCRIPT = pathlib.Path(__file__).resolve().parents[1] / "perf-macos-ax-driver.swi
 class PerfMacOSAXDriverTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls.build = None
+        cls.binary = None
+        if sys.platform != "darwin":
+            return
         cls.build = tempfile.TemporaryDirectory()
         cls.binary = pathlib.Path(cls.build.name) / "perf-macos-ax-driver"
         subprocess.run(
@@ -22,7 +27,8 @@ class PerfMacOSAXDriverTests(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        cls.build.cleanup()
+        if cls.build is not None:
+            cls.build.cleanup()
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -44,6 +50,8 @@ class PerfMacOSAXDriverTests(unittest.TestCase):
         return document
 
     def run_driver(self, document, *, mode=0o600):
+        if self.binary is None:
+            self.skipTest("requires macOS Accessibility frameworks")
         workload = self.root / "workload.json"
         workload.write_text(json.dumps(document))
         workload.chmod(mode)

@@ -1,6 +1,6 @@
 # Compile performance
 
-The Phase 5 compile audit is intentionally opt-in: it performs a large paired matrix of clean,
+The compile audit is intentionally opt-in: it performs a large paired matrix of clean,
 no-op, representative incremental, and test-coverage builds. It is not a CI gate. Run it on an
 otherwise idle Mac and do not change Xcode, power mode, or other material host conditions during a
 comparison.
@@ -49,7 +49,9 @@ edit, the selected file's original bytes are restored exactly and a **checked** 
 before the next scenario. A failed restoration or settle is recorded as a run failure instead of
 being silently ignored.
 
-This is a representative compile-cost audit, not exhaustive dependency coverage. In particular,
+This is a representative compile-cost audit across PMSKit and the four app schemes, not exhaustive
+dependency coverage or distribution-readiness evidence. Mac and tvOS results remain measurements of
+their preview/development targets. In particular,
 it does not currently measure release/LTO builds, Intel compilation, physical-device signing,
 simulator runtime launch cost, or every feature-module leaf edit.
 
@@ -65,7 +67,7 @@ The ignored output directory contains:
   commit, and worktree status, and the result manifest checksums the copy;
 - `measurements.csv`: every raw measurement and its private-log filename;
 - `paired-deltas.csv`: same-index candidate-minus-control deltas and percentages;
-- `summary.md`: medians for each variant plus median paired elapsed-time deltas;
+- `summary.md`: median elapsed time for each variant plus median paired elapsed-time deltas;
 - `manifest.sha256`: SHA-256 checksums for result files, normalized warnings, and private raw logs
   (the large disposable `workspace/` is intentionally excluded);
 - `*.log` and `*.warnings.txt`: private compiler output which may contain local filesystem paths.
@@ -75,10 +77,12 @@ result directory with `shasum -a 256 -c manifest.sha256` before using or sharing
 A failed measured command or restoration settle is retained in metadata/CSV and makes the runner
 exit nonzero after completing the matrix.
 
-Only compare runs with matching machine, toolchain, architecture, configuration, repetition count,
-and materially similar recorded covariates. Candidate-minus-control medians and percentages are
-descriptive summaries of at least five local paired samples; they do **not** establish statistical
-significance. Treat these as investigation prompts rather than pass/fail thresholds:
+Only compare successful runs with matching machine, toolchain, architecture, configuration,
+repetition count, and materially similar recorded covariates. The runner attempts at least five
+local pairs per scenario; a failed command can leave partial rows and a nonzero run that is not a
+valid comparison. Candidate-minus-control medians and percentages from a successful complete run
+are descriptive; they do **not** establish statistical significance. Treat these as investigation
+prompts rather than pass/fail thresholds:
 
 - function/body type checking over 300 ms;
 - expression type checking over 200 ms;

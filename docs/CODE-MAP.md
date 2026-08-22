@@ -25,7 +25,9 @@ would become stale as implementations move.
   one retained main-window group, removes the New Window command, owns the singleton Mac Settings
   scene, and supplies deterministic window reactivation and menu commands.
 - `Labstream/Shared/App/ContentView.swift` registers system routing, runs the one-time restore,
-  and switches between restore, login, and browse states.
+  and applies PMSKit's `BrowseUIGate` to select restoring, restricted offline, login, or
+  authenticated browse state. The restricted offline path exists only on download-capable
+  products; tvOS falls back to login.
 - `Labstream/Capabilities/Downloads/App/AppDelegate.swift` bridges iOS/visionOS background URLSession relaunch
   events. `Labstream/Platforms/macOS/App/MacAppDelegate.swift` owns Mac launch, reopen, and
   window presentation; it is not a Downloads session adapter and does not handle UIKit
@@ -197,7 +199,7 @@ are backend-scoped and cross-backend.
   lane-specific. `PlaybackSessionSource.swift` is the typed construction lane;
   `PlaybackRestartIntent.swift` owns reason-specific in-place restart plans;
   `HLSStartupHardening.swift` owns `HLSSessionPrewarmer`.
-- `Labstream/Shared/Player/CustomPlayerView.swift` is the shipping windowed player presenter and
+- `Labstream/Shared/Player/CustomPlayerView.swift` is the common windowed player presenter and
   hosts an `AVPlayerLayer` plus `CustomPlayerChrome`; `Labstream/Platforms/visionOS/Player/CustomCinemaMode.swift`
   owns the separate immersive presenter for the same live controller.
 - `Labstream/Shared/Player/CustomPlayerChrome.swift` owns the shared transport/menu/scrubber UI
@@ -310,6 +312,11 @@ upstream connection rotation used by `PlaybackController`.
   serializes that queue independently of the `DownloadStore` index lock.
 - `Labstream/Capabilities/Downloads/Core/OfflineLibraryView.swift` owns the cross-backend offline UI and
   local playback launch. Its snapshot is lightweight and actions re-resolve exact attempt identity.
+- `Labstream/Shared/UI/OfflineLaunchView.swift` owns the restricted cold-launch surface when a
+  saved-session restore is temporarily unavailable and an existing local file belongs to a
+  complete or unverified row. PMSKit's `OfflineLaunchAvailability` decides admission; this path
+  permits local library/playback, reconnect/sign-in, and Settings rather than authenticated
+  browsing, and is absent from tvOS. Invalid or missing credentials continue to Login.
 - `PMSKit/Sources/PMSKit/Downloads/DownloadStorageSnapshot.swift` owns provenance-aware
   known/unknown/not-applicable storage presentation.
 - `PMSKit/Sources/PMSKit/Downloads/` contains pure route, status, retry, display, storage,
@@ -406,7 +413,8 @@ paths, filenames, client identifiers, or media titles to diagnostics.
 ## Tests, builds, and scripts
 
 - `PMSKit/Tests/PMSKitTests/` covers pure policies, request builders, decoders, state
-  machines, and redaction. Run it with `cd PMSKit && swift test`.
+  machines, and redaction. Run the hermetic suite with
+  `swift test --package-path PMSKit --no-parallel --skip 'Live.*ProbeTests'`.
 - `Labstream.xcodeproj/project.pbxproj` is the source of truth for the four native app target
   versions, platforms, and deployment settings.
 - `scripts/worktree-sim.sh` provisions the visionOS worktree simulator or explicit

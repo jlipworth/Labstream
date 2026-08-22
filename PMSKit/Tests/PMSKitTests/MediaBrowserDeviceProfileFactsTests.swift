@@ -12,17 +12,21 @@ struct MediaBrowserDeviceProfileFactsTests {
                         maxStreamingBitrate: bitrate,
                         advertiseDolbyVision: advertiseDV,
                         subtitlesInManifest: subtitlesInManifest)
-                    try #expect(canonical(jellyfin) == canonical(legacyJellyfinStreaming(
+                    let actual = try canonical(jellyfin)
+                    let expected = try canonical(legacyJellyfinStreaming(
                         bitrate: bitrate,
                         advertiseDV: advertiseDV,
-                        subtitlesInManifest: subtitlesInManifest)))
+                        subtitlesInManifest: subtitlesInManifest))
+                    #expect(actual == expected)
                 }
 
                 let emby = EmbyPlayback.streamingDeviceProfile(
                     maxStreamingBitrate: bitrate,
                     advertiseDolbyVision: advertiseDV)
-                try #expect(canonical(emby) == canonical(legacyEmbyStreaming(
-                    bitrate: bitrate, advertiseDV: advertiseDV)))
+                let actual = try canonical(emby)
+                let expected = try canonical(legacyEmbyStreaming(
+                    bitrate: bitrate, advertiseDV: advertiseDV))
+                #expect(actual == expected)
             }
         }
     }
@@ -50,10 +54,15 @@ struct MediaBrowserDeviceProfileFactsTests {
     @Test func compatibleRemuxProfilesShareExactStaticFactsAtMultipleBitrates() throws {
         for bitrate in [1, 40_000_000, 200_000_000] {
             let expected = legacyCompatibleRemux(bitrate: bitrate)
-            try #expect(canonical(JellyfinPlayback.compatibleRemuxDownloadDeviceProfile(
-                maxStaticBitrate: bitrate)) == canonical(expected))
-            try #expect(canonical(EmbyPlayback.compatibleRemuxDownloadDeviceProfile(
-                maxStaticBitrate: bitrate)) == canonical(expected))
+            let expectedCanonical = try canonical(expected)
+            let jellyfinCanonical = try canonical(
+                JellyfinPlayback.compatibleRemuxDownloadDeviceProfile(
+                    maxStaticBitrate: bitrate))
+            let embyCanonical = try canonical(
+                EmbyPlayback.compatibleRemuxDownloadDeviceProfile(
+                    maxStaticBitrate: bitrate))
+            #expect(jellyfinCanonical == expectedCanonical)
+            #expect(embyCanonical == expectedCanonical)
         }
     }
 
@@ -61,11 +70,15 @@ struct MediaBrowserDeviceProfileFactsTests {
         let strict = EmbyPlayback.downloadDeviceProfile(maxStaticBitrate: 200_000_000)
         let remux = EmbyPlayback.compatibleRemuxDownloadDeviceProfile(
             maxStaticBitrate: 200_000_000)
+        let strictDirectPlay = try firstProfile(strict, key: "DirectPlayProfiles")
+        let strictTranscode = try firstProfile(strict, key: "TranscodingProfiles")
+        let strictCanonical = try canonical(strict)
+        let remuxCanonical = try canonical(remux)
         #expect(strict["Name"] as? String == "Labstream-Download")
         #expect(remux["Name"] as? String == "Labstream-Compatible-Download")
-        #expect(try firstProfile(strict, key: "DirectPlayProfiles")["VideoCodec"] as? String == "h264")
-        #expect(try firstProfile(strict, key: "TranscodingProfiles")["VideoCodec"] as? String == "h264")
-        #expect(try canonical(strict) != canonical(remux))
+        #expect(strictDirectPlay["VideoCodec"] as? String == "h264")
+        #expect(strictTranscode["VideoCodec"] as? String == "h264")
+        #expect(strictCanonical != remuxCanonical)
     }
 
     private var directPlay: [[String: Any]] { [

@@ -38,8 +38,9 @@ interactive UI checks, live-server probes, or physical-device acceptance.
 
 ## Native Apple matrix driver
 
-`scripts/native-test-matrix.py` is the checked source of truth for native smoke,
-affected-platform, and full planning. Planning is side-effect free and is always the default:
+`scripts/native-test-matrix.py` is the checked source of truth for compile/package smoke,
+affected-platform, hosted/UI, and full planning. It does not perform the runtime
+install/launch/log/screenshot smoke. Planning is side-effect free and is always the default:
 
 ```sh
 # Compile/package smoke plan for all four app schemes plus hermetic PMSKit tests.
@@ -65,6 +66,10 @@ The driver reads `scripts/native-test-matrix.json`. The current source topology 
 fallback still selects all app lanes for an unclassified path under `Labstream/`. Update the
 manifest and its topology tests in the same change whenever target membership or an ownership
 root changes.
+
+After the matrix builds/tests selected for a runtime change, complete the canonical
+[install/launch/log/screenshot smoke](DEVELOPMENT.md#install-and-observe-a-simulator-smoke) or the
+applicable named evidence runner. A successful matrix lane alone is not runtime evidence.
 
 Execution is deliberately lane-at-a-time. The driver never provisions or boots a simulator, and
 `--run` requires an exact `--lane`. A simulator-hosted lane additionally requires the ID recorded
@@ -181,7 +186,9 @@ Woodpecker provides the repository's default public, portable CI surface:
   requests without receiving a deployment key or running a deploy command.
 - `.woodpecker/hygiene.yml` runs `scripts/ci-hygiene.sh`, including its Python tooling tests, on
   pushes, pull requests, and manual runs.
-- `.woodpecker/pmskit.yml` runs PMSKit's hermetic Linux suite without credentials. XCTest and
+- `.woodpecker/pmskit.yml` runs PMSKit's credential-free Linux suite. Live probe tests are designed
+  to skip when their opt-in environment is absent; the pipeline does not select them as live
+  acceptance. XCTest and
   Swift Testing are separate invocations because their combined runner deadlocks under
   swift-corelibs-foundation; see that pipeline for the exact flags.
 

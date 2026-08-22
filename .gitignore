@@ -27,6 +27,7 @@ build/
 .swiftpm/
 Packages/
 Package.resolved
+!PMSKit/Package.resolved
 
 # Secrets — never commit PMS tokens / client identifiers
 scripts/ci-hygiene.local
@@ -76,6 +77,7 @@ site/
 # Local agent simulator run artifacts
 artifacts/agent-sim-runs/
 artifacts/agent-platform-runs/
+artifacts/app-store-screenshots/
 
 # Local performance-audit evidence (raw traces and manifests may be sensitive)
 artifacts/performance-audit/

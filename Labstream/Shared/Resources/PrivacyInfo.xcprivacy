@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<!-- App Store privacy manifest (#appstore).
-	     Labstream talks to the user-selected Plex, Jellyfin, or Emby server, plus Plex/Emby auth services when selected. No data is automatically collected by or sent to the developer; optional diagnostics are user-initiated, and there is no tracking or third-party SDK. -->
+	     Labstream talks to the user-selected Plex, Jellyfin, or Emby server, plus Plex/Emby auth services when selected. No data is automatically collected by or sent to the developer; optional diagnostics are user-initiated, and there is no tracking or data-collection SDK. -->
 
 	<key>NSPrivacyTracking</key>
 	<false/>

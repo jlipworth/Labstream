@@ -59,7 +59,7 @@ enum DebugUIFixtureCatalog {
             // derealize rows during vertical traversal — the regime where SwiftUI's
             // DynamicContainer item removal runs (2026-07-21 manual-session crash).
             for shelf in 1...6 {
-                hubs.append(Hub(title: "Fixture Shelf \(shelf)",
+                hubs.append(Hub(title: shelfTitles[shelf - 1],
                                 hubIdentifier: "fixture-shelf-\(shelf)",
                                 metadata: shelfItems(backend: backend, shelf: shelf)))
             }
@@ -109,11 +109,27 @@ enum DebugUIFixtureCatalog {
         MediaBrowserHomeLibraryLink(id: "shows", title: "TV Shows", collectionType: "tvshows"),
     ]
 
+    /// Store-safe, plainly fictional merchandising copy. Keep test mechanics in identifiers rather
+    /// than visible labels so credential-free screenshots still represent the shipping experience.
+    private static let shelfTitles = [
+        "Recommended For You", "Science Fiction", "Award Winners",
+        "New Releases", "Popular Movies", "Stories From the Sea",
+    ]
+
+    private static let syntheticShelfItemTitles = [
+        "Glass Horizon", "Echoes of Titan", "The Last Meridian", "Paper Moons",
+        "Midnight Current", "Arctic Signal", "Second Sunrise", "The Quiet Engine",
+        "Distant Harbor", "After the Aurora", "Redwood Sky", "The Far Lantern",
+    ]
+
     private static func shelfItems(backend: MediaBackendKind, shelf: Int) -> [MediaItem] {
         let prefix = backend.rawValue
         return (0..<12).map { index in
             MediaItem(ratingKey: "\(prefix)-shelf\(shelf)-\(index)",
-                      title: "Shelf \(shelf) Item \(index + 1)", type: "movie",
+                      title: syntheticShelfItemTitles[
+                        (index + shelf - 1) % syntheticShelfItemTitles.count
+                      ],
+                      type: "movie",
                       duration: 5_400_000, year: 2020 + (index % 6))
         }
     }
