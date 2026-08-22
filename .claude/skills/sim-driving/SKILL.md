@@ -22,7 +22,7 @@ cases), pinch-drag gestures, or any flow where the harness cannot prove the UI c
 Prefer the bounded harness over ad hoc clicks:
 
 ```sh
-scripts/agent-sim-run.sh launch-fixture-home-passive
+scripts/agent-sim-run.sh launch-fixture-home-passive --allow-simulator
 ```
 
 The harness resolves the worktree simulator via `scripts/worktree-sim.sh id`, records

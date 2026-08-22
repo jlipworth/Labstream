@@ -7,6 +7,7 @@ usage() {
 Usage: scripts/agent-tvos-run.sh <scenario> --allow-simulator [options]
 
 Scenarios:
+  fixture-home-passive   Build/install/launch the synthetic Home and capture it without input.
   fixture-home-semantic  Launch and drive the synthetic Home-to-detail journey.
   fixture-player-basic   Exercise deterministic local playback chrome and Back behavior.
 
@@ -21,7 +22,7 @@ USAGE
 
 scenario=${1:-}
 if [[ -z $scenario || $scenario == -h || $scenario == --help ]]; then usage; exit 0; fi
-[[ $scenario == fixture-home-semantic || $scenario == fixture-player-basic ]] || {
+[[ $scenario == fixture-home-passive || $scenario == fixture-home-semantic || $scenario == fixture-player-basic ]] || {
   usage >&2; exit 2;
 }
 shift
@@ -163,6 +164,38 @@ bounded_screenshot "$outdir/screen-start.png" >"$outdir/screenshot.log" 2>&1
 xcrun simctl io "$simid" recordVideo "$outdir/screen-recording.mp4" \
   >"$outdir/record-video.log" 2>&1 &
 video_pid=$!
+
+if [[ $scenario == fixture-home-passive ]]; then
+  derived_data="$repo_root/build/DerivedData-agent-tvos-passive"
+  rm -rf "$derived_data"
+  scripts/run-bounded-command.py --timeout 300 --output "$outdir/xcodebuild.log" -- \
+    scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamTV \
+    -configuration Debug -destination "platform=tvOS Simulator,id=$simid" \
+    -derivedDataPath "$derived_data" build CODE_SIGNING_ALLOWED=NO
+  app_path="$derived_data/Build/Products/Debug-appletvsimulator/Labstream.app"
+  [[ -x $app_path/Labstream ]] || { printf 'Built app missing: %s\n' "$app_path" >&2; result_code=2; exit 2; }
+  xcrun simctl install "$simid" "$app_path" >"$outdir/install.log" 2>&1
+  installed_app=$(xcrun simctl get_app_container "$simid" com.jlipworth.Labstream app)
+  built_uuid=$(xcrun dwarfdump --uuid "$app_path/Labstream" | awk '{print $2}')
+  installed_uuid=$(xcrun dwarfdump --uuid "$installed_app/Labstream" | awk '{print $2}')
+  [[ -n $built_uuid && $built_uuid == "$installed_uuid" ]] || {
+    printf 'Installed executable does not match built product.\n' >&2; exit 1;
+  }
+  xcrun simctl terminate "$simid" com.jlipworth.Labstream >/dev/null 2>&1 || true
+  xcrun simctl launch "$simid" com.jlipworth.Labstream \
+    --ui-testing --ui-testing-backend plex --ui-testing-fixture browse \
+    >"$outdir/launch.log" 2>&1
+  sleep 5
+  bounded_screenshot "$outdir/screen-end.png" >>"$outdir/screenshot.log" 2>&1
+  kill -INT "$video_pid" 2>/dev/null || true
+  wait "$video_pid" 2>/dev/null || true
+  video_pid=
+  [[ -s $outdir/screen-end.png && -s $outdir/screen-recording.mp4 ]]
+  status=passed
+  result_code=0
+  printf 'PASS: %s\n' "$outdir"
+  exit 0
+fi
 
 selectors=()
 expected_passes=2

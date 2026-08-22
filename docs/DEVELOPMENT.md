@@ -329,6 +329,11 @@ Evidence is written beneath ignored `artifacts/agent-platform-runs/`. Exit code 
 precondition such as Accessibility or Screen Recording permission is unavailable; the runner does
 not fall back to coordinates or full-desktop capture.
 
+Credential-free App Store capture composes these platform runners into a serial, exact-worktree-ID
+workflow and validates Apple's accepted dimensions, alpha prohibition, and checksums. See
+[App Store screenshot automation](APP-STORE-SCREENSHOTS.md). On Xcode 27 the visionOS lane is
+passive Home capture only; richer visionOS marketing states remain a human/headset gate.
+
 The Mac target is a local-build development preview, not a released or supported App Store
 product. See [macOS development preview](MACOS.md) for identity isolation, cleanup, validation,
 and deferred licensing/release decisions.

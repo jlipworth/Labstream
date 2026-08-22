@@ -23,6 +23,11 @@ media details out of commits and public issues.
   worktree, sole-booted state, and an explicit lease assertion; generic simulator build lanes do
   not. See
   [Testing strategy](../docs/TESTING-STRATEGY.md#native-apple-matrix-driver).
+- `app-store-screenshots.py` + `app-store-screenshot-specs.json` — serial credential-free fixture
+  capture for visionOS, iPhone, iPad, tvOS, and the isolated Mac preview. It uses exact worktree
+  simulator IDs, exports only JPEGs plus a sanitized checksum manifest, and fails closed on
+  non-Apple dimensions or alpha channels. See
+  [App Store screenshot automation](../docs/APP-STORE-SCREENSHOTS.md).
 - `publication-audit.py` — audits tracked text, Git history, and optionally GitHub issue text for
   sensitive publication regressions without echoing matched secrets.
 - `loc.sh` — informational per-module source line counts.

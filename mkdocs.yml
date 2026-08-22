@@ -54,6 +54,7 @@ nav:
       - Contributing: CONTRIBUTING.md
       - Development setup: DEVELOPMENT.md
       - Testing strategy: TESTING-STRATEGY.md
+      - App Store screenshots: APP-STORE-SCREENSHOTS.md
       - Compile performance: COMPILE-PERFORMANCE.md
       - iOS and iPadOS target: MOBILE-IOS.md
       - tvOS development target: TVOS.md

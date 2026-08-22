@@ -40,6 +40,7 @@ duration=5
 artifact_root=artifacts/agent-platform-runs
 allow_simulator=0
 keep_booted=0
+status_bar_overridden=0
 while (($#)); do
   case "$1" in
     --backend) backend=${2:-}; shift 2 ;;
@@ -133,6 +134,7 @@ artifacts={
   "buildLog": f"{out}/xcodebuild.log",
   "installLog": f"{out}/install.log",
   "launchLog": f"{out}/launch.log",
+  "terminateLog": f"{out}/terminate.log",
 }
 payload={
   "schemaVersion": 1,
@@ -192,6 +194,9 @@ cleanup() {
   if [[ ! -s $outdir/screen-end.png ]]; then
     bounded_screenshot "$outdir/screen-end.png" >>"$outdir/screenshot.log" 2>&1 || true
   fi
+  if ((status_bar_overridden == 1)); then
+    xcrun simctl status_bar "$simid" clear >/dev/null 2>&1 || true
+  fi
   if ((keep_booted == 0)); then xcrun simctl shutdown "$simid" >/dev/null 2>&1 || true; fi
   if ((ec != 0)) && ((result_code == 0)); then result_code=$ec; status=failed; fi
   write_result
@@ -200,6 +205,12 @@ trap cleanup EXIT
 
 xcrun simctl boot "$simid" >/dev/null 2>&1 || true
 xcrun simctl bootstatus "$simid" -b >/dev/null
+if xcrun simctl status_bar "$simid" override --time 09:41 \
+    --dataNetwork wifi --wifiMode active --wifiBars 3 \
+    --cellularMode active --cellularBars 4 --operatorName '' \
+    --batteryState charged --batteryLevel 100 >/dev/null 2>&1; then
+  status_bar_overridden=1
+fi
 
 if [[ $scenario == fixture-detail-semantic ]]; then
   test_result="$outdir/Test.xcresult"
@@ -272,13 +283,18 @@ xcrun simctl launch "$simid" com.jlipworth.Labstream \
   >"$outdir/launch.log" 2>&1
 app_pid=$(awk -F': ' '/com\.jlipworth\.Labstream:/{print $2}' "$outdir/launch.log" | tail -1)
 sleep "$duration"
-[[ $app_pid =~ ^[0-9]+$ ]] && xcrun simctl spawn "$simid" /bin/kill -0 "$app_pid"
+[[ $app_pid =~ ^[0-9]+$ ]] || { printf 'Launch did not return an app PID.\n' >&2; exit 1; }
 
 kill -INT "$video_pid" 2>/dev/null || true
 wait "$video_pid" 2>/dev/null || true
 video_pid=
 bounded_screenshot "$outdir/screen-end.png" >>"$outdir/screenshot.log" 2>&1
 [[ -s $outdir/screen-start.png && -s $outdir/screen-end.png && -s $outdir/screen-recording.mp4 ]]
+# `kill` is not an executable in current iOS simulator runtimes, so a `simctl spawn ... kill -0`
+# liveness probe fails with LaunchdSimError 111 even while the app is healthy. A successful exact-
+# bundle termination after capture proves the launched process was still registered without relying
+# on unavailable guest utilities.
+xcrun simctl terminate "$simid" com.jlipworth.Labstream >"$outdir/terminate.log" 2>&1
 
 status=passed
 result_code=0

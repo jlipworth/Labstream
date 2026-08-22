@@ -76,6 +76,7 @@ site/
 # Local agent simulator run artifacts
 artifacts/agent-sim-runs/
 artifacts/agent-platform-runs/
+artifacts/app-store-screenshots/
 
 # Local performance-audit evidence (raw traces and manifests may be sensitive)
 artifacts/performance-audit/

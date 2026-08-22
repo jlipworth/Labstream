@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "verifiedAt": "2026-08-21",
+  "officialSource": "https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications",
+  "uploadSource": "https://developer.apple.com/help/app-store-connect/manage-app-information/upload-app-previews-and-screenshots",
+  "requirements": {
+    "format": ["jpeg", "jpg", "png"],
+    "alphaAllowed": false,
+    "minimumCount": 1,
+    "maximumCount": 10
+  },
+  "targets": {
+    "visionos": {
+      "acceptedPixels": [[3840, 2160]],
+      "capturePixels": [3840, 2160],
+      "runner": "scripts/agent-sim-run.sh launch-fixture-home-passive"
+    },
+    "iphone": {
+      "acceptedPixels": [[1260, 2736], [1290, 2796], [1320, 2868], [1284, 2778], [1242, 2688], [1179, 2556], [1206, 2622], [1170, 2532], [1125, 2436], [1080, 2340]],
+      "capturePixels": [1206, 2622],
+      "runner": "scripts/agent-mobile-run.sh iphone fixture-home-passive"
+    },
+    "ipad": {
+      "acceptedPixels": [[2064, 2752], [2048, 2732], [1488, 2266], [1668, 2420], [1668, 2388], [1640, 2360]],
+      "capturePixels": [2064, 2752],
+      "runner": "scripts/agent-mobile-run.sh ipad fixture-home-passive"
+    },
+    "tvos": {
+      "acceptedPixels": [[1920, 1080], [3840, 2160]],
+      "capturePixels": [3840, 2160],
+      "runner": "scripts/agent-tvos-run.sh fixture-home-passive"
+    },
+    "macos": {
+      "acceptedPixels": [[1280, 800], [1440, 900], [2560, 1600], [2880, 1800]],
+      "capturePixels": [2560, 1600],
+      "runner": "scripts/agent-macos-run.sh fixture-home-passive"
+    }
+  }
+}

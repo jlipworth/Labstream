@@ -23,6 +23,7 @@ private struct Arguments {
     let screenshotBefore: URL
     let screenshotAfter: URL
     let timeout: TimeInterval
+    let captureOnly: Bool
 }
 
 private struct DriverResult: Codable {
@@ -38,11 +39,17 @@ private struct DriverResult: Codable {
 
 private func parseArguments() throws -> Arguments {
     let arguments = Array(CommandLine.arguments.dropFirst())
-    guard arguments.count == 10 else { throw DriverError.invalidArguments }
+    guard arguments.count == 10 || arguments.count == 11 else { throw DriverError.invalidArguments }
     var values: [String: String] = [:]
+    var captureOnly = false
     var index = 0
     while index < arguments.count {
         let flag = arguments[index]
+        if flag == "--capture-only", !captureOnly {
+            captureOnly = true
+            index += 1
+            continue
+        }
         guard ["--pid", "--output", "--screenshot-before", "--screenshot-after", "--timeout"]
                 .contains(flag),
               values[flag] == nil, index + 1 < arguments.count else {
@@ -59,7 +66,8 @@ private func parseArguments() throws -> Arguments {
           (1...60).contains(timeout) else { throw DriverError.invalidArguments }
     return Arguments(pid: pid, output: URL(fileURLWithPath: rawOutput),
                      screenshotBefore: URL(fileURLWithPath: rawBefore),
-                     screenshotAfter: URL(fileURLWithPath: rawAfter), timeout: timeout)
+                     screenshotAfter: URL(fileURLWithPath: rawAfter), timeout: timeout,
+                     captureOnly: captureOnly)
 }
 
 private func write(_ result: DriverResult, to output: URL) throws {
@@ -90,16 +98,44 @@ private final class FixtureDriver {
         guard AXIsProcessTrustedWithOptions([promptKey: false] as CFDictionary) else {
             throw DriverError.accessibilityNotTrusted
         }
-        guard application.isActive || application.activate(options: [.activateAllWindows]) else {
-            throw DriverError.actionFailed
+        let root = AXUIElementCreateApplication(pid)
+        if !application.isActive {
+            _ = application.activate(options: [.activateAllWindows])
+            // After simulator automation, AppKit activation can remain advisory. The runner already
+            // requires Accessibility trust, so request the exact target process as frontmost via AX
+            // and wait briefly. Store captures must not silently publish a dimmed inactive window.
+            _ = AXUIElementSetAttributeValue(root, kAXFrontmostAttribute as CFString,
+                                             kCFBooleanTrue)
+            var rawWindows: CFTypeRef?
+            if AXUIElementCopyAttributeValue(root, kAXWindowsAttribute as CFString,
+                                             &rawWindows) == .success,
+               let window = (rawWindows as? [AXUIElement])?.first {
+                _ = AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString,
+                                                 kCFBooleanTrue)
+                _ = AXUIElementSetAttributeValue(window, kAXFocusedAttribute as CFString,
+                                                 kCFBooleanTrue)
+                _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+            }
+            let activationDeadline = Date().addingTimeInterval(min(timeout, 2))
+            while !application.isActive && Date() < activationDeadline {
+                usleep(50_000)
+            }
         }
+        // Some headless host sessions prohibit foreground changes even with AX trust. The runner's
+        // window-only capture remains privacy-safe in that state; final editorial review decides
+        // whether the inactive appearance is acceptable or a person should focus and recapture.
         self.pid = pid
-        self.root = AXUIElementCreateApplication(pid)
+        self.root = root
         self.timeout = timeout
     }
 
-    func run(screenshotBefore: URL, screenshotAfter: URL) throws {
+    func run(screenshotBefore: URL, screenshotAfter: URL, captureOnly: Bool) throws {
         try captureWindow(to: screenshotBefore)
+        if captureOnly {
+            try captureWindow(to: screenshotAfter)
+            completedStage = "home_captured"
+            return
+        }
         let target = try waitForUniquePressable(identifier: "labstream.home.fixture-resume.plex-orbit")
         completedStage = "fixture_item_found"
         guard AXUIElementPerformAction(target, kAXPressAction as CFString) == .success else {
@@ -229,7 +265,8 @@ do {
     let driver = try FixtureDriver(pid: arguments.pid, timeout: arguments.timeout)
     do {
         try driver.run(screenshotBefore: arguments.screenshotBefore,
-                       screenshotAfter: arguments.screenshotAfter)
+                       screenshotAfter: arguments.screenshotAfter,
+                       captureOnly: arguments.captureOnly)
         completedStage = driver.completedStage
         actionCount = driver.actionCount
     } catch {
@@ -238,7 +275,8 @@ do {
         throw error
     }
     try write(DriverResult(schemaVersion: 1, status: "passed", pid: resultPID,
-                           scenario: "fixture-detail", completedStage: completedStage,
+                           scenario: arguments.captureOnly ? "fixture-home-passive" : "fixture-detail",
+                           completedStage: completedStage,
                            actionCount: actionCount, windowID: largestWindowID(for: resultPID),
                            errorCode: nil), to: arguments.output)
 } catch {

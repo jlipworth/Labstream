@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/agent-macos-run.sh fixture-detail [options]
+Usage: scripts/agent-macos-run.sh <fixture-home-passive|fixture-detail> [options]
 
 Options:
   --artifact-root PATH  Default: artifacts/agent-platform-runs.
@@ -17,7 +17,7 @@ USAGE
 
 scenario=${1:-}
 if [[ -z $scenario || $scenario == -h || $scenario == --help ]]; then usage; exit 0; fi
-[[ $scenario == fixture-detail ]] || { usage >&2; exit 2; }
+[[ $scenario == fixture-home-passive || $scenario == fixture-detail ]] || { usage >&2; exit 2; }
 shift
 
 artifact_root=artifacts/agent-platform-runs
@@ -134,10 +134,24 @@ done
 running_command=$(ps -p "$app_pid" -o command= || true)
 [[ $running_command == "$executable"* ]] || { printf 'PID does not match staged executable.\n' >&2; exit 1; }
 
+# `open` can leave the new process behind the previously focused simulator after a serial all-
+# platform run. Accessibility is already an explicit runner prerequisite; use the exact PID rather
+# than an app name (which can collide across worktrees) to make the window visibly frontmost.
+osascript - "$app_pid" <<'APPLESCRIPT' >/dev/null 2>&1 || true
+on run argv
+    set targetPID to (item 1 of argv) as integer
+    tell application "System Events"
+        set frontmost of first application process whose unix id is targetPID to true
+    end tell
+end run
+APPLESCRIPT
+
+driver_args=(--pid "$app_pid" --output "$outdir/driver.json"
+  --screenshot-before "$outdir/screen-before.png"
+  --screenshot-after "$outdir/screen-after.png" --timeout "$timeout")
+[[ $scenario == fixture-detail ]] || driver_args+=(--capture-only)
 set +e
-"$repo_root/build/agent-macos-ax-driver" --pid "$app_pid" --output "$outdir/driver.json" \
-  --screenshot-before "$outdir/screen-before.png" \
-  --screenshot-after "$outdir/screen-after.png" --timeout "$timeout"
+"$repo_root/build/agent-macos-ax-driver" "${driver_args[@]}"
 driver_code=$?
 set -e
 if ((driver_code != 0)); then
