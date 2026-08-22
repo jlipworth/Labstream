@@ -252,6 +252,12 @@ public final class DownloadManager {
     /// observes a single value and row bodies stay manager-free.
     var offlineLibrarySnapshot: OfflineLibrarySnapshot = .empty
 
+    /// True only when a terminal row still owns a present local media file. A durable row by
+    /// itself is not enough to bypass the launch login gate.
+    var hasPlayableOfflineContent: Bool {
+        OfflineLaunchAvailability.hasPlayableDownload(records: records)
+    }
+
     /// ratingKeys with an active (optimize or transfer) job in flight.
     public internal(set) var activeJobs: Set<String> = []
     /// Exact owner of each compatibility `activeJobs` slot. The Set remains the UI-facing shape;

@@ -764,7 +764,9 @@ public struct OfflineLibraryView: View {
     private func currentPlayableRecord(
         for identity: OfflineDownloadRowActionIdentity
     ) -> DownloadRecord? {
-        manager.currentRecord(for: identity).flatMap { $0.isComplete ? $0 : nil }
+        manager.currentRecord(for: identity).flatMap {
+            $0.isComplete && FileManager.default.fileExists(atPath: $0.localURL.path) ? $0 : nil
+        }
     }
 
     private func backendKind(for record: DownloadRecord) -> DownloadBackendKind {

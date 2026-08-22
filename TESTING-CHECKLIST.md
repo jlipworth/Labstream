@@ -53,6 +53,7 @@ skipping them.
 | Fresh sign-in reaches a browse-ready server without exposing credentials | [ ] | [ ] | [ ] |
 | Saved session restores through the neutral Connecting screen without flashing login | [ ] | [ ] | [ ] |
 | Invalid/revoked credentials return to a clear sign-in state | [ ] | [ ] | [ ] |
+| Disconnected cold launch with a completed local file opens restricted Offline mode and plays without a server request | [ ] | [ ] | [ ] |
 | Explicit sign-out clears the active runtime lane and stops stale music | [ ] | [ ] | [ ] |
 | Reauthentication to the same server refreshes browse state and navigation identity | [ ] | [ ] | [ ] |
 

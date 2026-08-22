@@ -31,7 +31,15 @@ struct BrowseUIGateTests {
     @Test("launch restore shows the splash")
     func restoringShowsSplash() {
         #expect(BrowseUIGate.state(isBrowseReady: false, isRestoring: true,
-                                   isSwitchingBackend: false, hasEverBeenBrowseReady: false) == .restoringSplash)
+                                   isSwitchingBackend: false, hasEverBeenBrowseReady: false,
+                                   canOpenOffline: true) == .restoringSplash)
+    }
+
+    @Test("a completed local download is reachable after a transient restore failure")
+    func transientRestoreFailureShowsOffline() {
+        #expect(BrowseUIGate.state(isBrowseReady: false, isRestoring: false,
+                                   isSwitchingBackend: false, hasEverBeenBrowseReady: false,
+                                   canOpenOffline: true) == .offline)
     }
 
     @Test("a genuinely signed-out user sees login")

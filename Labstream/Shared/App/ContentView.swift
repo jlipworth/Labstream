@@ -59,11 +59,19 @@ struct ContentView: View {
             switch BrowseUIGate.state(isBrowseReady: appModel.isBrowseReady,
                                       isRestoring: bootstrap.isRestoring,
                                       isSwitchingBackend: appModel.isSwitchingBackend,
-                                      hasEverBeenBrowseReady: bootstrap.hasEverBeenBrowseReady) {
+                                      hasEverBeenBrowseReady: bootstrap.hasEverBeenBrowseReady,
+                                      canOpenOffline: canOpenOffline) {
             case .browse:
                 RootView(runtime: runtime)
             case .restoringSplash:
                 RestoringSessionView()
+            case .offline:
+                #if os(tvOS)
+                LoginView(authManager: authManager)
+                    .environment(appModel)
+                #else
+                OfflineLaunchView(runtime: runtime)
+                #endif
             case .login:
                 LoginView(authManager: authManager)
                     .environment(appModel)
@@ -190,6 +198,15 @@ struct ContentView: View {
             downloadManager.teardownOrphanedEncodersOnLaunch()
             #endif
         }
+    }
+
+    private var canOpenOffline: Bool {
+        #if os(tvOS)
+        false
+        #else
+        authManager.sessionRestoreOutcome == .temporarilyUnavailable
+            && downloadManager.hasPlayableOfflineContent
+        #endif
     }
 }
 
