@@ -301,7 +301,7 @@ final class DiagnosticLoggingTests: XCTestCase {
         XCTAssertTrue(report.contains("Plex Media Server 1.40"))
     }
 
-    // MARK: - Free-text feedback note (#85): adversarial redaction of the optional
+    // MARK: - Free-text feedback note (#272): adversarial redaction of the optional
     // "What were you doing?" note. FeedbackSheet folds the note in ONLY through
     // `DiagnosticRedactor.redact(note)`, so these exercise that single trust boundary on
     // the kinds of prose a user might type. Where a class is a known residual gap, the

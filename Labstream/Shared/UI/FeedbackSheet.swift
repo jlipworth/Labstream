@@ -7,7 +7,7 @@ import UIKit
 import UniformTypeIdentifiers
 import PMSKit
 
-/// Bug-report flow (#85 v1, no backend).
+/// Bug-report flow (#272 v1, no backend).
 ///
 /// The fast path is **Open a GitHub issue**: it deep-links to the bug form with the user's
 /// description and version fields already filled in, attaches the redacted diagnostic report
