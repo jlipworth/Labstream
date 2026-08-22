@@ -11,7 +11,7 @@ remain release gates. The repository's GPL section-7 exception covers the macOS 
 
 ## Current implementation
 
-The preview provides a native Mac app shell and adapts the shared browse, search, detail,
+The target provides a native Mac app shell and adapts the shared browse, search, detail,
 playback, music, downloads/offline, settings, diagnostics, and backend flows for the host Mac.
 Mac-specific code supplies window commands, keyboard navigation, fullscreen/player presentation,
 and system media integration while backend wire behavior and pure policies remain shared.
@@ -43,9 +43,9 @@ transfer has an exact expected byte total. Unknown or estimated totals suppress 
 The queue toolbar's `Pause All` / `Resume All` action is intentionally distinct from per-item pause
 and retry controls.
 
-Treat this as source-build coverage rather than a compatibility promise. Real Plex, Jellyfin,
-and Emby authentication, media-key behavior, playback, and background-download recovery still
-need platform-specific validation.
+Treat this as pre-release source coverage rather than a released compatibility promise. Real Plex,
+Jellyfin, and Emby authentication, media-key behavior, playback, sandboxing, and background-download
+recovery still need platform-specific TestFlight and release acceptance.
 
 ## Build, stage, and launch
 
@@ -75,7 +75,7 @@ sandbox, Keychain behavior, and logs.
 
 ## Cleanup
 
-Clean up host preview state after a one-off test or before removing its worktree:
+Clean up host-development state after a one-off test or before removing its worktree:
 
 ```sh
 scripts/deploy-macos-to-host.sh --delete
@@ -140,16 +140,12 @@ See [Testing strategy](TESTING-STRATEGY.md) for the repository-wide validation l
 
 ## Release status
 
-The Mac target currently has its own marketing/build settings so its development work does not
-silently join the visionOS/iOS release train. Before any Mac archive or distribution, the project
-must explicitly decide and review:
+The Mac target is part of the coordinated 1.6.1 universal-purchase release candidate and uses the
+production identifier `org.labstream.Labstream`. Licensing, universal-purchase topology, identity,
+and version policy are decided; they are not remaining design questions. The open gates are a clean
+Apple Distribution archive and validation, App Store sandbox/entitlement review, processed
+TestFlight build, fresh-install sign-in, real-backend playback, keyboard/media-key and window
+lifecycle behavior, download recovery, accessibility, screenshots, metadata, and App Review.
 
-1. licensing and the GPL section-7 exception's platform scope;
-2. App Store Connect SKU or universal-purchase structure;
-3. production bundle identifier, signing, sandbox, and entitlements;
-4. production Keychain service and cross-device credential behavior;
-5. version/build-number policy and the full validation matrix;
-6. App Store/TestFlight versus notarized direct distribution.
-
-Downloads remain inside the app container for the preview. External download folders and
-security-scoped bookmark migration are deferred.
+Downloads remain inside the app container for 1.6.1. External download folders and
+security-scoped bookmark migration are deferred product work, not prerequisites for this release.

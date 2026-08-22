@@ -43,9 +43,8 @@ flowchart TD
 
 ## Native targets and release trains
 
-The repository contains four native application targets. Vision Pro and mobile are the
-supported product paths; the native Mac target is a local-build development preview, and the
-streaming-only tvOS target is in development. All four
+The repository contains four native application targets in one coordinated pre-release
+universal-purchase set: visionOS, universal iOS/iPadOS, streaming-only tvOS, and native macOS. All four
 attach the file-system-synchronized `Labstream/Shared/` root plus exactly one root under
 `Labstream/Platforms/`. Vision Pro, mobile, and Mac additionally attach the non-overlapping
 `Labstream/Capabilities/Downloads/` root; tvOS cannot compile or construct that capability.
@@ -57,9 +56,9 @@ attach the file-system-synchronized `Labstream/Shared/` root plus exactly one ro
 | `LabstreamMac` | `Labstream/Platforms/macOS/App/LabstreamMac.swift` | native macOS, not Catalyst |
 | `LabstreamTV` | `Labstream/Platforms/tvOS/App/LabstreamTV.swift` | tvOS |
 
-Marketing versions remain independently configurable. The Xcode project is the source of truth
-for current version and deployment settings; synchronized version numbers do not change the Mac
-or tvOS distribution status.
+Marketing versions remain independently configurable even when a coordinated release aligns them.
+The Xcode project is the source of truth for current version and deployment settings; synchronized
+numbers do not prove that any platform has passed its hardware, TestFlight, or review gates.
 
 Shared files still use conditional compilation for genuinely inline framework and presentation
 differences. Capability and build variants also use `#if canImport(...)`,

@@ -14,8 +14,9 @@
 Labstream does not provide, host, sell, or bundle movies, TV, music, or other media. It connects only to servers you choose, and offline downloads are for media you are authorized to access and download under the applicable server/service terms.
 
 The repository contains native targets for Apple Vision Pro, iPhone/iPad, Apple TV, and Mac. The
-visionOS target is the primary development path, `LabstreamMobile` is one universal iPhone/iPad
-target, `LabstreamTV` is a streaming-only TV target, and `LabstreamMac` is the native Mac target.
+visionOS target owns the spatial shell and Cinema experience, `LabstreamMobile` is one universal
+iPhone/iPad target, `LabstreamTV` is a streaming-only TV target, and `LabstreamMac` is the native
+Mac target.
 They share the SwiftUI app core, custom AVFoundation player, and
 `PMSKit` backend layer while owning platform-specific shells, input, and system integration.
 
@@ -52,7 +53,7 @@ and backend. See the platform and backend status tables below for the current su
 
 ### Playback
 
-- Custom AVFoundation player surface shared across visionOS, iOS/iPadOS, tvOS, and the Mac preview.
+- Custom AVFoundation player surface shared across visionOS, iOS/iPadOS, tvOS, and macOS.
 - Direct Play / Maximum attempts copy or direct-stream paths where viable.
 - Explicit quality rungs request capped server streams when needed.
 - Resume, seek, retry, subtitles, chapters, playback speed, buffering state, and Stats for Nerds.
@@ -68,7 +69,7 @@ and backend. See the platform and backend status tables below for the current su
 
 ### Downloads and offline
 
-Downloads and offline playback are available on visionOS, iOS/iPadOS, and the Mac preview. The
+Downloads and offline playback are available on visionOS, iOS/iPadOS, and macOS. The
 tvOS target deliberately omits the complete download capability and Offline product surface.
 
 - Offline downloads with metadata, poster/side-asset support, integrity checks, and route-specific recovery: static/original and server-prepared static files use checkpoints, while live remux/transcode streams reconcile safely but may need retry/restart after interruption.
@@ -79,7 +80,7 @@ tvOS target deliberately omits the complete download capability and Offline prod
 
 - Canonical app builds store tokens and server credentials in Keychain. The Plex account token is
   the one synchronizable Keychain item; per-device client identity, Jellyfin/Emby tokens, and server
-  selection remain device-local. Per-worktree Mac preview builds use isolated, backup-excluded
+  selection remain device-local. Per-worktree Mac development builds use isolated, backup-excluded
   credential files instead.
 - Diagnostic logging is off by default and local-only. When enabled, events are kept in a bounded
   in-memory ring and small rotating redacted files; reports leave the device only after a user action.
@@ -99,9 +100,9 @@ Labstream is unofficial and independent. It is not affiliated with, endorsed by,
 
 | Platform | Target / scheme | Current status |
 | --- | --- | --- |
-| Apple Vision Pro / visionOS 26 | `Labstream` | Primary development and validation path. Includes the app-owned immersive cinema surface. |
-| iPhone / iOS 26.1+ | `LabstreamMobile` | Native adaptive mobile shell in active development. Local simulator and signed-device builds are supported. |
-| iPad / iPadOS 26.1+ | `LabstreamMobile` | The same universal mobile target, using the regular-width sidebar layout. Local simulator and signed-device builds are supported. |
+| Apple Vision Pro / visionOS 26 | `Labstream` | Spatial release candidate with the app-owned immersive Cinema surface. Physical-headset and release acceptance remain open. |
+| iPhone / iOS 26.1+ | `LabstreamMobile` | Native compact-width release candidate. Local simulator and signed-device builds are supported; physical/TestFlight acceptance remains open. |
+| iPad / iPadOS 26.1+ | `LabstreamMobile` | The same universal release-candidate binary, using the regular-width sidebar layout. Physical/TestFlight acceptance remains open. |
 | Apple TV / tvOS 26+ | `LabstreamTV` | Native streaming-only release candidate with a ten-foot shell and custom Siri Remote player interactions. Downloads and Offline are absent; physical-device, accessibility, system-integration, and release acceptance remain open. |
 | Mac / macOS 26 | `LabstreamMac` | Native release candidate with shared sign-in, playback, media-key, and background-download code. App Store signing, sandbox behavior, and live Mac acceptance remain open release gates. |
 
@@ -123,8 +124,7 @@ Labstream is unofficial and independent. It is not affiliated with, endorsed by,
 - Python 3.11+ and [`uv`](https://docs.astral.sh/uv/getting-started/installation/) for documentation and repository tooling checks.
 - A Plex, Jellyfin, or Emby server you control or have permission to access.
 
-The optional `LabstreamMac` development preview builds directly for an Apple-silicon Mac running
-macOS 26; it has no simulator lane.
+`LabstreamMac` builds directly for an Apple-silicon Mac running macOS 26; it has no simulator lane.
 
 ### Build and smoke
 
@@ -140,11 +140,11 @@ macOS 26; it has no simulator lane.
 - Apple Vision Pro: complete the [first-use pairing, Developer Mode, Xcode account/signing, install, and launch procedure](docs/DEVELOPMENT.md#physical-apple-vision-pro-install).
 - iPhone/iPad: use the canonical [signed hardware install procedure](docs/DEVELOPMENT.md#physical-iphone-or-ipad-install).
 - Apple TV: simulator procedures are documented today; physical Apple TV deployment and acceptance remain open release gates in the [tvOS target guide](docs/TVOS.md).
-- Mac: use the [host validation procedure](docs/DEVELOPMENT.md#build-and-run-the-macos-development-preview).
+- Mac: use the [host validation procedure](docs/DEVELOPMENT.md#build-and-run-the-macos-target).
 
-The visionOS, mobile, and tvOS app targets currently use `org.labstream.Labstream`. The Mac helper
-defaults to a per-worktree development bundle identifier so local host
-builds do not collide; see [macOS development preview](docs/MACOS.md).
+All four production targets use `org.labstream.Labstream`. The Mac host helper defaults to a
+per-worktree development bundle identifier so local builds do not collide; see the
+[macOS target guide](docs/MACOS.md).
 
 ## Project structure
 
@@ -172,7 +172,7 @@ Labstream/
 - Development setup: [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)
 - iOS/iPadOS target: [`docs/MOBILE-IOS.md`](docs/MOBILE-IOS.md)
 - tvOS target: [`docs/TVOS.md`](docs/TVOS.md)
-- macOS development preview: [`docs/MACOS.md`](docs/MACOS.md)
+- macOS target: [`docs/MACOS.md`](docs/MACOS.md)
 - Architecture overview: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - Backend model: [`docs/BACKENDS.md`](docs/BACKENDS.md)
 - Playback: [`docs/PLAYBACK-ARCHITECTURE.md`](docs/PLAYBACK-ARCHITECTURE.md)
@@ -213,9 +213,9 @@ Labstream does not send analytics, diagnostics, or media-server data to the deve
 Labstream is licensed under the **GNU General Public License v3.0**. See [`LICENSE`](LICENSE) for the full text.
 Third-party package licenses and required notices are bundled under [`Labstream/Shared/Resources/ThirdPartyNotices`](Labstream/Shared/Resources/ThirdPartyNotices/README.md).
 
-The project also carries a GPLv3 section 7 additional permission for the visionOS/iOS/iPadOS Apple
-App Store and TestFlight paths if those distribution channels are used. It does not establish Mac
-or tvOS distribution approval; see [`APP-STORE-EXCEPTION.md`](APP-STORE-EXCEPTION.md).
+The project also carries a GPLv3 section 7 additional permission for linking and distributing the
+visionOS, iOS/iPadOS, tvOS, and macOS applications through Apple App Store and TestFlight paths.
+See [`APP-STORE-EXCEPTION.md`](APP-STORE-EXCEPTION.md) for its exact scope.
 
 Copyright (C) 2026 Jonathan Lipworth
 

@@ -250,7 +250,7 @@ Interaction does not support its simulator; gaze, pinch-drag, immersive, and har
 remain human/headset gates. Real backend credentials supplement these fixture loops but are never a
 precondition for platform-loop closure.
 
-## macOS development-preview checks
+## macOS host checks
 
 macOS has no simulator lane. The native `LabstreamMac` target runs on the host under a
 per-worktree development identity. For Mac-specific or widely shared app changes, run the current
@@ -268,7 +268,7 @@ run and must not be treated as one), focused PMSKit diagnostics tests
 `scripts/smoke-macos-host.sh`. Shut down any simulator it left booted before another leased
 turn. It does not prove real backend auth, subjective UI behavior,
 media-key ownership, live playback, or background-download durability. See
-[macOS development preview](MACOS.md) for host identity and cleanup rules.
+[macOS target guide](MACOS.md) for host identity and cleanup rules.
 
 ## Optional live-server checks
 
@@ -293,9 +293,9 @@ deploy/acceptance path exists. Simulator evidence cannot close them.
 - Spotlight, Shortcuts, and App Intents end-to-end;
 - physical Apple TV remote, HDR/HDMI, and audio-route behavior (blocked until a deploy path exists).
 
-For the Mac development preview, use a real signed-in host session for keyboard/fullscreen
-behavior, menu commands, system media keys, live playback, and download reconciliation. Keep that
-evidence labeled as preview validation rather than released-platform support.
+For the Mac target, use a real signed-in host session for keyboard/fullscreen behavior, menu
+commands, system media keys, live playback, and download reconciliation. Keep that evidence labeled
+as pre-release acceptance rather than released-platform support.
 
 Semantic AX performance captures have a narrower admission boundary: keep the interactive Mac
 session unlocked and available to the foreground, grant Accessibility trust to the invoking

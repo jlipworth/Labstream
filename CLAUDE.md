@@ -1,10 +1,10 @@
 # Labstream (Labstream) — Claude Code notes
 
 Apple-platform Plex/Jellyfin/Emby client. App code in `Labstream/`, networking/model
-layer in `PMSKit/` (local Swift package with its own tests). The primary shipping path is
-still visionOS, and the repo also contains the `LabstreamMobile` universal iOS/iPadOS
-target, the in-development streaming-only `LabstreamTV` target, and a native `LabstreamMac`
-development preview. `docs/DEVELOPMENT.md` covers
+layer in `PMSKit/` (local Swift package with its own tests). The coordinated App Store release
+set contains the `Labstream` visionOS target, the `LabstreamMobile` universal iOS/iPadOS target,
+the streaming-only `LabstreamTV` target, and the native `LabstreamMac` target. All remain
+pre-release until their platform-specific acceptance gates pass. `docs/DEVELOPMENT.md` covers
 build/run setup; current player ownership and the load-bearing startup, stall,
 seek/restart, cleanup, HDR/DV, and Cinema invariants live in
 `docs/PLAYBACK-ARCHITECTURE.md`. Archived development notes are historical context only.
@@ -83,7 +83,7 @@ runtime in Xcode Settings before treating `LabstreamMobile` as broken.
 
 ### Building the native Apple TV target
 
-The in-development tvOS target/scheme is `LabstreamTV`. It owns a streaming-only TV shell;
+The tvOS release-candidate target/scheme is `LabstreamTV`. It owns a streaming-only TV shell;
 the Downloads capability, Offline destination, and download-storage settings are absent at
 compile time. Use the exact worktree Apple TV simulator rather than a generic `booted` device:
 

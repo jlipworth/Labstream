@@ -244,7 +244,7 @@ never capture account names, server addresses, provider IDs, item IDs, or activi
 
 ## 5. Downloads and Offline
 
-This section applies only to visionOS, iOS/iPadOS, and the Mac preview. The tvOS app must compile
+This section applies only to visionOS, iOS/iPadOS, and macOS. The tvOS app must compile
 without the Downloads capability and expose no Offline tab, download action, storage control,
 background-session registration, or migration/recovery work.
 

@@ -1,10 +1,10 @@
 # Downloads and offline playback
 
-Labstream downloads are implemented for the supported visionOS and iOS/iPadOS source-build paths and are designed
+Labstream downloads are implemented for the visionOS, iOS/iPadOS, and macOS targets and are designed
 to end in a local file the current device can play, plus enough metadata to show the item in the
-offline library and resume safely. The same engine is present in the [macOS development
-preview](MACOS.md), where background recovery remains preview validation rather than a reliability
-promise. The [tvOS development target](TVOS.md) compiles no Downloads capability or Offline surface.
+offline library and resume safely. The same engine is present in the [macOS target](MACOS.md), where
+background recovery remains a pre-release acceptance gate rather than a reliability promise. The
+[tvOS target](TVOS.md) compiles no Downloads capability or Offline surface.
 
 ```mermaid
 flowchart TD
@@ -128,9 +128,8 @@ sequenceDiagram
 ```
 
 - **A pre-queued train of closed-range segment tasks for known-size static files.** The
-  same segment-train engine runs on visionOS, iOS/iPadOS, and the Mac preview; only the
-  visionOS/mobile paths document this as a supported capability, while Mac background recovery
-  remains preview validation.
+  same segment-train engine runs on visionOS, iOS/iPadOS, and macOS; Mac background recovery
+  remains a platform-specific release-acceptance gate.
   Static Plex/Jellyfin/Emby file routes enqueue up to `maxQueuedSegments` (currently 2) background
   `URLSessionDownloadTask`s ahead of the durable checkpoint, each a closed
   `Range: bytes=<offset>-<offset+segmentBytes-1>` request of `segmentBytes` (512 MiB) —

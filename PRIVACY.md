@@ -1,9 +1,10 @@
 # Labstream — Privacy Policy
 
-_Last updated: 2026-08-21_
+_Last updated: 2026-08-22_
 
-Labstream is a personal media client for Apple Vision Pro, iPhone, and iPad that connects to a Plex Media Server, Jellyfin server, or Emby server **that you administer or are authorized to access**. The source repository also contains a native Mac local-build development preview and an
-in-development streaming-only Apple TV target. Labstream is designed to collect as little as possible.
+Labstream is a personal media client with pre-release targets for Apple Vision Pro, iPhone/iPad,
+Apple TV, and Mac. It connects to a Plex Media Server, Jellyfin server, or Emby server **that you
+administer or are authorized to access**. Labstream is designed to collect as little as possible.
 
 ## What Labstream does not do
 
@@ -26,7 +27,7 @@ in-development streaming-only Apple TV target. Labstream is designed to collect 
   Plex server; Jellyfin access tokens are sent only to your Jellyfin server;
   Emby access tokens are sent only to Emby Connect during sign-in and to your
   selected Emby server. They are never transmitted to the developer.
-- **Noncanonical Mac development-preview builds** created by the host deploy helper use an
+- **Noncanonical Mac development builds** created by the host deploy helper use an
   isolated, backup-excluded credential file inside that development app's sandbox instead of the
   production Keychain path. This avoids repeated Keychain prompts while an ad-hoc local build is
   replaced. Deleting/resetting that development identity's container deletes those credentials.

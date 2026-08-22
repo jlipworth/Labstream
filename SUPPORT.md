@@ -2,17 +2,17 @@
 
 Labstream is a native Apple-platform client for **your own Plex Media Server, Jellyfin server, or Emby server**.
 
-The supported source-build and support paths documented here are Apple Vision Pro, iPhone, and iPad;
-that status does not by itself assert availability in any binary distribution channel. The source
-repository also contains a native Mac local-build development preview and an in-development
-streaming-only Apple TV target; neither is a released or supported App Store product.
-Contributors testing those targets should use
-the [Mac development documentation](https://github.com/jlipworth/Labstream/blob/main/docs/MACOS.md)
-and [tvOS documentation](https://github.com/jlipworth/Labstream/blob/main/docs/TVOS.md).
+The repository contains pre-release targets for Apple Vision Pro, iPhone/iPad, Apple TV, and Mac.
+That source coverage does not by itself assert availability in any binary distribution channel;
+there is no public App Store release yet. Platform-specific status and acceptance gates are in the
+[release guide](https://github.com/jlipworth/Labstream/blob/main/docs/RELEASES.md),
+[Mac target guide](https://github.com/jlipworth/Labstream/blob/main/docs/MACOS.md), and
+[tvOS target guide](https://github.com/jlipworth/Labstream/blob/main/docs/TVOS.md).
 
 ## Requirements
 
-- Apple Vision Pro running **visionOS 26.0** or later, or an iPhone/iPad running **iOS/iPadOS 26.1** or later.
+- Apple Vision Pro running **visionOS 26.0** or later; an iPhone/iPad running **iOS/iPadOS 26.1**
+  or later; Apple TV running **tvOS 26** or later; or an Apple-silicon Mac running **macOS 26**.
 - A reachable **Plex Media Server**, **Jellyfin server**, or **Emby server** you administer or have access to.
   Plex mode requires a Plex account for PIN/OAuth sign-in; Emby mode can use Emby Connect PIN sign-in or a manual Emby server URL.
 - Labstream does not provide, host, sell, or bundle media. Playback and offline
@@ -50,8 +50,8 @@ The fastest path is the [bug report form](https://github.com/jlipworth/Labstream
 See the [bug reporting guide](https://github.com/jlipworth/Labstream/blob/main/docs/REPORTING-BUGS.md)
 for the step-by-step flow, including what the diagnostic report does and does not include.
 
-Open an issue with steps to reproduce, your device type (Apple Vision Pro, iPhone, iPad, Mac
-development preview, or in-development Apple TV), OS version, and the app version from
+Open an issue with steps to reproduce, your device type (Apple Vision Pro, iPhone, iPad, Apple TV,
+or Mac), OS version, and the app version from
 **Settings ▸ About**:
 
 <https://github.com/jlipworth/Labstream/issues>

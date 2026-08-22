@@ -2,7 +2,7 @@
 
 Labstream integrates with Apple system surfaces through one routing layer so external entry points
 behave like normal in-app navigation. The implementation is shared by the visionOS and mobile
-targets and reused by the Mac development preview where the platform surface is available;
+targets and reused by the Mac target where the platform surface is available;
 end-to-end validation remains platform-specific. tvOS compiles the shared router and App Intents,
 but Spotlight indexing is a no-op, user-activity Spotlight handoff is compiled out, SharePlay and
 Cinema are absent, and video Now Playing is not published through the iOS/Mac lease or the
@@ -121,10 +121,10 @@ sequenceDiagram
   P->>V: coordinate only after local launch consent
 ```
 
-## Mac development preview
+## Mac target
 
-The Mac preview routes external entries through the same `SystemEntryRouter` and adds native Mac
+The Mac target routes external entries through the same `SystemEntryRouter` and adds native Mac
 window/menu navigation and separate video/music system-media coordination. Those hooks are present
-for local source testing, but Shortcuts, Spotlight, media-key ownership, and real backend restore
-remain preview validation items rather than released-platform guarantees. See
-[macOS development preview](MACOS.md).
+in source, but Shortcuts, Spotlight, media-key ownership, and real backend restore remain
+platform-specific release-acceptance items rather than released guarantees. See the
+[macOS target guide](MACOS.md).

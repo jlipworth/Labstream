@@ -6,8 +6,8 @@ This page is the shortest path from a clean checkout to a running Labstream buil
 
 - macOS with Xcode and the visionOS SDK installed for the `Labstream` target.
 - The iOS/iPadOS 26.1+ SDK/runtime for the `LabstreamMobile` target.
-- The tvOS 26+ SDK and an installed tvOS simulator runtime for the in-progress `LabstreamTV` target.
-- macOS 26 on an Apple-silicon host when testing the optional `LabstreamMac` development preview.
+- The tvOS 26+ SDK and an installed tvOS simulator runtime for the `LabstreamTV` target.
+- macOS 26 on an Apple-silicon host when testing the `LabstreamMac` target.
 - A visionOS 26 or newer Apple Vision Pro simulator runtime compatible with the active Xcode.
 - Swift Package Manager for `PMSKit` tests (included with Xcode).
 - Python 3.11+ and [`uv`](https://docs.astral.sh/uv/getting-started/installation/) for the repository's
@@ -175,8 +175,9 @@ If Xcode says the iOS platform/runtime is missing or warns that the deployment t
 the installed SDK, install the matching iOS Simulator runtime/platform in Xcode Settings. A newer
 simulator runtime may not be usable with an older installed iOS SDK.
 
-The visionOS, mobile, and tvOS targets use `org.labstream.Labstream` for the intended product
-identity on their respective platforms. A development install can replace another Labstream build
+All four production targets use `org.labstream.Labstream` on their respective platforms; ordinary
+Mac host development is the documented exception and uses an isolated worktree identity. A
+development install can replace another Labstream build
 with the same bundle identifier on the same compatible device, but separate simulator devices and
 operating-system platforms do not share or replace one another's app container or login state.
 
@@ -199,7 +200,7 @@ Device Interaction can inspect and drive it semantically rather than by free-for
 
 ## Build for an Apple TV simulator
 
-The in-progress tvOS target is named/schemed `LabstreamTV`. It supports only the current Apple TV
+The tvOS release-candidate target is named/schemed `LabstreamTV`. It supports only the current Apple TV
 4K third-generation simulator types; the helper intentionally does not fall back to older Apple TV
 hardware. Unlike visionOS, tvOS creates a fresh shutdown simulator rather than cloning the Vision
 Pro golden simulator:
@@ -308,7 +309,7 @@ for an existing linked worktree and prunes orphaned Labstream worktree simulator
 already removed, run `scripts/worktree-sim.sh prune` as the cleanup backstop. Neither command deletes
 the main worktree's golden simulator.
 
-## Build and run the macOS development preview
+## Build and run the macOS target
 
 The `LabstreamMac` target runs directly on the Apple-silicon host; there is no Mac simulator lane.
 Use the host helper so builds are staged under a per-worktree development identity:
@@ -334,9 +335,9 @@ workflow and validates Apple's accepted dimensions, alpha prohibition, and check
 [App Store screenshot automation](APP-STORE-SCREENSHOTS.md). On Xcode 27 the visionOS lane is
 passive Home capture only; richer visionOS marketing states remain a human/headset gate.
 
-The Mac target is a local-build development preview, not a released or supported App Store
-product. See [macOS development preview](MACOS.md) for identity isolation, cleanup, validation,
-and deferred licensing/release decisions.
+The Mac target is a pre-release App Store candidate, not a released compatibility promise. Routine
+host builds still use per-worktree identities to isolate containers and credentials. See the
+[macOS target guide](MACOS.md) for identity isolation, cleanup, validation, and release gates.
 
 ## Core validation commands
 
@@ -500,8 +501,8 @@ Exactly one item is stored as an iCloud-synchronizable Keychain item: the **Plex
 Because the canonical visionOS, iPhone/iPad, tvOS, and Mac variants share the
 `org.labstream.Labstream` bundle id and Keychain service string, a Plex sign-in can synchronize to
 another device through iCloud Keychain when the platform and the user's Keychain settings permit.
-The normal per-worktree Mac development preview deliberately uses isolated,
-backup-excluded credential storage instead; see [macOS development preview](MACOS.md).
+The normal per-worktree Mac development build deliberately uses isolated,
+backup-excluded credential storage instead; see the [macOS target guide](MACOS.md).
 
 Everything else is deliberately device-local:
 

@@ -24,7 +24,7 @@ media details out of commits and public issues.
   not. See
   [Testing strategy](../docs/TESTING-STRATEGY.md#native-apple-matrix-driver).
 - `app-store-screenshots.py` + `app-store-screenshot-specs.json` — serial credential-free fixture
-  capture for visionOS, iPhone, iPad, tvOS, and the isolated Mac preview. It uses exact worktree
+  capture for visionOS, iPhone, iPad, tvOS, and the isolated Mac target. It uses exact worktree
   simulator IDs, exports only JPEGs plus a sanitized checksum manifest, and fails closed on
   non-Apple dimensions or alpha channels. See
   [App Store screenshot automation](../docs/APP-STORE-SCREENSHOTS.md).
@@ -223,12 +223,12 @@ scripts/perf-compare.py compare \
 - `simclick.swift` — retained low-level helper for the legacy visionOS click scenario. It is not a
   supported Xcode 27/Device Hub validation path; current visionOS closure is passive/probe-first.
 
-## Local Mac development preview
+## Local Mac development
 
 - `deploy-macos-to-host.sh` — builds/stages/optionally launches `LabstreamMac` on the arm64 host
   under an isolated per-worktree development identity; also owns safe staged-app/container cleanup.
 - `smoke-macos-host.sh` — bounded signed-out host launch smoke under an isolated identity.
-- `validate-macos-228.sh` — repeatable Mac-preview validation sweep. The filename is retained from
+- `validate-macos-228.sh` — repeatable Mac-target validation sweep. The filename is retained from
   the implementation issue; it also builds shared targets and runs focused diagnostics checks.
 - `validate-macos-pipeline.py` — enforces the trust-boundary/label rules (`platform: darwin/arm64`,
   `backend: local`, `purpose: mac-ci`) for the native Woodpecker CI workflow file.
