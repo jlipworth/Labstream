@@ -84,6 +84,12 @@
       "location": "scripts/**",
       "category": "home_path",
       "reason": "Audit regression fixtures and detection expressions intentionally contain synthetic home-path patterns; concrete maintainer paths were removed by the publication rewrite."
+    },
+    {
+      "surface": "history",
+      "location": "scripts/tests/test_publication_audit.py",
+      "category": "private_lan_ip",
+      "reason": "Publication-audit regression tests intentionally contain RFC1918 examples so the scanner can prove it blocks them; these values are synthetic."
     }
   ]
 }
