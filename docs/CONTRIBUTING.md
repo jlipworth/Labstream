@@ -88,6 +88,17 @@ Never commit or paste:
 
 Use placeholders such as `plex.example.internal`, `192.0.2.10`, `<server-url>`, `<token>`, and `<media title>`.
 
+Security vulnerabilities and reports containing private data must use the private route in the
+[security policy](https://github.com/jlipworth/Labstream/blob/main/SECURITY.md), not an issue,
+Discussion, or pull request.
+
+## Contribution license
+
+By submitting a contribution, you agree that it is licensed under GPLv3 together with the
+repository's existing App Store/TestFlight additional permission in `LICENSE-APP-STORE-EXCEPTION`.
+Do not contribute code, assets, or documentation that you do not have the right to license on
+those terms. New third-party material must include its provenance, license, and required notice.
+
 ## Architecture guidelines
 
 - Keep backend-specific wire behavior explicit.

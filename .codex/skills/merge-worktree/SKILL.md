@@ -7,7 +7,7 @@ description: Merge, document, publish-status, and clean up a completed Labstream
 
 Treat closeout as one transaction: integrate the code, align the durable docs, report accurate GitHub status, and remove the lane's resources. Do not call it complete when only the Git merge succeeded.
 
-The main worktree is `/path/to/user/Projects/labstream`. Linked lanes normally live under `/path/to/user/Projects/labstream-worktrees/<lane>` or `/path/to/user/.codex/worktrees/<id>/labstream`, with branches normally named `codex/issue-<number>-<topic>`.
+The main worktree is `/path/to/labstream`. Linked lanes normally live under `/path/to/labstream-worktrees/<lane>` or `/path/to/codex-worktrees/<id>/labstream`, with branches normally named `codex/issue-<number>-<topic>`.
 
 ## Safety and authority
 
@@ -81,7 +81,7 @@ For app-code changes, follow `CLAUDE.md`'s clean build and worktree-owned simula
 Integrate into main without manufacturing an unnecessary merge commit:
 
 ```sh
-cd /path/to/user/Projects/labstream
+cd /path/to/labstream
 git merge --ff-only "$SOURCE_BRANCH"
 git merge-base --is-ancestor "$SOURCE_TIP" main
 ```
@@ -117,7 +117,7 @@ Otherwise leave it open and say exactly why. A successful local merge is not by 
 Only after the merge is verified and the GitHub comment succeeds:
 
 ```sh
-cd /path/to/user/Projects/labstream
+cd /path/to/labstream
 
 # Remove every native Mac app implementation staged from the closing worktree.
 "$WORKTREE/scripts/deploy-macos-to-host.sh" --delete-all-staged

@@ -145,26 +145,20 @@ complete merely because a shared view was checked on iPad, Mac, visionOS, or a d
 
 ## Recorded evidence
 
-- TVUI-016/019/020 — live Plex Movies library, simulator
-  `1BB9E7C3-3700-48E1-8B2A-DF6A6AD29457`, dirty build based on `5f8d4e32`, installed binary UUID
-  `B573D4BD-53C9-309B-A736-73A06B8185AC`, remote path Libraries → Movies, screenshot
-  `/tmp/labstream-tvos-library-section-final.png`.
-- TVUI-017 — same simulator/build, remote path Movies → Jump; verified readable separated cells
-  and Back dismissing only the picker in `/tmp/labstream-tvos-library-jump-final.png` and
-  `/tmp/labstream-tvos-library-jump-back-final.png`. Earlier traversal also selected D, moved the
-  grid to D, and restored focus to Jump (`/tmp/labstream-tvos-library-jump-result.png`).
-- TVUI-018 — same simulator/build, remote path Movies → Right ×3 → Collections → Back → Movies →
-  Back → Libraries. Full-label focus and both one-level returns are shown in
-  `/tmp/labstream-tvos-collections-focus-final.png`,
-  `/tmp/labstream-tvos-back-collections-to-movies-final.png`, and
-  `/tmp/labstream-tvos-back-movies-to-libraries-final.png`.
+- TVUI-016/019/020 — live Plex `<library>`, simulator `<simulator-id>`, dirty build based on
+  `5f8d4e32`, installed binary `<binary-uuid>`, remote path Libraries → `<library>`. The private
+  screenshots remain in the local evidence bundle rather than the repository.
+- TVUI-017 — same simulator/build, remote path `<library>` → Jump; verified readable separated
+  cells and Back dismissing only the picker. Earlier traversal also selected a letter, moved the
+  grid to that section, and restored focus to Jump. Screenshots remain private local evidence.
+- TVUI-018 — same simulator/build, remote path `<library>` → Right ×3 → Collections → Back →
+  `<library>` → Back → Libraries. Private local evidence shows full-label focus and both one-level
+  returns.
 - TVUI-022/023 — live Plex episode `<episode title scrubbed>`, same simulator, dirty build
-  based on `5f8d4e32`, installed debug-dylib UUID
-  `19192CD2-4EDD-3972-89E2-153FA0DFD896`. The original 19:04 crash is recorded in
+  based on `5f8d4e32`, installed debug dylib `<binary-uuid>`. The original crash is recorded in
   `~/Library/Logs/DiagnosticReports/<crash-report>.ips` with
   `PlaybackController.attachExternalMetadata` at `PlaybackController.swift:3187`. The replacement
-  binary explicitly links AVKit; remote path detail → Resume reached live decoded video while PID
-  15966 remained alive and no exception, abort, or fatal event appeared. Playback and return proof:
-  `/tmp/tvos-playback-after-fix.png` and `/tmp/tvos-detail-after-playback-fix.png`. The captured
-  transition sequence `/tmp/tvos-play-transition-fix-contact.png` retains the same Resume and Mark
-  Watched geometry/focus until player presentation.
+  binary explicitly links AVKit; remote path detail → Resume reached live decoded video while the
+  app process remained alive and no exception, abort, or fatal event appeared. Private local
+  playback, return, and transition evidence retains the same Resume and Mark Watched geometry/focus
+  until player presentation.

@@ -1,0 +1,3 @@
+# Historical false positives: synthetic tvOS UI fixture labels parsed as generic API keys.
+b4b85ae7cc4e16a529f2ffe686b7fbaaf4dc9565:Labstream/Platforms/tvOS/Debug/TVUIFixtureCatalog.swift:generic-api-key:36
+b4b85ae7cc4e16a529f2ffe686b7fbaaf4dc9565:Labstream/Platforms/tvOS/Debug/TVUIFixtureCatalog.swift:generic-api-key:40

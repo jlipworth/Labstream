@@ -201,6 +201,8 @@ Labstream does not send analytics, diagnostics, or media-server data to the deve
 - Bug guide: [`docs/REPORTING-BUGS.md`](docs/REPORTING-BUGS.md)
 - Bug form: <https://github.com/jlipworth/Labstream/issues/new?template=bug_report.yml>
 - Privacy policy: [`PRIVACY.md`](PRIVACY.md)
+- Security reports: [`SECURITY.md`](SECURITY.md) — vulnerabilities must use the private route
+- Community conduct: [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)
 
 ## License
 
