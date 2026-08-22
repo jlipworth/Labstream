@@ -95,7 +95,10 @@ Discussion, or pull request.
 ## Contribution license
 
 By submitting a contribution, you agree that it is licensed under GPLv3 together with the
-repository's existing App Store/TestFlight additional permission in `LICENSE-APP-STORE-EXCEPTION`.
+repository's existing App Store/TestFlight additional permission in
+[`APP-STORE-EXCEPTION.md`](app-store-exception.md). Its framework-linking portion currently names
+the visionOS, iOS, and iPadOS application paths; do not infer Mac or tvOS distribution permission
+without a separate licensing review.
 Do not contribute code, assets, or documentation that you do not have the right to license on
 those terms. New third-party material must include its provenance, license, and required notice.
 

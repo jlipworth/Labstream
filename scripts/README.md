@@ -17,7 +17,7 @@ media details out of commits and public issues.
 - `ci-macos-apple-platforms.sh` — native-runner preflight, isolated unsigned
   visionOS/iOS/iPadOS builds, PMSKit tests, evidence, and cleanup. See
   [`docs/MACOS-CI.md`](../docs/MACOS-CI.md).
-- `native-test-matrix.py` + `native-test-matrix.json` — side-effect-free smoke,
+- `native-test-matrix.py` + `native-test-matrix.json` — side-effect-free compile/package smoke,
   affected-platform, and full native validation planning, with explicitly gated
   lane-at-a-time execution. Simulator-hosted lanes require the exact ID owned by the current
   worktree, sole-booted state, and an explicit lease assertion; generic simulator build lanes do
@@ -187,8 +187,9 @@ scripts/perf-compare.py compare \
   --json-out result.json --csv-out pairs.csv
 ```
 - `compile-audit.py` — opt-in, isolated, paired arm64 compile-cost comparison for explicit control
-  and candidate commits across PMSKit and all app schemes; it enforces at least five alternating
-  same-index repetitions and records integrity/covariate metadata. See
+  and candidate commits across PMSKit and all app schemes; it attempts at least five alternating
+  same-index repetitions and records integrity/covariate metadata. Failed runs retain partial rows
+  and are not valid comparisons. See
   [`docs/COMPILE-PERFORMANCE.md`](../docs/COMPILE-PERFORMANCE.md).
 - `tests/test_*.py` — the complete, discoverable script/tooling test inventory, including native
   matrix, publication/docs, performance contract/comparator/runner/fixture/AX/trace, diagnostics,

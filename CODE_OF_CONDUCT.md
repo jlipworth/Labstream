@@ -24,7 +24,8 @@ decisions consider context, severity, repetition, and the safety of affected peo
 
 Report conduct concerns privately through
 [GitHub private vulnerability reporting](https://github.com/jlipworth/Labstream/security/advisories/new)
-and label the report as a community-conduct concern. Do not open a public issue containing private
+when private handling is necessary, and state at the top that the report is a community-conduct
+concern rather than a security vulnerability. Do not open a public issue containing private
 or identifying information. Reports will be handled as confidentially as practical; conflicts of
 interest will be disclosed and routed away from an involved maintainer when another appropriate
 reviewer is available.

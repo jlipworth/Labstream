@@ -1,8 +1,8 @@
 # Labstream — Privacy Policy
 
-_Last updated: 2026-07-15_
+_Last updated: 2026-08-21_
 
-Labstream is a personal media client for Apple Vision Pro, iPhone, and iPad that connects to a Plex Media Server, Jellyfin server, or Emby server **that you choose and control**. The source repository also contains a native Mac local-build development preview and an
+Labstream is a personal media client for Apple Vision Pro, iPhone, and iPad that connects to a Plex Media Server, Jellyfin server, or Emby server **that you administer or are authorized to access**. The source repository also contains a native Mac local-build development preview and an
 in-development streaming-only Apple TV target. Labstream is designed to collect as little as possible.
 
 ## What Labstream does not do
@@ -18,8 +18,8 @@ in-development streaming-only Apple TV target. Labstream is designed to collect 
 
 ## What stays on your device
 
-- **Your media-server credentials/tokens** are stored in the Apple **Keychain** on visionOS and
-  mobile builds, as well as canonical production-style Mac builds. The Plex account token is the
+- **Your media-server credentials/tokens** are stored in the Apple **Keychain** on visionOS,
+  iOS/iPadOS, tvOS, and canonical production-style Mac builds. The Plex account token is the
   only synchronizable Keychain item, so it may sync through your iCloud Keychain to your other
   Labstream devices. The per-device client identifier, Jellyfin and Emby tokens, and selected
   backend/server do not sync. Plex tokens are sent only to Plex and the selected
@@ -36,10 +36,11 @@ in-development streaming-only Apple TV target. Labstream is designed to collect 
 - **Offline downloads** you choose to make are stored in Labstream's private app
   container on your device and can be deleted from within the app or by removing
   the app.
-- **Local Network access** may be requested by iOS/iPadOS/visionOS or macOS when your
+- **Local Network access** may be requested by Labstream's Apple-platform builds, including tvOS,
+  when your
   selected server is on your local network, uses a `.local` name, or resolves to
   a LAN address. Labstream uses that access only to connect to the media server
-  you choose for browsing, playback, and downloads; it does not scan the network
+  you choose for browsing and playback, and for downloads where available; it does not scan the network
   for advertising or analytics.
 - **Spotlight, Siri, and Shortcuts media suggestions** can expose browsed media
   titles and summaries to Apple system surfaces on your device. You can turn this
@@ -51,20 +52,25 @@ in-development streaming-only Apple TV target. Labstream is designed to collect 
   in-memory ring and in small rotating local diagnostic files (one active file plus
   up to three archives, approximately 1 MB each). The rotating files exist so a
   user-initiated headset evidence collection can survive a suspension or termination;
-  the in-app report uses the current process's ring buffer. You can copy, export, or
+  the same redacted event summaries may also appear in Apple's local unified log, and the in-app
+  report uses the current process's ring buffer. You can copy, export, or
   share a bug-report summary after reproducing a problem.
   This diagnostic report is user-initiated only and is not uploaded automatically.
-- **Passive MetricKit diagnostic summaries** — crash, hang, CPU exception, or disk-write exception — may be delivered by an Apple operating system after a problematic run and stored locally in a small bounded list. Labstream keeps only redacted summary fields for inclusion in a report you explicitly preview/copy/export; these summaries are not uploaded automatically and are separate from opt-in event logging.
+- **Passive MetricKit diagnostic summaries** — on non-tvOS builds, crash, hang, CPU exception, or
+  disk-write exception summaries may be delivered by an Apple operating system after a problematic
+  run and stored locally in a small bounded list. Labstream keeps only redacted summary fields for
+  inclusion in a report you explicitly preview/copy/export; these summaries are not uploaded
+  automatically and are separate from opt-in event logging.
 
 ## Diagnostic reports
 
 When you tap **Send feedback to developer**, **Copy diagnostic report**, or
 **Export diagnostic report file** (Copy and Export are available on visionOS,
-iPhone, iPad, and Mac; Apple TV uses Send feedback or Open a GitHub issue), Labstream includes safe app/server
+iPhone, iPad, and Mac; Apple TV uses the feedback/GitHub handoff), Labstream includes safe app/server
 product/version/build information, platform and safely redacted app identity,
-backend and server product/version, connection scheme, selected quality settings,
-Adaptive Bitrate state, bucketed download/storage state, a recent playback snapshot
-when available, passive redacted MetricKit summaries when present, and up to 80 recent
+backend and server product (plus version where available), connection scheme, selected quality
+settings, Adaptive Bitrate state, download/storage state on download-capable products, a recent
+playback snapshot when available, passive redacted MetricKit summaries when present, and up to 80 recent
 redacted events from the current process when diagnostic logging was enabled. The diagnostics API and report
 renderer are designed to omit sensitive values such as Plex/Jellyfin/Emby tokens,
 client identifiers, hostnames/IP addresses, full URLs, usernames, library paths,
@@ -72,7 +78,8 @@ filenames, and media titles.
 
 The optional free-form feedback note is best-effort scrubbed and shown in the
 preview before sharing, but ordinary prose can still contain a media title or
-personal detail that automated redaction cannot identify. Review the preview and
+personal detail that automated redaction cannot identify. Other personal labels may also remain
+after generic redaction. Review the preview and
 edit anything you do not want to make public before opening a GitHub issue or
 sharing the report.
 
@@ -96,7 +103,9 @@ Labstream.
 
 ## Children
 
-Labstream is not directed at children and collects no personal information.
+Labstream is not directed at children and does not collect personal information from children for
+the developer. The local device/server data described above is used only to provide the app's
+requested media-client features.
 
 ## Contact
 

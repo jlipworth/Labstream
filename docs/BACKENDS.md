@@ -28,15 +28,16 @@ flowchart TD
 | --- | --- | --- | --- |
 | Sign-in | Plex PIN/OAuth and server discovery. | Server URL plus username/password or Quick Connect. | Emby Connect PIN or manual server URL plus username/password. |
 | Auth material | Plex account token and selected-server token/resource. | Server URL, access token, user ID, server ID. | Server URL, access token, user ID, server ID. |
-| Credential sync | Account token syncs across the user's devices via iCloud Keychain (shared sign-in). | Device-local; per-device sign-in. | Device-local; per-device sign-in. |
+| Credential sync | Account token may sync across canonical Keychain-backed installs via iCloud Keychain (shared sign-in). | Device-local; per-device sign-in. | Device-local; per-device sign-in. |
 | Browse | Plex library APIs. | MediaBrowser item APIs. | MediaBrowser-family item APIs with Emby-specific differences. |
 | Playback | Universal-transcode HLS decisions and direct/copy/transcode routes. | PlaybackInfo, resolved stream URLs, session progress, and active-encoding cleanup. | PlaybackInfo, resolved stream URLs, session progress, and separate active-encoding cleanup. |
 | Downloads | Direct originals, existing server versions, and server-rendered compatible copies. | Static original/range transfers or server-selected stream outputs. | Direct static, prepared static, compatible remux, or convert-then-static lanes. |
 | Music | Plex music provider. | MediaBrowser music provider. | MediaBrowser music provider. |
 
-Only the Plex account token syncs across devices; Jellyfin/Emby tokens are deliberately device-local
+Only the Plex account token may sync across canonical Keychain-backed installs; Jellyfin/Emby tokens are deliberately device-local
 because those servers bind the token to the device id used at sign-in. See `docs/DEVELOPMENT.md`
-§Credentials and iCloud Keychain sync for the full rationale.
+§Credentials and iCloud Keychain sync for the full rationale. Per-worktree Mac development
+identities use isolated credential storage instead of this canonical sync path.
 
 ## Canonical models and MediaBrowser sharing
 
@@ -114,8 +115,7 @@ folders rather than a `Plex/` directory.
 
 For MediaBrowser Home artwork (Jellyfin and Emby), synthetic season/series Primary sources are
 treated as portrait posters; Thumb and Backdrop fallbacks retain 16:9 request and presentation
-geometry. Automated policy, request, mapping, and hosted checks cover this; GitHub issue #245
-was the Emby/iPhone verification of that shared policy and is closed (see commit 82025875).
+geometry. Automated policy, request, mapping, and hosted checks cover this shared policy.
 
 ## Package boundary
 

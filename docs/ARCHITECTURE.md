@@ -23,7 +23,7 @@ flowchart TD
 
   UI[SwiftUI UI] --> Model
   UI --> Auth
-  UI --> Downloads
+  UI -->|download-capable products| Downloads
   UI --> Music
   UI --> Player[PlaybackController]
   UI --> SharePlay
@@ -31,7 +31,7 @@ flowchart TD
 
   Auth --> PMSKit[PMSKit requests, models, policies]
   Player --> PMSKit
-  Downloads --> PMSKit
+  Downloads -->|download-capable products| PMSKit
   Music --> PMSKit
   SharePlay --> PMSKit
 
@@ -50,16 +50,16 @@ attach the file-system-synchronized `Labstream/Shared/` root plus exactly one ro
 `Labstream/Platforms/`. Vision Pro, mobile, and Mac additionally attach the non-overlapping
 `Labstream/Capabilities/Downloads/` root; tvOS cannot compile or construct that capability.
 
-| Target / scheme | Entry point | Platform | Current marketing version |
-| --- | --- | --- | --- |
-| `Labstream` | `Labstream/Platforms/visionOS/App/Labstream.swift` | visionOS | 1.6.1 |
-| `LabstreamMobile` | `Labstream/Platforms/Mobile/App/LabstreamMobile.swift` | iOS and iPadOS | 1.6.1 |
-| `LabstreamMac` | `Labstream/Platforms/macOS/App/LabstreamMac.swift` | native macOS, not Catalyst | 1.6.1 |
-| `LabstreamTV` | `Labstream/Platforms/tvOS/App/LabstreamTV.swift` | tvOS | 1.6.1 |
+| Target / scheme | Entry point | Platform |
+| --- | --- | --- |
+| `Labstream` | `Labstream/Platforms/visionOS/App/Labstream.swift` | visionOS |
+| `LabstreamMobile` | `Labstream/Platforms/Mobile/App/LabstreamMobile.swift` | iOS and iPadOS |
+| `LabstreamMac` | `Labstream/Platforms/macOS/App/LabstreamMac.swift` | native macOS, not Catalyst |
+| `LabstreamTV` | `Labstream/Platforms/tvOS/App/LabstreamTV.swift` | tvOS |
 
-The marketing versions remain independently configurable. They were synchronized for the 1.6.1
-codebase milestone; that synchronization does not change the Mac or tvOS distribution status.
-The Xcode project is the source of truth for current version and deployment settings.
+Marketing versions remain independently configurable. The Xcode project is the source of truth
+for current version and deployment settings; synchronized version numbers do not change the Mac
+or tvOS distribution status.
 
 Shared files still use conditional compilation for genuinely inline framework and presentation
 differences. Capability and build variants also use `#if canImport(...)`,
@@ -102,8 +102,10 @@ Cinema. Non-vision products construct neither capability. Keeping the live visio
 because entering Cinema can dismiss the window while the authenticated session, active player,
 and SharePlay coordination must survive until it reopens.
 
-`ContentView` receives the exact `AppRuntime` and is the launch gate. It registers system-entry routing, restores saved
-sessions once, presents restore/login/browse UI, and starts download reconciliation.
+`ContentView` receives the exact `AppRuntime` and is the launch gate. It registers system-entry
+routing, restores saved sessions once, and presents restoring, login, authenticated browse, or the
+restricted Offline launch surface on download-capable products; tvOS has no Offline state. It also
+starts download reconciliation where that capability exists.
 `RootView` receives the same runtime as the authenticated navigation shell and injects the app
 model, supported download manager, and music player into the view environment. Its visionOS-only SharePlay consumers read
 the coordinator inherited from the visionOS scene environment.
@@ -253,9 +255,8 @@ memory-only and bounded by both byte cost and entry count. Sprite sheets and fin
 cross a detached, eager ImageIO decode boundary before provider or MainActor cache publication; one
 BIF backing payload is retained, safe offline files are mapped, and normal seek lookup copies only
 the selected frame; the source-compatible `frames` accessor materializes all payloads only when
-explicitly read. Largest-real-BIF and tile-sheet peak-RSS measurement was a planned Wave 5 gate that the operator
-explicitly elected to forgo; no measurement gate remains outstanding (see
-docs/archive/plans/2026-07-21-simplification-performance.md).
+explicitly read. Largest-real-BIF and tile-sheet peak-RSS measurement is not a current release
+gate; the caches remain bounded by the policies described above.
 Their `DecodedImage` conversion is not shared-pipeline migration. Downloaded poster/chapter/BIF/subtitle
 payloads are validated before promotion: `DownloadSideAssetService.validate` decodes and structurally
 checks each payload kind ahead of the atomic staging write.
@@ -325,9 +326,10 @@ best-effort and index-as-you-browse rather than a full-library crawl. The cross-
 privacy and authenticated local-resolution boundary is canonical in
 [System integration](SYSTEM-INTEGRATION.md#shareplay-watch-together).
 
-Structured app diagnostics are local, bounded, redacted, and opt-in. MetricKit is a
-separate passive crash/hang channel: it keeps at most five redacted summaries, uploads
-nothing, and includes them only in a user-generated feedback report. Debug performance
+Structured app diagnostic event logging is local, bounded, redacted, and opt-in. On non-tvOS
+products, MetricKit is a separate passive crash/hang channel: it keeps at most five redacted
+summaries, uploads nothing automatically, and includes them only in a user-generated feedback
+report. Debug performance
 signposts compile to no-op implementations in Release. `RuntimeLifecycleCoordinator` consumes the
 existing aggregate-scene 500 ms handoff grace and emits typed active/inactive recovery reasons;
 best-effort diagnostic flushing happens only on genuine aggregate inactivity.

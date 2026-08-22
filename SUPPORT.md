@@ -2,7 +2,8 @@
 
 Labstream is a native Apple-platform client for **your own Plex Media Server, Jellyfin server, or Emby server**.
 
-The supported product paths documented here are Apple Vision Pro, iPhone, and iPad. The source
+The supported source-build and support paths documented here are Apple Vision Pro, iPhone, and iPad;
+that status does not by itself assert availability in any binary distribution channel. The source
 repository also contains a native Mac local-build development preview and an in-development
 streaming-only Apple TV target; neither is a released or supported App Store product.
 Contributors testing those targets should use
@@ -16,7 +17,9 @@ and [tvOS documentation](https://github.com/jlipworth/Labstream/blob/main/docs/T
   Plex mode requires a Plex account for PIN/OAuth sign-in; Emby mode can use Emby Connect PIN sign-in or a manual Emby server URL.
 - Labstream does not provide, host, sell, or bundle media. Playback and offline
   downloads are for media you are authorized to access on the server you choose.
-- Local-network playback is free. Plex remote (off-LAN) **video** streaming can require
+- Local-network playback is free. Under Plex's current
+  [remote playback requirements](https://support.plex.tv/articles/requirements-for-remote-playback-of-personal-media/),
+  remote (off-LAN) **video** streaming can require
   Plex Pass or Remote Watch Pass on your account, or Plex Pass on the server owner's
   account. This is a Plex service policy, not a Labstream feature.
 
@@ -28,14 +31,15 @@ and [tvOS documentation](https://github.com/jlipworth/Labstream/blob/main/docs/T
 
 ## Common questions
 
-- **A reinstall asks me to sign in again.** A normal upgrade install usually
-  preserves app state. Deleting Labstream, erasing the simulator/device, or
-  replacing an App Store/TestFlight build with a development build can clear the
-  app container, including stored tokens, so sign-in is expected.
+- **A reinstall asks me to sign in again.** A normal upgrade install usually preserves app state.
+  Deleting Labstream, erasing the simulator/device, or replacing a distribution build with a
+  development build can reset the app container and selected-session state. Canonical credentials
+  are Keychain-backed, but availability can still differ by identity, device, and Keychain state,
+  so a fresh sign-in may be required.
 - **Playback failed / spinner won't clear.** Labstream has a stall watchdog
-  that surfaces a "Playback failed" overlay and rebuilds the player. If it
-  persists, confirm the server is reachable and try a lower streaming quality in
-  Settings.
+  that can attempt a bounded recovery and otherwise surfaces a **Playback failed** / Retry overlay.
+  Choosing Retry rebuilds the player. If the problem persists, confirm the server is reachable and
+  try a lower streaming quality in Settings.
 - **Can I watch away from home?** Remote Plex video can require Plex Pass / Remote Watch
   Pass on your account, or Plex Pass on the server owner's account (a Plex policy).
   Jellyfin and Emby remote access depend on your server/network setup.
@@ -60,8 +64,9 @@ diagnostic report if you're comfortable sharing the redacted preview:
 3. Reproduce the problem once.
 4. On visionOS, iPhone, iPad, or Mac, tap **Send feedback to developer**,
    **Copy diagnostic report**, or **Export diagnostic report file**. On Apple TV,
-   Copy and Export are not available; use **Send feedback to developer** or
-   **Open a GitHub issue** and review the on-screen preview.
+   Copy and Export are not available; use **Send feedback to developer** for the preview/GitHub
+   handoff. A long report may not fit in the issue URL, so the handoff does not guarantee that the
+   full report transfers.
 5. Review the redacted report before sharing it.
 6. Turn diagnostic logging off again if you no longer need it.
 
@@ -75,4 +80,8 @@ usernames, library paths, filenames, and media titles.
 
 ## Privacy
 
-See the [Privacy Policy](https://github.com/jlipworth/Labstream/blob/main/PRIVACY.md). Labstream does not automatically send analytics, diagnostics, or personal data to the developer; app state and optional diagnostic reports stay local unless you choose to copy, export, share, or open a GitHub issue.
+See the [Privacy Policy](https://github.com/jlipworth/Labstream/blob/main/PRIVACY.md). Labstream does
+not automatically send analytics, diagnostics, or personal data to the developer. Optional
+diagnostic reports stay local unless you choose to copy, export, share, or open a GitHub issue;
+ordinary playback progress and other backend operations may still be sent to the media server you
+selected.

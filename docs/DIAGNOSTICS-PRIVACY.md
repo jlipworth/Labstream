@@ -15,17 +15,19 @@ flowchart TD
   Ring --> Report[Diagnostic report]
   MXRedact --> Report
   Report --> Preview[User preview]
-  Preview --> Copy[Copy/export/share]
+  Preview --> Copy[Explicit copy/export/share]
 ```
 
 ## Contract
 
 - Diagnostic event logging is off by default.
 - Events stay local in a 300-event process ring and, while logging is enabled, one
-  approximately 1 MB JSONL file plus up to three rotated archives. The disk copy is
-  already redacted and exists for user-initiated headset evidence after suspension or termination.
+  approximately 1 MB JSONL file plus up to three rotated archives. The same redacted event summary
+  is also emitted to Apple's local unified log. The disk copy is already redacted and exists for
+  user-initiated headset evidence after suspension or termination.
 - Reports are copied, exported, or shared only after a user action.
-- The app does not upload diagnostic reports.
+- The app does not upload diagnostic reports automatically. An explicit feedback/share action may
+  hand the report to GitHub or another destination selected by the user.
 - Reports must omit or redact tokens, client identifiers, hostnames/IP addresses, full URLs, usernames, library paths, filenames, and media titles.
 - Free-form user notes are best-effort scrubbed, but users should still review the preview before posting publicly.
 
@@ -51,10 +53,15 @@ A report may include:
 - connection scheme, not host;
 - selected quality settings;
 - Adaptive Bitrate state;
-- bucketed download counts, queue state, storage totals, and conservative orphan-candidate totals;
+- exact download counts and queue state, plus bucketed storage totals and conservative
+  orphan-candidate counts;
 - recent playback snapshot;
 - passive redacted MetricKit crash/hang/CPU/disk-write diagnostic summaries;
 - up to 80 recent redacted events from the current process ring.
+
+Download fields are absent on tvOS, which does not compile the Downloads capability. MetricKit
+summaries are unavailable on tvOS and are collected independently of the opt-in event-logging
+toggle on other platforms.
 
 The in-app report does not reload the rotating JSONL files. Those files are collected only by the
 repository's explicit evidence tooling, and still require the user to review anything before sharing it.
@@ -65,4 +72,6 @@ and container paths must not be emitted as raw identifiers or filesystem paths.
 
 ## Public issue reminder
 
-GitHub issues are public. The app and docs ask users to review diagnostic reports, screenshots, videos, and logs before submitting because automated redaction cannot understand every personal detail in free-form prose or images.
+GitHub issues are public. The app and docs ask users to review diagnostic reports, personal labels,
+screenshots, videos, and logs before submitting because automated redaction
+cannot understand every personal detail in free-form prose or images.

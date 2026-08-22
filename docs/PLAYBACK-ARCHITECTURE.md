@@ -279,9 +279,11 @@ in-controller item replacement. Controller stop, a surfaced playback failure, or
 autoplay tears it down. Metadata is published on each `AVPlayerItem`, including best-effort
 Plex-authenticated or cached offline artwork when those inputs are available, and the session's
 commands route play, pause, skip, and absolute seeks back through `PlaybackController`.
-The app-lifetime `ArtworkPipeline` supplies music/video system Now Playing, `AVPlayerItem`
-external metadata, ordinary posters, offline rows, and offline player art from the same exact
-authenticated/local flight and cost-cache boundary. Completed image values cross the immutable
+The app-lifetime `ArtworkPipeline` supplies music/video system Now Playing, ordinary posters,
+offline rows, offline player art, and `AVPlayerItem` external metadata on platforms where that API
+is available, from the same exact authenticated/local flight and cost-cache boundary. macOS
+publishes Now Playing artwork through `VideoNowPlayingCore` rather than `AVPlayerItem.externalMetadata`.
+Completed image values cross the immutable
 CGImage-backed `DecodedImage` boundary; original encoded bytes are retained only for
 `AVMetadataItem` artwork, and AppKit/UIKit images are created only at native publication bridges.
 Video and visionOS metadata completion additionally requires the exact descriptor, pipeline,
@@ -301,9 +303,8 @@ or under memory pressure. Sprite sheets and final scrub previews cross a detache
 eager ImageIO decode boundary before entering provider or MainActor cache state. A parsed BIF retains
 one backing payload, maps safe offline files, and normal seek lookup copies only the selected frame;
 the source-compatible `frames` accessor materializes all payloads only when explicitly read.
-Largest-real-BIF and tile-sheet peak-RSS measurement was a planned Wave 5 gate that the
-operator explicitly elected to forgo; no measurement gate remains outstanding (see
-docs/archive/plans/2026-07-21-simplification-performance.md).
+Largest-real-BIF and tile-sheet peak-RSS measurement is not a current release gate; the caches
+remain bounded by the policies described above.
 Those paths use `DecodedImage` at their image boundary, but that conversion is not shared-pipeline
 migration.
 

@@ -1,6 +1,10 @@
 # Downloads and offline playback
 
-Labstream downloads are designed to end in a local file the current device can play, plus enough metadata to show the item in the offline library and resume safely.
+Labstream downloads are implemented for the supported visionOS and iOS/iPadOS source-build paths and are designed
+to end in a local file the current device can play, plus enough metadata to show the item in the
+offline library and resume safely. The same engine is present in the [macOS development
+preview](MACOS.md), where background recovery remains preview validation rather than a reliability
+promise. The [tvOS development target](TVOS.md) compiles no Downloads capability or Offline surface.
 
 ```mermaid
 flowchart TD
@@ -94,8 +98,9 @@ fundamentally constrained by the platform, not by the server or the app:
   background-session event, it may delay the next opportunity to do app work. Any design that
   needs an app wake-up per bounded transfer therefore stalls after a handful of handoffs
   regardless of transfer size.
-- **Transfers started while backgrounded are treated as discretionary** — the system schedules
-  them at its own pace regardless of configuration.
+- **Background scheduling remains system-controlled.** Labstream asks for non-discretionary
+  transfers, but the OS still decides when background work runs and how much network/power budget
+  it receives.
 
 Labstream's static byte-range lane is shaped around these limits and follows the simplest
 Apple-standard architecture we can make stable:
@@ -123,7 +128,9 @@ sequenceDiagram
 ```
 
 - **A pre-queued train of closed-range segment tasks for known-size static files.** The
-  same segment-train engine runs on visionOS, iOS/iPadOS, and macOS.
+  same segment-train engine runs on visionOS, iOS/iPadOS, and the Mac preview; only the
+  visionOS/mobile paths document this as a supported capability, while Mac background recovery
+  remains preview validation.
   Static Plex/Jellyfin/Emby file routes enqueue up to `maxQueuedSegments` (currently 2) background
   `URLSessionDownloadTask`s ahead of the durable checkpoint, each a closed
   `Range: bytes=<offset>-<offset+segmentBytes-1>` request of `segmentBytes` (512 MiB) —
@@ -176,8 +183,8 @@ sequenceDiagram
   resume-blob adoption/clearing. A strangely resumed transfer is rejected, restarted, or
   falls back to the durable partial rather than appending unvalidated bytes.
 - **Why segments, not one task:** a visionOS wake bounce can silently restart the body of an
-  in-flight custom-`Range` request with no error and no resume-data callback (see the verified
-  platform finding in `docs/DEVELOPMENT.md`). With one open-ended task, that restart forfeits
+  in-flight custom-`Range` request with no error and no resume-data callback (see the
+  [verified platform finding](DEVELOPMENT.md#verified-platform-findings)). With one open-ended task, that restart forfeits
   every un-appended byte transferred off-head, unbounded overnight. With a segment train,
   nsurlsessiond executes pre-queued segments with the process dead — no per-continuation app
   wake is required — and a wake-time bounce can only restart the one segment that was mid-flight
@@ -195,11 +202,12 @@ real background continuation, lock/off-head scheduling, or cellular policy.
 User-facing expectations worth setting (the "downloads disclaimer"):
 
 - Very large background downloads are best-effort. Keeping the device on power helps; briefly
-  foregrounding the app resets the system's background rate limiter and gives Labstream a chance
-  to process completed tasks or recover from a failed resume blob.
-- Plex optimize and Emby convert have a server-preparation phase that needs the
-  app awake; after they hand off to a static file, the byte transfer can use the
-  static recovery path.
+  foregrounding the app gives Labstream a chance to process delivered completions or recover
+  app-owned work, without guaranteeing any change to the OS scheduler.
+- Plex optimize and Emby Convert are server-side preparation jobs. Their app-side polling and
+  handoff cannot run while the app is suspended; Emby Convert job identity is persisted so polling
+  can resume after relaunch. Once either route hands off to a static file, the byte transfer can use
+  the static recovery path.
 - Jellyfin optimized/compatible-remux downloads, and Emby compatible-remux
   downloads, can be live-forward encoder streams. They may continue as
   system-owned transfers while the OS allows it, but they are not durable

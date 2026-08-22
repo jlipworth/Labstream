@@ -1,6 +1,9 @@
 # Music architecture
 
-Labstream includes a music surface for browsing and playing tracks from the active backend.
+Labstream implements a music surface for browsing and playing tracks from the active backend on the
+supported visionOS and iOS/iPadOS source-build paths. The same shared music core is compiled into the macOS
+development preview and in-development tvOS target; that source coverage is not a distribution or
+platform-acceptance claim.
 
 ```mermaid
 flowchart TD
