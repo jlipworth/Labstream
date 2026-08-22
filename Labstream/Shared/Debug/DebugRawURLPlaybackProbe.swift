@@ -12,7 +12,7 @@ import os
 /// `--vp-probe-capture-frames` is present.
 @MainActor
 enum DebugRawURLPlaybackProbe {
-    private static let log = Logger(subsystem: "com.jlipworth.Labstream", category: "RawURLProbe")
+    private static let log = Logger(subsystem: "org.labstream.Labstream", category: "RawURLProbe")
 
     static func runIfRequested() async {
         let arguments = ProcessInfo.processInfo.arguments

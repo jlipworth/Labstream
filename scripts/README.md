@@ -233,7 +233,7 @@ scripts/perf-compare.py compare \
 - `validate-macos-pipeline.py` — enforces the trust-boundary/label rules (`platform: darwin/arm64`,
   `backend: local`, `purpose: mac-ci`) for the native Woodpecker CI workflow file.
 - `perf-macos-launch-idle.py` — external paired runner for two already-built Mac
-  `PerformanceAudit` apps using the same dedicated `com.jlipworth.Labstream.perf.*` identity. It validates both
+  `PerformanceAudit` apps using the same dedicated `org.labstream.Labstream.perf.*` identity. It validates both
   products with `performance-audit-contract.py`, preserves the system-managed container root while
   resetting only its mutable `Data` subtree, seeds the
   canonical empty download index, and records adjacent A/B launch logs or exact-PID 120-second

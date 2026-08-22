@@ -180,7 +180,7 @@ class RunnerTests(unittest.TestCase):
         self.home_patch.stop()
         self.home.cleanup()
 
-    def make_app(self, root, name, bundle="com.jlipworth.Labstream.perf.audit"):
+    def make_app(self, root, name, bundle="org.labstream.Labstream.perf.audit"):
         app = pathlib.Path(root) / name
         macos = app / "Contents/MacOS"
         macos.mkdir(parents=True)
@@ -223,7 +223,7 @@ class RunnerTests(unittest.TestCase):
 
     def test_seed_preserves_system_data_root_and_clears_only_children(self):
         with tempfile.TemporaryDirectory() as temporary:
-            container = pathlib.Path(temporary) / "com.jlipworth.Labstream.perf.audit"
+            container = pathlib.Path(temporary) / "org.labstream.Labstream.perf.audit"
             data = container / "Data"
             data.mkdir(parents=True, mode=0o700)
             data.chmod(0o700)
@@ -244,7 +244,7 @@ class RunnerTests(unittest.TestCase):
     def test_seed_rejects_symlinked_data_root_without_touching_target(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
-            container = root / "com.jlipworth.Labstream.perf.audit"
+            container = root / "org.labstream.Labstream.perf.audit"
             target = root / "outside"
             container.mkdir()
             target.mkdir()
@@ -398,11 +398,11 @@ class RunnerTests(unittest.TestCase):
 
     def test_app_validation_rejects_production_mismatch_and_symlinks(self):
         with tempfile.TemporaryDirectory() as temporary:
-            prod = self.make_app(temporary, "Prod.app", "com.jlipworth.Labstream")
-            with self.assertRaisesRegex(runner.RunnerError, "com.jlipworth.Labstream.perf"):
+            prod = self.make_app(temporary, "Prod.app", "org.labstream.Labstream")
+            with self.assertRaisesRegex(runner.RunnerError, "org.labstream.Labstream.perf"):
                 runner.validate_app("control", prod)
             control = self.make_app(temporary, "A.app")
-            other = self.make_app(temporary, "B.app", "com.jlipworth.Labstream.perf.other")
+            other = self.make_app(temporary, "B.app", "org.labstream.Labstream.perf.other")
             with self.assertRaisesRegex(runner.RunnerError, "same dedicated"):
                 runner.validate_pair(control, other)
             link = pathlib.Path(temporary) / "Link.app"
@@ -433,7 +433,7 @@ class RunnerTests(unittest.TestCase):
     def test_bundle_suffix_is_bounded(self):
         with tempfile.TemporaryDirectory() as temporary:
             app = self.make_app(temporary, "A.app",
-                                "com.jlipworth.Labstream.perf." + "a" * 49)
+                                "org.labstream.Labstream.perf." + "a" * 49)
             with self.assertRaisesRegex(runner.RunnerError, "lowercase-label"):
                 runner.validate_app("control", app)
 
@@ -490,7 +490,7 @@ class RunnerTests(unittest.TestCase):
                               document["duration_seconds"]), (1, 5, 120))
             self.assertEqual(document["settle_seconds"], 10)
             self.assertEqual(document["container"],
-                             str(pathlib.Path.home() / "Library/Containers/com.jlipworth.Labstream.perf.audit"))
+                             str(pathlib.Path.home() / "Library/Containers/org.labstream.Labstream.perf.audit"))
             self.assertEqual(document["samples"][0]["commands"]["reset"], {
                 "operation": "fd_anchored_clear_children",
                 "path": str(pathlib.Path(document["container"]) / "Data"),

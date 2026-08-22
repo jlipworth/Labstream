@@ -267,7 +267,7 @@ scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamMo
 app_path="$derived_data/Build/Products/Debug-iphonesimulator/Labstream.app"
 [[ -x $app_path/Labstream ]] || { printf 'Built app missing: %s\n' "$app_path" >&2; result_code=2; exit 2; }
 xcrun simctl install "$simid" "$app_path" >"$outdir/install.log" 2>&1
-installed_app=$(xcrun simctl get_app_container "$simid" com.jlipworth.Labstream app)
+installed_app=$(xcrun simctl get_app_container "$simid" org.labstream.Labstream app)
 built_uuid=$(xcrun dwarfdump --uuid "$app_path/Labstream" | awk '{print $2}')
 installed_uuid=$(xcrun dwarfdump --uuid "$installed_app/Labstream" | awk '{print $2}')
 [[ -n $built_uuid && $built_uuid == "$installed_uuid" ]] || {
@@ -277,11 +277,11 @@ installed_uuid=$(xcrun dwarfdump --uuid "$installed_app/Labstream" | awk '{print
 bounded_screenshot "$outdir/screen-start.png" >"$outdir/screenshot.log" 2>&1
 xcrun simctl io "$simid" recordVideo "$outdir/screen-recording.mp4" >"$outdir/record-video.log" 2>&1 &
 video_pid=$!
-xcrun simctl terminate "$simid" com.jlipworth.Labstream >/dev/null 2>&1 || true
-xcrun simctl launch "$simid" com.jlipworth.Labstream \
+xcrun simctl terminate "$simid" org.labstream.Labstream >/dev/null 2>&1 || true
+xcrun simctl launch "$simid" org.labstream.Labstream \
   --ui-testing --ui-testing-backend "$backend" --ui-testing-fixture browse \
   >"$outdir/launch.log" 2>&1
-app_pid=$(awk -F': ' '/com\.jlipworth\.Labstream:/{print $2}' "$outdir/launch.log" | tail -1)
+app_pid=$(awk -F': ' '/org\.labstream\.Labstream:/{print $2}' "$outdir/launch.log" | tail -1)
 sleep "$duration"
 [[ $app_pid =~ ^[0-9]+$ ]] || { printf 'Launch did not return an app PID.\n' >&2; exit 1; }
 
@@ -294,7 +294,7 @@ bounded_screenshot "$outdir/screen-end.png" >>"$outdir/screenshot.log" 2>&1
 # liveness probe fails with LaunchdSimError 111 even while the app is healthy. A successful exact-
 # bundle termination after capture proves the launched process was still registered without relying
 # on unavailable guest utilities.
-xcrun simctl terminate "$simid" com.jlipworth.Labstream >"$outdir/terminate.log" 2>&1
+xcrun simctl terminate "$simid" org.labstream.Labstream >"$outdir/terminate.log" 2>&1
 
 status=passed
 result_code=0

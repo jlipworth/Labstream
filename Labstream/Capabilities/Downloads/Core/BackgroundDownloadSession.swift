@@ -133,7 +133,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// app identity too; otherwise two Mac worktrees can accidentally reattach each other's
     /// in-flight transfers even though their sandbox containers are separate.
     static var identifier: String {
-        let bundleID = Bundle.main.bundleIdentifier ?? "com.jlipworth.Labstream"
+        let bundleID = Bundle.main.bundleIdentifier ?? "org.labstream.Labstream"
         return "\(bundleID).downloads.background"
     }
     #else
@@ -241,7 +241,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     private var loggedStaleAttemptCallbackPhases: Set<String> = []
     /// Cap UI progress publication to roughly 4 Hz total while preserving terminal updates.
     private let progressNotifyInterval: TimeInterval = 0.5
-    private static let appBundleIdentifier = "com.jlipworth.Labstream"
+    private static let appBundleIdentifier = "org.labstream.Labstream"
     private let lock = NSLock()
     /// Background URLSession construction itself can trigger delegate delivery. Keep the session
     /// dormant until schema-v3 ownership has committed and every pre-current task has disappeared.

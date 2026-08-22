@@ -10,8 +10,8 @@ This is the minimal release/distribution note for #228. It deliberately does not
 - Native macOS target: `LabstreamMac`
 - Local host deploy script: `scripts/deploy-macos-to-host.sh`
 - Local host validation script: `scripts/validate-macos-228.sh`
-- Default local Mac debug identity: per-worktree bundle id, e.g. `com.jlipworth.Labstream.dev.issue-228-macos`
-- Production/canonical bundle id remains `com.jlipworth.Labstream`
+- Default local Mac debug identity: per-worktree bundle id, e.g. `org.labstream.Labstream.dev.issue-228-macos`
+- Production/canonical bundle id remains `org.labstream.Labstream`
 - Mac App Store-first entitlement posture for v1: sandbox + network client
 - Downloads live in the app container for v1; external folders/security-scoped bookmarks are deferred
 

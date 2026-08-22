@@ -175,7 +175,7 @@ If Xcode says the iOS platform/runtime is missing or warns that the deployment t
 the installed SDK, install the matching iOS Simulator runtime/platform in Xcode Settings. A newer
 simulator runtime may not be usable with an older installed iOS SDK.
 
-The visionOS, mobile, and tvOS targets use `com.jlipworth.Labstream` for the intended product
+The visionOS, mobile, and tvOS targets use `org.labstream.Labstream` for the intended product
 identity on their respective platforms. A development install can replace another Labstream build
 with the same bundle identifier on the same compatible device, but separate simulator devices and
 operating-system platforms do not share or replace one another's app container or login state.
@@ -244,7 +244,7 @@ work. They never read or persist production credentials: `--ui-testing` starts s
 `--ui-testing-fixture browse` supplies synthetic data to the real Home/Libraries/Detail views:
 
 ```sh
-xcrun simctl launch "$SIMID" com.jlipworth.Labstream \
+xcrun simctl launch "$SIMID" org.labstream.Labstream \
   --ui-testing --ui-testing-backend plex --ui-testing-fixture browse
 ```
 
@@ -256,7 +256,7 @@ capture a screenshot:
 
 ```sh
 xcrun simctl install "$SIMID" "$APP"
-INSTALLED_APP=$(xcrun simctl get_app_container "$SIMID" com.jlipworth.Labstream app)
+INSTALLED_APP=$(xcrun simctl get_app_container "$SIMID" org.labstream.Labstream app)
 BUILT_UUID=$(xcrun dwarfdump --uuid "$APP/Labstream" | cut -d' ' -f2)
 INSTALLED_UUID=$(xcrun dwarfdump --uuid "$INSTALLED_APP/Labstream" | cut -d' ' -f2)
 [ "$BUILT_UUID" = "$INSTALLED_UUID" ] || {
@@ -265,8 +265,8 @@ INSTALLED_UUID=$(xcrun dwarfdump --uuid "$INSTALLED_APP/Labstream" | cut -d' ' -
 }
 printf '%s\n' "UUID_MATCH $BUILT_UUID"
 
-xcrun simctl terminate "$SIMID" com.jlipworth.Labstream 2>/dev/null || true
-xcrun simctl launch "$SIMID" com.jlipworth.Labstream
+xcrun simctl terminate "$SIMID" org.labstream.Labstream 2>/dev/null || true
+xcrun simctl launch "$SIMID" org.labstream.Labstream
 sleep 3
 xcrun simctl spawn "$SIMID" log show --last 2m \
   --predicate 'process == "Labstream"' | tail -120
@@ -453,7 +453,7 @@ explicit override.
 
 A certificate visible to `security find-identity -p codesigning -v` is not sufficient by itself for
 command-line automatic provisioning. If the build reports `No Account for Team` or that no profile
-for `com.jlipworth.Labstream` was found, sign the matching Apple ID into Xcode Settings and rerun the
+for `org.labstream.Labstream` was found, sign the matching Apple ID into Xcode Settings and rerun the
 script. For the first install, opening the project in Xcode, choosing the paired headset, and running
 the `Labstream` scheme once is also a valid way to let Xcode finish interactive registration and
 provisioning.
@@ -497,10 +497,10 @@ use still requires pairing/trust, Developer Mode, and the matching Apple ID in X
 
 The app persists its long-lived secrets in the Keychain (`Labstream/Shared/Auth/KeychainStore.swift`).
 Exactly one item is stored as an iCloud-synchronizable Keychain item: the **Plex account token**.
-Because the supported visionOS, iPhone, and iPad variants share the
-`com.jlipworth.Labstream` bundle id and Keychain service string, a Plex sign-in on any one device
-signs the others in on their next launch. A canonical production-style Mac build uses that same
-policy, but the normal per-worktree Mac development preview deliberately uses isolated,
+Because the canonical visionOS, iPhone/iPad, tvOS, and Mac variants share the
+`org.labstream.Labstream` bundle id and Keychain service string, a Plex sign-in can synchronize to
+another device through iCloud Keychain when the platform and the user's Keychain settings permit.
+The normal per-worktree Mac development preview deliberately uses isolated,
 backup-excluded credential storage instead; see [macOS development preview](MACOS.md).
 
 Everything else is deliberately device-local:
@@ -534,7 +534,7 @@ it and this section in agreement.
 ```sh
 SIMID=$(scripts/worktree-sim.sh --platform visionos id)
 xcrun simctl spawn "$SIMID" log show --last 10m --info --debug \
-  --predicate 'subsystem == "com.jlipworth.Labstream"'
+  --predicate 'subsystem == "org.labstream.Labstream"'
 ```
 
 ## Verified platform findings

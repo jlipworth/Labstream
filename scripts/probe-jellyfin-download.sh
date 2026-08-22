@@ -153,7 +153,7 @@ fi
 
 timeout_seconds=${LABSTREAM_PROBE_TIMEOUT_SECONDS:-$((observe_seconds + 70))}
 printf '==> Capturing app logs for ~%ss (unified: %s)\n' "$timeout_seconds" "$log_file"
-predicate='subsystem == "com.jlipworth.Labstream" AND (category == "JellyfinDownloadProbe" OR category == "Downloads")'
+predicate='subsystem == "org.labstream.Labstream" AND (category == "JellyfinDownloadProbe" OR category == "Downloads")'
 xcrun simctl spawn "$simid" log stream --style compact --level debug --predicate "$predicate" >"$log_file" 2>&1 &
 log_pid=$!
 cleanup() {
@@ -166,13 +166,13 @@ trap cleanup EXIT
 
 printf '==> Launching probe (stdout: %s, stderr: %s)\n' "$stdout_file" "$stderr_file"
 xcrun simctl launch --terminate-running-process --stdout="$stdout_file" --stderr="$stderr_file" \
-  "$simid" com.jlipworth.Labstream "${probe_args[@]}"
+  "$simid" org.labstream.Labstream "${probe_args[@]}"
 
 sleep "$timeout_seconds"
 if [[ $keep_app_running == "1" || $keep_app_running == "true" || $keep_app_running == "yes" ]]; then
   printf '==> Leaving Labstream running in simulator %s\n' "$simid"
 else
-  xcrun simctl terminate "$simid" com.jlipworth.Labstream >/dev/null 2>&1 || true
+  xcrun simctl terminate "$simid" org.labstream.Labstream >/dev/null 2>&1 || true
 fi
 cleanup
 trap - EXIT

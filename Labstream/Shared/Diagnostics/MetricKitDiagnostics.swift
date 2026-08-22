@@ -33,7 +33,7 @@ final class MetricKitDiagnostics: NSObject, MXMetricManagerSubscriber, @unchecke
     static let maxStored = 5
     private static let defaultsKey = "metricKitDiagnosticSummaries"
 
-    private let logger = Logger(subsystem: "com.jlipworth.Labstream", category: "Diagnostics")
+    private let logger = Logger(subsystem: "org.labstream.Labstream", category: "Diagnostics")
     private let lock = NSLock()
     private let defaults: UserDefaults
 

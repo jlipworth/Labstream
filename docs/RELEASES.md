@@ -8,20 +8,22 @@ Connect contact details, review credentials, tokens, private server addresses, o
 
 | Product | Source version | Distribution status |
 | --- | --- | --- |
-| Apple Vision Pro (`Labstream`) | 1.6.1 (build 1) | Primary release path. An earlier 1.6.0 (build 1) binary is available to the private internal TestFlight group; 1.6.1 has not been uploaded. |
-| iPhone and iPad (`LabstreamMobile`) | 1.6.1 (build 1) | Supported local and signed-device development path; no public App Store or TestFlight release. |
-| Apple TV (`LabstreamTV`) | 1.6.1 (build 1) | Streaming-only development target; not a released or supported App Store product. |
-| Mac (`LabstreamMac`) | 1.6.1 (build 1) | Local-build development preview; not a released or supported App Store product. |
+| Apple Vision Pro (`Labstream`) | 1.6.1 (build 1) | Universal-purchase release candidate; neutral-identity archive and upload pending. |
+| iPhone and iPad (`LabstreamMobile`) | 1.6.1 (build 1) | Universal-purchase release candidate; one iOS archive covers both device families. |
+| Apple TV (`LabstreamTV`) | 1.6.1 (build 1) | Streaming-only universal-purchase release candidate; physical-device acceptance remains open. |
+| Mac (`LabstreamMac`) | 1.6.1 (build 1) | Native universal-purchase release candidate; App Store sandbox and live-host acceptance remain open. |
 
-The four targets share a coordinated 1.6.1 codebase milestone, but version synchronization does
-not make every target a distribution candidate. The Xcode project remains the source of truth.
+The four targets share the neutral `org.labstream.Labstream` bundle identifier and are intended
+for one App Store Connect universal-purchase record. The earlier private visionOS 1.6.0 build used
+a retired personal-namespace identifier; it is not the publication record for 1.6.1 and cannot be
+migrated because Apple freezes a record's bundle identifier after its first build upload.
 
 `1.6.1` is the user-facing marketing version (`CFBundleShortVersionString`). The number in
 parentheses is the App Store build number (`CFBundleVersion`). A new marketing version begins at
 build 1; each replacement upload for the same platform and marketing version must use a higher
 build number.
 
-## Vision Pro release checklist
+## Apple-platform release checklist
 
 ### Repository and binary
 
@@ -29,15 +31,23 @@ build number.
       bundles, or personal media data, including in newly added files.
 - [ ] `PMSKit` hermetic tests, repository hygiene, strict MkDocs, and the affected native test
       matrix pass.
-- [ ] A clean Release archive is produced with the intended Xcode release and Apple Distribution
-      signing; the archive reports the expected marketing version and build number.
-- [ ] The archive passes Xcode validation and App Store Connect processing without compliance or
-      binary warnings.
-- [ ] The selected App Store Connect build metadata reports the intended minimum OS, device
-      family, entitlements, and supported architecture.
+- [ ] Clean Release archives are produced for iOS/iPadOS, visionOS, tvOS, and macOS with the
+      intended Xcode release and Apple Distribution signing; every archive reports the neutral
+      bundle identifier and expected marketing version and build number.
+- [ ] Every platform archive passes Xcode validation and App Store Connect processing without
+      compliance or binary warnings.
+- [ ] Each selected App Store Connect build reports the intended minimum OS, device family,
+      entitlements, and supported architecture.
 - [ ] A physical Vision Pro TestFlight smoke covers first launch, sign-in, browse, playback,
       seeking, subtitles, audio, Cinema, background/foreground, and diagnostics. Simulator smoke
       is useful but does not replace this gate.
+- [ ] Physical iPhone and iPad TestFlight smokes cover compact and regular-width navigation,
+      sign-in, playback, downloads, lifecycle, diagnostics, and accessibility.
+- [ ] A physical Apple TV TestFlight smoke covers Siri Remote focus/input, sign-in, browse,
+      playback, long-play behavior, audio/HDR routing, lifecycle, and accessibility. Downloads are
+      intentionally absent from this platform.
+- [ ] A TestFlight Mac smoke covers sandboxed sign-in, browse, playback, keyboard/media keys,
+      window lifecycle, downloads, diagnostics, and accessibility on the supported architectures.
 - [ ] The release commit is publicly available as corresponding GPLv3 source. Create the annotated
       coordinated tag `vX.Y.Z` only after the version commit exists and tagging is authorized.
 
@@ -50,9 +60,10 @@ build number.
 - [ ] The public support URL and privacy-policy URL resolve over HTTPS:
       [Support](https://jlipworth.github.io/Labstream/support/) and
       [Privacy](https://jlipworth.github.io/Labstream/privacy/).
-- [ ] At least one Apple Vision Pro screenshot is supplied at 3840 × 2160 pixels. Apple permits up
-      to ten screenshots and up to three optional landscape app previews per supported size and
-      localization. See Apple's current
+- [ ] Every platform version has reviewed screenshots for each required App Store device size;
+      the Vision Pro set includes at least one 3840 × 2160 image. Apple permits up to ten
+      screenshots and up to three optional app previews per supported size and localization. See
+      Apple's current
       [screenshot specifications](https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications)
       before capture because requirements can change.
 - [ ] Screenshots show only authorized media and contain no account, server, network, or personal
@@ -75,7 +86,7 @@ build number.
       media. Store credentials only in App Store Connect, never in Git or issue comments.
 - [ ] Review notes explain local-network access, direct connections to user-selected servers,
       optional offline downloads, the absence of bundled media, and where Cinema mode is found.
-- [ ] The correct build is attached to the platform version before **Add for Review** and the final
+- [ ] The correct build is attached to each platform version before **Add for Review** and the final
       **Submit for Review** action. See Apple's current
       [submission procedure](https://developer.apple.com/help/app-store-connect/manage-submissions-to-app-review/submit-an-app).
 

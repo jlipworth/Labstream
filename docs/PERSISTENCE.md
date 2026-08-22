@@ -113,6 +113,10 @@ iOS/visionOS; macOS host paths do not claim iOS file-protection semantics.
 
 Container paths are implementation details and should not appear in user-submitted diagnostic reports.
 
-## Compatibility identifiers
+## Publication identity boundary
 
-Some persisted identifiers still contain the original app identity, including the bundle identifier and a few app-support/session names. They are intentionally preserved so existing installs, Keychain entries, downloads, background sessions, and Spotlight state continue to work.
+The coordinated 1.6.1 publication uses the neutral `org.labstream.Labstream` identity throughout
+the bundle, Keychain service, background sessions, diagnostics, and Spotlight domains. It does not
+adopt persisted state from the retired private-TestFlight identity. Installing the neutral build is
+therefore a new app installation: users sign in again, and prior downloads, background sessions,
+Spotlight entries, and device-local preferences do not migrate.

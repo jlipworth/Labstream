@@ -10,7 +10,7 @@ import PMSKit
 /// It is inert unless explicitly launched with `--vp-probe-plex-download`.
 @MainActor
 enum DebugPlexDownloadProbe {
-    private static let log = Logger(subsystem: "com.jlipworth.Labstream", category: "DownloadProbe")
+    private static let log = Logger(subsystem: "org.labstream.Labstream", category: "DownloadProbe")
 
     static func runIfRequested(appModel: AppModel, downloadManager: DownloadManager) async {
         let arguments = ProcessInfo.processInfo.arguments

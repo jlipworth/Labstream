@@ -72,7 +72,7 @@ final class KeychainStore {
     private let writeInterceptor: ((String, String) -> Bool?)?
     private let deleteInterceptor: ((String) -> Bool?)?
 
-    init(service: String = "com.visionplay.app",
+    init(service: String = "org.labstream.Labstream",
          synchronizesPlexToken: Bool = true,
          fallbackPolicy: SecretFileFallbackPolicy = .current,
          fileManager: FileManager = .default,

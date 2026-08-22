@@ -19,7 +19,7 @@ import PMSKit
 /// `URLSession` delegate can call in from a delegate queue, so writes are locked.
 final class DownloadStore: @unchecked Sendable {
     private static let unsupportedRootCleanupQueue = DispatchQueue(
-        label: "com.jlipworth.Labstream.download-unsupported-root-cleanup", qos: .utility)
+        label: "org.labstream.Labstream.download-unsupported-root-cleanup", qos: .utility)
 
     struct IndexPersistence: Sendable {
         let atomicWrite: @Sendable (Data, URL) throws -> Void

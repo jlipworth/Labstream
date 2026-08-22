@@ -15,7 +15,7 @@ scripts/deploy-macos-to-host.sh --launch # also launch it
 
 By default the script builds `LabstreamMac` for `platform=macOS,arch=arm64` and overrides
 the local debug bundle id to a deterministic per-worktree value such as
-`com.jlipworth.Labstream.dev.issue-228-macos`. It also uses that dev bundle id as the
+`org.labstream.Labstream.dev.issue-228-macos`. It also uses that dev bundle id as the
 Mac keychain service for local debug runs, so parallel worktrees do not share the same
 sandbox container/keychain namespace by accident.
 
@@ -25,7 +25,7 @@ by another worktree's Mac app. iOS/visionOS keep their existing shipped backgrou
 identifier for update compatibility.
 
 Use `--use-production-bundle-id` only when intentionally testing the App Store identity
-`com.jlipworth.Labstream`. Release/App Store configuration remains canonical in the Xcode
+`org.labstream.Labstream`. Release/App Store configuration remains canonical in the Xcode
 target; the dev identity is a deploy-script build override.
 
 Safety notes:

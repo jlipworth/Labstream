@@ -11,7 +11,7 @@ enum AppDiagnostics {
     static let enabledDefaultsKey = "diagnosticLoggingEnabled"
     static let maxReportEvents = 80
 
-    private static let subsystem = "com.jlipworth.Labstream"
+    private static let subsystem = "org.labstream.Labstream"
     /// Per-process correlation token. `.identifier` hashes it before persistence, so exported
     /// diagnostics can join lifecycle/download events across one launch without exposing a UUID.
     private static let processRunID = UUID().uuidString

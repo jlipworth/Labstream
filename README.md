@@ -4,8 +4,8 @@
 [![visionOS 26](https://img.shields.io/badge/visionOS-26-black.svg)](https://developer.apple.com/visionos/)
 [![iOS 26.1+](https://img.shields.io/badge/iOS-26.1%2B-black.svg)](https://developer.apple.com/ios/)
 [![iPadOS 26.1+](https://img.shields.io/badge/iPadOS-26.1%2B-black.svg)](https://developer.apple.com/ipados/)
-[![tvOS 26 in development](https://img.shields.io/badge/tvOS-26%20in%20development-lightgrey.svg)](docs/TVOS.md)
-[![macOS 26 preview](https://img.shields.io/badge/macOS-26%20development%20preview-lightgrey.svg)](docs/MACOS.md)
+[![tvOS 26](https://img.shields.io/badge/tvOS-26-black.svg)](docs/TVOS.md)
+[![macOS 26](https://img.shields.io/badge/macOS-26-black.svg)](docs/MACOS.md)
 [![Swift 6](https://img.shields.io/badge/Swift-6-orange.svg)](https://www.swift.org/)
 [![Xcode 27](https://img.shields.io/badge/Xcode-27-blue.svg)](https://developer.apple.com/xcode/)
 
@@ -15,14 +15,15 @@ Labstream does not provide, host, sell, or bundle movies, TV, music, or other me
 
 The repository contains native targets for Apple Vision Pro, iPhone/iPad, Apple TV, and Mac. The
 visionOS target is the primary development path, `LabstreamMobile` is one universal iPhone/iPad
-target, `LabstreamTV` is an in-development streaming-only TV target, and `LabstreamMac` is a
-local-build development preview. They share the SwiftUI app core, custom AVFoundation player, and
+target, `LabstreamTV` is a streaming-only TV target, and `LabstreamMac` is the native Mac target.
+They share the SwiftUI app core, custom AVFoundation player, and
 `PMSKit` backend layer while owning platform-specific shells, input, and system integration.
 
 > **Distribution status:** Labstream is publicly distributed as source for local builds. The
-> primary visionOS path has an invitation-only internal TestFlight build, but there is no public
-> App Store release. iPhone/iPad distribution has not started, and Mac and Apple TV remain
-> development previews rather than distribution products. See the
+> former visionOS-only identity has an invitation-only internal TestFlight build, but there is no
+> public App Store release. The coordinated 1.6.1 release is preparing a new neutral universal-
+> purchase identity for visionOS, iOS/iPadOS, tvOS, and macOS. Platform versions remain pre-release
+> until their individual hardware, TestFlight, metadata, and App Review gates pass. See the
 > [release and App Store status](docs/RELEASES.md).
 
 > **Development status:** This is an active, pre-release project rather than a compatibility
@@ -101,12 +102,12 @@ Labstream is unofficial and independent. It is not affiliated with, endorsed by,
 | Apple Vision Pro / visionOS 26 | `Labstream` | Primary development and validation path. Includes the app-owned immersive cinema surface. |
 | iPhone / iOS 26.1+ | `LabstreamMobile` | Native adaptive mobile shell in active development. Local simulator and signed-device builds are supported. |
 | iPad / iPadOS 26.1+ | `LabstreamMobile` | The same universal mobile target, using the regular-width sidebar layout. Local simulator and signed-device builds are supported. |
-| Apple TV / tvOS 26+ | `LabstreamTV` | Native streaming-only development target with a ten-foot shell and custom Siri Remote player interactions. Downloads and Offline are absent; physical-device, parity, accessibility, system-integration, and release acceptance remain open. |
-| Apple-silicon Mac / macOS 26 | `LabstreamMac` | Local-build development preview only; not a supported distribution target or compatibility promise. Shared sign-in, playback, media-key, and background-download code is present, but live Mac validation is not yet equivalent to the primary visionOS lane. |
+| Apple TV / tvOS 26+ | `LabstreamTV` | Native streaming-only release candidate with a ten-foot shell and custom Siri Remote player interactions. Downloads and Offline are absent; physical-device, accessibility, system-integration, and release acceptance remain open. |
+| Mac / macOS 26 | `LabstreamMac` | Native release candidate with shared sign-in, playback, media-key, and background-download code. App Store signing, sandbox behavior, and live Mac acceptance remain open release gates. |
 
 ## Tech stack
 
-- SwiftUI app shells targeting visionOS 26, iOS/iPadOS 26.1+, and tvOS 26+, plus a macOS 26 development-preview target.
+- SwiftUI app shells targeting visionOS 26, iOS/iPadOS 26.1+, tvOS 26+, and macOS 26.
 - Swift 6 with strict concurrency.
 - Custom AVFoundation playback and offline playback paths.
 - `PMSKit`, a local Swift package for Plex/Jellyfin/Emby request builders, models,
@@ -134,14 +135,14 @@ macOS 26; it has no simulator lane.
 - Complete the [exact-product install, observable launch/log/screenshot smoke, and simulator shutdown](docs/DEVELOPMENT.md#install-and-observe-a-simulator-smoke).
 - Run the [core validation commands](docs/DEVELOPMENT.md#core-validation-commands) and clean up any [linked-worktree simulators](docs/DEVELOPMENT.md#linked-worktree-simulator-cleanup).
 
-### Physical devices and Mac preview
+### Physical devices and Mac
 
 - Apple Vision Pro: complete the [first-use pairing, Developer Mode, Xcode account/signing, install, and launch procedure](docs/DEVELOPMENT.md#physical-apple-vision-pro-install).
 - iPhone/iPad: use the canonical [signed hardware install procedure](docs/DEVELOPMENT.md#physical-iphone-or-ipad-install).
-- Apple TV: simulator procedures are documented today; physical Apple TV deployment and acceptance remain open development gates in the [tvOS target guide](docs/TVOS.md).
-- Apple-silicon Mac: use the [host development-preview procedure](docs/DEVELOPMENT.md#build-and-run-the-macos-development-preview).
+- Apple TV: simulator procedures are documented today; physical Apple TV deployment and acceptance remain open release gates in the [tvOS target guide](docs/TVOS.md).
+- Mac: use the [host validation procedure](docs/DEVELOPMENT.md#build-and-run-the-macos-development-preview).
 
-The visionOS, mobile, and tvOS app targets currently use `com.jlipworth.Labstream`. The Mac helper
+The visionOS, mobile, and tvOS app targets currently use `org.labstream.Labstream`. The Mac helper
 defaults to a per-worktree development bundle identifier so local host
 builds do not collide; see [macOS development preview](docs/MACOS.md).
 

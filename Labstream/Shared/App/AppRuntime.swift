@@ -144,7 +144,7 @@ private enum AppKeychainService {
             // host apps; they can fail with missing app-identifier/keychain entitlements
             // and they would also defeat worktree isolation. The canonical service keeps
             // the existing cross-device sync policy for production/App Store-style builds.
-            let isCanonicalService = service == "com.visionplay.app"
+            let isCanonicalService = service == "org.labstream.Labstream"
             return KeychainStore(service: service,
                                  synchronizesPlexToken: isCanonicalService,
                                  usesDevelopmentFileStorage: DevelopmentCredentialStoragePolicy
