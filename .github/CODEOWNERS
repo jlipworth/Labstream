@@ -1,0 +1,23 @@
+# Default maintainer review.
+* @jlipworth
+
+# Security, privacy, authentication, and diagnostics.
+/SECURITY.md @jlipworth
+/PRIVACY.md @jlipworth
+/Labstream/Shared/Auth/ @jlipworth
+/Labstream/Shared/Diagnostics/ @jlipworth
+/PMSKit/Sources/PMSKit/Diagnostics/ @jlipworth
+
+# Core protocol, playback, downloads, and platform UI.
+/PMSKit/ @jlipworth
+/Labstream/Shared/Player/ @jlipworth
+/Labstream/Capabilities/Downloads/ @jlipworth
+/Labstream/Platforms/ @jlipworth
+
+# CI, release, contribution, and published documentation surfaces.
+/.github/ @jlipworth
+/.woodpecker/ @jlipworth
+/scripts/ @jlipworth
+/docs/ @jlipworth
+/CONTRIBUTING.md @jlipworth
+/SUPPORT.md @jlipworth

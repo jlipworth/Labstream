@@ -97,12 +97,12 @@ struct EmbyConnectTests {
     @Test func pinDecodesConfirmedShapeWithStringNoneAccessToken() throws {
         // Live: a confirmed poll returns AccessToken as the literal string "none" pre-exchange.
         let data = #"""
-        {"Id":"22153871","Pin":"73494","DeviceId":"device-123","IsExpired":false,"IsConfirmed":true,"AccessToken":"none"}
+        {"Id":"pin-id-1","Pin":"73494","DeviceId":"device-123","IsExpired":false,"IsConfirmed":true,"AccessToken":"none"}
         """#.data(using: .utf8)!
 
         let pin = try JSONDecoder().decode(EmbyConnectPin.self, from: data)
 
-        #expect(pin.id == "22153871")
+        #expect(pin.id == "pin-id-1")
         #expect(pin.pin == "73494")
         #expect(pin.isConfirmed == true)
         #expect(pin.isExpired == false)
@@ -123,38 +123,38 @@ struct EmbyConnectTests {
     }
 
     @Test func exchangePinResultDecodesUserIdAndAccessToken() throws {
-        let data = #"{"UserId":"1717410","AccessToken":"connect-token"}"#.data(using: .utf8)!
+        let data = #"{"UserId":"connect-user-1","AccessToken":"connect-access-token"}"#.data(using: .utf8)!
         let result = try JSONDecoder().decode(EmbyConnectExchangePinResult.self, from: data)
 
-        #expect(result.userId == "1717410")
-        #expect(result.accessToken == "connect-token")
+        #expect(result.userId == "connect-user-1")
+        #expect(result.accessToken == "connect-access-token")
     }
 
     @Test func serverListDecodesAllObservedFields() throws {
-        // Field set confirmed live, including SupporterKey (absent from the client source).
+        // Field set confirmed from the public wire shape; all values are synthetic fixtures.
         let data = #"""
-        [{"Id":"93555d42","Url":"https://emby.example.org","Name":"emby-server",
-          "SystemId":"ec061cd8","AccessKey":"0ac5e2c3","LocalAddress":"http://192.0.2.10:8096",
+        [{"Id":"server-choice-1","Url":"https://emby.example.org","Name":"emby-server",
+          "SystemId":"server-system-1","AccessKey":"server-access-key","LocalAddress":"http://192.0.2.10:8096",
           "UserType":"Linked","SupporterKey":""}]
         """#.data(using: .utf8)!
 
         let servers = try JSONDecoder().decode([EmbyConnectServer].self, from: data)
         let server = try #require(servers.first)
 
-        #expect(server.systemId == "ec061cd8")
+        #expect(server.systemId == "server-system-1")
         #expect(server.name == "emby-server")
         #expect(server.url == "https://emby.example.org")
         #expect(server.localAddress == "http://192.0.2.10:8096")
-        #expect(server.accessKey == "0ac5e2c3")
+        #expect(server.accessKey == "server-access-key")
         #expect(server.userType == "Linked")
     }
 
     @Test func exchangeResultDecodesLocalUserIdAndAccessToken() throws {
-        let data = #"{"LocalUserId":"0e4d26e2","AccessToken":"server-token"}"#.data(using: .utf8)!
+        let data = #"{"LocalUserId":"local-user-1","AccessToken":"local-access-token"}"#.data(using: .utf8)!
         let result = try JSONDecoder().decode(EmbyConnectExchangeResult.self, from: data)
 
-        #expect(result.localUserId == "0e4d26e2")
-        #expect(result.accessToken == "server-token")
+        #expect(result.localUserId == "local-user-1")
+        #expect(result.accessToken == "local-access-token")
     }
 
     // MARK: API base from a Connect address

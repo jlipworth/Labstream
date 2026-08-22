@@ -17,6 +17,6 @@ steps:
   - name: unsigned-apple-builds-and-tests
     image: bash
     environment:
-      MACOS_CI_ARTIFACT_ROOT: /Users/ci/Library/Caches/Woodpecker/artifacts/labstream
+      MACOS_CI_ARTIFACT_ROOT: /Library/Caches/Woodpecker/artifacts/labstream
     commands:
       - ./scripts/ci-macos-apple-platforms.sh

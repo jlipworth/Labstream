@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "surface": "tracked",
+      "location": ".claude/skills/headless-pmskit-probe/SKILL.md",
+      "category": "plex_token_marker",
+      "reason": "The maintainer skill documents prohibited Plex header and environment-variable terminology without containing a credential value."
+    },
+    {
+      "surface": "tracked",
+      "location": ".codex/skills/headless-pmskit-probe/SKILL.md",
+      "category": "plex_token_marker",
+      "reason": "The mirrored maintainer skill documents prohibited Plex header and environment-variable terminology without containing a credential value."
+    },
+    {
+      "surface": "tracked",
+      "location": "docs/archive/research/*.md",
+      "category": "plex_token_marker",
+      "reason": "Archived protocol research necessarily names the public Plex authentication header; values remain redacted or synthetic."
+    },
+    {
+      "surface": "history",
+      "location": "PMSKit/Tests/**",
+      "category": "private_lan_ip",
+      "reason": "Hermetic redaction and URL-policy tests intentionally contain synthetic private-address fixtures."
+    },
+    {
+      "surface": "history",
+      "location": "LabstreamTests/**",
+      "category": "private_lan_ip",
+      "reason": "Hermetic app redaction and routing tests intentionally contain synthetic private-address fixtures."
+    },
+    {
+      "surface": "tracked",
+      "location": "docs/archive/research/09-transcode-api-deep-dive.md",
+      "category": "likely_raw_token",
+      "reason": "Archived protocol examples use the literal synthetic value YOURTOKEN and contain no usable credential."
+    },
+    {
+      "surface": "commit_message",
+      "location": "b1e7971c057",
+      "category": "likely_raw_token",
+      "reason": "This remediation commit describes a redacted token-marker fingerprint test and contains no credential value."
+    },
+    {
+      "surface": "github",
+      "location": "issue:100:comment:*",
+      "category": "home_path",
+      "reason": "The match is an Emby API Users route, not a filesystem home directory."
+    },
+    {
+      "surface": "github",
+      "location": "issue:201:comment:*",
+      "category": "home_path",
+      "reason": "The matches are Jellyfin API Users routes, not filesystem home directories."
+    },
+    {
+      "surface": "github",
+      "location": "issue:229:comment:*",
+      "category": "home_path",
+      "reason": "The matches are MediaBrowser API Users routes, not filesystem home directories."
+    }
+  ]
+}

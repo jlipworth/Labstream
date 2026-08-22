@@ -100,8 +100,11 @@ Labstream is not directed at children and collects no personal information.
 
 ## Contact
 
-Questions about privacy: open an issue at
-<https://github.com/jlipworth/Labstream/issues>.
+For ordinary, non-sensitive privacy questions, open an issue at
+<https://github.com/jlipworth/Labstream/issues>. If a question includes private data or describes
+a possible vulnerability, use
+[GitHub private vulnerability reporting](https://github.com/jlipworth/Labstream/security/advisories/new)
+instead of a public issue.
 
 ## Changes
 
