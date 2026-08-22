@@ -23,6 +23,18 @@ enum SessionRestorePerformanceOutcome: Equatable {
     var restoredField: Int { self == .usable ? 1 : 0 }
 }
 
+enum SessionRestoreOutcome: Equatable {
+    case notAttempted
+    case restored
+    case temporarilyUnavailable
+    case requiresSignIn
+
+    static func resolve(reportedRestored: Bool, hasUsableSession: Bool) -> Self {
+        if hasUsableSession { return .restored }
+        return reportedRestored ? .temporarilyUnavailable : .requiresSignIn
+    }
+}
+
 /// Drives the Plex PIN-OAuth login flow and persists the result.
 ///
 /// Flow:
@@ -58,6 +70,7 @@ final class AuthManager {
     }
 
     private(set) var state: State = .idle
+    private(set) var sessionRestoreOutcome: SessionRestoreOutcome = .notAttempted
 
     private let appModel: AppModel
     private let keychain: KeychainStore
@@ -206,6 +219,10 @@ final class AuthManager {
         }
         finishAuthAttempt(attemptID)
         let performanceOutcome = SessionRestorePerformanceOutcome.resolve(
+            reportedRestored: selectedRestored,
+            hasUsableSession: appModel.backendSession(for: selected) != nil
+        )
+        sessionRestoreOutcome = SessionRestoreOutcome.resolve(
             reportedRestored: selectedRestored,
             hasUsableSession: appModel.backendSession(for: selected) != nil
         )
@@ -1457,6 +1474,7 @@ final class AuthManager {
             signOutEmby()
         }
         state = .idle
+        sessionRestoreOutcome = .requiresSignIn
     }
 
     /// Coordinated local sign-out for every backend. Remote revocation remains best effort and
@@ -1493,6 +1511,7 @@ final class AuthManager {
         }
         appModel.activeBackend = .plex
         state = .idle
+        sessionRestoreOutcome = .requiresSignIn
 
         // Shared system integration is intentionally updated once after the coordinated clear.
         SpotlightIndexer.deleteAll()
