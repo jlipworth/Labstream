@@ -115,7 +115,7 @@ struct EmbyAuthTests {
         let server = try #require(URL(string: "https://emby.example.test/emby"))
         let request = try EmbyAuth.currentUserRequest(server: server, token: "token-abc",
                                                       identity: identity, userId: "user-9")
-        #expect(request.url == URL(string: "https://emby.example.test/emby/path/to/user"))
+        #expect(request.url == URL(string: "https://emby.example.test/emby/Users/user-9"))
         #expect(request.httpMethod == "GET")
         #expect(request.value(forHTTPHeaderField: "X-Emby-Token") == "token-abc")
     }

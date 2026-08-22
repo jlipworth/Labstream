@@ -63,7 +63,7 @@ struct SharePlayMediaIdentityTests {
             "[2001:db8::1] movie",
             "2001:db8::1 movie",
             "/library/metadata/123",
-            "/path/to/user/Movies/Movie.mkv",
+            "/Users/alice/Movies/Movie.mkv",
             #"C:\Media\Movie.mp4"#,
             "Movie.Name.2021.mkv",
             "ratingKey=12345",

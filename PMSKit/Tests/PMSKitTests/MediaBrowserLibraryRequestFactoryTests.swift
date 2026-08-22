@@ -48,7 +48,7 @@ struct MediaBrowserLibraryRequestFactoryTests {
                     identity: embyIdentity,
                     userId: "user-one"
                 ),
-                expected: "GET https://emby.example.test/emby-base/path/to/user/Views?IncludeExternalContent=false [Accept:application/json|Authorization:Emby UserId=\"user-one\", Client=\"Lab stream\", Device=\"Vision/Pro\", DeviceId=\"device+1\", Version=\"1.2.3\", Token=\"tok\\\"en\"|X-Emby-Token:tok\"en] body=nil"
+                expected: "GET https://emby.example.test/emby-base/Users/user-one/Views?IncludeExternalContent=false [Accept:application/json|Authorization:Emby UserId=\"user-one\", Client=\"Lab stream\", Device=\"Vision/Pro\", DeviceId=\"device+1\", Version=\"1.2.3\", Token=\"tok\\\"en\"|X-Emby-Token:tok\"en] body=nil"
             ),
             GoldenCase(
                 name: "Jellyfin items paging/search",
@@ -94,7 +94,7 @@ struct MediaBrowserLibraryRequestFactoryTests {
                     artistIds: "cc/dd",
                     filters: ["IsPlayed", "Likes"]
                 ),
-                expected: "GET https://emby.example.test/emby-base/path/to/user/Items?Fields=Overview,Genres&EnableUserData=true&ParentId=parent/one&Recursive=true&StartIndex=20&Limit=10&SearchTerm=A+B%20%26%20C&NameStartsWith=A&AlbumArtistIds=aa,bb&ArtistIds=cc/dd&IncludeItemTypes=Movie,Episode&Filters=IsPlayed,Likes&SortBy=DateCreated,SortName&SortOrder=Descending [Accept:application/json|Authorization:Emby UserId=\"user-one\", Client=\"Lab stream\", Device=\"Vision/Pro\", DeviceId=\"device+1\", Version=\"1.2.3\", Token=\"tok\\\"en\"|X-Emby-Token:tok\"en] body=nil"
+                expected: "GET https://emby.example.test/emby-base/Users/user-one/Items?Fields=Overview,Genres&EnableUserData=true&ParentId=parent/one&Recursive=true&StartIndex=20&Limit=10&SearchTerm=A+B%20%26%20C&NameStartsWith=A&AlbumArtistIds=aa,bb&ArtistIds=cc/dd&IncludeItemTypes=Movie,Episode&Filters=IsPlayed,Likes&SortBy=DateCreated,SortName&SortOrder=Descending [Accept:application/json|Authorization:Emby UserId=\"user-one\", Client=\"Lab stream\", Device=\"Vision/Pro\", DeviceId=\"device+1\", Version=\"1.2.3\", Token=\"tok\\\"en\"|X-Emby-Token:tok\"en] body=nil"
             ),
             GoldenCase(
                 name: "Jellyfin items omit empty optionals",
@@ -124,7 +124,7 @@ struct MediaBrowserLibraryRequestFactoryTests {
                     artistIds: "",
                     filters: []
                 ),
-                expected: "GET https://emby.example.test/emby-base/path/to/user/Items?Fields=Overview,Genres,MediaSources,People,Studios,ProviderIds,ParentId,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,CriticRating,Taglines,Chapters,ExtraIds,LocalTrailerCount,SpecialFeatureCount,RemoteTrailers,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags,ParentPrimaryImageItemId,ParentPrimaryImageTag,SeriesPrimaryImageTag&EnableUserData=true&Recursive=false&IncludeItemTypes=Movie,Series,Season,Episode,Video&SortBy=SortName&SortOrder=Ascending [Accept:application/json|Authorization:Emby UserId=\"u\", Client=\"Lab stream\", Device=\"Vision/Pro\", DeviceId=\"device+1\", Version=\"1.2.3\", Token=\"t\"|X-Emby-Token:t] body=nil"
+                expected: "GET https://emby.example.test/emby-base/Users/u/Items?Fields=Overview,Genres,MediaSources,People,Studios,ProviderIds,ParentId,PrimaryImageAspectRatio,UserData,OfficialRating,CommunityRating,CriticRating,Taglines,Chapters,ExtraIds,LocalTrailerCount,SpecialFeatureCount,RemoteTrailers,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags,ParentPrimaryImageItemId,ParentPrimaryImageTag,SeriesPrimaryImageTag&EnableUserData=true&Recursive=false&IncludeItemTypes=Movie,Series,Season,Episode,Video&SortBy=SortName&SortOrder=Ascending [Accept:application/json|Authorization:Emby UserId=\"u\", Client=\"Lab stream\", Device=\"Vision/Pro\", DeviceId=\"device+1\", Version=\"1.2.3\", Token=\"t\"|X-Emby-Token:t] body=nil"
             ),
             GoldenCase(
                 name: "Jellyfin album artists",
@@ -365,7 +365,7 @@ struct MediaBrowserLibraryRequestFactoryTests {
             ShapeGolden(
                 name: "Emby resume nil parent",
                 shape: emby.resumeItems(userId: "u &/1", parentId: nil, limit: 0, fields: "F"),
-                expected: "GET /path/to/user &/1/Items/Resume?Limit=0&IncludeItemTypes=Movie,Episode,Video&Fields=F&EnableUserData=true&EnableImages=true accept=nil"
+                expected: "GET /Users/u &/1/Items/Resume?Limit=0&IncludeItemTypes=Movie,Episode,Video&Fields=F&EnableUserData=true&EnableImages=true accept=nil"
             ),
             ShapeGolden(
                 name: "Jellyfin next up nil parent",
@@ -385,27 +385,27 @@ struct MediaBrowserLibraryRequestFactoryTests {
             ShapeGolden(
                 name: "Emby latest reserved item types",
                 shape: emby.latestItems(userId: "u", parentId: "p/1", includeItemTypes: "Movie,Video & X", limit: 2, fields: "F"),
-                expected: "GET /path/to/user/Items/Latest?Limit=2&IncludeItemTypes=Movie,Video & X&Fields=F&EnableUserData=true&EnableImages=true&GroupItems=false&ParentId=p/1 accept=nil"
+                expected: "GET /Users/u/Items/Latest?Limit=2&IncludeItemTypes=Movie,Video & X&Fields=F&EnableUserData=true&EnableImages=true&GroupItems=false&ParentId=p/1 accept=nil"
             ),
             ShapeGolden(
                 name: "Jellyfin metadata",
                 shape: jf.item(userId: "u/1", itemId: "i &+", fields: "F"),
-                expected: "GET /path/to/user/1/Items/i &+?fields=F accept=nil"
+                expected: "GET /Users/u/1/Items/i &+?fields=F accept=nil"
             ),
             ShapeGolden(
                 name: "Emby metadata",
                 shape: emby.item(userId: "u/1", itemId: "i &+", fields: "F"),
-                expected: "GET /path/to/user/1/Items/i &+?Fields=F accept=nil"
+                expected: "GET /Users/u/1/Items/i &+?Fields=F accept=nil"
             ),
             ShapeGolden(
                 name: "Jellyfin mark played",
                 shape: jf.markPlayed(userId: "u", itemId: "i", played: true),
-                expected: "POST /path/to/user/PlayedItems/i accept=nil"
+                expected: "POST /Users/u/PlayedItems/i accept=nil"
             ),
             ShapeGolden(
                 name: "Emby mark unplayed",
                 shape: emby.markPlayed(userId: "u", itemId: "i", played: false),
-                expected: "DELETE /path/to/user/PlayedItems/i accept=nil"
+                expected: "DELETE /Users/u/PlayedItems/i accept=nil"
             ),
             ShapeGolden(
                 name: "Jellyfin subtitle normalizes reserved format",

@@ -49,7 +49,7 @@ struct EmbyLibraryTests {
         let comps = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
 
         #expect(request.httpMethod == "GET")
-        #expect(comps.path == "/emby/path/to/user/Views")
+        #expect(comps.path == "/emby/Users/user-9/Views")
         #expect(request.value(forHTTPHeaderField: "X-Emby-Token") == "token-abc")
         #expect(request.value(forHTTPHeaderField: "Authorization")?.contains("UserId=\"user-9\"") == true)
     }
@@ -164,7 +164,7 @@ struct EmbyLibraryTests {
         let q = try query(request)
 
         // Canonical Emby browse path is /Users/{UserId}/Items, base path preserved.
-        #expect(comps.path == "/emby/path/to/user/Items")
+        #expect(comps.path == "/emby/Users/user-9/Items")
         #expect(q["Recursive"] == "true")
         #expect(q["IncludeItemTypes"] == "Movie")
         #expect(q["Fields"] == "MediaSources,Overview,Chapters,Genres")
@@ -194,7 +194,7 @@ struct EmbyLibraryTests {
         let url = try #require(request.url)
         let comps = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
 
-        #expect(comps.path == "/emby/path/to/user/Items/item-1")
+        #expect(comps.path == "/emby/Users/user-9/Items/item-1")
     }
 
     @Test func markPlayedRequestUsesPostAndUnplayedUsesDelete() throws {
@@ -202,7 +202,7 @@ struct EmbyLibraryTests {
         let unplayed = try EmbyLibrary.markPlayedRequest(server: server, token: "token-abc", identity: identity, userId: "user-9", itemId: "item-1", played: false)
 
         let playedURL = try #require(played.url)
-        #expect(URLComponents(url: playedURL, resolvingAgainstBaseURL: false)?.path == "/emby/path/to/user/PlayedItems/item-1")
+        #expect(URLComponents(url: playedURL, resolvingAgainstBaseURL: false)?.path == "/emby/Users/user-9/PlayedItems/item-1")
         #expect(played.httpMethod == "POST")
         #expect(unplayed.httpMethod == "DELETE")
     }

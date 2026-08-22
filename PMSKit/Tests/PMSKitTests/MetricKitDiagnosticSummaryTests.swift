@@ -43,7 +43,7 @@ final class MetricKitDiagnosticSummaryTests: XCTestCase {
     func testTerminationReasonWithPathIsRedacted() {
         let input = MetricKitDiagnosticInput(
             kind: .crash,
-            terminationReason: "Namespace SIGNAL, Code 11 at /path/to/user/Library/foo.dylib"
+            terminationReason: "Namespace SIGNAL, Code 11 at /Users/someone/Library/foo.dylib"
         )
         let summary = MetricKitDiagnosticSummarizer.summarize(input)
         XCTAssertTrue(summary.headline.contains("[path]"), summary.headline)
@@ -52,7 +52,7 @@ final class MetricKitDiagnosticSummaryTests: XCTestCase {
     }
 
     func testCallStackFramesAreCappedAndRedacted() {
-        let frames = (0..<20).map { "Labstream frame\($0) /path/to/user/build/Labstream.app/bin" }
+        let frames = (0..<20).map { "Labstream frame\($0) /Users/dev/build/Labstream.app/bin" }
         let input = MetricKitDiagnosticInput(kind: .crash, callStackFrames: frames)
         let summary = MetricKitDiagnosticSummarizer.summarize(input)
         XCTAssertEqual(summary.topFrames.count, MetricKitDiagnosticSummarizer.maxFrames)

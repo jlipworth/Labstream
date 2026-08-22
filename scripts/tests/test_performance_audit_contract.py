@@ -165,7 +165,7 @@ class PerformanceAuditContractTests(unittest.TestCase):
             root = pathlib.Path(temporary)
             for value, expected in (
                 ("https://private.invalid", "forbidden URL"),
-                ("/path/to/user/run", "forbidden absolute user path"),
+                ("/Users/private/run", "forbidden absolute user path"),
                 ("personal-device-name", "opaque local-device-NN"),
             ):
                 with self.subTest(value=value):

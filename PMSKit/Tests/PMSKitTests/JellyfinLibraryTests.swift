@@ -272,7 +272,7 @@ struct JellyfinLibraryTests {
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
         let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
 
-        #expect(components.path == "/base/path/to/user/Items/item-1")
+        #expect(components.path == "/base/Users/user-1/Items/item-1")
         #expect(query["userId"] == nil)
         #expect(request.value(forHTTPHeaderField: "Authorization")?.contains("Token=\"token-abc\"") == true)
     }
@@ -294,7 +294,7 @@ struct JellyfinLibraryTests {
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
         let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
 
-        #expect(components.path == "/base/path/to/user/Items/item-1")
+        #expect(components.path == "/base/Users/user-1/Items/item-1")
         #expect(query["userId"] == nil)
         #expect(query["fields"]?.contains("MediaSources") == true)
         #expect(query["fields"]?.contains("Chapters") == true)
@@ -443,7 +443,7 @@ struct JellyfinLibraryTests {
 
         #expect(played.httpMethod == "POST")
         #expect(unplayed.httpMethod == "DELETE")
-        #expect(played.url?.path == "/base/path/to/user/PlayedItems/item-1")
+        #expect(played.url?.path == "/base/Users/user-1/PlayedItems/item-1")
         #expect(played.value(forHTTPHeaderField: "Authorization")?.contains("Token=\"token-abc\"") == true)
     }
 

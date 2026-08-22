@@ -19,13 +19,13 @@ final class DiagnosticLoggingTests: XCTestCase {
     }
 
     func testRedactionRemovesSecretsUrlsHostsPathsFilenamesAndRawIdentifiers() {
-        let raw = "https://alice.example.com:32400/library/metadata/1?X-Plex-Token=secret-token clientIdentifier=ABCDEF0123456789ABCDEF0123456789 host=192.0.2.44 file=/path/to/user/Movies/Blade Runner 2049.mkv email=alice@example.com"
+        let raw = "https://alice.example.com:32400/library/metadata/1?X-Plex-Token=secret-token clientIdentifier=ABCDEF0123456789ABCDEF0123456789 host=192.0.2.44 file=/Users/alice/Movies/Blade Runner 2049.mkv email=alice@example.com"
         let redacted = DiagnosticRedactor.redact(raw)
 
         XCTAssertFalse(redacted.contains("secret-token"))
         XCTAssertFalse(redacted.contains("alice.example.com"))
         XCTAssertFalse(redacted.contains("192.0.2.44"))
-        XCTAssertFalse(redacted.contains("/path/to/user"))
+        XCTAssertFalse(redacted.contains("/Users/alice"))
         XCTAssertFalse(redacted.contains("Blade Runner 2049.mkv"))
         XCTAssertFalse(redacted.contains("alice@example.com"))
         XCTAssertFalse(redacted.contains("ABCDEF0123456789ABCDEF0123456789"))
@@ -435,8 +435,8 @@ final class DiagnosticLoggingTests: XCTestCase {
     /// Octet-validated IPv4: a real IP is redacted, but a four-part version string with a
     /// group > 255 (a Plex build) is preserved instead of being corrupted into [ip].
     func testIPv4RuleRedactsAddressesButPreservesVersionStrings() {
-        let redacted = DiagnosticRedactor.redact("server 192.0.2.10 running build 1.40.2.8395 ok")
-        XCTAssertFalse(redacted.contains("192.0.2.10"), "a real private IP must be redacted")
+        let redacted = DiagnosticRedactor.redact("server 10.0.0.5 running build 1.40.2.8395 ok")
+        XCTAssertFalse(redacted.contains("10.0.0.5"), "a real private IP must be redacted")
         XCTAssertTrue(redacted.contains("[ip]"))
         XCTAssertTrue(redacted.contains("1.40.2.8395"),
                       "a dotted version with a group > 255 must not be mistaken for an IP")

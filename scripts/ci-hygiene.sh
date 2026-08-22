@@ -263,7 +263,7 @@ while IFS= read -r -d '' path; do
 done < <(git ls-files -z)
 
 if ((${#archive_paths[@]} > 0)); then
-  if git grep -n -I -E -- '/Users/[A-Za-z0-9._-]+|/home/[A-Za-z0-9._-]+|/path/to/temp|\\b10\.([0-9]{1,3}\.){2}[0-9]{1,3}\b|\\b192\.168\.[0-9]{1,3}\.[0-9]{1,3}\b|\\b172\.(1[6-9]|2[0-9]|3[0-1])\.[0-9]{1,3}\.[0-9]{1,3}\b' -- "${archive_paths[@]}" | grep -v '/Users/AuthenticateByName'; then
+  if git grep -n -I -E -- '/Users/[A-Za-z0-9._-]+|/home/[A-Za-z0-9._-]+|/private/var/folders|\\b10\.([0-9]{1,3}\.){2}[0-9]{1,3}\b|\\b192\.168\.[0-9]{1,3}\.[0-9]{1,3}\b|\\b172\.(1[6-9]|2[0-9]|3[0-1])\.[0-9]{1,3}\.[0-9]{1,3}\b' -- "${archive_paths[@]}" | grep -v '/Users/AuthenticateByName'; then
     fail "public archive docs contain machine-local paths or private-LAN IP examples; scrub to placeholders such as /path/to/labstream or 192.0.2.10"
   fi
 fi

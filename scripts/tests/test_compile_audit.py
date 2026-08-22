@@ -78,7 +78,7 @@ class CompileAuditTests(unittest.TestCase):
 
     def test_warning_normalization_redacts_paths_urls_and_values(self):
         warning = audit.normalize_warning(
-            'file.swift: warning: at /path/to/user/private https://private.invalid "secret"'
+            'file.swift: warning: at /Users/person/private https://private.invalid "secret"'
         )
         self.assertNotIn("person", warning)
         self.assertNotIn("private.invalid", warning)

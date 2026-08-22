@@ -57,12 +57,12 @@ struct EmbyConnectTests {
     }
 
     @Test func serversRequestGetsUserIdWithConnectUserToken() {
-        let request = EmbyConnect.serversRequest(connectUserId: "connect-user-1",
+        let request = EmbyConnect.serversRequest(connectUserId: "1717410",
                                                  connectToken: "ctoken-abc",
                                                  identity: identity)
 
         #expect(request.httpMethod == "GET")
-        #expect(request.url == URL(string: "https://connect.emby.media/service/servers?userId=connect-user-1"))
+        #expect(request.url == URL(string: "https://connect.emby.media/service/servers?userId=1717410"))
         #expect(request.value(forHTTPHeaderField: "X-Application") == "Labstream/1.0")
         #expect(request.value(forHTTPHeaderField: "X-Connect-UserToken") == "ctoken-abc")
     }
@@ -75,7 +75,7 @@ struct EmbyConnectTests {
         let server = try #require(URL(string: "https://emby.example.test/emby"))
         let request = try EmbyConnect.exchangeRequest(server: server,
                                                       accessKey: "server-access-key",
-                                                      connectUserId: "connect-user-1",
+                                                      connectUserId: "1717410",
                                                       identity: identity)
 
         #expect(request.httpMethod == "GET")
@@ -84,7 +84,7 @@ struct EmbyConnectTests {
         #expect(comps.path == "/emby/Connect/Exchange")
         let items = Set(comps.queryItems ?? [])
         #expect(items.contains(URLQueryItem(name: "format", value: "json")))
-        #expect(items.contains(URLQueryItem(name: "ConnectUserId", value: "connect-user-1")))
+        #expect(items.contains(URLQueryItem(name: "ConnectUserId", value: "1717410")))
         // The AccessKey authenticates the exchange via X-Emby-Token.
         #expect(request.value(forHTTPHeaderField: "X-Emby-Token") == "server-access-key")
         // Plus the standard Emby identity header (no per-user token yet).

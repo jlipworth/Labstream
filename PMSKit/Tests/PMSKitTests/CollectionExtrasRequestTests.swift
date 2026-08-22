@@ -70,7 +70,7 @@ struct CollectionExtrasRequestTests {
                                                       userId: "user-1",
                                                       parentId: "library-1")
         let listURL = try #require(list.url)
-        #expect(listURL.path == "/emby/path/to/user/Items")
+        #expect(listURL.path == "/emby/Users/user-1/Items")
         #expect(!listURL.path.contains("/Collections"))
         #expect(try queryValue(list, "ParentId") == "library-1")
         #expect(try queryValue(list, "IncludeItemTypes") == "BoxSet")
@@ -84,7 +84,7 @@ struct CollectionExtrasRequestTests {
                                                               userId: "user-1",
                                                               collectionId: "boxset-1")
         let childURL = try #require(children.url)
-        #expect(childURL.path == "/emby/path/to/user/Items")
+        #expect(childURL.path == "/emby/Users/user-1/Items")
         #expect(!childURL.path.contains("/Collections"))
         #expect(try queryValue(children, "ParentId") == "boxset-1")
         #expect(try queryValue(children, "Recursive") == "false")
@@ -127,7 +127,7 @@ struct CollectionExtrasRequestTests {
                                                             identity: TestFixtures.embyIdentity,
                                                             userId: "user-1",
                                                             itemId: "movie-1")
-        #expect(try #require(trailers.url).path == "/emby/path/to/user/Items/movie-1/LocalTrailers")
+        #expect(try #require(trailers.url).path == "/emby/Users/user-1/Items/movie-1/LocalTrailers")
         #expect(try queryValue(trailers, "Fields") == MediaBrowserMetadataFieldProfiles.relatedMedia.fields)
         #expect(trailers.value(forHTTPHeaderField: "X-Emby-Token") == "emby-token")
         #expect(!(try #require(trailers.url).absoluteString.contains("emby-token")))
@@ -137,13 +137,13 @@ struct CollectionExtrasRequestTests {
                                                               identity: TestFixtures.embyIdentity,
                                                               userId: "user-1",
                                                               itemId: "movie-1")
-        #expect(try #require(features.url).path == "/emby/path/to/user/Items/movie-1/SpecialFeatures")
+        #expect(try #require(features.url).path == "/emby/Users/user-1/Items/movie-1/SpecialFeatures")
 
         let intros = try EmbyLibrary.introsRequest(server: TestFixtures.embyServer,
                                                    token: "emby-token",
                                                    identity: TestFixtures.embyIdentity,
                                                    userId: "user-1",
                                                    itemId: "movie-1")
-        #expect(try #require(intros.url).path == "/emby/path/to/user/Items/movie-1/Intros")
+        #expect(try #require(intros.url).path == "/emby/Users/user-1/Items/movie-1/Intros")
     }
 }

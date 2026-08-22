@@ -16,19 +16,19 @@ SPEC.loader.exec_module(AUDIT)
 class PublicationAuditTests(unittest.TestCase):
     def test_home_path_is_blocking_and_redacted(self):
         audit = AUDIT.Audit([], [])
-        audit.add_text("tracked", "doc.md", "build from /path/to/user/secret/project")
+        audit.add_text("tracked", "doc.md", "build from /Users/example/secret/project")
         self.assertEqual(audit.blockers, 1)
         report = AUDIT.render_text(audit)
         self.assertIn("/Users/<user>", report)
-        self.assertNotIn("/path/to/user", report)
+        self.assertNotIn("/Users/example", report)
 
     def test_private_ip_and_token_shaped_value_block_without_leaking(self):
         token = "not-a-real-secret-value-123456"
         audit = AUDIT.Audit([], [])
-        audit.add_text("tracked", "doc.md", f"host 192.0.2.10 token={token}")
+        audit.add_text("tracked", "doc.md", f"host 192.168.4.20 token={token}")
         self.assertEqual(audit.blockers, 2)
         report = AUDIT.render_json(audit, None, "a" * 40)
-        self.assertNotIn("192.0.2.10", report)
+        self.assertNotIn("192.168.4.20", report)
         self.assertNotIn(token, report)
 
     def test_documentary_header_can_be_narrowly_allowlisted(self):

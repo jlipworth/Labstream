@@ -669,8 +669,8 @@ class RunnerTests(unittest.TestCase):
         command = [sys.executable, str(runner.IDLE_EXTRACTOR), "--toc-xml", "/private/input.xml"]
         unsafe = subprocess.CalledProcessError(
             2, command,
-            output=(b'Traceback: /path/to/user/private.py line 4\n'
-                    b'error: failed /path/to/user/private.xml token=abc password=hunter2 '
+            output=(b'Traceback: /Users/alice/private.py line 4\n'
+                    b'error: failed /Users/alice/private.xml token=abc password=hunter2 '
                     b'Authorization: secret Bearer credential https://user:pass@example.test/x\n'),
         )
         failure = runner.idle_failure_record(unsafe)

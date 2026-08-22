@@ -262,7 +262,7 @@ struct MediaBrowserBrowseCoreTests {
         #expect(page.items.map(\.ratingKey) == ["snapshot"])
         let request = try #require(requests.value.first)
         #expect(request.url?.host == "emby-a.example")
-        #expect(request.url?.path == "/root/path/to/user/Items")
+        #expect(request.url?.path == "/root/Users/user-A/Items")
         #expect(request.value(forHTTPHeaderField: "X-Emby-Token") == "token-A")
         #expect(request.value(forHTTPHeaderField: "Authorization")?
             .contains("DeviceId=\"device\"") == true)

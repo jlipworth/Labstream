@@ -32,7 +32,7 @@ PLEX_TOKEN_ENV = "PLEX" + "_TOKEN"
 
 PATTERNS: dict[str, tuple[re.Pattern[str], bool]] = {
     "home_path": (
-        re.compile(r"/Users/(?!AuthenticateByName|Authenticate\b)[A-Za-z0-9._-]+|(?<![/A-Za-z0-9])/home/[A-Za-z0-9._-]+|/path/to/temp"),
+        re.compile(r"/Users/(?!AuthenticateByName|Authenticate\b)[A-Za-z0-9._-]+|(?<![/A-Za-z0-9])/home/[A-Za-z0-9._-]+|/private/var/folders"),
         True,
     ),
     "private_lan_ip": (
@@ -137,7 +137,7 @@ def redact(text: str, extras: list[str] | None = None) -> str:
         text = text.replace(value, "<configured-forbidden-value>")
     text = re.sub(r"/Users/[A-Za-z0-9._-]+", "/Users/<user>", text)
     text = re.sub(r"/home/[A-Za-z0-9._-]+", "/home/<user>", text)
-    text = re.sub(r"/path/to/temp/[^\s`)]+", "/path/to/temp/<redacted>", text)
+    text = re.sub(r"/private/var/folders/[^\s`)]+", "/private/var/folders/<redacted>", text)
     text = re.sub(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", "<redacted-email>", text)
     text = re.sub(
         r"\b(?:10\.(?:\d{1,3}\.){2}\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})\b",
@@ -241,7 +241,7 @@ def scan_history(audit: Audit, extras: list[str]) -> None:
     commits = run(["git", "rev-list", "--all"], check=True).stdout.splitlines()
     audit.scanned["historical_commits"] = len(commits)
     patterns = {
-        "home_path": r"/Users/(?!AuthenticateByName|Authenticate\b)[A-Za-z0-9._-]+|(?<![/A-Za-z0-9])/home/[A-Za-z0-9._-]+|/path/to/temp",
+        "home_path": r"/Users/(?!AuthenticateByName|Authenticate\b)[A-Za-z0-9._-]+|(?<![/A-Za-z0-9])/home/[A-Za-z0-9._-]+|/private/var/folders",
         "private_lan_ip": r"\b(10\.([0-9]{1,3}\.){2}[0-9]{1,3}|192\.168\.[0-9]{1,3}\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[0-1])\.[0-9]{1,3}\.[0-9]{1,3})\b",
         "plex_token_marker": re.escape(PLEX_TOKEN_HEADER) + "|" + re.escape(PLEX_TOKEN_ENV),
         "likely_raw_token": r"(?i)(bearer\s+[a-z0-9._~+/-]{12,}|token\s*[:=]\s*[a-z0-9._~+/-]{12,}|x-plex-token[=:][a-z0-9._~+/-]{4,})",

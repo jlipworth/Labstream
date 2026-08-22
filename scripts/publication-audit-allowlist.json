@@ -60,6 +60,30 @@
       "location": "issue:229:comment:*",
       "category": "home_path",
       "reason": "The matches are MediaBrowser API Users routes, not filesystem home directories."
+    },
+    {
+      "surface": "history",
+      "location": "CLAUDE.md",
+      "category": "home_path",
+      "reason": "Historical maintainer documentation used synthetic filesystem examples; concrete maintainer paths were removed by the publication rewrite."
+    },
+    {
+      "surface": "history",
+      "location": "LabstreamTests/**",
+      "category": "home_path",
+      "reason": "Hermetic tests use synthetic filesystem paths and MediaBrowser /Users API routes; concrete maintainer paths were removed by the publication rewrite."
+    },
+    {
+      "surface": "history",
+      "location": "PMSKit/Tests/**",
+      "category": "home_path",
+      "reason": "Hermetic tests use synthetic filesystem paths and MediaBrowser /Users API routes; concrete maintainer paths were removed by the publication rewrite."
+    },
+    {
+      "surface": "history",
+      "location": "scripts/**",
+      "category": "home_path",
+      "reason": "Audit regression fixtures and detection expressions intentionally contain synthetic home-path patterns; concrete maintainer paths were removed by the publication rewrite."
     }
   ]
 }

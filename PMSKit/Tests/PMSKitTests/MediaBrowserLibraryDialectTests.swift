@@ -48,8 +48,8 @@ struct MediaBrowserLibraryDialectTests {
         #expect(jellyfin.queryName(.includeItemTypes) == "includeItemTypes")
         #expect(jellyfin.queryName(.nameStartsWith) == "nameStartsWith")
 
-        #expect(emby.path(.userViews(userId: "user-9")) == "/path/to/user/Views")
-        #expect(emby.path(.items(userId: "user-9")) == "/path/to/user/Items")
+        #expect(emby.path(.userViews(userId: "user-9")) == "/Users/user-9/Views")
+        #expect(emby.path(.items(userId: "user-9")) == "/Users/user-9/Items")
         #expect(emby.path(.albumArtists) == "/Artists/AlbumArtists")
         #expect(emby.path(.playlistItems(playlistId: "playlist-9")) == "/Playlists/playlist-9/Items")
         #expect(!emby.includesUserIDInRootQuery)

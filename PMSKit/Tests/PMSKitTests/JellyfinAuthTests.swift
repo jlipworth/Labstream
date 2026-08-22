@@ -19,7 +19,7 @@ struct JellyfinAuthTests {
                                               deviceId: "device-1", version: "1.0")
         let request = JellyfinAuth.currentUserRequest(server: URL(string: "https://example.com/jellyfin")!,
                                                       token: "token-abc", identity: identity)
-        #expect(request.url?.absoluteString == "https://example.com/jellyfin/path/to/user")
+        #expect(request.url?.absoluteString == "https://example.com/jellyfin/Users/Me")
         #expect(request.value(forHTTPHeaderField: "Authorization")?.contains("Token=\"token-abc\"") == true)
     }
     @Test func authorizationHeaderUsesMediaBrowserScheme() throws {
@@ -126,7 +126,7 @@ struct JellyfinQuickConnectAuthTests {
             secret: "qc-secret",
             identity: identity)
 
-        #expect(request.url == URL(string: "https://jellyfin.example.test/base/path/to/user"))
+        #expect(request.url == URL(string: "https://jellyfin.example.test/base/Users/AuthenticateWithQuickConnect"))
         #expect(request.httpMethod == "POST")
         #expect(request.value(forHTTPHeaderField: "Accept") == "application/json")
         #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
