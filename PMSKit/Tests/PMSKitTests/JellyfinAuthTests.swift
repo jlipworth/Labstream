@@ -73,6 +73,26 @@ struct JellyfinAuthTests {
         #expect(object?["Username"] == "viewer")
         #expect(object?["Pw"] == "secret")
     }
+
+    @Test func authenticateByNameRequestPreservesEmptyPassword() throws {
+        let server = try #require(URL(string: "https://jellyfin.example.test"))
+        let identity = JellyfinClientIdentity(
+            client: "Labstream",
+            device: "Apple Vision Pro",
+            deviceId: "device-123",
+            version: "0.1.0")
+
+        let request = try JellyfinAuth.authenticateByNameRequest(
+            server: server,
+            username: "passwordless-viewer",
+            password: "",
+            identity: identity)
+
+        let body = try #require(request.httpBody)
+        let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: String])
+        #expect(object["Username"] == "passwordless-viewer")
+        #expect(object["Pw"] == "")
+    }
 }
 
 @Suite("Jellyfin Quick Connect auth")

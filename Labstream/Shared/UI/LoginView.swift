@@ -504,8 +504,9 @@ struct LoginView: View {
             return
         }
         let username = jellyfinUsername.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !username.isEmpty, !jellyfinPassword.isEmpty else {
-            errorMessage = "Enter your Jellyfin username and password."
+        guard BackendCredentialSignInPolicy.jellyfin.allowsSubmission(
+            server: jellyfinServer, username: username, password: jellyfinPassword) else {
+            errorMessage = "Enter your Jellyfin username."
             return
         }
         working = true
@@ -550,7 +551,8 @@ struct LoginView: View {
             return
         }
         let username = embyUsername.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !username.isEmpty, !embyPassword.isEmpty else {
+        guard BackendCredentialSignInPolicy.emby.allowsSubmission(
+            server: embyServer, username: username, password: embyPassword) else {
             errorMessage = "Enter your Emby username and password."
             return
         }

@@ -149,6 +149,36 @@ enum EmbySignInMethod: Equatable {
     case credentials
 }
 
+/// Backend-specific requirements for the direct username/password form.
+///
+/// Jellyfin permits passwordless users. Emby still requires a non-empty password;
+/// keep the policies explicit so a shared form cannot accidentally conflate them.
+enum BackendCredentialSignInPolicy {
+    case jellyfin
+    case emby
+
+    func allowsSubmission(server: String, username: String, password: String) -> Bool {
+        guard !server.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+
+        switch self {
+        case .jellyfin:
+            return true
+        case .emby:
+            return !password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    var requiresPassword: Bool {
+        switch self {
+        case .jellyfin: false
+        case .emby: true
+        }
+    }
+}
+
 struct BackendSelectionPicker: View {
     let selection: MediaBackendKind
     let onSelect: (MediaBackendKind) -> Void
@@ -472,8 +502,8 @@ struct JellyfinSignInFlow: View {
     }
 
     private var hasCredentialInput: Bool {
-        !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-        !password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        BackendCredentialSignInPolicy.jellyfin.allowsSubmission(
+            server: server, username: username, password: password)
     }
 
     @ViewBuilder
@@ -523,6 +553,7 @@ struct JellyfinSignInFlow: View {
             password: $password,
             isWorking: isWorking,
             signInTitle: "Sign in with Jellyfin",
+            requiresPassword: BackendCredentialSignInPolicy.jellyfin.requiresPassword,
             isSignInDisabled: isWorking || !hasServerInput || !hasCredentialInput,
             onSignIn: onSignInWithCredentials,
             onChooseDifferent: onChooseDifferentFromCredentials)
@@ -568,8 +599,8 @@ struct EmbySignInFlow: View {
     }
 
     private var hasCredentialInput: Bool {
-        !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-        !password.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        BackendCredentialSignInPolicy.emby.allowsSubmission(
+            server: server, username: username, password: password)
     }
 
     @ViewBuilder
@@ -621,6 +652,7 @@ struct EmbySignInFlow: View {
             isWorking: isWorking,
             signInTitle: "Sign in with Emby",
             accessibilityIdentifierPrefix: "performance.login.emby",
+            requiresPassword: BackendCredentialSignInPolicy.emby.requiresPassword,
             isSignInDisabled: isWorking || !hasServerInput || !hasCredentialInput,
             onSignIn: onSignInWithCredentials,
             onChooseDifferent: onChooseDifferentFromCredentials)
@@ -808,6 +840,7 @@ struct BackendCredentialsSignInForm: View {
     let signInTitle: String
     let accessibilityIdentifierPrefix: String?
     let systemImage: String
+    let requiresPassword: Bool
     let isSignInDisabled: Bool
     let chooseDifferentTitle: String
     let onSignIn: () -> Void
@@ -821,6 +854,7 @@ struct BackendCredentialsSignInForm: View {
          signInTitle: String,
          accessibilityIdentifierPrefix: String? = nil,
          systemImage: String = "person.crop.circle.badge.checkmark",
+         requiresPassword: Bool = true,
          isSignInDisabled: Bool,
          chooseDifferentTitle: String = "Choose a different sign-in method",
          onSignIn: @escaping () -> Void,
@@ -833,6 +867,7 @@ struct BackendCredentialsSignInForm: View {
         self.signInTitle = signInTitle
         self.accessibilityIdentifierPrefix = accessibilityIdentifierPrefix
         self.systemImage = systemImage
+        self.requiresPassword = requiresPassword
         self.isSignInDisabled = isSignInDisabled
         self.chooseDifferentTitle = chooseDifferentTitle
         self.onSignIn = onSignIn
@@ -924,7 +959,8 @@ struct BackendCredentialsSignInForm: View {
             hasServer = true
         }
         let hasUsername = !username.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let hasPassword = !password.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasPassword = !requiresPassword ||
+            !password.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return hasServer && hasUsername && hasPassword
     }
 
