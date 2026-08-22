@@ -19,6 +19,8 @@ public enum BrowseUIGate {
         case browse
         /// Show the neutral restore/connecting splash.
         case restoringSplash
+        /// Mount the deliberately restricted local-download surface.
+        case offline
         /// Show the sign-in screen.
         case login
     }
@@ -35,12 +37,14 @@ public enum BrowseUIGate {
     public static func state(isBrowseReady: Bool,
                              isRestoring: Bool,
                              isSwitchingBackend: Bool,
-                             hasEverBeenBrowseReady: Bool) -> State {
+                             hasEverBeenBrowseReady: Bool,
+                             canOpenOffline: Bool = false) -> State {
         if isBrowseReady { return .browse }
         // Keep an already-ready browse UI mounted through a switch instead of bouncing to the
         // splash — the new lane will flip `isBrowseReady` true again when it reports live.
         if isSwitchingBackend && hasEverBeenBrowseReady { return .browse }
         if isRestoring || isSwitchingBackend { return .restoringSplash }
+        if canOpenOffline { return .offline }
         return .login
     }
 }

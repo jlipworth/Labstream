@@ -284,6 +284,13 @@ transport, recovery work, persistence barriers, or background-completion durabil
   and files stay; `DownloadManager.pauseDownloadsForBackendSignOut` runs while credentials
   still exist so encoder teardown can use the right session. This is not cancel or delete.
 
+If the selected saved session cannot be restored because its server or network is temporarily
+unreachable, launch finishes in a restricted Offline surface when at least one completed media
+file is still present. This surface exposes only the local library/player plus reconnect,
+sign-in, Settings, resume-position, and deletion controls; it does not fabricate an authenticated
+browse session. Missing or explicitly invalid credentials continue to show sign-in instead, and
+tvOS never enters this path because it does not ship downloads.
+
 Season confirmation captures one immutable draft containing new rows and exact retry attempts. The
 Store validates every owner and commits insertions plus retry admission markers in one schema-v4
 snapshot before any lane starts; stale ownership, a normal persistence failure, and an indeterminate
