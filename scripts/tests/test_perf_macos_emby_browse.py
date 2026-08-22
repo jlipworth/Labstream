@@ -178,7 +178,7 @@ class BrowseRunnerTests(unittest.TestCase):
         self.home_patch.stop()
         self.home.cleanup()
 
-    def make_app(self, root, name, bundle="com.jlipworth.Labstream.perf.browse", service=None):
+    def make_app(self, root, name, bundle="org.labstream.Labstream.perf.browse", service=None):
         app = pathlib.Path(root) / name
         binary = app / "Contents/MacOS/Labstream"
         binary.parent.mkdir(parents=True)
@@ -662,8 +662,8 @@ class BrowseRunnerTests(unittest.TestCase):
 
     def test_validation_requires_dedicated_matching_keychain_service(self):
         with tempfile.TemporaryDirectory() as temporary:
-            control = self.make_app(temporary, "Control.app", service="com.visionplay.app")
-            candidate = self.make_app(temporary, "Candidate.app", service="com.visionplay.app")
+            control = self.make_app(temporary, "Control.app", service="org.labstream.Labstream")
+            candidate = self.make_app(temporary, "Candidate.app", service="org.labstream.Labstream")
             with self.assertRaisesRegex(runner.RunnerError, "dedicated performance"):
                 runner.validate_inputs(control, candidate)
 
@@ -826,7 +826,7 @@ class BrowseRunnerTests(unittest.TestCase):
 
     def test_keychain_reset_targets_only_closed_accounts_and_verifies_absence(self):
         fake = FakeExecutor([0, 44] * len(runner.AUTH_ACCOUNTS))
-        service = "com.jlipworth.Labstream.perf.browse"
+        service = "org.labstream.Labstream.perf.browse"
         runner.reset_performance_keychain(service, fake)
         self.assertEqual(len(fake.actions), 2 * len(runner.AUTH_ACCOUNTS))
         for account, delete, find in zip(runner.AUTH_ACCOUNTS,
@@ -839,10 +839,10 @@ class BrowseRunnerTests(unittest.TestCase):
 
     def test_keychain_reset_fails_closed_for_unproved_absence(self):
         with self.assertRaisesRegex(runner.RunnerError, "could not prove"):
-            runner.reset_performance_keychain("com.jlipworth.Labstream.perf.browse",
+            runner.reset_performance_keychain("org.labstream.Labstream.perf.browse",
                                               FakeExecutor([44, 0]))
         with self.assertRaisesRegex(runner.RunnerError, "non-performance"):
-            runner.reset_performance_keychain("com.visionplay.app", FakeExecutor())
+            runner.reset_performance_keychain("org.labstream.Labstream", FakeExecutor())
 
     def test_private_spec_is_exclusive_and_mode_0600(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -854,7 +854,7 @@ class BrowseRunnerTests(unittest.TestCase):
 
     def test_browse_preference_seed_is_closed_private_and_fixture_scoped(self):
         with tempfile.TemporaryDirectory() as temporary:
-            service = "com.jlipworth.Labstream.perf.browse"
+            service = "org.labstream.Labstream.perf.browse"
             container = pathlib.Path(temporary) / service
             (container / "Data/Library").mkdir(parents=True)
             digest = runner.seed_browse_preferences(container, service)

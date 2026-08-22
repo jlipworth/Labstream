@@ -5,7 +5,7 @@ import PMSKit
 /// Core Spotlight is unavailable on tvOS. Keep identifier parsing shared for deep-link
 /// compatibility while indexing becomes a no-op; Top Shelf owns TV discovery later.
 enum SpotlightIndexer {
-    static let domainIdentifier = "com.jlipworth.Labstream.media"
+    static let domainIdentifier = "org.labstream.Labstream.media"
 
     static func index(_ items: [MediaItem], server: URL) {}
     static func index(_ items: [MediaItem], backend: MediaBackendKind, server: URL) {}
@@ -40,7 +40,7 @@ import UniformTypeIdentifiers
 ///     These ids are token-free but still private user/server metadata and are never logged.
 enum SpotlightIndexer {
     /// Single domain for everything we index, so sign-out can wipe it in one call.
-    static let domainIdentifier = "com.jlipworth.Labstream.media"
+    static let domainIdentifier = "org.labstream.Labstream.media"
 
     /// Queue a batch for indexing. Fire-and-forget: indexing is a nicety and must
     /// never affect browse, so failures are only logged.

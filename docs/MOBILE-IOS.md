@@ -5,8 +5,8 @@ target:
 
 | Target / scheme | Platforms | Product name | Bundle identifier |
 | --- | --- | --- | --- |
-| `Labstream` | visionOS / visionOS Simulator | `Labstream` | `com.jlipworth.Labstream` |
-| `LabstreamMobile` | iOS, iPadOS, and iOS Simulator | `Labstream` | `com.jlipworth.Labstream` |
+| `Labstream` | visionOS / visionOS Simulator | `Labstream` | `org.labstream.Labstream` |
+| `LabstreamMobile` | iOS, iPadOS, and iOS Simulator | `Labstream` | `org.labstream.Labstream` |
 
 The repository also contains `LabstreamMac` as a local-build development preview. It is documented
 separately in [macOS development preview](MACOS.md) and is not part of the supported mobile product

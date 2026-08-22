@@ -148,15 +148,15 @@ final class DiagnosticLoggingTests: XCTestCase {
                                               operatingSystem: "macOS 26.5",
                                               deviceName: "Mac",
                                               platform: "macOS",
-                                              bundleIdentifier: "com.jlipworth.Labstream.dev.issue-228-macos",
-                                              keychainService: "com.jlipworth.Labstream.dev.issue-228-macos",
-                                              sandboxContainerIdentifier: "com.jlipworth.Labstream.dev.issue-228-macos",
+                                              bundleIdentifier: "org.labstream.Labstream.dev.issue-228-macos",
+                                              keychainService: "org.labstream.Labstream.dev.issue-228-macos",
+                                              sandboxContainerIdentifier: "org.labstream.Labstream.dev.issue-228-macos",
                                               backend: "Plex",
                                               server: "Plex Media Server 1.40",
                                               connectionScheme: "https",
                                               selectedQuality: "Home: 8 Mbps; Remote: 4 Mbps",
                                               adaptiveBitrateEnabled: true,
-                                              backgroundDownloadSessionIdentifier: "com.jlipworth.Labstream.dev.issue-228-macos.downloads.background",
+                                              backgroundDownloadSessionIdentifier: "org.labstream.Labstream.dev.issue-228-macos.downloads.background",
                                               downloadStorageLocation: "app-container/Application Support/Labstream/Downloads",
                                               downloadRecordCount: 3,
                                               activeDownloadCount: 1,
@@ -174,11 +174,11 @@ final class DiagnosticLoggingTests: XCTestCase {
                                                      generatedAt: Date(timeIntervalSince1970: 1_700_000_030))
 
         XCTAssertTrue(report.contains("- Platform: macOS"))
-        XCTAssertTrue(report.contains("- Bundle ID: com.jlipworth.Labstream.dev.issue-228-macos"))
-        XCTAssertTrue(report.contains("- Keychain service: com.jlipworth.Labstream.dev.issue-228-macos"))
-        XCTAssertTrue(report.contains("- Sandbox/container identity: com.jlipworth.Labstream.dev.issue-228-macos"))
+        XCTAssertTrue(report.contains("- Bundle ID: org.labstream.Labstream.dev.issue-228-macos"))
+        XCTAssertTrue(report.contains("- Keychain service: org.labstream.Labstream.dev.issue-228-macos"))
+        XCTAssertTrue(report.contains("- Sandbox/container identity: org.labstream.Labstream.dev.issue-228-macos"))
         XCTAssertTrue(report.contains("Downloads"))
-        XCTAssertTrue(report.contains("- Background session: com.jlipworth.Labstream.dev.issue-228-macos.downloads.background"))
+        XCTAssertTrue(report.contains("- Background session: org.labstream.Labstream.dev.issue-228-macos.downloads.background"))
         XCTAssertTrue(report.contains("- Storage location: app-container/Application Support/Labstream/Downloads"))
         XCTAssertTrue(report.contains("- Queue paused: no"))
         XCTAssertTrue(report.contains("- Records: 3 total, 1 active, 2 complete"))

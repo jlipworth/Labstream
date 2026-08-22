@@ -175,14 +175,14 @@ if [[ $scenario == fixture-home-passive ]]; then
   app_path="$derived_data/Build/Products/Debug-appletvsimulator/Labstream.app"
   [[ -x $app_path/Labstream ]] || { printf 'Built app missing: %s\n' "$app_path" >&2; result_code=2; exit 2; }
   xcrun simctl install "$simid" "$app_path" >"$outdir/install.log" 2>&1
-  installed_app=$(xcrun simctl get_app_container "$simid" com.jlipworth.Labstream app)
+  installed_app=$(xcrun simctl get_app_container "$simid" org.labstream.Labstream app)
   built_uuid=$(xcrun dwarfdump --uuid "$app_path/Labstream" | awk '{print $2}')
   installed_uuid=$(xcrun dwarfdump --uuid "$installed_app/Labstream" | awk '{print $2}')
   [[ -n $built_uuid && $built_uuid == "$installed_uuid" ]] || {
     printf 'Installed executable does not match built product.\n' >&2; exit 1;
   }
-  xcrun simctl terminate "$simid" com.jlipworth.Labstream >/dev/null 2>&1 || true
-  xcrun simctl launch "$simid" com.jlipworth.Labstream \
+  xcrun simctl terminate "$simid" org.labstream.Labstream >/dev/null 2>&1 || true
+  xcrun simctl launch "$simid" org.labstream.Labstream \
     --ui-testing --ui-testing-backend plex --ui-testing-fixture browse \
     >"$outdir/launch.log" 2>&1
   sleep 5

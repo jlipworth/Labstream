@@ -25,7 +25,7 @@
 #
 set -euo pipefail
 
-BUNDLE_ID="com.jlipworth.Labstream"
+BUNDLE_ID="org.labstream.Labstream"
 APP_NAME="Labstream"
 SCHEME="LabstreamMobile"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

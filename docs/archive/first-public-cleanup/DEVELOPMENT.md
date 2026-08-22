@@ -30,14 +30,14 @@ SIMID=$(scripts/worktree-sim.sh id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
 APP=$(/bin/ls -td "$HOME"/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-xrsimulator/Labstream.app | head -1)
 xcrun simctl install "$SIMID" "$APP"
-xcrun simctl terminate "$SIMID" com.jlipworth.Labstream 2>/dev/null || true
-xcrun simctl launch "$SIMID" com.jlipworth.Labstream
+xcrun simctl terminate "$SIMID" org.labstream.Labstream 2>/dev/null || true
+xcrun simctl launch "$SIMID" org.labstream.Labstream
 
 # After-the-fact logs
 xcrun simctl spawn "$SIMID" log show --last 5m --predicate 'process == "Labstream"' --style compact
 ```
 
-- App bundle id: `com.jlipworth.Labstream` · project deployment target: visionOS 26.0 · normal local sim runtime: the installed Apple Vision Pro visionOS 26.x runtime. Use `scripts/worktree-sim.sh id` and target `"$SIMID"`, not `booted`, because multiple worktree simulators can be running.
+- App bundle id: `org.labstream.Labstream` · project deployment target: visionOS 26.0 · normal local sim runtime: the installed Apple Vision Pro visionOS 26.x runtime. Use `scripts/worktree-sim.sh id` and target `"$SIMID"`, not `booted`, because multiple worktree simulators can be running.
 - Docs map: [`ARCHITECTURE.md`](../../ARCHITECTURE.md), [`PLAYBACK-ARCHITECTURE.md`](../../PLAYBACK-ARCHITECTURE.md), [`BACKENDS.md`](../../BACKENDS.md), [`DOWNLOADS-OFFLINE.md`](../../DOWNLOADS-OFFLINE.md), [`PERSISTENCE.md`](../../PERSISTENCE.md), [`DIAGNOSTICS-PRIVACY.md`](../../DIAGNOSTICS-PRIVACY.md), [`SYSTEM-INTEGRATION.md`](../../SYSTEM-INTEGRATION.md), and [`TESTING-STRATEGY.md`](../../TESTING-STRATEGY.md). Active implementation plans live under [`plans/`](https://github.com/jlipworth/Labstream/tree/main/docs/plans/), unresolved investigations under [`research/`](https://github.com/jlipworth/Labstream/tree/main/docs/research/), and historical research under [`archive/research/`](https://github.com/jlipworth/Labstream/tree/main/docs/archive/research/).
 - Profiling workflow: see [`docs/PROFILING.md`](PROFILING.md) for Instruments baseline targets, simulator/device caveats, and finding templates.
 - New Swift files are auto-included (Xcode file-system-synchronized groups + SPM
@@ -89,7 +89,7 @@ CI installs `requirements.txt` and runs `mkdocs build --strict` before deploying
   `timeout_not_ready`, making good and bad files indistinguishable. Instead add a `#if DEBUG`,
   launch-argument-gated probe (mirror `DebugPlexDownloadProbe`/`DebugJellyfinPlaybackProbe`), drop
   the test files into the app's Documents container
-  (`xcrun simctl get_app_container <sim> com.jlipworth.Labstream data`), launch with the arg, and
+  (`xcrun simctl get_app_container <sim> org.labstream.Labstream data`), launch with the arg, and
   read results from the log. This was how GH #98's post-download playability probe was reproduced:
   a fragmented MP4 (`empty_moov+delay_moov+mfra`, up to 1.9 GB / 120 fragments) plays fine in-app,
   confirming the probe failure is an intermittent timing false-negative, not an fMP4/container issue.

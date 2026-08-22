@@ -108,20 +108,17 @@ done < <(git ls-files -z)
 
 stale_paths=()
 while IFS= read -r -d '' path; do
-  case "$path" in
-    # Historical docs may intentionally reference the old bundle ID.
-    docs/archive/*)
-      ;;
-    *)
-      stale_paths+=("$path")
-      ;;
-  esac
+  stale_paths+=("$path")
 done < <(git ls-files -z)
-
-old_bundle_id="$(printf '%s%s' 'com.personal.' 'Labstream')"
-if ((${#stale_paths[@]} > 0)) && git grep -n -I -F -- "$old_bundle_id" -- "${stale_paths[@]}"; then
-  fail "stale bundle identifier $old_bundle_id found"
-fi
+stale_bundle_ids=(
+  "$(printf '%s%s' 'com.personal.' 'Labstream')"
+  "$(printf '%s%s%s' 'com.' 'jlip' 'worth.Labstream')"
+)
+for stale_bundle_id in "${stale_bundle_ids[@]}"; do
+  if ((${#stale_paths[@]} > 0)) && git grep -n -I -F -- "$stale_bundle_id" -- "${stale_paths[@]}"; then
+    fail "stale bundle identifier $stale_bundle_id found"
+  fi
+done
 
 scan_paths=()
 while IFS= read -r -d '' path; do

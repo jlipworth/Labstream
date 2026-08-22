@@ -59,7 +59,7 @@ class AgentPlatformRunnerTests(unittest.TestCase):
 
     def test_mobile_passive_liveness_uses_exact_bundle_not_missing_guest_kill(self) -> None:
         source = (ROOT / "scripts" / "agent-mobile-run.sh").read_text()
-        self.assertIn('simctl terminate "$simid" com.jlipworth.Labstream', source)
+        self.assertIn('simctl terminate "$simid" org.labstream.Labstream', source)
         self.assertNotIn('simctl spawn "$simid" /bin/kill', source)
 
     def test_bounded_command_records_output_and_times_out_process_group(self) -> None:

@@ -117,7 +117,7 @@ class ToolingHardeningTests(unittest.TestCase):
                 if [[ "$*" == *'-dvvv'* ]]; then
                   echo 'TeamIdentifier=TESTTEAM' >&2
                 else
-                  echo '<plist version="1.0"><dict><key>keychain-access-groups</key><array><string>TESTTEAM.com.jlipworth.Labstream</string></array></dict></plist>'
+                  echo '<plist version="1.0"><dict><key>keychain-access-groups</key><array><string>TESTTEAM.org.labstream.Labstream</string></array></dict></plist>'
                 fi
                 """))
             (fakebin / "codesign").chmod(0o755)

@@ -1222,7 +1222,7 @@ not a release claim, a regression finding, or a gate on the authorized merge.
    focused Mac tests, generic visionOS/iOS builds, tvOS build-for-testing, and adversarial review.
 9. The Mac runtime capture foundation now includes an external paired launch/idle runner. It accepts
    only two real `PerformanceAudit` apps with the same dedicated
-   `com.jlipworth.Labstream.perf.*` bundle identity,
+   `org.labstream.Labstream.perf.*` bundle identity,
    validates both binaries through the closed contract, and limits reset/seed work to the exact
    sandbox container's mutable `Data` subtree while preserving containermanagerd metadata. The
    deterministic schedule uses adjacent A/B pairs in the exact

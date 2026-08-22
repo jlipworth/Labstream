@@ -295,13 +295,13 @@ xcrun simctl install "$simid" "$app" >>"$outdir/install.log" 2>&1 || {
 }
 
 log_note "Launching Labstream..."
-xcrun simctl terminate "$simid" com.jlipworth.Labstream >/dev/null 2>&1 || true
+xcrun simctl terminate "$simid" org.labstream.Labstream >/dev/null 2>&1 || true
 launch_args=()
 if [ "$scenario" = "launch-fixture-home-passive" ]; then
   launch_args=(--ui-testing --ui-testing-backend plex --ui-testing-fixture browse)
 fi
 set +e
-xcrun simctl launch "$simid" com.jlipworth.Labstream "${launch_args[@]}" \
+xcrun simctl launch "$simid" org.labstream.Labstream "${launch_args[@]}" \
   >"$outdir/launch.log" 2>&1
 launch_exit_code=$?
 set -e
@@ -329,7 +329,7 @@ sleep "$duration"
 stop_recording
 collect_tail_artifacts
 
-if xcrun simctl get_app_container "$simid" com.jlipworth.Labstream app >/dev/null 2>&1; then
+if xcrun simctl get_app_container "$simid" org.labstream.Labstream app >/dev/null 2>&1; then
   log_note "App container exists after launch."
 fi
 

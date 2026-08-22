@@ -16,7 +16,7 @@ cd "$ROOT"
 
 SUFFIX="${LABSTREAM_MAC_SMOKE_SUFFIX:-macos-228-smoke}"
 DURATION_SECONDS="${LABSTREAM_MAC_SMOKE_SECONDS:-8}"
-CANONICAL_BUNDLE_ID="com.jlipworth.Labstream"
+CANONICAL_BUNDLE_ID="org.labstream.Labstream"
 EFFECTIVE_BUNDLE_ID="$CANONICAL_BUNDLE_ID.dev.$SUFFIX"
 LOG_DIR="$ROOT/build/validation/macos-228"
 mkdir -p "$LOG_DIR"
@@ -76,7 +76,7 @@ esac
 
 LOG_SNAPSHOT="$LOG_DIR/macos-smoke-log-show.log"
 /usr/bin/log show --last 2m --style compact \
-  --predicate "process == \"Labstream\" OR subsystem == \"com.jlipworth.Labstream\"" \
+  --predicate "process == \"Labstream\" OR subsystem == \"org.labstream.Labstream\"" \
   >"$LOG_SNAPSHOT" 2>&1 || true
 
 echo "running pid:  $APP_PID"

@@ -32,7 +32,7 @@ extension PlexBrowseService: PlexBrowseProbeServing {}
 @MainActor
 enum DebugPlexBrowseProbe {
     static let flag = "--vp-probe-plex-browse"
-    private static let log = Logger(subsystem: "com.jlipworth.Labstream", category: "PlexBrowseProbe")
+    private static let log = Logger(subsystem: "org.labstream.Labstream", category: "PlexBrowseProbe")
 
     enum Stage: String { case readiness, libraries, page, alphabet, hubs, search, onDeck = "on_deck", metadata, children, music, session, assertions }
     @MainActor final class Progress { var stage: Stage = .readiness }

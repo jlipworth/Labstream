@@ -287,7 +287,7 @@ fi
 timeout_seconds=${LABSTREAM_PROBE_TIMEOUT_SECONDS:-$((observe_seconds + pause_after_seconds + 70))}
 printf '==> Capturing app logs for ~%ss (unified: %s)\n' "$timeout_seconds" "$log_file"
 
-predicate='subsystem == "com.jlipworth.Labstream" AND (category == "DownloadProbe" OR category == "Downloads")'
+predicate='subsystem == "org.labstream.Labstream" AND (category == "DownloadProbe" OR category == "Downloads")'
 xcrun simctl spawn "$simid" log stream --style compact --level debug --predicate "$predicate" >"$log_file" 2>&1 &
 log_pid=$!
 cleanup() {
@@ -300,13 +300,13 @@ trap cleanup EXIT
 
 printf '==> Launching probe (stdout: %s, stderr: %s)\n' "$stdout_file" "$stderr_file"
 xcrun simctl launch --terminate-running-process --stdout="$stdout_file" --stderr="$stderr_file" \
-  "$simid" com.jlipworth.Labstream "${probe_args[@]}"
+  "$simid" org.labstream.Labstream "${probe_args[@]}"
 
 if [[ $relaunch_held -eq 1 ]]; then
   first_phase_seconds=$((observe_seconds + 18))
   printf '==> Waiting %ss for held bodies, then terminating for relaunch\n' "$first_phase_seconds"
   sleep "$first_phase_seconds"
-  xcrun simctl terminate "$simid" com.jlipworth.Labstream >/dev/null 2>&1 || true
+  xcrun simctl terminate "$simid" org.labstream.Labstream >/dev/null 2>&1 || true
   # CoreSimulator can opportunistically shut the device down after the only foreground process is
   # terminated. Rebooting here still preserves the app container and is a stronger relaunch seam.
   xcrun simctl boot "$simid" >/dev/null 2>&1 || true
@@ -322,7 +322,7 @@ if [[ $relaunch_held -eq 1 ]]; then
   [[ -n "$rating_key" ]] && relaunch_args+=(--vp-probe-rating-key "$rating_key")
   [[ -n "$query" ]] && relaunch_args+=(--vp-probe-query "$query")
   xcrun simctl launch --terminate-running-process --stdout="$stdout_file" --stderr="$stderr_file" \
-    "$simid" com.jlipworth.Labstream "${relaunch_args[@]}"
+    "$simid" org.labstream.Labstream "${relaunch_args[@]}"
   sleep 18
 else
   sleep "$timeout_seconds"
@@ -330,7 +330,7 @@ fi
 if [[ $keep_app_running == "1" || $keep_app_running == "true" || $keep_app_running == "yes" ]]; then
   printf '==> Leaving Labstream running in simulator %s\n' "$simid"
 else
-  xcrun simctl terminate "$simid" com.jlipworth.Labstream >/dev/null 2>&1 || true
+  xcrun simctl terminate "$simid" org.labstream.Labstream >/dev/null 2>&1 || true
 fi
 cleanup
 trap - EXIT
@@ -542,8 +542,8 @@ if [[ $pause_only -eq 1 ]]; then
   cleanup_args=(--vp-probe-backend plex --vp-probe-plex-download --vp-probe-delete-existing)
   [[ -n "$rating_key" ]] && cleanup_args+=(--vp-probe-rating-key "$rating_key")
   [[ -n "$query" ]] && cleanup_args+=(--vp-probe-query "$query")
-  xcrun simctl launch --terminate-running-process "$simid" com.jlipworth.Labstream "${cleanup_args[@]}" >/dev/null
+  xcrun simctl launch --terminate-running-process "$simid" org.labstream.Labstream "${cleanup_args[@]}" >/dev/null
   sleep 7
-  xcrun simctl terminate "$simid" com.jlipworth.Labstream >/dev/null 2>&1 || true
+  xcrun simctl terminate "$simid" org.labstream.Labstream >/dev/null 2>&1 || true
 fi
 exit "$probe_status"

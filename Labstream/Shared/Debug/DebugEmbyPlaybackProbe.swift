@@ -15,7 +15,7 @@ import PMSKit
 /// signed in to Emby (the probe does not authenticate; sign in once via the UI first).
 @MainActor
 enum DebugEmbyPlaybackProbe {
-    private static let log = Logger(subsystem: "com.jlipworth.Labstream", category: "EmbyProbe")
+    private static let log = Logger(subsystem: "org.labstream.Labstream", category: "EmbyProbe")
 
     static func runIfRequested(appModel: AppModel) async {
         let arguments = ProcessInfo.processInfo.arguments

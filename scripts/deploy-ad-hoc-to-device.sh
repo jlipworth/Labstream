@@ -9,7 +9,7 @@
 # Prereqs:
 #   - Apple Distribution certificate installed in the keychain.
 #   - A non-expired Ad Hoc distribution provisioning profile for
-#     com.jlipworth.Labstream installed in Xcode's profile cache.
+#     org.labstream.Labstream installed in Xcode's profile cache.
 #   - The headset UDID registered in that Ad Hoc profile.
 #
 # Usage:
@@ -26,7 +26,7 @@
 #
 set -euo pipefail
 
-BUNDLE_ID="com.jlipworth.Labstream"
+BUNDLE_ID="org.labstream.Labstream"
 APP_NAME="Labstream"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILE_HELPER="$REPO/scripts/provisioning-profile-info.py"

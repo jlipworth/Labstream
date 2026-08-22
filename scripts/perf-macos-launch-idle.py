@@ -30,8 +30,8 @@ SUMMARY = ROOT / "scripts" / "perf-log-summary.py"
 IDLE_EXTRACTOR = ROOT / "scripts" / "perf-xctrace-idle-summary.py"
 COMPARE = ROOT / "scripts" / "perf-compare.py"
 IDLE_XCTRACE_XPATH = '//trace-toc[1]/run[1]/data[1]/table[@schema="thread-state"]'
-PRODUCTION_IDS = {"com.jlipworth.Labstream", "com.visionplay.app"}
-BUNDLE_ID_RE = re.compile(r"^com\.jlipworth\.Labstream\.perf\.[a-z0-9][a-z0-9-]{0,47}$")
+PRODUCTION_IDS = {"org.labstream.Labstream"}
+BUNDLE_ID_RE = re.compile(r"^org\.labstream\.Labstream\.perf\.[a-z0-9][a-z0-9-]{0,47}$")
 SAFE_BUNDLE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{2,199}$")
 CANONICAL_INDEX = b'{"schemaVersion":4,"rows":[]}\n'
 CANONICAL_INDEX_SHA256 = hashlib.sha256(CANONICAL_INDEX).hexdigest()
@@ -214,7 +214,7 @@ def validate_app(role: str, raw_path: pathlib.Path) -> App:
     if not isinstance(bundle_id, str) or not SAFE_BUNDLE_ID_RE.fullmatch(bundle_id):
         fail(f"{role} has an invalid bundle identifier")
     if bundle_id in PRODUCTION_IDS or not BUNDLE_ID_RE.fullmatch(bundle_id):
-        fail(f"{role} must use com.jlipworth.Labstream.perf.<lowercase-label>")
+        fail(f"{role} must use org.labstream.Labstream.perf.<lowercase-label>")
     if not isinstance(executable_name, str) or pathlib.PurePath(executable_name).name != executable_name:
         fail(f"{role} has an invalid CFBundleExecutable")
     executable = path / "Contents/MacOS" / executable_name

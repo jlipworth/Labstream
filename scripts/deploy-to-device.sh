@@ -30,7 +30,7 @@
 #
 set -euo pipefail
 
-BUNDLE_ID="com.jlipworth.Labstream"
+BUNDLE_ID="org.labstream.Labstream"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILE_HELPER="$REPO/scripts/provisioning-profile-info.py"
 cd "$REPO"

@@ -1,9 +1,9 @@
-# tvOS development target
+# tvOS target
 
-`LabstreamTV` is Labstream's native streaming-only Apple TV target. It is an active development
-target, not a released or supported App Store product. Simulator builds and deterministic TV tests
-are available; physical-device, complete backend parity, accessibility, system-integration,
-performance, TestFlight, and release acceptance remain open.
+`LabstreamTV` is Labstream's native streaming-only Apple TV target and a pre-release App Store
+candidate. Simulator builds and deterministic TV tests are available; physical-device, complete
+backend parity, accessibility, system-integration, performance, TestFlight, and release acceptance
+remain open.
 
 ## Current product boundary
 
@@ -88,7 +88,7 @@ Debug-only launch arguments provide production-isolated signed-out and synthetic
 They do not read or persist production credentials:
 
 ```sh
-xcrun simctl launch "$SIMID" com.jlipworth.Labstream \
+xcrun simctl launch "$SIMID" org.labstream.Labstream \
   --ui-testing --ui-testing-backend plex --ui-testing-fixture browse
 ```
 

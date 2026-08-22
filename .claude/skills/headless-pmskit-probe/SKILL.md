@@ -110,7 +110,7 @@ process** (so it reuses the app's Keychain session + the *same* `EmbyBrowseServi
 from `ContentView`'s startup task. It resolves an item by search query, opens playback,
 waits for `readyToPlay` + `rate > 0`, performs a seek, then asserts the playhead actually
 advanced during a hold — failing loudly if it stalls. All events go to `os.Logger`
-(subsystem `com.jlipworth.Labstream`, category e.g. `EmbyProbe`) and `AppDiagnostics`.
+(subsystem `org.labstream.Labstream`, category e.g. `EmbyProbe`) and `AppDiagnostics`.
 
 Run loop (Claude self-serves; the USER must sign in to that backend **once** first, since
 the probe does not authenticate):
@@ -123,8 +123,8 @@ APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Pr
 xcrun simctl install "$SIMID" "$APP"
 # 2. Launch with the probe flag (launch args go AFTER the bundle id). Optional overrides:
 #    --vp-probe-query "<title>"  --vp-probe-bitrate-kbps N  --vp-probe-seek-ms N
-xcrun simctl terminate "$SIMID" com.jlipworth.Labstream 2>/dev/null
-xcrun simctl launch "$SIMID" com.jlipworth.Labstream --vp-probe-emby-playback --vp-probe-query "Some Movie"
+xcrun simctl terminate "$SIMID" org.labstream.Labstream 2>/dev/null
+xcrun simctl launch "$SIMID" org.labstream.Labstream --vp-probe-emby-playback --vp-probe-query "Some Movie"
 # 3. Read the probe's own log lines (probe.start / probe.item_resolved / probe.progress / probe.pass|fail)
 xcrun simctl spawn "$SIMID" log show --last 2m --predicate 'process == "Labstream"' | grep -iE 'EmbyProbe|probe\.'
 ```

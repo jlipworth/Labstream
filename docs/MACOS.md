@@ -1,15 +1,13 @@
-# macOS development preview
+# macOS target
 
 Labstream includes a native macOS target on `main` for local source builds. The target and
 scheme are named `LabstreamMac` and require macOS 26. It compiles `Labstream/Shared/`,
 `Labstream/Capabilities/Downloads/`, and its exclusive `Labstream/Platforms/macOS/` owner
 root, plus the shared `PMSKit` package.
 
-The Mac target is a **development preview**, not a released or supported App Store product.
-Its final distribution, signing, credential-sharing, versioning, and App Store Connect strategy
-remain deferred. In particular, the repository's GPL section-7 exception currently names the
-visionOS, iOS, and iPadOS application paths; Mac distribution requires a separate licensing and
-release review.
+The Mac target is a **pre-release App Store candidate**, not yet a compatibility promise.
+Distribution signing, universal-purchase configuration, sandbox behavior, and live-host acceptance
+remain release gates. The repository's GPL section-7 exception covers the macOS application path.
 
 ## Current implementation
 
@@ -62,7 +60,7 @@ scripts/deploy-macos-to-host.sh --no-build --launch
 ```
 
 By default, the helper derives a development bundle identifier from the worktree, such as
-`com.jlipworth.Labstream.dev.issue-228-macos`. The staged app lives at
+`org.labstream.Labstream.dev.issue-228-macos`. The staged app lives at
 `build/macos-host/<identity>/Labstream.app`. This keeps parallel worktrees from sharing a sandbox,
 offline library, LaunchServices identity, or background-download session.
 
@@ -71,7 +69,7 @@ their sandbox instead of the production Keychain path. This avoids repeated Keyc
 an ad-hoc development app is rebuilt. The canonical production-style identity continues to use
 the normal Keychain policy, but it should be exercised only for intentional identity testing.
 
-`--use-production-bundle-id` switches to `com.jlipworth.Labstream`. Do not use it for routine
+`--use-production-bundle-id` switches to `org.labstream.Labstream`. Do not use it for routine
 development: multiple production-identity builds share the same LaunchServices identity,
 sandbox, Keychain behavior, and logs.
 

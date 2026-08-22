@@ -23,7 +23,7 @@ import PMSKit
 ///     live-transcode `.optimize` lane instead (forward-only; won't complete for a large item).
 @MainActor
 enum DebugJellyfinDownloadProbe {
-    private static let log = Logger(subsystem: "com.jlipworth.Labstream", category: "JellyfinDownloadProbe")
+    private static let log = Logger(subsystem: "org.labstream.Labstream", category: "JellyfinDownloadProbe")
 
     static func runIfRequested(appModel: AppModel, downloadManager: DownloadManager) async {
         let args = ProcessInfo.processInfo.arguments

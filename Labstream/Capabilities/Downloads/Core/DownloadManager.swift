@@ -131,10 +131,10 @@ import AVFoundation   // D1: AVURLAsset playability probe on a finished download
 import os
 
 /// Diagnostic log for the offline-download pipeline. Inspect with:
-///   log show --predicate 'subsystem == "com.jlipworth.Labstream"' --last 10m
+///   log show --predicate 'subsystem == "org.labstream.Labstream"' --last 10m
 /// Only scrubbed values are logged — never the token or full URL (the transcode
 /// URL carries `X-Plex-Token` as a query param), so we log `url.path` only.
-let downloadLog = Logger(subsystem: "com.jlipworth.Labstream", category: "Downloads")
+let downloadLog = Logger(subsystem: "org.labstream.Labstream", category: "Downloads")
 
 enum DownloadOptimizeStateLabel {
     static let queued = "queued"

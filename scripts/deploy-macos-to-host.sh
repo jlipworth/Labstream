@@ -3,7 +3,7 @@
 #
 # macOS has no simulator lane in this repo. This script treats macOS as the host
 # platform, never uses simctl/devicectl, and defaults to a per-worktree dev bundle
-# id so parallel worktrees do not all collide with com.jlipworth.Labstream state.
+# id so parallel worktrees do not all collide with org.labstream.Labstream state.
 #
 # Usage:
 #   scripts/deploy-macos-to-host.sh                 # build + stage dev app
@@ -15,9 +15,9 @@
 #   scripts/deploy-macos-to-host.sh --use-production-bundle-id --launch
 #
 # Dev identity controls:
-#   --bundle-id-suffix SUFFIX            use com.jlipworth.Labstream.dev.SUFFIX
+#   --bundle-id-suffix SUFFIX            use org.labstream.Labstream.dev.SUFFIX
 #   LABSTREAM_MAC_BUNDLE_ID_SUFFIX=...   env equivalent
-#   --use-production-bundle-id           use com.jlipworth.Labstream intentionally
+#   --use-production-bundle-id           use org.labstream.Labstream intentionally
 #                                        (Apple Development signed for canonical Keychain access)
 #
 # Safety:
@@ -32,7 +32,7 @@ cd "$REPO"
 
 APP_NAME="Labstream"
 SCHEME="LabstreamMac"
-CANONICAL_BUNDLE_ID="com.jlipworth.Labstream"
+CANONICAL_BUNDLE_ID="org.labstream.Labstream"
 BUILD=1
 LAUNCH=0
 DELETE=0
@@ -81,7 +81,7 @@ sanitize_suffix() {
 if [ "$USE_PRODUCTION" -eq 1 ]; then
   EFFECTIVE_BUNDLE_ID="$CANONICAL_BUNDLE_ID"
   IDENTITY_SLUG="production"
-  KEYCHAIN_SERVICE="com.visionplay.app"
+  KEYCHAIN_SERVICE="org.labstream.Labstream"
 else
   if [ -z "$BUNDLE_SUFFIX" ]; then
     BUNDLE_SUFFIX="$(git branch --show-current 2>/dev/null || basename "$REPO")"
@@ -103,7 +103,7 @@ STAGE_ROOT="$REPO/build/macos-host"
 STAGE_DIR="$STAGE_ROOT/$IDENTITY_SLUG"
 STAGED_APP="$STAGE_DIR/$APP_NAME.app"
 CONTAINER_PATH="$HOME/Library/Containers/$EFFECTIVE_BUNDLE_ID"
-LOG_COMMAND="log stream --style compact --predicate 'process == \"$APP_NAME\" OR subsystem == \"com.jlipworth.Labstream\"'"
+LOG_COMMAND="log stream --style compact --predicate 'process == \"$APP_NAME\" OR subsystem == \"org.labstream.Labstream\"'"
 
 echo "platform: macOS host (no simulator/devicectl/simctl)"
 echo "scheme:   $SCHEME"

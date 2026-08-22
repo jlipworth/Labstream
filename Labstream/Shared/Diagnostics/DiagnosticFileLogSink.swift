@@ -40,7 +40,7 @@ final class DiagnosticFileLogSink: @unchecked Sendable {
             .appendingPathComponent("Labstream", isDirectory: true)
             .appendingPathComponent("Diagnostics", isDirectory: true)
         self.fileURL = directoryURL.appendingPathComponent("app-diagnostics.jsonl")
-        self.queue = queue ?? DispatchQueue(label: "com.jlipworth.Labstream.diagnostics.file")
+        self.queue = queue ?? DispatchQueue(label: "org.labstream.Labstream.diagnostics.file")
     }
 
     var diagnosticsDirectory: URL { directoryURL }

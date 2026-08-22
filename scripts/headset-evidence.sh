@@ -9,7 +9,7 @@
 set -u
 set -o pipefail
 
-BUNDLE_ID="com.jlipworth.Labstream"
+BUNDLE_ID="org.labstream.Labstream"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEFAULT_OUT_ROOT="$REPO/build/headset-evidence"
 DEVICE_ID="${VP_DEVICE_ID:-}"

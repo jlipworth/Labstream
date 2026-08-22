@@ -23,7 +23,7 @@ xcrun simctl boot "$SIMID" 2>/dev/null || true   # no-op if already booted
 # but SKIP the Ld step — exit 0, no new binary, and the "fix" you then install is the OLD
 # app. Guard every fix build: delete the .app product first, and verify afterwards that
 # the binary mtime is fresh (and matches the installed copy via
-# `xcrun simctl get_app_container "$SIMID" com.jlipworth.Labstream app`).
+# `xcrun simctl get_app_container "$SIMID" org.labstream.Labstream app`).
 # ⚠️ DETERMINISTIC LC_UUID (don't be fooled): this project emits a content-INDEPENDENT
 # Mach-O UUID — two different builds (even a real source change) produce the IDENTICAL
 # `dwarfdump --uuid`, and even a full clean rebuild reuses it. So a cross-build UUID
@@ -45,7 +45,7 @@ scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme Labstream \
 # Install only the exact product from this worktree-local DerivedData path.
 APP="$DD/Build/Products/Debug-xrsimulator/Labstream.app"
 xcrun simctl install "$SIMID" "$APP"
-xcrun simctl terminate "$SIMID" com.jlipworth.Labstream; xcrun simctl launch "$SIMID" com.jlipworth.Labstream
+xcrun simctl terminate "$SIMID" org.labstream.Labstream; xcrun simctl launch "$SIMID" org.labstream.Labstream
 
 # Hermetic PMSKit correctness (live probes are always opt-in and excluded here)
 swift test --package-path PMSKit --no-parallel --skip 'Live.*ProbeTests'
@@ -57,7 +57,7 @@ edit the pbxproj to add one.
 ### Building the native iPad/iPhone target
 
 The mobile app target/scheme is `LabstreamMobile`; its product/display name is
-`Labstream` and it shares the bundle id `com.jlipworth.Labstream`.
+`Labstream` and it shares the bundle id `org.labstream.Labstream`.
 
 ```sh
 PLATFORM=iphone                    # change to ipad for the regular-width path
@@ -73,8 +73,8 @@ scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamMo
 
 APP="$DD/Build/Products/Debug-iphonesimulator/Labstream.app"
 xcrun simctl install "$SIMID" "$APP"
-xcrun simctl terminate "$SIMID" com.jlipworth.Labstream 2>/dev/null || true
-xcrun simctl launch "$SIMID" com.jlipworth.Labstream
+xcrun simctl terminate "$SIMID" org.labstream.Labstream 2>/dev/null || true
+xcrun simctl launch "$SIMID" org.labstream.Labstream
 ```
 
 Mobile simulator builds require an iOS Simulator runtime compatible with the installed
@@ -148,7 +148,7 @@ deletes the stale `Debug-xros/Labstream.app` product before building, and stamps
 internal Build ID via `scripts/build-version-args.sh`.
 
 ⚠️ **RECURRING SIGNING GOTCHA (hit often).** A command-line device build fails with
-`error: No Account for Team "<id>"` / `No profiles for 'com.jlipworth.Labstream' were found`
+`error: No Account for Team "<id>"` / `No profiles for 'org.labstream.Labstream' were found`
 **even though** `security find-identity -p codesigning -v` shows a valid "Apple Development"
 cert. The keychain cert alone is NOT enough for CLI automatic provisioning — Xcode must have
 the matching Apple ID **account** signed in (Xcode → Settings → Accounts → + → Apple ID).
@@ -187,10 +187,10 @@ xcrun simctl install "$SIMID" "$APP"
 # install==build, NOT that the binary is newer than your source edit — a clean build is what
 # proves the latter. dwarfdump prints full paths (which differ), so compare only the UUID token.
 B=$(xcrun dwarfdump --uuid "$APP/Labstream" | awk '{print $2}')
-I=$(xcrun dwarfdump --uuid "$(xcrun simctl get_app_container "$SIMID" com.jlipworth.Labstream app)/Labstream" | awk '{print $2}')
+I=$(xcrun dwarfdump --uuid "$(xcrun simctl get_app_container "$SIMID" org.labstream.Labstream app)/Labstream" | awk '{print $2}')
 [ "$B" = "$I" ] && echo UUID_MATCH || echo "UUID_MISMATCH built=$B installed=$I"
-xcrun simctl terminate "$SIMID" com.jlipworth.Labstream 2>/dev/null || true
-xcrun simctl launch "$SIMID" com.jlipworth.Labstream
+xcrun simctl terminate "$SIMID" org.labstream.Labstream 2>/dev/null || true
+xcrun simctl launch "$SIMID" org.labstream.Labstream
 xcrun simctl spawn "$SIMID" log show --last 2m --predicate 'process == "Labstream"' | tail -120
 xcrun simctl io "$SIMID" screenshot /tmp/labstream-smoke.png   # then Read it
 ```
@@ -333,7 +333,7 @@ misleading token/session error.
 Production container reset is intentionally guarded and requires both
 `--use-production-bundle-id` and `--allow-production-container-reset`; do not touch the
 production container unless explicitly testing/resetting the App Store identity. For old
-manual identities, inspect `~/Library/Containers/com.jlipworth.Labstream.dev.*` and remove
+manual identities, inspect `~/Library/Containers/org.labstream.Labstream.dev.*` and remove
 only stale dev containers after confirming they do not correspond to an active worktree.
 Current contributor guidance: `docs/MACOS.md`. The original host-helper rollout note is retained
 as historical context at `docs/archive/macos/MACOS-HOST-DEPLOYMENT.md`.

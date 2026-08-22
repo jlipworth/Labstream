@@ -100,7 +100,7 @@ cleanup() {
     kill -9 "$app_pid" 2>/dev/null || true
   fi
   /usr/bin/log show --start "$log_start" --style compact \
-    --predicate 'process == "Labstream" OR subsystem == "com.jlipworth.Labstream"' \
+    --predicate 'process == "Labstream" OR subsystem == "org.labstream.Labstream"' \
     >"$outdir/app.log" 2>&1 || true
   if ((ec != 0)) && ((result_code == 0)); then result_code=$ec; status=failed; fi
   write_result
