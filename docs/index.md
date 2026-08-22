@@ -4,7 +4,9 @@ Labstream is a native Apple-platform media client for Plex, Jellyfin, and Emby. 
 shipping path remains Apple Vision Pro, with a native universal iPhone/iPad target. The repository
 also contains an in-development streaming-only Apple TV target and a native Mac target as a
 local-build development preview; neither is a released or supported App Store product. Labstream
-is distributed as source for local builds and is designed around privacy: the app has no
+is distributed publicly as source, and an invitation-only internal TestFlight build exists for
+the primary visionOS release path. There is no public App Store release. Labstream is designed
+around privacy: the app has no
 developer-operated backend, talks to the media services/server you choose, and does not
 automatically send diagnostics or analytics to the developer.
 
@@ -24,7 +26,7 @@ flowchart TD
 
 ## Start here
 
-- **Users:** [Support & troubleshooting](support.md), [Report a bug](REPORTING-BUGS.md), and [Privacy policy](privacy.md).
+- **Users:** [Support & troubleshooting](support.md), [Report a bug](REPORTING-BUGS.md), [Privacy policy](privacy.md), and [Release and App Store status](RELEASES.md).
 - **Contributors:** [Development setup](DEVELOPMENT.md), [Testing strategy](TESTING-STRATEGY.md), [manual validation checklist](https://github.com/jlipworth/Labstream/blob/main/TESTING-CHECKLIST.md), [iOS and iPadOS target](MOBILE-IOS.md), [tvOS target](TVOS.md), [macOS development preview](MACOS.md), and [Code map](CODE-MAP.md).
 - **Architecture readers:** [Overview](ARCHITECTURE.md), [Backends](BACKENDS.md), [Playback](PLAYBACK-ARCHITECTURE.md), and [Downloads & offline](DOWNLOADS-OFFLINE.md).
 

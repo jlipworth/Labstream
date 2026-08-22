@@ -52,12 +52,12 @@ attach the file-system-synchronized `Labstream/Shared/` root plus exactly one ro
 
 | Target / scheme | Entry point | Platform | Current marketing version |
 | --- | --- | --- | --- |
-| `Labstream` | `Labstream/Platforms/visionOS/App/Labstream.swift` | visionOS | 1.6.0 |
-| `LabstreamMobile` | `Labstream/Platforms/Mobile/App/LabstreamMobile.swift` | iOS and iPadOS | 1.6.0 |
-| `LabstreamMac` | `Labstream/Platforms/macOS/App/LabstreamMac.swift` | native macOS, not Catalyst | 1.6.0 |
-| `LabstreamTV` | `Labstream/Platforms/tvOS/App/LabstreamTV.swift` | tvOS | 1.6.0 |
+| `Labstream` | `Labstream/Platforms/visionOS/App/Labstream.swift` | visionOS | 1.6.1 |
+| `LabstreamMobile` | `Labstream/Platforms/Mobile/App/LabstreamMobile.swift` | iOS and iPadOS | 1.6.1 |
+| `LabstreamMac` | `Labstream/Platforms/macOS/App/LabstreamMac.swift` | native macOS, not Catalyst | 1.6.1 |
+| `LabstreamTV` | `Labstream/Platforms/tvOS/App/LabstreamTV.swift` | tvOS | 1.6.1 |
 
-The marketing versions remain independently configurable. They were synchronized for the 1.6.0
+The marketing versions remain independently configurable. They were synchronized for the 1.6.1
 codebase milestone; that synchronization does not change the Mac or tvOS distribution status.
 The Xcode project is the source of truth for current version and deployment settings.
 

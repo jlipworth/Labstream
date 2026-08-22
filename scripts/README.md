@@ -19,14 +19,17 @@ media details out of commits and public issues.
   [`docs/MACOS-CI.md`](../docs/MACOS-CI.md).
 - `native-test-matrix.py` + `native-test-matrix.json` — side-effect-free smoke,
   affected-platform, and full native validation planning, with explicitly gated
-  lane-at-a-time execution. Simulator lanes require the exact ID owned by the current
-  worktree, sole-booted state, and an explicit lease assertion; see
+  lane-at-a-time execution. Simulator-hosted lanes require the exact ID owned by the current
+  worktree, sole-booted state, and an explicit lease assertion; generic simulator build lanes do
+  not. See
   [Testing strategy](../docs/TESTING-STRATEGY.md#native-apple-matrix-driver).
 - `publication-audit.py` — audits tracked text, Git history, and optionally GitHub issue text for
   sensitive publication regressions without echoing matched secrets.
 - `loc.sh` — informational per-module source line counts.
 - `perf-log-summary.py` — converts privacy-safe performance signposts into summaries/Markdown and
   produces strict, raw-artifact-bound comparison summaries.
+- `perf_evidence_schema.py` — shared closed schema/parser for privacy-safe performance spans,
+  capture bindings, phase/backend selectors, and correctness fields.
 - `perf-compare.py` — freezes a control-only minimum detectable effect, then validates and compares
   seeded paired control/candidate runs with correctness, provenance, failure, and covariate gates.
 - `perf-idle-compare.py` — separately compares the Mac runner's typed System Trace idle evidence.
@@ -190,7 +193,7 @@ scripts/perf-compare.py compare \
 - `tests/test_*.py` — the complete, discoverable script/tooling test inventory, including native
   matrix, publication/docs, performance contract/comparator/runner/fixture/AX/trace, diagnostics,
   compile-audit, macOS-CI, source-topology, and hardening coverage. `scripts/ci-hygiene.sh` runs the
-  inventory with `python -m unittest discover -s scripts/tests -v` when `pyproject.toml` is present,
+  inventory with `uv run python -m unittest discover -s scripts/tests -v` when `pyproject.toml` is present,
   so newly added matching test modules do not require this catalog to be hand-enumerated.
 
 ## Simulator and worktree helpers

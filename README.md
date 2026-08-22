@@ -19,9 +19,11 @@ target, `LabstreamTV` is an in-development streaming-only TV target, and `Labstr
 local-build development preview. They share the SwiftUI app core, custom AVFoundation player, and
 `PMSKit` backend layer while owning platform-specific shells, input, and system integration.
 
-> **Distribution status:** Labstream is currently distributed as source for local builds. There
-> is no App Store or TestFlight build today. Mac distribution remains deferred pending licensing
-> and release review.
+> **Distribution status:** Labstream is publicly distributed as source for local builds. The
+> primary visionOS path has an invitation-only internal TestFlight build, but there is no public
+> App Store release. iPhone/iPad distribution has not started, and Mac and Apple TV remain
+> development previews rather than distribution products. See the
+> [release and App Store status](docs/RELEASES.md).
 
 > **Development status:** This is an active, pre-release project rather than a compatibility
 > promise. Plex, Jellyfin, and Emby paths are implemented, but backend, server-version, media,
@@ -165,6 +167,7 @@ Labstream/
 ## Documentation
 
 - Documentation source and local site build: [`docs/`](docs/)
+- Release and App Store status: [`docs/RELEASES.md`](docs/RELEASES.md)
 - Development setup: [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)
 - iOS/iPadOS target: [`docs/MOBILE-IOS.md`](docs/MOBILE-IOS.md)
 - tvOS target: [`docs/TVOS.md`](docs/TVOS.md)
@@ -208,7 +211,7 @@ Labstream does not send analytics, diagnostics, or media-server data to the deve
 
 Labstream is licensed under the **GNU General Public License v3.0**. See [`LICENSE`](LICENSE) for the full text.
 
-The project also carries a GPLv3 section 7 additional permission for Apple App Store / TestFlight distribution if that distribution path is used later. See [`APP-STORE-EXCEPTION.md`](APP-STORE-EXCEPTION.md).
+The project also carries a GPLv3 section 7 additional permission for Apple App Store / TestFlight distribution. See [`APP-STORE-EXCEPTION.md`](APP-STORE-EXCEPTION.md).
 
 Copyright (C) 2026 Jonathan Lipworth
 

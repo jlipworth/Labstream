@@ -48,6 +48,7 @@ nav:
       - Support & troubleshooting: support.md
       - Report a bug: REPORTING-BUGS.md
       - Privacy policy: privacy.md
+      - Release and App Store status: RELEASES.md
       - License exception: app-store-exception.md
   - Developer guide:
       - Contributing: CONTRIBUTING.md
