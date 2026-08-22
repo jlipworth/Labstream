@@ -30,9 +30,9 @@ That's it. The form will also ask for your Labstream version and build
 (**Settings ▸ About**), your OS version, and which backend you use
 (Plex / Jellyfin / Emby).
 
-If you are testing the local-build Mac development preview or the in-development Apple TV
-target, say so explicitly and include macOS or tvOS as the platform. These are not released
-support targets, but reproducible source-build reports are still useful.
+If you are testing Mac or Apple TV, say so explicitly and include macOS or tvOS as the platform.
+All platform targets remain pre-release, and reproducible source-build or TestFlight reports are
+useful when they identify the exact platform, version, and build.
 
 ## What's in the diagnostic report — and what isn't
 

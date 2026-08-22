@@ -12,10 +12,9 @@ Labstream has four independently versioned native app targets sharing one source
 - `LabstreamMac` target/scheme = native macOS app.
 - `LabstreamTV` target/scheme = native tvOS app.
 
-Vision Pro and mobile are the supported product paths. Mac is a local-build development preview,
-and tvOS is still in development. Their independent version settings support internal milestones;
-do not describe either preview as an App Store release without an explicit distribution decision
-and the physical/TestFlight gates documented elsewhere in the repository.
+All four targets are part of the coordinated pre-release App Store set. Their independent version
+settings still support platform-specific replacement builds and milestones; do not describe any
+platform as released until its physical, TestFlight, and App Review gates pass.
 
 The shared toolkit is identified at runtime by the git-derived `LABSTREAM_BUILD_SLUG` from `scripts/build-version-args.sh`; do not force every platform to bump just because shared code changed.
 
@@ -60,7 +59,7 @@ Change exactly the selected target's Debug, Release, and PerformanceAudit settin
 
 Set `MARKETING_VERSION = X.Y.Z` for the selected scope. Use semver-ish `MAJOR.MINOR.PATCH`;
 for a distributed platform, never decrease relative to what was already submitted in App Store
-Connect. A preview-target version bump does not itself authorize or claim distribution.
+Connect. A version bump does not itself authorize or claim distribution.
 
 For a brand-new marketing version, set that target's `CURRENT_PROJECT_VERSION = 1` unless the user explicitly requests another build number.
 
@@ -93,8 +92,8 @@ Use scoped tags when release trains diverge:
 
 - `mobile-vX.Y.Z` for `LabstreamMobile` iOS/iPadOS releases.
 - `visionos-vX.Y.Z` for `Labstream` visionOS releases.
-- `macos-vX.Y.Z` for explicitly approved `LabstreamMac` releases or named preview milestones.
-- `tvos-vX.Y.Z` for explicitly approved `LabstreamTV` releases or named preview milestones.
+- `macos-vX.Y.Z` for explicitly approved `LabstreamMac` releases or named pre-release milestones.
+- `tvos-vX.Y.Z` for explicitly approved `LabstreamTV` releases or named pre-release milestones.
 - `vX.Y.Z` only for synchronized `all` releases or coordinated codebase milestones.
 - `pmskit-vX.Y.Z` only for an intentional toolkit/fallback release.
 
@@ -150,7 +149,7 @@ APP=$(/bin/ls -td "$HOME"/Library/Developer/Xcode/DerivedData/Labstream-*/Build/
 /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist"
 ```
 
-### macOS preview bundle
+### macOS bundle
 
 ```sh
 scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamMac \
@@ -161,7 +160,7 @@ APP=build/DerivedData-version-macos/Build/Products/Debug/Labstream.app
 /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist"
 ```
 
-### tvOS preview bundle
+### tvOS bundle
 
 ```sh
 scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamTV \

@@ -57,8 +57,8 @@ nav:
       - App Store screenshots: APP-STORE-SCREENSHOTS.md
       - Compile performance: COMPILE-PERFORMANCE.md
       - iOS and iPadOS target: MOBILE-IOS.md
-      - tvOS development target: TVOS.md
-      - macOS development preview: MACOS.md
+      - tvOS target: TVOS.md
+      - macOS target: MACOS.md
       - Native macOS CI: MACOS-CI.md
       - Scripts catalog: SCRIPTS.md
   - Architecture:

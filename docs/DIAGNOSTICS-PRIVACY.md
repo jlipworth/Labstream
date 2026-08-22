@@ -66,7 +66,7 @@ toggle on other platforms.
 The in-app report does not reload the rotating JSONL files. Those files are collected only by the
 repository's explicit evidence tooling, and still require the user to review anything before sharing it.
 
-The Mac development preview uses the same typed/redacted report pipeline and may add safe platform,
+The Mac target uses the same typed/redacted report pipeline and may add safe platform,
 effective bundle-identity, sandbox-storage, download, and playback facts. Per-worktree bundle IDs
 and container paths must not be emitted as raw identifiers or filesystem paths.
 

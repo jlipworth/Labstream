@@ -6,10 +6,10 @@ Thanks for helping improve Labstream. This project touches private media servers
 
 - Read [Development setup](DEVELOPMENT.md).
 - Skim the [Architecture overview](ARCHITECTURE.md) and [Code map](CODE-MAP.md).
-- For host-Mac work, read [macOS development preview](MACOS.md); it is a local-build preview,
-  not a released support target.
-- For tvOS work, read [tvOS development](TVOS.md); `LabstreamTV` is a streaming-only,
-  in-development target with the Downloads capability compiled out.
+- For host-Mac work, read the [macOS target guide](MACOS.md); local builds use isolated
+  development identities even though the production target is a release candidate.
+- For tvOS work, read the [tvOS target guide](TVOS.md); `LabstreamTV` is a streaming-only release
+  candidate with the Downloads capability compiled out.
 - Check open issues to avoid duplicating work.
 
 ## Local workflow
@@ -32,7 +32,7 @@ A good PR includes:
 - a focused description of the user-visible change;
 - tests for pure policies or request builders when applicable;
 - notes about simulator, device, or live-server validation when relevant;
-- Mac host build/smoke notes when a change touches the `LabstreamMac` preview;
+- Mac host build/smoke notes when a change touches the `LabstreamMac` target;
 - tvOS build/smoke notes when a change touches the `LabstreamTV` target;
 - screenshots only when they do not reveal private server or media details.
 
@@ -96,9 +96,9 @@ Discussion, or pull request.
 
 By submitting a contribution, you agree that it is licensed under GPLv3 together with the
 repository's existing App Store/TestFlight additional permission in
-[`APP-STORE-EXCEPTION.md`](app-store-exception.md). Its framework-linking portion currently names
-the visionOS, iOS, and iPadOS application paths; do not infer Mac or tvOS distribution permission
-without a separate licensing review.
+[`APP-STORE-EXCEPTION.md`](app-store-exception.md). Its framework-linking portion names the
+visionOS, iOS/iPadOS, tvOS, and macOS application paths; do not infer permission beyond the exact
+scope of that text.
 Do not contribute code, assets, or documentation that you do not have the right to license on
 those terms. New third-party material must include its provenance, license, and required notice.
 

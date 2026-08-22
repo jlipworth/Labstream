@@ -50,8 +50,8 @@ before the next scenario. A failed restoration or settle is recorded as a run fa
 being silently ignored.
 
 This is a representative compile-cost audit across PMSKit and the four app schemes, not exhaustive
-dependency coverage or distribution-readiness evidence. Mac and tvOS results remain measurements of
-their preview/development targets. In particular,
+dependency coverage or distribution-readiness evidence. Mac and tvOS compile results do not replace
+their platform-specific hardware and TestFlight acceptance. In particular,
 it does not currently measure release/LTO builds, Intel compilation, physical-device signing,
 simulator runtime launch cost, or every feature-module leaf edit.
 

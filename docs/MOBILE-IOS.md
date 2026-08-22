@@ -8,13 +8,13 @@ target:
 | `Labstream` | visionOS / visionOS Simulator | `Labstream` | `org.labstream.Labstream` |
 | `LabstreamMobile` | iOS, iPadOS, and iOS Simulator | `Labstream` | `org.labstream.Labstream` |
 
-The repository also contains `LabstreamMac` as a local-build development preview. It is documented
-separately in [macOS development preview](MACOS.md) and is not part of the supported mobile product
-path.
+The repository also contains the native `LabstreamMac` release candidate. It is documented
+separately in the [macOS target guide](MACOS.md) and is not part of the iOS/iPadOS binary described
+here.
 
-The repository also contains `LabstreamTV`, a streaming-only Apple TV development target (no
+The repository also contains `LabstreamTV`, a streaming-only Apple TV release candidate (no
 Downloads/Offline capability at compile time). It is documented separately in
-[tvOS development target](TVOS.md) and is not part of the iOS/iPadOS mobile product path described
+[the tvOS target guide](TVOS.md) and is not part of the iOS/iPadOS binary described
 here.
 
 `LabstreamMobile` is the universal iPhone/iPad target. It compiles `Labstream/Shared/`,
@@ -110,6 +110,6 @@ multiple-device selection, install, and launch.
   an iOS simulator.
 - Continued iPhone compact-width QA across signed-in Plex/Jellyfin/Emby libraries, music,
   offline rows, and long metadata titles.
-- If App Store distribution is pursued, metadata/release work for the intended
-  visionOS/iPhone/iPad universal-purchase product. The Mac preview has separate unresolved release
-  and licensing decisions.
+- Complete the iPhone and iPad metadata, screenshot, TestFlight, fresh-install, accessibility, and
+  hardware gates for the coordinated four-platform universal-purchase release. One iOS archive
+  covers both device families, but each family still needs its own acceptance evidence.
