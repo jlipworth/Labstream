@@ -27,6 +27,7 @@ build/
 .swiftpm/
 Packages/
 Package.resolved
+!PMSKit/Package.resolved
 
 # Secrets — never commit PMS tokens / client identifiers
 scripts/ci-hygiene.local

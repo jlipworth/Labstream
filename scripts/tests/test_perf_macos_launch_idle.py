@@ -169,6 +169,17 @@ class FakeExecutor:
 
 
 class RunnerTests(unittest.TestCase):
+    def setUp(self):
+        self.home = tempfile.TemporaryDirectory()
+        self.home_path = pathlib.Path(self.home.name).resolve()
+        (self.home_path / "Library/Containers").mkdir(parents=True)
+        self.home_patch = mock.patch.object(pathlib.Path, "home", return_value=self.home_path)
+        self.home_patch.start()
+
+    def tearDown(self):
+        self.home_patch.stop()
+        self.home.cleanup()
+
     def make_app(self, root, name, bundle="com.jlipworth.Labstream.perf.audit"):
         app = pathlib.Path(root) / name
         macos = app / "Contents/MacOS"

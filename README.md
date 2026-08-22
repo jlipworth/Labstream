@@ -210,6 +210,7 @@ Labstream does not send analytics, diagnostics, or media-server data to the deve
 ## License
 
 Labstream is licensed under the **GNU General Public License v3.0**. See [`LICENSE`](LICENSE) for the full text.
+Third-party package licenses and required notices are bundled under [`Labstream/Shared/Resources/ThirdPartyNotices`](Labstream/Shared/Resources/ThirdPartyNotices/README.md).
 
 The project also carries a GPLv3 section 7 additional permission for the visionOS/iOS/iPadOS Apple
 App Store and TestFlight paths if those distribution channels are used. It does not establish Mac
