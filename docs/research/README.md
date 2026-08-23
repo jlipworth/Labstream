@@ -23,6 +23,10 @@ When the investigation resolves:
 
 ## Active research notes
 
+- [`2026-08-22-jellyfin-public-demo.md`](2026-08-22-jellyfin-public-demo.md) — evaluates the
+  official public stable demo as the no-new-infrastructure lane for screenshots and App Review;
+  compatibility passed, while artwork rights, shared-state reliability, downloads, and final
+  reviewer suitability remain open.
 - [`2026-07-20-tvos-screen-audit.md`](2026-07-20-tvos-screen-audit.md) — exhaustive tvOS
   screen/interaction audit for [issue #246](https://github.com/jlipworth/Labstream/issues/246).
   The implementation plan and 2026-07-21 session report are archived; remaining open
