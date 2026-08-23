@@ -21,10 +21,11 @@ They share the SwiftUI app core, custom AVFoundation player, and
 `PMSKit` backend layer while owning platform-specific shells, input, and system integration.
 
 > **Distribution status:** Labstream is publicly distributed as source for local builds. The
-> former visionOS-only identity has an invitation-only internal TestFlight build, but there is no
-> public App Store release. The coordinated 1.6.1 release is preparing a new neutral universal-
-> purchase identity for visionOS, iOS/iPadOS, tvOS, and macOS. Platform versions remain pre-release
-> until their individual hardware, TestFlight, metadata, and App Review gates pass. See the
+> neutral universal-purchase App Store Connect record now has processed 1.6.1 (build 1) builds for
+> visionOS, iOS/iPadOS, tvOS, and macOS in invitation-only internal TestFlight. Product metadata
+> and initial privacy-safe screenshots are staged, but there is no public App Store release.
+> Platform versions remain pre-release until their individual hardware, review-access, storefront,
+> and App Review gates pass. See the
 > [release and App Store status](docs/RELEASES.md).
 
 > **Development status:** This is an active, pre-release project rather than a compatibility
