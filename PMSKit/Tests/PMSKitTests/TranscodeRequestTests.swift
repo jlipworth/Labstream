@@ -568,3 +568,23 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     let q = queryItems(req.startM3U8URL())
     #expect(q.first { $0.name == "directStream" }?.value == "1")
 }
+
+@Test func forcingExistingRequestPreservesTheLogicalSession() {
+    let request = TranscodeRequest(server: server, token: "tok", identity: id,
+                                   metadataKey: "/library/metadata/101",
+                                   maxVideoBitrateKbps: 200_000,
+                                   sessionID: "S", mediaIndex: 1, partIndex: 2,
+                                   burnSubtitleStreamID: 7,
+                                   startOffsetSeconds: 83)
+
+    let forced = request.withForceTranscode(true)
+
+    #expect(forced.forceTranscode)
+    #expect(forced.sessionID == request.sessionID)
+    #expect(forced.mediaIndex == request.mediaIndex)
+    #expect(forced.partIndex == request.partIndex)
+    #expect(forced.burnSubtitleStreamID == request.burnSubtitleStreamID)
+    #expect(forced.startOffsetSeconds == request.startOffsetSeconds)
+    #expect(forced.withForceTranscode(false) == request)
+    #expect(queryItems(forced.startM3U8URL()).first { $0.name == "directStream" }?.value == "0")
+}

@@ -311,8 +311,9 @@ final class PlaybackController {
     /// video (`savesVideoEncode`) yet hand back an HLS rendition AVFoundation can't actually
     /// play, which fails at LOAD time — not at the decision stage. `directPlayFallbackArmed`
     /// is set only while a committed direct-play stream is live; on its first failure we
-    /// fall back once to the production HLS path instead of surfacing a dead-end. That path may
-    /// still Direct Stream/video-copy; it is not an automatic capped video-transcode fallback.
+    /// fall back once to a forced maximum video transcode instead of surfacing a dead-end. The
+    /// fallback must not allow Direct Stream: that would repeat the copy rendition AVFoundation
+    /// just rejected.
     /// `suppressDirectPlayProbe` is the one-shot that makes that rebuild skip the literal
     /// direct-play start and also marks "a fallback is in flight" so a sibling failure
     /// callback on the same dead item doesn't surface over it. Both are reset/consumed at the
@@ -2603,19 +2604,27 @@ final class PlaybackController {
         }
         diagnostics.dvSignallingActive = false
 
-        let transcode = TranscodeRequest(server: server,
-                                         token: token,
-                                         identity: identity,
-                                         metadataKey: metadataKey,
-                                         maxVideoBitrateKbps: requestedCap,
-                                         sessionID: sessionID,
-                                         mediaIndex: mediaIndex,
-                                         partIndex: 0,
-                                         burnSubtitleStreamID: burnSubtitleStreamID,
-                                         startOffsetSeconds: offsetSeconds,
-                                         forceTranscode: dvGuardReason != nil,
-                                         advertiseDolbyVision: DolbyVisionGuard.shouldAdvertiseDolbyVision(for: item,
-                                                                                                           mediaIndex: mediaIndex))
+        let productionMustForceVideoTranscode = PlexVideoTranscodePolicy.shouldForceVideoTranscode(
+            selectedQualityKbps: maxVideoBitrateKbps,
+            directPlayProductionFallback: maxVideoBitrateKbps <= 0,
+            dolbyVisionGuardActive: dvGuardReason != nil)
+        let directPlayTranscode = TranscodeRequest(server: server,
+                                                   token: token,
+                                                   identity: identity,
+                                                   metadataKey: metadataKey,
+                                                   maxVideoBitrateKbps: requestedCap,
+                                                   sessionID: sessionID,
+                                                   mediaIndex: mediaIndex,
+                                                   partIndex: 0,
+                                                   burnSubtitleStreamID: burnSubtitleStreamID,
+                                                   startOffsetSeconds: offsetSeconds,
+                                                   forceTranscode: dvGuardReason != nil,
+                                                   advertiseDolbyVision: DolbyVisionGuard.shouldAdvertiseDolbyVision(for: item,
+                                                                                                                     mediaIndex: mediaIndex))
+        // Keep the literal Direct Play probe copy-capable, but use a separate production
+        // request for every fallback. Reusing one request here either disables the probe's
+        // copy lane or lets its rejected copy parameters leak into the recovery lane.
+        let transcode = directPlayTranscode.withForceTranscode(productionMustForceVideoTranscode)
         let directPlayStartKey = Self.directPlayStartRejectionKey(metadataKey: metadataKey,
                                                                   mediaIndex: mediaIndex,
                                                                   partIndex: 0)
@@ -2632,6 +2641,7 @@ final class PlaybackController {
             "subtitle_burn_mode": .label(UserDefaults.standard.string(forKey: PlaybackPreferences.Keys.subtitleBurnMode) ?? SubtitleBurnMode.automatic.rawValue),
             "burning_subtitles": .bool(burnSubtitleStreamID != nil),
             "dv_guard": .bool(dvGuardReason != nil),
+            "production_force_video_transcode": .bool(productionMustForceVideoTranscode),
         ]
         requestFields.merge(sourceDiagnosticFields()) { _, new in new }
         recordPlaybackDiagnostic("playback.start_streaming", fields: requestFields)
@@ -2647,11 +2657,11 @@ final class PlaybackController {
         let skipDirectPlayProbe = suppressDirectPlayProbe
         suppressDirectPlayProbe = false
         // "Direct Play / Maximum" asks PMS to direct-play the source bits when it can copy the
-        // video. If the literal direct-play start is rejected, fall through to the production HLS
-        // request, which may still Direct Stream/video-copy. If PMS cannot copy video at all, that
-        // same production HLS path becomes the maximum-transcode fallback. Every numeric capped
-        // rung transcodes at that cap; "Maximum (HLS)" skips the literal direct-play probe but
-        // may still Direct Stream/video-copy compatible sources. The user picks the
+        // video. If the probe or literal direct-play start is rejected, fall through to a
+        // production HLS request with Direct Stream disabled; retrying the copy-capable request
+        // would reproduce the lane that just failed. Every numeric capped
+        // rung transcodes at that cap; "Maximum (HLS)" skips the literal direct-play probe and
+        // explicitly disables Direct Stream so it cannot repeat a high-bitrate copy lane. The user picks the
         // path by picking the quality; there is no separate
         // toggle or pre-flight bandwidth gate (#31 superseded).
         if maxVideoBitrateKbps <= 0,
@@ -2660,16 +2670,16 @@ final class PlaybackController {
            burnSubtitleStreamID == nil,
            !rejectedDirectPlayStartKeys.contains(directPlayStartKey) {
             do {
-                let probe = try await client.send(transcode.directPlayProbeRequest(), as: DecisionResponse.self)
+                let probe = try await client.send(directPlayTranscode.directPlayProbeRequest(), as: DecisionResponse.self)
                 guard !Task.isCancelled, generation == playbackGeneration else { return }
                 if probe.savesVideoEncode {
                     var fields = decisionDiagnosticFields(probe)
                     fields["probe_result"] = .label("commit_direct_play")
                     recordTranscodeDiagnostic("transcode.direct_play_probe", fields: fields)
 
-                    let startURL = transcode.directPlayStartM3U8URL()
+                    let startURL = directPlayTranscode.directPlayStartM3U8URL()
                     do {
-                        let playlistData = try await client.send(transcode.directPlayStartM3U8Request())
+                        let playlistData = try await client.send(directPlayTranscode.directPlayStartM3U8Request())
                         guard !Task.isCancelled, generation == playbackGeneration else { return }
                         NSLog("PlaybackController: Direct Play / Maximum — PMS will copy video and start.m3u8 is reachable; committing direct-play start.m3u8")
                         var startFields = decisionDiagnosticFields(probe)
@@ -2682,29 +2692,29 @@ final class PlaybackController {
                         streamURL = startURL
                         // Arm the playback-time fallback: PMS agreed to copy and served the
                         // initial playlist, but AVFoundation may still fail later on the media
-                        // rendition. If it does, retry once via production HLS, which may still
-                        // Direct Stream/video-copy.
+                        // rendition. If it does, retry once via production HLS with Direct Stream
+                        // disabled.
                         directPlayFallbackArmed = true
                         #if DEBUG
                         // Log what PMS decided for this title (probe vs production), so a Debug
                         // build can tell whole-file direct play (mde=1000) from Direct Stream
                         // (video=copy) at a glance. DEBUG-only; never compiled into Release.
-                        logDirectPlayDecision(transcode: transcode, probe: probe)
+                        logDirectPlayDecision(transcode: directPlayTranscode, probe: probe)
                         #endif
                     } catch {
                         guard !Task.isCancelled, generation == playbackGeneration else { return }
                         rejectedDirectPlayStartKeys.insert(directPlayStartKey)
                         var startFields = decisionDiagnosticFields(probe)
-                        startFields["probe_result"] = .label("fallback_to_production_hls")
+                        startFields["probe_result"] = .label("fallback_to_forced_maximum_transcode")
                         startFields["start_preflight"] = .label("rejected")
                         startFields["error"] = .error(error)
                         if let status = Self.httpStatus(from: error) {
                             startFields["http_status"] = .int(status)
                         }
-                        startFields["fallback"] = .label("production_hls")
+                        startFields["fallback"] = .label("forced_maximum_transcode")
                         startFields["stream_url_shape"] = .urlShape(startURL)
                         recordTranscodeDiagnostic("transcode.direct_play_start_rejected", fields: startFields)
-                        NSLog("PlaybackController: Direct Play / Maximum — PMS accepted decision but rejected direct-play start.m3u8 (%@); using production HLS path",
+                        NSLog("PlaybackController: Direct Play / Maximum — PMS accepted decision but rejected direct-play start.m3u8 (%@); using forced maximum transcode",
                               Self.safeErrorSummary(error))
                     }
                 } else {
@@ -2717,9 +2727,9 @@ final class PlaybackController {
                 guard !Task.isCancelled, generation == playbackGeneration else { return }
                 recordTranscodeDiagnostic("transcode.direct_play_probe_failed", fields: [
                     "error": .error(error),
-                    "fallback": .label("production_hls"),
+                    "fallback": .label("forced_maximum_transcode"),
                 ])
-                NSLog("PlaybackController: direct-play probe failed (%@); using production HLS path", Self.safeErrorSummary(error))
+                NSLog("PlaybackController: direct-play probe failed (%@); using forced maximum transcode", Self.safeErrorSummary(error))
             }
         } else if maxVideoBitrateKbps <= 0,
                   !skipDirectPlayProbe,
@@ -2727,9 +2737,9 @@ final class PlaybackController {
                   rejectedDirectPlayStartKeys.contains(directPlayStartKey) {
             recordTranscodeDiagnostic("transcode.direct_play_start_skipped", fields: [
                 "reason": .label("cached_start_rejection"),
-                "fallback": .label("production_hls"),
+                "fallback": .label("forced_maximum_transcode"),
             ])
-            NSLog("PlaybackController: Direct Play / Maximum — skipping cached rejected direct-play start.m3u8; using production HLS path")
+            NSLog("PlaybackController: Direct Play / Maximum — skipping cached rejected direct-play start.m3u8; using forced maximum transcode")
         }
 
         if decision == nil {
@@ -4500,10 +4510,10 @@ final class PlaybackController {
         // fails to load isn't a hard failure — PMS agreed to copy the video, but AVFoundation
         // couldn't play the resulting literal direct-play HLS rendition. Retry ONCE through
         // production HLS (resuming at the live playhead) instead of surfacing a dead-end. That
-        // production path may still Direct Stream/video-copy; it only becomes a maximum transcode
-        // when PMS cannot copy video. Armed only while a direct-play stream is live and consumed
-        // here, so the rebuild — or any later failure — surfaces normally; the rebuild can't loop
-        // back into another direct-play start.
+        // production request is forced to re-encode video: allowing Direct Stream here would
+        // rebuild the same copy rendition that just failed. Armed only while a direct-play stream
+        // is live and consumed here, so the rebuild — or any later failure — surfaces normally;
+        // the rebuild can't loop back into another direct-play start.
         if directPlayFallbackArmed {
             directPlayFallbackArmed = false
             suppressDirectPlayProbe = true
@@ -4516,9 +4526,9 @@ final class PlaybackController {
             var fields = positionSnapshotDiagnosticFields(snapshot)
             fields["error"] = .error(error)
             fields["resume"] = .millisecondsBucket(resumeMs)
-            fields["fallback"] = .label("production_hls")
+            fields["fallback"] = .label("forced_maximum_transcode")
             recordTranscodeDiagnostic("transcode.direct_play_runtime_fallback", fields: fields)
-            NSLog("PlaybackController: direct-play stream failed to load (%@); falling back to production HLS",
+            NSLog("PlaybackController: direct-play stream failed to load (%@); falling back to forced maximum transcode",
                   Self.safeErrorSummary(error))
             setPendingResumeMs(resumeMs, cause: .directPlayRuntimeFallback, allowsNearZero: true)
             rememberTrustworthyPlaybackPosition(resumeMs,
