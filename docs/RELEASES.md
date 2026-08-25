@@ -8,10 +8,10 @@ Connect contact details, review credentials, tokens, private server addresses, o
 
 | Product | Source version | Distribution status |
 | --- | --- | --- |
-| Apple Vision Pro (`Labstream`) | 1.6.1 (build 1) | Clean `20bea2546dd1` archive uploaded and processed; selected for the platform version and available to the internal TestFlight group. Physical TestFlight acceptance and review access remain pending. |
-| iPhone and iPad (`LabstreamMobile`) | 1.6.1 (build 1) | Clean `20bea2546dd1` universal iOS archive uploaded and processed; selected for the platform version and available to the internal TestFlight group. Physical iPhone and iPad acceptance remain pending. |
-| Apple TV (`LabstreamTV`) | 1.6.1 (build 1) | Clean `20bea2546dd1` archive uploaded and processed; selected for the platform version and available to the internal TestFlight group. Physical Apple TV acceptance remains pending. |
-| Mac (`LabstreamMac`) | 1.6.1 (build 1) | Clean `20bea2546dd1` archive uploaded and processed; selected for the platform version and installed from TestFlight on a Mac. Deeper sandbox and live-host acceptance remain pending. |
+| Apple Vision Pro (`Labstream`) | 1.6.1 (build 2) | Clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical TestFlight acceptance and review access remain pending. |
+| iPhone and iPad (`LabstreamMobile`) | 1.6.1 (build 2) | Clean `abd1ddcac351` universal iOS archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical iPhone and iPad acceptance remain pending. |
+| Apple TV (`LabstreamTV`) | 1.6.1 (build 2) | Clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical Apple TV acceptance remains pending. |
+| Mac (`LabstreamMac`) | 1.6.1 (build 2) | Clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and installed from TestFlight on a Mac. Launch and receipt/signature checks passed; deeper sandbox and live-host acceptance remain pending. |
 
 The four targets share the neutral `org.labstream.Labstream` bundle identifier and are intended
 for one App Store Connect universal-purchase record. The earlier private visionOS 1.6.0 build used
