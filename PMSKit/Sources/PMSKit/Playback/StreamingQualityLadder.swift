@@ -19,10 +19,12 @@ import Foundation
 /// also decide the *path* (this is what replaced the experimental Direct Stream toggle +
 /// headroom gate, #31):
 /// - **Direct Play / Maximum** (`maximumOriginalKbps`, 0): ask PMS to direct-play/direct-stream
-///   the source when compatible. If literal direct-play is rejected, use production HLS, which may
-///   still copy video; only when PMS cannot copy video does it become a maximum transcode.
-/// - **Maximum (HLS)** (`maxTranscodedKbps`): use Plex/Jellyfin HLS at the highest
-///   ceiling. Plex may still copy/remux compatible video; this is not a forced re-encode.
+///   the source when compatible. If the probe, literal start, or committed copy rendition fails,
+///   fall back once through production HLS with Direct Stream disabled so the rejected copy lane
+///   cannot be selected again.
+/// - **Maximum (HLS)** (`maxTranscodedKbps`): use HLS at the highest ceiling. On Plex this is
+///   an explicit video transcode rather than another copy/remux attempt; Jellyfin/Emby apply the
+///   same effectively uncapped quality ceiling through their backend policies.
 /// Every numeric rung transcodes at that cap.
 public enum StreamingQuality {
 
@@ -30,8 +32,8 @@ public enum StreamingQuality {
     public static let maximumOriginalKbps = 0
 
     /// The "Maximum (HLS)" sentinel: request the production HLS path at this effectively
-    /// uncapped ceiling. It skips the literal direct-play probe, but Plex may still Direct
-    /// Stream/video-copy compatible sources; it only video-transcodes when PMS requires it.
+    /// uncapped ceiling. It skips the literal direct-play probe and forces a Plex video
+    /// transcode so it cannot collapse back onto the Direct Play / Maximum copy lane.
     public static let maxTranscodedKbps = 200_000
 
     /// One rung of the ladder. `kbps == maximumOriginalKbps` (0) is the direct-play-or-max

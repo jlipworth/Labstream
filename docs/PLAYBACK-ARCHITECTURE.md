@@ -61,12 +61,17 @@ Plex playback uses two start paths. Do not collapse them into a single
    that playlist, and arms one playback-time fallback to production HLS. That
    copy-lane start omits `offset=`: the session starts at 0 and the playhead is
    restored with a client seek. Putting `offset=` on a copy session was observed
-   to emit `#EXT-X-START:TIME-OFFSET` and then abandon the sole variant.
+   to emit `#EXT-X-START:TIME-OFFSET` and then abandon the sole variant. If the
+   start preflight is rejected—or the committed rendition later fails in
+   AVFoundation—the production fallback disables Direct Stream and requests a
+   maximum video transcode. Retrying production HLS with Direct Stream enabled
+   can reproduce the same rejected copy rendition.
 2. **Production decision / `start.m3u8`.** Capped quality rungs, Maximum (HLS),
    subtitle burn, and DV-forced transcodes skip the dedicated probe and use the
    production universal-transcode decision plus `start.m3u8`. Capped transcodes
    keep `offset=` priming so a deep resume does not wait on an unproduced
-   segment.
+   segment. Maximum (HLS) explicitly disables Direct Stream: it is the uncapped
+   re-encode choice, not a second spelling of the Direct Play / Maximum copy lane.
 
 Quality settings can force a capped transcode; Direct Play / Maximum preserves
 the user's no-cap/copy intent and is not silently converted to a lower-quality

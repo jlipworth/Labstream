@@ -78,6 +78,28 @@ public struct TranscodeRequest: Sendable, Equatable {
         self.advertiseDolbyVision = advertiseDolbyVision
     }
 
+    /// Returns the same logical session with only its Direct Stream policy changed.
+    ///
+    /// Direct Play probing and production fallback must share all identifiers and media
+    /// selection inputs, while the fallback may need to disable video copy after that lane
+    /// was rejected. Keeping this copy operation here prevents those request shapes drifting.
+    public func withForceTranscode(_ forceTranscode: Bool) -> Self {
+        Self(server: server,
+             token: token,
+             identity: identity,
+             metadataKey: metadataKey,
+             maxVideoBitrateKbps: maxVideoBitrateKbps,
+             maxVideoResolution: maxVideoResolution,
+             maxAudioBitrateKbps: maxAudioBitrateKbps,
+             sessionID: sessionID,
+             mediaIndex: mediaIndex,
+             partIndex: partIndex,
+             burnSubtitleStreamID: burnSubtitleStreamID,
+             startOffsetSeconds: startOffsetSeconds,
+             forceTranscode: forceTranscode,
+             advertiseDolbyVision: advertiseDolbyVision)
+    }
+
     /// The device profile advertised to PMS for this request.
     public var deviceProfile: DeviceProfile {
         DeviceProfile.streaming(maxVideoBitrateKbps: maxVideoBitrateKbps,
