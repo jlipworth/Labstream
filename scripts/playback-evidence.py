@@ -5,6 +5,8 @@ A passed result proves only sustained sampled playhead progress, never visible f
 hardware decode, server cleanup, or video-copy negotiation. Inputs are allowlisted.
 """
 import argparse
+import base64
+import re
 import json
 import math
 import sys
@@ -123,6 +125,48 @@ def evaluate(payload):
     return result
 
 
+def validate_report(payload):
+    """Allowlisted live-controller report, separate from sampled progress input."""
+    exact_keys(payload, ("schemaVersion", "evidenceKind", "scenario", "status", "reason", "snapshots"))
+    if type(payload["schemaVersion"]) is not int or payload["schemaVersion"] != 1 or payload["evidenceKind"] != "liveController":
+        raise InvalidEvidence("unsupported_schema")
+    if payload["scenario"] not in ("original", "seek", "capped", "maximum", "consentDecline", "consentApprove", "audio", "subtitles"):
+        raise InvalidEvidence("invalid_scenario")
+    if payload["status"] not in ("passed", "failed", "blocked"):
+        raise InvalidEvidence("invalid_status")
+    reasons = ("completed", "missingAdmission", "invalidOptions", "missingAuth", "unsupportedTrack", "consentNotPending",
+               "decisionUnknown", "cancelled", "playbackFailed", "deadline", "backendChanged", "staleGeneration")
+    if payload["reason"] not in reasons or (payload["status"] == "passed") != (payload["reason"] == "completed"):
+        raise InvalidEvidence("invalid_reason")
+    snapshots = payload["snapshots"]
+    if not isinstance(snapshots, list) or len(snapshots) > 8:
+        raise InvalidEvidence("invalid_snapshots")
+    enums = {
+        "phase": ("playing", "waiting", "paused", "failed", "consent", "stopped"),
+        "backend": ("plex", "jellyfin", "emby", "offline", "unknown"),
+        "videoDecision": ("copy", "encode", "unknown"), "audioDecision": ("copy", "encode", "unknown"),
+        "videoProvenance": ("serverDecision", "enforcedRequest", "unknown"),
+        "consent": ("pending", "notPending"), "visibleAttachment": ("attached", "detached", "unknown"),
+        "renderedFormat": ("avc1", "avc3", "hvc1", "hev1", "dvh1", "dvhe", "unknown"),
+        "serverCleanup": ("unknown",),
+    }
+    numeric = {"buildNumber": 1_000_000, "generation": 1_000_000, "qualityKbps": 1_000_000,
+               "positionBucketSeconds": 604_800, "bufferBucketSeconds": 3600, "schemaVersion": 1}
+    for snapshot in snapshots:
+        exact_keys(snapshot, (*enums, *numeric, "cleanupRequested"))
+        for key, choices in enums.items():
+            if snapshot[key] not in choices:
+                raise InvalidEvidence("invalid_snapshot_enum")
+        for key, maximum in numeric.items():
+            if type(snapshot[key]) is not int or not 0 <= snapshot[key] <= maximum:
+                raise InvalidEvidence("invalid_snapshot_number")
+        if snapshot["schemaVersion"] != 1 or type(snapshot["cleanupRequested"]) is not bool:
+            raise InvalidEvidence("invalid_snapshot")
+    if payload["status"] == "passed" and (not snapshots or not snapshots[-1]["cleanupRequested"] or snapshots[-1]["phase"] != "stopped"):
+        raise InvalidEvidence("missing_terminal_cleanup_request")
+    return payload
+
+
 def fixture():
     return {
         "schemaVersion": 1, "evidenceKind": "synthetic", "backend": "fixture",
@@ -141,9 +185,40 @@ def unique_object(pairs):
     return result
 
 
+def report_from_unified_log(data):
+    """Reassemble one exact-PID log pull; missing/reordered/truncated parts cannot pass."""
+    parts = []
+    expected = None
+    completed = None
+    for line in data.splitlines():
+        event = json.loads(line, object_pairs_hook=unique_object)
+        message = event.get("eventMessage", "")
+        if not message.startswith("evidence.run.part "):
+            continue
+        match = re.fullmatch(r"evidence.run.part index=(\d+) count=(\d+) payload=([A-Za-z0-9+/=]{1,512})", message)
+        if not match:
+            raise InvalidEvidence("invalid_fragment")
+        index, count = int(match[1]), int(match[2])
+        if not 1 <= count <= 86 or index != len(parts) or (expected is not None and count != expected):
+            raise InvalidEvidence("invalid_fragment_order")
+        expected = count
+        parts.append(match[3])
+        if len(parts) == count:
+            decoded = base64.b64decode("".join(parts), validate=True)
+            if len(decoded) > 32 * 1024:
+                raise InvalidEvidence("payload_too_large")
+            completed = validate_report(json.loads(decoded, object_pairs_hook=unique_object))
+            parts, expected = [], None
+    if parts or completed is None:
+        raise InvalidEvidence("incomplete_report")
+    return completed
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", nargs="?", type=Path)
+    parser.add_argument("--unified-log", action="store_true", help="Validate ordered report fragments from an exact-PID NDJSON log pull")
+    parser.add_argument("--report", action="store_true", help="Validate a typed live-controller run report")
     parser.add_argument("--fixture", action="store_true", help="Synthetic oracle self-check; does not launch Labstream")
     args = parser.parse_args()
     if bool(args.input) == args.fixture:
@@ -156,8 +231,8 @@ def main():
                 data = handle.read(MAX_BYTES + 1)
             if len(data) > MAX_BYTES:
                 raise InvalidEvidence("payload_too_large")
-            payload = json.loads(data, object_pairs_hook=unique_object)
-        result = evaluate(payload)
+            payload = report_from_unified_log(data) if args.unified_log else json.loads(data, object_pairs_hook=unique_object)
+        result = validate_report(payload) if args.report or args.unified_log else evaluate(payload)
     except (ValueError, OSError, RecursionError, TypeError):
         # No raw parser errors, file paths, or attacker-controlled field names escape.
         result = {"schemaVersion": 1, "status": "blocked", "reason": "invalid_evidence"}

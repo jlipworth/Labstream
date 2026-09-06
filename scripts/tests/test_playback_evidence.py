@@ -1,3 +1,4 @@
+import base64
 import copy
 import importlib.util
 import json
@@ -73,6 +74,29 @@ class PlaybackEvidenceTests(unittest.TestCase):
                 result = subprocess.run([sys.executable, str(SCRIPT), str(path)], capture_output=True, text=True)
                 self.assertEqual(result.returncode, 2)
                 self.assertNotIn("private-sentinel", result.stdout + result.stderr)
+
+class PlaybackReportTests(unittest.TestCase):
+    def test_missing_admission_is_valid_blocked_evidence(self):
+        report = dict(schemaVersion=1, evidenceKind="liveController", scenario="original",
+                      status="blocked", reason="missingAdmission", snapshots=[])
+        self.assertEqual(evidence.validate_report(report)["status"], "blocked")
+        for changed in [dict(report, token="private-sentinel"), dict(report, status="passed", reason="completed"),
+                        dict(report, reason="https://private-sentinel")]:
+            with self.assertRaises(evidence.InvalidEvidence):
+                evidence.validate_report(changed)
+
+    def test_fragmented_log_roundtrip_and_rejection(self):
+        report = dict(schemaVersion=1, evidenceKind="liveController", scenario="original",
+                      status="blocked", reason="missingAdmission", snapshots=[])
+        encoded = base64.b64encode(json.dumps(report).encode()).decode()
+        chunks = [encoded[i:i+80] for i in range(0, len(encoded), 80)]
+        lines = [json.dumps(dict(eventMessage=f"evidence.run.part index={i} count={len(chunks)} payload={part}"))
+                 for i, part in enumerate(chunks)]
+        self.assertEqual(evidence.report_from_unified_log("\n".join(lines)), report)
+        for bad in [lines[:-1], lines[::-1], [lines[0], *lines],
+                    [lines[0].replace("payload=", "payload=<…>")], []]:
+            with self.assertRaises(evidence.InvalidEvidence):
+                evidence.report_from_unified_log("\n".join(bad))
 
 
 if __name__ == "__main__":

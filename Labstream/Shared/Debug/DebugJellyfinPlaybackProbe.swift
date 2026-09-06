@@ -24,15 +24,16 @@ enum DebugJellyfinPlaybackProbe {
 
     private static func run(arguments: [String], appModel: AppModel) async {
         guard let options = DebugPlaybackProbeSupport.launchOptions(from: arguments,
-                                                                    defaultBitrateKbps: appModel.activeStreamingQualityKbps) else {
+                                                                    defaultBitrateKbps: 0) else {
             log.error("probe.fail reason=missing_probe_query")
+            DebugPlaybackScenario.blocked(arguments, reason: .invalidOptions)
             DebugPlaybackProbeSupport.recordMissingQuery(eventName: "probe.jellyfin.fail")
             return
         }
+        guard DebugPlaybackScenario.admitted(arguments, bitrateKbps: options.bitrateKbps) else { return }
         let query = options.query
         let bitrateKbps = options.bitrateKbps
         let seekMs = options.seekMs
-        let postSeekHoldSeconds = options.postSeekHoldSeconds
 
         let querySummary = DebugPlaybackProbeSupport.querySummary(query)
         log.notice("probe.start backend=\(appModel.activeBackend.rawValue, privacy: .public) query=\(querySummary, privacy: .public) bitrate_kbps=\(bitrateKbps, privacy: .public) seek_ms=\(seekMs, privacy: .public)")
@@ -45,11 +46,13 @@ enum DebugJellyfinPlaybackProbe {
 
         guard appModel.activeBackend == .jellyfin, appModel.isBrowseReady else {
             log.error("probe.fail reason=not_jellyfin_or_not_ready")
+            DebugPlaybackScenario.blocked(arguments, reason: .missingAuth)
             return
         }
 
         let service = JellyfinBrowseService(appModel: appModel)
         var controller: PlaybackController?
+        var scenarioOwnsCleanup = false
         do {
             let item = try await resolveItem(query: query, service: service)
             let detailed = (try? await service.metadata(itemId: item.ratingKey)) ?? item
@@ -66,27 +69,14 @@ enum DebugJellyfinPlaybackProbe {
                 maxVideoBitrateKbps: bitrateKbps,
                 qualityDefaultsKey: appModel.activeStreamingQualityDefaultsKey)
             controller = playback
-            playback.start()
-
-            try await DebugPlaybackProbeSupport.waitUntilPlayable(playback, phase: "initial", timeoutSeconds: options.playableTimeoutSeconds)
-            log.notice("probe.initial_playing position_ms=\(playback.currentResumeMs, privacy: .public)")
-            await DebugPlaybackProbeSupport.logActiveVideoFormat(playback, phase: "initial", log: log)
-            await DebugPlaybackFrameCapture.captureIfRequested(from: playback.player, label: "jellyfin-initial", log: log)
-
-            playback.performUserSeek(toMs: seekMs)
-            try await DebugPlaybackProbeSupport.waitUntilPlayable(playback, phase: "post_seek", timeoutSeconds: options.playableTimeoutSeconds)
-            try await DebugPlaybackProbeSupport.holdWithPlaybackProgress(playback, seconds: postSeekHoldSeconds, stallToleranceSeconds: options.stallToleranceSeconds, log: log)
-            await DebugPlaybackProbeSupport.logActiveVideoFormat(playback, phase: "post_seek", log: log)
-            await DebugPlaybackFrameCapture.captureIfRequested(from: playback.player, label: "jellyfin-postseek", log: log)
-
-            log.notice("probe.pass position_ms=\(playback.currentResumeMs, privacy: .public) failed=\(playback.playbackError.isFailed, privacy: .public)")
-            AppDiagnostics.record(.playback, "probe.jellyfin.pass", fields: [
-                "resume": .millisecondsBucket(playback.currentResumeMs),
-                "target": .millisecondsBucket(seekMs),
-            ])
-            playback.stop()
+            scenarioOwnsCleanup = true
+            controller = nil // The named scenario owns cleanup from this point, including errors.
+            try await DebugPlaybackScenario.run(playback, options: options, arguments: arguments,
+                backendIsCurrent: { appModel.activeBackend == .jellyfin && appModel.isBrowseReady }, log: log)
+            log.notice("probe.pass scenario_completed=true")
             controller = nil
         } catch {
+            if !scenarioOwnsCleanup { DebugPlaybackScenario.blocked(arguments, reason: .playbackFailed) }
             log.error("probe.fail error=\(DiagnosticRedactor.safeErrorSummary(error), privacy: .public)")
             AppDiagnostics.record(.playback, "probe.jellyfin.fail", fields: [
                 "error": .error(error),

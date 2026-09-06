@@ -290,7 +290,18 @@ struct CustomPlayerChrome: View {
         // stays in the browse UI; inside the player it reads as non-native.
         .tint(.white)
         #endif
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("playback.surface")
+        .accessibilityAction(named: Text("Show playback controls")) { revealChrome(keepVisible: true) }
         .onAppear {
+            #if DEBUG
+            controller.debugVisibleAttachmentCount += 1
+            #if os(macOS)
+            controller.debugVisibleWindowIsVisible = { [weak macWindowBridge] in
+                macWindowBridge?.window.map { $0.isVisible && !$0.isMiniaturized } ?? false
+            }
+            #endif
+            #endif
             revealChrome()
             #if os(tvOS)
             // Verified write, not a raw assignment: the appear-time write races the
@@ -302,6 +313,9 @@ struct CustomPlayerChrome: View {
             #endif
         }
         .onDisappear {
+            #if DEBUG
+            controller.debugVisibleAttachmentCount = max(0, controller.debugVisibleAttachmentCount - 1)
+            #endif
             hideTask?.cancel()
             endHoverPreview()
             mobileDisplayStatusTask?.cancel()
@@ -532,6 +546,7 @@ struct CustomPlayerChrome: View {
                     }
                     .buttonStyle(.bordered)
                     .accessibilityLabel("Close")
+                    .accessibilityIdentifier("playback.close")
                     #endif
                 }
 
@@ -921,6 +936,8 @@ struct CustomPlayerChrome: View {
                 handleScrubEditingChanged(editing)
             }
             .disabled(scrubState.durationMs <= 0)
+            .accessibilityIdentifier("playback.timeline")
+            .accessibilityLabel("Playback position")
             .frame(maxHeight: .infinity)
             #if os(macOS) || os(iOS)
             .contentShape(Rectangle())

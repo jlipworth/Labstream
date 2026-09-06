@@ -73,6 +73,8 @@ struct QualityTabView: View {
                         .contentShape(Rectangle())
                     }
                     .playerPickerButtonStyle()
+                    .accessibilityIdentifier("playback.quality.\(option.kbps)")
+                    .accessibilityValue(option.kbps == state.selectedBitrateKbps ? "Selected" : "Not selected")
                 }
             }
             .padding(PlayerPickerMetrics.contentPadding)
@@ -450,7 +452,7 @@ struct SubtitlesTabView: View {
                             .padding(.vertical, 4)
                     }
 
-                    ForEach(tracks) { track in
+                    ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
                         Button {
                             if shouldConfirm(track, selectedID) {
                                 pendingConfirmation = track
@@ -484,6 +486,8 @@ struct SubtitlesTabView: View {
                             .contentShape(Rectangle())
                         }
                         .playerPickerButtonStyle()
+                        .accessibilityIdentifier("playback.subtitles.\(index)")
+                        .accessibilityValue(track.id == selectedID ? "Selected" : "Not selected")
                     }
                 }
             }
@@ -677,7 +681,7 @@ struct AudioTabView: View {
                         .foregroundStyle(.secondary)
                     .padding(.vertical, PlayerPickerMetrics.rowVerticalPadding)
                 } else {
-                    ForEach(tracks) { track in
+                    ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
                         Button {
                             // Optimistically reflect the pick, then apply it; re-sync from
                             // the player afterward in case the selection didn't take.
@@ -700,6 +704,8 @@ struct AudioTabView: View {
                             .contentShape(Rectangle())
                         }
                         .playerPickerButtonStyle()
+                        .accessibilityIdentifier("playback.audio.\(index)")
+                        .accessibilityValue(track.id == selectedID ? "Selected" : "Not selected")
                     }
                 }
             }
@@ -755,7 +761,7 @@ struct AudioStreamsTabView: View {
                         .foregroundStyle(.secondary)
                     .padding(.vertical, PlayerPickerMetrics.rowVerticalPadding)
                 } else {
-                    ForEach(snapshot?.tracks ?? []) { choice in
+                    ForEach(Array((snapshot?.tracks ?? []).enumerated()), id: \.element.id) { index, choice in
                         Button {
                             guard choice.id != snapshot?.selectedID else { return }
                             pendingID = choice.id
@@ -778,6 +784,9 @@ struct AudioStreamsTabView: View {
                             .contentShape(Rectangle())
                         }
                         .playerPickerButtonStyle()
+                        .accessibilityIdentifier("playback.audio.\(index)")
+                        .accessibilityValue(pendingID == choice.id ? "Pending" : activeID == choice.id ? "Selected" : "Not selected")
+                        .disabled(pendingID != nil)
                     }
                 }
             }

@@ -43,12 +43,14 @@ enum DebugRawURLPlaybackProbe {
         window.makeKeyAndOrderFront(nil)
         defer { window.close() }
         #endif
+        defer { player.pause(); player.replaceCurrentItem(with: nil) }
         player.play()
 
         let deadline = ContinuousClock.now.advanced(by: .seconds(60))
         while ContinuousClock.now < deadline {
             if item.status == .failed { break }
             if item.status == .readyToPlay, player.rate > 0, item.currentTime().seconds > 1 { break }
+            if Task.isCancelled { return }
             try? await Task.sleep(for: .milliseconds(500))
         }
 
@@ -64,6 +66,7 @@ enum DebugRawURLPlaybackProbe {
             while ContinuousClock.now < seekDeadline {
                 if item.status == .failed { break }
                 if player.rate > 0, item.currentTime().seconds > target + 1 { break }
+                if Task.isCancelled { return }
                 try? await Task.sleep(for: .seconds(1))
             }
         }
@@ -77,7 +80,7 @@ enum DebugRawURLPlaybackProbe {
         }
         if let errorLog = item.errorLog() {
             for event in errorLog.events.prefix(8) {
-                log.error("probe.rawurl errlog status=\(event.errorStatusCode, privacy: .public) domain=\(event.errorDomain, privacy: .public) comment=\(event.errorComment ?? "-", privacy: .public)")
+                log.error("probe.rawurl errlog status=\(event.errorStatusCode, privacy: .public)")
             }
         }
         for track in item.tracks {
@@ -92,14 +95,18 @@ enum DebugRawURLPlaybackProbe {
         }
         await DebugPlaybackFrameCapture.captureIfRequested(from: player, label: "rawurl", log: log)
         let requiredPosition = Double(DebugPlaybackProbeSupport.intValue(after: "--vp-probe-rawurl-seek-s", in: arguments) ?? 0) + 1
-        let passed = item.status == .readyToPlay && item.currentTime().seconds > requiredPosition
-        if passed {
-            log.notice("probe.pass position_ms=\(Int(item.currentTime().seconds * 1000), privacy: .public) failed=false")
-        } else {
-            log.error("probe.fail error=rawurl_did_not_play")
+        do {
+            guard item.status == .readyToPlay, item.currentTime().seconds > requiredPosition else {
+                throw DebugPlaybackProbeSupport.ProbeError.timeout("rawurl_start")
+            }
+            try await DebugPlaybackProbeSupport.holdWithPlaybackProgress(player: player,
+                seconds: DebugPlaybackProbeSupport.intValue(after: "--vp-probe-post-seek-hold-seconds", in: arguments) ?? 15,
+                stallToleranceSeconds: DebugPlaybackProbeSupport.intValue(after: "--vp-probe-stall-tolerance-seconds", in: arguments) ?? 20,
+                log: log)
+            log.notice("probe.pass sustained_progress=true")
+        } catch {
+            log.error("probe.fail error=rawurl_sustained_progress_unproven")
         }
-        if passed { try? await Task.sleep(for: .seconds(15)) }
-        player.pause()
     }
 }
 #endif

@@ -47,6 +47,54 @@ final class PlaybackController {
     private var preferEmbyVideoCopyHLS = false
     private var mediaBrowserVideoCopyEnforced = false
 
+    #if DEBUG
+    var debugVisibleAttachmentCount = 0
+    var debugVisibleWindowIsVisible: (() -> Bool)?
+    private var debugCleanupRequested = false
+
+    /// Allowlisted read-only facts; no URL, token, title, raw session ID, or error text.
+    func debugEvidenceSnapshot() -> DebugPlaybackEvidence.Snapshot {
+        var video: DebugPlaybackEvidence.Decision = .unknown
+        var audio: DebugPlaybackEvidence.Decision = .unknown
+        var provenance: DebugPlaybackEvidence.Provenance = .unknown
+        if let decision = lastPlexDecision {
+            if ["copy", "directplay"].contains(decision.videoDecision?.lowercased() ?? "") { video = .copy }
+            if decision.videoDecision?.lowercased() == "transcode" { video = .encode }
+            if ["copy", "directplay"].contains(decision.audioDecision?.lowercased() ?? "") { audio = .copy }
+            if decision.audioDecision?.lowercased() == "transcode" { audio = .encode }
+            if video != .unknown { provenance = .serverDecision }
+        } else if mediaBrowserVideoCopyEnforced {
+            video = .copy; provenance = .enforcedRequest
+        }
+        let backend: DebugPlaybackEvidence.Backend
+        switch sessionSource {
+        case .plex: backend = .plex
+        case .offline: backend = .offline
+        case .mediaBrowser(let session):
+            backend = .init(rawValue: session.backend.rawValue) ?? .unknown
+        }
+        let position = player.currentTime().seconds
+        let buffer = diagnostics.bufferedAheadSeconds
+        let phase: DebugPlaybackEvidence.Phase = debugCleanupRequested ? .stopped
+            : videoTranscodeConsent.isPending ? .consent
+            : playbackError.isFailed ? .failed
+            : player.timeControlStatus == .playing ? .playing
+            : player.timeControlStatus == .waitingToPlayAtSpecifiedRate ? .waiting : .paused
+        return .init(buildNumber: Int(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "") ?? 0,
+            phase: phase, bufferBucketSeconds: buffer.isFinite ? Int(min(3600, max(0, buffer))) / 5 * 5 : 0,
+            renderedFormat: ["avc1", "avc3", "hvc1", "hev1", "dvh1", "dvhe"].contains(diagnostics.runtimeVideoCodecFourCC ?? "")
+                ? diagnostics.runtimeVideoCodecFourCC! : "unknown", schemaVersion: 1, generation: playbackGeneration,
+            backend: backend,
+            qualityKbps: max(0, min(1_000_000, userSelectedMaxVideoBitrateKbps)),
+            videoDecision: video, videoProvenance: provenance, audioDecision: audio,
+            consent: videoTranscodeConsent.isPending ? .pending : .notPending,
+            visibleAttachment: debugVisibleAttachmentCount == 0 ? .detached
+                : debugVisibleWindowIsVisible.map { $0() ? .attached : .detached } ?? .unknown,
+            positionBucketSeconds: position.isFinite ? Int(min(604_800, max(0, position))) / 5 * 5 : 0,
+            cleanupRequested: debugCleanupRequested, serverCleanup: "unknown")
+    }
+    #endif
+
     /// Observable surface for the currently-active Skip Intro / Skip Credits affordance
     /// (#14). Modeled as its own `@Observable` object (mirroring `playbackError`) so the
     /// PlayerView overlay can react to a marker becoming active/inactive without making the
@@ -992,6 +1040,9 @@ final class PlaybackController {
     /// Begin playback. Safe to call once; subsequent calls are ignored.
     func start() {
         guard !started else { return }
+        #if DEBUG
+        debugCleanupRequested = false
+        #endif
         playbackGeneration += 1
         started = true
         let pathMode = sessionSource.pathMode
@@ -1031,6 +1082,9 @@ final class PlaybackController {
     /// Tear down observers and report a final `stopped` timeline. Call from the
     /// view's `dismantle`.
     func stop() {
+        #if DEBUG
+        debugCleanupRequested = true
+        #endif
         videoTranscodeConsent.generation = nil
         preferEmbyVideoCopyHLS = false
         videoTranscodeApprovedForCurrentItem = false

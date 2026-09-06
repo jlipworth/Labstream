@@ -25,7 +25,16 @@ struct ContentView: View {
     private var bootstrap: SessionBootstrap { runtime.bootstrap }
 
     var body: some View {
-        #if os(tvOS) && DEBUG
+        #if os(macOS) && DEBUG
+        if DebugUITestLaunchConfiguration.fixtureKind == .player,
+           Bundle.main.bundleIdentifier?.contains(".dev.") == true {
+            MacPlayerFixtureView()
+                .environment(musicPlayer)
+                .environment(appModel)
+        } else {
+            mainBody
+        }
+        #elseif os(tvOS) && DEBUG
         // Deterministic tvOS UI-test fixtures (season browser, player chrome, system keyboard)
         // bypass the restore/login/browse gate entirely; production launches never set one.
         switch DebugUITestLaunchConfiguration.fixtureKind {
@@ -99,6 +108,24 @@ struct ContentView: View {
             bootstrap.didStartRestore = true
             await authManager.restoreSession()
             bootstrap.isRestoring = false
+#if DEBUG
+            // Explicit playback probes must not wait behind unrelated inactive-download
+            // hydration. Restore/switch the requested session, then run the bounded probe.
+            let debugArgs = ProcessInfo.processInfo.arguments
+            let hasPlaybackProbe = ["--vp-probe-plex-playback", "--vp-probe-jellyfin-playback", "--vp-probe-emby-playback"]
+                .contains { debugArgs.contains($0) }
+            if (!hasPlaybackProbe || debugArgs.contains("--vp-probe-allow-live")),
+               let idx = debugArgs.firstIndex(of: "--vp-probe-backend"),
+               debugArgs.indices.contains(idx + 1),
+               let backend = MediaBackendKind(rawValue: debugArgs[idx + 1]),
+               backend != appModel.activeBackend {
+                await authManager.switchBackend(backend)
+            }
+
+            await DebugJellyfinPlaybackProbe.runIfRequested(appModel: appModel)
+            await DebugEmbyPlaybackProbe.runIfRequested(appModel: appModel)
+            await DebugPlexPlaybackProbe.runIfRequested(appModel: appModel)
+#endif
             #if !os(tvOS)
             // Restore the selected browse lane first, then hydrate only inactive backends that
             // currently own durable active work. Paused/failed/completed rows remain cold until
@@ -118,19 +145,8 @@ struct ContentView: View {
             downloadManager.teardownOrphanedEncodersOnLaunch()
             #endif
 #if DEBUG
-            let debugArgs = ProcessInfo.processInfo.arguments
-            if let idx = debugArgs.firstIndex(of: "--vp-probe-backend"),
-               debugArgs.indices.contains(idx + 1),
-               let backend = MediaBackendKind(rawValue: debugArgs[idx + 1]),
-               backend != appModel.activeBackend {
-                await authManager.switchBackend(backend)
-            }
-
             await DebugRawURLPlaybackProbe.runIfRequested()
             await DebugPlexBrowseProbe.runIfRequested(appModel: appModel)
-            await DebugJellyfinPlaybackProbe.runIfRequested(appModel: appModel)
-            await DebugEmbyPlaybackProbe.runIfRequested(appModel: appModel)
-            await DebugPlexPlaybackProbe.runIfRequested(appModel: appModel)
             #if !os(tvOS)
             await DebugPlexDownloadProbe.runIfRequested(appModel: appModel, downloadManager: downloadManager)
             await DebugEmbyDownloadProbe.runIfRequested(appModel: appModel, downloadManager: downloadManager)

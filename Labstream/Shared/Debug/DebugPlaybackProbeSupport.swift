@@ -37,6 +37,16 @@ enum DebugPlaybackProbeSupport {
         let rawQuery = value(after: "--vp-probe-query", in: arguments)
         let trimmedQuery = rawQuery?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let query = trimmedQuery, !query.isEmpty else { return nil }
+        let bounds: [(String, ClosedRange<Int>)] = [
+            ("--vp-probe-post-seek-hold-seconds", 5...300),
+            ("--vp-probe-stall-tolerance-seconds", 1...60),
+            ("--vp-probe-playable-timeout-seconds", 1...180),
+            ("--vp-probe-seek-ms", 0...604_800_000),
+            ("--vp-probe-bitrate-kbps", 0...1_000_000)
+        ]
+        for (flag, range) in bounds where arguments.contains(flag) {
+            guard let value = intValue(after: flag, in: arguments), range.contains(value) else { return nil }
+        }
         return LaunchOptions(
             query: query,
             bitrateKbps: intValue(after: "--vp-probe-bitrate-kbps", in: arguments) ?? defaultBitrateKbps,
@@ -70,9 +80,12 @@ enum DebugPlaybackProbeSupport {
 
     static func waitUntilPlayable(_ controller: PlaybackController,
                                   phase: String,
-                                  timeoutSeconds: Int) async throws {
+                                  timeoutSeconds: Int,
+                                  sessionIsCurrent: () -> Bool = { true }) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(timeoutSeconds))
         while ContinuousClock.now < deadline {
+            try Task.checkCancellation()
+            guard sessionIsCurrent() else { throw DebugPlaybackScenario.Blocked(reason: .backendChanged) }
             if controller.playbackError.isFailed {
                 throw ProbeError.playbackFailed(phase, controller.playbackError.message)
             }
@@ -88,55 +101,51 @@ enum DebugPlaybackProbeSupport {
     static func holdWithPlaybackProgress(_ controller: PlaybackController,
                                          seconds: Int,
                                          stallToleranceSeconds: Int = 20,
-                                         log: Logger) async throws {
+                                         log: Logger,
+                                         sessionIsCurrent: () -> Bool = { true }) async throws {
+        try await holdWithPlaybackProgress(player: controller.player, seconds: seconds,
+                                           stallToleranceSeconds: stallToleranceSeconds,
+                                           evidenceKind: "liveController", log: log,
+                                           failed: { controller.playbackError.isFailed },
+                                           sessionIsCurrent: sessionIsCurrent)
+    }
+
+    /// Uses actual monotonic elapsed time and catches paused starvation as well as waiting.
+    /// An item replacement/seek during an uninterrupted hold invalidates that evidence window.
+    static func holdWithPlaybackProgress(player: AVPlayer, seconds: Int,
+                                         stallToleranceSeconds: Int = 20,
+                                         evidenceKind: String = "rawPlayer",
+                                         log: Logger,
+                                         failed: () -> Bool = { false },
+                                         sessionIsCurrent: () -> Bool = { true }) async throws {
+        guard (5...300).contains(seconds), (1...60).contains(stallToleranceSeconds),
+              let item = player.currentItem else { throw ProbeError.timeout("invalid_hold_options") }
         let start = ContinuousClock.now
-        // Buffering time doesn't count against the hold goal: the window is the requested
-        // hold plus the full buffering budget, and success requires the same advancement as
-        // before once at least `seconds` have elapsed.
-        let deadline = start.advanced(by: .seconds(seconds + max(0, stallToleranceSeconds - 20)))
-        let requiredAdvanceMs = min(3_000, max(1_000, seconds * 500))
-        var initialPositionMs: Int?
-        var lastPositionMs = rawPlayerPositionMs(controller)
-        var bestPositionMs = lastPositionMs
-        var consecutiveWaitingSamples = 0
-        var movingSamples = 0
-        while ContinuousClock.now < deadline {
-            if controller.playbackError.isFailed {
-                throw ProbeError.playbackFailed("hold", controller.playbackError.message)
-            }
-            let currentPositionMs = rawPlayerPositionMs(controller)
-            if initialPositionMs == nil, currentPositionMs > 1_000 {
-                initialPositionMs = currentPositionMs
-                lastPositionMs = currentPositionMs
-                bestPositionMs = currentPositionMs
-            }
-            bestPositionMs = max(bestPositionMs, currentPositionMs)
-            if currentPositionMs >= lastPositionMs + 500 {
-                movingSamples += 1
-                log.notice("probe.progress position_ms=\(currentPositionMs, privacy: .public) status=\(String(describing: controller.player.timeControlStatus), privacy: .public) rate=\(controller.player.rate, privacy: .public)")
-                lastPositionMs = currentPositionMs
-            }
-            if controller.player.timeControlStatus == .waitingToPlayAtSpecifiedRate {
-                consecutiveWaitingSamples += 1
-            } else {
-                consecutiveWaitingSamples = 0
-            }
-            if consecutiveWaitingSamples >= stallToleranceSeconds {
-                throw ProbeError.playbackStalled(bestPositionMs - (initialPositionMs ?? lastPositionMs),
-                                                 "player remained waiting during hold")
-            }
-            if start.duration(to: ContinuousClock.now) >= .seconds(seconds),
-               bestPositionMs - (initialPositionMs ?? lastPositionMs) >= requiredAdvanceMs,
-               movingSamples >= 3 {
-                return
+        var evidence = PlaybackProgressEvidence(evidenceKind: evidenceKind, backend: "unknown",
+            generation: 1, holdSeconds: Double(seconds), stallToleranceSeconds: Double(stallToleranceSeconds))
+        defer { DebugPlaybackEvidence.exportProgressIfRequested(evidence) }
+        while evidence.samples.count < 601 {
+            try Task.checkCancellation()
+            guard sessionIsCurrent() else { throw DebugPlaybackScenario.Blocked(reason: .backendChanged) }
+            guard player.currentItem === item else { throw ProbeError.timeout("hold_item_replaced") }
+            let duration = start.duration(to: .now).components
+            let elapsed = Double(duration.seconds) + Double(duration.attoseconds) / 1e18
+            let position = player.currentTime().seconds
+            let phase: PlaybackProgressEvidence.Phase = failed() || item.status == .failed ? .failed
+                : player.timeControlStatus == .playing ? .playing
+                : player.timeControlStatus == .waitingToPlayAtSpecifiedRate ? .waiting : .paused
+            evidence.samples.append(.init(elapsedSeconds: evidence.samples.isEmpty ? 0 : elapsed,
+                positionSeconds: position, phase: phase, generation: 1))
+            if evidence.samples.count >= 2 {
+                let result = evidence.evaluate()
+                if result.status == .passed { return }
+                if result.reason != .insufficientObservation {
+                    throw ProbeError.playbackStalled(Int(result.movingSeconds * 1000), result.reason.rawValue)
+                }
             }
             try await Task.sleep(for: .seconds(1))
         }
-        let baselineMs = initialPositionMs ?? lastPositionMs
-        let advancedMs = bestPositionMs - baselineMs
-        guard advancedMs >= requiredAdvanceMs, movingSamples >= 3 else {
-            throw ProbeError.playbackStalled(advancedMs, "playhead did not advance enough")
-        }
+        throw ProbeError.timeout("hold_sample_limit")
     }
 
     /// Logs the video format descriptions AVPlayer actually engaged (codec fourCC + transfer

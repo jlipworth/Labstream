@@ -44,6 +44,7 @@ struct CustomTransportStatusOverlay: View {
                         .padding(.horizontal, 8)
                 }
                 .playerTransportProminentButtonStyle()
+                .accessibilityIdentifier("playback.buffer.playPause")
                 .controlSize(statusControlSize)
             case .reconnecting:
                 if let onClose {
@@ -61,6 +62,7 @@ struct CustomTransportStatusOverlay: View {
                             .frame(minWidth: 160)
                     }
                     .playerTransportProminentButtonStyle()
+                    .accessibilityIdentifier("playback.retry")
                     if let onClose {
                         Button(action: onClose) {
                             Text("Close")

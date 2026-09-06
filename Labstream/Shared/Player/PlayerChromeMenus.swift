@@ -143,6 +143,7 @@ struct CustomPlayerMenuPopover: View {
                         .labelStyle(.iconOnly)
                         .frame(width: closeButtonSide, height: closeButtonSide)
                 }
+                .accessibilityIdentifier("playback.menu.close")
                 #if os(iOS)
                 .buttonStyle(.glass)
                 .buttonBorderShape(.circle)

@@ -27,15 +27,16 @@ enum DebugPlexPlaybackProbe {
 
     private static func run(arguments: [String], appModel: AppModel) async {
         guard let options = DebugPlaybackProbeSupport.launchOptions(from: arguments,
-                                                                    defaultBitrateKbps: appModel.activeStreamingQualityKbps) else {
+                                                                    defaultBitrateKbps: 0) else {
             log.error("probe.fail reason=missing_probe_query")
+            DebugPlaybackScenario.blocked(arguments, reason: .invalidOptions)
             DebugPlaybackProbeSupport.recordMissingQuery(eventName: "probe.plex.fail")
             return
         }
+        guard DebugPlaybackScenario.admitted(arguments, bitrateKbps: options.bitrateKbps) else { return }
         let query = options.query
         let bitrateKbps = options.bitrateKbps
         let seekMs = options.seekMs
-        let postSeekHoldSeconds = options.postSeekHoldSeconds
 
         let querySummary = DebugPlaybackProbeSupport.querySummary(query)
         log.notice("probe.start backend=\(appModel.activeBackend.rawValue, privacy: .public) query=\(querySummary, privacy: .public) bitrate_kbps=\(bitrateKbps, privacy: .public) seek_ms=\(seekMs, privacy: .public)")
@@ -51,6 +52,7 @@ enum DebugPlexPlaybackProbe {
               let restoredServer = appModel.serverBaseURL,
               let token = appModel.serverToken else {
             log.error("probe.fail reason=not_plex_or_not_ready")
+            DebugPlaybackScenario.blocked(arguments, reason: .missingAuth)
             return
         }
         // `--vp-probe-server-url` swaps the transport endpoint (e.g. a kubectl port-forward
@@ -65,6 +67,7 @@ enum DebugPlexPlaybackProbe {
         }
 
         var controller: PlaybackController?
+        var scenarioOwnsCleanup = false
         do {
             let item = try await resolveItem(query: query, appModel: appModel, server: server, token: token)
             log.notice("probe.item_resolved type=\(item.type, privacy: .public) duration_ms=\(item.duration ?? 0, privacy: .public)")
@@ -80,27 +83,14 @@ enum DebugPlexPlaybackProbe {
                                               qualityDefaultsKey: appModel.activeStreamingQualityDefaultsKey,
                                               mediaIndex: 0)
             controller = playback
-            playback.start()
-
-            try await DebugPlaybackProbeSupport.waitUntilPlayable(playback, phase: "initial", timeoutSeconds: options.playableTimeoutSeconds)
-            log.notice("probe.initial_playing position_ms=\(playback.currentResumeMs, privacy: .public)")
-            await DebugPlaybackProbeSupport.logActiveVideoFormat(playback, phase: "initial", log: log)
-            await DebugPlaybackFrameCapture.captureIfRequested(from: playback.player, label: "plex-initial", log: log)
-
-            playback.performUserSeek(toMs: seekMs)
-            try await DebugPlaybackProbeSupport.waitUntilPlayable(playback, phase: "post_seek", timeoutSeconds: options.playableTimeoutSeconds)
-            try await DebugPlaybackProbeSupport.holdWithPlaybackProgress(playback, seconds: postSeekHoldSeconds, stallToleranceSeconds: options.stallToleranceSeconds, log: log)
-            await DebugPlaybackProbeSupport.logActiveVideoFormat(playback, phase: "post_seek", log: log)
-            await DebugPlaybackFrameCapture.captureIfRequested(from: playback.player, label: "plex-postseek", log: log)
-
-            log.notice("probe.pass position_ms=\(playback.currentResumeMs, privacy: .public) failed=\(playback.playbackError.isFailed, privacy: .public)")
-            AppDiagnostics.record(.playback, "probe.plex.pass", fields: [
-                "resume": .millisecondsBucket(playback.currentResumeMs),
-                "target": .millisecondsBucket(seekMs),
-            ])
-            playback.stop()
+            scenarioOwnsCleanup = true
+            controller = nil // The named scenario owns cleanup from this point, including errors.
+            try await DebugPlaybackScenario.run(playback, options: options, arguments: arguments,
+                backendIsCurrent: { appModel.activeBackend == .plex && appModel.isBrowseReady }, log: log)
+            log.notice("probe.pass scenario_completed=true")
             controller = nil
         } catch {
+            if !scenarioOwnsCleanup { DebugPlaybackScenario.blocked(arguments, reason: .playbackFailed) }
             log.error("probe.fail error=\(DiagnosticRedactor.safeErrorSummary(error), privacy: .public)")
             AppDiagnostics.record(.playback, "probe.plex.fail", fields: [
                 "error": .error(error),
