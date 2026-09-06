@@ -11,6 +11,7 @@ extension CustomPlayerChrome {
                 macTopChromeButton("Close Player", systemImage: "xmark") {
                     requestPlayerClose(onClose)
                 }
+                .accessibilityIdentifier("playback.close")
             }
         }
     }
@@ -77,6 +78,11 @@ extension CustomPlayerChrome {
 
     func handleMacKeyDown(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection([.shift, .control, .option, .command])
+        // Stable keyboard reveal leaves playback and the active menu/consent untouched.
+        if event.charactersIgnoringModifiers?.lowercased() == "k", modifiers == [.command, .shift] {
+            revealChrome(keepVisible: true)
+            return true
+        }
         if event.keyCode == 53, modifiers.isEmpty { // Escape
             guard !event.isARepeat else { return true }
             switch macPlayerEscapeAction(isMenuPresented: selectedMenu != nil,
@@ -218,6 +224,13 @@ extension CustomPlayerChrome {
                 .strokeBorder(.white.opacity(0.12), lineWidth: 0.5)
         }
         .help(controller.transport.showsPausedControl ? "Play" : "Pause")
+        .accessibilityIdentifier("playback.playPause")
+        .accessibilityLabel(controller.transport.showsPausedControl ? "Play" : "Pause")
+        .accessibilityValue(controller.videoTranscodeConsent.isPending ? "Awaiting consent"
+            : controller.playbackError.isFailed ? "Playback failed"
+            : controller.transportStatus.activeStatus != nil ? "Buffering"
+            : controller.transport.showsPausedControl ? "Paused" : "Playing")
+        .disabled(controller.videoTranscodeConsent.isPending || controller.playbackError.isFailed)
     }
 
     func macSkipButton(seconds: Int) -> some View {
@@ -239,6 +252,7 @@ extension CustomPlayerChrome {
                 .strokeBorder(.white.opacity(0.09), lineWidth: 0.5)
         }
         .disabled(scrubState.durationMs <= 0)
+        .accessibilityIdentifier("playback.skip.\(seconds)")
         .help(isForward ? "Skip Forward \(amount) Seconds" : "Skip Back \(amount) Seconds")
         .accessibilityLabel(isForward ? "Skip forward \(amount) seconds" : "Skip back \(amount) seconds")
     }
@@ -266,6 +280,8 @@ extension CustomPlayerChrome {
                 }
                 .help(menu.title)
                 .accessibilityLabel(menu.title)
+                .accessibilityIdentifier("playback.menu.\(menu.rawValue)")
+                .accessibilityValue(selectedMenu == menu ? "Open" : "Closed")
             }
         }
         .fixedSize(horizontal: true, vertical: false)

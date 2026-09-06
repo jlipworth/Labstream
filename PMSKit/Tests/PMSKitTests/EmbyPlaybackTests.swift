@@ -47,6 +47,7 @@ struct EmbyPlaybackTests {
         #expect(object["AllowAudioStreamCopy"] as? Bool == true)
         // DIVERGENCE FROM JELLYFIN: AutoOpenLiveStream is false.
         #expect(object["AutoOpenLiveStream"] as? Bool == false)
+        #expect(object["IsPlayback"] as? Bool == false)
         let profile = try #require(object["DeviceProfile"] as? [String: Any])
         #expect(profile["Name"] as? String == "Labstream")
         #expect(profile["MaxStreamingBitrate"] as? Int == 8_000_000)

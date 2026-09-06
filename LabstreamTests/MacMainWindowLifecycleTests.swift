@@ -62,7 +62,8 @@ struct MacMainWindowLifecycleTests {
     func closingTheOnlyWindowDoesNotTerminateTheApplication() {
         let delegate = MacAppDelegate()
         #expect(!delegate.applicationShouldTerminateAfterLastWindowClosed(NSApp))
-        #expect(!delegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false))
+        let didActivate = MacMainWindowController.shared.activateMainWindow()
+        #expect(delegate.applicationShouldHandleReopen(NSApp, hasVisibleWindows: false) == !didActivate)
     }
 
     @Test

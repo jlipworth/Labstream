@@ -24,7 +24,7 @@ struct MediaBrowserDeviceProfileFactsTests {
                     maxStreamingBitrate: bitrate,
                     advertiseDolbyVision: advertiseDV)
                 let actual = try canonical(emby)
-                let expected = try canonical(legacyEmbyStreaming(
+                let expected = try canonical(expectedEmbyStreaming(
                     bitrate: bitrate, advertiseDV: advertiseDV))
                 #expect(actual == expected)
             }
@@ -46,6 +46,8 @@ struct MediaBrowserDeviceProfileFactsTests {
 
         let embyTranscode = try firstProfile(emby, key: "TranscodingProfiles")
         #expect(embyTranscode["EnableSubtitlesInManifest"] == nil)
+        #expect(embyTranscode["Container"] as? String == "m4s,ts")
+        #expect(jfOnTranscode["Container"] as? String == "ts")
         let subtitleProfiles = try #require(emby["SubtitleProfiles"] as? [[String: Any]])
         #expect(subtitleProfiles.map { $0["Format"] as? String } == subtitleFormats)
         #expect(subtitleProfiles.allSatisfy { $0["Method"] as? String == "Encode" })
@@ -107,7 +109,7 @@ struct MediaBrowserDeviceProfileFactsTests {
         return result
     }
 
-    private func legacyEmbyStreaming(bitrate: Int, advertiseDV: Bool) -> [String: Any] {
+    private func expectedEmbyStreaming(bitrate: Int, advertiseDV: Bool) -> [String: Any] {
         var result: [String: Any] = [
             "Name": "Labstream",
             "MaxStreamingBitrate": bitrate,
@@ -121,7 +123,7 @@ struct MediaBrowserDeviceProfileFactsTests {
 
     private func streamingTranscode(enableSubtitlesInManifest: Bool?) -> [String: Any] {
         var result: [String: Any] = [
-            "Type": "Video", "Container": "ts", "Protocol": "hls",
+            "Type": "Video", "Container": enableSubtitlesInManifest == nil ? "m4s,ts" : "ts", "Protocol": "hls",
             "VideoCodec": "h264,hevc", "AudioCodec": "aac,ac3",
             "Context": "Streaming", "MinSegments": 2, "BreakOnNonKeyFrames": false,
         ]

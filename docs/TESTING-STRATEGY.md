@@ -270,6 +270,14 @@ turn. It does not prove real backend auth, subjective UI behavior,
 media-key ownership, live playback, or background-download durability. See
 [macOS target guide](MACOS.md) for host identity and cleanup rules.
 
+### Bounded playback troubleshooting
+
+The [agent playback troubleshooting guide](AGENT-PLAYBACK-TROUBLESHOOTING.md) defines the
+versioned progress/report contract, the synthetic hosted-controller command, CUA-only
+semantic player checks, and separately admitted live scenarios. Start with the fixture;
+only use live probes with explicit admission and existing sign-in. Video encoding needs
+separate approval. Reported controller progress is not visible-frame or hardware evidence.
+
 ## Optional live-server checks
 
 Live probes are opt-in and must stay secret-gated. They validate real Plex/Jellyfin/Emby wire behavior without committing tokens, URLs, item IDs, media titles, or logs. Keep their env files gitignored and review generated output before sharing.

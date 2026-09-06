@@ -2,6 +2,10 @@
 import AVFoundation
 import Foundation
 import os
+#if os(macOS)
+import AppKit
+import AVKit
+#endif
 
 /// Plays an arbitrary HLS/media URL with a bare AVPlayer — no backend, no
 /// PlaybackController — to isolate whether a playback failure is content/OS-level or
@@ -19,15 +23,34 @@ enum DebugRawURLPlaybackProbe {
         guard let raw = DebugPlaybackProbeSupport.value(after: "--vp-probe-play-url", in: arguments),
               let url = URL(string: raw) else { return }
 
+        await run(url: url, headers: [:], arguments: arguments)
+    }
+
+    static func run(url: URL, headers: [String: String], arguments: [String]) async {
         log.notice("probe.start backend=rawurl")
-        let item = AVPlayerItem(url: url)
+        let options: [String: Any]? = headers.isEmpty ? nil : ["AVURLAssetHTTPHeaderFieldsKey": headers]
+        let item = AVPlayerItem(asset: AVURLAsset(url: url, options: options))
         let player = AVPlayer(playerItem: item)
+        #if os(macOS)
+        let view = AVPlayerView()
+        view.player = player
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.title = "Playback diagnostic"
+        window.isReleasedWhenClosed = false
+        window.contentView = view
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        defer { window.close() }
+        #endif
+        defer { player.pause(); player.replaceCurrentItem(with: nil) }
         player.play()
 
         let deadline = ContinuousClock.now.advanced(by: .seconds(60))
         while ContinuousClock.now < deadline {
             if item.status == .failed { break }
             if item.status == .readyToPlay, player.rate > 0, item.currentTime().seconds > 1 { break }
+            if Task.isCancelled { return }
             try? await Task.sleep(for: .milliseconds(500))
         }
 
@@ -36,13 +59,14 @@ enum DebugRawURLPlaybackProbe {
         if let seekSeconds = DebugPlaybackProbeSupport.intValue(after: "--vp-probe-rawurl-seek-s", in: arguments),
            item.status == .readyToPlay {
             log.notice("probe.rawurl seeking_to_s=\(seekSeconds, privacy: .public)")
-            await player.seek(to: CMTime(seconds: Double(seekSeconds), preferredTimescale: 600))
+            player.seek(to: CMTime(seconds: Double(seekSeconds), preferredTimescale: 600), completionHandler: { _ in })
             player.play()
             let seekDeadline = ContinuousClock.now.advanced(by: .seconds(120))
             let target = Double(seekSeconds)
             while ContinuousClock.now < seekDeadline {
                 if item.status == .failed { break }
                 if player.rate > 0, item.currentTime().seconds > target + 1 { break }
+                if Task.isCancelled { return }
                 try? await Task.sleep(for: .seconds(1))
             }
         }
@@ -56,7 +80,7 @@ enum DebugRawURLPlaybackProbe {
         }
         if let errorLog = item.errorLog() {
             for event in errorLog.events.prefix(8) {
-                log.error("probe.rawurl errlog status=\(event.errorStatusCode, privacy: .public) domain=\(event.errorDomain, privacy: .public) comment=\(event.errorComment ?? "-", privacy: .public)")
+                log.error("probe.rawurl errlog status=\(event.errorStatusCode, privacy: .public)")
             }
         }
         for track in item.tracks {
@@ -70,13 +94,19 @@ enum DebugRawURLPlaybackProbe {
             }
         }
         await DebugPlaybackFrameCapture.captureIfRequested(from: player, label: "rawurl", log: log)
-        let passed = item.status == .readyToPlay && item.currentTime().seconds > 1
-        if passed {
-            log.notice("probe.pass position_ms=\(Int(item.currentTime().seconds * 1000), privacy: .public) failed=false")
-        } else {
-            log.error("probe.fail error=rawurl_did_not_play")
+        let requiredPosition = Double(DebugPlaybackProbeSupport.intValue(after: "--vp-probe-rawurl-seek-s", in: arguments) ?? 0) + 1
+        do {
+            guard item.status == .readyToPlay, item.currentTime().seconds > requiredPosition else {
+                throw DebugPlaybackProbeSupport.ProbeError.timeout("rawurl_start")
+            }
+            try await DebugPlaybackProbeSupport.holdWithPlaybackProgress(player: player,
+                seconds: DebugPlaybackProbeSupport.intValue(after: "--vp-probe-post-seek-hold-seconds", in: arguments) ?? 15,
+                stallToleranceSeconds: DebugPlaybackProbeSupport.intValue(after: "--vp-probe-stall-tolerance-seconds", in: arguments) ?? 20,
+                log: log)
+            log.notice("probe.pass sustained_progress=true")
+        } catch {
+            log.error("probe.fail error=rawurl_sustained_progress_unproven")
         }
-        player.pause()
     }
 }
 #endif

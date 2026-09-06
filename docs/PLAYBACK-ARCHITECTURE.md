@@ -21,7 +21,7 @@ already queued for the old item was cancelled.
 ```mermaid
 sequenceDiagram
   accTitle: Backend playback startup
-  accDescr: Jellyfin and Emby negotiate a stream before constructing the playback controller. Plex either probes a dedicated Direct Play start URL or uses the production universal-transcode decision and start.m3u8. Both lanes then load one app-owned AVPlayer and retain lane-specific progress and cleanup.
+  accDescr: Jellyfin and Emby negotiate a stream before constructing the playback controller. Plex and Jellyfin validate video-copy HLS for Original and ask before falling back to video encoding; explicit transcoded qualities authorize encoding. Both lanes then load one app-owned AVPlayer and retain lane-specific progress and cleanup.
   participant UI
   participant Backend
   participant PC as PlaybackController
@@ -34,11 +34,22 @@ sequenceDiagram
     Server-->>Backend: stream URL + session metadata
     Backend-->>UI: negotiated remote stream + callbacks
     UI->>PC: construct with negotiated stream
+    opt Jellyfin Original
+      PC->>Server: validate explicit video-copy primary playlist
+      opt copy unavailable or video transform required
+        PC->>UI: ask before video encoding
+        UI-->>PC: approve or decline
+      end
+    end
   else Plex Direct Play / Maximum copy
     UI->>PC: construct and start with item + session
-    PC->>Server: direct-play probe
-    Server-->>PC: copy decision
-    PC->>AV: dedicated direct-play start.m3u8 at 0
+    PC->>Server: directPlay=0, directStream=1 decision
+    Server-->>PC: video-copy decision or encoding required
+    opt encoding required or copy fails
+      PC->>UI: ask for video-encoding consent
+      UI-->>PC: approve or decline
+    end
+    PC->>AV: authorized start.m3u8 at copy or encode intent
   else Plex capped, HLS-max, burn, or DV-forced
     UI->>PC: construct and start with item + session
     PC->>Server: production decision and start.m3u8
@@ -51,31 +62,35 @@ sequenceDiagram
 
 ## Plex
 
-Plex playback uses two start paths. Do not collapse them into a single
-“decision, then production `start.m3u8`” recipe.
+Plex uses the universal HLS endpoint with distinct video-copy and video-encoding intent.
+The client-first changes are under active acceptance (see the repository plan
+`docs/plans/2026-09-06-client-first-playback.md`);
+control-plane success is not a claim that live rendering or every platform has passed.
 
-1. **Direct Play / Maximum copy.** When the selected quality is Direct Play /
-   Maximum, there is no subtitle burn, and Dolby Vision is not forcing a
-   transcode, the controller first sends `directPlayProbeRequest()`. If PMS will
-   copy video, it commits the dedicated `directPlayStartM3U8URL()`, preflights
-   that playlist, and arms one playback-time fallback to production HLS. That
-   copy-lane start omits `offset=`: the session starts at 0 and the playhead is
-   restored with a client seek. Putting `offset=` on a copy session was observed
-   to emit `#EXT-X-START:TIME-OFFSET` and then abandon the sole variant. If the
-   start preflight is rejected—or the committed rendition later fails in
-   AVFoundation—the production fallback disables Direct Stream and requests a
-   maximum video transcode. Retrying production HLS with Direct Stream enabled
-   can reproduce the same rejected copy rendition.
-2. **Production decision / `start.m3u8`.** Capped quality rungs, Maximum (HLS),
-   subtitle burn, and DV-forced transcodes skip the dedicated probe and use the
-   production universal-transcode decision plus `start.m3u8`. Capped transcodes
-   keep `offset=` priming so a deep resume does not wait on an unproduced
-   segment. Maximum (HLS) explicitly disables Direct Stream: it is the uncapped
-   re-encode choice, not a second spelling of the Direct Play / Maximum copy lane.
+1. **Direct Play / Maximum (Original video).** Negotiate with `directPlay=0` and
+   `directStream=1`, and require an explicit video `copy`/`directplay` decision before
+   fetching the media start. Container remux and audio conversion are allowed; this HLS
+   route is not byte-for-byte original-file playback. Copy starts omit `offset=` and
+   restore the playhead through a client seek. The rejected literal `directPlay=1` HLS
+   start is no longer the app's Original playback route.
+2. **Consent before video encoding.** An unknown/encoding decision, subtitle burn,
+   Dolby Vision safety requirement, or failed copy rendition stops the previous job and
+   offers a controller-owned choice. Decline starts no encoder. Approval is scoped to
+   the current item and generation; stop and explicit quality changes clear it. Approved
+   fallback disables Direct Stream and primes the saved resume offset. It is not a
+   persistent preference or an automatic retry loop.
+3. **Explicit capped / Maximum (HLS).** These quality choices authorize encoding without
+   a second prompt. Maximum (HLS) disables Direct Stream rather than recreating the copy
+   rendition. Capped/approved encoding retains `offset=` priming for deep resume.
 
-Quality settings can force a capped transcode; Direct Play / Maximum preserves
-the user's no-cap/copy intent and is not silently converted to a lower-quality
-transcode after a stall.
+For a single HDR variant on an SDR display, the bounded media-playlist selector can open
+its same-origin child directly after master prewarming. It rejects alternate media tracks,
+multiple variants, and cross-origin children, and never rewrites encoded color metadata.
+Actual HDR/SDR presentation and seek acceptance remain open; preparation alone is insufficient.
+
+Automatic bitrate downshift still does not turn Original into an unapproved capped encode.
+Transport activity can defer the stall watchdog for one additional normal interval, not
+indefinitely. Genuine play/resume, pause, and teardown reset that waiting window.
 
 The profile and quality parameters are load-bearing. `TranscodeRequest` uses the built-in
 Plex profile name `Generic` plus explicit profile-extra directives. Unknown or missing
@@ -94,6 +109,19 @@ preserves required request headers, and reports `Sessions/Playing`,
 media source, method, and absolute position ticks. A reopen that mints a new session must
 replace that progress context.
 
+Jellyfin Original is now guarded before any media segment request: compatible H.264/HEVC
+sources may use explicit `VideoCodec=copy` with fMP4 segments while audio is copied or
+converted. The controller selects the validated same-origin primary copy child, not the
+HDR master whose additional SDR variants can force a video encoder. Unknown decisions,
+required video transforms, and unhandled alternate renditions stop and ask rather than
+silently encoding or discarding a track. Maximum (HLS) explicitly forces video encoding.
+An approval travels only through the captured, current-session reopener; stale generations
+cannot approve another playback request. These changes remain under live acceptance.
+
+Jellyfin VOD playlists describe the full timeline. Both copy and encoded playback use a
+client seek on readiness; `StartTimeTicks` must not reach dynamic segment requests. Copy
+playback is not treated as server-primed merely because it owns an FFmpeg audio/remux job.
+
 ## Emby
 
 Emby playback uses its own MediaBrowser-family lane. Like Jellyfin, `DetailPlaybackLauncher`
@@ -104,6 +132,29 @@ request dialect. `POST /Sessions/Playing/Stopped` reports
 playback state only; it does **not** stop an encoder. A source whose open result says it used
 server encoding must also call Emby's active-encoding delete endpoint. Keep those two teardown
 operations separate.
+
+Emby Original prefers a server-accepted static original file over optional transcode
+URLs. If that file stalls, one bounded retry requests video-copy HLS with AAC audio
+conversion before asking to encode video. Ordinary copy HLS uses Emby's `m4s` dialect, validates
+the same-origin primary child, and preserves session and track authority. H.264 static-file
+recovery instead requests self-contained MPEG-TS segments with video copy and AAC; this
+avoids the dynamic fragmented-MP4 delivery failure observed in the Mac acceptance control.
+The recovery child uses the full VOD timeline, strips `StartTimeTicks` from master and child,
+and performs its initial resume and subsequent seeks natively. It bypasses the legacy
+master-playlist prewarmer/proxy and retains the server session for cleanup. Explicit
+full-timeline resume must not depend on the clock still being near zero after track setup.
+
+Verified Emby copy HLS reopens retain their 12-second buffer target but keep automatic
+waiting enabled, so buffer exhaustion does not strand AVPlayer at rate zero. Other
+backends and approved video-encode buffering settings remain unchanged. AC-3 copy
+transport also uses AAC as a narrow delivery workaround. Unknown transforms and subtitle
+burn require consent; Maximum explicitly authorizes video encoding. This fallback is
+video-copy Direct Stream, not byte-for-byte original-file Direct Play. Native-file starvation
+itself remains unresolved; the scoped recovery passed Mac playback and deep-seek acceptance.
+
+A reopened result arriving after cancellation must still stop its exact server session.
+`stopAndWaitIgnoringCancellation()` isolates that cleanup from the cancelled preparation
+task; playback-stopped reporting alone does not establish encoder cleanup.
 
 Jellyfin and Emby share DTOs, quality/progress policy, and app-facing carriers, not a single
 wire implementation. See `BACKENDS.md` for the exact boundary.
@@ -120,10 +171,11 @@ Current invariants:
 
 - `HLSSessionPrewarmer` is lane-specific rather than a universal HLS prerequisite. Plex uses
   its full 20-second budget only when the selected quality is Direct Play / Maximum.
-  Jellyfin/Emby use an 8-second head start only for a transcoded stream with a nonzero resume
+  Emby uses an 8-second head start only for a transcoded stream with a nonzero resume
   or reopen target; progressive/direct streams and zero-offset remote starts attach without
-  that prewarm. All outcomes are soft and AVPlayer still gets a chance to load.
-- After that MediaBrowser transcode prewarm, the controller stands up `MediaSessionProxy` to
+  that prewarm. Jellyfin skips this legacy priming path and client-seeks its VOD timeline.
+  All prewarm outcomes are soft and AVPlayer still gets a chance to load.
+- After that Emby transcode prewarm, the controller stands up `MediaSessionProxy` to
   strip `starttimeticks` from the playlist and inject a playlist start-time offset, then
   attaches AVPlayer to the loopback URL. If proxy standup fails, it falls back to the original
   remote URL. Zero-offset and progressive/direct streams skip both the prewarm and the proxy.
@@ -197,7 +249,8 @@ debounced into one settled final-target rebuild instead of restarting for every 
 - Jellyfin/Emby replacement is deliberately ordered differently: detach the old `AVPlayerItem`,
   negotiate and attach the replacement item, then defer the prior active-encoding stop. If the
   backend reused the same play-session id, skip that prior stop so it cannot tear down the new
-  stream.
+  stream. A consent boundary instead awaits the old session stop before showing the
+  choice, and cleans up any rejected newly negotiated session without attaching it.
 
 ## Audio and subtitle selection
 

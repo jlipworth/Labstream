@@ -290,7 +290,18 @@ struct CustomPlayerChrome: View {
         // stays in the browse UI; inside the player it reads as non-native.
         .tint(.white)
         #endif
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("playback.surface")
+        .accessibilityAction(named: Text("Show playback controls")) { revealChrome(keepVisible: true) }
         .onAppear {
+            #if DEBUG
+            controller.debugVisibleAttachmentCount += 1
+            #if os(macOS)
+            controller.debugVisibleWindowIsVisible = { [weak macWindowBridge] in
+                macWindowBridge?.window.map { $0.isVisible && !$0.isMiniaturized } ?? false
+            }
+            #endif
+            #endif
             revealChrome()
             #if os(tvOS)
             // Verified write, not a raw assignment: the appear-time write races the
@@ -302,6 +313,9 @@ struct CustomPlayerChrome: View {
             #endif
         }
         .onDisappear {
+            #if DEBUG
+            controller.debugVisibleAttachmentCount = max(0, controller.debugVisibleAttachmentCount - 1)
+            #endif
             hideTask?.cancel()
             endHoverPreview()
             mobileDisplayStatusTask?.cancel()
@@ -457,7 +471,20 @@ struct CustomPlayerChrome: View {
         // The chrome renders the controller-owned transport status verbatim. It does not compose
         // buffering, retry, and failure booleans, so Cinema cannot show duplicate dialogs when HLS
         // delivery chatters between waiting and playing.
-        if let status = controller.transportStatus.activeStatus {
+        if let consentGeneration = controller.videoTranscodeConsent.generation {
+            VStack(spacing: 16) {
+                Text("Allow video transcoding?").font(.headline)
+                Text("Original playback could not be started or verified. The server can try converting the video, which may require substantial processing and change HDR or picture quality.")
+                    .multilineTextAlignment(.center)
+                Button("Allow Video Transcoding") { controller.approveVideoTranscoding(generation: consentGeneration) }
+                    .accessibilityIdentifier("playback.allowVideoTranscoding")
+                Button("Not Now") { controller.declineVideoTranscoding(generation: consentGeneration) }
+                    .accessibilityIdentifier("playback.declineVideoTranscoding")
+            }
+            .padding(24)
+            .frame(maxWidth: 460)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+        } else if let status = controller.transportStatus.activeStatus {
             CustomTransportStatusOverlay(status: status,
                                          onRetry: {
                                              revealChrome()
@@ -519,6 +546,7 @@ struct CustomPlayerChrome: View {
                     }
                     .buttonStyle(.bordered)
                     .accessibilityLabel("Close")
+                    .accessibilityIdentifier("playback.close")
                     #endif
                 }
 
@@ -908,6 +936,8 @@ struct CustomPlayerChrome: View {
                 handleScrubEditingChanged(editing)
             }
             .disabled(scrubState.durationMs <= 0)
+            .accessibilityIdentifier("playback.timeline")
+            .accessibilityLabel("Playback position")
             .frame(maxHeight: .infinity)
             #if os(macOS) || os(iOS)
             .contentShape(Rectangle())

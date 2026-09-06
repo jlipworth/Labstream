@@ -41,7 +41,8 @@ public enum PlaybackBufferingPolicy {
     }
 
     public static func configuration(isRemoteServerEncodedHLS: Bool,
-                                     preferShortRemoteHLSBuffer: Bool) -> PlaybackBufferingConfiguration {
+                                     preferShortRemoteHLSBuffer: Bool,
+                                     isEmbyVideoCopyHLS: Bool = false) -> PlaybackBufferingConfiguration {
         let usesShortRemoteHLSBuffer = isRemoteServerEncodedHLS && preferShortRemoteHLSBuffer
         let preferredForwardBufferSeconds = usesShortRemoteHLSBuffer
             ? remoteHLSSeekReopenForwardBufferSeconds
@@ -49,7 +50,10 @@ public enum PlaybackBufferingPolicy {
 
         return PlaybackBufferingConfiguration(
             preferredForwardBufferSeconds: preferredForwardBufferSeconds,
-            automaticallyWaitsToMinimizeStalling: !usesShortRemoteHLSBuffer,
+            // With automatic waiting disabled, starvation can leave AVPlayer paused at
+            // rate zero. Keep automatic recovery for Emby copy reopens without changing
+            // their short buffer target, delivery URL, audio conversion, or pause loading.
+            automaticallyWaitsToMinimizeStalling: !usesShortRemoteHLSBuffer || isEmbyVideoCopyHLS,
             canUseNetworkResourcesForLiveStreamingWhilePaused: isRemoteServerEncodedHLS && !usesShortRemoteHLSBuffer,
             usesShortRemoteHLSBuffer: usesShortRemoteHLSBuffer)
     }

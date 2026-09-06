@@ -6,12 +6,16 @@ Connect contact details, review credentials, tokens, private server addresses, o
 
 ## Current status
 
+Source is now 1.6.2 (build 1) across all four apps, with a matching PMSKit fallback.
+No 1.6.2 archive has been uploaded by this change. The distribution entries below still
+refer to the previously processed **1.6.1 (build 2)** archives at `abd1ddcac351`.
+
 | Product | Source version | Distribution status |
 | --- | --- | --- |
-| Apple Vision Pro (`Labstream`) | 1.6.1 (build 2) | Clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical TestFlight acceptance and review access remain pending. |
-| iPhone and iPad (`LabstreamMobile`) | 1.6.1 (build 2) | Clean `abd1ddcac351` universal iOS archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical iPhone and iPad acceptance remain pending. |
-| Apple TV (`LabstreamTV`) | 1.6.1 (build 2) | Clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical Apple TV acceptance remains pending. |
-| Mac (`LabstreamMac`) | 1.6.1 (build 2) | Clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and installed from TestFlight on a Mac. Launch and receipt/signature checks passed; deeper sandbox and live-host acceptance remain pending. |
+| Apple Vision Pro (`Labstream`) | 1.6.2 (build 1) | Clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical TestFlight acceptance and review access remain pending. |
+| iPhone and iPad (`LabstreamMobile`) | 1.6.2 (build 1) | Clean `abd1ddcac351` universal iOS archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical iPhone and iPad acceptance remain pending. |
+| Apple TV (`LabstreamTV`) | 1.6.2 (build 1) | Clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical Apple TV acceptance remains pending. |
+| Mac (`LabstreamMac`) | 1.6.2 (build 1) | Clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and installed from TestFlight on a Mac. Launch and receipt/signature checks passed; deeper sandbox and live-host acceptance remain pending. |
 
 The four targets share the neutral `org.labstream.Labstream` bundle identifier and are intended
 for one App Store Connect universal-purchase record. The earlier private visionOS 1.6.0 build used
@@ -32,7 +36,7 @@ public product-page set. App availability is not yet enabled. Licensed demo medi
 capture and review, demo review access, review notes, physical-platform acceptance, storefront
 scope, Digital Services Act status where applicable, and final submission remain open.
 
-`1.6.1` is the user-facing marketing version (`CFBundleShortVersionString`). The number in
+`1.6.2` is the current source marketing version (`CFBundleShortVersionString`). The number in
 parentheses is the App Store build number (`CFBundleVersion`). A new marketing version begins at
 build 1; each replacement upload for the same platform and marketing version must use a higher
 build number.

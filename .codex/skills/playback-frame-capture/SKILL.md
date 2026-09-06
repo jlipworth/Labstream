@@ -32,9 +32,9 @@ SIMID=$(scripts/worktree-sim.sh id)
 # build + install per CLAUDE.md (versioned script, CODE_SIGNING_ALLOWED=NO), then:
 xcrun simctl terminate "$SIMID" org.labstream.Labstream 2>/dev/null
 xcrun simctl launch "$SIMID" org.labstream.Labstream \
-  --vp-probe-backend emby --vp-probe-emby-playback \
+  --vp-probe-backend emby --vp-probe-emby-playback --vp-probe-allow-live \
   --vp-probe-capture-frames --vp-probe-query "Some Movie" \
-  --vp-probe-bitrate-kbps 8000        # optional quality cap
+  --vp-probe-bitrate-kbps 0 --vp-probe-evidence  # Original; no implicit encoding approval
 
 # wait for probe.pass/probe.fail, then:
 xcrun simctl spawn "$SIMID" log show --last 5m --predicate 'process == "Labstream"' \
@@ -48,6 +48,11 @@ DATA=$(xcrun simctl get_app_container "$SIMID" org.labstream.Labstream data)
 Backends: swap `emby`→`jellyfin`→`plex` in both flags (`--vp-probe-backend`,
 `--vp-probe-<backend>-playback`). The app must be signed in to that backend on the sim
 (the probe never authenticates).
+
+Nonzero quality, Maximum, and consent-approval scenarios additionally require
+`--vp-probe-allow-video-encode`, supplied only after separate user authorization. Named
+scenarios and bounded reports are documented in the agent playback evidence plan. Probes
+restore the prior diagnostics setting; leaving diagnostics enabled beforehand preserves it.
 
 ## Reading the numbers
 
