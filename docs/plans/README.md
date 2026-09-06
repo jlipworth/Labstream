@@ -23,6 +23,7 @@ When a plan is complete or superseded:
 
 ## Active plans
 
+- [Agent playback evidence and semantic troubleshooting](2026-09-06-agent-playback-evidence.md)
 - [Client-first playback and release acceptance](2026-09-06-client-first-playback.md)
 
 Completed plans live in [`docs/archive/plans/`](../archive/plans/); the most
