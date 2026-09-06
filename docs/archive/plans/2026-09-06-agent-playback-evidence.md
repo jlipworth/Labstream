@@ -1,11 +1,15 @@
 # Agent playback evidence and semantic troubleshooting
 
+**Closeout:** published on `codex/client-first-playback` in `51a91a5e`; #290 closed.
+The dated journal below is historical. Current procedures are in
+[agent playback troubleshooting](../../AGENT-PLAYBACK-TROUBLESHOOTING.md).
+
 **Status:** implemented and locally verified; publication/issue closeout pending.
 Tracks [#290](https://github.com/jlipworth/Labstream/issues/290). No claim of fixing all
 underlying playback failures or passing physical-device release gates is made.
 This is the next priority before release-readiness work. Deeper Emby native MP4 investigation
 is deferred to [#291](https://github.com/jlipworth/Labstream/issues/291); its verified recovery
-workaround is retained in the [client-first playback plan](2026-09-06-client-first-playback.md).
+workaround is retained in the [client-first playback plan](../../plans/2026-09-06-client-first-playback.md).
 
 ## Decision: no control transport yet
 

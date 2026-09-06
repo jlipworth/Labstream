@@ -272,7 +272,7 @@ media-key ownership, live playback, or background-download durability. See
 
 ### Bounded playback troubleshooting
 
-The [agent playback evidence plan](plans/2026-09-06-agent-playback-evidence.md) defines the
+The [agent playback troubleshooting guide](AGENT-PLAYBACK-TROUBLESHOOTING.md) defines the
 versioned progress/report contract, the synthetic hosted-controller command, CUA-only
 semantic player checks, and separately admitted live scenarios. Start with the fixture;
 only use live probes with explicit admission and existing sign-in. Video encoding needs
