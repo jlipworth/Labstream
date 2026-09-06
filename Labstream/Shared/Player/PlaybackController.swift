@@ -3,6 +3,9 @@ import AVKit
 import AVFAudio
 import os
 import PMSKit
+#if DEBUG
+import CryptoKit
+#endif
 
 /// Persistent (`.notice`-level, disk-backed) log for the playback session lifecycle.
 /// Used sparingly for events worth diagnosing after the fact — e.g. the transcode-stop
@@ -38,6 +41,11 @@ final class PlaybackController {
     /// reactive surface minimal. Populated when an `AVPlayerItem` reports `.failed`
     /// or fails to play to end (P3 #8); cleared on a (re)start.
     let playbackError = PlaybackError()
+    let videoTranscodeConsent = VideoTranscodeConsentState()
+    private var videoTranscodeApprovedForCurrentItem = false
+    private var videoTranscodeConsentResumeMs: Int?
+    private var preferEmbyVideoCopyHLS = false
+    private var mediaBrowserVideoCopyEnforced = false
 
     /// Observable surface for the currently-active Skip Intro / Skip Credits affordance
     /// (#14). Modeled as its own `@Observable` object (mirroring `playbackError`) so the
@@ -307,24 +315,11 @@ final class PlaybackController {
     /// Keep the user intent here and honor it once the item becomes ready (#40).
     private var userWantsPaused = false
 
-    /// Playback-time direct-play fallback (Direct Play / Maximum). PMS can agree to copy the
-    /// video (`savesVideoEncode`) yet hand back an HLS rendition AVFoundation can't actually
-    /// play, which fails at LOAD time — not at the decision stage. `directPlayFallbackArmed`
-    /// is set only while a committed direct-play stream is live; on its first failure we
-    /// fall back once to a forced maximum video transcode instead of surfacing a dead-end. The
-    /// fallback must not allow Direct Stream: that would repeat the copy rendition AVFoundation
-    /// just rejected.
-    /// `suppressDirectPlayProbe` is the one-shot that makes that rebuild skip the literal
-    /// direct-play start and also marks "a fallback is in flight" so a sibling failure
-    /// callback on the same dead item doesn't surface over it. Both are reset/consumed at the
-    /// top of every `startStreaming`.
+    /// A failed video-copy session can offer an explicitly authorized encode fallback.
+    /// The one-shot suppression consumes the failed-copy retry before another media start;
+    /// it also suppresses sibling failure callbacks while the old item is detached.
     private var directPlayFallbackArmed = false
     private var suppressDirectPlayProbe = false
-    /// Direct-play `start.m3u8` rejections seen during this controller's lifetime, keyed by
-    /// metadata/media/part. Plex can return "Direct play OK" from the decision endpoint and then
-    /// reject the actual `directPlay=1` start with HTTP 400; once seen, avoid retrying the same
-    /// doomed start on every seek/reopen until the viewer explicitly changes quality.
-    private var rejectedDirectPlayStartKeys: Set<String> = []
 
     /// GH #196 startup-deadline auto-retry (one-shot). When AVFoundation abandons the sole
     /// copy-lane variant because the first segments missed its hard startup deadlines
@@ -836,8 +831,15 @@ final class PlaybackController {
     /// AVFoundation because the whole playable file is already on disk.
     var supportsMetadataAudioSelection: Bool { sessionSource.kind != .offline }
 
+    private var usesEmbyStaticRecoveryTimeline: Bool {
+        mediaBrowserSession?.backend == .emby && mediaBrowserVideoCopyEnforced &&
+            EmbyVideoCopyPolicy.usesTransportStreamRecovery(videoCodec: remoteSourceMetadata?.videoCodec,
+                                                          prefersStaticRecovery: preferEmbyVideoCopyHLS)
+    }
+
     private var seekStreamKind: RemoteSeekModePolicy.StreamKind {
-        RemoteSeekModePolicy.streamKind(isLocalFile: sessionSource.kind == .offline,
+        if usesEmbyStaticRecoveryTimeline { return .mediaBrowserDirectOrStatic }
+        return RemoteSeekModePolicy.streamKind(isLocalFile: sessionSource.kind == .offline,
                                         isPlexStreaming: isStreaming,
                                         isPlexVideoCopyLane: maxVideoBitrateKbps <= 0,
                                         hasRemoteStream: sessionSource.kind == .mediaBrowser,
@@ -1029,6 +1031,9 @@ final class PlaybackController {
     /// Tear down observers and report a final `stopped` timeline. Call from the
     /// view's `dismantle`.
     func stop() {
+        videoTranscodeConsent.generation = nil
+        preferEmbyVideoCopyHLS = false
+        videoTranscodeApprovedForCurrentItem = false
         captionAppearance.stopPreview()
         // Invalidate callbacks before doing any final reporting. Observer removal cannot retract
         // a KVO/notification/time callback that has already queued its MainActor continuation.
@@ -1836,6 +1841,17 @@ final class PlaybackController {
                                                     itemGeneration: Int,
                                                     observedPlaybackGeneration: Int) async {
         guard !didApplyAudioPreference else { return }
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--vp-probe-disable-audio"),
+           let group = try? await playerItem.asset.loadMediaSelectionGroup(for: .audible),
+           isCurrentObservedItem(playerItem, itemGeneration: itemGeneration,
+                                 observedPlaybackGeneration: observedPlaybackGeneration) {
+            playerItem.select(nil, in: group)
+            didApplyAudioPreference = true
+            playbackLog.notice("remote.audio_disabled_for_comparison active=true")
+            return
+        }
+        #endif
         let savedLang = UserDefaults.standard.string(forKey: AudioPrefKey.language)
         // No preference saved: leave the HLS default and don't burn the one-shot gate yet, so a
         // future pick starts fresh.
@@ -2229,12 +2245,13 @@ final class PlaybackController {
     func reload(bitrateKbps: Int) {
         guard supportsQualityReload else { return }
         let previousActiveKbps = maxVideoBitrateKbps
+        let hadConsent = videoTranscodeApprovedForCurrentItem || videoTranscodeConsent.isPending || preferEmbyVideoCopyHLS
+        preferEmbyVideoCopyHLS = false
+        videoTranscodeApprovedForCurrentItem = false
+        videoTranscodeConsent.generation = nil
         userSelectedMaxVideoBitrateKbps = bitrateKbps
         adaptiveBitratePolicy.reset()
-        if bitrateKbps <= 0 {
-            rejectedDirectPlayStartKeys.removeAll()
-        }
-        guard bitrateKbps != previousActiveKbps else { return }
+        guard bitrateKbps != previousActiveKbps || hadConsent else { return }
         let snapshot = playheadSnapshotForRestart(cause: .qualityReload)
         var fields = positionSnapshotDiagnosticFields(snapshot)
         fields["from_quality"] = .label(StreamingQuality.label(kbps: previousActiveKbps))
@@ -2255,6 +2272,51 @@ final class PlaybackController {
         restartAtCurrentPosition(offsetMs: snapshot.positionMs,
                                  bitrateKbps: bitrateKbps,
                                  intent: .qualityChange)
+    }
+
+    /// Stop any copy/audio-conversion job before presenting the choice. Approval is
+    /// scoped to this controller and generation, never persisted as a global preference.
+    private func requestVideoTranscodeConsent(resumeMs: Int?, generation: Int) async {
+        guard !Task.isCancelled, generation == playbackGeneration else { return }
+        directPlayFallbackArmed = false
+        removeObservers()
+        endReconnectStatus()
+        endItemPreparation()
+        setSeeking(false)
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        if let server, let token {
+            await stopPreviousTranscode(server: server, token: token)
+        }
+        if let session = mediaBrowserSession, !session.didStop {
+            if let stop = session.onStopAndWait { await stop() } else { session.onStop?() }
+            session.didStop = true
+        }
+        guard !Task.isCancelled, generation == playbackGeneration else { return }
+        videoTranscodeConsentResumeMs = resumeMs
+        videoTranscodeConsent.generation = generation
+    }
+
+    func approveVideoTranscoding(generation: Int) {
+        guard videoTranscodeConsent.generation == generation,
+              generation == playbackGeneration else { return }
+        let resumeMs = videoTranscodeConsentResumeMs
+        videoTranscodeApprovedForCurrentItem = true
+        videoTranscodeConsent.generation = nil
+        if sessionSource.kind == .mediaBrowser {
+            reopenRemoteStream(offsetMs: resumeMs ?? 0, bitrateKbps: maxVideoBitrateKbps)
+        } else {
+            beginStreaming(resumeOffsetMsOverride: resumeMs)
+        }
+    }
+
+    func declineVideoTranscoding(generation: Int) {
+        guard videoTranscodeConsent.generation == generation,
+              generation == playbackGeneration else { return }
+        videoTranscodeConsent.generation = nil
+        surfaceFailure(NSError(domain: "Labstream.Playback", code: -290,
+            userInfo: [NSLocalizedDescriptionKey:
+                "Original video could not be played. Video transcoding was not authorized."]))
     }
 
     // MARK: - Failure / retry
@@ -2287,6 +2349,9 @@ final class PlaybackController {
     /// native `AVPlayer.seek` for buffered/local/static-range targets and reserves server reopen for
     /// out-of-buffer HLS streams whose segment window cannot satisfy a deep target.
     func performUserSeek(toMs targetMs: Int) {
+        // A newer user seek wins over captured initial resume while ready-to-play
+        // track preparation is suspended. Do not seek back when those awaits finish.
+        if usesEmbyStaticRecoveryTimeline { didSeek = true }
         // Fresh user intent re-arms the GH #196 one-shot startup-deadline retry. It must
         // NOT re-arm on transient `.playing` (a retried item plays briefly at 0 before its
         // resume seek, which turned the one-shot into a hidden retry loop live: three
@@ -2399,6 +2464,7 @@ final class PlaybackController {
     private func beginStreaming(resumeOffsetMsOverride: Int? = nil,
                                 stoppingPreviousTranscode: Bool = true,
                                 finalTargetRebuildGeneration: Int? = nil) {
+        videoTranscodeConsent.generation = nil
         beginItemPreparation()
         playbackTask?.cancel()
         if let activeFinalTargetRebuildGeneration {
@@ -2495,7 +2561,7 @@ final class PlaybackController {
         // fallback in the readyToPlay handler instead. Capped transcode rungs keep offset
         // priming: there the transcoder runs at ~realtime, so without priming a deep
         // client seek stalls waiting on a segment the transcoder hasn't reached yet.
-        let offsetSeconds: Int? = if maxVideoBitrateKbps <= 0 {
+        let offsetSeconds: Int? = if maxVideoBitrateKbps <= 0 && !videoTranscodeApprovedForCurrentItem {
             nil
         } else if let resumeMs, resumeMs > 0 {
             resumeMs / 1000
@@ -2606,7 +2672,7 @@ final class PlaybackController {
 
         let productionMustForceVideoTranscode = PlexVideoTranscodePolicy.shouldForceVideoTranscode(
             selectedQualityKbps: maxVideoBitrateKbps,
-            directPlayProductionFallback: maxVideoBitrateKbps <= 0,
+            directPlayProductionFallback: videoTranscodeApprovedForCurrentItem,
             dolbyVisionGuardActive: dvGuardReason != nil)
         let directPlayTranscode = TranscodeRequest(server: server,
                                                    token: token,
@@ -2621,14 +2687,9 @@ final class PlaybackController {
                                                    forceTranscode: dvGuardReason != nil,
                                                    advertiseDolbyVision: DolbyVisionGuard.shouldAdvertiseDolbyVision(for: item,
                                                                                                                      mediaIndex: mediaIndex))
-        // Keep the literal Direct Play probe copy-capable, but use a separate production
-        // request for every fallback. Reusing one request here either disables the probe's
-        // copy lane or lets its rejected copy parameters leak into the recovery lane.
+        // Video encoding is forced only for explicit quality intent, an approved fallback,
+        // or the DV safety guard (which itself requires consent under Original).
         let transcode = directPlayTranscode.withForceTranscode(productionMustForceVideoTranscode)
-        let directPlayStartKey = Self.directPlayStartRejectionKey(metadataKey: metadataKey,
-                                                                  mediaIndex: mediaIndex,
-                                                                  partIndex: 0)
-
         var requestFields: [String: DiagnosticFieldValue] = [
             "requested_cap_kbps": .int(requestedCap),
             "selected_quality": .label(StreamingQuality.label(kbps: maxVideoBitrateKbps)),
@@ -2649,97 +2710,15 @@ final class PlaybackController {
 
         var decision: DecisionResponse?
         var streamURL = transcode.startM3U8URL()
-        // This build decides afresh whether it commits to direct play, so disarm any prior
-        // fallback and consume the one-shot probe suppression. `suppressDirectPlayProbe` is set
-        // by the playback-time fallback below: when a committed direct-play stream fails to
-        // load, the rebuild skips the literal direct-play start and uses production HLS instead.
+        // Original means video copy, not a literal directPlay=1 HLS request. PMS can
+        // remux the container and convert audio without re-encoding the video.
         directPlayFallbackArmed = false
-        let skipDirectPlayProbe = suppressDirectPlayProbe
+        let copyFailed = suppressDirectPlayProbe
         suppressDirectPlayProbe = false
-        // "Direct Play / Maximum" asks PMS to direct-play the source bits when it can copy the
-        // video. If the probe or literal direct-play start is rejected, fall through to a
-        // production HLS request with Direct Stream disabled; retrying the copy-capable request
-        // would reproduce the lane that just failed. Every numeric capped
-        // rung transcodes at that cap; "Maximum (HLS)" skips the literal direct-play probe and
-        // explicitly disables Direct Stream so it cannot repeat a high-bitrate copy lane. The user picks the
-        // path by picking the quality; there is no separate
-        // toggle or pre-flight bandwidth gate (#31 superseded).
-        if maxVideoBitrateKbps <= 0,
-           !skipDirectPlayProbe,
-           dvGuardReason == nil,
-           burnSubtitleStreamID == nil,
-           !rejectedDirectPlayStartKeys.contains(directPlayStartKey) {
-            do {
-                let probe = try await client.send(directPlayTranscode.directPlayProbeRequest(), as: DecisionResponse.self)
-                guard !Task.isCancelled, generation == playbackGeneration else { return }
-                if probe.savesVideoEncode {
-                    var fields = decisionDiagnosticFields(probe)
-                    fields["probe_result"] = .label("commit_direct_play")
-                    recordTranscodeDiagnostic("transcode.direct_play_probe", fields: fields)
-
-                    let startURL = directPlayTranscode.directPlayStartM3U8URL()
-                    do {
-                        let playlistData = try await client.send(directPlayTranscode.directPlayStartM3U8Request())
-                        guard !Task.isCancelled, generation == playbackGeneration else { return }
-                        NSLog("PlaybackController: Direct Play / Maximum — PMS will copy video and start.m3u8 is reachable; committing direct-play start.m3u8")
-                        var startFields = decisionDiagnosticFields(probe)
-                        startFields["probe_result"] = .label("commit_direct_play")
-                        startFields["start_preflight"] = .label("ok")
-                        startFields["playlist_bytes"] = .int(playlistData.count)
-                        startFields["stream_url_shape"] = .urlShape(startURL)
-                        recordTranscodeDiagnostic("transcode.direct_play_start_preflight", fields: startFields)
-                        decision = probe
-                        streamURL = startURL
-                        // Arm the playback-time fallback: PMS agreed to copy and served the
-                        // initial playlist, but AVFoundation may still fail later on the media
-                        // rendition. If it does, retry once via production HLS with Direct Stream
-                        // disabled.
-                        directPlayFallbackArmed = true
-                        #if DEBUG
-                        // Log what PMS decided for this title (probe vs production), so a Debug
-                        // build can tell whole-file direct play (mde=1000) from Direct Stream
-                        // (video=copy) at a glance. DEBUG-only; never compiled into Release.
-                        logDirectPlayDecision(transcode: directPlayTranscode, probe: probe)
-                        #endif
-                    } catch {
-                        guard !Task.isCancelled, generation == playbackGeneration else { return }
-                        rejectedDirectPlayStartKeys.insert(directPlayStartKey)
-                        var startFields = decisionDiagnosticFields(probe)
-                        startFields["probe_result"] = .label("fallback_to_forced_maximum_transcode")
-                        startFields["start_preflight"] = .label("rejected")
-                        startFields["error"] = .error(error)
-                        if let status = Self.httpStatus(from: error) {
-                            startFields["http_status"] = .int(status)
-                        }
-                        startFields["fallback"] = .label("forced_maximum_transcode")
-                        startFields["stream_url_shape"] = .urlShape(startURL)
-                        recordTranscodeDiagnostic("transcode.direct_play_start_rejected", fields: startFields)
-                        NSLog("PlaybackController: Direct Play / Maximum — PMS accepted decision but rejected direct-play start.m3u8 (%@); using forced maximum transcode",
-                              Self.safeErrorSummary(error))
-                    }
-                } else {
-                    var fields = decisionDiagnosticFields(probe)
-                    fields["probe_result"] = .label("fallback_to_transcode")
-                    recordTranscodeDiagnostic("transcode.direct_play_probe", fields: fields)
-                    NSLog("PlaybackController: Direct Play / Maximum — PMS cannot copy video; using maximum transcode")
-                }
-            } catch {
-                guard !Task.isCancelled, generation == playbackGeneration else { return }
-                recordTranscodeDiagnostic("transcode.direct_play_probe_failed", fields: [
-                    "error": .error(error),
-                    "fallback": .label("forced_maximum_transcode"),
-                ])
-                NSLog("PlaybackController: direct-play probe failed (%@); using forced maximum transcode", Self.safeErrorSummary(error))
-            }
-        } else if maxVideoBitrateKbps <= 0,
-                  !skipDirectPlayProbe,
-                  burnSubtitleStreamID == nil,
-                  rejectedDirectPlayStartKeys.contains(directPlayStartKey) {
-            recordTranscodeDiagnostic("transcode.direct_play_start_skipped", fields: [
-                "reason": .label("cached_start_rejection"),
-                "fallback": .label("forced_maximum_transcode"),
-            ])
-            NSLog("PlaybackController: Direct Play / Maximum — skipping cached rejected direct-play start.m3u8; using forced maximum transcode")
+        if maxVideoBitrateKbps <= 0 && !videoTranscodeApprovedForCurrentItem &&
+            (copyFailed || dvGuardReason != nil || burnSubtitleStreamID != nil) {
+            await requestVideoTranscodeConsent(resumeMs: resumeMs, generation: generation)
+            return
         }
 
         if decision == nil {
@@ -2771,6 +2750,29 @@ final class PlaybackController {
                     "fallback": .label("attempt_start_m3u8"),
                 ])
                 NSLog("PlaybackController: decision call failed (%@); attempting start.m3u8 anyway", Self.safeErrorSummary(error))
+            }
+        }
+
+        if VideoTranscodeConsentPolicy.requiresConsent(
+            selectedQualityKbps: maxVideoBitrateKbps,
+            approvedForCurrentItem: videoTranscodeApprovedForCurrentItem,
+            videoDecision: decision?.videoDecision,
+            forcesVideoEncoding: productionMustForceVideoTranscode) {
+            await requestVideoTranscodeConsent(resumeMs: resumeMs, generation: generation)
+            return
+        }
+        var copyMaster: String?
+        if maxVideoBitrateKbps <= 0 && !videoTranscodeApprovedForCurrentItem {
+            do {
+                let data = try await client.send(PlexRequest(url: streamURL, method: "GET",
+                    headers: PlexHeaders.media(identity: identity, token: token)))
+                guard !Task.isCancelled, generation == playbackGeneration else { return }
+                copyMaster = String(data: data, encoding: .utf8)
+                directPlayFallbackArmed = true
+            } catch {
+                guard !Task.isCancelled, generation == playbackGeneration else { return }
+                await requestVideoTranscodeConsent(resumeMs: resumeMs, generation: generation)
+                return
             }
         }
 
@@ -2814,6 +2816,16 @@ final class PlaybackController {
             ])
             NSLog("PlaybackController: copy-lane prewarm %@ after %.1fs (%d polls) (#196)",
                   prewarm.outcome.rawValue, prewarm.elapsedSeconds, prewarm.polls)
+        }
+
+        if let copyMaster,
+           let child = PlexHLSMediaPlaylistPolicy.mediaPlaylist(in: copyMaster,
+               baseURL: streamURL, hdrDisplayEligible: AVPlayer.eligibleForHDRPlayback) {
+            streamURL = child
+            recordTranscodeDiagnostic("transcode.media_playlist_selected", fields: [
+                "reason": .label("single_hdr_variant_sdr_display"),
+                "stream_url_shape": .urlShape(child),
+            ])
         }
 
         // Plex Universal HLS can rely on the X-Plex identity headers in addition to the
@@ -2939,6 +2951,14 @@ final class PlaybackController {
                                                 transcodeReasons: remoteTranscodeReasons,
                                                 dolbyVisionGuardActive: dvGuardReason != nil)
         }
+        if mediaBrowserVideoCopyEnforced {
+            diagnostics.isTranscoding = false
+            diagnostics.modeText = "Direct Stream"
+            diagnostics.decisionText = "video copy · audio copy/conversion"
+            diagnostics.playbackExplanation = .mediaBrowser(playMethod: .directStream,
+                transcodeReasons: remoteTranscodeReasons, maxVideoBitrateKbps: maxVideoBitrateKbps,
+                dolbyVisionGuardActive: false)
+        }
         diagnostics.usesLocalMediaProxy = Self.isLoopback(url)
         if diagnostics.usesLocalMediaProxy,
            let upstream = remoteStreamURL,
@@ -2993,8 +3013,101 @@ final class PlaybackController {
                                          headers: [String: String],
                                          resumeOffsetMs: Int?,
                                          playMethod: MediaBrowserPlayMethod?,
-                                         generation: Int) async -> URL? {
+                                         generation: Int,
+                                         sourceMetadata: MediaBrowserPlaybackSourceMetadata? = nil,
+                                         transcodeReasons: [String]? = nil) async -> URL? {
         guard !Task.isCancelled, generation == playbackGeneration else { return nil }
+        var url = url
+        #if DEBUG
+        // Explicit diagnostic transport comparison against the same server via a caller-owned
+        // loopback port-forward. Never accepts arbitrary remote hosts or persists credentials.
+        let args = ProcessInfo.processInfo.arguments
+        if mediaBrowserSession?.backend == .emby,
+           let index = args.firstIndex(of: "--vp-probe-emby-loopback-port"),
+           args.indices.contains(index + 1), let port = Int(args[index + 1]),
+           (1024...65535).contains(port),
+           var components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            components.scheme = "http"
+            components.host = "127.0.0.1"
+            components.port = port
+            if let loopbackURL = components.url { url = loopbackURL }
+            playbackLog.notice("remote.emby_loopback_comparison active=true")
+        }
+        if mediaBrowserSession?.backend == .emby, playMethod == .directPlay,
+           args.contains("--vp-probe-byte-ranges") {
+            for offset in [0, 1_048_576, 1_073_741_824, 12_884_901_888] {
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 5
+                for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
+                request.setValue("bytes=\(offset)-\(offset + 65_535)", forHTTPHeaderField: "Range")
+                if let (data, response) = try? await URLSession.shared.data(for: request) {
+                    let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+                    let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+                    playbackLog.notice("remote.range_probe offset=\(offset, privacy: .public) bytes=\(data.count, privacy: .public) status=\(status, privacy: .public) sha256=\(digest, privacy: .public)")
+                }
+            }
+            guard !Task.isCancelled, generation == playbackGeneration else { return nil }
+        }
+        #endif
+        mediaBrowserVideoCopyEnforced = false
+        playbackLog.notice("remote.prepare method=\(playMethod?.rawValue ?? "unknown", privacy: .public) original=\(self.maxVideoBitrateKbps <= 0, privacy: .public)")
+        if let backend = mediaBrowserSession?.backend,
+           backend == .jellyfin || backend == .emby, maxVideoBitrateKbps <= 0,
+           !videoTranscodeApprovedForCurrentItem {
+            if playMethod == .directPlay { return url }
+            let metadata = sourceMetadata ?? remoteSourceMetadata
+            let reasons = transcodeReasons ?? remoteTranscodeReasons
+            // Emby's AC-3 copy fMP4 path stalled in the signed Mac app on deep resume.
+            // Convert only that audio track; the video remains explicitly copy-only.
+            let forceAAC = backend == .emby && (metadata?.audioCodec?.lowercased() == "ac3" || preferEmbyVideoCopyHLS)
+            // H.264 static recovery uses self-contained TS segments: Emby's dynamic
+            // fMP4 remux can replace a shared init while adjacent fragments reset timestamps.
+            let useMPEGTS = backend == .emby && EmbyVideoCopyPolicy.usesTransportStreamRecovery(
+                videoCodec: metadata?.videoCodec, prefersStaticRecovery: preferEmbyVideoCopyHLS)
+            let subtitle = effectiveRemoteSubtitleStreamIndex()
+            let selectedStream = sourcePartForCurrentMedia()?.streams?.first { $0.id == subtitle }
+            let needsBurn = subtitle.map { $0 >= 0 } == true &&
+                (backend == .emby || Self.isImageSubtitleCodec(selectedStream?.codec))
+            guard JellyfinVideoCopyPolicy.canAttemptCopy(videoCodec: metadata?.videoCodec,
+                    transcodeReasons: reasons, requiresVideoTransform: dvGuardReason != nil || needsBurn),
+                  let copyMaster = backend == .emby ? EmbyVideoCopyPolicy.copyURL(url, forceAAC: forceAAC, useMPEGTS: useMPEGTS) : JellyfinVideoCopyPolicy.copyURL(url) else {
+                await requestVideoTranscodeConsent(resumeMs: resumeOffsetMs, generation: generation)
+                return nil
+            }
+            do {
+                let deliveryMaster = useMPEGTS
+                    ? (EmbyVideoCopyPolicy.fullTimelineURL(copyMaster) ?? copyMaster) : copyMaster
+                var request = URLRequest(url: deliveryMaster)
+                request.timeoutInterval = 15
+                for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard !Task.isCancelled, generation == playbackGeneration else { return nil }
+                guard (response as? HTTPURLResponse)?.statusCode == 200,
+                      response.url?.host == copyMaster.host, data.count < 2_000_000,
+                      let master = String(data: data, encoding: .utf8),
+                      let child = backend == .emby
+                        ? EmbyVideoCopyPolicy.copyChild(in: master, baseURL: deliveryMaster, forceAAC: forceAAC, useMPEGTS: useMPEGTS)
+                        : JellyfinVideoCopyPolicy.copyChild(in: master, baseURL: copyMaster) else {
+                    await requestVideoTranscodeConsent(resumeMs: resumeOffsetMs, generation: generation)
+                    return nil
+                }
+                playbackLog.notice("remote.copy_child_verified backend=\(backend.rawValue, privacy: .public)")
+                mediaBrowserVideoCopyEnforced = true
+                // This VOD child spans the full timeline. Seek AVPlayer on readiness;
+                // StartTimeTicks is illegal on Jellyfin segment requests.
+                if backend == .jellyfin { return child }
+                // The prewarmer expects a master, not this already-validated media child.
+                // Static-file recovery instead keeps the VOD timeline and seeks natively.
+                if useMPEGTS { return EmbyVideoCopyPolicy.fullTimelineURL(child) }
+                url = child
+            } catch {
+                await requestVideoTranscodeConsent(resumeMs: resumeOffsetMs, generation: generation)
+                return nil
+            }
+        }
+        // Jellyfin VOD manifests span the full timeline for both copy and encode.
+        // Client-seek on readiness; never prime segment URLs with StartTimeTicks.
+        if mediaBrowserSession?.backend == .jellyfin { return url }
         guard playMethod == .transcode,
               let resumeOffsetMs, resumeOffsetMs > 0,
               let primedURL = jellyfinHLSURL(url, startTimeTicks: resumeOffsetMs * 10_000)
@@ -3412,13 +3525,21 @@ final class PlaybackController {
         let bufferingConfig = PlaybackBufferingPolicy.configuration(
             isRemoteServerEncodedHLS: isRemoteTranscode
                 || PlaybackBufferingPolicy.isServerEncodedHLSPlaylist(url: itemStreamURL),
-            preferShortRemoteHLSBuffer: preferShortRemoteHLSBuffer)
+            preferShortRemoteHLSBuffer: preferShortRemoteHLSBuffer,
+            isEmbyVideoCopyHLS: mediaBrowserSession?.backend == .emby && mediaBrowserVideoCopyEnforced)
         configureAdaptiveBitratePolicy(usesShortRemoteBuffer: bufferingConfig.usesShortRemoteHLSBuffer)
         activeForwardBufferTargetSeconds = bufferingConfig.preferredForwardBufferSeconds
         playerItem.preferredForwardBufferDuration = bufferingConfig.preferredForwardBufferSeconds
         playerItem.canUseNetworkResourcesForLiveStreamingWhilePaused =
             bufferingConfig.canUseNetworkResourcesForLiveStreamingWhilePaused
         player.automaticallyWaitsToMinimizeStalling = bufferingConfig.automaticallyWaitsToMinimizeStalling
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--vp-probe-system-buffering") {
+            playerItem.preferredForwardBufferDuration = 0
+            player.automaticallyWaitsToMinimizeStalling = false
+            playbackLog.notice("remote.system_buffering_comparison active=true")
+        }
+        #endif
         activateVideoNowPlayingSessionIfNeeded()
         // Populate Now Playing / cinema-chrome metadata (title + summary now, artwork async).
         // Done for both streaming and local-file paths so the player shows the real title.
@@ -3664,7 +3785,9 @@ final class PlaybackController {
                     if !self.didSeek, let resumeOffsetMs, resumeOffsetMs > 0 {
                         let current = self.player.currentTime().seconds
                         let nearZero = !current.isFinite || current < 1.0
-                        if nearZero, !self.isRemoteTranscode {
+                        // This explicit full-timeline recovery must seek even if asynchronous
+                        // track setup allowed the zero-origin clock to advance past one second.
+                        if self.usesEmbyStaticRecoveryTimeline || (nearZero && (!self.isRemoteTranscode || self.mediaBrowserSession?.backend == .jellyfin)) {
                             let target = CMTime(value: CMTimeValue(resumeOffsetMs), timescale: 1000)
                             let tolerance: CMTime = .zero
                             self.player.seek(to: target,
@@ -3952,8 +4075,8 @@ final class PlaybackController {
         // Stall watchdog (#8 hardening): a network-loss stall often never flips
         // item.status to .failed, so arm a timeout while the player is starved and
         // cancel it the instant playback genuinely resumes. We deliberately do NOT
-        // cancel on `.paused` — handleStallTimeout's buffer-empty check distinguishes a
-        // dead stall from a user pause on already-buffered content.
+        // cancel on a transient framework `.paused` without user intent. An explicit
+        // user pause does reset the starvation window.
         if isStalled {
             self.armStallWatchdog()
         } else if status == .playing {
@@ -3977,6 +4100,9 @@ final class PlaybackController {
             self.finishReconnectStatus()
             self.updateTransportStatus()
             self.onPlaybackActive?()
+        } else if self.userWantsPaused {
+            // User pause is not elapsed starvation time for the bounded deferral window.
+            self.cancelStallWatchdog()
         }
     }
 
@@ -4485,6 +4611,21 @@ final class PlaybackController {
         return bestAhead
     }
 
+    /// A failing native Emby file gets one copy-only HLS attempt before any video encode.
+    @discardableResult
+    private func attemptEmbyVideoCopyFallback() -> Bool {
+        guard mediaBrowserSession?.backend == .emby, maxVideoBitrateKbps <= 0,
+              !videoTranscodeApprovedForCurrentItem, !preferEmbyVideoCopyHLS,
+              remotePlayMethod == .directPlay || remotePlayMethod == .directStream else { return false }
+        preferEmbyVideoCopyHLS = true
+        let resume = playheadSnapshotForRestart(cause: .directPlayRuntimeFallback).positionMs
+        playbackLog.notice("remote.emby_static_fallback video_copy=true audio_conversion=true")
+        playbackError.clear()
+        endReconnectStatus()
+        reopenRemoteStream(offsetMs: resume, bitrateKbps: 0)
+        return true
+    }
+
     /// Surface a playback failure to the UI. No silent auto-retry: a failed PMS stream must not
     /// become a hidden restart loop that can hammer the server. Retry is an explicit user action.
     private func handlePlaybackFailure(_ error: Error?,
@@ -4493,7 +4634,7 @@ final class PlaybackController {
                                        itemGeneration: Int? = nil,
                                        observedPlaybackGeneration: Int? = nil,
                                        contextFields: [String: DiagnosticFieldValue] = [:]) {
-        guard !playbackError.isFailed else { return }
+        guard !playbackError.isFailed, !videoTranscodeConsent.isPending else { return }
         if let playerItem,
            let itemGeneration,
            let observedPlaybackGeneration,
@@ -4506,29 +4647,33 @@ final class PlaybackController {
                                          observedPlaybackGeneration: observedPlaybackGeneration)
             return
         }
-        // Direct Play / Maximum, playback-time fallback: a committed direct-play stream that
-        // fails to load isn't a hard failure — PMS agreed to copy the video, but AVFoundation
-        // couldn't play the resulting literal direct-play HLS rendition. Retry ONCE through
-        // production HLS (resuming at the live playhead) instead of surfacing a dead-end. That
-        // production request is forced to re-encode video: allowing Direct Stream here would
-        // rebuild the same copy rendition that just failed. Armed only while a direct-play stream
-        // is live and consumed here, so the rebuild — or any later failure — surfaces normally;
-        // the rebuild can't loop back into another direct-play start.
+        if attemptEmbyVideoCopyFallback() { return }
+        if let backend = mediaBrowserSession?.backend,
+           backend == .jellyfin || backend == .emby, maxVideoBitrateKbps <= 0,
+           !videoTranscodeApprovedForCurrentItem {
+            let resume = playheadSnapshotForRestart(cause: .directPlayRuntimeFallback).positionMs
+            playbackTask?.cancel()
+            playbackGeneration += 1
+            let generation = playbackGeneration
+            removeObservers()
+            playbackTask = Task { @MainActor [weak self] in
+                await self?.requestVideoTranscodeConsent(resumeMs: resume, generation: generation)
+            }
+            return
+        }
+        // A failed copy lane must never silently become a video encoder. Rebuild only
+        // far enough to stop the old job and present the per-item consent choice.
         if directPlayFallbackArmed {
             directPlayFallbackArmed = false
             suppressDirectPlayProbe = true
             let snapshot = playheadSnapshotForRestart(cause: .directPlayRuntimeFallback)
             let resumeMs = snapshot.positionMs
-            rejectedDirectPlayStartKeys.insert(Self.directPlayStartRejectionKey(
-                metadataKey: item.key ?? "/library/metadata/\(item.ratingKey)",
-                mediaIndex: mediaIndex,
-                partIndex: 0))
             var fields = positionSnapshotDiagnosticFields(snapshot)
             fields["error"] = .error(error)
             fields["resume"] = .millisecondsBucket(resumeMs)
-            fields["fallback"] = .label("forced_maximum_transcode")
+            fields["fallback"] = .label("request_video_transcode_consent")
             recordTranscodeDiagnostic("transcode.direct_play_runtime_fallback", fields: fields)
-            NSLog("PlaybackController: direct-play stream failed to load (%@); falling back to forced maximum transcode",
+            NSLog("PlaybackController: direct-play stream failed to load (%@); requesting permission for video transcoding",
                   Self.safeErrorSummary(error))
             setPendingResumeMs(resumeMs, cause: .directPlayRuntimeFallback, allowsNearZero: true)
             rememberTrustworthyPlaybackPosition(resumeMs,
@@ -4616,6 +4761,7 @@ final class PlaybackController {
         recordPlaybackDiagnostic("playback.reconnect_watchdog_fired", fields: [
             "resume": .millisecondsBucket(currentResumeMs),
         ])
+        if attemptEmbyVideoCopyFallback() { return }
         NSLog("PlaybackController: reconnect watchdog timed out, surfacing failure (#33)")
         surfaceFailure(ReconnectTimeoutError())
     }
@@ -4635,12 +4781,16 @@ final class PlaybackController {
     }
 
     private var stallProgressBaseline: StallProgressSignature?
+    private var stallWaitingSince: TimeInterval?
 
     private var isRemoteTranscode: Bool {
         sessionSource.kind == .mediaBrowser && remotePlayMethod == .transcode
     }
 
     private var activeStallTimeoutSeconds: TimeInterval {
+        if mediaBrowserSession?.backend == .emby, remotePlayMethod == .directPlay {
+            return stallTimeoutSeconds
+        }
         if isRemoteTranscode {
             return remoteTranscodeStallTimeoutSeconds
         }
@@ -4658,6 +4808,7 @@ final class PlaybackController {
     /// so repeated `.waitingToPlayAtSpecifiedRate` callbacks don't reset the countdown.
     private func armStallWatchdog() {
         guard stallWatchdogObservers.isEmpty, !playbackError.isFailed else { return }
+        if stallWaitingSince == nil { stallWaitingSince = ProcessInfo.processInfo.systemUptime }
         stallProgressBaseline = currentStallProgressSignature()
         recordPlaybackDiagnostic("playback.stall_watchdog_armed", fields: [
             "timeout_seconds": .int(Int(activeStallTimeoutSeconds)),
@@ -4739,6 +4890,7 @@ final class PlaybackController {
         }
         stallWatchdogObservers.reset()
         stallProgressBaseline = nil
+        stallWaitingSince = nil
     }
 
     /// Fired when a stall outlasts `stallTimeoutSeconds`. Confirm the player is genuinely starved
@@ -4765,7 +4917,10 @@ final class PlaybackController {
         // and the player never resumes, no KVO transition ever comes and the safety net is
         // silently gone — unbounded spinner with no Retry. Re-arm instead.
         guard player.timeControlStatus == .waitingToPlayAtSpecifiedRate else { return }
-        if current.isPlaybackLikelyToKeepUp {
+        let mayDefer = PlaybackStallDeadlinePolicy.allowsDeferral(
+            waitingSince: stallWaitingSince ?? ProcessInfo.processInfo.systemUptime,
+            now: ProcessInfo.processInfo.systemUptime, interval: activeStallTimeoutSeconds)
+        if current.isPlaybackLikelyToKeepUp && mayDefer {
             recordPlaybackDiagnostic("playback.stall_watchdog_rearmed_keep_up")
             armStallWatchdog()
             return
@@ -4774,7 +4929,7 @@ final class PlaybackController {
         fields["keep_up"] = .bool(current.isPlaybackLikelyToKeepUp)
         fields["adaptive_bitrate_enabled"] = .bool(adaptiveBitrateEnabled)
 
-        if stallMadeTransportProgress(since: baseline) {
+        if mayDefer && stallMadeTransportProgress(since: baseline) {
             fields["stall_progress_deferred"] = .bool(true)
             if let baseline {
                 fields["baseline_bytes"] = .int(Int(min(baseline.transferredBytes, Int64(Int.max))))
@@ -4789,6 +4944,13 @@ final class PlaybackController {
             return
         }
 
+        if directPlayFallbackArmed {
+            handlePlaybackFailure(NSError(domain: "Labstream.Playback", code: -291,
+                userInfo: [NSLocalizedDescriptionKey: "Original video playback stalled."]))
+            return
+        }
+
+        if attemptEmbyVideoCopyFallback() { return }
         if attemptAdaptiveBitrateFallback(fields: fields) {
             return
         }
@@ -5192,6 +5354,8 @@ final class PlaybackController {
             do {
                 let request = RemoteStreamReopenRequest(offsetMs: offsetMs,
                                                         bitrateKbps: bitrateKbps,
+                                                        videoTranscodeApproved: videoTranscodeApprovedForCurrentItem,
+                                                        preferVideoCopyHLS: preferEmbyVideoCopyHLS,
                                                         audioStreamIndex: effectiveRemoteAudioStreamIndex(),
                                                         subtitleStreamIndex: effectiveRemoteSubtitleStreamIndex())
                 let reopened = try await remoteStreamReopener(request)
@@ -5199,7 +5363,7 @@ final class PlaybackController {
                     capturedGeneration: generation,
                     currentGeneration: self.playbackGeneration,
                     isCancelled: Task.isCancelled) else {
-                    reopened.onStop?()
+                    await reopened.stopAndWaitIgnoringCancellation()
                     return
                 }
                 let nextPlayMethod = reopened.playMethod ?? self.remotePlayMethod
@@ -5207,12 +5371,14 @@ final class PlaybackController {
                                                                            headers: reopened.headers,
                                                                            resumeOffsetMs: offsetMs,
                                                                            playMethod: nextPlayMethod,
-                                                                           generation: generation),
+                                                                           generation: generation,
+                                                                           sourceMetadata: reopened.sourceMetadata,
+                                                                           transcodeReasons: reopened.transcodeReasons),
                       RemoteStreamLifecyclePolicy.acceptsReopenResult(
                           capturedGeneration: generation,
                           currentGeneration: self.playbackGeneration,
                           isCancelled: Task.isCancelled) else {
-                    reopened.onStop?()
+                    await reopened.stopAndWaitIgnoringCancellation()
                     return
                 }
                 self.remoteHTTPHeaders = reopened.headers
@@ -5239,6 +5405,7 @@ final class PlaybackController {
                     self.remoteTranscodeReasons = transcodeReasons
                 }
                 self.onStopRemoteSession = reopened.onStop
+                self.mediaBrowserSession?.onStopAndWait = reopened.onStopAndWait
                 self.didStopRemoteSession = false
                 self.preferShortRemoteHLSBufferForNextLoad = preferShortRemoteHLSBuffer
                 self.loadRemoteStream(playableURL, headers: reopened.headers, resumeOffsetMs: offsetMs)
@@ -5377,12 +5544,6 @@ final class PlaybackController {
         sessionSource.pathMode
     }
 
-    private static func directPlayStartRejectionKey(metadataKey: String,
-                                                    mediaIndex: Int,
-                                                    partIndex: Int) -> String {
-        "\(metadataKey)#media=\(mediaIndex)#part=\(partIndex)"
-    }
-
     private static func httpStatus(from error: Error) -> Int? {
         if case PlexError.http(let status) = error { return status }
         return nil
@@ -5422,6 +5583,13 @@ struct ReconnectTimeoutError: LocalizedError {
 final class OfflineSubtitleOverlayState {
     var text: String?
     func set(_ value: String?) { text = value }
+}
+
+@Observable
+@MainActor
+final class VideoTranscodeConsentState {
+    var generation: Int?
+    var isPending: Bool { generation != nil }
 }
 
 @Observable

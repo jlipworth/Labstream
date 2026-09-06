@@ -62,7 +62,28 @@ enum DebugEmbyPlaybackProbe {
             let opened = try await DetailPlaybackLauncher.open(item: detailed,
                                                                backend: .emby,
                                                                appModel: appModel,
+                                                               mediaIndex: DebugPlaybackProbeSupport.intValue(after: "--vp-probe-media-index", in: arguments) ?? 0,
                                                                maxVideoBitrateKbps: bitrateKbps)
+            if arguments.contains("--vp-probe-bare-player"), opened.playback.playMethod == .directPlay {
+                await DebugRawURLPlaybackProbe.run(url: opened.playback.url,
+                    headers: opened.playback.headers, arguments: arguments)
+                return
+            }
+            if arguments.contains("--vp-probe-decision-only") {
+                // Bounded control-plane probe: do not hand any media URL to AVPlayer.
+                // Never log the URL, auth, source/session IDs, or arbitrary query values.
+                let components = URLComponents(url: opened.playback.url, resolvingAgainstBaseURL: false)
+                let query = components?.queryItems ?? []
+                let container = query.first { $0.name.lowercased() == "segmentcontainer" }?.value ?? ""
+                let safeContainer = ["m4s", "mp4", "ts", "m4s,ts"].contains(container) ? container : "unknown"
+                let codec = query.first { $0.name.lowercased() == "videocodec" }?.value ?? ""
+                let safeCodec = ["copy", "hevc", "h264", "h264,hevc", "hevc,h264"].contains(codec) ? codec : "unknown"
+                log.notice("probe.decision_only method=\(opened.playback.playMethod.rawValue, privacy: .public) segment_container=\(safeContainer, privacy: .public) video_codec=\(safeCodec, privacy: .public)")
+                try? await Task.sleep(for: .seconds(5))
+                _ = await DetailPlaybackLauncher.stopActiveEncodingNow(remote: opened.playback, appModel: appModel)
+                log.notice("probe.decision_only_stopped")
+                return
+            }
             let playback = DetailPlaybackLauncher.playbackController(
                 remote: opened.playback,
                 item: detailed,

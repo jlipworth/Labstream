@@ -457,7 +457,20 @@ struct CustomPlayerChrome: View {
         // The chrome renders the controller-owned transport status verbatim. It does not compose
         // buffering, retry, and failure booleans, so Cinema cannot show duplicate dialogs when HLS
         // delivery chatters between waiting and playing.
-        if let status = controller.transportStatus.activeStatus {
+        if let consentGeneration = controller.videoTranscodeConsent.generation {
+            VStack(spacing: 16) {
+                Text("Allow video transcoding?").font(.headline)
+                Text("Original playback could not be started or verified. The server can try converting the video, which may require substantial processing and change HDR or picture quality.")
+                    .multilineTextAlignment(.center)
+                Button("Allow Video Transcoding") { controller.approveVideoTranscoding(generation: consentGeneration) }
+                    .accessibilityIdentifier("playback.allowVideoTranscoding")
+                Button("Not Now") { controller.declineVideoTranscoding(generation: consentGeneration) }
+                    .accessibilityIdentifier("playback.declineVideoTranscoding")
+            }
+            .padding(24)
+            .frame(maxWidth: 460)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+        } else if let status = controller.transportStatus.activeStatus {
             CustomTransportStatusOverlay(status: status,
                                          onRetry: {
                                              revealChrome()

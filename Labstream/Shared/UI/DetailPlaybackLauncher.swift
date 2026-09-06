@@ -151,6 +151,9 @@ enum DetailPlaybackLauncher {
                                        appModel: appModel,
                                        mediaSourceId: remote.mediaSourceId,
                                        request: request)
+            },
+            onStopAndWait: {
+                _ = await stopActiveEncodingNow(remote: remote, appModel: appModel)
             })
         return PlaybackController(
             item: item,
@@ -208,6 +211,7 @@ enum DetailPlaybackLauncher {
                               session: context.session,
                               identity: context.identity,
                               maxVideoBitrateKbps: request.bitrateKbps,
+                              videoTranscodeApproved: request.videoTranscodeApproved,
                               resumeOffsetMs: request.offsetMs,
                               mediaSourceId: mediaSourceId,
                               audioStreamIndex: request.audioStreamIndex,
@@ -218,6 +222,8 @@ enum DetailPlaybackLauncher {
                               session: context.session,
                               identity: context.identity,
                               maxVideoBitrateKbps: request.bitrateKbps,
+                              videoTranscodeApproved: request.videoTranscodeApproved,
+                            preferVideoCopyHLS: request.preferVideoCopyHLS,
                               resumeOffsetMs: request.offsetMs,
                               mediaSourceId: mediaSourceId,
                               audioStreamIndex: request.audioStreamIndex,
@@ -240,6 +246,9 @@ enum DetailPlaybackLauncher {
             transcodeReasons: reopened.transcodeReasons,
             onStop: {
                 stopActiveEncoding(remote: reopened, appModel: appModel)
+            },
+            onStopAndWait: {
+                _ = await stopActiveEncodingNow(remote: reopened, appModel: appModel)
             })
     }
 

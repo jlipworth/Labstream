@@ -23,6 +23,8 @@ When a plan is complete or superseded:
 
 ## Active plans
 
-None currently. Completed plans live in [`docs/archive/plans/`](../archive/plans/); the most
+- [Client-first playback and release acceptance](2026-09-06-client-first-playback.md)
+
+Completed plans live in [`docs/archive/plans/`](../archive/plans/); the most
 recently archived programs (2026-07-24) are the codebase remediation journal, the tvOS
 implementation plan, and the cross-platform simplification and performance program.

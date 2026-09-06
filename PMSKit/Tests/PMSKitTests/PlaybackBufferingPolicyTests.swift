@@ -22,6 +22,19 @@ struct PlaybackBufferingPolicyTests {
         #expect(!initialRemoteHLS.usesShortRemoteHLSBuffer)
     }
 
+    @Test func embyCopyReopenKeepsAutomaticRecoveryWithTheSameShortBuffer() {
+        let baseline = PlaybackBufferingPolicy.configuration(
+            isRemoteServerEncodedHLS: true, preferShortRemoteHLSBuffer: true)
+        let copy = PlaybackBufferingPolicy.configuration(
+            isRemoteServerEncodedHLS: true, preferShortRemoteHLSBuffer: true,
+            isEmbyVideoCopyHLS: true)
+        #expect(copy.automaticallyWaitsToMinimizeStalling)
+        #expect(!baseline.automaticallyWaitsToMinimizeStalling)
+        #expect(copy.preferredForwardBufferSeconds == baseline.preferredForwardBufferSeconds)
+        #expect(copy.usesShortRemoteHLSBuffer == baseline.usesShortRemoteHLSBuffer)
+        #expect(copy.canUseNetworkResourcesForLiveStreamingWhilePaused == baseline.canUseNetworkResourcesForLiveStreamingWhilePaused)
+    }
+
     @Test func recognizesServerEncodedHLSPlaylistURLs() {
         // Plex serves ALL playback — Direct Play / Direct Stream included — as a
         // `start.m3u8` transcode-session playlist, which is EVENT-style (live-ish to

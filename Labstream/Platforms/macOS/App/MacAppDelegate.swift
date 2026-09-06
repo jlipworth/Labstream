@@ -30,10 +30,10 @@ final class MacAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldHandleReopen(_ sender: NSApplication,
                                        hasVisibleWindows flag: Bool) -> Bool {
-        MacMainWindowController.shared.activateMainWindow()
-        // We already restored the one retained window. Suppress AppKit's default reopen path so
-        // it cannot compete by asking SwiftUI to manufacture another scene/window.
-        return false
+        // Suppress default scene creation only when we actually presented a retained window.
+        // A fresh process can have no restored scene at all; swallowing reopen in that state
+        // leaves a live menu-bar-only app and prevents SwiftUI from creating its first window.
+        return !MacMainWindowController.shared.activateMainWindow()
     }
 
     func applicationWillTerminate(_ notification: Notification) {

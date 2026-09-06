@@ -69,6 +69,10 @@ enum MediaBrowserDeviceProfileFacts {
         if case .jellyfinManifest(let enabled) = subtitlePolicy {
             profile["EnableSubtitlesInManifest"] = enabled
         }
+        if subtitlePolicy == .embyEncodeSelected {
+            // Emby's own fMP4-capable client advertises m4s, not Jellyfin's mp4 spelling.
+            profile["Container"] = "m4s,ts"
+        }
         return [profile]
     }
 

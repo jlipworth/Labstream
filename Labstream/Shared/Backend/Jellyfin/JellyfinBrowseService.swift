@@ -170,6 +170,7 @@ struct JellyfinBrowseService: MediaBrowserBrowseFacade {
                       session playbackSession: BackendSession,
                       identity: ClientIdentity,
                       maxVideoBitrateKbps: Int,
+                      videoTranscodeApproved: Bool = false,
                       resumeOffsetMs: Int? = nil,
                       mediaSourceId: String? = nil,
                       audioStreamIndex: Int? = nil,
@@ -189,7 +190,7 @@ struct JellyfinBrowseService: MediaBrowserBrowseFacade {
             forceTranscode = true
             NSLog("JellyfinBrowseService: forcing tone-map transcode (%@)", reason)
         } else {
-            forceTranscode = false
+            forceTranscode = videoTranscodeApproved || maxVideoBitrateKbps == StreamingQuality.maxTranscodedKbps
         }
         let req = try JellyfinPlayback.playbackInfoRequest(server: context.server,
                                                            token: context.token,

@@ -51,6 +51,17 @@ struct RemoteStreamOpenResult {
     let playMethod: MediaBrowserPlayMethod?
     let transcodeReasons: [String]?
     let onStop: (() -> Void)?
+    let onStopAndWait: (() async -> Void)?
+
+    /// A canceled preparation task must still deliver the exact-session server DELETE.
+    @MainActor
+    func stopAndWaitIgnoringCancellation() async {
+        if let onStopAndWait {
+            await Task { await onStopAndWait() }.value
+        } else {
+            onStop?()
+        }
+    }
 
     init(url: URL,
          headers: [String: String],
@@ -59,7 +70,8 @@ struct RemoteStreamOpenResult {
          sourceMetadata: MediaBrowserPlaybackSourceMetadata? = nil,
          playMethod: MediaBrowserPlayMethod? = nil,
          transcodeReasons: [String]? = nil,
-         onStop: (() -> Void)? = nil) {
+         onStop: (() -> Void)? = nil,
+         onStopAndWait: (() async -> Void)? = nil) {
         self.url = url
         self.headers = headers
         self.playSessionId = playSessionId
@@ -68,21 +80,28 @@ struct RemoteStreamOpenResult {
         self.playMethod = playMethod
         self.transcodeReasons = transcodeReasons
         self.onStop = onStop
+        self.onStopAndWait = onStopAndWait
     }
 }
 
 struct RemoteStreamReopenRequest: Sendable {
     let offsetMs: Int
     let bitrateKbps: Int
+    let videoTranscodeApproved: Bool
+    let preferVideoCopyHLS: Bool
     let audioStreamIndex: Int?
     let subtitleStreamIndex: Int?
 
     init(offsetMs: Int,
          bitrateKbps: Int,
+         videoTranscodeApproved: Bool = false,
+         preferVideoCopyHLS: Bool = false,
          audioStreamIndex: Int? = nil,
          subtitleStreamIndex: Int? = nil) {
         self.offsetMs = offsetMs
         self.bitrateKbps = bitrateKbps
+        self.videoTranscodeApproved = videoTranscodeApproved
+        self.preferVideoCopyHLS = preferVideoCopyHLS
         self.audioStreamIndex = audioStreamIndex
         self.subtitleStreamIndex = subtitleStreamIndex
     }
@@ -109,6 +128,7 @@ final class MediaBrowserPlaybackSession {
     var playSessionID: String?
     var progressSession: MediaBrowserPlaybackProgressSession?
     var onStop: (() -> Void)?
+    var onStopAndWait: (() async -> Void)?
     var didStop = false
 
     init(streamURL: URL,
@@ -121,7 +141,8 @@ final class MediaBrowserPlaybackSession {
          transcodeReasons: [String],
          progressSession: MediaBrowserPlaybackProgressSession?,
          onStop: @escaping () -> Void,
-         reopener: @escaping RemoteStreamReopener) {
+         reopener: @escaping RemoteStreamReopener,
+         onStopAndWait: (() async -> Void)? = nil) {
         self.initialStreamURL = streamURL
         self.backend = backend
             ?? MediaBackendID.allCases.first(where: {
@@ -136,6 +157,7 @@ final class MediaBrowserPlaybackSession {
         self.transcodeReasons = transcodeReasons
         self.progressSession = progressSession
         self.onStop = onStop
+        self.onStopAndWait = onStopAndWait
         self.reopener = reopener
     }
 }

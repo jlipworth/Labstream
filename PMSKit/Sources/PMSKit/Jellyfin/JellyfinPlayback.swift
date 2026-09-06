@@ -166,7 +166,7 @@ public enum JellyfinPlayback {
             "EnableTranscoding": true,
             "AllowVideoStreamCopy": !forcePlaybackTranscode,
             "AllowAudioStreamCopy": true,
-            "AutoOpenLiveStream": true,
+            "AutoOpenLiveStream": false,
             "DeviceProfile": streamingDeviceProfile(maxStreamingBitrate: maxStreamingBitrate,
                                                    advertiseDolbyVision: advertiseDolbyVision,
                                                    subtitlesInManifest: subtitleStreamIndex != -1),
@@ -477,6 +477,7 @@ public enum JellyfinPlayback {
         // surfaces as NSURLErrorDomain -1008 after a deep seek. The start offset belongs in
         // the PlaybackInfo body above; keep the playable URL itself segment-safe.
         _ = startTimeTicks
+        items.removeAll { $0.name.caseInsensitiveCompare("StartTimeTicks") == .orderedSame }
         if let maxVideoBitrate, maxVideoBitrate > 0, maxVideoBitrate < 200_000_000 {
             replace("VideoBitrate", value: String(maxVideoBitrate))
         }

@@ -173,6 +173,8 @@ struct EmbyBrowseService: MediaBrowserBrowseFacade {
                       session playbackSession: BackendSession,
                       identity: ClientIdentity,
                       maxVideoBitrateKbps: Int,
+                      videoTranscodeApproved: Bool = false,
+                      preferVideoCopyHLS: Bool = false,
                       resumeOffsetMs: Int? = nil,
                       mediaSourceId: String? = nil,
                       audioStreamIndex: Int? = nil,
@@ -200,7 +202,7 @@ struct EmbyBrowseService: MediaBrowserBrowseFacade {
             forceTranscode = true
             NSLog("EmbyBrowseService: forcing tone-map transcode (%@)", reason)
         case .allowCopyLanes:
-            forceTranscode = false
+            forceTranscode = videoTranscodeApproved || maxVideoBitrateKbps == StreamingQuality.maxTranscodedKbps
         }
         // DIVERGENCE: Emby PlaybackInfo needs UserId in BOTH query and body.
         let req = try EmbyPlayback.playbackInfoRequest(server: context.server,
@@ -214,6 +216,7 @@ struct EmbyBrowseService: MediaBrowserBrowseFacade {
                                                        audioStreamIndex: audioStreamIndex,
                                                        subtitleStreamIndex: subtitleStreamIndex,
                                                        forcePlaybackTranscode: forceTranscode,
+                                                       preferVideoCopyHLS: preferVideoCopyHLS,
                                                        advertiseDolbyVision: DolbyVisionGuard.shouldAdvertiseDolbyVision(for: item))
         let info = try await send(req, as: EmbyPlaybackInfoResponse.self)
         do {
@@ -233,7 +236,7 @@ struct EmbyBrowseService: MediaBrowserBrowseFacade {
                 audioStreamIndex: audioStreamIndex,
                 subtitleStreamIndex: subtitleStreamIndex)
         } catch {
-            // Emby starts encoding during PlaybackInfo negotiation. If exact-source validation
+            // Stop any session-owned work defensively if exact-source validation
             // rejects the response, clean up any alternate-source encoder before surfacing the
             // original error. Preserve Emby's direct-source contract: only send the active-
             // encoding stop when PlaybackInfo actually advertised an encoder-backed source.

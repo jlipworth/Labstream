@@ -168,6 +168,7 @@ public enum EmbyPlayback {
                                            audioStreamIndex: Int? = nil,
                                            subtitleStreamIndex: Int? = nil,
                                            forcePlaybackTranscode: Bool = false,
+                                           preferVideoCopyHLS: Bool = false,
                                            advertiseDolbyVision: Bool = false) throws -> URLRequest {
         let url = try embyURL(server: server,
                               path: "/Items/\(itemId)/PlaybackInfo",
@@ -184,12 +185,13 @@ public enum EmbyPlayback {
         var body: [String: Any] = [
             "UserId": userId,
             "MaxStreamingBitrate": maxStreamingBitrate,
-            "EnableDirectPlay": !forcePlaybackTranscode,
-            "EnableDirectStream": !forcePlaybackTranscode,
+            "EnableDirectPlay": !forcePlaybackTranscode && !preferVideoCopyHLS,
+            "EnableDirectStream": !forcePlaybackTranscode && !preferVideoCopyHLS,
             "EnableTranscoding": true,
             "AllowVideoStreamCopy": !forcePlaybackTranscode,
             "AllowAudioStreamCopy": true,
             "AutoOpenLiveStream": false,
+            "IsPlayback": false,
             "DeviceProfile": streamingDeviceProfile(maxStreamingBitrate: maxStreamingBitrate,
                                                    advertiseDolbyVision: advertiseDolbyVision),
         ]
@@ -417,8 +419,8 @@ public enum EmbyPlayback {
 
     /// Resolve a playable URL from a PlaybackInfo response.
     ///
-    /// Preference order: server-generated `TranscodingUrl`, then `DirectStreamUrl`, then a
-    /// synthesized direct-play `stream.{container}` URL.
+    /// Preference order: negotiated direct play, then server-generated `TranscodingUrl`,
+    /// then `DirectStreamUrl`, then a synthesized static stream URL.
     ///
     /// DIVERGENCE FROM JELLYFIN: the server-generated stream URLs carry the token in the
     /// query (`api_key=`), so AVPlayer's HLS child playlists/segments inherit auth — no
@@ -455,7 +457,7 @@ public enum EmbyPlayback {
         }
 
         // Prefer the server-generated transcode URL (HLS). Token rides in api_key query.
-        if let transcodingURL = source.transcodingURL, !transcodingURL.isEmpty {
+        if !source.supportsDirectPlay, let transcodingURL = source.transcodingURL, !transcodingURL.isEmpty {
             let resolvedAudioStreamIndex = audioStreamIndex ??
                 (audioBitrate == nil ? nil : source.mediaStreams.preferredCompatibleAudioStreamIndexForCappedTranscode())
             // The compatible-audio steering above is resolved client-side AFTER the server minted
@@ -480,7 +482,7 @@ public enum EmbyPlayback {
         }
 
         // Next prefer the server-generated direct-stream URL.
-        if let directStreamURL = source.directStreamURL, !directStreamURL.isEmpty {
+        if !source.supportsDirectPlay, let directStreamURL = source.directStreamURL, !directStreamURL.isEmpty {
             var url = try embyURL(server: server, pathOrURLString: directStreamURL)
             if source.addApiKeyToDirectStreamURL == true {
                 url = try ensureApiKey(on: url, token: token)
