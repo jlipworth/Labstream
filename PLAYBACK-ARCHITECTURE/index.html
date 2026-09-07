@@ -1,0 +1,1992 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Native Apple-platform client for your own Plex, Jellyfin, or Emby server.">
+      
+      
+      
+        <link rel="canonical" href="https://jlipworth.github.io/Labstream/PLAYBACK-ARCHITECTURE/">
+      
+      
+        <link rel="prev" href="../BACKENDS/">
+      
+      
+        <link rel="next" href="../DOWNLOADS-OFFLINE/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Playback - Labstream</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#playback-architecture" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Labstream" class="md-header__button md-logo" aria-label="Labstream" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Labstream
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Playback
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/jlipworth/Labstream" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    jlipworth/Labstream
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Labstream" class="md-nav__button md-logo" aria-label="Labstream" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Labstream
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/jlipworth/Labstream" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    jlipworth/Labstream
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Support & troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../REPORTING-BUGS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Report a bug
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../privacy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Privacy policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../RELEASES/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release and App Store status
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../app-store-exception/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    License exception
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Developer guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CONTRIBUTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../DEVELOPMENT/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../TESTING-STRATEGY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Testing strategy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../APP-STORE-SCREENSHOTS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    App Store screenshots
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../COMPILE-PERFORMANCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compile performance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MOBILE-IOS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    iOS and iPadOS target
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../TVOS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    tvOS target
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MACOS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    macOS target
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MACOS-CI/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Native macOS CI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../SCRIPTS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scripts catalog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ARCHITECTURE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CODE-MAP/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Code map
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../BACKENDS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Backends
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Playback
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Playback
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#plex" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plex
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#jellyfin" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Jellyfin
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#emby" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Emby
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hls-startup-and-failure-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        HLS startup and failure detection
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#buffering-and-stalls" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Buffering and stalls
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#seeking-and-restart-budgets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Seeking and restart budgets
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#audio-and-subtitle-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Audio and subtitle selection
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#localoffline-playback" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Local/offline playback
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hdr-and-dolby-vision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        HDR and Dolby Vision
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shareplay-on-visionos" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SharePlay on visionOS
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#system-media-ownership" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        System media ownership
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#playback-explanation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Playback explanation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cinema-ownership" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cinema ownership
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#restart-and-cleanup-principles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Restart and cleanup principles
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../DOWNLOADS-OFFLINE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Downloads & offline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MUSIC-DESIGN/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Music
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../PERSISTENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Persistence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../SYSTEM-INTEGRATION/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    System integration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../DIAGNOSTICS-PRIVACY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Diagnostics & privacy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#plex" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plex
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#jellyfin" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Jellyfin
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#emby" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Emby
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hls-startup-and-failure-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        HLS startup and failure detection
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#buffering-and-stalls" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Buffering and stalls
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#seeking-and-restart-budgets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Seeking and restart budgets
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#audio-and-subtitle-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Audio and subtitle selection
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#localoffline-playback" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Local/offline playback
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hdr-and-dolby-vision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        HDR and Dolby Vision
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shareplay-on-visionos" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SharePlay on visionOS
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#system-media-ownership" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        System media ownership
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#playback-explanation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Playback explanation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cinema-ownership" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cinema ownership
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#restart-and-cleanup-principles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Restart and cleanup principles
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="playback-architecture">Playback architecture<a class="headerlink" href="#playback-architecture" title="Permanent link">&para;</a></h1>
+<p>Video playback is split by backend, then converges on one app-owned <code>PlaybackController</code>.
+The controller owns its <code>AVPlayer</code>, progress reporting, diagnostics, seeking, recovery, and
+teardown. Presenter views own the <code>AVPlayerLayer</code> instances that display that player:
+<code>CustomPlayerView</code> hosts <code>PlayerLayerView</code> in a window, and the Cinema attachment hosts another
+presenter for the same live controller. The retired <code>AVPlayerViewController</code> path is not part of
+the current architecture.</p>
+<p>Every controller is constructed from one typed <code>PlaybackSessionSource</code>: <code>.plex</code> carries Plex
+server authority, <code>.mediaBrowser</code> carries the negotiated Jellyfin/Emby stream together with its
+reopener, progress context, and cleanup callback, and <code>.offline</code> carries the local file and side
+assets. The controller never infers its lane from independent optional URLs, tokens, or callbacks.</p>
+<p>Each item replacement advances a playback generation. Observer callbacks, notifications,
+timers, artwork/metadata loads, reconnect watchdogs, and other queued work capture that
+generation and re-check it on the main actor through <code>PlaybackLifecycleCallbackSink</code> and
+<code>VideoPlaybackLifecyclePolicy</code>. Removing an observer is cleanup, not proof that a callback
+already queued for the old item was cancelled.</p>
+<pre class="mermaid"><code>sequenceDiagram
+  accTitle: Backend playback startup
+  accDescr: Jellyfin and Emby negotiate a stream before constructing the playback controller. Plex and Jellyfin validate video-copy HLS for Original and ask before falling back to video encoding; explicit transcoded qualities authorize encoding. Both lanes then load one app-owned AVPlayer and retain lane-specific progress and cleanup.
+  participant UI
+  participant Backend
+  participant PC as PlaybackController
+  participant AV as AVPlayer
+  participant Server
+
+  alt Jellyfin or Emby
+    UI-&gt;&gt;Backend: initial PlaybackInfo negotiation
+    Backend-&gt;&gt;Server: authenticated PlaybackInfo request
+    Server--&gt;&gt;Backend: stream URL + session metadata
+    Backend--&gt;&gt;UI: negotiated remote stream + callbacks
+    UI-&gt;&gt;PC: construct with negotiated stream
+    opt Jellyfin Original
+      PC-&gt;&gt;Server: validate explicit video-copy primary playlist
+      opt copy unavailable or video transform required
+        PC-&gt;&gt;UI: ask before video encoding
+        UI--&gt;&gt;PC: approve or decline
+      end
+    end
+  else Plex Direct Play / Maximum copy
+    UI-&gt;&gt;PC: construct and start with item + session
+    PC-&gt;&gt;Server: directPlay=0, directStream=1 decision
+    Server--&gt;&gt;PC: video-copy decision or encoding required
+    opt encoding required or copy fails
+      PC-&gt;&gt;UI: ask for video-encoding consent
+      UI--&gt;&gt;PC: approve or decline
+    end
+    PC-&gt;&gt;AV: authorized start.m3u8 at copy or encode intent
+  else Plex capped, HLS-max, burn, or DV-forced
+    UI-&gt;&gt;PC: construct and start with item + session
+    PC-&gt;&gt;Server: production decision and start.m3u8
+    Server--&gt;&gt;PC: decision + stream URL
+  end
+  PC-&gt;&gt;AV: create and replace player item
+  PC-&gt;&gt;Server: progress / heartbeat as needed
+  PC-&gt;&gt;Server: lane-specific cleanup on replacement or teardown</code></pre>
+<h2 id="plex">Plex<a class="headerlink" href="#plex" title="Permanent link">&para;</a></h2>
+<p>Plex uses the universal HLS endpoint with distinct video-copy and video-encoding intent.
+The client-first changes are under active acceptance (see the repository plan
+<code>docs/plans/2026-09-06-client-first-playback.md</code>);
+control-plane success is not a claim that live rendering or every platform has passed.</p>
+<ol>
+<li><strong>Direct Play / Maximum (Original video).</strong> Negotiate with <code>directPlay=0</code> and
+   <code>directStream=1</code>, and require an explicit video <code>copy</code>/<code>directplay</code> decision before
+   fetching the media start. Container remux and audio conversion are allowed; this HLS
+   route is not byte-for-byte original-file playback. Copy starts omit <code>offset=</code> and
+   restore the playhead through a client seek. The rejected literal <code>directPlay=1</code> HLS
+   start is no longer the app's Original playback route.</li>
+<li><strong>Consent before video encoding.</strong> An unknown/encoding decision, subtitle burn,
+   Dolby Vision safety requirement, or failed copy rendition stops the previous job and
+   offers a controller-owned choice. Decline starts no encoder. Approval is scoped to
+   the current item and generation; stop and explicit quality changes clear it. Approved
+   fallback disables Direct Stream and primes the saved resume offset. It is not a
+   persistent preference or an automatic retry loop.</li>
+<li><strong>Explicit capped / Maximum (HLS).</strong> These quality choices authorize encoding without
+   a second prompt. Maximum (HLS) disables Direct Stream rather than recreating the copy
+   rendition. Capped/approved encoding retains <code>offset=</code> priming for deep resume.</li>
+</ol>
+<p>For a single HDR variant on an SDR display, the bounded media-playlist selector can open
+its same-origin child directly after master prewarming. It rejects alternate media tracks,
+multiple variants, and cross-origin children, and never rewrites encoded color metadata.
+Actual HDR/SDR presentation and seek acceptance remain open; preparation alone is insufficient.</p>
+<p>Automatic bitrate downshift still does not turn Original into an unapproved capped encode.
+Transport activity can defer the stall watchdog for one additional normal interval, not
+indefinitely. Genuine play/resume, pause, and teardown reset that waiting window.</p>
+<p>The profile and quality parameters are load-bearing. <code>TranscodeRequest</code> uses the built-in
+Plex profile name <code>Generic</code> plus explicit profile-extra directives. Unknown or missing
+profile names can make PMS return HTTP 400, while the previously tried <code>Safari</code> profile
+regressed high-bitrate 10-bit HEVC. Do not change these values casually.</p>
+<h2 id="jellyfin">Jellyfin<a class="headerlink" href="#jellyfin" title="Permanent link">&para;</a></h2>
+<p><code>DetailPlaybackLauncher</code> orchestrates Jellyfin's initial PlaybackInfo negotiation through
+<code>JellyfinBrowseService</code> before <code>PlaybackController</code> is constructed. The controller receives the
+resolved stream and callbacks as one typed MediaBrowser session for later reopens, progress, and
+cleanup. The app adapts
+the native open result to the neutral MediaBrowser carrier at the app boundary,
+preserves required request headers, and reports <code>Sessions/Playing</code>,
+<code>Sessions/Playing/Progress</code>, and <code>Sessions/Playing/Stopped</code> with the current play session,
+media source, method, and absolute position ticks. A reopen that mints a new session must
+replace that progress context.</p>
+<p>Jellyfin Original is now guarded before any media segment request: compatible H.264/HEVC
+sources may use explicit <code>VideoCodec=copy</code> with fMP4 segments while audio is copied or
+converted. The controller selects the validated same-origin primary copy child, not the
+HDR master whose additional SDR variants can force a video encoder. Unknown decisions,
+required video transforms, and unhandled alternate renditions stop and ask rather than
+silently encoding or discarding a track. Maximum (HLS) explicitly forces video encoding.
+An approval travels only through the captured, current-session reopener; stale generations
+cannot approve another playback request. These changes remain under live acceptance.</p>
+<p>Jellyfin VOD playlists describe the full timeline. Both copy and encoded playback use a
+client seek on readiness; <code>StartTimeTicks</code> must not reach dynamic segment requests. Copy
+playback is not treated as server-primed merely because it owns an FFmpeg audio/remux job.</p>
+<h2 id="emby">Emby<a class="headerlink" href="#emby" title="Permanent link">&para;</a></h2>
+<p>Emby playback uses its own MediaBrowser-family lane. Like Jellyfin, <code>DetailPlaybackLauncher</code>
+orchestrates its initial PlaybackInfo request through <code>EmbyBrowseService</code> before controller
+construction; the resulting stream and reopen/cleanup callbacks are then supplied to the
+controller. It reports progress through the same neutral app progress seam, but with Emby's
+request dialect. <code>POST /Sessions/Playing/Stopped</code> reports
+playback state only; it does <strong>not</strong> stop an encoder. A source whose open result says it used
+server encoding must also call Emby's active-encoding delete endpoint. Keep those two teardown
+operations separate.</p>
+<p>Emby Original prefers a server-accepted static original file over optional transcode
+URLs. If that file stalls, one bounded retry requests video-copy HLS with AAC audio
+conversion before asking to encode video. Ordinary copy HLS uses Emby's <code>m4s</code> dialect, validates
+the same-origin primary child, and preserves session and track authority. H.264 static-file
+recovery instead requests self-contained MPEG-TS segments with video copy and AAC; this
+avoids the dynamic fragmented-MP4 delivery failure observed in the Mac acceptance control.
+The recovery child uses the full VOD timeline, strips <code>StartTimeTicks</code> from master and child,
+and performs its initial resume and subsequent seeks natively. It bypasses the legacy
+master-playlist prewarmer/proxy and retains the server session for cleanup. Explicit
+full-timeline resume must not depend on the clock still being near zero after track setup.</p>
+<p>Verified Emby copy HLS reopens retain their 12-second buffer target but keep automatic
+waiting enabled, so buffer exhaustion does not strand AVPlayer at rate zero. Other
+backends and approved video-encode buffering settings remain unchanged. AC-3 copy
+transport also uses AAC as a narrow delivery workaround. Unknown transforms and subtitle
+burn require consent; Maximum explicitly authorizes video encoding. This fallback is
+video-copy Direct Stream, not byte-for-byte original-file Direct Play. Native-file starvation
+itself remains unresolved; the scoped recovery passed Mac playback and deep-seek acceptance.</p>
+<p>A reopened result arriving after cancellation must still stop its exact server session.
+<code>stopAndWaitIgnoringCancellation()</code> isolates that cleanup from the cancelled preparation
+task; playback-stopped reporting alone does not establish encoder cleanup.</p>
+<p>Jellyfin and Emby share DTOs, quality/progress policy, and app-facing carriers, not a single
+wire implementation. See <code>BACKENDS.md</code> for the exact boundary.</p>
+<h2 id="hls-startup-and-failure-detection">HLS startup and failure detection<a class="headerlink" href="#hls-startup-and-failure-detection" title="Permanent link">&para;</a></h2>
+<p>AVFoundation applies hard per-media-file startup deadlines. A large first HLS segment can
+miss those deadlines even when the server and link are otherwise healthy; a one-variant
+playlist then has no alternate rendition left. The failure shape also differs: Plex can
+remain <code>.unknown</code> while the decisive codes appear only in <code>AVPlayerItem.errorLog()</code>, whereas
+a MediaBrowser item may become <code>.failed</code>.</p>
+<p>Current invariants:</p>
+<ul>
+<li><code>HLSSessionPrewarmer</code> is lane-specific rather than a universal HLS prerequisite. Plex uses
+  its full 20-second budget only when the selected quality is Direct Play / Maximum.
+  Emby uses an 8-second head start only for a transcoded stream with a nonzero resume
+  or reopen target; progressive/direct streams and zero-offset remote starts attach without
+  that prewarm. Jellyfin skips this legacy priming path and client-seeks its VOD timeline.
+  All prewarm outcomes are soft and AVPlayer still gets a chance to load.</li>
+<li>After that Emby transcode prewarm, the controller stands up <code>MediaSessionProxy</code> to
+  strip <code>starttimeticks</code> from the playlist and inject a playlist start-time offset, then
+  attaches AVPlayer to the loopback URL. If proxy standup fails, it falls back to the original
+  remote URL. Zero-offset and progressive/direct streams skip both the prewarm and the proxy.</li>
+<li>Failure handling scans the complete error log for the startup-deadline/variant-removal
+  codes; a notification can cover more than its last appended event.</li>
+<li>A startup-deadline abandonment gets at most one automatic warm retry. The allowance is
+  re-armed by explicit user intent such as Retry, a quality/audio reload, or a new seek,
+  not by a transient <code>.playing</code> callback. Exhaustion produces the visible Retry surface.</li>
+<li>Preparation and reconnect watchdogs are each 20 seconds. The preparation watchdog covers
+  attach after a poisoned <code>start.m3u8</code> that produces neither an AVPlayer failure nor a useful
+  <code>timeControlStatus</code> transition. The reconnect watchdog covers in-flight recovery that
+  replaces the player item. Both are progress-deferred so a slow-but-working prime is not
+  false-failed.</li>
+</ul>
+<h2 id="buffering-and-stalls">Buffering and stalls<a class="headerlink" href="#buffering-and-stalls" title="Permanent link">&para;</a></h2>
+<p>Plex universal-transcode playlists are live-ish while their server session is open, even
+for video-copy routes. In steady-state remote HLS playback, Labstream enables
+<code>canUseNetworkResourcesForLiveStreamingWhilePaused</code>; otherwise pause-to-buffer can stop
+network loading completely. An explicit out-of-buffer HLS seek temporarily uses the bounded
+reopen/buffer path instead. Jellyfin/Emby progressive direct streams are ordinary VOD.</p>
+<p>HLS buffer-ahead values advance by completed segment, so a high-bitrate stream can remain at
+0 seconds for a while and then jump by the segment duration. That staircase is not itself a
+stall. Diagnostics distinguish active transfer from a stale/idle observed-bitrate sample.</p>
+<p>Network loss frequently leaves AVPlayer waiting with an empty buffer without changing the
+item to <code>.failed</code>. Stall deadlines depend on the active lane: Jellyfin/Emby remote transcodes
+use 45 seconds, other Direct Play / Maximum-selected paths use 90 seconds, and all remaining
+paths use 15 seconds. For every network-backed stream—Plex, Jellyfin, or Emby—growth in
+transferred bytes or loaded range at expiry rearms the watchdog instead of failing a
+slow-but-working prime. Local-file playback does not use this deferral. Once progress stops, the
+controller uses the startup error log when available and otherwise surfaces a recoverable
+network/capacity message.</p>
+<p>Client-driven adaptive bitrate is an optional Settings feature and is default-off. When enabled,
+it can reopen supported capped Plex or MediaBrowser streams at bounded rungs after a sustained
+stall and later upshift after healthy playback. It never silently converts an explicit Direct
+Play / Maximum choice to a capped transcode. The requested forward-buffer duration remains a
+hint, not a guarantee; a full server throttle window, a single-rendition copy stream, or
+AVPlayer's realized buffer is not itself an adaptive bitrate ladder.</p>
+<h2 id="seeking-and-restart-budgets">Seeking and restart budgets<a class="headerlink" href="#seeking-and-restart-budgets" title="Permanent link">&para;</a></h2>
+<p>The custom scrubber owns user seek intent. <code>RemoteSeekModePolicy</code> selects native in-buffer
+or copy-lane seeking versus a backend/session reopen. Out-of-buffer server-encoded seeks are
+debounced into one settled final-target rebuild instead of restarting for every drag sample.</p>
+<ul>
+<li>Plex streaming-copy HLS seeks natively within its full-timeline playlist; do not kill and
+  re-mint that copy session merely to seek.</li>
+<li>Reopen/rebuild paths capture the live playhead, detach stale work, negotiate the final
+  target, and hold the scrubber until the replacement item lands or fails.</li>
+<li><code>FinalTargetRebuildPolicy</code> and <code>SeekRestartBudget</code> prevent concurrent/unbounded restart
+  pipelines. When the budget is exhausted, recovery stops and the user gets Retry rather
+  than a hidden server-hammering loop.</li>
+<li>Playhead evidence is carried as typed <code>PlaybackPositionSample</code>s rather than parallel
+  millisecond/timestamp/source/near-zero fields. <code>PlaybackPositionSnapshot</code> captures the chosen
+  restart target and all evidence together; <code>PlaybackSeekHold</code> owns its target, latest generation,
+  and 12-second deadline so a stale completion cannot release a newer seek.</li>
+<li>Explicit seek-to-zero samples remain authoritative. Unintended near-zero clocks observed while
+  replacing an item are suppressed when newer meaningful evidence exists, and terminal reporting
+  uses the same typed evidence without regressing to a detached item's transient zero.</li>
+<li>Track, quality, explicit-Retry, and adaptive-bitrate replacements enter the controller through
+  a typed <code>PlaybackRestartIntent</code>. Its value-only <code>PlaybackRestartPlan</code> is reason-specific: every
+  intent resets the final target, rearms the startup-deadline retry, and tears down observers;
+  only <code>.explicitRetry</code> also clears the visible error and resets ABR. Callers must not assume
+  every restart clears failure state.</li>
+<li>Every intentional Plex in-place restart that supersedes a transcode (quality/audio
+  reload, Retry, or final-target rebuild) stops the old job first with a bounded wait before
+  requesting the replacement under the reused session id.</li>
+<li>Jellyfin/Emby replacement is deliberately ordered differently: detach the old <code>AVPlayerItem</code>,
+  negotiate and attach the replacement item, then defer the prior active-encoding stop. If the
+  backend reused the same play-session id, skip that prior stop so it cannot tear down the new
+  stream. A consent boundary instead awaits the old session stop before showing the
+  choice, and cleans up any rejected newly negotiated session without attaching it.</li>
+</ul>
+<h2 id="audio-and-subtitle-selection">Audio and subtitle selection<a class="headerlink" href="#audio-and-subtitle-selection" title="Permanent link">&para;</a></h2>
+<p>Player pickers consume one validated <code>PlaybackTrackSnapshot</code>: its rows and selected typed ID are
+captured together, so a stale or magic numeric selection cannot describe a different list. Every
+row carries exactly one mechanism—AVFoundation, Plex stream, MediaBrowser stream, or offline
+sidecar—and subtitle Off is a lane-specific typed choice. Plex's <code>0</code> and MediaBrowser's <code>-1</code> Off
+values exist only in the controller's backend adapter immediately next to wire-facing requests.</p>
+<p>Offline subtitle menus read only the downloaded track metadata. The controller opens and parses
+the selected SRT/VTT sidecar off the main actor when the viewer chooses it; opening the menu no
+longer parses every sidecar up front. Offline subtitle and metadata-audio selections are
+generation-fenced: a later track or Off choice invalidates stale async parse/PUT completions before
+they can change the active track, preference, overlay, or restart the stream. Plex's account-sticky
+audio PUTs also run through a serialized latest-intent tail: an in-flight mutation finishes before
+the newest choice is sent, while superseded queued choices are skipped, making the newest intent
+the final server mutation as well as the final local selection.</p>
+<p>Subtitle delivery risk and caption styling are separate typed policies. <code>SubtitleBurnRiskPolicy</code>
+maps backend evidence (including Plex's decision response and MediaBrowser transcode reasons) to
+none, uncertain, or confirmed burn/transcode risk; only confirmed new risk interrupts selection
+with a consequence-and-alternatives confirmation. <code>SubtitleStyleCapabilityPolicy</code> independently
+decides whether the selected route can use an Apple caption appearance profile, is an app-rendered
+offline sidecar, or is server/image rendered and therefore cannot be restyled.</p>
+<p>The playback-owned caption appearance controller observes system Media Accessibility changes,
+applies profiles system-wide only after explicit selection, and uses <code>AVPlayerLayer</code>'s native
+profile preview on OS 26.4 and later. Preview is stopped before layer replacement and on picker,
+item, playback, and Cinema teardown. The app-owned offline subtitle overlay mirrors the active
+system profile's supported font, size, colors, opacity, edge, window, and corner settings.</p>
+<h2 id="localoffline-playback">Local/offline playback<a class="headerlink" href="#localoffline-playback" title="Permanent link">&para;</a></h2>
+<p>Completed downloads play from local file URLs. Local playback has no remote progress stream,
+server session, or transcode cleanup path. Its playhead is persisted on the offline record,
+and its typed offline session still shares player UI, diagnostics, chapters/subtitles, Cinema,
+and error surfaces with remote playback. Transport-status presentation is source-aware:
+<code>PlaybackTransportPresentationPolicy</code> maps AVPlayer's shared waiting state to local-preparation
+wording for <code>.localFile</code> sessions instead of remote buffering language, while stall-watchdog
+mechanics remain shared with remote playback.</p>
+<h2 id="hdr-and-dolby-vision">HDR and Dolby Vision<a class="headerlink" href="#hdr-and-dolby-vision" title="Permanent link">&para;</a></h2>
+<p>Source classification and runtime observation are deliberately separate. PMSKit maps each
+backend's available stream metadata into <code>VideoHDRMetadata</code>; <code>PlaybackHDRProbe</code> later reads
+AVFoundation tracks and format descriptions after segments load. Stats may describe the
+source as HDR10+ only when backend metadata can distinguish it, and must not claim that
+AVPlayer rendered HDR10+ dynamic metadata. Bit depth alone is not HDR evidence.</p>
+<p>Dolby Vision Profile 5 has no compatible base layer. With experimental DV signalling off
+(the default), <code>DolbyVisionPlaybackPolicy</code> forces a tone-map transcode where the backend is
+known to handle untagged P5, and blocks Emby rather than accepting a successful-looking but
+incorrectly colored encode. A guard-forced transcode has a transport-progress-aware
+first-frame deadline and a DV-specific failure surface.</p>
+<p>Experimental DV signalling remains default-off and changes two separate decisions when enabled.
+First, it defers the fallback-less Profile 5 safety gate so the experimental copy lane can be
+attempted. Separately, server capability advertising and HLS master-playlist injection are enabled
+only for the exact eligible item, and actual injection remains limited to Profile 8 streams with
+a known compatible base layer. Profile 5 never receives <code>SUPPLEMENTAL-CODECS</code> injection. Do not
+broaden either policy without device and bitstream verification.</p>
+<h2 id="shareplay-on-visionos">SharePlay on visionOS<a class="headerlink" href="#shareplay-on-visionos" title="Permanent link">&para;</a></h2>
+<p>The visionOS <code>App</code> owns one live app-lifetime <code>WatchTogetherCoordinator</code> and injects it into both
+the main window and Custom Cinema. The local player is not coordinated merely because a
+<code>GroupSession</code> exists: the participant must resolve and launch the exact local item first. A
+surface-owned attachment-maintenance loop then binds that controller's
+<code>AVPlayerPlaybackCoordinator</code> to the active session and reattaches whenever the group-session
+generation or <code>AVPlayerItem</code> changes.</p>
+<p>The window-to-Cinema handoff preserves the same <code>PlaybackController</code> and SharePlay session. The
+window presenter disappearing during that handoff does not leave the activity; the Cinema
+scaffold takes over attachment maintenance. A genuine player close, Cinema exit, active
+browse-session identity change (backend, server, user, or auth session), or invalidated group
+session leaves or clears participation. Payload privacy and participant-local resolution are
+documented in <a href="../SYSTEM-INTEGRATION/#shareplay-watch-together">System integration</a>.</p>
+<h2 id="system-media-ownership">System media ownership<a class="headerlink" href="#system-media-ownership" title="Permanent link">&para;</a></h2>
+<p>visionOS video uses a controller-owned <code>VideoNowPlayingCoordinator</code> backed by a scoped
+<code>MPNowPlayingSession(players:)</code>. It is created as a player item loads and stays active through
+in-controller item replacement. Controller stop, a surfaced playback failure, or EOF without
+autoplay tears it down. Metadata is published on each <code>AVPlayerItem</code>, including best-effort
+Plex-authenticated or cached offline artwork when those inputs are available, and the session's
+commands route play, pause, skip, and absolute seeks back through <code>PlaybackController</code>.
+The app-lifetime <code>ArtworkPipeline</code> supplies music/video system Now Playing, ordinary posters,
+offline rows, offline player art, and <code>AVPlayerItem</code> external metadata on platforms where that API
+is available, from the same exact authenticated/local flight and cost-cache boundary. macOS
+publishes Now Playing artwork through <code>VideoNowPlayingCore</code> rather than <code>AVPlayerItem.externalMetadata</code>.
+Completed image values cross the immutable
+CGImage-backed <code>DecodedImage</code> boundary; original encoded bytes are retained only for
+<code>AVMetadataItem</code> artwork, and AppKit/UIKit images are created only at native publication bridges.
+Video and visionOS metadata completion additionally requires the exact descriptor, pipeline,
+playback generation, and current <code>AVPlayerItem</code>; stale success/failure callbacks cannot overwrite a
+replacement item.</p>
+<p>The chapter info tab is the deliberate exception: AVKit hosts it in an independent
+<code>UIHostingController</code> without the app's injected pipeline or a stable requested-pixel contract, so
+<code>RequestBackedChapterImage</code> remains request-backed. BIF and sprite-sheet providers, Emby generated
+per-position frames, Emby online/offline chapter fallback, and the player nearest-frame cache remain
+provider-scoped time-indexed exceptions rather than <code>ArtworkPipeline</code> consumers. Authenticated
+requests use the nonpersistent side-asset transport, and their leaf caches are memory-only and
+bounded by both byte cost and entry count. The Chapters panel additionally holds a panel-session-scoped <code>ChapterThumbnailImageCache</code> — a
+MainActor cost-bounded LRU (48 images / 48 MB) keyed by opaque side-asset request digest — that
+keeps decoded thumbnails warm across lazy card reuse and releases all pixels when the panel closes
+or under memory pressure. Sprite sheets and final scrub previews cross a detached,
+eager ImageIO decode boundary before entering provider or MainActor cache state. A parsed BIF retains
+one backing payload, maps safe offline files, and normal seek lookup copies only the selected frame;
+the source-compatible <code>frames</code> accessor materializes all payloads only when explicitly read.
+Largest-real-BIF and tile-sheet peak-RSS measurement is not a current release gate; the caches
+remain bounded by the policies described above.
+Those paths use <code>DecodedImage</code> at their image boundary, but that conversion is not shared-pipeline
+migration.</p>
+<p>iOS/iPadOS and macOS use a separate process-wide lease model. The mobile platform coordinator wraps
+<code>VideoNowPlayingCore</code> alongside PiP/AirPlay behavior, while the Mac player owns the core directly.
+The core acquires an identity-guarded video lease on the app-lifetime
+<code>SystemMediaSessionCoordinator</code> owned by <code>MusicPlayerController</code>. Video temporarily supersedes
+music's Now Playing and remote commands; releasing video restores the most recent surviving music
+owner, and stale artwork or teardown cannot clear a newer owner. visionOS video does not use this
+lease path. tvOS compiles neither <code>VideoNowPlayingCore</code> nor the visionOS
+<code>VideoNowPlayingCoordinator</code>; it does not publish video Now Playing through either path.</p>
+<h2 id="playback-explanation">Playback explanation<a class="headerlink" href="#playback-explanation" title="Permanent link">&para;</a></h2>
+<p>Stats for Nerds shows a compact <strong>Why</strong> line from <code>PlaybackExplanation</code>: one lane headline and
+at most two useful reasons, with provenance (backend-reported, app-requested, or inferred).
+The normal player must not show raw backend reason arrays, IDs, or URLs. Emby Profile 5 is
+blocked rather than forced through a tone-map, so an Emby no-fallback DV open should refuse; it
+is not a requested tone-map explanation.</p>
+<h2 id="cinema-ownership">Cinema ownership<a class="headerlink" href="#cinema-ownership" title="Permanent link">&para;</a></h2>
+<p>Cinema is an app-owned visionOS immersive presentation, not AVKit expanded playback. It
+hosts the same <code>PlayerLayerView</code> and <code>CustomPlayerChrome</code> in one RealityView attachment. The
+attachment is scaled from its measured <code>visualBounds</code>; hard-coding points-to-meters density
+can make a present and hit-testable surface effectively invisible.</p>
+<p>The visionOS <code>App</code> retains the active controller in <code>CustomCinemaSessionStore</code>. The immersive
+space presents that controller; it does not own it. Dropping the controller when the window
+dismisses is a regression. <code>CinemaTransitionCoordinator</code> is the sole
+presentation-transition owner: its pure reducer generation-fences open, appear, window-detach,
+dismiss, and disappear callbacks. Explicit Exit, Crown/system dismissal, EOF, and Up Next all
+converge on one exact-once finalizer ordered as SharePlay leave, controller stop, return routing,
+main-window open, and retained-session clear. <code>CinemaExitRouting</code> preserves the originating
+tab/item, resolved next item, or offline destination without introducing a server fetch for an
+offline return. The player window detaches only after both the platform open result and the exact
+immersive generation's appearance have succeeded; a failed or missing appearance leaves it in
+place. Window disappearance during the accepted handoff is not an exit and preserves the same
+controller, <code>AVPlayer</code>, and audio path. Stale scaffold generations cannot bind player callbacks,
+maintain SharePlay attachment, tick, or finalize. Do not restore a hidden second player or
+reintroduce an AVKit-only control surface.</p>
+<h2 id="restart-and-cleanup-principles">Restart and cleanup principles<a class="headerlink" href="#restart-and-cleanup-principles" title="Permanent link">&para;</a></h2>
+<pre class="mermaid"><code>sequenceDiagram
+  accTitle: Backend replacement and cleanup ordering
+  accDescr: A Plex in-place restart first bounds and awaits the superseded transcode stop, detaches its now-dead item, starts the replacement session, and attaches the new item. Jellyfin and Emby first detach the old item, negotiate and attach the replacement, then defer the prior session and active-encoding cleanup so old resource loads cannot race the new playlist.
+  participant PC as PlaybackController
+  participant AV as AVPlayer
+  participant Backend
+  participant Server
+
+  alt Plex in-place restart
+    PC-&gt;&gt;Server: stop superseded transcode, bounded and awaited
+    PC-&gt;&gt;AV: detach old item
+    PC-&gt;&gt;Backend: decide and start replacement stream
+    Backend-&gt;&gt;Server: universal-transcode requests
+    PC-&gt;&gt;AV: attach replacement item
+  else Jellyfin or Emby reopen
+    PC-&gt;&gt;AV: pause and detach old item
+    PC-&gt;&gt;Backend: request replacement at target
+    Backend-&gt;&gt;Server: authenticated PlaybackInfo request
+    Backend--&gt;&gt;PC: replacement stream and cleanup callback
+    PC-&gt;&gt;AV: attach replacement item
+    PC-&gt;&gt;Backend: schedule deferred prior-session cleanup
+    Backend-&gt;&gt;Server: progress stop and active-encoding cleanup as applicable
+  end</code></pre>
+<ul>
+<li>Restart player items rather than mutating a stale AVPlayer item in place when the server route changes.</li>
+<li>Preserve each backend lane's replacement order: Plex stops the superseded in-place transcode
+  before replacement, while Jellyfin/Emby detach the old item, attach the replacement, and only
+  then schedule deferred prior active-encoding cleanup.</li>
+<li>Keep Plex transcode stop, MediaBrowser progress-stop, and MediaBrowser active-encoding
+  cleanup as distinct operations.</li>
+<li>Treat cleanup failures as non-fatal where the user-visible playback path can continue.</li>
+<li>Keep diagnostic fields shape-level and redacted: no full URLs, tokens, hosts, titles, or filenames.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Copyright (C) 2026 Jonathan Lipworth — GPL-3.0 with §7 exception
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "content.code.copy", "toc.follow", "search.suggest"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

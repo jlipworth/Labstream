@@ -1,0 +1,2106 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Native Apple-platform client for your own Plex, Jellyfin, or Emby server.">
+      
+      
+      
+        <link rel="canonical" href="https://jlipworth.github.io/Labstream/DEVELOPMENT/">
+      
+      
+        <link rel="prev" href="../CONTRIBUTING/">
+      
+      
+        <link rel="next" href="../TESTING-STRATEGY/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Development setup - Labstream</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#development-setup" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Labstream" class="md-header__button md-logo" aria-label="Labstream" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Labstream
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Development setup
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/jlipworth/Labstream" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    jlipworth/Labstream
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Labstream" class="md-nav__button md-logo" aria-label="Labstream" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Labstream
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/jlipworth/Labstream" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    jlipworth/Labstream
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Support & troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../REPORTING-BUGS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Report a bug
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../privacy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Privacy policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../RELEASES/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release and App Store status
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../app-store-exception/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    License exception
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Developer guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CONTRIBUTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development setup
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#requirements" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Requirements
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#bootstrap-the-first-visionos-simulator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bootstrap the first visionOS simulator
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-for-the-visionos-simulator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build for the visionOS simulator
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-for-an-iphone-or-ipad-simulator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build for an iPhone or iPad simulator
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-for-an-apple-tv-simulator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build for an Apple TV simulator
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#install-and-observe-a-simulator-smoke" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Install and observe a simulator smoke
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#linked-worktree-simulator-cleanup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Linked-worktree simulator cleanup
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-and-run-the-macos-target" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build and run the macOS target
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#core-validation-commands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Core validation commands
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#physical-apple-vision-pro-install" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Physical Apple Vision Pro install
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#physical-iphone-or-ipad-install" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Physical iPhone or iPad install
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#credentials-and-icloud-keychain-sync" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Credentials and iCloud Keychain sync
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#logs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Logs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verified-platform-findings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verified platform findings
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#documentation-workflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Documentation workflow
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../TESTING-STRATEGY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Testing strategy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../APP-STORE-SCREENSHOTS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    App Store screenshots
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../COMPILE-PERFORMANCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compile performance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MOBILE-IOS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    iOS and iPadOS target
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../TVOS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    tvOS target
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MACOS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    macOS target
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MACOS-CI/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Native macOS CI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../SCRIPTS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scripts catalog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ARCHITECTURE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CODE-MAP/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Code map
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../BACKENDS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Backends
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../PLAYBACK-ARCHITECTURE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Playback
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../DOWNLOADS-OFFLINE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Downloads & offline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MUSIC-DESIGN/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Music
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../PERSISTENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Persistence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../SYSTEM-INTEGRATION/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    System integration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../DIAGNOSTICS-PRIVACY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Diagnostics & privacy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#requirements" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Requirements
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#bootstrap-the-first-visionos-simulator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bootstrap the first visionOS simulator
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-for-the-visionos-simulator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build for the visionOS simulator
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-for-an-iphone-or-ipad-simulator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build for an iPhone or iPad simulator
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-for-an-apple-tv-simulator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build for an Apple TV simulator
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#install-and-observe-a-simulator-smoke" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Install and observe a simulator smoke
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#linked-worktree-simulator-cleanup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Linked-worktree simulator cleanup
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-and-run-the-macos-target" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build and run the macOS target
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#core-validation-commands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Core validation commands
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#physical-apple-vision-pro-install" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Physical Apple Vision Pro install
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#physical-iphone-or-ipad-install" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Physical iPhone or iPad install
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#credentials-and-icloud-keychain-sync" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Credentials and iCloud Keychain sync
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#logs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Logs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#verified-platform-findings" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verified platform findings
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#documentation-workflow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Documentation workflow
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="development-setup">Development setup<a class="headerlink" href="#development-setup" title="Permanent link">&para;</a></h1>
+<p>This page is the shortest path from a clean checkout to a running Labstream build.</p>
+<h2 id="requirements">Requirements<a class="headerlink" href="#requirements" title="Permanent link">&para;</a></h2>
+<ul>
+<li>macOS with Xcode and the visionOS SDK installed for the <code>Labstream</code> target.</li>
+<li>The iOS/iPadOS 26.1+ SDK/runtime for the <code>LabstreamMobile</code> target.</li>
+<li>The tvOS 26+ SDK and an installed tvOS simulator runtime for the <code>LabstreamTV</code> target.</li>
+<li>macOS 26 on an Apple-silicon host when testing the <code>LabstreamMac</code> target.</li>
+<li>A visionOS 26 or newer Apple Vision Pro simulator runtime compatible with the active Xcode.</li>
+<li>Swift Package Manager for <code>PMSKit</code> tests (included with Xcode).</li>
+<li>Python 3.11+ and <a href="https://docs.astral.sh/uv/getting-started/installation/"><code>uv</code></a> for the repository's
+  documentation and Python tooling checks.</li>
+</ul>
+<h2 id="bootstrap-the-first-visionos-simulator">Bootstrap the first visionOS simulator<a class="headerlink" href="#bootstrap-the-first-visionos-simulator" title="Permanent link">&para;</a></h2>
+<p>Simulator IDs are machine-local and gitignored. A brand-new main checkout therefore has no <code>.simid</code>,
+and <code>scripts/worktree-sim.sh setup</code> cannot create the main worktree's initial visionOS simulator by
+itself. From the repository root, run this bootstrap once. It selects a usable existing simulator,
+preferring the newest compatible installed visionOS runtime, or creates a dedicated
+<code>Labstream Golden</code> simulator on the newest compatible runtime when none is available. It then
+validates the selected UDID and records it as the main worktree's golden simulator:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">if</span><span class="w"> </span><span class="o">[</span><span class="w"> </span>!<span class="w"> </span>-s<span class="w"> </span>.simid<span class="w"> </span><span class="o">]</span><span class="p">;</span><span class="w"> </span><span class="k">then</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nv">SIMID</span><span class="o">=</span><span class="k">$(</span>xcrun<span class="w"> </span>simctl<span class="w"> </span>list<span class="w"> </span>devices<span class="w"> </span>available<span class="w"> </span>-j<span class="w"> </span><span class="p">|</span><span class="w"> </span>python3<span class="w"> </span>-c<span class="w"> </span><span class="s1">'</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="s1">import json, re, sys</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="s1">data = json.load(sys.stdin).get("devices", {})</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="s1">def version(runtime):</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="s1">    return tuple(int(n) for n in re.findall(r"\d+", runtime))</span>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="s1">for runtime in sorted(data, key=version, reverse=True):</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="s1">    if ".SimRuntime.xrOS-" not in runtime or version(runtime) &lt; (26, 0):</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="s1">        continue</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="s1">    devices = data[runtime]</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="s1">    preferred = [d for d in devices if d.get("name") == "Labstream Golden"]</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="s1">    standard = [d for d in devices if d.get("name", "").startswith("Apple Vision Pro")]</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="s1">    other = [d for d in devices if not d.get("name", "").startswith("vpwt-")]</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="s1">    for device in preferred + standard + other:</span>
+<a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="s1">        if device.get("isAvailable", True):</span>
+<a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="s1">            print(device["udid"])</span>
+<a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="s1">            raise SystemExit(0)</span>
+<a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="s1">'</span><span class="k">)</span>
+<a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>
+<a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="o">[</span><span class="w"> </span>-z<span class="w"> </span><span class="s2">"</span><span class="nv">$SIMID</span><span class="s2">"</span><span class="w"> </span><span class="o">]</span><span class="p">;</span><span class="w"> </span><span class="k">then</span>
+<a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a><span class="w">    </span><span class="nv">RUNTIME</span><span class="o">=</span><span class="k">$(</span>xcrun<span class="w"> </span>simctl<span class="w"> </span>list<span class="w"> </span>runtimes<span class="w"> </span>-j<span class="w"> </span><span class="p">|</span><span class="w"> </span>python3<span class="w"> </span>-c<span class="w"> </span><span class="s1">'</span>
+<a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a><span class="s1">import json, re, sys</span>
+<a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a><span class="s1">def version(runtime):</span>
+<a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a><span class="s1">    return tuple(int(n) for n in re.findall(r"\d+", runtime.get("version", runtime.get("name", ""))))</span>
+<a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a><span class="s1">runtimes = [r for r in json.load(sys.stdin).get("runtimes", [])</span>
+<a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a><span class="s1">            if r.get("isAvailable", True)</span>
+<a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a><span class="s1">            and ".SimRuntime.xrOS-" in r.get("identifier", "")</span>
+<a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a><span class="s1">            and version(r) &gt;= (26, 0)]</span>
+<a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a><span class="s1">runtimes.sort(key=version, reverse=True)</span>
+<a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a><span class="s1">if runtimes:</span>
+<a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a><span class="s1">    print(runtimes[0]["identifier"])</span>
+<a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a><span class="s1">'</span><span class="k">)</span>
+<a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a><span class="w">    </span><span class="o">[</span><span class="w"> </span>-n<span class="w"> </span><span class="s2">"</span><span class="nv">$RUNTIME</span><span class="s2">"</span><span class="w"> </span><span class="o">]</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="o">{</span><span class="w"> </span><span class="nb">printf</span><span class="w"> </span><span class="s1">'%s\n'</span><span class="w"> </span><span class="s2">"No compatible visionOS 26+ simulator runtime is installed."</span><span class="w"> </span>&gt;<span class="p">&amp;</span><span class="m">2</span><span class="p">;</span><span class="w"> </span><span class="nb">exit</span><span class="w"> </span><span class="m">1</span><span class="p">;</span><span class="w"> </span><span class="o">}</span>
+<a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a><span class="w">    </span><span class="nv">DEVICE_TYPES_FILE</span><span class="o">=</span><span class="k">$(</span>mktemp<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">TMPDIR</span><span class="k">:-</span><span class="p">/tmp</span><span class="si">}</span><span class="s2">/labstream-device-types.XXXXXX"</span><span class="k">)</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">exit</span><span class="w"> </span><span class="m">1</span>
+<a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a><span class="w">    </span>xcrun<span class="w"> </span>simctl<span class="w"> </span>list<span class="w"> </span>devicetypes<span class="w"> </span>-j<span class="w"> </span><span class="p">|</span><span class="w"> </span>python3<span class="w"> </span>-c<span class="w"> </span><span class="s1">'</span>
+<a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a><span class="s1">import json, sys</span>
+<a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a><span class="s1">for device in json.load(sys.stdin).get("devicetypes", []):</span>
+<a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a><span class="s1">    if device.get("isAvailable", True) and device.get("name", "").startswith("Apple Vision Pro"):</span>
+<a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a><span class="s1">        print(device["identifier"])</span>
+<a id="__codelineno-0-40" name="__codelineno-0-40" href="#__codelineno-0-40"></a><span class="s1">'</span><span class="w"> </span>&gt;<span class="w"> </span><span class="s2">"</span><span class="nv">$DEVICE_TYPES_FILE</span><span class="s2">"</span>
+<a id="__codelineno-0-41" name="__codelineno-0-41" href="#__codelineno-0-41"></a><span class="w">    </span><span class="o">[</span><span class="w"> </span>-s<span class="w"> </span><span class="s2">"</span><span class="nv">$DEVICE_TYPES_FILE</span><span class="s2">"</span><span class="w"> </span><span class="o">]</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="o">{</span>
+<a id="__codelineno-0-42" name="__codelineno-0-42" href="#__codelineno-0-42"></a><span class="w">      </span>rm<span class="w"> </span>-f<span class="w"> </span><span class="s2">"</span><span class="nv">$DEVICE_TYPES_FILE</span><span class="s2">"</span>
+<a id="__codelineno-0-43" name="__codelineno-0-43" href="#__codelineno-0-43"></a><span class="w">      </span><span class="nb">printf</span><span class="w"> </span><span class="s1">'%s\n'</span><span class="w"> </span><span class="s2">"No Apple Vision Pro simulator device type is installed."</span><span class="w"> </span>&gt;<span class="p">&amp;</span><span class="m">2</span>
+<a id="__codelineno-0-44" name="__codelineno-0-44" href="#__codelineno-0-44"></a><span class="w">      </span><span class="nb">exit</span><span class="w"> </span><span class="m">1</span>
+<a id="__codelineno-0-45" name="__codelineno-0-45" href="#__codelineno-0-45"></a><span class="w">    </span><span class="o">}</span>
+<a id="__codelineno-0-46" name="__codelineno-0-46" href="#__codelineno-0-46"></a><span class="w">    </span><span class="nv">SIMID</span><span class="o">=</span><span class="s2">""</span>
+<a id="__codelineno-0-47" name="__codelineno-0-47" href="#__codelineno-0-47"></a><span class="w">    </span><span class="k">while</span><span class="w"> </span><span class="nv">IFS</span><span class="o">=</span><span class="w"> </span><span class="nb">read</span><span class="w"> </span>-r<span class="w"> </span>DEVICE_TYPE<span class="p">;</span><span class="w"> </span><span class="k">do</span>
+<a id="__codelineno-0-48" name="__codelineno-0-48" href="#__codelineno-0-48"></a><span class="w">      </span><span class="k">if</span><span class="w"> </span><span class="nv">SIMID</span><span class="o">=</span><span class="k">$(</span>xcrun<span class="w"> </span>simctl<span class="w"> </span>create<span class="w"> </span><span class="s2">"Labstream Golden"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$DEVICE_TYPE</span><span class="s2">"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$RUNTIME</span><span class="s2">"</span><span class="w"> </span><span class="m">2</span>&gt;/dev/null<span class="k">)</span><span class="p">;</span><span class="w"> </span><span class="k">then</span>
+<a id="__codelineno-0-49" name="__codelineno-0-49" href="#__codelineno-0-49"></a><span class="w">        </span><span class="k">break</span>
+<a id="__codelineno-0-50" name="__codelineno-0-50" href="#__codelineno-0-50"></a><span class="w">      </span><span class="k">fi</span>
+<a id="__codelineno-0-51" name="__codelineno-0-51" href="#__codelineno-0-51"></a><span class="w">      </span><span class="nv">SIMID</span><span class="o">=</span><span class="s2">""</span>
+<a id="__codelineno-0-52" name="__codelineno-0-52" href="#__codelineno-0-52"></a><span class="w">    </span><span class="k">done</span><span class="w"> </span>&lt;<span class="w"> </span><span class="s2">"</span><span class="nv">$DEVICE_TYPES_FILE</span><span class="s2">"</span>
+<a id="__codelineno-0-53" name="__codelineno-0-53" href="#__codelineno-0-53"></a><span class="w">    </span>rm<span class="w"> </span>-f<span class="w"> </span><span class="s2">"</span><span class="nv">$DEVICE_TYPES_FILE</span><span class="s2">"</span>
+<a id="__codelineno-0-54" name="__codelineno-0-54" href="#__codelineno-0-54"></a><span class="w">    </span><span class="o">[</span><span class="w"> </span>-n<span class="w"> </span><span class="s2">"</span><span class="nv">$SIMID</span><span class="s2">"</span><span class="w"> </span><span class="o">]</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="o">{</span><span class="w"> </span><span class="nb">printf</span><span class="w"> </span><span class="s1">'%s\n'</span><span class="w"> </span><span class="s2">"No Apple Vision Pro device type supports </span><span class="nv">$RUNTIME</span><span class="s2">."</span><span class="w"> </span>&gt;<span class="p">&amp;</span><span class="m">2</span><span class="p">;</span><span class="w"> </span><span class="nb">exit</span><span class="w"> </span><span class="m">1</span><span class="p">;</span><span class="w"> </span><span class="o">}</span>
+<a id="__codelineno-0-55" name="__codelineno-0-55" href="#__codelineno-0-55"></a><span class="w">  </span><span class="k">fi</span>
+<a id="__codelineno-0-56" name="__codelineno-0-56" href="#__codelineno-0-56"></a>
+<a id="__codelineno-0-57" name="__codelineno-0-57" href="#__codelineno-0-57"></a><span class="w">  </span><span class="nb">printf</span><span class="w"> </span><span class="s1">'%s\n'</span><span class="w"> </span><span class="s2">"</span><span class="nv">$SIMID</span><span class="s2">"</span><span class="w"> </span>&gt;<span class="w"> </span>.simid
+<a id="__codelineno-0-58" name="__codelineno-0-58" href="#__codelineno-0-58"></a><span class="k">fi</span>
+<a id="__codelineno-0-59" name="__codelineno-0-59" href="#__codelineno-0-59"></a>
+<a id="__codelineno-0-60" name="__codelineno-0-60" href="#__codelineno-0-60"></a><span class="nv">SIMID</span><span class="o">=</span><span class="k">$(</span>tr<span class="w"> </span>-d<span class="w"> </span><span class="s1">'[:space:]'</span><span class="w"> </span>&lt;<span class="w"> </span>.simid<span class="k">)</span>
+<a id="__codelineno-0-61" name="__codelineno-0-61" href="#__codelineno-0-61"></a>xcrun<span class="w"> </span>simctl<span class="w"> </span>list<span class="w"> </span>devices<span class="w"> </span>-j<span class="w"> </span><span class="p">|</span><span class="w"> </span>python3<span class="w"> </span>-c<span class="w"> </span><span class="s1">'</span>
+<a id="__codelineno-0-62" name="__codelineno-0-62" href="#__codelineno-0-62"></a><span class="s1">import json, re, sys</span>
+<a id="__codelineno-0-63" name="__codelineno-0-63" href="#__codelineno-0-63"></a><span class="s1">udid = sys.argv[1]</span>
+<a id="__codelineno-0-64" name="__codelineno-0-64" href="#__codelineno-0-64"></a><span class="s1">def version(runtime):</span>
+<a id="__codelineno-0-65" name="__codelineno-0-65" href="#__codelineno-0-65"></a><span class="s1">    return tuple(int(n) for n in re.findall(r"\d+", runtime))</span>
+<a id="__codelineno-0-66" name="__codelineno-0-66" href="#__codelineno-0-66"></a><span class="s1">for runtime, devices in json.load(sys.stdin).get("devices", {}).items():</span>
+<a id="__codelineno-0-67" name="__codelineno-0-67" href="#__codelineno-0-67"></a><span class="s1">    if ".SimRuntime.xrOS-" in runtime and version(runtime) &gt;= (26, 0):</span>
+<a id="__codelineno-0-68" name="__codelineno-0-68" href="#__codelineno-0-68"></a><span class="s1">        for device in devices:</span>
+<a id="__codelineno-0-69" name="__codelineno-0-69" href="#__codelineno-0-69"></a><span class="s1">            if device.get("udid") == udid and device.get("isAvailable", True):</span>
+<a id="__codelineno-0-70" name="__codelineno-0-70" href="#__codelineno-0-70"></a><span class="s1">                raise SystemExit(0)</span>
+<a id="__codelineno-0-71" name="__codelineno-0-71" href="#__codelineno-0-71"></a><span class="s1">raise SystemExit(f".simid does not name an available visionOS 26+ simulator: {udid}")</span>
+<a id="__codelineno-0-72" name="__codelineno-0-72" href="#__codelineno-0-72"></a><span class="s1">'</span><span class="w"> </span><span class="s2">"</span><span class="nv">$SIMID</span><span class="s2">"</span>
+<a id="__codelineno-0-73" name="__codelineno-0-73" href="#__codelineno-0-73"></a>
+<a id="__codelineno-0-74" name="__codelineno-0-74" href="#__codelineno-0-74"></a>scripts/worktree-sim.sh<span class="w"> </span>--platform<span class="w"> </span>visionos<span class="w"> </span>setup
+</code></pre></div>
+<p>If the bootstrap reports that no compatible runtime or device type is installed, add a visionOS 26+
+Simulator runtime in Xcode Settings, then rerun it. If validation rejects a stale <code>.simid</code>, remove
+that file and rerun the bootstrap. A newly created simulator has no Labstream credentials; sign in
+through the app after the first launch when your test requires backend data. Do not commit <code>.simid</code>.</p>
+<p>After the main checkout is initialized, <code>scripts/worktree-sim.sh</code> owns the lifecycle. A linked
+worktree gets a shutdown clone of the main simulator when you run:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>scripts/worktree-sim.sh<span class="w"> </span>--platform<span class="w"> </span>visionos<span class="w"> </span>setup
+</code></pre></div>
+<p>Always resolve a concrete UDID with the script rather than targeting <code>booted</code>.
+Booted simulators are not free: obtain the current simulator lease, use only one
+simulator at a time, shut it down before switching platforms, and release the lease
+before another agent boots a simulator. Do not leave the golden visionOS simulator
+booted while a linked-worktree simulator is running.</p>
+<h2 id="build-for-the-visionos-simulator">Build for the visionOS simulator<a class="headerlink" href="#build-for-the-visionos-simulator" title="Permanent link">&para;</a></h2>
+<p>Use a dedicated DerivedData directory and remove it before a verification build. That makes the
+product named by <code>$APP</code> unambiguous and ensures the subsequent install uses this build rather than
+another checkout's product:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>scripts/worktree-sim.sh<span class="w"> </span>--platform<span class="w"> </span>visionos<span class="w"> </span>setup
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="nv">SIMID</span><span class="o">=</span><span class="k">$(</span>scripts/worktree-sim.sh<span class="w"> </span>--platform<span class="w"> </span>visionos<span class="w"> </span>id<span class="k">)</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>xcrun<span class="w"> </span>simctl<span class="w"> </span>boot<span class="w"> </span><span class="s2">"</span><span class="nv">$SIMID</span><span class="s2">"</span><span class="w"> </span><span class="m">2</span>&gt;/dev/null<span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">true</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="nv">DD</span><span class="o">=</span><span class="s2">"</span><span class="nv">$PWD</span><span class="s2">/build/DerivedData-visionos"</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>rm<span class="w"> </span>-rf<span class="w"> </span><span class="s2">"</span><span class="nv">$DD</span><span class="s2">"</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>scripts/xcodebuild-versioned.sh<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">  </span>-project<span class="w"> </span>Labstream.xcodeproj<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">  </span>-scheme<span class="w"> </span>Labstream<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">  </span>-destination<span class="w"> </span><span class="s2">"platform=visionOS Simulator,id=</span><span class="nv">$SIMID</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="w">  </span>-configuration<span class="w"> </span>Debug<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="w">  </span>-derivedDataPath<span class="w"> </span><span class="s2">"</span><span class="nv">$DD</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="w">  </span>build<span class="w"> </span><span class="nv">CODE_SIGNING_ALLOWED</span><span class="o">=</span>NO
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="nv">APP</span><span class="o">=</span><span class="s2">"</span><span class="nv">$DD</span><span class="s2">/Build/Products/Debug-xrsimulator/Labstream.app"</span>
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a><span class="nb">test</span><span class="w"> </span>-x<span class="w"> </span><span class="s2">"</span><span class="nv">$APP</span><span class="s2">/Labstream"</span>
+</code></pre></div>
+<p>Continue with <a href="#install-and-observe-a-simulator-smoke">Install and observe a simulator smoke</a>.</p>
+<h2 id="build-for-an-iphone-or-ipad-simulator">Build for an iPhone or iPad simulator<a class="headerlink" href="#build-for-an-iphone-or-ipad-simulator" title="Permanent link">&para;</a></h2>
+<p>The mobile target is named/schemed <code>LabstreamMobile</code> and builds one universal iPhone/iPad app whose
+displayed product name is still <code>Labstream</code>. Unlike visionOS, the script can create a fresh iPhone
+or iPad simulator without a pre-existing golden simulator. Select the platform explicitly; a
+<code>.simplatform</code> file is optional convenience, not a prerequisite:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nv">PLATFORM</span><span class="o">=</span>iphone<span class="w">                    </span><span class="c1"># change to ipad for the regular-width path</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>scripts/worktree-sim.sh<span class="w"> </span>--platform<span class="w"> </span><span class="s2">"</span><span class="nv">$PLATFORM</span><span class="s2">"</span><span class="w"> </span>setup
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="nv">SIMID</span><span class="o">=</span><span class="k">$(</span>scripts/worktree-sim.sh<span class="w"> </span>--platform<span class="w"> </span><span class="s2">"</span><span class="nv">$PLATFORM</span><span class="s2">"</span><span class="w"> </span>id<span class="k">)</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>xcrun<span class="w"> </span>simctl<span class="w"> </span>boot<span class="w"> </span><span class="s2">"</span><span class="nv">$SIMID</span><span class="s2">"</span><span class="w"> </span><span class="m">2</span>&gt;/dev/null<span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">true</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="nv">DD</span><span class="o">=</span><span class="s2">"</span><span class="nv">$PWD</span><span class="s2">/build/DerivedData-ios-</span><span class="nv">$PLATFORM</span><span class="s2">"</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>rm<span class="w"> </span>-rf<span class="w"> </span><span class="s2">"</span><span class="nv">$DD</span><span class="s2">"</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>scripts/xcodebuild-versioned.sh<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="w">  </span>-project<span class="w"> </span>Labstream.xcodeproj<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="w">  </span>-scheme<span class="w"> </span>LabstreamMobile<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="w">  </span>-destination<span class="w"> </span><span class="s2">"platform=iOS Simulator,id=</span><span class="nv">$SIMID</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="w">  </span>-configuration<span class="w"> </span>Debug<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="w">  </span>-derivedDataPath<span class="w"> </span><span class="s2">"</span><span class="nv">$DD</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a><span class="w">  </span>build<span class="w"> </span><span class="nv">CODE_SIGNING_ALLOWED</span><span class="o">=</span>NO
+<a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a>
+<a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="nv">APP</span><span class="o">=</span><span class="s2">"</span><span class="nv">$DD</span><span class="s2">/Build/Products/Debug-iphonesimulator/Labstream.app"</span>
+<a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a><span class="nb">test</span><span class="w"> </span>-x<span class="w"> </span><span class="s2">"</span><span class="nv">$APP</span><span class="s2">/Labstream"</span>
+</code></pre></div>
+<p>If Xcode says the iOS platform/runtime is missing or warns that the deployment target is newer than
+the installed SDK, install the matching iOS Simulator runtime/platform in Xcode Settings. A newer
+simulator runtime may not be usable with an older installed iOS SDK.</p>
+<p>All four production targets use <code>org.labstream.Labstream</code> on their respective platforms; ordinary
+Mac host development is the documented exception and uses an isolated worktree identity. A
+development install can replace another Labstream build
+with the same bundle identifier on the same compatible device, but separate simulator devices and
+operating-system platforms do not share or replace one another's app container or login state.</p>
+<p>Debug mobile builds also accept the credential-free browse fixture described in the tvOS section
+below. For a bounded agent smoke that builds, installs, launches, records screenshots/video/logs,
+and shuts down the leased simulator, use:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>scripts/agent-sim-run.sh<span class="w"> </span>launch-fixture-home-passive<span class="w">   </span><span class="c1"># visionOS named runner</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>scripts/agent-mobile-run.sh<span class="w"> </span>iphone<span class="w"> </span>fixture-home-passive<span class="w"> </span>--allow-simulator
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="c1"># Use `ipad` to exercise the regular-width layout.</span>
+</code></pre></div>
+<p>The mobile runner requires <code>--allow-simulator</code> as an assertion that its caller owns the
+repository's single-simulator lease. The visionOS runner has no such flag, so its caller must still
+hold the lease before invocation. VisionOS evidence defaults to <code>artifacts/agent-sim-runs/</code>; mobile
+and tvOS runner evidence defaults to <code>artifacts/agent-platform-runs/</code>. The fixture exposes stable accessibility targets including
+<code>labstream.fixture.browse.root</code> and <code>labstream.home.fixture-resume.&lt;backend&gt;-orbit</code>, so Xcode 27
+Device Interaction can inspect and drive it semantically rather than by free-form coordinates.</p>
+<h2 id="build-for-an-apple-tv-simulator">Build for an Apple TV simulator<a class="headerlink" href="#build-for-an-apple-tv-simulator" title="Permanent link">&para;</a></h2>
+<p>The tvOS release-candidate target is named/schemed <code>LabstreamTV</code>. It supports only the current Apple TV
+4K third-generation simulator types; the helper intentionally does not fall back to older Apple TV
+hardware. Unlike visionOS, tvOS creates a fresh shutdown simulator rather than cloning the Vision
+Pro golden simulator:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>scripts/worktree-sim.sh<span class="w"> </span>--platform<span class="w"> </span>tvos<span class="w"> </span>setup
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="nv">SIMID</span><span class="o">=</span><span class="k">$(</span>scripts/worktree-sim.sh<span class="w"> </span>--platform<span class="w"> </span>tvos<span class="w"> </span>id<span class="k">)</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>xcrun<span class="w"> </span>simctl<span class="w"> </span>boot<span class="w"> </span><span class="s2">"</span><span class="nv">$SIMID</span><span class="s2">"</span><span class="w"> </span><span class="m">2</span>&gt;/dev/null<span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">true</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="nv">DD</span><span class="o">=</span><span class="s2">"</span><span class="nv">$PWD</span><span class="s2">/build/DerivedData-tvos"</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>rm<span class="w"> </span>-rf<span class="w"> </span><span class="s2">"</span><span class="nv">$DD</span><span class="s2">"</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>scripts/xcodebuild-versioned.sh<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="w">  </span>-project<span class="w"> </span>Labstream.xcodeproj<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="w">  </span>-scheme<span class="w"> </span>LabstreamTV<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="w">  </span>-destination<span class="w"> </span><span class="s2">"platform=tvOS Simulator,id=</span><span class="nv">$SIMID</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="w">  </span>-configuration<span class="w"> </span>Debug<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="w">  </span>-derivedDataPath<span class="w"> </span><span class="s2">"</span><span class="nv">$DD</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="w">  </span>build<span class="w"> </span><span class="nv">CODE_SIGNING_ALLOWED</span><span class="o">=</span>NO
+<a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>
+<a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a><span class="nv">APP</span><span class="o">=</span><span class="s2">"</span><span class="nv">$DD</span><span class="s2">/Build/Products/Debug-appletvsimulator/Labstream.app"</span>
+<a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a><span class="nb">test</span><span class="w"> </span>-x<span class="w"> </span><span class="s2">"</span><span class="nv">$APP</span><span class="s2">/Labstream"</span>
+</code></pre></div>
+<p>If <code>worktree-sim.sh</code> reports <code>no available tvOS simulator runtime found</code>, install the matching tvOS
+runtime in Xcode Settings. The SDK alone can still prove the compile foundation with a generic
+destination, but it cannot satisfy the launch/smoke gate:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>scripts/xcodebuild-versioned.sh<span class="w"> </span>-project<span class="w"> </span>Labstream.xcodeproj<span class="w"> </span>-scheme<span class="w"> </span>LabstreamTV<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span>-destination<span class="w"> </span><span class="s1">'generic/platform=tvOS Simulator'</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>-derivedDataPath<span class="w"> </span><span class="s2">"</span><span class="nv">$PWD</span><span class="s2">/build/DerivedData-tvos-generic"</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span>build<span class="w"> </span><span class="nv">CODE_SIGNING_ALLOWED</span><span class="o">=</span>NO
+</code></pre></div>
+<p>Continue with <a href="#install-and-observe-a-simulator-smoke">Install and observe a simulator smoke</a> only
+when a concrete tvOS simulator runtime and <code>$SIMID</code> are available. The tvOS product deliberately has
+no downloads, Offline destination, or download-storage settings.</p>
+<p>Debug builds on every platform expose production-isolated launch arguments for deterministic UI
+work. They never read or persist production credentials: <code>--ui-testing</code> starts signed out,
+<code>--ui-testing-backend plex|jellyfin|emby</code> selects the authentication surface, and
+<code>--ui-testing-fixture browse</code> supplies synthetic data to the real Home/Libraries/Detail views:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>xcrun<span class="w"> </span>simctl<span class="w"> </span>launch<span class="w"> </span><span class="s2">"</span><span class="nv">$SIMID</span><span class="s2">"</span><span class="w"> </span>org.labstream.Labstream<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span>--ui-testing<span class="w"> </span>--ui-testing-backend<span class="w"> </span>plex<span class="w"> </span>--ui-testing-fixture<span class="w"> </span>browse
+</code></pre></div>
+<h2 id="install-and-observe-a-simulator-smoke">Install and observe a simulator smoke<a class="headerlink" href="#install-and-observe-a-simulator-smoke" title="Permanent link">&para;</a></h2>
+<p>After either simulator build above, <code>$SIMID</code> and <code>$APP</code> identify the exact simulator and product.
+Install that product, compare the installed executable with it, launch, inspect bounded logs, and
+capture a screenshot:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>xcrun<span class="w"> </span>simctl<span class="w"> </span>install<span class="w"> </span><span class="s2">"</span><span class="nv">$SIMID</span><span class="s2">"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$APP</span><span class="s2">"</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="nv">INSTALLED_APP</span><span class="o">=</span><span class="k">$(</span>xcrun<span class="w"> </span>simctl<span class="w"> </span>get_app_container<span class="w"> </span><span class="s2">"</span><span class="nv">$SIMID</span><span class="s2">"</span><span class="w"> </span>org.labstream.Labstream<span class="w"> </span>app<span class="k">)</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="nv">BUILT_UUID</span><span class="o">=</span><span class="k">$(</span>xcrun<span class="w"> </span>dwarfdump<span class="w"> </span>--uuid<span class="w"> </span><span class="s2">"</span><span class="nv">$APP</span><span class="s2">/Labstream"</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>cut<span class="w"> </span>-d<span class="s1">' '</span><span class="w"> </span>-f2<span class="k">)</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="nv">INSTALLED_UUID</span><span class="o">=</span><span class="k">$(</span>xcrun<span class="w"> </span>dwarfdump<span class="w"> </span>--uuid<span class="w"> </span><span class="s2">"</span><span class="nv">$INSTALLED_APP</span><span class="s2">/Labstream"</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>cut<span class="w"> </span>-d<span class="s1">' '</span><span class="w"> </span>-f2<span class="k">)</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="o">[</span><span class="w"> </span><span class="s2">"</span><span class="nv">$BUILT_UUID</span><span class="s2">"</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"</span><span class="nv">$INSTALLED_UUID</span><span class="s2">"</span><span class="w"> </span><span class="o">]</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="o">{</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">  </span><span class="nb">printf</span><span class="w"> </span><span class="s1">'%s\n'</span><span class="w"> </span><span class="s2">"Installed executable does not match </span><span class="nv">$APP</span><span class="s2">"</span><span class="w"> </span>&gt;<span class="p">&amp;</span><span class="m">2</span>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="w">  </span><span class="nb">exit</span><span class="w"> </span><span class="m">1</span>
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="o">}</span>
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="nb">printf</span><span class="w"> </span><span class="s1">'%s\n'</span><span class="w"> </span><span class="s2">"UUID_MATCH </span><span class="nv">$BUILT_UUID</span><span class="s2">"</span>
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>
+<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>xcrun<span class="w"> </span>simctl<span class="w"> </span>terminate<span class="w"> </span><span class="s2">"</span><span class="nv">$SIMID</span><span class="s2">"</span><span class="w"> </span>org.labstream.Labstream<span class="w"> </span><span class="m">2</span>&gt;/dev/null<span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">true</span>
+<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>xcrun<span class="w"> </span>simctl<span class="w"> </span>launch<span class="w"> </span><span class="s2">"</span><span class="nv">$SIMID</span><span class="s2">"</span><span class="w"> </span>org.labstream.Labstream
+<a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a>sleep<span class="w"> </span><span class="m">3</span>
+<a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a>xcrun<span class="w"> </span>simctl<span class="w"> </span>spawn<span class="w"> </span><span class="s2">"</span><span class="nv">$SIMID</span><span class="s2">"</span><span class="w"> </span>log<span class="w"> </span>show<span class="w"> </span>--last<span class="w"> </span>2m<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a><span class="w">  </span>--predicate<span class="w"> </span><span class="s1">'process == "Labstream"'</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>tail<span class="w"> </span>-120
+<a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a>mkdir<span class="w"> </span>-p<span class="w"> </span>build
+<a id="__codelineno-8-17" name="__codelineno-8-17" href="#__codelineno-8-17"></a>xcrun<span class="w"> </span>simctl<span class="w"> </span>io<span class="w"> </span><span class="s2">"</span><span class="nv">$SIMID</span><span class="s2">"</span><span class="w"> </span>screenshot<span class="w"> </span>build/labstream-smoke.png
+</code></pre></div>
+<p>A passing smoke is observable, not just a successful build: <code>simctl launch</code> prints a process ID;
+the bounded log has no crash, <code>fatalError</code>, or assertion for the changed area; and
+<code>build/labstream-smoke.png</code> shows the expected app surface. A fresh simulator normally shows sign-in,
+while a previously configured simulator should reach its browse UI. Inspect the PNG locally and do
+not publish screenshots that expose server or media details.</p>
+<p>Shut the simulator down as soon as the check finishes:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>xcrun<span class="w"> </span>simctl<span class="w"> </span>shutdown<span class="w"> </span><span class="s2">"</span><span class="nv">$SIMID</span><span class="s2">"</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="c1"># Credential-free semantic mobile evidence (run one platform at a time under the lease).</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>scripts/agent-mobile-run.sh<span class="w"> </span>iphone<span class="w"> </span>fixture-detail-semantic<span class="w"> </span>--allow-simulator
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>scripts/agent-mobile-run.sh<span class="w"> </span>ipad<span class="w"> </span>fixture-detail-semantic<span class="w"> </span>--allow-simulator
+</code></pre></div>
+<p>Shutting down preserves the simulator and its app state. Do not use <code>teardown</code> for the main
+worktree's golden visionOS simulator.</p>
+<h2 id="linked-worktree-simulator-cleanup">Linked-worktree simulator cleanup<a class="headerlink" href="#linked-worktree-simulator-cleanup" title="Permanent link">&para;</a></h2>
+<p>Linked worktrees own their <code>vpwt-*</code>, <code>iphonewt-*</code>, <code>ipadwt-*</code>, and <code>tvwt-*</code> simulators. Before removing a
+linked worktree, delete all of its simulators and then remove the worktree:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>scripts/worktree-sim.sh<span class="w"> </span>closeout<span class="w"> </span>/path/to/linked-worktree
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>git<span class="w"> </span>worktree<span class="w"> </span>remove<span class="w"> </span>/path/to/linked-worktree
+</code></pre></div>
+<p><code>closeout</code> can be run from any remaining checkout of the repository. It tears down simulator state
+for an existing linked worktree and prunes orphaned Labstream worktree simulators. If a worktree was
+already removed, run <code>scripts/worktree-sim.sh prune</code> as the cleanup backstop. Neither command deletes
+the main worktree's golden simulator.</p>
+<h2 id="build-and-run-the-macos-target">Build and run the macOS target<a class="headerlink" href="#build-and-run-the-macos-target" title="Permanent link">&para;</a></h2>
+<p>The <code>LabstreamMac</code> target runs directly on the Apple-silicon host; there is no Mac simulator lane.
+Use the host helper so builds are staged under a per-worktree development identity:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>scripts/deploy-macos-to-host.sh<span class="w"> </span>--launch
+</code></pre></div>
+<p>For a credential-free semantic agent check, the bounded runner stages an isolated bundle, mounts
+the real browse/detail UI with synthetic data, presses the stable home-item Accessibility target,
+asserts the detail tagline, captures only the Labstream window, and stops its exact process:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a>scripts/agent-macos-run.sh<span class="w"> </span>fixture-detail
+</code></pre></div>
+<p>Evidence is written beneath ignored <code>artifacts/agent-platform-runs/</code>. Exit code <code>2</code> means a host
+precondition such as Accessibility or Screen Recording permission is unavailable; the runner does
+not fall back to coordinates or full-desktop capture.</p>
+<p>Credential-free App Store capture composes these platform runners into a serial, exact-worktree-ID
+workflow and validates Apple's accepted dimensions, alpha prohibition, and checksums. See
+<a href="../APP-STORE-SCREENSHOTS/">App Store screenshot automation</a>. On Xcode 27 the visionOS lane is
+passive Home capture only; richer visionOS marketing states remain a human/headset gate.</p>
+<p>The Mac target is a pre-release App Store candidate, not a released compatibility promise. Routine
+host builds still use per-worktree identities to isolate containers and credentials. See the
+<a href="../MACOS/">macOS target guide</a> for identity isolation, cleanup, validation, and release gates.</p>
+<h2 id="core-validation-commands">Core validation commands<a class="headerlink" href="#core-validation-commands" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="c1"># Hermetic Swift package correctness; live probes remain separate and opt-in</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>swift<span class="w"> </span><span class="nb">test</span><span class="w"> </span>--package-path<span class="w"> </span>PMSKit<span class="w"> </span>--no-parallel<span class="w"> </span>--skip<span class="w"> </span><span class="s1">'Live.*ProbeTests'</span>
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="c1"># Repository hygiene, redaction, and tooling tests</span>
+<a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a>scripts/ci-hygiene.sh
+<a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a>
+<a id="__codelineno-13-7" name="__codelineno-13-7" href="#__codelineno-13-7"></a><span class="c1"># Documentation build</span>
+<a id="__codelineno-13-8" name="__codelineno-13-8" href="#__codelineno-13-8"></a>uv<span class="w"> </span>run<span class="w"> </span>--with-requirements<span class="w"> </span>requirements.txt<span class="w"> </span>mkdocs<span class="w"> </span>build<span class="w"> </span>--strict
+</code></pre></div>
+<p><code>PMSKit/Tests/PMSKitTests</code> is the portable package suite. App-owned deterministic tests live in
+<code>LabstreamTests/</code> and are hosted by platform-specific Xcode test targets over the same test sources:</p>
+<ul>
+<li><code>LabstreamTests</code>, selected by the <code>LabstreamMobile</code> scheme and <code>LabstreamTests.xctestplan</code>, runs
+  on an iPhone/iPad simulator;</li>
+<li><code>LabstreamMobileUITests</code>, selected by the same scheme/test plan, owns the credential-free
+  semantic Home-to-detail regression used by the mobile agent loop;</li>
+<li><code>LabstreamMacTests</code>, selected by the <code>LabstreamMac</code> scheme and
+  <code>LabstreamMacTests.xctestplan</code>, runs on the macOS host;</li>
+<li><code>LabstreamTVTests</code>, selected by <code>LabstreamTVTests.xctestplan</code>, runs the applicable shared app
+  tests for tvOS while excluding the approved download-only exception;
+  <code>LabstreamTVUITests.xctestplan</code> isolates deterministic authentication and the initial
+  remote-only Home-to-detail browse journey so unrelated hosted sources cannot block UI execution.</li>
+</ul>
+<p>Run the app suite for the platform affected by a change (all three hosts — iOS, macOS,
+and tvOS — for shared app infrastructure):</p>
+<p>For a deterministic smoke, affected-platform, or full plan, use the checked
+<a href="../TESTING-STRATEGY/#native-apple-matrix-driver"><code>native-test-matrix.py</code></a> driver. The commands below
+remain the direct forms for an individually leased platform lane.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="c1"># Mobile-hosted app tests.</span>
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>scripts/worktree-sim.sh<span class="w"> </span>--platform<span class="w"> </span>iphone<span class="w"> </span>setup
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a><span class="nv">SIMID</span><span class="o">=</span><span class="k">$(</span>scripts/worktree-sim.sh<span class="w"> </span>--platform<span class="w"> </span>iphone<span class="w"> </span>id<span class="k">)</span>
+<a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a>xcrun<span class="w"> </span>simctl<span class="w"> </span>boot<span class="w"> </span><span class="s2">"</span><span class="nv">$SIMID</span><span class="s2">"</span><span class="w"> </span><span class="m">2</span>&gt;/dev/null<span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">true</span>
+<a id="__codelineno-14-5" name="__codelineno-14-5" href="#__codelineno-14-5"></a>scripts/xcodebuild-versioned.sh<span class="w"> </span>-project<span class="w"> </span>Labstream.xcodeproj<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-14-6" name="__codelineno-14-6" href="#__codelineno-14-6"></a><span class="w">  </span>-scheme<span class="w"> </span>LabstreamMobile<span class="w"> </span>-testPlan<span class="w"> </span>LabstreamTests<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-14-7" name="__codelineno-14-7" href="#__codelineno-14-7"></a><span class="w">  </span>-destination<span class="w"> </span><span class="s2">"platform=iOS Simulator,id=</span><span class="nv">$SIMID</span><span class="s2">"</span><span class="w"> </span><span class="nb">test</span><span class="w"> </span><span class="nv">CODE_SIGNING_ALLOWED</span><span class="o">=</span>NO
+<a id="__codelineno-14-8" name="__codelineno-14-8" href="#__codelineno-14-8"></a>xcrun<span class="w"> </span>simctl<span class="w"> </span>shutdown<span class="w"> </span><span class="s2">"</span><span class="nv">$SIMID</span><span class="s2">"</span>
+<a id="__codelineno-14-9" name="__codelineno-14-9" href="#__codelineno-14-9"></a>
+<a id="__codelineno-14-10" name="__codelineno-14-10" href="#__codelineno-14-10"></a><span class="c1"># Mac-hosted app tests.</span>
+<a id="__codelineno-14-11" name="__codelineno-14-11" href="#__codelineno-14-11"></a>scripts/xcodebuild-versioned.sh<span class="w"> </span>-project<span class="w"> </span>Labstream.xcodeproj<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-14-12" name="__codelineno-14-12" href="#__codelineno-14-12"></a><span class="w">  </span>-scheme<span class="w"> </span>LabstreamMac<span class="w"> </span>-testPlan<span class="w"> </span>LabstreamMacTests<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-14-13" name="__codelineno-14-13" href="#__codelineno-14-13"></a><span class="w">  </span>-destination<span class="w"> </span><span class="s1">'platform=macOS,arch=arm64'</span><span class="w"> </span><span class="nb">test</span><span class="w"> </span><span class="nv">CODE_SIGNING_ALLOWED</span><span class="o">=</span>NO
+<a id="__codelineno-14-14" name="__codelineno-14-14" href="#__codelineno-14-14"></a>
+<a id="__codelineno-14-15" name="__codelineno-14-15" href="#__codelineno-14-15"></a><span class="c1"># tvOS test build (works with the SDK even before a runtime is installed).</span>
+<a id="__codelineno-14-16" name="__codelineno-14-16" href="#__codelineno-14-16"></a>scripts/xcodebuild-versioned.sh<span class="w"> </span>-project<span class="w"> </span>Labstream.xcodeproj<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-14-17" name="__codelineno-14-17" href="#__codelineno-14-17"></a><span class="w">  </span>-scheme<span class="w"> </span>LabstreamTV<span class="w"> </span>-testPlan<span class="w"> </span>LabstreamTVTests<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-14-18" name="__codelineno-14-18" href="#__codelineno-14-18"></a><span class="w">  </span>-destination<span class="w"> </span><span class="s1">'generic/platform=tvOS Simulator'</span><span class="w"> </span>build-for-testing<span class="w"> </span><span class="nv">CODE_SIGNING_ALLOWED</span><span class="o">=</span>NO
+<a id="__codelineno-14-19" name="__codelineno-14-19" href="#__codelineno-14-19"></a>
+<a id="__codelineno-14-20" name="__codelineno-14-20" href="#__codelineno-14-20"></a><span class="c1"># tvOS unit and UI suites (requires the worktree's concrete tvOS simulator).</span>
+<a id="__codelineno-14-21" name="__codelineno-14-21" href="#__codelineno-14-21"></a>scripts/worktree-sim.sh<span class="w"> </span>--platform<span class="w"> </span>tvos<span class="w"> </span>setup
+<a id="__codelineno-14-22" name="__codelineno-14-22" href="#__codelineno-14-22"></a><span class="nv">SIMID</span><span class="o">=</span><span class="k">$(</span>scripts/worktree-sim.sh<span class="w"> </span>--platform<span class="w"> </span>tvos<span class="w"> </span>id<span class="k">)</span>
+<a id="__codelineno-14-23" name="__codelineno-14-23" href="#__codelineno-14-23"></a>xcrun<span class="w"> </span>simctl<span class="w"> </span>boot<span class="w"> </span><span class="s2">"</span><span class="nv">$SIMID</span><span class="s2">"</span><span class="w"> </span><span class="m">2</span>&gt;/dev/null<span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nb">true</span>
+<a id="__codelineno-14-24" name="__codelineno-14-24" href="#__codelineno-14-24"></a>scripts/xcodebuild-versioned.sh<span class="w"> </span>-project<span class="w"> </span>Labstream.xcodeproj<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-14-25" name="__codelineno-14-25" href="#__codelineno-14-25"></a><span class="w">  </span>-scheme<span class="w"> </span>LabstreamTV<span class="w"> </span>-testPlan<span class="w"> </span>LabstreamTVTests<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-14-26" name="__codelineno-14-26" href="#__codelineno-14-26"></a><span class="w">  </span>-destination<span class="w"> </span><span class="s2">"platform=tvOS Simulator,id=</span><span class="nv">$SIMID</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-14-27" name="__codelineno-14-27" href="#__codelineno-14-27"></a><span class="w">  </span>-only-testing:LabstreamTVTests<span class="w"> </span><span class="nb">test</span><span class="w"> </span><span class="nv">CODE_SIGNING_ALLOWED</span><span class="o">=</span>NO<span class="w"> </span>-enableCodeCoverage<span class="w"> </span>NO
+<a id="__codelineno-14-28" name="__codelineno-14-28" href="#__codelineno-14-28"></a>scripts/xcodebuild-versioned.sh<span class="w"> </span>-project<span class="w"> </span>Labstream.xcodeproj<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-14-29" name="__codelineno-14-29" href="#__codelineno-14-29"></a><span class="w">  </span>-scheme<span class="w"> </span>LabstreamTV<span class="w"> </span>-testPlan<span class="w"> </span>LabstreamTVUITests<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-14-30" name="__codelineno-14-30" href="#__codelineno-14-30"></a><span class="w">  </span>-destination<span class="w"> </span><span class="s2">"platform=tvOS Simulator,id=</span><span class="nv">$SIMID</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-14-31" name="__codelineno-14-31" href="#__codelineno-14-31"></a><span class="w">  </span>-only-testing:LabstreamTVUITests<span class="w"> </span><span class="nb">test</span><span class="w"> </span><span class="nv">CODE_SIGNING_ALLOWED</span><span class="o">=</span>NO<span class="w"> </span>-enableCodeCoverage<span class="w"> </span>NO
+<a id="__codelineno-14-32" name="__codelineno-14-32" href="#__codelineno-14-32"></a>
+<a id="__codelineno-14-33" name="__codelineno-14-33" href="#__codelineno-14-33"></a><span class="c1"># Credential-free TV evidence wrappers.</span>
+<a id="__codelineno-14-34" name="__codelineno-14-34" href="#__codelineno-14-34"></a>scripts/agent-tvos-run.sh<span class="w"> </span>fixture-home-semantic<span class="w"> </span>--allow-simulator
+<a id="__codelineno-14-35" name="__codelineno-14-35" href="#__codelineno-14-35"></a>scripts/agent-tvos-run.sh<span class="w"> </span>fixture-player-basic<span class="w"> </span>--allow-simulator
+<a id="__codelineno-14-36" name="__codelineno-14-36" href="#__codelineno-14-36"></a>xcrun<span class="w"> </span>simctl<span class="w"> </span>shutdown<span class="w"> </span><span class="s2">"</span><span class="nv">$SIMID</span><span class="s2">"</span>
+</code></pre></div>
+<p>The shared app suites are host-app unit tests, not live-server acceptance tests. Keep policy and
+wire-format logic in PMSKit tests; use the app suites for app-owned persistence/filesystem,
+credential adapters, lifecycle coordination, playback ownership, and other platform integration
+seams. Running the tvOS tests and UI launch harness requires a concrete tvOS simulator runtime.</p>
+<h2 id="physical-apple-vision-pro-install">Physical Apple Vision Pro install<a class="headerlink" href="#physical-apple-vision-pro-install" title="Permanent link">&para;</a></h2>
+<p>Simulator builds are unsigned and cannot install on hardware. Complete Apple's one-time device and
+signing setup before using the repository wrapper:</p>
+<ol>
+<li>Update the headset and Xcode to mutually compatible visionOS versions.</li>
+<li>On Apple Vision Pro, enable Developer Mode in <strong>Settings &gt; Privacy &amp; Security &gt; Developer Mode</strong>
+   and restart the headset if prompted.</li>
+<li>Keep the Mac and headset on the same Wi-Fi, then open <strong>Xcode &gt; Window &gt; Devices and
+   Simulators</strong>. Select the discovered Apple Vision Pro, choose <strong>Pair</strong>, and enter or confirm the
+   pairing code on the headset. Accept any trust prompt. The headset must be awake and worn for
+   discovery, install, and launch.</li>
+<li>In <strong>Xcode &gt; Settings &gt; Accounts</strong>, sign in with the Apple ID that belongs to the development
+   team. Allow Xcode to create an Apple Development certificate if the account has none.</li>
+<li>Confirm that CoreDevice can see an available headset:</li>
+</ol>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>xcrun<span class="w"> </span>devicectl<span class="w"> </span>list<span class="w"> </span>devices
+</code></pre></div>
+<p>Use the wrapper rather than re-deriving device destinations, signing-team IDs, provisioning, build
+locations, or install commands:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>scripts/deploy-to-device.sh<span class="w">            </span><span class="c1"># signed Debug-xros build + install</span>
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>scripts/deploy-to-device.sh<span class="w"> </span>--launch<span class="w">   </span><span class="c1"># also launch while the headset is awake/worn</span>
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>scripts/deploy-to-device.sh<span class="w"> </span>--no-build<span class="w"> </span><span class="c1"># reinstall the last Debug-xros build</span>
+<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a>scripts/deploy-to-device.sh<span class="w"> </span>--verbose<span class="w">  </span><span class="c1"># show full device/team IDs for troubleshooting</span>
+</code></pre></div>
+<p>If several visionOS devices are paired, select one with
+<code>VP_DEVICE_ID=&lt;device-uuid&gt; scripts/deploy-to-device.sh --launch</code>. The script normally derives the
+development team from the Apple Development certificate; <code>VP_DEVELOPMENT_TEAM=&lt;team-id&gt;</code> is the
+explicit override.</p>
+<p>A certificate visible to <code>security find-identity -p codesigning -v</code> is not sufficient by itself for
+command-line automatic provisioning. If the build reports <code>No Account for Team</code> or that no profile
+for <code>org.labstream.Labstream</code> was found, sign the matching Apple ID into Xcode Settings and rerun the
+script. For the first install, opening the project in Xcode, choosing the paired headset, and running
+the <code>Labstream</code> scheme once is also a valid way to let Xcode finish interactive registration and
+provisioning.</p>
+<p>An <code>unavailable</code> headset usually needs to be woken, worn, and returned to the same Wi-Fi as the Mac.
+Developer Mode and trust prompts must be completed on the headset; the deploy script cannot perform
+those steps.</p>
+<p>The development build uses the same bundle identifier as the intended App Store identity, so a local
+install can replace another installed build and its app state. Development provisioning profiles can
+also expire; review the profile lifetime printed by the wrapper before relying on an offline install.</p>
+<p>For an install that must outlive a development provisioning profile (for example, offline use away
+from the development Mac), use the distribution-signed Ad Hoc wrapper instead. It requires an Apple
+Distribution certificate and a non-expired Ad Hoc provisioning profile that includes the headset's UDID:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>scripts/deploy-ad-hoc-to-device.sh<span class="w">                 </span><span class="c1"># distribution-signed build + install</span>
+<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>scripts/deploy-ad-hoc-to-device.sh<span class="w"> </span>--launch<span class="w">        </span><span class="c1"># also launch</span>
+<a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>scripts/deploy-ad-hoc-to-device.sh<span class="w"> </span>--list-profiles<span class="w"> </span><span class="c1"># inspect installed Ad Hoc profiles</span>
+<a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>scripts/deploy-ad-hoc-to-device.sh<span class="w"> </span>--profile<span class="w"> </span><span class="s2">"&lt;name-or-uuid&gt;"</span>
+</code></pre></div>
+<p>Select a device or team explicitly with VP_DEVICE_ID, VP_DISTRIBUTION_TEAM, or
+VP_AD_HOC_PROFILE_SPECIFIER when the defaults are ambiguous.</p>
+<h2 id="physical-iphone-or-ipad-install">Physical iPhone or iPad install<a class="headerlink" href="#physical-iphone-or-ipad-install" title="Permanent link">&para;</a></h2>
+<p>Use the mobile wrapper for a signed <code>iphoneos</code> build:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a>scripts/deploy-mobile-to-device.sh
+<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>scripts/deploy-mobile-to-device.sh<span class="w"> </span>--launch
+<a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a>scripts/deploy-mobile-to-device.sh<span class="w"> </span>--no-build
+</code></pre></div>
+<p>If more than one phone or tablet is paired, set <code>IOS_DEVICE_ID=&lt;device-uuid&gt;</code> explicitly. First
+use still requires pairing/trust, Developer Mode, and the matching Apple ID in Xcode Settings.</p>
+<h2 id="credentials-and-icloud-keychain-sync">Credentials and iCloud Keychain sync<a class="headerlink" href="#credentials-and-icloud-keychain-sync" title="Permanent link">&para;</a></h2>
+<p>The app persists its long-lived secrets in the Keychain (<code>Labstream/Shared/Auth/KeychainStore.swift</code>).
+Exactly one item is stored as an iCloud-synchronizable Keychain item: the <strong>Plex account token</strong>.
+Because the canonical visionOS, iPhone/iPad, tvOS, and Mac variants share the
+<code>org.labstream.Labstream</code> bundle id and Keychain service string, a Plex sign-in can synchronize to
+another device through iCloud Keychain when the platform and the user's Keychain settings permit.
+The normal per-worktree Mac development build deliberately uses isolated,
+backup-excluded credential storage instead; see the <a href="../MACOS/">macOS target guide</a>.</p>
+<p>Everything else is deliberately device-local:</p>
+<ul>
+<li><strong>Plex <code>clientIdentifier</code></strong> — generated once per install and never synced. Combined with a distinct
+  <code>X-Plex-Device-Name</code> (see <code>Labstream/Shared/App/PlatformClientIdentity.swift</code>), every device presents a
+  unique <code>X-Plex-Client-Identifier</code>, so the server still sees truly independent, per-device-identifiable
+  sessions even though the token is shared. Syncing it would merge all devices into one server-side
+  client identity, breaking per-device session listings and transcode bookkeeping.</li>
+<li><strong>Jellyfin/Emby access tokens</strong> — those servers mint the access token bound to the device id
+  presented at authentication (token and device are one server-side record). Syncing the token would
+  make every physical device impersonate a single server-side device, causing session collisions,
+  merged played-on attribution, and broken remote-control targeting. Jellyfin/Emby therefore still
+  require a per-device sign-in; Quick Connect / Emby Connect keeps that to a short-code step.</li>
+<li><strong>Backend/server selection</strong> — a per-device preference, not a credential.</li>
+</ul>
+<p>Because the Plex token is the shared item, deleting it — a manual sign-out or a 401-triggered wipe —
+propagates sign-out to <strong>all</strong> devices, which matches how an account-level token actually dies.
+When a synced Plex token is successfully read, the app deletes any pre-sync device-local Plex token
+so a later synced/global sign-out cannot re-promote stale local credentials.</p>
+<p>Caveat for the simulator: simulator builds use <code>CODE_SIGNING_ALLOWED=NO</code> and cannot access the real
+Keychain, so <code>KeychainStore</code> falls back to a file store. iCloud sync therefore only manifests on real
+devices with iCloud Keychain enabled; you cannot observe cross-device sign-in in the simulator.</p>
+<p>The type doc comment at the top of <code>KeychainStore.swift</code> is the source of truth for this behavior; keep
+it and this section in agreement.</p>
+<h2 id="logs">Logs<a class="headerlink" href="#logs" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="nv">SIMID</span><span class="o">=</span><span class="k">$(</span>scripts/worktree-sim.sh<span class="w"> </span>--platform<span class="w"> </span>visionos<span class="w"> </span>id<span class="k">)</span>
+<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a>xcrun<span class="w"> </span>simctl<span class="w"> </span>spawn<span class="w"> </span><span class="s2">"</span><span class="nv">$SIMID</span><span class="s2">"</span><span class="w"> </span>log<span class="w"> </span>show<span class="w"> </span>--last<span class="w"> </span>10m<span class="w"> </span>--info<span class="w"> </span>--debug<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a><span class="w">  </span>--predicate<span class="w"> </span><span class="s1">'subsystem == "org.labstream.Labstream"'</span>
+</code></pre></div>
+<h2 id="verified-platform-findings">Verified platform findings<a class="headerlink" href="#verified-platform-findings" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>visionOS wake silently restarts custom-<code>Range</code> request bodies, and resume data cannot
+  see it.</strong> When a headset is re-worn, the network path re-evaluates and <code>nsurlsessiond</code>
+  transparently retries the in-flight background task; because Labstream's static-range
+  downloads carry a custom <code>Range</code> header, the retried body restarts from the range start
+  with no error and no resume-data callback — the failure is invisible to the resume-data
+  recovery path entirely. Observed signature: an app-diagnostics <code>reset_body_bytes</code> on the
+  order of ~1 KB (i.e. the retried body barely got going again) even though gigabytes had
+  already been buffered un-appended for that task. Contrast with an app-alive network switch
+  on iPad, which surfaces as a normal task error WITH resume data and is recoverable through
+  the existing resume-data path. Consequence: off-head durability for static-range downloads
+  cannot rely on resume data alone, and per-chunk background wakes to checkpoint more often
+  are not viable either — the OS background-relaunch rate limiter (exponential backoff, #212)
+  stops granting wakes once a design needs one wake per bounded transfer, stalling overnight.
+  The fix is a pre-queued train of closed-range segment tasks that <code>nsurlsessiond</code> executes
+  without app involvement, bounding what a silent wake-time retry can destroy to one segment;
+  see <code>docs/DOWNLOADS-OFFLINE.md</code> for the design.</li>
+</ul>
+<h2 id="documentation-workflow">Documentation workflow<a class="headerlink" href="#documentation-workflow" title="Permanent link">&para;</a></h2>
+<p>Preview the published site locally with:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a>uv<span class="w"> </span>run<span class="w"> </span>--with-requirements<span class="w"> </span>requirements.txt<span class="w"> </span>mkdocs<span class="w"> </span>serve
+</code></pre></div>
+<p>Use the strict documentation build in <a href="#core-validation-commands">Core validation commands</a> before
+publishing changes. Keep current product, architecture, and contributor guidance in the published
+Markdown files at the top of <code>docs/</code>. Classify repository-internal documents into these unpublished
+lanes:</p>
+<ul>
+<li><code>docs/plans/</code> for active implementation plans and acceptance journals;</li>
+<li><code>docs/research/</code> for unresolved investigations;</li>
+<li><code>docs/evidence/</code> for immutable audit and profiling observations; and</li>
+<li><code>docs/archive/</code> for completed, superseded, or closed context that is never canonical.</li>
+</ul>
+<p>The current manual validation matrix deliberately remains at the repository root in
+<a href="https://github.com/jlipworth/Labstream/blob/main/TESTING-CHECKLIST.md"><code>TESTING-CHECKLIST.md</code></a>.
+Each lane README defines its naming and promotion/archive rules. Preserve historical prose when
+moving snapshots, but repair live links, navigation, includes, and script references.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Copyright (C) 2026 Jonathan Lipworth — GPL-3.0 with §7 exception
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "content.code.copy", "toc.follow", "search.suggest"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

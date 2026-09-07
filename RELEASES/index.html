@@ -1,0 +1,1713 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Native Apple-platform client for your own Plex, Jellyfin, or Emby server.">
+      
+      
+      
+        <link rel="canonical" href="https://jlipworth.github.io/Labstream/RELEASES/">
+      
+      
+        <link rel="prev" href="../privacy/">
+      
+      
+        <link rel="next" href="../app-store-exception/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Release and App Store status - Labstream</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#release-and-app-store-status" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Labstream" class="md-header__button md-logo" aria-label="Labstream" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Labstream
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Release and App Store status
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/jlipworth/Labstream" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    jlipworth/Labstream
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Labstream" class="md-nav__button md-logo" aria-label="Labstream" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Labstream
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/jlipworth/Labstream" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    jlipworth/Labstream
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Support & troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../REPORTING-BUGS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Report a bug
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../privacy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Privacy policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release and App Store status
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release and App Store status
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#current-status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Current status
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#initial-publication-sequence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Initial publication sequence
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reviewer-environment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reviewer environment
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#apple-platform-release-checklist" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Apple-platform release checklist
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Apple-platform release checklist">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#repository-and-binary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Repository and binary
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#product-page-metadata" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Product-page metadata
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#testflight-and-app-review" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        TestFlight and App Review
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#account-holder-and-legal-gates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Account-holder and legal gates
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#public-release-closeout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Public-release closeout
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../app-store-exception/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    License exception
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Developer guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CONTRIBUTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../DEVELOPMENT/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../TESTING-STRATEGY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Testing strategy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../APP-STORE-SCREENSHOTS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    App Store screenshots
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../COMPILE-PERFORMANCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compile performance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MOBILE-IOS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    iOS and iPadOS target
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../TVOS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    tvOS target
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MACOS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    macOS target
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MACOS-CI/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Native macOS CI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../SCRIPTS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scripts catalog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ARCHITECTURE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CODE-MAP/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Code map
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../BACKENDS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Backends
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../PLAYBACK-ARCHITECTURE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Playback
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../DOWNLOADS-OFFLINE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Downloads & offline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MUSIC-DESIGN/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Music
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../PERSISTENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Persistence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../SYSTEM-INTEGRATION/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    System integration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../DIAGNOSTICS-PRIVACY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Diagnostics & privacy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#current-status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Current status
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#initial-publication-sequence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Initial publication sequence
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reviewer-environment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reviewer environment
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#apple-platform-release-checklist" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Apple-platform release checklist
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Apple-platform release checklist">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#repository-and-binary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Repository and binary
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#product-page-metadata" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Product-page metadata
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#testflight-and-app-review" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        TestFlight and App Review
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#account-holder-and-legal-gates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Account-holder and legal gates
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#public-release-closeout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Public-release closeout
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="release-and-app-store-status">Release and App Store status<a class="headerlink" href="#release-and-app-store-status" title="Permanent link">&para;</a></h1>
+<p>This page is the public source of truth for Labstream's distribution status and the release
+checks that can safely live in the repository. It does not contain signing identities, App Store
+Connect contact details, review credentials, tokens, private server addresses, or other secrets.</p>
+<h2 id="current-status">Current status<a class="headerlink" href="#current-status" title="Permanent link">&para;</a></h2>
+<p>Source is now 1.6.2 (build 1) across all four apps, with a matching PMSKit fallback.
+No 1.6.2 archive has been uploaded by this change. The distribution entries below still
+refer to the previously processed <strong>1.6.1 (build 2)</strong> archives at <code>abd1ddcac351</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Product</th>
+<th>Source version</th>
+<th>Distribution status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Apple Vision Pro (<code>Labstream</code>)</td>
+<td>1.6.2 (build 1)</td>
+<td>Clean <code>abd1ddcac351</code> archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical TestFlight acceptance and review access remain pending.</td>
+</tr>
+<tr>
+<td>iPhone and iPad (<code>LabstreamMobile</code>)</td>
+<td>1.6.2 (build 1)</td>
+<td>Clean <code>abd1ddcac351</code> universal iOS archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical iPhone and iPad acceptance remain pending.</td>
+</tr>
+<tr>
+<td>Apple TV (<code>LabstreamTV</code>)</td>
+<td>1.6.2 (build 1)</td>
+<td>Clean <code>abd1ddcac351</code> archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical Apple TV acceptance remains pending.</td>
+</tr>
+<tr>
+<td>Mac (<code>LabstreamMac</code>)</td>
+<td>1.6.2 (build 1)</td>
+<td>Clean <code>abd1ddcac351</code> archive uploaded and processed, selected for the platform version, and installed from TestFlight on a Mac. Launch and receipt/signature checks passed; deeper sandbox and live-host acceptance remain pending.</td>
+</tr>
+</tbody>
+</table>
+<p>The four targets share the neutral <code>org.labstream.Labstream</code> bundle identifier and are intended
+for one App Store Connect universal-purchase record. The earlier private visionOS 1.6.0 build used
+a retired personal-namespace identifier; it is not the publication record for 1.6.1 and cannot be
+migrated because Apple freezes a record's bundle identifier after its first build upload.</p>
+<p>The publication topology is one product record with four platform versions and four binary
+archives: the <code>LabstreamMobile</code> iOS archive covers both iPhone and iPad, while visionOS, tvOS, and
+macOS each use their own archive. Metadata, screenshots, build selection, review notes, and
+acceptance remain platform-specific even when the platforms share one purchase record. A platform
+must not be marked ready merely because another platform passed review.</p>
+<p>App Store Connect currently has the shared app information, free price schedule, published
+<strong>Data Not Collected</strong> privacy answer, platform descriptions, review contacts, build selections,
+manual-release settings, and one privacy-safe synthetic placeholder screenshot for each submitted
+device family. Those screenshots prove the capture and upload path, but they are not the intended
+public product-page set. App availability is not yet enabled. Licensed demo media, final screenshot
+capture and review, demo review access, review notes, physical-platform acceptance, storefront
+scope, Digital Services Act status where applicable, and final submission remain open.</p>
+<p><code>1.6.2</code> is the current source marketing version (<code>CFBundleShortVersionString</code>). The number in
+parentheses is the App Store build number (<code>CFBundleVersion</code>). A new marketing version begins at
+build 1; each replacement upload for the same platform and marketing version must use a higher
+build number.</p>
+<h2 id="initial-publication-sequence">Initial publication sequence<a class="headerlink" href="#initial-publication-sequence" title="Permanent link">&para;</a></h2>
+<p>The first neutral-identity deployment should proceed in this order:</p>
+<ol>
+<li>In the Apple Developer account, confirm the neutral App ID and required capabilities, then make
+   an Apple Distribution signing identity and platform-appropriate App Store provisioning available
+   to Xcode. Do not commit certificates, private keys, profiles, account identifiers, or exports.</li>
+<li>Create the new App Store Connect app for <code>org.labstream.Labstream</code>, then add the visionOS,
+   iOS/iPadOS, tvOS, and macOS platform versions to that one universal-purchase record. Do not reuse
+   the retired personal-identity visionOS record.</li>
+<li>From the exact public release commit, produce and locally validate one archive each for
+   <code>Labstream</code>, <code>LabstreamMobile</code>, <code>LabstreamTV</code>, and <code>LabstreamMac</code>. Confirm identity, version,
+   build, entitlements, minimum OS, architecture, and device family before upload.</li>
+<li>Upload each archive and wait for App Store Connect processing. Treat warnings or missing
+   platform associations as blockers; do not advance a different binary merely because it shares
+   the version number.</li>
+<li>Establish the reviewer environment and its licensed sample-media inventory, then capture and
+   privacy-review the final platform-specific screenshot sets. Complete shared app information plus
+   platform metadata, build selection, privacy/export answers, review notes, and review access.</li>
+<li>Install processed builds through TestFlight on every submitted device family, starting from a
+   fresh install for the identity boundary and sign-in checks. Record the platform-specific gates
+   below.</li>
+<li>Add only accepted platform versions for review. The final submit action and storefront scope
+   remain Account Holder decisions.</li>
+</ol>
+<h2 id="reviewer-environment">Reviewer environment<a class="headerlink" href="#reviewer-environment" title="Permanent link">&para;</a></h2>
+<p>App Review needs a reproducible path that does not depend on a private home network, short-lived
+token, personal media library, VPN, or reviewer-created server. Prefer a dedicated review account
+and a small non-personal library whose media and artwork are licensed for this use. The environment
+must support the same backend choice and core browse/play journey documented in the review notes
+and remain available throughout review.</p>
+<p>A public Jellyfin demonstration service may be evaluated as a candidate, but it is not automatically
+an acceptable dependency: confirm the operator permits App Review use, credentials are stable,
+Apple networks can reach it, and the sample library exercises the submitted clients. If any of
+those conditions is uncertain, run a dedicated review-only Jellyfin instance instead. Keep its
+credentials only in App Store Connect. Test the final instructions from clean installs on Vision
+Pro, iPhone, iPad, Apple TV, and Mac before submission.</p>
+<p>The official stable demo is the first evaluation lane before provisioning new infrastructure. It
+currently exposes a passwordless shared account, Quick Connect, Movies/Shows/Music/Playlists, and a
+catalog containing public/open test media. It is useful for compatibility and screenshot trials,
+but it is not yet accepted as the final reviewer dependency: the shared account is mutable,
+downloads are disabled, service resets can interrupt sessions, and the project's permission for
+third-party App Store marketing screenshots still needs to be established. Labstream supports the
+demo's passwordless Jellyfin login as of
+<a href="https://github.com/jlipworth/Labstream/issues/283">issue #283</a>.</p>
+<p>Prefer a Labstream-controlled review instance with a deterministic catalog of original,
+public-domain, or appropriately Creative Commons media. Record every title, artwork source,
+license, attribution requirement, and permitted screenshot/review use in a repository manifest;
+do not use commercial movie or television artwork merely because a metadata provider can return
+it. The same catalog should drive automated screenshots and the reviewer journey so the captured
+UI matches the environment Apple can actually test.</p>
+<h2 id="apple-platform-release-checklist">Apple-platform release checklist<a class="headerlink" href="#apple-platform-release-checklist" title="Permanent link">&para;</a></h2>
+<h3 id="repository-and-binary">Repository and binary<a class="headerlink" href="#repository-and-binary" title="Permanent link">&para;</a></h3>
+<ul>
+<li>[ ] The release commit contains no credentials, private endpoints, signing files, diagnostic
+      bundles, or personal media data, including in newly added files.</li>
+<li>[ ] <code>PMSKit</code> hermetic tests, repository hygiene, strict MkDocs, and the affected native test
+      matrix pass.</li>
+<li>[x] Clean Release archives are produced for iOS/iPadOS, visionOS, tvOS, and macOS with the
+      intended Xcode release and Apple Distribution signing; every archive reports the neutral
+      bundle identifier and expected marketing version and build number.</li>
+<li>[x] Archives are reproducible from the exact public release commit. If that commit changes after
+      a preflight archive, rebuild rather than treating the older archive as the submission binary.</li>
+<li>[x] Every platform archive passes Xcode validation and App Store Connect processing without
+      compliance or binary warnings.</li>
+<li>[x] Each selected App Store Connect build reports the intended minimum OS, device family,
+      entitlements, and supported architecture.</li>
+<li>[ ] A physical Vision Pro TestFlight smoke covers first launch, sign-in, browse, playback,
+      seeking, subtitles, audio, Cinema, background/foreground, and diagnostics. Simulator smoke
+      is useful but does not replace this gate.</li>
+<li>[ ] Physical iPhone and iPad TestFlight smokes cover compact and regular-width navigation,
+      sign-in, playback, downloads, lifecycle, diagnostics, and accessibility.</li>
+<li>[ ] A physical Apple TV TestFlight smoke covers Siri Remote focus/input, sign-in, browse,
+      playback, long-play behavior, audio/HDR routing, lifecycle, and accessibility. Downloads are
+      intentionally absent from this platform.</li>
+<li>[ ] A TestFlight Mac smoke covers sandboxed sign-in, browse, playback, keyboard/media keys,
+      window lifecycle, downloads, diagnostics, and accessibility on the supported architectures.</li>
+<li>[ ] The release commit is publicly available as corresponding GPLv3 source. Create the annotated
+      coordinated tag <code>vX.Y.Z</code> only after the version commit exists and tagging is authorized.</li>
+</ul>
+<h3 id="product-page-metadata">Product-page metadata<a class="headerlink" href="#product-page-metadata" title="Permanent link">&para;</a></h3>
+<ul>
+<li>[ ] App name, subtitle, category, age rating, description, keywords, copyright, and availability
+      are complete and match the product that was tested.</li>
+<li>[x] The description states that Labstream connects to a server selected by the user, provides no
+      media, and is unofficial and unaffiliated with Plex, Jellyfin, and Emby.</li>
+<li>[x] The public support URL and privacy-policy URL resolve over HTTPS:
+      <a href="https://jlipworth.github.io/Labstream/support/">Support</a> and
+      <a href="https://jlipworth.github.io/Labstream/privacy/">Privacy</a>.</li>
+<li>[ ] Replace the currently staged single-image synthetic placeholders with final, reviewed
+      screenshot sets for every required App Store device size;
+      the Vision Pro set includes at least one 3840 × 2160 image. Apple permits up to ten
+      screenshots and up to three optional app previews per supported size and localization. See
+      Apple's current
+      <a href="https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications">screenshot specifications</a>
+      before capture because requirements can change.</li>
+<li>[ ] Final screenshots show only licensed demo media and contain no account, server, network, or
+      personal information. At minimum, cover Home, library browsing, a title detail surface, and
+      playback; add Downloads only on platforms that ship it and platform-specific features only
+      where they are actually available.</li>
+<li>[ ] Screenshot automation can reproduce the accepted set from clean fixture/review state for
+      iPhone, iPad, Mac, Apple TV, and Apple Vision Pro, and the exported files pass the repository
+      size/privacy manifest validator before upload.</li>
+<li>[x] App Privacy answers match the shipped privacy manifest and runtime behavior. The current
+      intended answer is <strong>Data Not Collected</strong>: Labstream has no developer analytics, tracking,
+      telemetry upload, or developer-operated backend. Re-audit this if dependencies or behavior
+      change.</li>
+<li>[x] Export-compliance answers match the binary. <code>ITSAppUsesNonExemptEncryption</code> is currently
+      false; re-evaluate if cryptography use changes.</li>
+</ul>
+<h3 id="testflight-and-app-review">TestFlight and App Review<a class="headerlink" href="#testflight-and-app-review" title="Permanent link">&para;</a></h3>
+<ul>
+<li>[x] TestFlight beta description, feedback contact, and <strong>What to Test</strong> text are current. Internal
+      builds remain available for 90 days; Apple currently permits up to 100 internal App Store
+      Connect users. See the current <a href="https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview">TestFlight overview</a>.</li>
+<li>[x] Review contact information is complete in App Store Connect. Do not commit it here.</li>
+<li>[ ] Because the app requires sign-in, App Review has a stable, non-expiring demo path and clear
+      steps for choosing a backend, signing in, browsing a library, and playing authorized sample
+      media. Store credentials only in App Store Connect, never in Git or issue comments.</li>
+<li>[ ] The review environment is reachable from Apple networks without a VPN or private DNS, uses
+      non-personal sample media that may be shown to reviewers, and is tested from a fresh install
+      on every submitted platform. If a community demo service is used, verify its current terms,
+      stability, credentials, and permission for App Review before depending on it.</li>
+<li>[ ] Do not enable public availability, add a platform version for review, or submit the app until
+      the licensed-media manifest, final screenshot sets, and clean-install reviewer journey above
+      have been accepted.</li>
+<li>[ ] Review notes explain local-network access, direct connections to user-selected servers,
+      optional offline downloads, the absence of bundled media, and where Cinema mode is found.</li>
+<li>[ ] Review notes call out platform differences: one iOS binary serves iPhone and iPad; tvOS has
+      no downloads/offline surface; Cinema is visionOS-only; and macOS uses a sandboxed native app.</li>
+<li>[x] The correct build is attached to each platform version before <strong>Add for Review</strong> and the final
+      <strong>Submit for Review</strong> action. See Apple's current
+      <a href="https://developer.apple.com/help/app-store-connect/manage-submissions-to-app-review/submit-an-app">submission procedure</a>.</li>
+</ul>
+<h3 id="account-holder-and-legal-gates">Account-holder and legal gates<a class="headerlink" href="#account-holder-and-legal-gates" title="Permanent link">&para;</a></h3>
+<p>These gates cannot be completed by source changes or automation:</p>
+<ul>
+<li>[x] The Account Holder reviews and accepts any current Apple Developer Program agreement.</li>
+<li>[ ] Trader status is declared. Apple requires a declaration even when an app is not offered in
+      the EU; EU distribution by a trader requires verified public contact information. See
+      Apple's <a href="https://developer.apple.com/help/app-store-connect/manage-compliance-information/manage-european-union-digital-services-act-trader-requirements/">EU Digital Services Act guidance</a>.</li>
+<li>[ ] Agreements, tax, banking, pricing, territories, and release method are configured as required
+      for the selected business model and storefronts.</li>
+<li>[ ] The Account Holder explicitly approves the final storefront scope and submission.</li>
+</ul>
+<h2 id="public-release-closeout">Public-release closeout<a class="headerlink" href="#public-release-closeout" title="Permanent link">&para;</a></h2>
+<p>After approval, verify the live product page and its support/privacy links, publish the exact
+corresponding source and release notes, create the authorized annotated tag, and record the
+released platform/version in this page. Do not describe an internal TestFlight build as a public
+App Store release.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Copyright (C) 2026 Jonathan Lipworth — GPL-3.0 with §7 exception
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "content.code.copy", "toc.follow", "search.suggest"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

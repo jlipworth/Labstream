@@ -1,0 +1,1955 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Native Apple-platform client for your own Plex, Jellyfin, or Emby server.">
+      
+      
+      
+        <link rel="canonical" href="https://jlipworth.github.io/Labstream/TESTING-STRATEGY/">
+      
+      
+        <link rel="prev" href="../DEVELOPMENT/">
+      
+      
+        <link rel="next" href="../APP-STORE-SCREENSHOTS/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Testing strategy - Labstream</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#testing-strategy" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Labstream" class="md-header__button md-logo" aria-label="Labstream" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Labstream
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Testing strategy
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/jlipworth/Labstream" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    jlipworth/Labstream
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Labstream" class="md-nav__button md-logo" aria-label="Labstream" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Labstream
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/jlipworth/Labstream" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    jlipworth/Labstream
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Support & troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../REPORTING-BUGS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Report a bug
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../privacy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Privacy policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../RELEASES/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release and App Store status
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../app-store-exception/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    License exception
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Developer guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CONTRIBUTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../DEVELOPMENT/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Testing strategy
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Testing strategy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#required-local-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required local checks
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Required local checks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#suspended-request-integration-regressions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Suspended-request integration regressions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#native-apple-matrix-driver" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Native Apple matrix driver
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Native Apple matrix driver">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#performanceaudit-comparison-gate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PerformanceAudit comparison gate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#shared-data-plane-contracts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Shared data-plane contracts
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#visionos-hosted-test-migration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        visionOS hosted-test migration
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shared-app-test-support" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Shared app-test support
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ci-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CI checks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#simulator-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Simulator checks
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Simulator checks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#tvos-ui-and-evidence-tiers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        tvOS UI and evidence tiers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#named-agent-evidence-runners" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Named agent evidence runners
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#macos-host-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        macOS host checks
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="macOS host checks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#bounded-playback-troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bounded playback troubleshooting
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#optional-live-server-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Optional live-server checks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#physical-device-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Physical-device checks
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../APP-STORE-SCREENSHOTS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    App Store screenshots
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../COMPILE-PERFORMANCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compile performance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MOBILE-IOS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    iOS and iPadOS target
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../TVOS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    tvOS target
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MACOS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    macOS target
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MACOS-CI/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Native macOS CI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../SCRIPTS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scripts catalog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ARCHITECTURE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CODE-MAP/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Code map
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../BACKENDS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Backends
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../PLAYBACK-ARCHITECTURE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Playback
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../DOWNLOADS-OFFLINE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Downloads & offline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MUSIC-DESIGN/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Music
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../PERSISTENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Persistence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../SYSTEM-INTEGRATION/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    System integration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../DIAGNOSTICS-PRIVACY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Diagnostics & privacy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#required-local-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required local checks
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Required local checks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#suspended-request-integration-regressions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Suspended-request integration regressions
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#native-apple-matrix-driver" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Native Apple matrix driver
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Native Apple matrix driver">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#performanceaudit-comparison-gate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PerformanceAudit comparison gate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#shared-data-plane-contracts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Shared data-plane contracts
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#visionos-hosted-test-migration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        visionOS hosted-test migration
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shared-app-test-support" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Shared app-test support
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ci-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CI checks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#simulator-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Simulator checks
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Simulator checks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#tvos-ui-and-evidence-tiers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        tvOS UI and evidence tiers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#named-agent-evidence-runners" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Named agent evidence runners
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#macos-host-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        macOS host checks
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="macOS host checks">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#bounded-playback-troubleshooting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bounded playback troubleshooting
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#optional-live-server-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Optional live-server checks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#physical-device-checks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Physical-device checks
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="testing-strategy">Testing strategy<a class="headerlink" href="#testing-strategy" title="Permanent link">&para;</a></h1>
+<p>Labstream uses layered validation. Fast, hermetic tests protect the codebase by default; live-server and physical-device checks are opt-in because they depend on private servers, credentials, network conditions, and hardware.</p>
+<pre class="mermaid"><code>flowchart TD
+  accTitle: Validation lanes by change type
+  accDescr: Every change runs repository hygiene. Documentation changes also run strict site, link, and Mermaid checks; pure package changes run PMSKit tests; app-owned deterministic changes run hosted tests; runtime changes add the affected platform build and smoke. Private-server and hardware-only behavior use separate opt-in gates.
+  Change[Proposed change] --&gt; Hygiene[Repository hygiene]
+  Change --&gt; Kind{What owns the behavior?}
+  Kind --&gt; Docs[Documentation or path]
+  Kind --&gt; Pure[Pure PMSKit request, model, or policy]
+  Kind --&gt; App[App-owned deterministic logic]
+  Kind --&gt; Runtime[Platform runtime or UI]
+  Docs --&gt; DocGate[Strict MkDocs, repository links, and Mermaid structure]
+  Pure --&gt; Package[PMSKit package tests]
+  App --&gt; Hosted[App-hosted tests on affected hosts]
+  Runtime --&gt; Smoke[Affected platform build, install or host launch, logs, and smoke]
+  Change --&gt; Private{Needs private server or physical behavior?}
+  Private --&gt; Live[Opt-in live-server probe]
+  Private --&gt; Device[Physical-device acceptance]</code></pre>
+<h2 id="required-local-checks">Required local checks<a class="headerlink" href="#required-local-checks" title="Permanent link">&para;</a></h2>
+<p>Run the canonical <a href="../DEVELOPMENT/#core-validation-commands">core validation commands</a> before
+publishing code changes.</p>
+<p>Production changes should also run focused tests from the owning layer. Pure request/model/policy
+coverage belongs in <code>PMSKit/Tests/PMSKitTests</code>. App-owned deterministic coverage lives in
+<code>LabstreamTests/</code>; the same sources are hosted by <code>LabstreamTests</code> on an iOS simulator,
+<code>LabstreamMacTests</code> on macOS, and <code>LabstreamTVTests</code> on tvOS. Run the affected host(s), or all
+three for shared app infrastructure, using the exact test-plan commands in Development setup.</p>
+<p>The app suites are host-app unit tests. They do not replace the canonical
+<a href="../DEVELOPMENT/#install-and-observe-a-simulator-smoke">install/launch/log/screenshot smoke</a>,
+interactive UI checks, live-server probes, or physical-device acceptance.</p>
+<h3 id="suspended-request-integration-regressions">Suspended-request integration regressions<a class="headerlink" href="#suspended-request-integration-regressions" title="Permanent link">&para;</a></h3>
+<p>Keep async ownership tests at the production publication boundary, not only in pure authority
+helpers. <code>SeasonPlannerIntegrationTests</code> commits real durable season rows, holds a Plex metadata
+response through an injected URLSession protocol, and deletes through <code>DownloadManager</code> before
+releasing that response. It checks the reopened index, absent negotiation/transfer requests,
+later admitted-row deletion, stale errors, pause refusal, and exactly-once unchanged admission.
+The successful control observes the real background transfer request but does not deliver media.</p>
+<p><code>ArtistDiscographyIntegrationTests</code> calls the same provider-to-controller operation used by
+Artist Play and Shuffle. A suspended provider covers backend/server changes, sign-out, newer
+album/artist intent, stop, cancellation, and unchanged publication. An injected stream resolver
+records which identifiers reach resolution without starting AVFoundation or network playback.
+These are hermetic integration checks, not live playback or physical-device acceptance.</p>
+<h2 id="native-apple-matrix-driver">Native Apple matrix driver<a class="headerlink" href="#native-apple-matrix-driver" title="Permanent link">&para;</a></h2>
+<p><code>scripts/native-test-matrix.py</code> is the checked source of truth for compile/package smoke,
+affected-platform, hosted/UI, and full planning. It does not perform the runtime
+install/launch/log/screenshot smoke. Planning is side-effect free and is always the default:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Compile/package smoke plan for all four app schemes plus hermetic PMSKit tests.</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>scripts/native-test-matrix.py<span class="w"> </span>smoke
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="c1"># Plan from committed changes relative to main, or include local changes as well.</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>scripts/native-test-matrix.py<span class="w"> </span>affected<span class="w"> </span>--base<span class="w"> </span>main
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>scripts/native-test-matrix.py<span class="w"> </span>affected<span class="w"> </span>--base<span class="w"> </span>main<span class="w"> </span>--include-working-tree
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="c1"># Plan one known path without consulting Git (useful in tooling and review automation).</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>scripts/native-test-matrix.py<span class="w"> </span>affected<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">  </span>--changed-file<span class="w"> </span>Labstream/Platforms/tvOS/App/LabstreamTV.swift
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="c1"># Full correctness, hosted, and exhaustive-TV plan. Missing simulator IDs and the current</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="c1"># visionOS-hosted gap are reported as BLOCKED/PLANNED rather than silently omitted.</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>scripts/native-test-matrix.py<span class="w"> </span>full
+</code></pre></div>
+<p>The driver reads <code>scripts/native-test-matrix.json</code>. The current source topology is explicit:
+<code>Labstream/Shared/</code> selects all four app builds and every available hosted/UI suite;
+<code>Labstream/Capabilities/Downloads/</code> selects visionOS, mobile, and Mac but not tvOS; and each
+<code>Labstream/Platforms/&lt;platform&gt;/</code> root selects only its owning product lanes. A conservative
+fallback still selects all app lanes for an unclassified path under <code>Labstream/</code>. Update the
+manifest and its topology tests in the same change whenever target membership or an ownership
+root changes. Git discovery includes deleted paths and both endpoints of renames, including
+working-tree changes when requested; filenames are read with NUL delimiters.</p>
+<p>The bounded command and playback runners terminate their owned process group on timeout or
+cancellation. Cleanup waits for surviving descendants, not just the leader, before escalating;
+it never uses application-name or system-wide process matching.</p>
+<p>After the matrix builds/tests selected for a runtime change, complete the canonical
+<a href="../DEVELOPMENT/#install-and-observe-a-simulator-smoke">install/launch/log/screenshot smoke</a> or the
+applicable named evidence runner. A successful matrix lane alone is not runtime evidence.</p>
+<p>Execution is deliberately lane-at-a-time. The driver never provisions or boots a simulator, and
+<code>--run</code> requires an exact <code>--lane</code>. A simulator-hosted lane additionally requires the ID recorded
+for this worktree by <code>worktree-sim.sh</code> (<code>.simid-iphone</code> or <code>.simid-tvos</code>) and
+<code>--allow-simulator</code>, which is an assertion that the caller has acquired the repository's
+one-simulator lease. The driver rejects an arbitrary simulator ID even when that simulator is
+Booted. It also fails unless the owned simulator is already Booted <strong>and every other simulator is
+Shutdown</strong>, so <code>xcodebuild</code> cannot silently boot an unleased device or run alongside another lane:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nv">SIMID</span><span class="o">=</span><span class="k">$(</span>scripts/worktree-sim.sh<span class="w"> </span>--platform<span class="w"> </span>tvos<span class="w"> </span>id<span class="k">)</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>xcrun<span class="w"> </span>simctl<span class="w"> </span>boot<span class="w"> </span><span class="s2">"</span><span class="nv">$SIMID</span><span class="s2">"</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>scripts/native-test-matrix.py<span class="w"> </span>affected<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span>--changed-file<span class="w"> </span>Labstream/Platforms/tvOS/App/LabstreamTV.swift<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span>--tvos-sim-id<span class="w"> </span><span class="s2">"</span><span class="nv">$SIMID</span><span class="s2">"</span><span class="w"> </span>--run<span class="w"> </span>--lane<span class="w"> </span>tvos-hosted<span class="w"> </span>--allow-simulator
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>xcrun<span class="w"> </span>simctl<span class="w"> </span>shutdown<span class="w"> </span><span class="s2">"</span><span class="nv">$SIMID</span><span class="s2">"</span>
+</code></pre></div>
+<p><code>pmskit-correctness</code> explicitly skips <code>Live*ProbeTests</code>; app-hosted lanes skip the Debug Plex
+browse probe. Credentialless probe returns are readiness signals, not hermetic correctness
+passes. Live probes remain separate opt-in commands. Timing benchmarks must likewise use a future
+optimized benchmark target/lane and must not be added to smoke, affected, or ordinary hosted
+correctness suites.</p>
+<h3 id="performanceaudit-comparison-gate">PerformanceAudit comparison gate<a class="headerlink" href="#performanceaudit-comparison-gate" title="Permanent link">&para;</a></h3>
+<p>Release-parity <code>PerformanceAudit</code> runs use the manifest/raw/summary contract documented in
+the <a href="../SCRIPTS/#paired-performance-comparison">scripts catalog</a>. A comparison regenerates
+every strict summary from its exact checksummed raw artifact, uses the closed phase/backend
+correctness fields, freezes the minimum detectable effect from control-only evidence, and compares
+seeded pairs through <code>scripts/perf-compare.py</code>. Warmup failures, missing/foreign spans, changed work
+counts, reused run IDs, privacy-unsafe fields, invalid schedules, thermal/battery mismatch, storage
+drift, or excessive pair gaps fail closed. Static inspection and unpaired timings are not
+performance proof. Frozen-before-candidate timing remains operator-attested until the manifest
+schema itself carries the frozen checksum.</p>
+<p>Ordinary launch and Home/catalog/Search/artwork <strong>latency</strong> comparisons use a control-only
+calibration freeze followed by separately collected seeded control/candidate pairs. A launch run
+selects one closed attribution profile (<code>runtime.composition</code>, <code>runtime.download_manager</code>,
+<code>runtime.download_store</code>, <code>runtime.download_transport_construct</code>, or
+<code>runtime.download_transport_submission</code>) before capture. Browse artwork is admitted only for the
+scoped <code>library_first_poster</code> span: one unique loaded AX image, one selected successful span, and at
+least one successful fixture image response. That milestone does not claim that a viewport or every
+poster loaded, nor does it establish a cache state.</p>
+<p>Mac <strong>idle</strong> thresholds use a different two-run protocol. First complete one 1+5 paired pilot with
+120-second arms, then run <code>perf-idle-compare.py freeze</code> on that result. The freeze derives thresholds
+from the pilot's five measured control arms and binds their runner, manifests, control commit, and
+product checksum. Record the printed threshold checksum before capturing a fresh, non-overlapping
+1+5 paired verdict result with the same control product; only then run the idle comparison. Reusing
+pilot evidence or comparison/order identities, or changing the control commit/product, fails closed.
+The latency comparator's frozen MDE and pair-gap threshold are not idle thresholds: idle has
+duration-normalized CPU/wakeup MDEs, and its start-gap tolerance must exceed the 120-second capture
+window.</p>
+<p>These paragraphs describe supported tooling and admission contracts, not completed measurements.
+A planned, paused, or capture-only run remains <code>insufficient_data</code> until its required calibration,
+fresh pairs, comparator output, and correctness/covariate gates all complete.</p>
+<h3 id="shared-data-plane-contracts">Shared data-plane contracts<a class="headerlink" href="#shared-data-plane-contracts" title="Permanent link">&para;</a></h3>
+<p>Phase 2 data-plane changes have deterministic contracts at their owning layer: opaque browse
+authority replacement and repository fencing; off-main Plex/Jellyfin/Emby decode witnesses;
+bounded fail-fast/partial fan-out; catalog force/failure/cancellation behavior; metadata
+fresh/stale/provenance/action admission and watched-patch ordering; progressive Home snapshots and
+failed-key-only retry; page-flight waiter cancellation; incremental movie-version projection;
+duplicate-preserving long-playlist paging; <code>DecodedImage</code> color/orientation/crop bridges; and
+artwork joining, priority, downsampling, privacy, cache cost, and clear epochs.</p>
+<p>These hosted/package checks are not all-target or live-backend acceptance. Shared source still
+requires the affected native matrix builds and isolated host/simulator smokes, and live Plex,
+Jellyfin, and Emby request behavior remains an opt-in credentialed gate where a hermetic fixture
+cannot establish server truth. Emby Home poster/rail corrections needing physical-device
+confirmation should be verified on a physical iPhone signed into Emby: check Recently Added TV
+Shows portrait art, a movie rail, and the episode Thumb/Backdrop fallback before closing the
+tracking issue.</p>
+<h3 id="visionos-hosted-test-migration">visionOS hosted-test migration<a class="headerlink" href="#visionos-hosted-test-migration" title="Permanent link">&para;</a></h3>
+<p>There is no visionOS-hosted test target at this checkpoint. The matrix therefore includes a
+non-executable <code>visionos-hosted</code> lane with a visible <code>PLANNED</code> result instead of implying coverage.
+Use this migration sequence:</p>
+<ol>
+<li>Move request/model/wire-format and platform-independent playback decisions into PMSKit with
+   hermetic package tests. Keep app-owned lifecycle, presentation ownership, and Cinema handoff
+   policy in the app layer.</li>
+<li>Complete the platform source split so a vision test target can host only shared app-core plus
+   narrow vision integration seams, without compiling mobile, TV, or Mac shell code by accident.</li>
+<li>Add <code>LabstreamVisionTests</code>, a checked <code>.xctestplan</code>, and a concrete visionOS-simulator command
+   to the existing <code>visionos-hosted</code> manifest lane. Start with window/Cinema handoff, scoped Now
+   Playing, SharePlay attachment, and vision-only capability composition.</li>
+<li>Keep physical Apple Vision Pro acceptance for media-plane rendering, spatial placement, and
+   long Cinema transitions. Hosted tests and the simulator cannot promote those gates.</li>
+</ol>
+<p>Do not create duplicate platform copies of pure policy merely to populate a hosted target. The
+strategy is a small vision integration suite over shared tested policy, not a second PMSKit suite.</p>
+<h2 id="shared-app-test-support">Shared app-test support<a class="headerlink" href="#shared-app-test-support" title="Permanent link">&para;</a></h2>
+<p><code>LabstreamTests/TestSupport.swift</code> owns the common temporary directory, locked box, continuation
+gate, manual clock, and <code>TestURLProtocolStub</code>. The stub gives every session a uniquely routed
+handler rather than replacing process-global state, so parallel tests remain isolated. New
+deterministic app tests should use these helpers instead of adding file-local copies. Existing
+local helpers can migrate when their own test files are touched; avoid a broad mechanical rewrite
+that obscures safety-test changes.</p>
+<h2 id="ci-checks">CI checks<a class="headerlink" href="#ci-checks" title="Permanent link">&para;</a></h2>
+<p>Woodpecker provides the repository's default public, portable CI surface:</p>
+<ul>
+<li><code>.woodpecker/docs.yml</code> builds MkDocs strictly and deploys the static site on relevant pushes to
+  <code>main</code> (or a manual run).</li>
+<li><code>.woodpecker/docs-pr.yml</code> performs the same strict build and Mermaid structural check for pull
+  requests without receiving a deployment key or running a deploy command.</li>
+<li><code>.woodpecker/hygiene.yml</code> runs <code>scripts/ci-hygiene.sh</code>, including its Python tooling tests, on
+  pushes, pull requests, and manual runs.</li>
+<li><code>.woodpecker/pmskit.yml</code> runs PMSKit's credential-free Linux suite. Live probe tests are designed
+  to skip when their opt-in environment is absent; the pipeline does not select them as live
+  acceptance. XCTest and
+  Swift Testing are separate invocations because their combined runner deadlocks under
+  swift-corelibs-foundation; see that pipeline for the exact flags.</li>
+</ul>
+<p>There is currently no enrolled macOS CI runner for Xcode app builds, app-hosted tests, simulator
+smoke, or host-Mac smoke, so those remain local validation gates and must not be inferred from
+portable CI. A separate <a href="../MACOS-CI/">native macOS CI lane</a> is prepared for unsigned visionOS and
+iOS/iPadOS builds. It remains manual/main-only and cannot execute until the explicitly labelled
+physical runner is enrolled; fork pull requests are permanently outside that local-backend trust
+boundary.</p>
+<h2 id="simulator-checks">Simulator checks<a class="headerlink" href="#simulator-checks" title="Permanent link">&para;</a></h2>
+<p>Use platform-specific worktree simulators and the exact-product procedures in Development setup:</p>
+<ul>
+<li>Before the first visionOS build or linked visionOS worktree, <a href="../DEVELOPMENT/#bootstrap-the-first-visionos-simulator">bootstrap the first visionOS simulator</a>, then <a href="../DEVELOPMENT/#build-for-the-visionos-simulator">build the <code>Labstream</code> scheme</a>.</li>
+<li>iPhone/iPad-only work needs no visionOS bootstrap: <a href="../DEVELOPMENT/#build-for-an-iphone-or-ipad-simulator">build the universal <code>LabstreamMobile</code> scheme</a> with <code>PLATFORM=iphone</code> or <code>PLATFORM=ipad</code>.</li>
+<li>tvOS work uses a fresh worktree-owned simulator rather than the visionOS golden clone: <a href="../DEVELOPMENT/#build-for-an-apple-tv-simulator">build the streaming-only <code>LabstreamTV</code> scheme</a> and keep the download/offline absence gates enabled.</li>
+<li>Every path must complete the <a href="../DEVELOPMENT/#install-and-observe-a-simulator-smoke">observable smoke and shutdown</a>. Linked-worktree simulators must also follow the <a href="../DEVELOPMENT/#linked-worktree-simulator-cleanup">closeout cleanup</a> when the worktree is removed.</li>
+</ul>
+<p>Simulator builds are useful for compile coverage, sign-in UI, settings, browse flows, compact/regular
+mobile shell regressions, TV focus/remote fixtures, and many download/playback routing checks. They
+are not a full substitute for headset playback, physical iPhone/iPad media-background behavior,
+cellular-transfer policy, PiP/AirPlay handoff, physical Apple TV Siri Remote/HDR/audio/HDMI and
+long-play behavior, or system search/Shortcuts invocation.</p>
+<h3 id="tvos-ui-and-evidence-tiers">tvOS UI and evidence tiers<a class="headerlink" href="#tvos-ui-and-evidence-tiers" title="Permanent link">&para;</a></h3>
+<p>The affected-platform tier selects only the small deterministic TV UI smoke plan: launch plus the
+fixture-backed Home-to-detail remote journey. Exhaustive focus, keyboard, remote-scrub, auto-hide,
+and player-menu sweeps belong to the full/manual TV lane.</p>
+<p>The DEBUG-only <code>UIWindow.sendEvent</code> evidence swizzle is never installed by default. Only launches
+with <code>--tv-input-evidence</code> enable it; the exhaustive player UI fixture opts in explicitly. Ordinary
+Debug launches, unit tests, and the small UI smoke plan therefore exercise the unswizzled event
+path. Release builds still compile the recorder out entirely.</p>
+<h3 id="named-agent-evidence-runners">Named agent evidence runners<a class="headerlink" href="#named-agent-evidence-runners" title="Permanent link">&para;</a></h3>
+<p>The native matrix is the selection/execution authority; the named runners are the evidence-bundle
+boundary for repeatable agent scenarios:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>scripts/agent-mobile-run.sh<span class="w"> </span>iphone<span class="w"> </span>fixture-detail-semantic<span class="w"> </span>--allow-simulator
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>scripts/agent-mobile-run.sh<span class="w"> </span>ipad<span class="w"> </span>fixture-detail-semantic<span class="w"> </span>--allow-simulator
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>scripts/agent-tvos-run.sh<span class="w"> </span>fixture-home-semantic<span class="w"> </span>--allow-simulator
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>scripts/agent-tvos-run.sh<span class="w"> </span>fixture-player-basic<span class="w"> </span>--allow-simulator
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>scripts/agent-macos-run.sh<span class="w"> </span>fixture-detail
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>scripts/agent-sim-run.sh<span class="w"> </span>launch-fixture-home-passive
+</code></pre></div>
+<p>The mobile and TV runners refuse a foreign booted device and require <code>--allow-simulator</code> as an
+explicit lease assertion. Invoke the visionOS passive runner only after acquiring the same
+repository lease; it resolves the worktree-owned simulator and shuts it down by default. The
+platform runners' Xcode invocations have a platform-specific wall-clock bound, including
+result-log finalization. Mobile and TV semantic scenarios retain XCTest attachments and result bundles in
+addition to video, screenshots, logs, and <code>run.json</code>. macOS uses semantic Accessibility against an
+isolated development identity. visionOS remains passive/probe-first because Xcode 27 Device
+Interaction does not support its simulator; gaze, pinch-drag, immersive, and hardware-only checks
+remain human/headset gates. Real backend credentials supplement these fixture loops but are never a
+precondition for platform-loop closure.</p>
+<h2 id="macos-host-checks">macOS host checks<a class="headerlink" href="#macos-host-checks" title="Permanent link">&para;</a></h2>
+<p>macOS has no simulator lane. The native <code>LabstreamMac</code> target runs on the host under a
+per-worktree development identity. For Mac-specific or widely shared app changes, run the current
+repeatable sweep:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>scripts/validate-macos-228.sh
+</code></pre></div>
+<p>The script retains its issue-era filename. It combines static identity checks, a Mac host
+build, extra visionOS and iPhone <code>xcodebuild</code> compile steps against this worktree's concrete
+simulator IDs (those <code>id</code> lookups may provision sims; this is not a leased simulator test
+run and must not be treated as one), focused PMSKit diagnostics tests
+(<code>DiagnosticLoggingTests</code> only), and a bounded launch smoke through
+<code>scripts/smoke-macos-host.sh</code>. Shut down any simulator it left booted before another leased
+turn. It does not prove real backend auth, subjective UI behavior,
+media-key ownership, live playback, or background-download durability. See
+<a href="../MACOS/">macOS target guide</a> for host identity and cleanup rules.</p>
+<h3 id="bounded-playback-troubleshooting">Bounded playback troubleshooting<a class="headerlink" href="#bounded-playback-troubleshooting" title="Permanent link">&para;</a></h3>
+<p>The <a href="../AGENT-PLAYBACK-TROUBLESHOOTING/">agent playback troubleshooting guide</a> defines the
+versioned progress/report contract, the synthetic hosted-controller command, CUA-only
+semantic player checks, and separately admitted live scenarios. Start with the fixture;
+only use live probes with explicit admission and existing sign-in. Video encoding needs
+separate approval. Reported controller progress is not visible-frame or hardware evidence.</p>
+<h2 id="optional-live-server-checks">Optional live-server checks<a class="headerlink" href="#optional-live-server-checks" title="Permanent link">&para;</a></h2>
+<p>Live probes are opt-in and must stay secret-gated. They validate real Plex/Jellyfin/Emby wire behavior without committing tokens, URLs, item IDs, media titles, or logs. Keep their env files gitignored and review generated output before sharing.</p>
+<h2 id="physical-device-checks">Physical-device checks<a class="headerlink" href="#physical-device-checks" title="Permanent link">&para;</a></h2>
+<p>Use real hardware for behavior the simulator cannot prove reliably. Follow the canonical
+<a href="../DEVELOPMENT/#physical-apple-vision-pro-install">Apple Vision Pro install</a> or
+<a href="../DEVELOPMENT/#physical-iphone-or-ipad-install">iPhone/iPad install</a> procedure first. Use Apple
+Vision Pro for visionOS media-plane and immersive/Cinema checks; use physical iPhone/iPad hardware
+for mobile background playback, PiP/AirPlay, cellular-transfer policy, Control Center/lock-screen
+behavior, and App Intents/Spotlight invocation. Physical Apple TV is still required for Siri
+Remote, HDR, HDMI, audio-route, and long-play cells in <a href="../TVOS/">TVOS.md</a> and the manual
+checklist; there is no <code>deploy-tvos</code> helper yet, so those cells stay open until a physical
+deploy/acceptance path exists. Simulator evidence cannot close them.</p>
+<ul>
+<li>AVPlayer media-plane rendering, especially on Apple Vision Pro;</li>
+<li>immersive/Cinema presentation on visionOS;</li>
+<li>background, locked, off-head, and cellular download scheduling;</li>
+<li>audio route/interruption behavior;</li>
+<li>Spotlight, Shortcuts, and App Intents end-to-end;</li>
+<li>physical Apple TV remote, HDR/HDMI, and audio-route behavior (blocked until a deploy path exists).</li>
+</ul>
+<p>For the Mac target, use a real signed-in host session for keyboard/fullscreen behavior, menu
+commands, system media keys, live playback, and download reconciliation. Keep that evidence labeled
+as pre-release acceptance rather than released-platform support.</p>
+<p>Semantic AX performance captures have a narrower admission boundary: keep the interactive Mac
+session unlocked and available to the foreground, grant Accessibility trust to the invoking
+process, and allow the exact audit app PID to become active. The driver does not use coordinates,
+but it still cannot produce admissible Home, catalog, Search, or artwork evidence from a locked or
+background-only login session. Missing trust, failed activation, ambiguous selectors, or a lost PID
+fails the arm rather than becoming a timing sample.</p>
+<p>When a headset-only bug is reproduced, collect a bounded bundle with
+<code>scripts/headset-evidence.sh</code> before trying ad hoc log collection, then triage it first with
+<code>scripts/diagnostics-summarize.py &lt;bundle&gt; --auto-baseline</code>. Read <code>analysis/triage.md</code> and
+<code>analysis/summary.json</code> before raw artifacts; open only a named, bounded source window when those
+summaries leave a specific causal question. For later pulls, review the baseline delta reported in
+those summaries and <code>analysis/novel-events.jsonl</code> instead of re-reading whole diagnostic directories
+or broad unified logs.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Copyright (C) 2026 Jonathan Lipworth — GPL-3.0 with §7 exception
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "content.code.copy", "toc.follow", "search.suggest"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

@@ -1,0 +1,1904 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Native Apple-platform client for your own Plex, Jellyfin, or Emby server.">
+      
+      
+      
+        <link rel="canonical" href="https://jlipworth.github.io/Labstream/SCRIPTS/">
+      
+      
+        <link rel="prev" href="../MACOS-CI/">
+      
+      
+        <link rel="next" href="../ARCHITECTURE/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Scripts catalog - Labstream</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#scripts" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Labstream" class="md-header__button md-logo" aria-label="Labstream" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Labstream
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Scripts catalog
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/jlipworth/Labstream" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    jlipworth/Labstream
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Labstream" class="md-nav__button md-logo" aria-label="Labstream" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Labstream
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/jlipworth/Labstream" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    jlipworth/Labstream
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Support & troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../REPORTING-BUGS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Report a bug
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../privacy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Privacy policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../RELEASES/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release and App Store status
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../app-store-exception/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    License exception
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Developer guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CONTRIBUTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../DEVELOPMENT/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../TESTING-STRATEGY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Testing strategy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../APP-STORE-SCREENSHOTS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    App Store screenshots
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../COMPILE-PERFORMANCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compile performance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MOBILE-IOS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    iOS and iPadOS target
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../TVOS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    tvOS target
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MACOS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    macOS target
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MACOS-CI/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Native macOS CI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scripts catalog
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scripts catalog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#build-and-validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build and validation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Build and validation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#paired-performance-comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Paired performance comparison
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#simulator-and-worktree-helpers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Simulator and worktree helpers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#local-mac-development" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Local Mac development
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#physical-device-deployment-and-evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Physical-device deployment and evidence
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#simulator-download-probes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Simulator download probes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#opt-in-live-server-probes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Opt-in live-server probes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Opt-in live-server probes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#plex-decisions-browsing-state-and-downloads" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plex decisions, browsing, state, and downloads
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#playback-and-subtitle-media-plane-probes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Playback and subtitle media-plane probes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#emby" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Emby
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#jellyfin" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Jellyfin
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ARCHITECTURE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CODE-MAP/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Code map
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../BACKENDS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Backends
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../PLAYBACK-ARCHITECTURE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Playback
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../DOWNLOADS-OFFLINE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Downloads & offline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MUSIC-DESIGN/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Music
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../PERSISTENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Persistence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../SYSTEM-INTEGRATION/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    System integration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../DIAGNOSTICS-PRIVACY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Diagnostics & privacy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#build-and-validation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build and validation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Build and validation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#paired-performance-comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Paired performance comparison
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#simulator-and-worktree-helpers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Simulator and worktree helpers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#local-mac-development" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Local Mac development
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#physical-device-deployment-and-evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Physical-device deployment and evidence
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#simulator-download-probes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Simulator download probes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#opt-in-live-server-probes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Opt-in live-server probes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Opt-in live-server probes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#plex-decisions-browsing-state-and-downloads" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plex decisions, browsing, state, and downloads
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#playback-and-subtitle-media-plane-probes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Playback and subtitle media-plane probes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#emby" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Emby
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#jellyfin" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Jellyfin
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="scripts">Scripts<a class="headerlink" href="#scripts" title="Permanent link">&para;</a></h1>
+<p>Repository utilities for validation, simulator/worktree hygiene, local host runs, device deploys,
+privacy-safe evidence collection, and opt-in live-server probes. Scripts that need real servers read
+gitignored environment files; keep tokens, server URLs, item IDs, device IDs, generated logs, and
+media details out of commits and public issues.</p>
+<h2 id="build-and-validation">Build and validation<a class="headerlink" href="#build-and-validation" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>xcodebuild-versioned.sh</code> — wraps <code>xcodebuild</code> and stamps a source-derived internal Build ID.</li>
+<li><code>build-version-args.sh</code> — prints the version/build arguments used by the wrapper and deploy scripts.</li>
+<li><code>ci-hygiene.sh</code> — repository privacy, signing, placeholder, and tooling guardrails.</li>
+<li><code>check-docs-mermaid.py</code> — verifies that published Mermaid source fences become
+  generated Mermaid containers without external script dependencies.</li>
+<li><code>check-doc-links.py</code> — validates repository-local links and Markdown heading anchors across all
+  tracked Markdown, including unpublished research, evidence, and archive lanes.</li>
+<li><code>ci-macos-apple-platforms.sh</code> — native-runner preflight, isolated unsigned
+  visionOS/iOS/iPadOS builds, PMSKit tests, evidence, and cleanup. See
+  <a href="../MACOS-CI/"><code>docs/MACOS-CI.md</code></a>.</li>
+<li><code>native-test-matrix.py</code> + <code>native-test-matrix.json</code> — side-effect-free compile/package smoke,
+  affected-platform, and full native validation planning, with explicitly gated
+  lane-at-a-time execution. Simulator-hosted lanes require the exact ID owned by the current
+  worktree, sole-booted state, and an explicit lease assertion; generic simulator build lanes do
+  not. See
+  <a href="../TESTING-STRATEGY/#native-apple-matrix-driver">Testing strategy</a>.</li>
+<li><code>app-store-screenshots.py</code> + <code>app-store-screenshot-specs.json</code> — serial credential-free fixture
+  capture for visionOS, iPhone, iPad, tvOS, and the isolated Mac target. It uses exact worktree
+  simulator IDs, exports only JPEGs plus a sanitized checksum manifest, and fails closed on
+  non-Apple dimensions or alpha channels. See
+  <a href="../APP-STORE-SCREENSHOTS/">App Store screenshot automation</a>.</li>
+<li><code>publication-audit.py</code> — audits tracked text, Git history, and optionally GitHub issue text for
+  sensitive publication regressions without echoing matched secrets.</li>
+<li><code>loc.sh</code> — informational per-module source line counts.</li>
+<li><code>perf-log-summary.py</code> — converts privacy-safe performance signposts into summaries/Markdown and
+  produces strict, raw-artifact-bound comparison summaries.</li>
+<li><code>perf_evidence_schema.py</code> — shared closed schema/parser for privacy-safe performance spans,
+  capture bindings, phase/backend selectors, and correctness fields.</li>
+<li><code>perf-compare.py</code> — freezes a control-only minimum detectable effect, then validates and compares
+  seeded paired control/candidate runs with correctness, provenance, failure, and covariate gates.</li>
+<li><code>perf-idle-compare.py</code> — separately compares the Mac runner's typed System Trace idle evidence.
+  Its primary input is the complete runner result rather than manifest globs, so failed arms cannot
+  disappear. It revalidates every successful manifest and typed archive/XML/extraction/summary chain,
+  enforces the runner-declared complete seeded schedule and requires the exact long policy (one
+  warmup, five measured pairs, and 120-second arms) for both the threshold pilot and verdict, plus
+  chronology, identity, environment, stable external-power/thermal covariates, caller-declared
+  storage/start-gap/trace-window tolerances, and reports both raw
+  <code>cpu_running_ns</code>/<code>wakeups_count</code> and duration-normalized CPU ns/s and wakeups/minute. Relative
+  deltas are deliberately <code>null</code> at a zero control baseline; the absolute normalized delta remains
+  authoritative.</li>
+</ul>
+<p>Idle uses a two-pass protocol, not the latency comparator's ordinary control-calibration flow:</p>
+<ol>
+<li>Complete a successful 1+5 paired, 120-second pilot with <code>perf-macos-launch-idle.py</code>.</li>
+<li>Freeze thresholds from that complete pilot. The freeze derives its guardrail only from the five
+     measured control arms, records the pilot result, manifest, control commit, and product checksums,
+     and prints the threshold-artifact checksum.</li>
+<li>After recording that checksum, capture a fresh, non-overlapping 1+5 paired verdict run with the
+     same control product.</li>
+<li>Compare the fresh result with the frozen artifact and its exact checksum. The comparator rejects
+     a reused pilot result, comparison/order identity, run ID, or manifest, and rejects a changed
+     control commit or product.</li>
+</ol>
+<p>The threshold artifact has the closed tool identity <code>labstream-perf-idle-thresholds</code> version 1,
+  <code>sample_policy: long</code>, the exact capture duration, a bounded rationale, control provenance, and
+  <code>absolute_mde</code> plus <code>relative_mde_percent</code> for both <code>cpu_running_ns_per_second</code> and
+  <code>wakeups_per_minute</code>. Each effective threshold is the larger of the absolute floor and the frozen
+  relative percentage of the fresh control median. Without that artifact, the tool still emits
+  descriptive paired statistics but exits 3 with <code>insufficient_data</code>. The manifest does not bind the
+  threshold checksum before verdict capture, so temporal ordering remains explicitly
+  operator-attested.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># First complete a distinct 1+5/120-second pilot runner result, then freeze it.</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>scripts/perf-idle-compare.py<span class="w"> </span>freeze<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span>--runner-result<span class="w"> </span>artifacts/performance-audit/mac-idle-pilot.json<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span>--thresholds-out<span class="w"> </span>frozen-idle-thresholds.json
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="nv">SHA</span><span class="o">=</span><span class="k">$(</span>shasum<span class="w"> </span>-a<span class="w"> </span><span class="m">256</span><span class="w"> </span>frozen-idle-thresholds.json<span class="w"> </span><span class="p">|</span><span class="w"> </span>awk<span class="w"> </span><span class="s1">'{print $1}'</span><span class="k">)</span>
+<a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>
+<a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="c1"># Capture a fresh non-overlapping 1+5/120-second verdict result before comparing.</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>scripts/perf-idle-compare.py<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">  </span>--runner-result<span class="w"> </span>artifacts/performance-audit/mac-idle-verdict.json<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">  </span>--thresholds<span class="w"> </span>frozen-idle-thresholds.json<span class="w"> </span>--thresholds-sha256<span class="w"> </span><span class="s2">"</span><span class="nv">$SHA</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="w">  </span>--max-free-storage-drift-bytes<span class="w"> </span><span class="m">5368709120</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="w">  </span>--max-pair-start-gap-seconds<span class="w"> </span><span class="m">300</span><span class="w"> </span>--max-actual-window-drift-ms<span class="w"> </span><span class="m">1000</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="w">  </span>--json-out<span class="w"> </span>artifacts/performance-audit/mac-idle-comparison.json<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="w">  </span>--csv-out<span class="w"> </span>artifacts/performance-audit/mac-idle-pairs.csv
+</code></pre></div>
+<p>The start-gap limit must exceed the capture duration: manifest timestamps precede settle, capture,
+  export, and packaging, so the latency comparator's 120-second gap is not valid for a 120-second idle
+  arm. Threshold values and all tolerances are audit decisions, not defaults supplied by the tool.
+- <code>perf-emby-browse-fixture.py</code> — external deterministic Emby-compatible browse/artwork fixture for
+  paired performance workloads. It binds only to literal <code>127.0.0.1</code> (ephemeral port by default),
+  accepts no token/password/public-bind configuration, and is outside every Xcode synchronized
+  source root. Its closed routes are <code>System/Info/Public</code>, <code>Users/AuthenticateByName</code>,
+  <code>Users/fixture-user/{Views,Items,Items/Resume,Items/Latest}</code>, <code>Shows/NextUp</code>, and
+  <code>Items/&lt;synthetic-item-id&gt;/Images/Primary</code>; the corpus contains only synthetic IDs/titles and
+  has a stable <code>fixture_id</code> plus SHA-256. The normal first-run Emby username/password UI can use
+  the fixed public test values <code>benchmark-user</code> / <code>benchmark-pass-v1</code>; successful authentication
+  returns the fixed non-secret <code>benchmark-access-v1</code> token. These are corpus constants, not secrets
+  or configurable credentials. The focused contract tests for both production auth request/decoder
+  shapes must pass before a UI driver may claim normal setup support. Saved-session relaunch probing
+  through <code>GET /Users/&lt;id&gt;</code> remains outside this first fixture slice and must not be inferred.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>scripts/perf-emby-browse-fixture.py<span class="w"> </span>--ready-file<span class="w"> </span>/tmp/labstream-emby-fixture.json
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="c1"># The ready file contains the ephemeral loopback base URL, fixed fixture user ID, and corpus hash.</span>
+</code></pre></div>
+<p>The loopback-only control surface is intentionally narrow: <code>POST /__fixture__/configure</code> accepts
+  exactly <code>route</code>, <code>delay_ms</code>, <code>status</code>, and <code>remaining</code> (<code>status: null</code> means delay-only);
+  <code>POST /__fixture__/reset</code> clears faults, delays, and counters; and <code>GET /__fixture__/ledger</code>
+  returns only aggregate route/status/concurrency counts. The server never retains or echoes raw
+  request paths, query values, headers, bodies, or credentials. It caps active handlers, applies a
+  timeout to every accepted socket, and returns a deterministic aggregate-counted 503 on overload.
+  The ledger includes saturating declared/committed response-body bytes per closed route plus
+  write-failure/client-disconnect counts; those counters are implemented, not deferred. This slice
+  is server tooling only: it does not configure or drive the app, and it is not permission to start
+  a paired capture.
+- <code>performance-audit-contract.py</code> — validates Release-parity <code>PerformanceAudit</code> build
+  settings, scans a built app for Debug-only fixture/probe/evidence contracts, and validates
+  version-1 local evidence manifests plus their checksums. The closed JSON schema lives at
+  <code>schemas/performance-audit-manifest-v1.schema.json</code>. Profile actions for all four app schemes use
+  <code>PerformanceAudit</code> and intentionally do not inherit Debug launch arguments or environment. Run:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>scripts/performance-audit-contract.py<span class="w"> </span>configuration
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>scripts/performance-audit-contract.py<span class="w"> </span>binary<span class="w"> </span>/path/to/PerformanceAudit/Labstream.app
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>scripts/performance-audit-contract.py<span class="w"> </span>manifest<span class="w"> </span>artifacts/performance-audit/&lt;run&gt;/manifest.json
+</code></pre></div>
+<p>Raw runs belong under the gitignored <code>artifacts/performance-audit/</code> directory. Each manifest records
+  comparison role, warmup/measured status, sample index, and seeded-order identity in addition to the
+  product, device, state, scenario, and retention metadata required by the comparison protocol.
+  Manifest identity fields use generated opaque shapes (<code>run-&lt;hex&gt;</code>, <code>scenario-&lt;hex&gt;</code>,
+  <code>fixture-&lt;hex&gt;</code>) and semantic fields use bounded enums; raw pointers use only
+  <code>raw/artifact-NNNN.&lt;type&gt;</code>, with a fixed <code>summary/redacted.json</code> summary path. The validator also
+  rejects URLs, IP addresses, and absolute user paths in manifest strings.</p>
+<p>This is a metadata contract, not a content scrubber. It does not inspect raw trace/log payloads,
+  prove that a human marked the correct privacy status, or make raw evidence publication-safe. Keep
+  raw artifacts local and review the redacted summary before setting <code>publishable</code> with a <code>reviewed</code>
+  status. The configuration check compares effective Swift/C/C++ flags, definitions, optimization,
+  coverage, sanitizers, signing, and other Release-parity settings; the profiling compilation
+  condition is the sole permitted condition difference.</p>
+<h3 id="paired-performance-comparison">Paired performance comparison<a class="headerlink" href="#paired-performance-comparison" title="Permanent link">&para;</a></h3>
+<p>Comparison evidence is fail-closed. Each raw log contains the opaque capture marker generated from
+its manifest, and that manifest points to the exact raw artifact and SHA-256. Generate the marker
+before appending the bounded unified-log capture, update the raw checksum, then derive the strict
+summary with the closed correctness fields required for that phase/backend:</p>
+<p>Browse/artwork measurement uses separate <code>home.first_content</code>/<code>home.load</code> and
+<code>library_grid.first_content</code>/<code>library_grid.complete</code> spans, a post-debounce <code>search.load</code> span,
+terminal page/publication counters, and the closed <code>artwork.load delivery=</code> provenance enum. These
+records measure existing execution only; they do not select a transport, fixture, cache policy, or
+retry policy. <code>publication_count</code> is an allowed diagnostic, not a correctness selector: concurrent
+completion order can vary between otherwise equivalent runs.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>scripts/perf-log-summary.py<span class="w"> </span>--emit-capture-marker<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>--manifest<span class="w"> </span>run/manifest.json<span class="w"> </span>--workload-id<span class="w"> </span>workload-0123456789ab<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span>&gt;&gt;<span class="w"> </span>run/raw/artifact-0001.log
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># Append only this launched run's bounded `log show`, then update the manifest raw checksum.</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>scripts/perf-log-summary.py<span class="w"> </span>--json<span class="w"> </span>--strict<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span>--manifest<span class="w"> </span>run/manifest.json<span class="w"> </span>--raw-artifact<span class="w"> </span>run/raw/artifact-0001.log<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">  </span>--workload-id<span class="w"> </span>workload-0123456789ab<span class="w"> </span>--phase<span class="w"> </span>home.load<span class="w"> </span>--backend<span class="w"> </span>Plex<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">  </span>--correctness-field<span class="w"> </span>hub_count<span class="w"> </span>--correctness-field<span class="w"> </span>item_count<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="w">  </span>--expected-span-count<span class="w"> </span><span class="m">1</span><span class="w"> </span>&gt;<span class="w"> </span>run/summary/redacted.json
+</code></pre></div>
+<p>Freeze the MDE from control-only evidence <strong>before</strong> candidate capture, record the printed checksum,
+then compare separately collected seeded pairs. <code>short</code> requires three warmups and twenty measured
+pairs; <code>long</code> requires one warmup and five measured pairs. Invalid, incomplete, failed, mismatched-
+work, privacy-unsafe, out-of-order, or materially drifted evidence produces insufficient data rather
+than an improvement. The current manifest schema does not cryptographically bind the frozen checksum
+before candidate capture, so the result records that ordering as operator-attested.</p>
+<p><div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>scripts/perf-compare.py<span class="w"> </span>freeze<span class="w"> </span>--control-manifest<span class="w"> </span>runs/control-*/*.json<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span>--phase<span class="w"> </span>home.load<span class="w"> </span>--backend<span class="w"> </span>Plex<span class="w"> </span>--correctness-field<span class="w"> </span>hub_count<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>--correctness-field<span class="w"> </span>item_count<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span>--sample-policy<span class="w"> </span>short<span class="w"> </span>--out<span class="w"> </span>frozen-mde.json
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>scripts/perf-compare.py<span class="w"> </span>compare<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">  </span>--control-manifest<span class="w"> </span>runs/pairs/control-*/*.json<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">  </span>--candidate-manifest<span class="w"> </span>runs/pairs/candidate-*/*.json<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">  </span>--phase<span class="w"> </span>home.load<span class="w"> </span>--backend<span class="w"> </span>Plex<span class="w"> </span>--correctness-field<span class="w"> </span>hub_count<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">  </span>--correctness-field<span class="w"> </span>item_count<span class="w"> </span>--sample-policy<span class="w"> </span>short<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">  </span>--frozen-mde<span class="w"> </span>frozen-mde.json<span class="w"> </span>--frozen-mde-sha256<span class="w"> </span>&lt;printed-checksum&gt;<span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">  </span>--max-free-storage-drift-bytes<span class="w"> </span><span class="m">1073741824</span><span class="w"> </span>--max-pair-gap-seconds<span class="w"> </span><span class="m">120</span><span class="w"> </span><span class="se">\</span>
+<a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="w">  </span>--json-out<span class="w"> </span>result.json<span class="w"> </span>--csv-out<span class="w"> </span>pairs.csv
+</code></pre></div>
+- <code>compile-audit.py</code> — opt-in, isolated, paired arm64 compile-cost comparison for explicit control
+  and candidate commits across PMSKit and all app schemes; it attempts at least five alternating
+  same-index repetitions and records integrity/covariate metadata. Failed runs retain partial rows
+  and are not valid comparisons. See
+  <a href="../COMPILE-PERFORMANCE/"><code>docs/COMPILE-PERFORMANCE.md</code></a>.
+- <code>tests/test_*.py</code> — the complete, discoverable script/tooling test inventory, including native
+  matrix, publication/docs, performance contract/comparator/runner/fixture/AX/trace, diagnostics,
+  compile-audit, macOS-CI, source-topology, and hardening coverage. <code>scripts/ci-hygiene.sh</code> runs the
+  inventory with <code>uv run python -m unittest discover -s scripts/tests -v</code> when <code>pyproject.toml</code> is present,
+  so newly added matching test modules do not require this catalog to be hand-enumerated.</p>
+<h2 id="simulator-and-worktree-helpers">Simulator and worktree helpers<a class="headerlink" href="#simulator-and-worktree-helpers" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>worktree-sim.sh</code> — provisions one simulator per worktree. The default is visionOS
+  (<code>vpwt-*</code>, <code>.simid</code>); opt into iPhone, iPad, or tvOS with <code>--platform</code>,
+  <code>LABSTREAM_SIM_PLATFORM</code>, or a gitignored <code>.simplatform</code> file (<code>iphonewt-*</code>/<code>.simid-iphone</code>,
+  <code>ipadwt-*</code>/<code>.simid-ipad</code>, <code>tvwt-*</code>/<code>.simid-tvos</code>). Resolve a concrete ID and never
+  target <code>booted</code>.</li>
+<li><code>run-bounded-command.py</code> — wall-clock timeout wrapper used by the mobile and tvOS agent
+  runners so a hung <code>xcodebuild</code> or simctl step cannot run unbounded.</li>
+<li><code>agent-sim-run.sh</code> — bounded visionOS agent scenarios with build/install/launch, screenshots,
+  video, logs, and a machine-readable run result. Prefer <code>launch-fixture-home-passive</code> for a
+  credential-free browse surface.</li>
+<li><code>agent-mobile-run.sh</code> — credential-free iPhone/iPad fixture launch and evidence bundle. It
+  requires <code>--allow-simulator</code> as the caller's one-simulator lease assertion and publishes the
+  stable semantic targets that Xcode 27 Device Interaction should use for the next action step.</li>
+<li><code>agent-tvos-run.sh</code> — credential-free tvOS semantic Home-to-detail and deterministic local-player evidence; it requires <code>--allow-simulator</code> as the lease assertion.</li>
+<li><code>agent-macos-run.sh</code> / <code>agent-macos-ax-driver.swift</code> — isolated credential-free macOS fixture
+  run using semantic Accessibility actions and Labstream-window-only screenshots.</li>
+<li><code>simclick.swift</code> — retained low-level helper for the legacy visionOS click scenario. It is not a
+  supported Xcode 27/Device Hub validation path; current visionOS closure is passive/probe-first.</li>
+</ul>
+<h2 id="local-mac-development">Local Mac development<a class="headerlink" href="#local-mac-development" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>deploy-macos-to-host.sh</code> — builds/stages/optionally launches <code>LabstreamMac</code> on the arm64 host
+  under an isolated per-worktree development identity; also owns safe staged-app/container cleanup.</li>
+<li><code>smoke-macos-host.sh</code> — bounded signed-out host launch smoke under an isolated identity.</li>
+<li><code>validate-macos-228.sh</code> — repeatable Mac-target validation sweep. The filename is retained from
+  the implementation issue; it also builds shared targets and runs focused diagnostics checks.</li>
+<li><code>validate-macos-pipeline.py</code> — enforces the trust-boundary/label rules (<code>platform: darwin/arm64</code>,
+  <code>backend: local</code>, <code>purpose: mac-ci</code>) for the native Woodpecker CI workflow file.</li>
+<li><code>perf-macos-launch-idle.py</code> — external paired runner for two already-built Mac
+  <code>PerformanceAudit</code> apps using the same dedicated <code>org.labstream.Labstream.perf.*</code> identity. It validates both
+  products with <code>performance-audit-contract.py</code>, preserves the system-managed container root while
+  resetting only its mutable <code>Data</code> subtree, seeds the
+  canonical empty download index, and records adjacent A/B launch logs or exact-PID 120-second
+  System Trace captures after a bounded 10-second readiness/settle interval. Unified-log bounds
+  still begin before launch. Start with <code>--plan</code> and supply exact distinct artifact commits, an
+  opaque device label, and retention deadline. Launch capture also selects one exact
+  <code>--launch-phase</code> profile: <code>runtime.composition</code>, <code>runtime.download_manager</code>,
+  <code>runtime.download_store</code>, <code>runtime.download_transport_construct</code>, or
+  <code>runtime.download_transport_submission</code>. The profile closes the span, selector, and correctness
+  field used by every sample; it cannot drift on resume or be inferred after capture. Successful
+  launch samples atomically publish a validated manifest, raw log, and strict selected-profile
+  summary consumable by <code>perf-compare.py</code>. The idle path cleanly stops the exact app, privately
+  exports the native System Trace TOC and <code>thread-state</code> table, creates a deterministic no-follow
+  <code>.trace.zip</code>, and normalizes the native id/ref XML into the closed typed XML artifact. Native
+  exports can contain paths and environment values, so they are deleted before atomic publication;
+  the archived trace remains the authoritative raw evidence. Xcode 27 can take materially longer
+  than the trace window to finalize a System Trace, so the runner allows a separate bounded
+  120-second finalization wait.
+  A timeout stops the exact app and trace processes, exports nothing, and publishes no run directory.
+  Schema, build, PID, reference, state, and timing drift fail closed.
+  Failures publish no run directory, remain in the complete runner result, and make the runner
+  nonzero. The runner itself deliberately retains an <code>insufficient_data</code> verdict; pass that result to
+  <code>perf-idle-compare.py</code> for the separate paired verdict rather than treating capture success as a
+  performance conclusion.</li>
+<li><code>perf-xctrace-idle-summary.py</code> — strict measurement-only normalizer for Xcode's native System
+  Trace TOC and 16-column <code>thread-state</code> XML. It clips native intervals that cross the exact TOC
+  boundary and sums only the in-window portion of target-process <code>Running</code> rows as
+  <code>cpu_running_ns</code>; <code>wakeups_count</code> is the number of target-process <code>Runnable</code> transitions whose
+  start lies inside that window and whose <code>made-runnable-by-thread</code> source is non-sentinel. It
+  treats Xcode 27's typed <code>Terminated</code> state as a known non-running, non-wakeup state, while an
+  unknown state or a mismatch between a state's formatted and typed values fails closed. It also
+  rejects zero-length or wholly out-of-window intervals plus Xcode/table/column/type/PID/window and
+  id/ref drift, then writes the closed normalized XML, typed extraction, and privacy-safe idle
+  summary bound to the regular <code>.trace.zip</code>. It makes no paired performance claim.</li>
+<li><code>perf-macos-emby-browse.py</code> — paired external Home, catalog, Search, and artwork runner for the same
+  dedicated Mac <code>PerformanceAudit</code> artifacts. It launches the loopback-only Emby fixture, resets
+  that performance identity's closed Keychain account set (including per-arm routing identity) and
+  mutable sandbox data, compiles
+  <code>perf-macos-ax-driver.swift</code> once before capture, and drives the exact app PID through semantic
+  accessibility selectors without coordinates or app arguments/environment. Each successful arm
+  waits for its exact terminal span, validates the aggregate fixture ledger, and publishes a
+  contract-validated manifest plus strict summary whose automation hashes bind the fixture,
+  compiled driver, and private workload spec. Begin with <code>--plan</code>. <code>artwork</code> is now an admitted
+  scenario for the exact scoped <code>library_first_poster</code> milestone: the AX tree must contain one
+  uniquely identified loaded poster image, the selected capture must contain exactly one successful
+  scoped <code>artwork.load</code> span, and the fixture ledger must prove at least one successful image route.
+  This proves only that first poster's loaded milestone and comparable scoped work; it does not prove
+  a full viewport, cache warming, or all-artwork completion. Home, catalog, Search, and artwork AX
+  captures require an unlocked interactive Mac session in which the audit app can become active and
+  the invoking process already has Accessibility trust. A locked/background-only session or failed
+  activation is an admission failure, not a performance sample.</li>
+</ul>
+<p>There is no macOS simulator lane. See <a href="../MACOS/"><code>docs/MACOS.md</code></a>.</p>
+<h2 id="physical-device-deployment-and-evidence">Physical-device deployment and evidence<a class="headerlink" href="#physical-device-deployment-and-evidence" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>deploy-to-device.sh</code> — development-signed build/install wrapper for a paired Apple Vision Pro.</li>
+<li><code>deploy-mobile-to-device.sh</code> — development-signed <code>LabstreamMobile</code> build/install wrapper for a
+  paired iPhone or iPad; set <code>IOS_DEVICE_ID</code> when more than one is paired.</li>
+<li><code>deploy-ad-hoc-to-device.sh</code> — distribution-signed Ad Hoc Vision Pro build/export/install path;
+  requires an appropriate distribution certificate and provisioning profile.</li>
+<li><code>provisioning-profile-info.py</code> — provisioning-profile parsing/filtering shared by deploy scripts.</li>
+<li><code>headset-evidence.sh</code> — read-only <code>devicectl</code> evidence bundle after a headset repro. Output under
+  <code>build/headset-evidence/</code> can contain private artifacts and must be reviewed before sharing.</li>
+<li><code>diagnostics-summarize.py</code> — deterministic, privacy-conscious first pass over an evidence bundle.
+  It writes bounded triage/delta artifacts under the bundle's <code>analysis/</code> directory so agents do
+  not repeatedly ingest raw rotated JSONL logs. Raw evidence is retained unchanged.</li>
+</ul>
+<p>Device deploy scripts mutate the installed app and may replace another build with the same bundle
+identifier. Read their <code>--help</code> output and the platform documentation before use.</p>
+<h2 id="simulator-download-probes">Simulator download probes<a class="headerlink" href="#simulator-download-probes" title="Permanent link">&para;</a></h2>
+<p>These launch the Debug app using the selected worktree simulator's already signed-in state. They do
+not read a token environment file:</p>
+<ul>
+<li><code>probe-plex-range-drop.sh</code> — Plex static-range recoverability with connection-loss (default),
+  validator-flip, and one-shot mid-train 401 transport faults.</li>
+<li><code>probe-jellyfin-download.sh</code> — Jellyfin original/static and optimize/transcode download lanes.</li>
+<li><code>probe-emby-download.sh</code> — Emby route negotiation, converted-source reuse, and optimize/download
+  lanes.</li>
+</ul>
+<p>Outputs live under <code>build/probes/</code> and are local evidence, not publication-ready artifacts.</p>
+<h2 id="opt-in-live-server-probes">Opt-in live-server probes<a class="headerlink" href="#opt-in-live-server-probes" title="Permanent link">&para;</a></h2>
+<p>Start from <code>plex-live.env.example</code> where applicable and keep the resulting <code>*-live.env</code> files
+gitignored. <code>live-test-filter.sh</code> is the shared output/exit-status filter used by probe wrappers.</p>
+<h3 id="plex-decisions-browsing-state-and-downloads">Plex decisions, browsing, state, and downloads<a class="headerlink" href="#plex-decisions-browsing-state-and-downloads" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>live-decision-probe.sh</code> — universal-transcode decision wire shape.</li>
+<li><code>live-plex-browse-probe.sh</code> — sections, library browsing, and TV hierarchy decoding.</li>
+<li><code>live-plex-timeline-probe.sh</code> — progress round trip and transcode-session stop cleanup.</li>
+<li><code>live-playqueue-mutation-probe.sh</code> — ephemeral queue creation, play-next, and shuffle mutations.</li>
+<li><code>live-download-probe.sh</code> — direct-original versus optimizer route decision.</li>
+<li><code>live-download-status-probe.sh</code> — read-only optimizer queue/progress status.</li>
+<li><code>live-phase6-download-candidate-probe.sh</code> — finds a large original/static Plex item suitable for
+  the static-range transport-fault harness.</li>
+<li><code>live-optimize-probe.sh</code> — optimizer discovery, creation grammar, and rendered static part.</li>
+<li><code>live-offline-playback-decision-probe.sh</code> — local completed-row playback routing fixture.</li>
+</ul>
+<h3 id="playback-and-subtitle-media-plane-probes">Playback and subtitle media-plane probes<a class="headerlink" href="#playback-and-subtitle-media-plane-probes" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>live-segment-probe.sh</code> — deep-offset HLS playlist/segment behavior outside AVFoundation.</li>
+<li><code>live-subtitle-burn-probe.sh</code> — image-subtitle burn request and server re-encode verdict.</li>
+<li><code>live-subtitle-off-probe.sh</code> — selected-stream state and <code>subtitles=auto</code>/Off behavior; its
+  opt-in mutation mode restores the original server selection.</li>
+<li><code>live-sidecar-subtitle-probe.sh</code> — real SRT/VTT fetch and offline parser coverage.</li>
+</ul>
+<h3 id="emby">Emby<a class="headerlink" href="#emby" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>live-emby-probe.sh</code> — Emby auth/browse/playback request builders, shared progress-plan 2xx
+  proof, and live response decoding. Copy <code>emby-live.env.example</code>. Timeline acceptance always
+  mutates a TEST ACCOUNT resume point and requires both the explicit write opt-in and a distinct
+  offset; the probe verifies the write and verifies restoration before reporting PASS.</li>
+<li><code>live-emby-trickplay-probe.sh</code> — GET-only Emby ThumbnailSet/Thumbnail/index.bif trick-play
+  preview probe; copy <code>emby-live.env.example</code> and follows the same ignored-env-file/VERDICT-SKIP
+  convention.</li>
+</ul>
+<h3 id="jellyfin">Jellyfin<a class="headerlink" href="#jellyfin" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>live-jellyfin-browse-timeline-probe.sh</code> — authoritative shared browse wrappers plus all four
+  shared progress events. Copy <code>jellyfin-live.env.example</code>. Timeline acceptance always mutates a
+  TEST ACCOUNT resume point and requires both the explicit write opt-in and a distinct offset; the
+  probe verifies the write and verifies restoration before reporting PASS.</li>
+</ul>
+<p>The browse/timeline wrappers print an explicit <code>VERDICT: SKIP</code> and exit successfully when their
+ignored credential file or required values are absent. A hermetic test pass containing that
+verdict is readiness evidence only, never live acceptance; acceptance requires a recorded
+<code>VERDICT: PASS</code> from a credentialed run.</p>
+<p>Before adding a live probe, document every required environment key, fail or skip safely when
+configuration is absent, clean up any server-side mutation, and ensure output redacts tokens,
+hosts, titles, identifiers, and paths.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Copyright (C) 2026 Jonathan Lipworth — GPL-3.0 with §7 exception
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "content.code.copy", "toc.follow", "search.suggest"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

@@ -1,0 +1,1975 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Native Apple-platform client for your own Plex, Jellyfin, or Emby server.">
+      
+      
+      
+        <link rel="canonical" href="https://jlipworth.github.io/Labstream/CODE-MAP/">
+      
+      
+        <link rel="prev" href="../ARCHITECTURE/">
+      
+      
+        <link rel="next" href="../BACKENDS/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Code map - Labstream</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#code-map" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Labstream" class="md-header__button md-logo" aria-label="Labstream" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Labstream
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Code map
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/jlipworth/Labstream" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    jlipworth/Labstream
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Labstream" class="md-nav__button md-logo" aria-label="Labstream" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Labstream
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/jlipworth/Labstream" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    jlipworth/Labstream
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    User guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    User guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../support/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Support & troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../REPORTING-BUGS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Report a bug
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../privacy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Privacy policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../RELEASES/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Release and App Store status
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../app-store-exception/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    License exception
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Developer guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Developer guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../CONTRIBUTING/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../DEVELOPMENT/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development setup
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../TESTING-STRATEGY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Testing strategy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../APP-STORE-SCREENSHOTS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    App Store screenshots
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../COMPILE-PERFORMANCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compile performance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MOBILE-IOS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    iOS and iPadOS target
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../TVOS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    tvOS target
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MACOS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    macOS target
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MACOS-CI/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Native macOS CI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../SCRIPTS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Scripts catalog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ARCHITECTURE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Code map
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Code map
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#app-shell-and-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        App shell and lifecycle
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#session-state-authentication-and-secrets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Session state, authentication, and secrets
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#browse-paging-search-and-artwork" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Browse, paging, search, and artwork
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#root-navigation-and-shared-ui" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Root navigation and shared UI
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#video-playback" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Video playback
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cinema" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cinema
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#downloads-and-offline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Downloads and offline
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#music" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Music
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shareplay-watch-together-visionos" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SharePlay / Watch Together (visionOS)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#system-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        System integration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#diagnostics-and-privacy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Diagnostics and privacy
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tests-builds-and-scripts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tests, builds, and scripts
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../BACKENDS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Backends
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../PLAYBACK-ARCHITECTURE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Playback
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../DOWNLOADS-OFFLINE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Downloads & offline
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../MUSIC-DESIGN/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Music
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../PERSISTENCE/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Persistence
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../SYSTEM-INTEGRATION/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    System integration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../DIAGNOSTICS-PRIVACY/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Diagnostics & privacy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#app-shell-and-lifecycle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        App shell and lifecycle
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#session-state-authentication-and-secrets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Session state, authentication, and secrets
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#browse-paging-search-and-artwork" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Browse, paging, search, and artwork
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#root-navigation-and-shared-ui" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Root navigation and shared UI
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#video-playback" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Video playback
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cinema" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cinema
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#downloads-and-offline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Downloads and offline
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#music" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Music
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shareplay-watch-together-visionos" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SharePlay / Watch Together (visionOS)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#system-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        System integration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#diagnostics-and-privacy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Diagnostics and privacy
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#tests-builds-and-scripts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tests, builds, and scripts
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="code-map">Code map<a class="headerlink" href="#code-map" title="Permanent link">&para;</a></h1>
+<p>Use this as the current “where do I change X?” guide. App lifecycle, UI, and most live
+orchestration live in <code>Labstream/</code>; reusable requests, models, and policies live in
+<code>PMSKit/</code>. PMSKit is mostly pure, with narrow effectful infrastructure such as its
+MediaBrowser request executor, loopback media-session proxy, diagnostic ring
+buffer, and protected credential-artifact writer.</p>
+<p>The directory names below are the stable first stop. Use symbol search and the ownership
+tables in the subsystem pages for current file-level detail; a duplicated per-file diagram
+would become stale as implementations move.</p>
+<h2 id="app-shell-and-lifecycle">App shell and lifecycle<a class="headerlink" href="#app-shell-and-lifecycle" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>Labstream/Shared/App/AppRuntime.swift</code> is the shared composition root for app-lifetime
+  <code>AppModel</code>, <code>AuthManager</code>, <code>MusicPlayerController</code>, <code>SessionBootstrap</code>,
+  <code>LibraryCatalogRepository</code>, <code>MetadataRepository</code>, and <code>ArtworkPipeline</code> instances. It also owns
+  the real <code>DownloadManager</code> on download-capable products; tvOS has no download field or
+  construction path.</li>
+<li><code>Labstream/Platforms/visionOS/App/Labstream.swift</code> is the visionOS entry point. It declares the main window,
+  declares Custom Cinema, and owns the live app-lifetime <code>WatchTogetherCoordinator</code> shared by
+  the window and Cinema.</li>
+<li><code>Labstream/Platforms/Mobile/App/LabstreamMobile.swift</code> is the universal iPhone/iPad entry point.</li>
+<li><code>Labstream/Platforms/macOS/App/LabstreamMac.swift</code> is the native macOS entry point and declares the
+  one retained main-window group, removes the New Window command, owns the singleton Mac Settings
+  scene, and supplies deterministic window reactivation and menu commands.</li>
+<li><code>Labstream/Shared/App/ContentView.swift</code> registers system routing, runs the one-time restore,
+  and applies PMSKit's <code>BrowseUIGate</code> to select restoring, restricted offline, login, or
+  authenticated browse state. The restricted offline path exists only on download-capable
+  products; tvOS falls back to login.</li>
+<li><code>Labstream/Capabilities/Downloads/App/AppDelegate.swift</code> bridges iOS/visionOS background URLSession relaunch
+  events. <code>Labstream/Platforms/macOS/App/MacAppDelegate.swift</code> owns Mac launch, reopen, and
+  window presentation; it is not a Downloads session adapter and does not handle UIKit
+  background URLSession relaunch.</li>
+<li><code>Labstream/Shared/App/PlatformClientIdentity.swift</code> maps the target to its Plex client/device
+  identity.</li>
+</ul>
+<p>Every app target owns <code>Labstream/Shared/</code> plus exactly its matching <code>Labstream/Platforms/</code>
+root. Vision Pro, mobile, and Mac also own <code>Labstream/Capabilities/Downloads/</code>; tvOS does not.
+Use inline conditional compilation only where a genuinely shared file needs framework or
+presentation variation. Do not create duplicate backend or policy implementations merely to
+vary presentation.</p>
+<h2 id="session-state-authentication-and-secrets">Session state, authentication, and secrets<a class="headerlink" href="#session-state-authentication-and-secrets" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>Labstream/Shared/App/AppModel.swift</code> owns live, separate Plex/Jellyfin/Emby server and
+  credential lanes, the active backend, token-free UI session identities, exact opaque browse
+  authorities, immutable authenticated browse contexts, and the shared <code>PlexClient</code>.</li>
+<li><code>Labstream/Shared/Auth/AuthManager.swift</code> owns sign-in, restore, server selection, backend
+  switching, and sign-out. It covers Plex PIN auth, Jellyfin credentials/Quick Connect,
+  Emby credentials/Connect PIN, selected-lane-first restore, and demand-driven download hydration.</li>
+<li><code>Labstream/Shared/Auth/EmbyConnectAuthFlow.swift</code> privately owns pending Emby Connect secrets,
+  exact server-selection state, backend exchange, and session commit. It never owns a polling task
+  or authorization generation; <code>AuthManager</code> fences every follow-up through the global authority.</li>
+<li><code>Labstream/Shared/Auth/AuthAttemptAuthority.swift</code> owns the one global authorization generation
+  used to reject cancellation and stale publication across all backend operations.</li>
+<li><code>Labstream/Shared/Auth/AuthorizationPollingCoordinator.swift</code> owns the single live Plex PIN,
+  Jellyfin Quick Connect, or Emby Connect polling task plus its exact attempt/PIN metadata. Its
+  narrow exact-owner finish/cancel API prevents stale poll cleanup from clearing a replacement.</li>
+<li><code>Labstream/Shared/Auth/KeychainStore.swift</code> stores secrets and the stable client identifier.
+  Do not put tokens in UserDefaults, diagnostics, URLs that do not require them, or
+  Codable profile indexes.</li>
+<li><code>Labstream/Shared/Auth/WebAuthSession.swift</code> is the cross-platform web-auth presentation
+  adapter.</li>
+<li><code>PMSKit/Sources/PMSKit/SessionIdentity.swift</code> and
+  <code>PMSKit/Sources/PMSKit/MediaBackendSwitch.swift</code> contain the corresponding pure
+  identity and switch decisions.</li>
+</ul>
+<p>Downloads call <code>AppModel.backendSession(for:)</code> so each row uses its own backend lane,
+not necessarily the backend currently visible in the UI.</p>
+<h2 id="browse-paging-search-and-artwork">Browse, paging, search, and artwork<a class="headerlink" href="#browse-paging-search-and-artwork" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>PMSKit/Sources/PMSKit/Models/PlexBrowseRequest.swift</code> contains hubs, search, and metadata
+  browse builders. Video-library section pages, filters, and sorts use
+  <code>PMSKit/Sources/PMSKit/PlexLibraryBrowseRequest.swift</code>.
+  <code>Labstream/Shared/Backend/PlexBrowseAPI.swift</code> is the source-compatible app facade over both.
+  <code>Labstream/Shared/Backend/PlexBrowseService.swift</code> pins one immutable Plex session and owns
+  execution. Its <code>PlexBrowseResponseExecutor</code> moves JSON decoding and normalized-result mapping off
+  the main actor while preserving the existing MainActor transport callback and typed errors.</li>
+<li><code>Labstream/Shared/Backend/Jellyfin/JellyfinBrowseService.swift</code> and
+  <code>Labstream/Shared/Backend/Emby/EmbyBrowseService.swift</code> are the live MediaBrowser browse
+  facades. They snapshot MainActor session state into the Sendable browse-only
+  <code>Labstream/Shared/Backend/MediaBrowserBrowseCore.swift</code>, which performs transport, decode, and
+  DTO mapping off the main actor; playback and downloads stay outside it.</li>
+<li><code>Labstream/Shared/Backend/Paging/</code> owns backend-neutral paging sources/models and the
+  Plex/Jellyfin/Emby grid and rail adapters. Sparse library pages join one model-owned task flight
+  per page rather than polling or issuing duplicate fetches. Movie-version grids retain stable
+  first-seen groups and apply only each page's changed dense projection positions instead of
+  re-collapsing all earlier pages. <code>PlaylistPagingModel</code> is deliberately positional: it pages long
+  playlists while retaining duplicates, server order, retry, cancellation, clamped-page, and
+  exact-authority semantics. <code>RailPagingModel</code>,
+  <code>RailPagingSource</code>, and <code>RailViewAllDestination</code> power paged Home “View All” destinations.</li>
+<li><code>Labstream/Shared/Backend/BoundedAsyncMap.swift</code> provides ordered fail-fast and
+  partial-result fan-out. MediaBrowser library search and video/music alphabet probes cap their
+  active requests at four while preserving the pre-existing order and failure contracts.</li>
+<li><code>Labstream/Shared/Backend/LibraryCatalogLoader.swift</code> normalizes one native Plex section or
+  Jellyfin/Emby view enumeration into ordered descriptors. The app-lifetime
+  <code>LibraryCatalogRepository</code> shares exact-authority values and in-flight work across Libraries,
+  MediaBrowser Home, Search, Music, the Mac sidebar, visibility editing, system entries, and Watch
+  Together; force refresh, failure eviction, and stale-work fencing remain repository concerns,
+  while per-surface query, visibility, ordering, and destination policy stay out.</li>
+<li><code>Labstream/Shared/Backend/MetadataRepository.swift</code> owns exact backend/opaque-authority/item
+  metadata flights, ten-second fresh display reuse, bounded stale-while-revalidate through sixty
+  seconds, watched-state presentation patches, and provenance-based action admission.
+  <code>DetailMetadataLoader.swift</code> and <code>DetailPlaybackLauncher.swift</code> consume that boundary: an exact
+  fresh native Detail result can authorize immediate Play without a second read, while reused,
+  stale, patched, expired, or superseded values require a native read.</li>
+<li><code>PMSKit/Sources/PMSKit/Search/SearchResults.swift</code> owns the pure grouped,
+  deduplicated, library-aware search presentation model; <code>Labstream/Shared/UI/SearchView.swift</code>
+  renders its backend-neutral sections and routes standard versus music results.</li>
+<li><code>Labstream/Shared/UI/HomeView.swift</code> uses Plex native hubs or
+  <code>Labstream/Shared/UI/MediaBrowserHomeProvider.swift</code> for shared Jellyfin/Emby Home rails.
+  <code>MediaBrowserHomeRailPlan.swift</code> assigns duplicate-safe canonical rail keys and reduces
+  authority/attempt-fenced results. The provider publishes successful rails progressively under a
+  single four-request ceiling and runs one failed-key-only retry while preserving successful and
+  empty-success rails; only a complete, non-degraded result pins Home's loaded identity. Plex
+  remains on native <code>/hubs</code>.
+  <code>PMSKit/Sources/PMSKit/UI/HomeRailArtworkPolicy.swift</code> classifies MediaBrowser synthetic
+  Primary artwork as portrait and Thumb/Backdrop as landscape so Home request dimensions match
+  the selected source instead of reshaping it. The policy applies to Jellyfin and Emby Home,
+  not Emby alone.</li>
+<li><code>Labstream/Shared/UI/LibraryGridView.swift</code> owns library roots and the shared sparse grid;
+  <code>LibraryAlphabetRail.swift</code> owns the A–Z interaction.</li>
+<li><code>Labstream/Shared/UI/ContainerBrowserView.swift</code> handles show/season child navigation and
+  normalizes duplicate visible episode rows.</li>
+<li><code>Labstream/Shared/UI/SearchView.swift</code> owns the shared search surface and music-result queue
+  actions.</li>
+<li><code>Labstream/Shared/UI/MediaArtwork.swift</code> resolves backend-authenticated, exact-authority artwork
+  descriptors whose task/debug/reflection identity contains no request credentials. The
+  app-lifetime actor-owned <code>ArtworkPipeline</code> executes remote and local requests with exact in-flight
+  joining, independent waiter cancellation, canonical-origin priority admission, ephemeral
+  nonpersistent remote transport, ImageIO downsampling/eager decode, and bounded
+  compressed/decoded/negative caches. <code>PosterImage</code>, music/video system Now Playing,
+  <code>AVPlayerItem</code> external and visionOS scoped metadata, offline row thumbnails, and offline player
+  artwork consume it. Their success/failure callbacks publish only while the exact descriptor,
+  pipeline instance, and owning view/playback generation remain current.
+  <code>Labstream/Shared/UI/OfflineArtworkSource.swift</code> turns persisted row ownership plus
+  <code>posterGeneration</code> into an opaque local authority, including same-path replacements.
+  <code>SettingsView</code> clears the one pipeline, and <code>ArtworkShimmerClock.swift</code> owns one app-lifetime,
+  reference-counted ticker for visible placeholders in the root UI and visionOS Custom Cinema
+  ImmersiveSpace, with a static Reduce Motion path. Shared image
+  values use the immutable CGImage-backed <code>Labstream/Shared/Platform/DecodedImage.swift</code>; native
+  images are created only at framework bridges.</li>
+</ul>
+<p><code>RequestBackedChapterImage</code> remains outside the pipeline because AVKit hosts the chapter tab in
+  an independent environment without an injected pixel contract. BIF and sprite-sheet providers,
+  Emby generated per-position frames, Emby online/offline chapter fallback, and the player nearest-
+  frame cache remain provider-scoped time-indexed exceptions rather than <code>ArtworkPipeline</code>
+  consumers.
+  Authenticated requests use the nonpersistent side-asset transport, and their leaf caches are
+  memory-only and bounded by byte cost plus entry count. Sprite sheets and final scrub previews cross
+  the eager off-main <code>DecodedImage</code> boundary before cache publication; BIF indexes retain/map one
+  backing payload and normal seek lookup copies only a selected frame (<code>frames</code> remains an explicit,
+  source-compatible materializing accessor). Largest-real-BIF and tile-sheet peak-RSS measurement
+  remains useful follow-up evidence rather than a completed acceptance claim. Using <code>DecodedImage</code>
+  there is not pipeline adoption. <code>DownloadSideAssetService</code> validates downloaded poster, chapter,
+  BIF, and subtitle payloads before promotion.</p>
+<p>Request/DTO implementations live under <code>PMSKit/Sources/PMSKit/Auth/</code>,
+<code>PMSKit/Sources/PMSKit/Jellyfin/</code>, <code>PMSKit/Sources/PMSKit/Emby/</code>,
+<code>PMSKit/Sources/PMSKit/MediaBrowser/</code>, and <code>PMSKit/Sources/PMSKit/Models/</code>, plus the
+root Plex request files such as <code>PlexRequest.swift</code> and <code>PlexPhotoTranscode.swift</code>.</p>
+<h2 id="root-navigation-and-shared-ui">Root navigation and shared UI<a class="headerlink" href="#root-navigation-and-shared-ui" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>Labstream/Shared/UI/RootView.swift</code> is the common authenticated composition wrapper. It installs
+  shared repositories/services and connects browse-session, music, system-entry, and Cinema-return
+  events to <code>RootNavigationCoordinator.swift</code>.</li>
+<li><code>Labstream/Shared/UI/RootNavigationCoordinator.swift</code> owns destination selection, online/music
+  paths, Search return/focus transitions, exact-session system-entry routing, music Now Playing
+  presentation state, and the offline Cinema return focus key.
+  <code>BrowseNavigationStack.swift</code> is the repeated session-keyed stack/push boundary.</li>
+<li><code>Labstream/Platforms/visionOS/UI/VisionRootShell.swift</code>,
+  <code>Labstream/Platforms/Mobile/UI/MobileRootShell.swift</code>,
+  <code>Labstream/Platforms/macOS/UI/MacRootShell.swift</code>, and
+  <code>Labstream/Platforms/tvOS/UI/TVRootShell.swift</code> independently own the native vision tab/ornament,
+  adaptive iPhone/iPad, Mac split-view/player, and focus-driven TV presentations respectively.</li>
+<li><code>Labstream/Shared/UI/LoginView.swift</code>, <code>BackendSignInComponents.swift</code>,
+  <code>LoginChromeComponents.swift</code>, and <code>PairingCodeView.swift</code> own shared backend login UI.</li>
+<li><code>Labstream/Shared/UI/DetailView.swift</code> owns item-detail presentation state. Extracted backend
+  effect seams are in <code>DetailMetadataLoader.swift</code>, <code>DetailWatchedUpdater.swift</code>, and
+  <code>DetailPlaybackLauncher.swift</code>.</li>
+<li><code>Labstream/Capabilities/Downloads/UI/DownloadOptionsSheet.swift</code> owns download intent/version selection.</li>
+<li><code>Labstream/Shared/UI/SettingsView.swift</code> owns backend/server status, preferences, storage,
+  library visibility, diagnostics export, and About information.</li>
+<li><code>Labstream/Shared/UI/DesignSystem.swift</code> contains shared visual constants and modifiers.</li>
+</ul>
+<p>Online navigation paths are scoped to <code>AppModel.activeBrowseSessionKey</code> and reset when
+that session changes. Offline navigation is intentionally not reset because saved items
+are backend-scoped and cross-backend.</p>
+<h2 id="video-playback">Video playback<a class="headerlink" href="#video-playback" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>Labstream/Shared/Player/PlaybackController.swift</code> owns one active <code>AVPlayer</code> session and the
+  shared item-observation, transport, diagnostics, seek, chapter, and chrome-facing state for
+  Plex streams, negotiated Jellyfin/Emby streams, and local files. Source negotiation,
+  reopen/progress callbacks, track behavior, retry mechanics, and server cleanup remain
+  lane-specific. <code>PlaybackSessionSource.swift</code> is the typed construction lane;
+  <code>PlaybackRestartIntent.swift</code> owns reason-specific in-place restart plans;
+  <code>HLSStartupHardening.swift</code> owns <code>HLSSessionPrewarmer</code>.</li>
+<li><code>Labstream/Shared/Player/CustomPlayerView.swift</code> is the common windowed player presenter and
+  hosts an <code>AVPlayerLayer</code> plus <code>CustomPlayerChrome</code>; <code>Labstream/Platforms/visionOS/Player/CustomCinemaMode.swift</code>
+  owns the separate immersive presenter for the same live controller.</li>
+<li><code>Labstream/Shared/Player/CustomPlayerChrome.swift</code> owns the shared transport/menu/scrubber UI
+  and contains the largest concentration of platform conditional compilation.</li>
+<li><code>Labstream/Shared/UI/DetailPlaybackLauncher.swift</code> negotiates Jellyfin/Emby playback and
+  supplies remote reopen, progress, and encoding-cleanup callbacks to the controller.</li>
+<li><code>Labstream/Shared/Player/TimelineReporter.swift</code> serializes/coalesces Plex timeline and
+  Jellyfin/Emby playback-progress traffic.</li>
+<li><code>Labstream/Shared/Player/PlaybackDiagnostics.swift</code>,
+  <code>PlaybackController+Diagnostics.swift</code>, <code>PlaybackHDRProbe.swift</code>, and
+  <code>StatsForNerdsView.swift</code> own runtime diagnostics surfaces.
+  <code>PMSKit/Sources/PMSKit/Models/PlaybackExplanation.swift</code> owns the compact Stats <strong>Why</strong>
+  lane, at-most-two reasons, and provenance. <code>DolbyVisionGuard.swift</code> and
+  <code>CaptionAppearance.swift</code> own the P5 safety gate and caption-profile preview.</li>
+<li><code>Labstream/Shared/Player/TrickPlayThumbnailProviders.swift</code> owns remote and local Plex BIF,
+  Jellyfin tile, and Emby chapter thumbnail providers; <code>Labstream/Shared/Support/CostBoundedLRU.swift</code>
+  owns the cost-and-entry cache bound shared by trick-play and artwork memory caches.</li>
+<li><code>Labstream/Shared/Player/AudioSessionCoordinator.swift</code> owns non-Mac audio-session policy.</li>
+<li><code>Labstream/Platforms/Mobile/Player/MobilePlayerSystemCoordinator.swift</code> and
+  <code>MobilePlayerOrientationCoordinator.swift</code> add iOS/iPadOS PiP, AirPlay, system media,
+  and orientation behavior.</li>
+<li><code>Labstream/Platforms/macOS/Player/MacPlayerPresentation.swift</code> adds native Mac player
+  presentation behavior.</li>
+<li><code>Labstream/Shared/Player/VideoNowPlayingCore.swift</code> is the iOS/iPadOS and macOS video adapter
+  for the shared process-wide <code>SystemMediaSessionCoordinator</code> lease. The mobile coordinator wraps
+  it alongside PiP/AirPlay, while the Mac player owns it directly.</li>
+<li><code>Labstream/Platforms/visionOS/Player/VideoNowPlayingCoordinator.swift</code> is the separate visionOS video
+  system-media owner. It creates a scoped <code>MPNowPlayingSession</code>, publishes metadata on each
+  <code>AVPlayerItem</code>, and routes session commands back to <code>PlaybackController</code>.</li>
+<li><code>Labstream/Shared/Player/PlaybackLifecycleCallbackSink.swift</code> and
+  <code>VideoPlaybackLifecyclePolicy.swift</code> reject queued observer/task callbacks from a
+  superseded item generation; removing an observer alone is not treated as cancellation.</li>
+<li><code>Labstream/Shared/Player/SystemMediaSessionCoordinator.swift</code> serializes process-wide Now
+  Playing and remote-command ownership between music and video with identity-guarded leases;
+  visionOS video does not use this lease path.</li>
+<li><code>Labstream/Shared/Player/NowPlayingArtwork.swift</code> provides the shared MediaPlayer artwork wrapper
+  used by both system-media approaches.</li>
+<li><code>Labstream/Shared/Player/PlaybackTransportPresentationPolicy.swift</code> owns transport/resume-button
+  presentation decisions for Offline playback based on local preparation status, extracted out of
+  <code>PlaybackController</code>/<code>PlayerChromeComponents</code>.</li>
+</ul>
+<p>Pure playback policies and request builders live primarily in
+<code>PMSKit/Sources/PMSKit/Playback/</code>, <code>PMSKit/Sources/PMSKit/Transcode/</code>,
+<code>PMSKit/Sources/PMSKit/MediaBrowser/</code>, and
+<code>PMSKit/Sources/PMSKit/MediaSession/</code>. The MediaSession directory is the exception to
+the usual pure-policy boundary: it owns the live, injectable loopback HLS proxy and
+upstream connection rotation used by <code>PlaybackController</code>.</p>
+<h2 id="cinema">Cinema<a class="headerlink" href="#cinema" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>Labstream/Platforms/visionOS/App/Labstream.swift</code> owns the app-lifetime
+  <code>CustomCinemaSessionStore</code> that retains the live controller across window dismiss / Cinema
+  present. <code>Labstream/Platforms/visionOS/Player/CustomCinemaMode.swift</code> is the user-visible
+  immersive presenter for that retained controller and is absent from non-vision products at
+  compile time.</li>
+<li><code>Labstream/Platforms/visionOS/Player/CinemaTransitionCoordinator.swift</code> and
+  <code>CinemaTransitionPolicy.swift</code> own generation-fenced open/appear/detach/dismiss/disappear
+  transitions. Do not re-home the controller on the ImmersiveSpace view.</li>
+<li><code>Labstream/Platforms/visionOS/Player/CinemaAppRouting.swift</code> is the small app-action adapter between PMSKit's
+  pure Cinema exit decision and the visionOS system-entry router. Its deterministic suite is now
+  visionOS-only; the assertions are preserved but honestly remain unexecuted until the planned
+  visionOS-hosted test target exists.</li>
+</ul>
+<h2 id="downloads-and-offline">Downloads and offline<a class="headerlink" href="#downloads-and-offline" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>Labstream/Capabilities/Downloads/Core/DownloadManager.swift</code> owns queue policy, observable records and
+  snapshots, retry/resume, storage limits, server-prep polling, validation, and encoder
+  cleanup. At startup it installs session callbacks and registers the dormant session before
+  deferring only healthy-current initial transport submission by one bounded MainActor turn. The
+  deferred task retains the manager; a retry cancels that edge and owns the sole immediate
+  submission, while unsupported, unreadable, and malformed recovery retain their existing
+  reset/fail-closed behavior. This is scheduling, not transport or durability deletion.</li>
+<li><code>DownloadKeepaliveCoordinator.swift</code> privately owns exact-attempt Jellyfin/Emby
+  keepalive tasks and credential-generation quarantine; the manager only forwards start/reconcile and exact-cancellation requests.</li>
+<li><code>DownloadManager+Plex.swift</code> and <code>DownloadManager+PlexOptimize.swift</code> own Plex source
+  and optimizer behavior.</li>
+<li><code>DownloadManager+Jellyfin.swift</code> owns Jellyfin original/transcode/remux behavior.</li>
+<li><code>DownloadManager+Emby.swift</code> and <code>DownloadManager+EmbyConvert.swift</code> own Emby source,
+  remux, and Convert behavior.</li>
+<li><code>DownloadManager+SideCache.swift</code> caches posters, subtitles, chapters, Plex BIF, Emby BIF,
+  Emby text subtitles, and Jellyfin trick-play assets through <code>DownloadSideAssetService.swift</code>,
+  which owns validated off-main repair inventory/preparation and exact resource admission.</li>
+<li><code>DownloadPlanningRequestExecutor.swift</code> is the injected nonpersistent request boundary for
+  <code>DownloadItemPlanner</code>; same-origin 307/308 redirects preserve method/body/headers and every other
+  redirect is rejected.</li>
+<li><code>DownloadOptionsModel.swift</code> owns typed per-item option resolution for the download sheet.
+  <code>DownloadManager+SeasonPlanner.swift</code> and <code>SeasonDownloadPlannerSheet.swift</code> own immutable
+  season drafts and the one atomic Store commit of new rows plus retry markers.</li>
+<li><code>DownloadTransferStartPlan.swift</code> is the common backend-to-transfer handoff contract.</li>
+<li><code>Labstream/Capabilities/Downloads/Core/BackgroundDownloadSession.swift</code> owns URLSession delegates,
+  reattachment, progress, validation, background-wake release effects, and durable static
+  byte-range recovery.</li>
+<li><code>BackgroundDownloadWakeCoordinator.swift</code> owns the locked background-completion gate,
+  atomic deferred-revalidation drain, and range-rebuild grace generations.</li>
+<li><code>Labstream/Capabilities/Downloads/Core/BackgroundDownloadCompletionRegistry.swift</code> joins system relaunch
+  callbacks to the live/recreated background session.</li>
+<li><code>Labstream/Capabilities/Downloads/Core/DownloadStore.swift</code> owns the locked relative-path index and files
+  under Application Support.</li>
+<li><code>DownloadArtifactLifecycleCoordinator.swift</code> registers attempt-scoped filesystem work
+  before execution and releases it only after the matching persistence outcome;
+  <code>DownloadArtifactFileCommitter.swift</code>, <code>DownloadPromotionFilesystem.swift</code>, and
+  <code>DownloadStaticCheckpointFilesystem.swift</code> are the narrow file-effect seams.</li>
+<li><code>RevisionedPersistenceWriter.swift</code> and <code>DownloadIndexFileCommitter.swift</code> serialize
+  revisioned index writes. <code>BackgroundCompletionPersistenceBarrier.swift</code> flushes the
+  exact boundary before releasing background-session completion handlers.</li>
+<li><code>DownloadWorkRegistry.swift</code> tracks attempt-scoped side-cache and encoder work.
+  <code>DownloadCleanupIntentJournal.swift</code> persists credential-free Jellyfin/Emby cleanup
+  independently so deleting a row cannot discard required server cleanup.
+  <code>EmbyConvertCleanupJournal.swift</code> owns the compatibility Emby Convert tombstone file and
+  serializes that queue independently of the <code>DownloadStore</code> index lock.</li>
+<li><code>Labstream/Capabilities/Downloads/Core/OfflineLibraryView.swift</code> owns the cross-backend offline UI and
+  local playback launch. Its snapshot is lightweight and actions re-resolve exact attempt identity.</li>
+<li><code>Labstream/Shared/UI/OfflineLaunchView.swift</code> owns the restricted cold-launch surface when a
+  saved-session restore is temporarily unavailable and an existing local file belongs to a
+  complete or unverified row. PMSKit's <code>OfflineLaunchAvailability</code> decides admission; this path
+  permits local library/playback, reconnect/sign-in, and Settings rather than authenticated
+  browsing, and is absent from tvOS. Invalid or missing credentials continue to Login.</li>
+<li><code>PMSKit/Sources/PMSKit/Downloads/DownloadStorageSnapshot.swift</code> owns provenance-aware
+  known/unknown/not-applicable storage presentation.</li>
+<li><code>PMSKit/Sources/PMSKit/Downloads/</code> contains pure route, status, retry, display, storage,
+  identity, and range-transfer policies and offline models.</li>
+</ul>
+<p>Do not assume simulator and device transfers use identical URLSession configuration:
+hardware uses the relaunch-capable background session, while simulator runs normally use
+the documented foreground substitute.</p>
+<h2 id="music">Music<a class="headerlink" href="#music" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>Labstream/Shared/Music/MusicProvider.swift</code> defines the backend-neutral browse boundary.</li>
+<li><code>PlexMusicProvider.swift</code> supplies Plex-native and richer artist data.</li>
+<li><code>MediaBrowserMusicProvider.swift</code> is shared by Jellyfin and Emby.</li>
+<li><code>MusicStreamResolver.swift</code> is the single backend-aware stream resolver.</li>
+<li><code>MusicPlayerController.swift</code> owns the app-lifetime AVPlayer queue, shuffle/repeat,
+  audio-session behavior, remote commands, and Now Playing metadata.</li>
+<li><code>MusicPlaybackLifecycle.swift</code> generation-guards per-track observers and queued work;
+  music acquires the shared <code>SystemMediaSessionCoordinator</code> lease rather than mutating
+  global MediaPlayer state independently of video.</li>
+<li><code>MusicLibraryView.swift</code>, <code>MediaBrowserMusicView.swift</code>, <code>MusicPagedGrid.swift</code>, and
+  the album/artist/playlist detail views own presentation.</li>
+<li><code>MiniPlayerBar.swift</code> and <code>NowPlayingView.swift</code> are the compact/full playback surfaces.
+  <code>RootNavigationCoordinator.nowPlayingPresentation</code> owns shared presentation state;
+  <code>VisionRootShell</code> owns the app-owned visionOS backdrop and <code>VisionNowPlayingPanel</code> so a
+  surround tap and the explicit leading-edge close control use the same dismissal path
+  without activating obscured content. <code>RootView</code> only forwards artist/album navigation
+  requests.</li>
+<li><code>PMSKit/Sources/PMSKit/Music/</code> contains Plex music request builders and pure queue
+  mutation behavior.</li>
+</ul>
+<p>Plex music currently reports timeline/scrobble state. Jellyfin/Emby music playback works,
+but MediaBrowser music progress reporting is not yet implemented.</p>
+<h2 id="shareplay-watch-together-visionos">SharePlay / Watch Together (visionOS)<a class="headerlink" href="#shareplay-watch-together-visionos" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>Labstream/Platforms/visionOS/SharePlay/WatchTogetherActivity.swift</code> defines the GroupActivity wrapper and maps
+  PMSKit's sanitized payload display fields into <code>GroupActivityMetadata</code>.</li>
+<li><code>Labstream/Platforms/visionOS/SharePlay/WatchTogetherCoordinator.swift</code> owns activation, GroupSession and
+  messenger state, participant readiness, local launch, the exact-item attachment consent gate,
+  and the <code>AVPlayerPlaybackCoordinator</code> session binding.</li>
+<li><code>Labstream/Platforms/visionOS/SharePlay/WatchTogetherMediaLookup.swift</code> searches and attempts to hydrate candidates
+  only through the participant's currently authenticated online backend.</li>
+<li><code>Labstream/Platforms/visionOS/SharePlay/WatchTogetherJoinView.swift</code> presents incoming local-resolution and
+  participant-readiness state and forwards search, selection, start, and decline actions; the
+  coordinator and lookup own the resolution work.</li>
+<li><code>Labstream/Shared/Player/CustomPlayerView.swift</code> and
+  <code>Labstream/Platforms/visionOS/Player/CustomCinemaMode.swift</code> maintain attachment across player-item replacement
+  and the window-to-Cinema handoff.</li>
+<li><code>PMSKit/Sources/PMSKit/SharePlay/SharePlayMediaIdentity.swift</code> owns backend-neutral payload
+  privacy, matching, readiness, leave, and late-join re-broadcast decisions;
+  <code>PMSKit/Sources/PMSKit/SharePlay/SharePlayPlaybackAttachmentRevision.swift</code> owns the pure
+  session/item revision key.</li>
+</ul>
+<h2 id="system-integration">System integration<a class="headerlink" href="#system-integration" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>Labstream/Shared/SystemIntegration/SystemEntryRouter.swift</code> is the process-lifetime bridge
+  from non-view entry points—including a participant-locally resolved SharePlay launch—into
+  RootView navigation. It weakly references the app-owned state and can wait for or initiate
+  session restoration without preempting an in-progress user authorization attempt.</li>
+<li><code>Labstream/Shared/SystemIntegration/LabstreamIntents.swift</code> defines Play, Open, and Continue
+  Watching App Intents for all three backends.</li>
+<li><code>Labstream/Shared/SystemIntegration/MediaItemEntity.swift</code> defines backend/server-scoped
+  AppEntity search and suggestions. Display values are snapshots; metadata is refetched
+  before navigation.</li>
+<li><code>Labstream/Shared/SystemIntegration/SpotlightIndexer.swift</code> performs token-free,
+  index-as-you-browse video indexing and shared-domain deletion.</li>
+<li><code>PMSKit/Sources/PMSKit/SystemEntryRouting.swift</code> contains pure identifier and routing
+  helpers.</li>
+</ul>
+<p>The current system surface excludes music and does not crawl an entire library in the
+background.</p>
+<h2 id="diagnostics-and-privacy">Diagnostics and privacy<a class="headerlink" href="#diagnostics-and-privacy" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>Labstream/Shared/Diagnostics/AppDiagnostics.swift</code> is the opt-in app-side facade.</li>
+<li><code>DiagnosticFileLogSink.swift</code> owns the rotating local JSONL sink.</li>
+<li><code>DiagnosticReportArtifact.swift</code> owns export/share wrappers.</li>
+<li><code>BrowseDiagnostics.swift</code> creates privacy-safe browse facts.</li>
+<li><code>MetricKitDiagnostics.swift</code> stores a bounded set of redacted crash/hang summaries for
+  user-generated feedback; it does not upload them.</li>
+<li><code>PerformanceInstrumentation.swift</code> is real signpost instrumentation in Debug and an
+  API-compatible no-op in Release. Its terminal gate emits at most one end/signpost record per
+  span even when cancellation and completion race. Launch evidence includes app-wide runtime
+  composition (<code>downloads_capable=0|1</code>) and selected-backend session restore (<code>restored=0|1</code>),
+  without identities, URLs, or credentials; <code>scripts/perf_evidence_schema.py</code> is the closed
+  allowlist for every emitted terminal field and phase/backend pairing.</li>
+<li><code>PMSKit/Sources/PMSKit/Diagnostics/</code> owns typed fields, redaction, the bounded event
+  store, report rendering, and MetricKit summary models.</li>
+</ul>
+<p>Use typed <code>DiagnosticFieldValue</code>s. Do not add raw tokens, URLs, hosts, usernames, local
+paths, filenames, client identifiers, or media titles to diagnostics.</p>
+<h2 id="tests-builds-and-scripts">Tests, builds, and scripts<a class="headerlink" href="#tests-builds-and-scripts" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>PMSKit/Tests/PMSKitTests/</code> covers pure policies, request builders, decoders, state
+  machines, and redaction. Run the hermetic suite with
+  <code>swift test --package-path PMSKit --no-parallel --skip 'Live.*ProbeTests'</code>.</li>
+<li><code>Labstream.xcodeproj/project.pbxproj</code> is the source of truth for the four native app target
+  versions, platforms, and deployment settings.</li>
+<li><code>scripts/worktree-sim.sh</code> provisions the visionOS worktree simulator or explicit
+  iPhone/iPad and Apple TV simulators.</li>
+<li><code>scripts/deploy-mobile-to-device.sh</code> deploys the signed mobile target to iPhone/iPad;
+  <code>scripts/deploy-to-device.sh</code> deploys the signed visionOS target.</li>
+<li><code>scripts/deploy-macos-to-host.sh</code> builds/installs/cleans up the native Mac host app (no
+  simulator); <code>scripts/deploy-ad-hoc-to-device.sh</code> deploys an Ad Hoc/distribution-profile
+  build to a device.</li>
+<li><code>scripts/</code> also contains docs, hygiene, version stamping, and optional live-probe tools.</li>
+<li><code>.woodpecker/</code> contains portable CI definitions.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Copyright (C) 2026 Jonathan Lipworth — GPL-3.0 with §7 exception
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "content.code.copy", "toc.follow", "search.suggest"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
