@@ -253,3 +253,27 @@ builds, and passive iPhone/tvOS/visionOS fixture launch checks passed. These res
 close the live playback, physical-device, or release gates above. Season-admission and artist
 queue fixes have authority-level regression coverage; full manager/provider integration
 coverage remains tracked in #293 and #295 rather than being inferred from passive smoke.
+
+
+## Suspended-request integration follow-up
+
+The #293/#295 integration gap now has focused hosted coverage, beyond the earlier authority-only
+tests. The season test drives the real manager, persisted index, Plex metadata transport, deletion,
+and background-transfer boundary. Deleting the held row or a later admitted row cannot recreate it
+or start its transfer; a delayed error stays inert, pause is preserved, and unchanged admission
+starts once. Artist Play/Shuffle use a shared production provider-to-controller operation tested
+against session changes, sign-out, newer playback intent, stop, cancellation, and unchanged success.
+
+The complete Mac hosted suite passed: 695 tests (67 XCTest and 628 Swift Testing), including
+21 parameterized integration scenarios. The 1,695 hermetic PMSKit tests passed using Xcode
+Swift; the shell-default Homebrew Swift could not compile the SDK Testing overlay. Earlier
+loaded-host suite retries hit existing timing assertions; the complete rerun passed with
+simulators shut down. Clean builds and inspected fixture launch checks passed on all four
+platforms. The iPhone focused run reported 13 tests passing, but initially hung while Xcode
+finalized its result bundle and was interrupted. Its bounded test-without-building retry
+completed successfully with all 13 tests; the TV focused run completed with all seven tests
+passing. Repository hygiene (320 tooling tests), strict MkDocs, links/anchors, and Mermaid
+validation passed. All simulators are shut down, and the isolated Mac smoke app was removed.
+
+Publication must complete before closing either issue. The live #291 Emby,
+#288 Plex, physical-device, and App Store gates remain open; this plan stays active.

@@ -36,6 +36,21 @@ The app suites are host-app unit tests. They do not replace the canonical
 [install/launch/log/screenshot smoke](DEVELOPMENT.md#install-and-observe-a-simulator-smoke),
 interactive UI checks, live-server probes, or physical-device acceptance.
 
+### Suspended-request integration regressions
+
+Keep async ownership tests at the production publication boundary, not only in pure authority
+helpers. `SeasonPlannerIntegrationTests` commits real durable season rows, holds a Plex metadata
+response through an injected URLSession protocol, and deletes through `DownloadManager` before
+releasing that response. It checks the reopened index, absent negotiation/transfer requests,
+later admitted-row deletion, stale errors, pause refusal, and exactly-once unchanged admission.
+The successful control observes the real background transfer request but does not deliver media.
+
+`ArtistDiscographyIntegrationTests` calls the same provider-to-controller operation used by
+Artist Play and Shuffle. A suspended provider covers backend/server changes, sign-out, newer
+album/artist intent, stop, cancellation, and unchanged publication. An injected stream resolver
+records which identifiers reach resolution without starting AVFoundation or network playback.
+These are hermetic integration checks, not live playback or physical-device acceptance.
+
 ## Native Apple matrix driver
 
 `scripts/native-test-matrix.py` is the checked source of truth for compile/package smoke,
