@@ -183,6 +183,11 @@ struct MetadataAudioSelectionAuthority: Equatable, Sendable {
         return Token(generation: generation, streamID: streamID)
     }
 
+    mutating func invalidate() {
+        generation += 1
+        intendedStreamID = nil
+    }
+
     func accepts(_ token: Token, isCancelled: Bool) -> Bool {
         !isCancelled
             && token.generation == generation

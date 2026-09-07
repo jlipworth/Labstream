@@ -210,12 +210,28 @@ extension DownloadManager {
         return store.records.contains { $0.metadata?.seasonPlannerPendingAdmission == true }
     }
 
+    private func seasonAdmissionStillCurrent(_ record: DownloadRecord) -> Bool {
+        let current = store.record(for: record.ratingKey)
+        return !Task.isCancelled
+            && SeasonPlanAdmissionAuthority.accepts(
+                expected: record.attemptID, current: current?.attemptID,
+                status: current?.status)
+    }
+
     private func startSeasonPlannedRecord(_ record: DownloadRecord) async {
-        guard let metadata = record.metadata else { return }
+        guard let metadata = record.metadata,
+              seasonAdmissionStillCurrent(record) else { return }
         let backend = metadata.resolvedBackendKind(ratingKey: record.ratingKey)
         let snapshotItem = metadata.makeMediaItem()
         let planner = DownloadItemPlanner(appModel: appModel, downloadManager: self)
-        guard let item = try? await planner.refreshedItem(snapshotItem, backend: backend) else {
+        let item: MediaItem
+        do {
+            guard let refreshed = try await SeasonPlanAdmissionAuthority.refresh(
+                isCurrent: { self.seasonAdmissionStillCurrent(record) },
+                operation: { try await planner.refreshedItem(snapshotItem, backend: backend) }) else { return }
+            item = refreshed
+        } catch {
+            guard seasonAdmissionStillCurrent(record) else { return }
             if let attemptID = record.attemptID {
                 _ = setAttemptStatus(
                     .failed,
@@ -225,6 +241,9 @@ extension DownloadManager {
             refreshRecords()
             return
         }
+        // Refresh suspends before a start-attempt exists. Deletion/replacement must
+        // revoke admission instead of letting the public enqueue API recreate the row.
+        guard seasonAdmissionStillCurrent(record) else { return }
         let choice: DownloadIntentChoice = {
             if metadata.isServerPreparedVersion == true { return .existingVersion }
             switch metadata.resolvedDownloadLane() {
@@ -281,5 +300,22 @@ extension DownloadManager {
         return SeasonDownloadAdmissionPolicy.lane(
             backend: metadata.resolvedBackendKind(ratingKey: record.ratingKey),
             downloadLane: metadata.resolvedDownloadLane())
+    }
+}
+
+/// A metadata refresh never grants authority to create a missing or replaced row.
+@MainActor
+enum SeasonPlanAdmissionAuthority {
+    static func refresh<Value>(isCurrent: () -> Bool,
+                               operation: () async throws -> Value) async rethrows -> Value? {
+        guard isCurrent() else { return nil }
+        let value = try await operation()
+        guard isCurrent() else { return nil }
+        return value
+    }
+
+    static func accepts(expected: DownloadAttemptID?, current: DownloadAttemptID?,
+                        status: DownloadStatus?) -> Bool {
+        expected != nil && expected == current && status == .queued
     }
 }

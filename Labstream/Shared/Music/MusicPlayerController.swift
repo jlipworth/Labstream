@@ -193,6 +193,32 @@ final class MusicPlayerController {
         self.systemMediaSessionCoordinator = systemMediaSessionCoordinator
     }
 
+    struct PendingQueueIntent: Equatable {
+        fileprivate let id: UUID
+        fileprivate let sessionKey: String
+    }
+    @ObservationIgnored private var pendingQueueIntent: PendingQueueIntent?
+
+    /// Reserve queue publication before an asynchronous catalog fetch. New playback,
+    /// another fetch, and stop each revoke earlier reservations.
+    func beginQueueIntent() -> PendingQueueIntent {
+        let intent = PendingQueueIntent(id: UUID(), sessionKey: appModel.activeBrowseSessionKey)
+        pendingQueueIntent = intent
+        return intent
+    }
+
+    func acceptsQueueIntent(_ intent: PendingQueueIntent) -> Bool {
+        pendingQueueIntent == intent && intent.sessionKey == appModel.activeBrowseSessionKey
+            && !Task.isCancelled
+    }
+
+    func playFetchedTracks(_ tracks: [MediaItem], shuffled: Bool,
+                           intent: PendingQueueIntent) {
+        guard acceptsQueueIntent(intent) else { return }
+        if shuffled { playAlbumShuffled(tracks: tracks) }
+        else { play(tracks: tracks, startingAt: 0) }
+    }
+
     // MARK: - Public API
 
     /// Replace the queue with `tracks` (display order) and start playing the track at
@@ -200,6 +226,7 @@ final class MusicPlayerController {
     /// plays first and the rest follow in a fresh random order.
     func play(tracks: [MediaItem], startingAt index: Int) {
         guard tracks.indices.contains(index) else { return }
+        pendingQueueIntent = nil
         lifecycle.advance()
         queueBrowseSessionKey = appModel.activeBrowseSessionKey
         queue = tracks
@@ -482,6 +509,7 @@ final class MusicPlayerController {
     /// command targets removed, the player emptied, the audio session released (notifying
     /// other audio apps), and the queue cleared.
     func stop() {
+        pendingQueueIntent = nil
         lifecycle.advance()
         reporter?.report(state: .stopped, force: true)
         reporter = nil

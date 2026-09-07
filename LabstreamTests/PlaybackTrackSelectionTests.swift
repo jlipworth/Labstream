@@ -210,6 +210,52 @@ struct PlaybackTrackSelectionTests {
         controller.stop()
     }
 
+    @Test func stopRevokesInFlightAndQueuedAudioSelections() async throws {
+        let gate = ControlledAudioSelector()
+        let streams = [
+            PlexStream(id: 1, streamType: StreamType.audio.rawValue, selected: true),
+            PlexStream(id: 2, streamType: StreamType.audio.rawValue),
+            PlexStream(id: 3, streamType: StreamType.audio.rawValue),
+            PlexStream(id: 4, streamType: StreamType.audio.rawValue),
+        ]
+        let item = MediaItem(ratingKey: "item-1", title: "Movie", type: "movie", media: [
+            Media(id: 1, part: [Part(id: 10, key: "/part/10", streams: streams)]),
+        ])
+        let identity = ClientIdentity(clientIdentifier: "device-1",
+                                      product: "Labstream",
+                                      version: "1",
+                                      deviceName: "Test Device")
+        let controller = PlaybackController(
+            item: item,
+            sessionSource: .plex(PlexPlaybackSession(
+                server: try #require(URL(string: "https://media.invalid")),
+                token: "token")),
+            identity: identity,
+            client: PlexClient(identity: identity),
+            plexAudioStreamSelector: { partID, streamID in
+                try await gate.select(partID: partID, streamID: streamID)
+            })
+        let initial = try #require(controller.loadAudioStreamChoices())
+        let second = try #require(initial.tracks.first { $0.id == .plexStream(2) })
+        let third = try #require(initial.tracks.first { $0.id == .plexStream(3) })
+
+        let secondTask = Task { await controller.selectAudioStream(second) }
+        await gate.waitUntilStarted(2)
+        let thirdTask = Task { await controller.selectAudioStream(third) }
+        while controller.activeMetadataAudioSelectionIntentID != 3 { await Task.yield() }
+        controller.stop()
+        await gate.complete(2)
+        await secondTask.value
+        await thirdTask.value
+        #expect(await gate.invocationOrder == [2])
+        await controller.selectAudioStream(third) // A picker task scheduled after teardown.
+        #expect(await gate.invocationOrder == [2])
+        #expect(controller.activeMetadataAudioSelectionIntentID == nil)
+        #expect(controller.player.currentItem == nil)
+        let final = try #require(controller.loadAudioStreamChoices())
+        #expect(final.selectedID == .plexStream(1))
+    }
+
     private func makeControlledOfflineController(
         gate: ControlledOfflineCueLoader
     ) async throws -> (PlaybackController, [PlaybackSubtitleTrack]) {

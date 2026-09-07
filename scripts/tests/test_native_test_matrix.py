@@ -23,6 +23,39 @@ class NativeTestMatrixTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.manifest = matrix.load_manifest(MANIFEST)
 
+    def test_git_discovery_includes_deleted_and_both_renamed_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=repo, text=True).strip()
+            git("init", "-q")
+            git("config", "user.email", "test@example.invalid")
+            git("config", "user.name", "Test")
+            old = "Labstream/Platforms/Mobile/Old.swift"
+            deleted = "Labstream/Shared/Delete\nMe.swift"
+            new = "Labstream/Platforms/macOS/New.swift"
+            for name in (old, deleted):
+                path = repo / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("fixture")
+            git("add", ".")
+            git("commit", "-qm", "baseline")
+            base = git("rev-parse", "HEAD")
+            (repo / new).parent.mkdir(parents=True)
+            (repo / old).rename(repo / new)
+            (repo / deleted).unlink()
+            expected = sorted([old, new, deleted])
+            moved_lanes = matrix.affected_lanes(self.manifest, [old, new])
+            self.assertIn("mobile-build", moved_lanes)
+            self.assertIn("macos-build", moved_lanes)
+            deleted_lanes = matrix.affected_lanes(self.manifest, [deleted])
+            for lane in ("mobile-build", "macos-build", "tvos-build", "visionos-build"):
+                self.assertIn(lane, deleted_lanes)
+            self.assertEqual(matrix.changed_paths(repo, base, "HEAD", True), expected)
+            git("add", "-A")
+            git("commit", "-qm", "move and delete")
+            self.assertEqual(matrix.changed_paths(repo, base, "HEAD", False), expected)
+
     def run_script(self, *arguments: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [sys.executable, str(SCRIPT), *arguments],

@@ -99,9 +99,12 @@ struct DownloadStoreLookupTests {
             let staleAttempt = try #require(DownloadAttemptID(rawValue: "attempt-stale"))
             let mediaAttempt = try #require(DownloadAttemptID(rawValue: "attempt-media"))
             let shared = "shared-body.mp4"
-            let staleMetadata = OfflineMetadata(
+            var staleMetadata = OfflineMetadata(
                 ratingKey: "plex:stale", title: "Stale", type: "movie",
                 posterRelativePath: shared, downloadAttemptID: staleAttempt.rawValue)
+            // Explicitly stale ownership exercises retirement, not intentional legacy
+            // adoption of a pre-owner-schema bundle.
+            staleMetadata.claimCachedSideAssets(attemptID: "attempt-retired")
             let mediaMetadata = OfflineMetadata(
                 ratingKey: "plex:media", title: "Media", type: "movie",
                 downloadAttemptID: mediaAttempt.rawValue)
@@ -121,6 +124,7 @@ struct DownloadStoreLookupTests {
             #expect(store.metadata(for: "plex:stale")?.posterRelativePath == nil)
             #expect(FileManager.default.fileExists(atPath: sharedURL.path))
             #expect(store.localURL(for: "plex:media") == sharedURL)
+            #expect(try Data(contentsOf: sharedURL) == Data([1, 2, 3]))
         }
     }
 

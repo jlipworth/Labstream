@@ -391,6 +391,33 @@ struct AuthSecureStorageTests {
         cleanupBackendKeys(store)
     }
 
+    @Test(arguments: [401, 403, 429, 500])
+    func plexHTTPRestoreOnlyUnauthorizedRetiresSavedCredentials(status: Int) async throws {
+        let store = KeychainStore(service: "com.visionplay.tests.http-restore.\(UUID().uuidString)",
+                                  synchronizesPlexToken: false, usesDevelopmentFileStorage: true)
+        defer { cleanupBackendKeys(store) }
+        #expect(store.saveToken("saved-token"))
+        #expect(store.saveSelectedBackend(.plex))
+        #expect(store.saveSelectedPlexServerID("preferred-server"))
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [PlexRestoreStatusURLProtocol.self]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let identity = PlatformClientIdentity.make(clientIdentifier: "http-restore")
+        let client = PlexClient(session: session, identity: identity)
+        let model = AppModel(identity: identity, client: client)
+        let manager = AuthManager(appModel: model, keychain: store,
+                                  plexSessionDiscoverer: { _ in
+            try await client.send(PlexRequest(
+                url: URL(string: "https://plex.invalid/\(status)")!, method: "GET"))
+            throw PlexError.decoding(URLError(.cannotParseResponse))
+        })
+        _ = await manager.restoreSession()
+        #expect(!model.isBrowseReady)
+        #expect(store.token == (status == 401 ? nil : "saved-token"))
+        #expect(store.selectedPlexServerID == (status == 401 ? nil : "preferred-server"))
+    }
+
     @Test func authorizedPlexPINSurvivesDiscoveryFailure() async throws {
         let service = "com.visionplay.tests.plex-authorized.\(UUID().uuidString)"
         let store = KeychainStore(service: service, synchronizesPlexToken: false,
@@ -969,5 +996,18 @@ private final class AuthorizedPlexPINURLProtocol: URLProtocol, @unchecked Sendab
         client?.urlProtocolDidFinishLoading(self)
     }
 
+    override func stopLoading() { }
+}
+
+private final class PlexRestoreStatusURLProtocol: URLProtocol, @unchecked Sendable {
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        let url = request.url!
+        let response = HTTPURLResponse(url: url, statusCode: Int(url.lastPathComponent)!,
+                                       httpVersion: nil, headerFields: nil)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocolDidFinishLoading(self)
+    }
     override func stopLoading() { }
 }

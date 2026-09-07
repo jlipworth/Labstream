@@ -92,12 +92,12 @@ def affected_lanes(manifest: dict[str, Any], changed_paths: list[str]) -> list[s
 
 
 def changed_paths(repo: Path, base: str, head: str, include_working_tree: bool) -> list[str]:
-    commands = [["git", "diff", "--name-only", "--diff-filter=ACMR", f"{base}...{head}"]]
+    commands = [["git", "diff", "--name-only", "--no-renames", "-z", f"{base}...{head}"]]
     if include_working_tree:
         commands.extend(
             [
-                ["git", "diff", "--name-only", "--diff-filter=ACMR", "HEAD"],
-                ["git", "ls-files", "--others", "--exclude-standard"],
+                ["git", "diff", "--name-only", "--no-renames", "-z", "HEAD"],
+                ["git", "ls-files", "--others", "--exclude-standard", "-z"],
             ]
         )
     paths: set[str] = set()
@@ -106,7 +106,7 @@ def changed_paths(repo: Path, base: str, head: str, include_working_tree: bool) 
         if result.returncode:
             detail = result.stderr.strip() or "git command failed"
             raise MatrixError(detail)
-        paths.update(line for line in result.stdout.splitlines() if line)
+        paths.update(line for line in result.stdout.split("\0") if line)
     return sorted(paths)
 
 
