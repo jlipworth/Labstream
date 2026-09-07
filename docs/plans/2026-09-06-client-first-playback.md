@@ -237,3 +237,19 @@ an upload, submission, or release; commit/tag/publishing authorization remains s
 
 Promote proven behavior into the canonical playback documentation and archive this plan
 only once implementation and acceptance are complete.
+
+## Sweep follow-up: hosted baseline restored
+
+The follow-up correctness branch restores a clean macOS hosted baseline: 693 tests passed
+(67 XCTest and 626 Swift Testing), with no tests skipped. The poster-retirement fixture now
+uses an explicitly stale owner rather than invoking intentional legacy owner adoption;
+shared main-media bytes remain readable. A coalesced side-asset test now establishes enqueue
+order explicitly, and the 140-write checkpoint-retention test uses a bounded 30-second drain
+allowance rather than treating five-second disk throughput as a correctness requirement.
+Earlier keepalive and transport failures did not recur in the final full suite.
+
+PMSKit's 1,695 hermetic tests, 320 tooling tests, strict documentation checks, all four native
+builds, and passive iPhone/tvOS/visionOS fixture launch checks passed. These results do not
+close the live playback, physical-device, or release gates above. Season-admission and artist
+queue fixes have authority-level regression coverage; full manager/provider integration
+coverage remains tracked in #293 and #295 rather than being inferred from passive smoke.
