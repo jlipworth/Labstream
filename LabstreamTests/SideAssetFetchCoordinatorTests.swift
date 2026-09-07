@@ -462,6 +462,11 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
                     return Data([1])
                 }
         }
+        // Task creation order is not actor enqueue order. Establish the transport
+        // owner before adding its coalesced survivor.
+        await waitUntil {
+            await coordinator.waiterCountForTesting(origin: origin, requestKey: request) == 1
+        }
         let second = Task {
             try await coordinator.fetch(
                 origin: origin, owner: .init(rawValue: "attempt-b"), requestKey: request,

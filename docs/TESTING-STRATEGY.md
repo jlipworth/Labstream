@@ -65,7 +65,12 @@ The driver reads `scripts/native-test-matrix.json`. The current source topology 
 `Labstream/Platforms/<platform>/` root selects only its owning product lanes. A conservative
 fallback still selects all app lanes for an unclassified path under `Labstream/`. Update the
 manifest and its topology tests in the same change whenever target membership or an ownership
-root changes.
+root changes. Git discovery includes deleted paths and both endpoints of renames, including
+working-tree changes when requested; filenames are read with NUL delimiters.
+
+The bounded command and playback runners terminate their owned process group on timeout or
+cancellation. Cleanup waits for surviving descendants, not just the leader, before escalating;
+it never uses application-name or system-wide process matching.
 
 After the matrix builds/tests selected for a runtime change, complete the canonical
 [install/launch/log/screenshot smoke](DEVELOPMENT.md#install-and-observe-a-simulator-smoke) or the

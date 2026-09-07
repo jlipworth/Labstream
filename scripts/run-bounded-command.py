@@ -2,11 +2,11 @@
 """Run one command with a wall-clock limit and capture combined output."""
 
 import argparse
-import os
-import signal
 import subprocess
 import sys
 from pathlib import Path
+
+from bounded_process import terminate_process_group
 
 
 def main() -> int:
@@ -32,13 +32,11 @@ def main() -> int:
         except subprocess.TimeoutExpired:
             output.write(f"\nrun-bounded-command: timed out after {args.timeout} seconds\n")
             output.flush()
-            os.killpg(process.pid, signal.SIGTERM)
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait()
+            terminate_process_group(process)
             return 124
+        except BaseException:
+            terminate_process_group(process)
+            raise
 
 
 if __name__ == "__main__":

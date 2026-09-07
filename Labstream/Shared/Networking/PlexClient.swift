@@ -77,7 +77,8 @@ public actor PlexClient {
         switch http.statusCode {
         case 200...299:
             return data
-        case 401, 403:
+        // Forbidden resources do not prove that the account credential expired.
+        case 401:
             throw PlexError.unauthorized
         default:
             throw PlexError.http(http.statusCode)

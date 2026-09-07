@@ -6,15 +6,15 @@ in-memory media-browser callbacks. It does not prove visible playback or server 
 """
 import argparse
 import json
-import os
 from pathlib import Path
-import signal
 import subprocess
 import sys
 import time
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+from bounded_process import terminate_process_group
 
 
 def run(command, log, timeout):
@@ -23,13 +23,7 @@ def run(command, log, timeout):
         try:
             return process.wait(timeout=timeout)
         except BaseException:
-            # Only this subprocess group, never an app-name/pattern kill or a container reset.
-            os.killpg(process.pid, signal.SIGTERM)
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait()
+            terminate_process_group(process)
             raise
 
 

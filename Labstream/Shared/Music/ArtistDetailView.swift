@@ -147,23 +147,22 @@ struct ArtistDetailView: View {
     }
 
     /// Fetch every track under the artist in one flat list and play it (in album
-    /// order, or shuffled). One request, zero controller changes.
+    /// order, or shuffled), publishing only while its queue intent still owns playback.
     private func playDiscography(shuffled: Bool) async {
+        let intent = player.beginQueueIntent()
         isStartingPlayback = true
         playError = nil
         defer { isStartingPlayback = false }
         do {
             let tracks = try await appModel.musicProvider.discographyTracks(artist: artist)
+            guard player.acceptsQueueIntent(intent) else { return }
             guard !tracks.isEmpty else {
                 playError = "No tracks to play."
                 return
             }
-            if shuffled {
-                player.playAlbumShuffled(tracks: tracks)
-            } else {
-                player.play(tracks: tracks, startingAt: 0)
-            }
+            player.playFetchedTracks(tracks, shuffled: shuffled, intent: intent)
         } catch {
+            guard player.acceptsQueueIntent(intent) else { return }
             playError = friendlyMessage(error)
         }
     }

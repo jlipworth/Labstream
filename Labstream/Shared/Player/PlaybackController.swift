@@ -172,6 +172,7 @@ final class PlaybackController {
     /// and Stats for Nerds describe the same active lane (#248).
     private var lastPlexDecision: DecisionResponse?
     private var metadataAudioSelectionAuthority = MetadataAudioSelectionAuthority()
+    private var metadataAudioSelectionStopped = false
     private var metadataAudioSelectionTail: Task<Void, Never>?
     private let plexAudioStreamSelector: PlexAudioStreamSelector?
     var activeMetadataAudioSelectionIntentID: Int? {
@@ -1082,6 +1083,10 @@ final class PlaybackController {
     /// Tear down observers and report a final `stopped` timeline. Call from the
     /// view's `dismantle`.
     func stop() {
+        // Revoke both queued and in-flight audio mutations before any await can
+        // publish preferences or reopen playback after teardown.
+        metadataAudioSelectionStopped = true
+        metadataAudioSelectionAuthority.invalidate()
         #if DEBUG
         debugCleanupRequested = true
         #endif
@@ -2131,7 +2136,8 @@ final class PlaybackController {
     }
 
     func selectAudioStream(_ choice: PlaybackAudioTrack) async {
-        guard supportsMetadataAudioSelection, let part = streamingPart else { return }
+        guard !metadataAudioSelectionStopped, supportsMetadataAudioSelection,
+              let part = streamingPart else { return }
         let streamID: Int
         switch choice.mechanism {
         case .plexStream(let id) where sessionSource.kind == .plex: streamID = id
