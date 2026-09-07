@@ -185,9 +185,13 @@ final class MusicPlayerController {
 
     // MARK: - Init
 
+    @ObservationIgnored private let resolveStream: @MainActor (MediaItem, AppModel) throws -> MusicStreamResolver.Stream
+
     init(appModel: AppModel,
          artworkPipeline: ArtworkPipeline,
-         systemMediaSessionCoordinator: SystemMediaSessionCoordinator = .init()) {
+         systemMediaSessionCoordinator: SystemMediaSessionCoordinator = .init(),
+         resolveStream: @escaping @MainActor (MediaItem, AppModel) throws -> MusicStreamResolver.Stream = MusicStreamResolver.stream) {
+        self.resolveStream = resolveStream
         self.appModel = appModel
         self.artworkPipeline = artworkPipeline
         self.systemMediaSessionCoordinator = systemMediaSessionCoordinator
@@ -217,6 +221,23 @@ final class MusicPlayerController {
         guard acceptsQueueIntent(intent) else { return }
         if shuffled { playAlbumShuffled(tracks: tracks) }
         else { play(tracks: tracks, startingAt: 0) }
+    }
+
+    /// The artist UI and integration tests share this provider-to-queue boundary.
+    /// Capture authority before suspension, including when the provider ignores cancellation.
+    func playDiscography(artist: MediaItem, shuffled: Bool,
+                         provider: any MusicProvider) async -> String? {
+        let intent = beginQueueIntent()
+        do {
+            let tracks = try await provider.discographyTracks(artist: artist)
+            guard acceptsQueueIntent(intent) else { return nil }
+            guard !tracks.isEmpty else { return "No tracks to play." }
+            playFetchedTracks(tracks, shuffled: shuffled, intent: intent)
+        } catch {
+            guard acceptsQueueIntent(intent) else { return nil }
+            return friendlyMessage(error)
+        }
+        return nil
     }
 
     // MARK: - Public API
@@ -606,7 +627,7 @@ final class MusicPlayerController {
         // track must not silence the one that's already playing.
         let stream: MusicStreamResolver.Stream
         do {
-            stream = try MusicStreamResolver.stream(for: track, appModel: appModel)
+            stream = try resolveStream(track, appModel)
         } catch MusicStreamResolver.ResolveError.notConnected {
             // No server: surface it but DON'T advance — no track would play.
             playbackErrorMessage = "Not connected to a server."
