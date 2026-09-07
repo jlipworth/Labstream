@@ -63,9 +63,12 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
             let submissions = (1...140).map {
                 store.submitStaticRangeCheckpointReset(for: owner, expectedBytes: $0 + 1)
             }
+            // This is retention correctness across 140 durable writes, not a five-second
+            // disk throughput benchmark. Keep a bounded deadline below the hosted test's
+            // 60-second watchdog while allowing concurrent native-build I/O contention.
             guard case .committed = await store.flushLifecycleAndPersistence(
                 through: store.currentPersistenceTicket(),
-                artifactWatermark: store.currentArtifactLifecycleWatermark(), timeout: 5) else {
+                artifactWatermark: store.currentArtifactLifecycleWatermark(), timeout: 30) else {
                 Issue.record("checkpoint queue did not drain"); return
             }
             #expect(store.staticCheckpointOutcomeCountForTests() == 140)
