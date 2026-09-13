@@ -342,7 +342,7 @@ or broad unified logs.
 
 ## Private release media corpus
 
-Use the [private media corpus workflow](plans/media-corpus-testing.md) to inventory
+Use the [private media corpus workflow](MEDIA-CORPUS-TESTING.md) to inventory
 observed codec/container/audio/subtitle combinations and choose bounded release cases.
 The metadata scanner is read-only, resumable, and requires gitignored output; its unit
 tests run in the existing repository-hygiene CI lane. It does not download media or

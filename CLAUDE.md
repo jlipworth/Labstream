@@ -385,7 +385,7 @@ Manual test plan: `TESTING-CHECKLIST.md` (keep it updated as fixes ship).
 
 ## Corpus-backed playback and release evidence
 
-Use `scripts/media-corpus.py` and `docs/plans/media-corpus-testing.md` for private,
+Use `scripts/media-corpus.py` and `docs/MEDIA-CORPUS-TESTING.md` for private,
 resumable source inventory and bounded release coverage. Keep inventory, backend IDs,
 credentials, captured frames and raw logs gitignored. Never publish media identifiers.
 Match each backend's exact unique title and verify source identity; Jellyfin/Emby probes

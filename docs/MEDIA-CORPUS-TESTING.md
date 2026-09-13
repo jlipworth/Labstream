@@ -1,6 +1,7 @@
 # Private media corpus testing
 
-Status: initial tooling; release integration and cross-server playback acceptance remain open.
+Status: metadata tooling and opt-in authentication verified; release integration and
+cross-server playback acceptance remain open.
 
 ## Purpose and privacy
 
