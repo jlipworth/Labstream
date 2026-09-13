@@ -85,6 +85,14 @@ class PlaybackReportTests(unittest.TestCase):
             with self.assertRaises(evidence.InvalidEvidence):
                 evidence.validate_report(changed)
 
+    def test_consent_and_capture_reset_gates_are_valid_blocked_evidence(self):
+        for reason in ("consentRequired", "evidenceUnavailable"):
+            report = dict(schemaVersion=1, evidenceKind="liveController", scenario="original",
+                          status="blocked", reason=reason, snapshots=[])
+            self.assertEqual(evidence.validate_report(report)["reason"], reason)
+            with self.assertRaises(evidence.InvalidEvidence):
+                evidence.validate_report(dict(report, status="passed"))
+
     def test_fragmented_log_roundtrip_and_rejection(self):
         report = dict(schemaVersion=1, evidenceKind="liveController", scenario="original",
                       status="blocked", reason="missingAdmission", snapshots=[])
