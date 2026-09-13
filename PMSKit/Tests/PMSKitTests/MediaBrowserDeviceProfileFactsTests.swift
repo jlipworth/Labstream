@@ -13,7 +13,7 @@ struct MediaBrowserDeviceProfileFactsTests {
                         advertiseDolbyVision: advertiseDV,
                         subtitlesInManifest: subtitlesInManifest)
                     let actual = try canonical(jellyfin)
-                    let expected = try canonical(legacyJellyfinStreaming(
+                    let expected = try canonical(expectedJellyfinStreaming(
                         bitrate: bitrate,
                         advertiseDV: advertiseDV,
                         subtitlesInManifest: subtitlesInManifest))
@@ -47,7 +47,7 @@ struct MediaBrowserDeviceProfileFactsTests {
         let embyTranscode = try firstProfile(emby, key: "TranscodingProfiles")
         #expect(embyTranscode["EnableSubtitlesInManifest"] == nil)
         #expect(embyTranscode["Container"] as? String == "m4s,ts")
-        #expect(jfOnTranscode["Container"] as? String == "ts")
+        #expect(jfOnTranscode["Container"] as? String == "mp4")
         let subtitleProfiles = try #require(emby["SubtitleProfiles"] as? [[String: Any]])
         #expect(subtitleProfiles.map { $0["Format"] as? String } == subtitleFormats)
         #expect(subtitleProfiles.allSatisfy { $0["Method"] as? String == "Encode" })
@@ -95,7 +95,7 @@ struct MediaBrowserDeviceProfileFactsTests {
          "pgssub", "dvdsub", "dvbsub"]
     }
 
-    private func legacyJellyfinStreaming(bitrate: Int,
+    private func expectedJellyfinStreaming(bitrate: Int,
                                          advertiseDV: Bool,
                                          subtitlesInManifest: Bool) -> [String: Any] {
         var result: [String: Any] = [
@@ -123,7 +123,7 @@ struct MediaBrowserDeviceProfileFactsTests {
 
     private func streamingTranscode(enableSubtitlesInManifest: Bool?) -> [String: Any] {
         var result: [String: Any] = [
-            "Type": "Video", "Container": enableSubtitlesInManifest == nil ? "m4s,ts" : "ts", "Protocol": "hls",
+            "Type": "Video", "Container": enableSubtitlesInManifest == nil ? "m4s,ts" : "mp4", "Protocol": "hls",
             "VideoCodec": "h264,hevc", "AudioCodec": "aac,ac3",
             "Context": "Streaming", "MinSegments": 2, "BreakOnNonKeyFrames": false,
         ]
