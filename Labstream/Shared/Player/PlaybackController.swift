@@ -46,6 +46,7 @@ final class PlaybackController {
     private var videoTranscodeConsentResumeMs: Int?
     private var preferEmbyVideoCopyHLS = false
     private var mediaBrowserVideoCopyEnforced = false
+    private var usesEmbyHEVCSDRNativeTimeline = false
 
     #if DEBUG
     var debugVisibleAttachmentCount = 0
@@ -880,14 +881,14 @@ final class PlaybackController {
     /// AVFoundation because the whole playable file is already on disk.
     var supportsMetadataAudioSelection: Bool { sessionSource.kind != .offline }
 
-    private var usesEmbyStaticRecoveryTimeline: Bool {
-        mediaBrowserSession?.backend == .emby && mediaBrowserVideoCopyEnforced &&
+    private var usesEmbyNativeHLSTimeline: Bool {
+        usesEmbyHEVCSDRNativeTimeline || (mediaBrowserSession?.backend == .emby && mediaBrowserVideoCopyEnforced &&
             EmbyVideoCopyPolicy.usesTransportStreamRecovery(videoCodec: remoteSourceMetadata?.videoCodec,
-                                                          prefersStaticRecovery: preferEmbyVideoCopyHLS)
+                                                          prefersStaticRecovery: preferEmbyVideoCopyHLS))
     }
 
     private var seekStreamKind: RemoteSeekModePolicy.StreamKind {
-        if usesEmbyStaticRecoveryTimeline { return .mediaBrowserDirectOrStatic }
+        if usesEmbyNativeHLSTimeline { return .mediaBrowserDirectOrStatic }
         return RemoteSeekModePolicy.streamKind(isLocalFile: sessionSource.kind == .offline,
                                         isPlexStreaming: isStreaming,
                                         isPlexVideoCopyLane: maxVideoBitrateKbps <= 0,
@@ -1092,6 +1093,7 @@ final class PlaybackController {
         #endif
         videoTranscodeConsent.generation = nil
         preferEmbyVideoCopyHLS = false
+        usesEmbyHEVCSDRNativeTimeline = false
         videoTranscodeApprovedForCurrentItem = false
         captionAppearance.stopPreview()
         // Invalidate callbacks before doing any final reporting. Observer removal cannot retract
@@ -2411,7 +2413,7 @@ final class PlaybackController {
     func performUserSeek(toMs targetMs: Int) {
         // A newer user seek wins over captured initial resume while ready-to-play
         // track preparation is suspended. Do not seek back when those awaits finish.
-        if usesEmbyStaticRecoveryTimeline { didSeek = true }
+        if usesEmbyNativeHLSTimeline { didSeek = true }
         // Fresh user intent re-arms the GH #196 one-shot startup-deadline retry. It must
         // NOT re-arm on transient `.playing` (a retried item plays briefly at 0 before its
         // resume seek, which turned the one-shot into a hidden retry loop live: three
@@ -3077,6 +3079,7 @@ final class PlaybackController {
                                          sourceMetadata: MediaBrowserPlaybackSourceMetadata? = nil,
                                          transcodeReasons: [String]? = nil) async -> URL? {
         guard !Task.isCancelled, generation == playbackGeneration else { return nil }
+        usesEmbyHEVCSDRNativeTimeline = false
         var url = url
         #if DEBUG
         // Explicit diagnostic transport comparison against the same server via a caller-owned
@@ -3186,6 +3189,18 @@ final class PlaybackController {
                 "target": .millisecondsBucket(0),
             ])
             return url
+        }
+        if mediaBrowserSession?.backend == .emby,
+           EmbyHEVCSDRTimelinePolicy.shouldUseNativeTimeline(url: url, playMethod: playMethod,
+                source: sourceMetadata ?? remoteSourceMetadata,
+                videoCopyEnforced: mediaBrowserVideoCopyEnforced,
+                bitrateCeilingKbps: maxVideoBitrateKbps,
+                requiresVideoTransform: dvGuardReason != nil || (effectiveRemoteSubtitleStreamIndex().map { $0 >= 0 } == true)) {
+            usesEmbyHEVCSDRNativeTimeline = true
+            recordPlaybackDiagnostic("playback.emby_native_hevc_sdr_timeline", fields: [
+                "native_resume": .bool(true),
+            ])
+            return EmbyVideoCopyPolicy.fullTimelineURL(url)
         }
         guard playMethod == .transcode,
               let resumeOffsetMs, resumeOffsetMs > 0,
@@ -3866,7 +3881,7 @@ final class PlaybackController {
                         let nearZero = !current.isFinite || current < 1.0
                         // This explicit full-timeline recovery must seek even if asynchronous
                         // track setup allowed the zero-origin clock to advance past one second.
-                        if self.usesEmbyStaticRecoveryTimeline || (nearZero && (!self.isRemoteTranscode || self.mediaBrowserSession?.backend == .jellyfin)) {
+                        if self.usesEmbyNativeHLSTimeline || (nearZero && (!self.isRemoteTranscode || self.mediaBrowserSession?.backend == .jellyfin)) {
                             let target = CMTime(value: CMTimeValue(resumeOffsetMs), timescale: 1000)
                             let tolerance: CMTime = .zero
                             self.player.seek(to: target,
