@@ -118,11 +118,9 @@ enum DebugEmbyPlaybackProbe {
                                             sortBy: "SortName",
                                             sortOrder: "Ascending",
                                             includeItemTypes: "Movie,Episode")
-        if let exact = items.first(where: { $0.title.localizedCaseInsensitiveCompare(query) == .orderedSame && !$0.isContainer }) {
-            return exact
-        }
-        if let playable = items.first(where: { !$0.isContainer && !$0.isMusic }) {
-            return playable
+        let playable = items.filter { !$0.isContainer && !$0.isMusic }
+        if let index = PlaybackProbeSelection.uniqueExactIndex(titles: playable.map(\.title), query: query) {
+            return playable[index]
         }
         throw DebugPlaybackProbeSupport.ProbeError.itemNotFound(query)
     }
