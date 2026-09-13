@@ -383,6 +383,30 @@ project — `xcodebuild` is the only truth.
 
 Manual test plan: `TESTING-CHECKLIST.md` (keep it updated as fixes ship).
 
+## Corpus-backed playback and release evidence
+
+Use `scripts/media-corpus.py` and `docs/plans/media-corpus-testing.md` for private,
+resumable source inventory and bounded release coverage. Keep inventory, backend IDs,
+credentials, captured frames and raw logs gitignored. Never publish media identifiers.
+Match each backend's exact unique title and verify source identity; Jellyfin/Emby probes
+fail closed on missing/ambiguous matches. Search names differ across servers.
+
+For playback changes, record direct/copy/encode provenance, initial and changed-quality
+frames, and seek/reopen results separately. An advancing playhead or `probe.pass` is
+transport evidence only: inspect decoded frames for missing video and corruption.
+Missing frames, repeated black frames, or unreviewed frames cannot establish a visual
+pass; a dark scene alone is not failure. Never select the same quality in a transition
+scenario and call its no-op a playback defect. Keep headset/hardware acceptance open.
+
+Prefer the Codex in-app browser for normal one-time-code approval; use opt-in semantic
+iPhone auth tests when Device Hub is unavailable. Do not inject tokens or export browser
+cookies. Keep credential-bearing test configurations/results private and remove temporary
+credential copies after authentication. Existing app sessions should survive relaunch.
+
+Before asking for merge review, update canonical docs when behavior/workflow changes,
+record unresolved gates in the PR, run local checks, push, and inspect CI to completion.
+Keep unrelated fixes on separate branches. Never merge without the user's approval.
+
 ## Documentation information architecture
 
 Evaluate factual accuracy and document placement together. Classify before creating: current
