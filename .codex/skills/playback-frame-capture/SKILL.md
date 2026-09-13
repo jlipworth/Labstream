@@ -23,7 +23,11 @@ Each run writes, per capture point (`<backend>-initial` after first playable,
 - Log lines `probe.frame … avg_r=… avg_g=… avg_b=… luma=…` — greppable verdicts without
   pulling files.
 
-The capture directory is wiped per run, so frames always belong to the latest probe.
+Capture-enabled probes clear the entire capture directory at entry, before admission or
+readiness can fail. A reset failure blocks playback. Still require a current-run identity
+and fresh file timestamps when collecting artifacts; older builds only cleared a label
+after readiness and could leave the preceding run's frames behind on startup failure.
+Never infer a visual pass from a stale directory or from `probe.pass` alone.
 
 ## Run loop
 

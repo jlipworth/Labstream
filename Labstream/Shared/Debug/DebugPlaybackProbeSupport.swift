@@ -27,6 +27,10 @@ enum DebugPlaybackProbeSupport {
     }
 
     static func withTemporaryDiagnosticsEnabled(_ operation: () async -> Void) async {
+        guard DebugPlaybackFrameCapture.resetIfRequested() else {
+            DebugPlaybackScenario.blocked(ProcessInfo.processInfo.arguments, reason: .evidenceUnavailable)
+            return
+        }
         let priorDiagnosticsEnabled = AppDiagnostics.isEnabled
         AppDiagnostics.setEnabled(true)
         defer { AppDiagnostics.setEnabled(priorDiagnosticsEnabled) }
@@ -86,6 +90,9 @@ enum DebugPlaybackProbeSupport {
         while ContinuousClock.now < deadline {
             try Task.checkCancellation()
             guard sessionIsCurrent() else { throw DebugPlaybackScenario.Blocked(reason: .backendChanged) }
+            if controller.videoTranscodeConsent.isPending {
+                throw DebugPlaybackScenario.Blocked(reason: .consentRequired)
+            }
             if controller.playbackError.isFailed {
                 throw ProbeError.playbackFailed(phase, controller.playbackError.message)
             }
