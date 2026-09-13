@@ -80,8 +80,10 @@ No production decoder or server defect was established by this bounded set.
   and debug-library hashes were checked for final simulator products; passive native
   smoke checks were serialized separately from live playback.
 - Strict MkDocs, repository links/anchors, Mermaid checks and CI hygiene passed locally.
-- The first hosted-test invocation passed its suite but hung during Xcode coverage
-  finalization. A bounded retry with `-enableCodeCoverage NO` reached terminal success.
+- The first hosted-test invocation passed its suite, but the next app run began before
+  xcodebuild finalized. That invocation was interrupted; this is an orchestration
+  failure, not an established Xcode defect. A fully serialized retry with
+  `-enableCodeCoverage NO` reached terminal success.
 - PR313's first PR hygiene run failed an unrelated existing Emby fixture ledger count
   assertion; push hygiene passed. The same-commit CI retry passed. The first failure
   remains recorded rather than being attributed to the playback changes.
