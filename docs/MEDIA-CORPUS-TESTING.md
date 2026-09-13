@@ -182,3 +182,10 @@ a nonnil replacement AVPlayerItem before testing readiness and sustained progres
 as quality transitions do. Soft AVFoundation/offline subtitle switches do not require
 replacement. The hold still fails if its item changes unexpectedly; it is not weakened
 to tolerate arbitrary restarts. See [issue #312](https://github.com/jlipworth/Labstream/issues/312).
+
+
+The [bounded Plex audit in PR314](https://github.com/jlipworth/Labstream/pull/314) records the tested
+cohorts, first failures, independent fixes and hardware gates. For focused hosted
+probe tests on Xcode 27, disable coverage with `-enableCodeCoverage NO` and wait for
+terminal xcodebuild success before installing or launching another app process;
+a completed test-suite log alone is not a completed test invocation.
