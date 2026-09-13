@@ -45,6 +45,32 @@ enum DebugPlaybackScenario {
             status: .blocked, reason: reason, snapshots: []))
     }
 
+    static func subtitleRequiresReplacement(_ mechanism: PlaybackSubtitleTrack.Mechanism) -> Bool {
+        switch mechanism {
+        case .plexOff, .plexStream, .mediaBrowserOff, .mediaBrowserStream: true
+        case .avFoundationOff, .avFoundation, .offlineOff, .offlineSidecar: false
+        }
+    }
+
+    /// A selection call can return before its scheduled restart replaces the old item.
+    /// Readiness on that predecessor is not readiness for the requested transition.
+    static func waitForReplacement(of priorItem: AVPlayerItem?, player: AVPlayer,
+                                   timeoutSeconds: Int,
+                                   sessionIsCurrent: () -> Bool = { true },
+                                   playbackFailed: () -> Bool = { false },
+                                   consentPending: () -> Bool = { false }) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(timeoutSeconds))
+        while ContinuousClock.now < deadline {
+            try Task.checkCancellation()
+            guard sessionIsCurrent() else { throw Blocked(reason: .backendChanged) }
+            if playbackFailed() { throw Blocked(reason: .playbackFailed) }
+            if consentPending() { throw Blocked(reason: .consentRequired) }
+            if let current = player.currentItem, current !== priorItem { return }
+            try await Task.sleep(for: .milliseconds(250))
+        }
+        throw Blocked(reason: .deadline)
+    }
+
     static func run(_ controller: PlaybackController, options: DebugPlaybackProbeSupport.LaunchOptions,
                     arguments: [String], backendIsCurrent: () -> Bool, log: Logger) async throws {
         guard let scenario = name(arguments), admitted(arguments, bitrateKbps: options.bitrateKbps) else {
@@ -90,6 +116,7 @@ enum DebugPlaybackScenario {
             await DebugPlaybackFrameCapture.captureIfRequested(from: controller.player, label: captureBackend + "-initial", log: log)
             guard backendIsCurrent() else { throw Blocked(reason: .backendChanged) }
             let priorItem = controller.player.currentItem
+            var requiresReplacement = [.capped, .maximum].contains(scenario)
             var expectedAudio: PlaybackAudioTrack.ID?
             var expectedSubtitle: PlaybackSubtitleTrack.ID?
             switch scenario {
@@ -118,6 +145,7 @@ enum DebugPlaybackScenario {
                     }
                     await controller.selectAudioStream(choice)
                     expectedAudio = choice.id
+                    requiresReplacement = true
                 } else { throw Blocked(reason: .unsupportedTrack) }
             case .subtitles:
                 let generation = controller.debugEvidenceSnapshot().generation
@@ -131,17 +159,15 @@ enum DebugPlaybackScenario {
                 // Burn-risk choices are excluded; this does not grant a second approval.
                 try await controller.selectSubtitle(track)
                 expectedSubtitle = track.id
+                requiresReplacement = subtitleRequiresReplacement(track.mechanism)
             default: break
             }
-            if [.capped, .maximum].contains(scenario) {
-                let deadline = ContinuousClock.now.advanced(by: .seconds(options.playableTimeoutSeconds))
-                while controller.player.currentItem === priorItem, ContinuousClock.now < deadline {
-                    try Task.checkCancellation()
-                    guard backendIsCurrent() else { throw Blocked(reason: .backendChanged) }
-                    if controller.playbackError.isFailed { throw Blocked(reason: .playbackFailed) }
-                    try await Task.sleep(for: .milliseconds(250))
-                }
-                guard controller.player.currentItem !== priorItem else { throw Blocked(reason: .deadline) }
+            if requiresReplacement {
+                try await waitForReplacement(of: priorItem, player: controller.player,
+                    timeoutSeconds: options.playableTimeoutSeconds,
+                    sessionIsCurrent: backendIsCurrent,
+                    playbackFailed: { controller.playbackError.isFailed },
+                    consentPending: { controller.videoTranscodeConsent.isPending })
             }
             try await DebugPlaybackProbeSupport.waitUntilPlayable(controller, phase: "transition", timeoutSeconds: options.playableTimeoutSeconds, sessionIsCurrent: backendIsCurrent)
             try await DebugPlaybackProbeSupport.holdWithPlaybackProgress(controller,

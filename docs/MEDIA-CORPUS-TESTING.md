@@ -175,3 +175,10 @@ snapshot and a separate post-stop snapshot. This is not a decoding failure and d
 authorize automatic encoding. Use the separately admitted `consentApprove` scenario only
 with the user's encoding authorization; missing admission is a harness block, not a
 server defect. Original/Maximum and Generic-profile production policies are unchanged.
+
+
+Metadata-owned audio and subtitle changes restart asynchronously. Their probes wait for
+a nonnil replacement AVPlayerItem before testing readiness and sustained progress, just
+as quality transitions do. Soft AVFoundation/offline subtitle switches do not require
+replacement. The hold still fails if its item changes unexpectedly; it is not weakened
+to tolerate arbitrary restarts. See [issue #312](https://github.com/jlipworth/Labstream/issues/312).

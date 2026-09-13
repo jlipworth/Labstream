@@ -79,6 +79,43 @@ struct PlaybackAgentEvidenceTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
     }
 
+    @Test func delayedTrackReplacementDoesNotAcceptThePredecessor() async throws {
+        let old = AVPlayerItem(asset: AVMutableComposition())
+        let replacement = AVPlayerItem(asset: AVMutableComposition())
+        let player = AVPlayer(playerItem: old)
+        let task = Task { @MainActor in
+            try await Task.sleep(for: .milliseconds(20))
+            player.replaceCurrentItem(with: nil)
+            try await Task.sleep(for: .milliseconds(20))
+            player.replaceCurrentItem(with: replacement)
+        }
+        defer { task.cancel(); player.replaceCurrentItem(with: nil) }
+        try await DebugPlaybackScenario.waitForReplacement(of: old, player: player, timeoutSeconds: 2)
+        #expect(player.currentItem === replacement)
+        try await task.value
+    }
+
+    @Test func missingReplacementFailsClosed() async throws {
+        let old = AVPlayerItem(asset: AVMutableComposition())
+        let player = AVPlayer(playerItem: old)
+        defer { player.replaceCurrentItem(with: nil) }
+        do {
+            try await DebugPlaybackScenario.waitForReplacement(of: old, player: player, timeoutSeconds: 0)
+            Issue.record("The predecessor must not satisfy replacement")
+        } catch let error as DebugPlaybackScenario.Blocked {
+            #expect(error.reason == .deadline)
+        }
+    }
+
+    @Test func onlyMetadataSubtitleMechanismsRequireReplacement() {
+        #expect(DebugPlaybackScenario.subtitleRequiresReplacement(.plexOff))
+        #expect(DebugPlaybackScenario.subtitleRequiresReplacement(.plexStream(1)))
+        #expect(DebugPlaybackScenario.subtitleRequiresReplacement(.mediaBrowserOff))
+        #expect(DebugPlaybackScenario.subtitleRequiresReplacement(.mediaBrowserStream(1)))
+        #expect(!DebugPlaybackScenario.subtitleRequiresReplacement(.avFoundationOff))
+        #expect(!DebugPlaybackScenario.subtitleRequiresReplacement(.offlineOff))
+    }
+
     @Test func changedBackendStopsBeforeStartingPlayback() async throws {
         let identity = ClientIdentity(clientIdentifier: "fixture-only", product: "Labstream",
                                       version: "1", deviceName: "Fixture")
