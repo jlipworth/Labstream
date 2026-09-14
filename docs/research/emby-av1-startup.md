@@ -49,11 +49,15 @@ from attaching an item after stop or replacement. Server-wide settings are untou
 - A fresh-build repeat passed the same visible-frame check. A forced one-second
   preparation deadline stopped during warm-up without attaching a late item; a subsequent
   server check found no encoder running.
-- Hermetic PMSKit checks passed (1,698 tests), as did repository hygiene, strict MkDocs,
+- Hermetic PMSKit checks passed (1,700 tests after integration with main), as did repository hygiene, strict MkDocs,
   links/anchors, and Mermaid validation. All four native products built; iPhone browse,
   tvOS/macOS signed-out UI, and visionOS fixture smoke were inspected. The visionOS
   fresh-device first launch was denied before boot readiness; waiting for boot completion
   resolved it. These smokes are not AV1 playback acceptance on those other platforms.
+- After integrating the landed shared corpus/Jellyfin change, a fresh exact-bound repeat
+  reached warm readiness in 7.4 seconds and passed with four initial and four post-hold
+  visible frames. The one-second cancellation check again stopped before item attachment,
+  with no server encoder remaining. Current corpus guidance and Jellyfin tests were retained.
 - Physical-device decoding, deep seeks, other server versions, and release gates remain
   open. Frame-count success alone never establishes visual correctness.
 
