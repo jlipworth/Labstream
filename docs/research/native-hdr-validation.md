@@ -38,7 +38,8 @@ configuration decoded successfully, but it is a different library file, not an
 exact-source base-layer derivative. This isolates a profile/packaging gate more narrowly
 than display eligibility, but does not yet prove which normalization would be safe.
 The [P7 decoder-boundary investigation](dv-p7-decoder-boundary.md) records the
-exact-initialization contrast and remaining sample-level gates.
+exact-initialization contrast, a bounded exact-source sample/HLS base-layer experiment,
+and remaining full-session and physical gates.
 
 The HDR10 control also produced decoded 3840×2160 buffers with PQ transfer and BT.2020
 primaries/matrix attachments. Explicit 8 Mbps encoding of the failing DV source passed

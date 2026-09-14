@@ -77,26 +77,58 @@ distinguishes P8.1 RPU conversion (including removal of FEL mapping) from enhanc
 layer removal. Merely changing a profile number or deleting a configuration box is
 not that conversion. No new conversion dependency is introduced here.
 
-## Sample acquisition status
+## Exact-source sample and HLS experiment
 
-A fresh, isolated native app paired through normal Plex authentication, selected the
-correct video server, verified the exact source binding and reproduced copy failure
-with encoding consent required. The new initialization capture reproduced the same
-four-way decoder-construction result. No credentials or existing app sessions were
-copied.
+After the host was unlocked, the isolated app reused its normal saved authentication
+and exact source binding. A temporary collector requested a bounded byte range from
+the first segment of the same single-variant copy playlist as its initialization.
+The complete segment was 12,952,841 bytes, below the 16 MiB cap. Box lengths and
+sample offsets validated that the capture was complete; an earlier 8 MiB prefix was
+incomplete and was not used as decoding evidence. No full source file or credentials
+were exported. The unchanged app copy path still ended with encoding consent required.
 
-A temporary, opt-in first-segment collector retained no compressed sample file on its
-initial attempt. Its instrumented bounded retry could not be verified after the host
-locked and computer-use access required manual unlock. The collector is not a shipping
-change. No sample-decoding, base-layer frame-equivalence or normalized-HLS success is
-claimed from these attempts. Continuing requires an unlocked native app and a complete,
-provenance-bound minimal sample capture; it does not require production access.
+The segment contains 240 video samples spanning 10.009 seconds. Its compressed sample
+inventory contains 240 type-62 RPU units and 798 type-63 wrapped enhancement-layer units.
+The experiment does not determine MEL versus FEL or reconstruct the enhancement layer.
+
+Two native VideoToolbox runs used the same timing and base configuration:
+
+1. Omit only `dvcC` from the format-description atom dictionary; preserve all samples.
+2. Additionally remove only sample NAL types 62/63, preserving VCL bytes, other NALs,
+   timing and color information. This matches the base-layer separation described by
+   [FFmpeg's `dovi_split` documentation](https://www.ffmpeg.org/ffmpeg-bitstream-filters.html#dovi_005fsplit).
+
+Both runs submitted and decoded all 240 frames without errors. Their timestamp-matched
+10-bit pixel-plane SHA-256 hashes were identical for every frame (193 unique images),
+and output attachments were PQ/BT.2020. Late visible frames were inspected; the early
+black frames are followed by visible content, not used alone as a visual pass.
+This proves equivalence to the extracted base for this clip, **not** equivalence to
+full P7 output, Dolby tone mapping or physical HDR luminance.
+
+A separate native AVPlayer window then read bounded local HLS over loopback:
+
+| Local HLS variant | Result |
+| --- | --- |
+| Original captured initialization and segment | -11855, no decoded-frame pass |
+| Only initialization `dvcC` atom type changed to `free`, same length and byte-identical segment | Playback and local seek from 5 seconds to beyond 7 seconds; inspected visible postseek frame; PQ/BT.2020 3840×2160 buffers |
+| Explicit base-only samples, repaired fragment sizes/offsets, unchanged audio and base VCL bytes | Playback and the same local seek; inspected visible postseek frame |
+| Reopened configuration-only experimental HLS | Playback and local seek repeated successfully |
+
+The explicit base-only fragment omits optional `sidx` indexes and updates video sample
+sizes, audio data offset and `mdat` size; it does not re-encode video or audio. These
+are **private experimental derivatives**, not an app playback transformation. The
+local one-segment seek does not validate Plex server seek/restart, multi-segment
+continuity, byte-range delivery or every source timestamp layout. Source media and
+all experiment scripts, hashes and frames stay in private ignored evidence. Temporary
+app acquisition changes are reverted and isolated resources cleaned up after testing.
 
 ## Safe-delivery acceptance gates
 
-Before a runtime normalization candidate can be justified:
+The bounded experiment closes sample and local-HLS gates only for this segment.
+Before a shipping runtime normalization candidate can be justified:
 
-1. Acquire a bounded init and compressed sample sequence from the **same source and
+1. Extend coverage beyond the tested initial segment: acquire bounded initialization
+   and compressed sample sequences from the **same source and
    same copy session**, using normal app authentication. Bind the exact source and
    selected child in private provenance. A diagnostic child fetched independently
    is not automatically the variant that AVPlayer decoded.
