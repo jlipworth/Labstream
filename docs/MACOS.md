@@ -140,12 +140,12 @@ See [Testing strategy](TESTING-STRATEGY.md) for the repository-wide validation l
 
 ## Release status
 
-The Mac target is part of the coordinated 1.6.1 universal-purchase release candidate and uses the
+The Mac target participates in the coordinated universal-purchase release and uses the
 production identifier `org.labstream.Labstream`. Licensing, universal-purchase topology, identity,
 and version policy are decided; they are not remaining design questions. The open gates are a clean
 Apple Distribution archive and validation, App Store sandbox/entitlement review, processed
 TestFlight build, fresh-install sign-in, real-backend playback, keyboard/media-key and window
 lifecycle behavior, download recovery, accessibility, screenshots, metadata, and App Review.
 
-Downloads remain inside the app container for 1.6.1. External download folders and
+Downloads remain inside the app container. External download folders and
 security-scoped bookmark migration are deferred product work, not prerequisites for this release.
