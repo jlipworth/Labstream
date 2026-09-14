@@ -79,8 +79,9 @@ The host helper sets `ENABLE_DEBUG_DYLIB=NO`. Xcode's small Debug launcher was o
 to have the same executable UUID in isolated-development and production-identity builds.
 macOS uses that UUID when enforcing local network privacy; the collision caused local
 connections to fail with `Local network prohibited` even while Settings showed access enabled.
-Rebuilding the signed production app without the Debug launcher produced a distinct UUID
-and restored live server access. This affects local helper builds, not archive settings.
+Rebuilding without the Debug launcher produced distinct main-executable UUIDs. The isolated
+helper app regained live server access after normal permission approval. This affects local
+helper builds, not archive settings. Production app replacement is not part of this workflow.
 
 If this recurs, compare the main executables with `xcrun dwarfdump --uuid`, verify signing,
 and check System Settings → Privacy & Security → Local Network. Relaunch and retry after

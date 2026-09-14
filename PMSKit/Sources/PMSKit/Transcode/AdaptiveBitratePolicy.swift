@@ -11,8 +11,8 @@ import Foundation
 ///
 /// The policy never raises above the user's selected cap. `Original (Direct Stream)` (0) is not a
 /// downshiftable transcode rung: callers must surface a visible failure or make an explicit user-
-/// initiated quality change rather than silently abandoning video-copy intent. `Maximum (Transcode)`
-/// (200 Mbps in the app) is treated as permission to climb only to the highest bounded rung.
+/// initiated quality change rather than silently abandoning video-copy intent.
+/// `Maximum (Transcode)` (200 Mbps in the app) permits climbing only to the highest bounded rung.
 public struct AdaptiveBitratePolicy: Sendable, Equatable {
     public struct Configuration: Sendable, Equatable {
         /// Minimum seconds between any two automatic changes. Protects PMS/Jellyfin from restart
@@ -60,8 +60,9 @@ public struct AdaptiveBitratePolicy: Sendable, Equatable {
         public let reason: String
     }
 
-    /// Positive transcoded caps, low -> high. Excludes sentinel values such as "Original (Direct Stream)" (`0`) and "Maximum (Transcode)" (`200_000`) because automatic adaptation should
-    /// operate only on bounded rungs. Original (Direct Stream) is explicitly not downshifted.
+    /// Positive transcoded caps, low -> high. Excludes "Original (Direct Stream)" (`0`)
+    /// and "Maximum (Transcode)" (`200_000`): automatic adaptation uses bounded rungs.
+    /// Original is explicitly not downshifted.
     public let transcodedRungsKbps: [Int]
     public var configuration: Configuration
 

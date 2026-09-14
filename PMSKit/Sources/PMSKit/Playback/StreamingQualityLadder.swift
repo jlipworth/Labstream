@@ -26,9 +26,8 @@ public enum StreamingQuality {
     /// The no-cap "Original (Direct Stream)" sentinel: attempt direct play/direct stream first.
     public static let maximumOriginalKbps = 0
 
-    /// The "Maximum (Transcode)" sentinel: request the production HLS path at this effectively
-    /// uncapped ceiling. It forces a video
-    /// transcode so it cannot collapse back onto the Original (Direct Stream) copy lane.
+    /// The "Maximum (Transcode)" sentinel requests effectively uncapped production HLS.
+    /// It forces video encoding rather than returning to the Original copy lane.
     public static let maxTranscodedKbps = 200_000
 
     /// One rung of the ladder. `kbps == maximumOriginalKbps` (0) is the video-copy
