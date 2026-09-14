@@ -40,26 +40,20 @@ from attaching an item after stop or replacement. Server-wide settings are untou
 
 ## Regression evidence and remaining gates
 
-- Exact identity assertions reject empty, missing, case-mismatched, and different opaque
-  identifiers before playback negotiation; title matching remains unique and exact.
-- Pure policy tests cover the cold AV1 path and excluded decisions/codecs/offsets.
-- The shipping-path candidate passed a bounded seek-to-zero/progress scenario and
-  produced four initial and four post-hold visible frames. A seek to zero is not a deep
-  seek acceptance claim. No active encoder remained in the post-stop server check.
-- A fresh-build repeat passed the same visible-frame check. A forced one-second
-  preparation deadline stopped during warm-up without attaching a late item; a subsequent
-  server check found no encoder running.
-- Hermetic PMSKit checks passed (1,700 tests after integration with main), as did repository hygiene, strict MkDocs,
-  links/anchors, and Mermaid validation. All four native products built; iPhone browse,
-  tvOS/macOS signed-out UI, and visionOS fixture smoke were inspected. The visionOS
-  fresh-device first launch was denied before boot readiness; waiting for boot completion
-  resolved it. These smokes are not AV1 playback acceptance on those other platforms.
-- After integrating the landed shared corpus/Jellyfin change, a fresh exact-bound repeat
-  reached warm readiness in 7.4 seconds and passed with four initial and four post-hold
-  visible frames. The one-second cancellation check again stopped before item attachment,
-  with no server encoder remaining. Current corpus guidance and Jellyfin tests were retained.
-- Physical-device decoding, deep seeks, other server versions, and release gates remain
-  open. Frame-count success alone never establishes visual correctness.
+The post-integration check for [PR #307](https://github.com/jlipworth/Labstream/pull/307)
+used a fresh build and exact item/source assertions. Warm readiness took 7.4 seconds;
+four initial and four post-hold frames were visually inspected, with progress after
+seek-to-zero. A forced one-second preparation deadline stopped before item attachment;
+the post-stop server check found no remaining encoder. Earlier candidate and repeat
+runs also passed the bounded visible-frame check. Seek-to-zero is **not** deep-seek evidence.
 
-Private media names, identifiers, paths, addresses, credentials, and frames remain in
-ignored local evidence, not in this document or GitHub attachments.
+Pure tests cover the cold AV1 policy, excluded decisions/codecs/offsets, and rejection
+of empty, missing, case-mismatched or different expected identifiers. At integration,
+1,700 hermetic PMSKit tests, repository hygiene and docs checks passed. All four native
+products built and passed their bounded UI/fixture smokes; those smokes do not establish
+AV1 playback acceptance on other platforms.
+
+Physical-device decoding, deep seeks, other server versions and release acceptance
+remain open. Frame counts alone are not a visual correctness oracle. Private names,
+identifiers, paths, addresses, credentials and frames remain in ignored local evidence,
+not this document or GitHub attachments.

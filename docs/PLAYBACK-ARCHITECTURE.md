@@ -144,6 +144,13 @@ and performs its initial resume and subsequent seeks natively. It bypasses the l
 master-playlist prewarmer/proxy and retains the server session for cleanup. Explicit
 full-timeline resume must not depend on the clock still being near zero after track setup.
 
+Known HEVC 10-bit SDR copy-compatible HLS also uses a full timeline and explicit native
+resume/seek, but retains fragmented MP4 rather than switching to MPEG-TS. Capped sources
+must have a known bitrate within the ceiling and explicit copy-compatible server reasons;
+unknown facts, transforms, and HDR are excluded. This avoids the reproduced visual corruption
+on the offset-primed quality-reopen path, without asserting a shared cause with the H.264
+starvation issue ([evidence and limits](research/emby-hevc-sdr-timeline.md)).
+
 Verified Emby copy HLS reopens retain their 12-second buffer target but keep automatic
 waiting enabled, so buffer exhaustion does not strand AVPlayer at rate zero. Other
 backends and approved video-encode buffering settings remain unchanged. AC-3 copy
@@ -171,17 +178,15 @@ Current invariants:
 
 - `HLSSessionPrewarmer` is lane-specific rather than a universal HLS prerequisite. Plex uses
   its full 20-second budget only when the selected quality is Direct Play / Maximum.
-  Emby uses an 8-second head start for a transcoded stream with a nonzero resume
-  or reopen target. At an absent/zero resume, Emby AV1 transcodes instead warm the same
-  session for up to 20 seconds before attachment, without the priming proxy; other codecs
-  and progressive/direct starts are unchanged. This prevents the reproduced cold-encoder
-  deadline/disconnect cycle ([evidence and limits](research/emby-av1-startup.md)).
-  Jellyfin skips this legacy priming path and client-seeks its VOD timeline.
+  Outside native full-timeline lanes, Emby gives nonzero transcode resume/reopen targets
+  an 8-second head start. Absent/zero-resume AV1 transcodes instead warm the same session
+  for up to 20 seconds without the proxy ([evidence and limits](research/emby-av1-startup.md)).
+  Jellyfin skips legacy priming and client-seeks its VOD timeline.
   All prewarm outcomes are soft and AVPlayer still gets a chance to load.
-- After that Emby transcode prewarm, the controller stands up `MediaSessionProxy` to
+- After the nonzero-offset Emby prewarm, the controller stands up `MediaSessionProxy` to
   strip `starttimeticks` from the playlist and inject a playlist start-time offset, then
   attaches AVPlayer to the loopback URL. If proxy standup fails, it falls back to the original
-  remote URL. Zero-offset and progressive/direct streams skip both the prewarm and the proxy.
+  remote URL. Zero-offset starts skip the proxy; progressive/direct streams skip both.
 - Failure handling scans the complete error log for the startup-deadline/variant-removal
   codes; a notification can cover more than its last appended event.
 - A startup-deadline abandonment gets at most one automatic warm retry. The allowance is
