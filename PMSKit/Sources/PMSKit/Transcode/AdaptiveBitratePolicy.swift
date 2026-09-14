@@ -9,9 +9,9 @@ import Foundation
 /// - sustained stall -> downshift one bounded rung, subject to cooldown/frequency limits
 /// - sustained healthy playback with enough buffer -> optional upshift one bounded rung
 ///
-/// The policy never raises above the user's selected cap. `Direct Play / Maximum` (0) is not a
+/// The policy never raises above the user's selected cap. `Original (Direct Stream)` (0) is not a
 /// downshiftable transcode rung: callers must surface a visible failure or make an explicit user-
-/// initiated quality change rather than silently abandoning video-copy intent. `Maximum (HLS)`
+/// initiated quality change rather than silently abandoning video-copy intent. `Maximum (Transcode)`
 /// (200 Mbps in the app) is treated as permission to climb only to the highest bounded rung.
 public struct AdaptiveBitratePolicy: Sendable, Equatable {
     public struct Configuration: Sendable, Equatable {
@@ -60,9 +60,8 @@ public struct AdaptiveBitratePolicy: Sendable, Equatable {
         public let reason: String
     }
 
-    /// Positive transcoded caps, low -> high. Excludes sentinel values such as "Direct Play /
-    /// Maximum" (`0`) and "Maximum (HLS)" (`200_000`) because automatic adaptation should
-    /// operate only on bounded rungs. Direct Play / Maximum is explicitly not downshifted.
+    /// Positive transcoded caps, low -> high. Excludes sentinel values such as "Original (Direct Stream)" (`0`) and "Maximum (Transcode)" (`200_000`) because automatic adaptation should
+    /// operate only on bounded rungs. Original (Direct Stream) is explicitly not downshifted.
     public let transcodedRungsKbps: [Int]
     public var configuration: Configuration
 

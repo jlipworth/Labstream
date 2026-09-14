@@ -15,29 +15,24 @@ import Foundation
 /// previously selectable caps (2/4/8/12/20 Mbps + Maximum) are retained — so an older
 /// persisted choice still resolves — plus 3/10/40 Mbps for finer steps.
 ///
-/// The top of the ladder splits the old single "Maximum" into two explicit choices that
-/// also decide the *path* (this is what replaced the experimental Direct Stream toggle +
-/// headroom gate, #31):
-/// - **Direct Play / Maximum** (`maximumOriginalKbps`, 0): ask PMS to direct-play/direct-stream
-///   the source when compatible. If the probe, literal start, or committed copy rendition fails,
-///   fall back once through production HLS with Direct Stream disabled so the rejected copy lane
-///   cannot be selected again.
-/// - **Maximum (HLS)** (`maxTranscodedKbps`): use HLS at the highest ceiling. On Plex this is
-///   an explicit video transcode rather than another copy/remux attempt; Jellyfin/Emby apply the
-///   same effectively uncapped quality ceiling through their backend policies.
-/// Every numeric rung transcodes at that cap.
+/// The two top choices express video-copy versus video-encode intent:
+/// - **Original (Direct Stream)** (`maximumOriginalKbps`, 0): retain source video;
+///   remuxing and audio conversion are allowed. Video encoding requires explicit consent.
+/// - **Maximum (Transcode)** (`maxTranscodedKbps`): explicitly request video encoding
+///   at the highest ceiling on Plex, Jellyfin and Emby.
+/// Numeric rungs impose bitrate ceilings; compatible video may still be copied.
 public enum StreamingQuality {
 
-    /// The no-cap "Direct Play / Maximum" sentinel: attempt direct play/direct stream first.
+    /// The no-cap "Original (Direct Stream)" sentinel: attempt direct play/direct stream first.
     public static let maximumOriginalKbps = 0
 
-    /// The "Maximum (HLS)" sentinel: request the production HLS path at this effectively
-    /// uncapped ceiling. It skips the literal direct-play probe and forces a Plex video
-    /// transcode so it cannot collapse back onto the Direct Play / Maximum copy lane.
+    /// The "Maximum (Transcode)" sentinel: request the production HLS path at this effectively
+    /// uncapped ceiling. It forces a video
+    /// transcode so it cannot collapse back onto the Original (Direct Stream) copy lane.
     public static let maxTranscodedKbps = 200_000
 
-    /// One rung of the ladder. `kbps == maximumOriginalKbps` (0) is the direct-play-or-max
-    /// sentinel; `kbps == maxTranscodedKbps` is the maximum-HLS sentinel;
+    /// One rung of the ladder. `kbps == maximumOriginalKbps` (0) is the video-copy
+    /// sentinel; `kbps == maxTranscodedKbps` is the maximum-transcode sentinel;
     /// `resolution` is the rough target PMS encodes to at that ceiling (empty for the maxima).
     public struct Option: Identifiable, Sendable {
         public let kbps: Int
@@ -68,8 +63,8 @@ public enum StreamingQuality {
     /// current ladder) render without trailing zeros via `%g`.
     public static func label(kbps: Int) -> String {
         switch kbps {
-        case maximumOriginalKbps: return "Direct Play / Maximum"
-        case maxTranscodedKbps:   return "Maximum (HLS)"
+        case maximumOriginalKbps: return "Original (Direct Stream)"
+        case maxTranscodedKbps:   return "Maximum (Transcode)"
         default:
             guard let resolution = ladder.first(where: { $0.kbps == kbps })?.resolution else {
                 return "\(kbps / 1000) Mbps"

@@ -151,7 +151,7 @@ public struct TranscodeRequest: Sendable, Equatable {
             // PMS). Use "Generic" plus our explicit `X-Plex-Client-Profile-Extra` so
             // PMS will direct-stream/remux HEVC video when the requested cap permits it.
             // The Safari profile hard-limits 10-bit HEVC and caused high-bitrate 4K MKV
-            // titles to be video-transcoded at ~20 Mbps even on Direct Play / Maximum.
+            // titles to be video-transcoded at ~20 Mbps even on Original (Direct Stream).
             .init(name: "X-Plex-Client-Profile-Name", value: "Generic"),
             .init(name: "X-Plex-Client-Profile-Extra", value: deviceProfile.clientProfileExtra),
         ]

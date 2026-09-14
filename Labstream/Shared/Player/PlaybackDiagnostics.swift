@@ -180,7 +180,7 @@ final class PlaybackDiagnostics {
 
     // MARK: Dynamic numbers
 
-    /// The requested hard cap (kbps). 0 means "Direct Play / Maximum" (no cap).
+    /// The requested hard cap (kbps). 0 means "Original (Direct Stream)" (no cap).
     var targetBitrateKbps: Int = 0
     /// Last active observed throughput sample (kbps), from the access log. This is empirical
     /// transfer throughput while AVFoundation is downloading, not encoded stream bitrate.
@@ -216,8 +216,8 @@ final class PlaybackDiagnostics {
     /// choices; numeric caps render as "<N> Mbps".
     var targetBitrateLabel: String {
         switch targetBitrateKbps {
-        case ...0: "Direct Play / Maximum"
-        case StreamingQuality.maxTranscodedKbps: "Maximum (HLS)"
+        case ...0: "Original (Direct Stream)"
+        case StreamingQuality.maxTranscodedKbps: "Maximum (Transcode)"
         default: "\(targetBitrateKbps / 1000) Mbps"
         }
     }

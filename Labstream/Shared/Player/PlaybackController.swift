@@ -234,7 +234,7 @@ final class PlaybackController {
     /// Hard bitrate cap requested of PMS (kbps). 8 Mbps default per spec.
     ///
     /// Mutable: the in-player quality menu rebuilds the stream at a new cap via
-    /// `reload(bitrateKbps:)`. `0` is the sentinel for "Direct Play / Maximum" (no cap).
+    /// `reload(bitrateKbps:)`. `0` is the sentinel for "Original (Direct Stream)" (no cap).
     private(set) var maxVideoBitrateKbps: Int
 
     /// The user's explicit quality ceiling for this session. Automatic adaptation may move the
@@ -2300,7 +2300,7 @@ final class PlaybackController {
     /// The PMS universal transcoder cannot change its cap mid-session, so we tear the
     /// HLS stream down and start a fresh `start.m3u8` at `bitrateKbps`. To make it feel
     /// continuous we snapshot the current playhead, load the new item, then seek back to
-    /// that position before playing. `0` requests "Direct Play / Maximum" (no cap — we pass
+    /// that position before playing. `0` requests "Original (Direct Stream)" (no cap — we pass
     /// a very high ceiling so PMS still produces a compatible HLS rendition).
     ///
     /// Only valid for reopenable sessions; a no-op for local files/static streams.
@@ -2604,9 +2604,9 @@ final class PlaybackController {
         }
         let metadataKey = item.key ?? "/library/metadata/\(item.ratingKey)"
 
-        // "Direct Play / Maximum" (the no-cap sentinel) maps to a very high ceiling so PMS still
+        // "Original (Direct Stream)" (the no-cap sentinel) maps to a very high ceiling so PMS still
         // emits a playable HLS rendition rather than rejecting an absent cap — the same
-        // ceiling "Maximum (HLS)" uses, and the transcode fallback when an Original
+        // ceiling "Maximum (Transcode)" uses, and the transcode fallback when an Original
         // pick can't be copied.
         let requestedCap = maxVideoBitrateKbps <= 0 ? StreamingQuality.maxTranscodedKbps : maxVideoBitrateKbps
 
@@ -2616,7 +2616,7 @@ final class PlaybackController {
         // waiting on a segment the transcoder hasn't reached yet.
         let resumeMs = resumeOffsetMsOverride ?? item.viewOffset
 
-        // GH #196: on the copy lane (Direct Play / Maximum) the `offset=` start param is
+        // GH #196: on the copy lane (Original (Direct Stream)) the `offset=` start param is
         // actively harmful — PMS emits `#EXT-X-START:TIME-OFFSET` and AVPlayer was observed
         // live decoding a single frame at the offset then abandoning the sole variant
         // (-12880). Start the copy session at 0 and resume via the client-side seek
@@ -2858,7 +2858,7 @@ final class PlaybackController {
         selectedFields.merge(playbackExplanationDiagnosticFields()) { _, new in new }
         recordPlaybackDiagnostic("playback.stream_selected", fields: selectedFields)
 
-        // GH #196 copy-lane startup hardening: on Direct Play / Maximum the PMS session emits
+        // GH #196 copy-lane startup hardening: on Original (Direct Stream) the PMS session emits
         // 10s / tens-of-MB fMP4 segments in a single-variant playlist, and on a cold session
         // the transcoder only starts once the child playlist is fetched — so AVPlayer's hard
         // startup deadlines (-12889/-16830) can fire before the first segment exists, and with
@@ -2893,7 +2893,7 @@ final class PlaybackController {
 
         // Plex Universal HLS can rely on the X-Plex identity headers in addition to the
         // token-bearing query string. In particular the Generic profile path that lets PMS
-        // remux/copy 10-bit HEVC at Direct Play / Maximum has been observed to 400 on the
+        // remux/copy 10-bit HEVC at Original (Direct Stream) has been observed to 400 on the
         // same URL when fetched without the standard X-Plex headers. Thread the headers into
         // AVFoundation so the media-plane request matches our successful control preflight.
         let assetOptions: [String: Any] = [
@@ -2943,7 +2943,7 @@ final class PlaybackController {
     }
 
     #if DEBUG
-    /// DEBUG-only per-title decision logger for the "Direct Play / Maximum" path. When PMS agrees
+    /// DEBUG-only per-title decision logger for the "Original (Direct Stream)" path. When PMS agrees
     /// to direct-play a title we commit `directPlayStartM3U8URL()`; this records WHY, so a Debug
     /// build can distinguish whole-file direct play (`mde=1000`) from Direct Stream (`video=copy`,
     /// copy video / transcode audio) at a glance, alongside the production verdict we would
@@ -4906,7 +4906,7 @@ final class PlaybackController {
         if isRemoteTranscode {
             return remoteTranscodeStallTimeoutSeconds
         }
-        // Direct Play / Maximum can legally be a very high-bitrate HEVC remux. Initial fMP4
+        // Original (Direct Stream) can legally be a very high-bitrate HEVC remux. Initial fMP4
         // segments for 4K remuxes can be tens of MB and the simulator/media plane can take a long
         // time to reach ready/keep-up even when PMS is serving valid video-copy bytes. Do not trip
         // the generic 15s watchdog or convert this explicit user choice into a capped transcode.
@@ -5098,8 +5098,8 @@ final class PlaybackController {
                 message = HLSStartupDeadlinePolicy.failureMessage(errorLogCodes: deadlineCodes)
                 NSLog("PlaybackController: stall watchdog found startup-deadline error log; surfacing deadline failure (#196)")
             } else if maxVideoBitrateKbps <= 0 {
-                message = "Direct Play / Maximum stalled before playback could start. The stream may be above this network or player path's capacity. Tap Retry, or choose a transcoded/lower quality."
-                NSLog("PlaybackController: Direct Play / Maximum stalled with no item error; surfacing capacity hint")
+                message = "Original (Direct Stream) stalled before playback could start. The stream may be above this network or player path's capacity. Tap Retry, or choose a transcoded/lower quality."
+                NSLog("PlaybackController: Original (Direct Stream) stalled with no item error; surfacing capacity hint")
             } else {
                 message = "Playback stalled. The server or network may be unreachable. Tap Retry once your connection is back."
                 NSLog("PlaybackController: stream stalled with no item error; surfacing generic failure")
@@ -5219,9 +5219,9 @@ final class PlaybackController {
     private func attemptAdaptiveBitrateFallback(fields baseFields: [String: DiagnosticFieldValue]) -> Bool {
         guard adaptiveBitrateEnabled else { return false }
         guard supportsQualityReload else { return false }
-        // Do not silently convert an explicit Direct Play / Maximum selection into a capped
+        // Do not silently convert an explicit Original (Direct Stream) selection into a capped
         // video transcode. That is worse than the user's chosen direct/remux path on fast links
-        // and was the source of the apparent ~20 Mbps fallback. If Direct Play / Maximum truly
+        // and was the source of the apparent ~20 Mbps fallback. If Original (Direct Stream) truly
         // cannot play, surface Retry rather than automatically abandoning video-copy.
         guard maxVideoBitrateKbps > 0 else { return false }
         guard let decision = adaptiveBitratePolicy.recordStall(

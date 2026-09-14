@@ -12,7 +12,7 @@ public enum RemoteSeekModePolicy {
     public enum StreamKind: Sendable, Equatable {
         case localFile
         case plexStreamingHLS
-        /// Plex video-copy (Direct Play / Maximum) transcode session. Seeks stay NATIVE even
+        /// Plex video-copy (Original (Direct Stream)) transcode session. Seeks stay NATIVE even
         /// out of buffer (GH #196): the session playlist is a full VOD list and PMS jumps its
         /// remux transcoder to whichever segment the player requests (proven live — the
         /// client-side resume seek rides exactly this). A reopen actively breaks this lane:

@@ -41,7 +41,7 @@ sequenceDiagram
         UI-->>PC: approve or decline
       end
     end
-  else Plex Direct Play / Maximum copy
+  else Plex Original (Direct Stream) copy
     UI->>PC: construct and start with item + session
     PC->>Server: directPlay=0, directStream=1 decision
     Server-->>PC: video-copy decision or encoding required
@@ -67,7 +67,7 @@ The client-first changes are under active acceptance (see the repository plan
 `docs/plans/2026-09-06-client-first-playback.md`);
 control-plane success is not a claim that live rendering or every platform has passed.
 
-1. **Direct Play / Maximum (Original video).** Negotiate with `directPlay=0` and
+1. **Original (Direct Stream) (Original video).** Negotiate with `directPlay=0` and
    `directStream=1`, and require an explicit video `copy`/`directplay` decision before
    fetching the media start. Container remux and audio conversion are allowed; this HLS
    route is not byte-for-byte original-file playback. Copy starts omit `offset=` and
@@ -79,8 +79,8 @@ control-plane success is not a claim that live rendering or every platform has p
    the current item and generation; stop and explicit quality changes clear it. Approved
    fallback disables Direct Stream and primes the saved resume offset. It is not a
    persistent preference or an automatic retry loop.
-3. **Explicit capped / Maximum (HLS).** These quality choices authorize encoding without
-   a second prompt. Maximum (HLS) disables Direct Stream rather than recreating the copy
+3. **Explicit capped / Maximum (Transcode).** These quality choices authorize encoding without
+   a second prompt. Maximum (Transcode) disables Direct Stream rather than recreating the copy
    rendition. Capped/approved encoding retains `offset=` priming for deep resume.
 
 For a single HDR variant on an SDR display, the bounded media-playlist selector can open
@@ -114,7 +114,7 @@ sources may use explicit `VideoCodec=copy` with fMP4 segments while audio is cop
 converted. The controller selects the validated same-origin primary copy child, not the
 HDR master whose additional SDR variants can force a video encoder. Unknown decisions,
 required video transforms, and unhandled alternate renditions stop and ask rather than
-silently encoding or discarding a track. Maximum (HLS) explicitly forces video encoding.
+silently encoding or discarding a track. Maximum (Transcode) explicitly forces video encoding.
 An approval travels only through the captured, current-session reopener; stale generations
 cannot approve another playback request. These changes remain under live acceptance.
 
@@ -177,7 +177,7 @@ a MediaBrowser item may become `.failed`.
 Current invariants:
 
 - `HLSSessionPrewarmer` is lane-specific rather than a universal HLS prerequisite. Plex uses
-  its full 20-second budget only when the selected quality is Direct Play / Maximum.
+  its full 20-second budget only when the selected quality is Original (Direct Stream).
   Outside native full-timeline lanes, Emby gives nonzero transcode resume/reopen targets
   an 8-second head start. Absent/zero-resume AV1 transcodes instead warm the same session
   for up to 20 seconds without the proxy ([evidence and limits](research/emby-av1-startup.md)).
@@ -212,7 +212,7 @@ stall. Diagnostics distinguish active transfer from a stale/idle observed-bitrat
 
 Network loss frequently leaves AVPlayer waiting with an empty buffer without changing the
 item to `.failed`. Stall deadlines depend on the active lane: Jellyfin/Emby remote transcodes
-use 45 seconds, other Direct Play / Maximum-selected paths use 90 seconds, and all remaining
+use 45 seconds, other Original (Direct Stream)-selected paths use 90 seconds, and all remaining
 paths use 15 seconds. For every network-backed stream—Plex, Jellyfin, or Emby—growth in
 transferred bytes or loaded range at expiry rearms the watchdog instead of failing a
 slow-but-working prime. Local-file playback does not use this deferral. Once progress stops, the
