@@ -67,6 +67,8 @@ enum MediaBrowserDeviceProfileFacts {
             "BreakOnNonKeyFrames": false,
         ]
         if case .jellyfinManifest(let enabled) = subtitlePolicy {
+            // HEVC copy must use fragmented MP4 on Apple players, including capped quality.
+            profile["Container"] = "mp4"
             profile["EnableSubtitlesInManifest"] = enabled
         }
         if subtitlePolicy == .embyEncodeSelected {

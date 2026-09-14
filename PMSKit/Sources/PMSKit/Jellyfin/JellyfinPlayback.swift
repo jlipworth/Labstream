@@ -465,11 +465,11 @@ public enum JellyfinPlayback {
         }
         // Jellyfin's PlaybackInfo body can ignore or partially carry over caps/deep-start/audio
         // choices for generated HLS URLs. The master.m3u8 query is what child playlists and
-        // segments inherit, so enforce the app's selected shape there too. Prefer MPEG-TS
-        // segments for Jellyfin live HLS because fMP4 deep-seek/reopen paths can produce
-        // transient unavailable segments in AVFoundation/Jellyfin, while TS is Jellyfin's
-        // more conservative HLS path. Keep caps/audio selections stable across seeks.
-        replace("SegmentContainer", value: "ts")
+        // segments inherit, so enforce the app's selected shape there too. A bitrate cap
+        // still permits HEVC video copy when the source is below it. Apple requires fMP4
+        // for HEVC HLS; forcing TS here produces audio-only playback (GH #303). fMP4 also
+        // supports the H.264 encode target. Keep caps/audio selections stable across seeks.
+        replace("SegmentContainer", value: "mp4")
         replace("BreakOnNonKeyFrames", value: "false")
         // Do not mirror StartTimeTicks onto the HLS master URL. Jellyfin copies master
         // query parameters into dynamic segment requests, and DynamicHlsController rejects

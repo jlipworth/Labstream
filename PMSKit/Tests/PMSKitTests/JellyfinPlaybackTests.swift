@@ -7,6 +7,46 @@ struct JellyfinPlaybackTests {
     private let server = URL(string: "https://jellyfin.example.test/base")!
     private let identity = JellyfinClientIdentity(client: "Labstream", device: "Apple Vision Pro", deviceId: "device-123", version: "0.1.0")
 
+    @Test(arguments: ["hevc", "h264"])
+    func cappedHLSPreservesCopyAndUsesAppleCompatibleSegments(codec: String) throws {
+        let payload: [String: Any] = [
+            "PlaySessionId": "play-1",
+            "MediaSources": [[
+                "Id": "source-1", "Container": "mkv", "Bitrate": 700_000,
+                "MediaStreams": [["Type": "Video", "Codec": codec, "Index": 0]],
+                "SupportsTranscoding": true,
+                "TranscodingUrl": "/Videos/item/master.m3u8?SegmentContainer=ts&segmentcontainer=ts&VideoCodec=\(codec)&AllowVideoStreamCopy=true&StartTimeTicks=123&ApiKey=fixture"
+            ]]
+        ]
+        let response = try JSONDecoder().decode(JellyfinPlaybackInfoResponse.self,
+            from: JSONSerialization.data(withJSONObject: payload))
+        let result = try JellyfinPlayback.resolveMediaBrowserStream(response: response,
+            server: server, identity: identity, token: "fixture", itemId: "item",
+            startTimeTicks: 123, maxVideoBitrate: 8_000_000,
+            audioBitrate: 256_000, subtitleStreamIndex: -1)
+        let items = try #require(URLComponents(url: result.url, resolvingAgainstBaseURL: false)?.queryItems)
+        func values(_ key: String) -> [String?] {
+            items.filter { $0.name.caseInsensitiveCompare(key) == .orderedSame }.map(\.value)
+        }
+        #expect(values("SegmentContainer") == ["mp4"])
+        #expect(values("VideoCodec") == [codec])
+        #expect(values("AllowVideoStreamCopy") == ["true"])
+        #expect(values("VideoBitrate") == ["8000000"])
+        #expect(values("AudioCodec") == ["aac"])
+        #expect(values("SubtitleStreamIndex") == ["-1"])
+        #expect(values("StartTimeTicks").isEmpty)
+        #expect(values("ApiKey") == ["fixture"])
+    }
+
+    @Test func jellyfinFMP4ProfileDoesNotChangeEmbyDialect() {
+        let jellyfin = MediaBrowserDeviceProfileFacts.streamingHLSTranscodingProfiles(
+            subtitlePolicy: .jellyfinManifest(enabled: false))
+        let emby = MediaBrowserDeviceProfileFacts.streamingHLSTranscodingProfiles(
+            subtitlePolicy: .embyEncodeSelected)
+        #expect(jellyfin.first?["Container"] as? String == "mp4")
+        #expect(emby.first?["Container"] as? String == "m4s,ts")
+    }
+
     @Test func playbackInfoRequestPostsDeviceProfileAndPlaybackOptions() throws {
         let request = try JellyfinPlayback.playbackInfoRequest(
             server: server,
@@ -45,7 +85,7 @@ struct JellyfinPlaybackTests {
         #expect(mpegTSProfile["VideoCodec"] as? String == "h264")
         let transcodeProfiles = try #require(profile["TranscodingProfiles"] as? [[String: Any]])
         let hlsProfile = try #require(transcodeProfiles.first)
-        #expect(hlsProfile["Container"] as? String == "ts")
+        #expect(hlsProfile["Container"] as? String == "mp4")
         #expect(hlsProfile["Protocol"] as? String == "hls")
         // h264 first (encode target); hevc enables MKV HEVC video-copy remux (GH #196).
         #expect(hlsProfile["VideoCodec"] as? String == "h264,hevc")
@@ -187,7 +227,7 @@ struct JellyfinPlaybackTests {
         #expect(query["AllowAudioStreamCopy"] == "false")
         #expect(query["AudioStreamIndex"] == "4")
         #expect(query["StartTimeTicks"] == nil)
-        #expect(query["SegmentContainer"] == "ts")
+        #expect(query["SegmentContainer"] == "mp4")
         #expect(query["BreakOnNonKeyFrames"] == "false")
         #expect(queryItems.filter { $0.name.caseInsensitiveCompare("AudioStreamIndex") == .orderedSame }.count == 1)
         #expect(queryItems.filter { $0.name.caseInsensitiveCompare("VideoBitrate") == .orderedSame }.count == 1)
