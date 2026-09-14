@@ -66,7 +66,31 @@ enum P7HDR10Initialization {
             let entries = try boxes(stsd.payload + 8, stsd.end)
             guard entries.count == 1 else { throw Rejection.unsupported }
             if kind == "vide" { videoEntries.append(entries[0]) }
-            else { guard entries[0].type == "mp4a" else { throw Rejection.unsupported } }
+            else {
+                let audio = entries[0]
+                if audio.type == "ac-3" {
+                    // Exact observed six-channel AC-3 sample-entry shape. Audio is retained
+                    // byte-for-byte; this is not permission to normalize other audio codecs.
+                    let header = Data([0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+                                       0, 6, 0, 16, 0, 0, 0, 0, 0xbb, 0x80, 0, 0])
+                    guard audio.end - audio.payload >= header.count,
+                          Data(bytes[audio.payload..<(audio.payload + header.count)]) == header else {
+                        throw Rejection.unsupported
+                    }
+                    let audioBoxes = try boxes(audio.payload + header.count, audio.end)
+                    guard audioBoxes.allSatisfy({ ["dac3", "btrt"].contains($0.type) }) else {
+                        throw Rejection.unsupported
+                    }
+                    let config = try one("dac3", in: audioBoxes)
+                    guard Data(bytes[config.payload..<config.end]) == Data([0x10, 0x3e, 0x40]),
+                          audioBoxes.filter({ $0.type == "btrt" }).count <= 1,
+                          audioBoxes.filter({ $0.type == "btrt" }).allSatisfy({ $0.end - $0.payload == 12 }) else {
+                        throw Rejection.unsupported
+                    }
+                } else {
+                    guard audio.type == "mp4a" else { throw Rejection.unsupported }
+                }
+            }
         }
         guard videoEntries.count == 1, let video = videoEntries.first,
               video.type == "hvc1", video.end - video.start >= 86 else { throw Rejection.unsupported }

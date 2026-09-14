@@ -12,7 +12,7 @@ final class P7HDR10InitializationTests: XCTestCase {
 
     private func fixture(profile: UInt8 = 7, compatibility: UInt8 = 6,
                          transfer: UInt8 = 16, entry: String = "hvc1",
-                         duplicateDV: Bool = false, extra: Data = Data()) -> Data {
+                         duplicateDV: Bool = false, extra: Data = Data(), audio: Data = Data()) -> Data {
         var hevc = Data(repeating: 0, count: 23)
         hevc[0] = 1; hevc[1] = 2; hevc[16] = 1
         hevc[17] = 2; hevc[18] = 2; hevc[21] = 3; hevc[22] = 3
@@ -27,7 +27,36 @@ final class P7HDR10InitializationTests: XCTestCase {
         let stsd = box("stsd", Data([0, 0, 0, 0, 0, 0, 0, 1]) + visual)
         let hdlr = box("hdlr", Data(repeating: 0, count: 8) + Data("vide".utf8))
         let media = box("mdia", hdlr + box("minf", box("stbl", stsd)))
-        return box("ftyp", Data("iso6".utf8)) + box("moov", box("trak", media) + box("mvex", Data()))
+        return box("ftyp", Data("iso6".utf8)) + box("moov", box("trak", media) + audio + box("mvex", Data()))
+    }
+
+    private func audioTrack(entry: String = "ac-3", config: Data = Data([0x10, 0x3e, 0x40]),
+                            extra: Data = Data(), corruptHeader: Bool = false) -> Data {
+        var header = Data([0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+                           0, 6, 0, 16, 0, 0, 0, 0, 0xbb, 0x80, 0, 0])
+        if corruptHeader { header[8] = 1 }
+        let sample = box(entry, header + box("dac3", config) + extra)
+        let stsd = box("stsd", Data([0, 0, 0, 0, 0, 0, 0, 1]) + sample)
+        let hdlr = box("hdlr", Data(repeating: 0, count: 8) + Data("soun".utf8))
+        return box("trak", box("mdia", hdlr + box("minf", box("stbl", stsd))))
+    }
+
+    func testObservedAC3AudioIsPreservedWithoutChangingVideoAdmission() throws {
+        let audio = audioTrack(extra: box("btrt", Data(repeating: 0, count: 12)))
+        let input = fixture(audio: audio)
+        var expected = input
+        expected.replaceSubrange(try XCTUnwrap(input.range(of: Data("dvcC".utf8))), with: "free".utf8)
+        XCTAssertEqual(try P7HDR10Initialization.normalize(input), expected)
+        XCTAssertThrowsError(try P7HDR10Initialization.normalize(fixture(profile: 5, audio: audio)))
+        for unsupported in [audioTrack(entry: "ec-3"), audioTrack(entry: "enca"),
+                            audioTrack(config: Data([0x10, 0x3e])),
+                            audioTrack(config: Data([0x10, 0x3e, 0x41])),
+                            audioTrack(corruptHeader: true),
+                            audioTrack(extra: box("sinf", Data())),
+                            audioTrack(extra: box("dac3", Data([0x10, 0x3e, 0x40]))),
+                            audioTrack(extra: box("btrt", Data(repeating: 0, count: 11)))] {
+            XCTAssertThrowsError(try P7HDR10Initialization.normalize(fixture(audio: unsupported)))
+        }
     }
 
     func testOnlyConfigurationTypeChangesAndLengthIsStable() throws {

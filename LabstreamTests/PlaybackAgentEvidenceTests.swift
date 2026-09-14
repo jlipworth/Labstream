@@ -8,6 +8,15 @@ import PMSKit
 
 @MainActor
 struct PlaybackAgentEvidenceTests {
+    @Test func detachedSeekClockRemainsPending() {
+        for position in [Double.nan, .infinity, -.infinity, 0, 597.9, 602.1] {
+            #expect(!DebugPlaybackScenario.seekTargetReached(positionSeconds: position, targetMs: 600_000))
+        }
+        for position in [598.0, 600.0, 602.0] {
+            #expect(DebugPlaybackScenario.seekTargetReached(positionSeconds: position, targetMs: 600_000))
+        }
+    }
+
     @Test(arguments: [MediaBackendKind.jellyfin, .emby])
     func fixtureConsentTransitions(backend: MediaBackendKind) async throws {
         var stopped = false

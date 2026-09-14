@@ -3132,6 +3132,12 @@ final class PlaybackController {
         // Explicit diagnostic transport comparison against the same server via a caller-owned
         // loopback port-forward. Never accepts arbitrary remote hosts or persists credentials.
         let args = ProcessInfo.processInfo.arguments
+        if let backend = mediaBrowserSession?.backend {
+            await DebugMediaBrowserHDREvidence.capture(url: url, headers: headers,
+                                                      backend: backend.rawValue, generation: generation)
+            guard !Task.isCancelled, generation == playbackGeneration else { return nil }
+        }
+
         if mediaBrowserSession?.backend == .emby,
            let index = args.firstIndex(of: "--vp-probe-emby-loopback-port"),
            args.indices.contains(index + 1), let port = Int(args[index + 1]),
