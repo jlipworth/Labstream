@@ -66,6 +66,10 @@ final class PlaybackController {
             if video != .unknown { provenance = .serverDecision }
         } else if mediaBrowserVideoCopyEnforced {
             video = .copy; provenance = .enforcedRequest
+        } else if remotePlayMethod == .directPlay {
+            // The negotiated original-file lane copies both streams. This records the
+            // server decision, not independent verification of rendered media or cleanup.
+            video = .copy; audio = .copy; provenance = .serverDecision
         }
         let backend: DebugPlaybackEvidence.Backend
         switch sessionSource {
@@ -5856,10 +5860,22 @@ final class PlaybackTransportStatusState {
     @ObservationIgnored private var pendingStatus: PlaybackTransportStatus?
     @ObservationIgnored private var pendingStatusTask: Task<Void, Never>?
     @ObservationIgnored private let initialPreparationDelay: Duration
+    @ObservationIgnored private let preparationSleep: @Sendable (Duration) async throws -> Void
 
     init(initialPreparationDelay: Duration = localInitialPreparationDelay) {
         self.initialPreparationDelay = initialPreparationDelay
+        self.preparationSleep = { try await Task.sleep(for: $0) }
     }
+
+    #if DEBUG
+    init(initialPreparationDelay: Duration,
+         preparationSleep: @escaping @Sendable (Duration) async throws -> Void) {
+        self.initialPreparationDelay = initialPreparationDelay
+        self.preparationSleep = preparationSleep
+    }
+
+    var pendingPreparationForTesting: Task<Void, Never>? { pendingStatusTask }
+    #endif
 
     var activeStatus: PlaybackTransportStatus? {
         status == .none ? nil : status
@@ -5877,8 +5893,9 @@ final class PlaybackTransportStatusState {
             pendingStatus = value
             if status != .none { status = .none }
             let delay = initialPreparationDelay
+            let sleep = preparationSleep
             pendingStatusTask = Task { @MainActor [weak self] in
-                try? await Task.sleep(for: delay)
+                try? await sleep(delay)
                 guard !Task.isCancelled, let self, self.pendingStatus == value else { return }
                 self.pendingStatus = nil
                 self.pendingStatusTask = nil

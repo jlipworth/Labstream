@@ -202,7 +202,7 @@ Jellyfin or Emby, nor classify all decoder failures as DV-specific.
 | P5 without compatible base | Exact P5 source stops at encoding consent; no encode or visual pass | Same exact P5 source stops at encoding consent; no encode or visual pass | Exact P5 source is blocked before playback request by the retained guard |
 | P8 variants | Exact-bound P8.1 copy attempt fails then requests encoding consent; no encode or visual pass | Exact-bound P8.1 representative Original produces inspected PQ/BT.2020 frames; no DV processing claim | Same exact P8.1 source passes Original with inspected PQ/BT.2020 frames; final-child configuration unverified |
 | Ordinary HDR10 control | Distinct-source native Original regression passes without selecting candidate | Same-source binding, fresh reopen and corrected copy seek pass with inspected frames | Same-source bound Original video-copy playback passes with inspected PQ/BT.2020 frames |
-| SDR control | Exact existing H.264 SDR library variant passes Original and 600-second seek with video/audio copy and inspected BT.709 frames | Exact-bound direct-file seek passes inspected BT.709 frames; Original report blocked by decision classifier | Same-file direct seek passes inspected BT.709 frames; Original report blocked by decision classifier |
+| SDR control | Exact existing H.264 SDR library variant passes Original and 600-second seek with video/audio copy and inspected BT.709 frames | Exact-bound direct-file seek and corrected Original report pass inspected BT.709 frames | Same-file direct seek and corrected Original report pass inspected BT.709 frames |
 
 The current evidence isolates one retained P7 configuration/native decoder boundary.
 It does not yet establish backend-wide DV predictability, all-profile support or a
@@ -358,7 +358,7 @@ coverage. The media-source identity check remains independent after metadata ret
 
 
 Both media-browser SDR sources resolve to server-reported direct play of the original
-file, rather than copy HLS. Their Original scenario reports remain **blocked** with
+file, rather than copy HLS. Their initial Original scenario reports were **blocked** with
 `decisionUnknown`: the DEBUG snapshot maps Plex decisions and enforced media-browser
 HLS copy, but does not map media-browser direct play. The Original scenario requires
 `.copy` before post-hold capture. This is a diagnosed evidence-classifier gap, not proof
@@ -381,8 +381,9 @@ no release tag, upload, merge or hardware acceptance is implied.
 Fresh generic visionOS, iOS and tvOS builds and the isolated macOS hosted product build
 pass. All four generated bundles report 1.7.1 build 1; the PMSKit fallback and sanity
 check match. Hermetic PMSKit passes 1,707 Swift Testing cases and 119 XCTest cases.
-The final owned iPhone and tvOS semantic fixtures pass with their app-view attachments
-inspected. Native 1.7.1 Plex SDR seek also passes with an inspected BT.709 frame.
+The owned iPhone and tvOS semantic fixtures pass with their app-view attachments
+inspected. A later audit found their UI-specific DerivedData had not been cleared; these
+older runs establish visible behavior, not standalone full-clean revision freshness. Native 1.7.1 Plex SDR seek also passes with an inspected BT.709 frame.
 The final-source macOS full suite (636) fails the replacement deadline and both Offline
 expectations; iOS (620) fails the two Offline expectations. The tvOS test summary reports
 all 338 tests passing, but its runner did not exit and was terminated after 301 seconds
@@ -390,3 +391,35 @@ without log progress (exit 143). All owned simulators are shut down and the leas
 released. These are not green full-suite results. The consent/revalidation
 instrumentation does not extend a deadline or suppress any failure. No release tag or
 upload has been created, and the P7 candidate remains default-off DEBUG macOS only.
+
+
+### Draft review follow-up: direct play and deterministic preparation
+
+The DEBUG snapshot now maps an explicitly negotiated media-browser `directPlay` to
+video/audio copy with `serverDecision` provenance, matching the existing Plex direct-play
+vocabulary. It does not infer copy from `directStream`, `transcode`, absent metadata, a
+file extension or a rendered codec. Enforced copy HLS retains its separate provenance.
+Both backend fixtures verify the positive case, negative cases, metadata invalidation,
+and continued unknown rendering/cleanup without a player. All 12 evidence tests pass.
+Fresh exact-source Jellyfin and Emby Original reopen runs now pass with inspected BT.709
+post-hold frames. Earlier blocked reports remain historical evidence, not retroactive passes.
+
+The repeated Offline expectation raced an independent 40-millisecond test sleep against
+a queued task that only began its 20-millisecond delay after being scheduled. The test
+now uses a DEBUG-only injected sleep gate and awaits actual task completion. It verifies
+the requested delay, no publication before release, cancellation before release, and
+publication afterward; the production 750-millisecond `Task.sleep` and cancellation
+checks are unchanged. Two full macOS hosted runs now pass all 637 tests. These new runs
+do not erase historical failures or prove the earlier intermittent unrelated conditions
+cannot recur. Fresh iOS hosted tests pass all 621 cases, and fresh tvOS hosted tests
+pass all 339 cases with normal runner exit in 24 seconds. The bounded diagnostic runner
+would sample a stalled process before termination, but no stall occurred in this run;
+therefore it does not establish the cause or resolution of earlier runner hangs. The
+fresh generic visionOS build, hermetic package tests and hygiene checks also pass.
+
+The fixture freshness audit identified separate `DerivedData-agent-iphone-ui` and
+`DerivedData-agent-tvos-ui` directories. Earlier removal of non-UI directories did not
+prove clean UI builds. Those historical artifacts are retained with that limitation;
+replacement fixtures explicitly move the actual UI DerivedData aside before building.
+Both replacement semantic fixtures pass from those clean UI build paths, with the iPhone
+detail and tvOS home app-view attachments inspected. All owned simulators are shut down.

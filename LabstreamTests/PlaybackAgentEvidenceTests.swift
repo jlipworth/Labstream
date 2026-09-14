@@ -8,6 +8,35 @@ import PMSKit
 
 @MainActor
 struct PlaybackAgentEvidenceTests {
+    @Test(arguments: [MediaBackendKind.jellyfin, .emby])
+    func directPlayEvidenceDoesNotInventCopyForOtherMethods(backend: MediaBackendKind) throws {
+        let identity = ClientIdentity(clientIdentifier: "fixture-only", product: "Labstream", version: "1", deviceName: "Fixture")
+        let methods: [MediaBrowserPlayMethod?] = [.directPlay, .directStream, .transcode, nil]
+        for method in methods {
+            let session = MediaBrowserPlaybackSession(
+                streamURL: try #require(URL(string: "https://fixture.invalid/video.mp4")),
+                backend: backend, backendLabel: backend.displayName, httpHeaders: [:],
+                playSessionID: "fixture-session", sourceMetadata: .init(videoCodec: "h264"),
+                playMethod: method ?? .directPlay, transcodeReasons: [],
+                progressSession: nil, onStop: {}, reopener: { _ in throw URLError(.cancelled) })
+            session.playMethod = method
+            let controller = PlaybackController(
+                item: MediaItem(ratingKey: "fixture", title: "Fixture", type: "movie"),
+                sessionSource: .mediaBrowser(session), identity: identity,
+                client: PlexClient(identity: identity), maxVideoBitrateKbps: 0)
+            let snapshot = controller.debugEvidenceSnapshot()
+            #expect(snapshot.videoDecision == (method == .directPlay ? .copy : .unknown))
+            #expect(snapshot.audioDecision == (method == .directPlay ? .copy : .unknown))
+            #expect(snapshot.videoProvenance == (method == .directPlay ? .serverDecision : .unknown))
+            #expect(snapshot.renderedFormat == "unknown")
+            #expect(snapshot.serverCleanup == "unknown")
+            #expect(snapshot.visibleAttachment == .detached)
+            session.playMethod = nil
+            #expect(controller.debugEvidenceSnapshot().videoDecision == .unknown)
+            controller.stop()
+        }
+    }
+
     @Test func initializationCaptureExcludesMediaAndMalformedContainers() {
         func box(_ type: String) -> Data { Data([0, 0, 0, 8]) + Data(type.utf8) }
         let valid = box("ftyp") + box("moov")

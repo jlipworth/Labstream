@@ -81,23 +81,39 @@ struct PlaybackTransportPresentationPolicyTests {
     @Test("A transient Offline initial wait never publishes an overlay")
     @MainActor
     func transientOfflineInitialWait() async throws {
-        let state = PlaybackTransportStatusState(initialPreparationDelay: .milliseconds(20))
+        let started = TestGate()
+        let release = TestGate()
+        let state = PlaybackTransportStatusState(initialPreparationDelay: .milliseconds(20)) { delay in
+            #expect(delay == .milliseconds(20))
+            await started.open()
+            await release.wait()
+        }
         state.set(.preparingLocal(isPaused: false, hasObservedPlayback: false))
+        await started.wait()
         #expect(state.status == .none)
-
+        // Retain completion before cancellation clears the pending-task reference.
+        let completion = try #require(state.pendingPreparationForTesting)
         state.set(.none)
-        try await Task.sleep(for: .milliseconds(40))
+        await release.open()
+        await completion.value
         #expect(state.status == .none)
     }
 
     @Test("A sustained Offline initial wait publishes preparation after the threshold")
     @MainActor
     func sustainedOfflineInitialWait() async throws {
-        let state = PlaybackTransportStatusState(initialPreparationDelay: .milliseconds(20))
+        let started = TestGate()
+        let release = TestGate()
+        let state = PlaybackTransportStatusState(initialPreparationDelay: .milliseconds(20)) { delay in
+            #expect(delay == .milliseconds(20))
+            await started.open()
+            await release.wait()
+        }
         state.set(.preparingLocal(isPaused: false, hasObservedPlayback: false))
+        await started.wait()
         #expect(state.status == .none)
-
-        try await Task.sleep(for: .milliseconds(40))
+        await release.open()
+        await state.pendingPreparationForTesting?.value
         #expect(state.status == .preparingLocal(
             isPaused: false,
             hasObservedPlayback: false
