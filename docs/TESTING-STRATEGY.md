@@ -339,3 +339,28 @@ When a headset-only bug is reproduced, collect a bounded bundle with
 summaries leave a specific causal question. For later pulls, review the baseline delta reported in
 those summaries and `analysis/novel-events.jsonl` instead of re-reading whole diagnostic directories
 or broad unified logs.
+
+## Private release media corpus
+
+Use the [private media corpus workflow](MEDIA-CORPUS-TESTING.md) to inventory
+observed codec/container/audio/subtitle combinations and choose bounded release cases.
+The metadata scanner is read-only, resumable, and requires gitignored output; its unit
+tests run in the existing repository-hygiene CI lane. It does not download media or
+prove playback support. Full live-library playback is not a per-commit requirement.
+
+Jellyfin capped HLS now requests fMP4 (`mp4`) to support HEVC copy on Apple players.
+Emby's `m4s` packaging policy remains independent. Below-cap video copy plus audio
+conversion and above-cap video encoding must be tested separately. Simulator evidence
+for the Jellyfin fix does not close physical Vision Pro, deep seek, or reopen gates.
+
+For Jellyfin/Emby probes, use a unique exact title and verify the selected source.
+Missing/ambiguous search matches fail closed instead of playing a fuzzy result. Review
+actual decoded frames: transport success alone cannot establish absence of black video
+or corruption. Record initial, changed-quality, and seek results separately; selecting
+an unchanged quality is not a valid transition. Keep failures visible even after retries.
+
+Use the Codex in-app browser for authorized one-time codes. Opt-in iPhone live-auth
+XCUITests provide a normal-UI fallback when Device Hub is unavailable. They skip by
+default; private credentials, pairing codes, logs, and result bundles never enter CI.
+Release automation against private servers remains future opt-in trusted self-hosted
+work, not an expansion of public pull-request permissions.
