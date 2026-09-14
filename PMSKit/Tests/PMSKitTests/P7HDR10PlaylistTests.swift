@@ -14,6 +14,15 @@ final class P7HDR10PlaylistTests: XCTestCase {
         XCTAssertEqual(try P7HDR10Playlist.parse(Data(update.utf8), at: base).segments.first?.path, "/session/2.m4s")
     }
 
+    func testLegacyPlexCacheAdvisoryDoesNotChangeResourceAuthority() throws {
+        let expected = try P7HDR10Playlist.parse(Data(media.utf8), at: base)
+        for value in ["YES", "NO"] {
+            let tagged = media.replacingOccurrences(of: "#EXT-X-VERSION:7", with: "#EXT-X-VERSION:7\n#EXT-X-ALLOW-CACHE:\(value)")
+            XCTAssertEqual(try P7HDR10Playlist.parse(Data(tagged.utf8), at: base), expected)
+        }
+        XCTAssertThrowsError(try P7HDR10Playlist.parse(Data((media + "#EXT-X-ALLOW-CACHE:MAYBE\n").utf8), at: base))
+    }
+
     func testUnsafeOrUnknownPackagingIsRejected() {
         for tag in ["#EXT-X-KEY:METHOD=AES-128,URI=\"key\"", "#EXT-X-BYTERANGE:10@0",
                     "#EXT-X-DISCONTINUITY", "#EXT-X-STREAM-INF:BANDWIDTH=100",

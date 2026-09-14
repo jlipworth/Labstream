@@ -205,6 +205,20 @@ public actor MediaSessionProxy {
             let limit: Int? = resource == .initialization ? 1_048_576 : (resource == .playlist ? 262_144 : nil)
             let (data, resp) = try await connection.send(req, maximumBytes: limit)
             if let resource {
+                #if DEBUG
+                NSLog("P7HDR10 candidate resource=%@ status=%d bytes=%d same_url=%d",
+                      String(describing: resource), resp.statusCode, data.count, resp.url == upstreamURL ? 1 : 0)
+                if resource == .playlist {
+                    let known = Set(["#EXTM3U", "#EXT-X-VERSION", "#EXT-X-TARGETDURATION", "#EXT-X-MEDIA-SEQUENCE",
+                        "#EXT-X-PLAYLIST-TYPE", "#EXT-X-ENDLIST", "#EXT-X-INDEPENDENT-SEGMENTS", "#EXT-X-MAP",
+                        "#EXTINF", "#EXT-X-ALLOW-CACHE", "#EXT-X-START", "#EXT-X-KEY", "#EXT-X-DISCONTINUITY",
+                        "#EXT-X-BYTERANGE", "#EXT-X-PROGRAM-DATE-TIME"])
+                    let tags = Set(String(decoding: data, as: UTF8.self).split(whereSeparator: \.isNewline)
+                        .filter { $0.hasPrefix("#") }.map { String($0.split(separator: ":", maxSplits: 1)[0]) })
+                    NSLog("P7HDR10 candidate playlist tags=%@ unknown=%d", tags.intersection(known).sorted().joined(separator: ","),
+                          tags.subtracting(known).count)
+                }
+                #endif
                 guard resp.url == upstreamURL else { throw P7HDR10Playlist.Rejection.unsupported }
                 switch resource {
                 case .playlist:

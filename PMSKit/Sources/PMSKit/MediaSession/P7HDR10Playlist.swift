@@ -38,6 +38,12 @@ enum P7HDR10Playlist {
                 let uri = String(line.dropFirst(prefix.count).dropLast())
                 guard !uri.contains("\"") else { throw Rejection.unsupported }
                 initialization = try resolve(uri)
+            } else if line.hasPrefix("#EXT-X-ALLOW-CACHE:") {
+                // Plex still emits this obsolete advisory tag. It changes no resource,
+                // encryption or byte layout; our own metadata caching policy remains fixed.
+                guard !pendingDuration, ["#EXT-X-ALLOW-CACHE:YES", "#EXT-X-ALLOW-CACHE:NO"].contains(line) else {
+                    throw Rejection.unsupported
+                }
             } else if line.hasPrefix("#EXTINF:") {
                 guard initialization != nil, !pendingDuration,
                       let token = line.dropFirst(8).split(separator: ",", omittingEmptySubsequences: false).first,

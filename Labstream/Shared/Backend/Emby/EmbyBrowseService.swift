@@ -125,6 +125,16 @@ struct EmbyBrowseService: MediaBrowserBrowseFacade {
         return items
     }
 
+    #if DEBUG
+    /// Read-only metadata for an explicitly requested private source-binding probe.
+    func probeSourceBinding(itemId: String) async throws -> Data {
+        let context = try context()
+        let request = try EmbyLibrary.itemRequest(server: context.server, token: context.token,
+            identity: embyIdentity, userId: context.userID, itemId: itemId)
+        return try await send(request)
+    }
+    #endif
+
     func metadata(itemId: String) async throws -> MediaItem {
         guard let item = try await browseCore().metadata(itemID: itemId) else {
             throw ServiceError.noPlayableItem

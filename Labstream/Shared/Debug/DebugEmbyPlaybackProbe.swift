@@ -35,6 +35,7 @@ enum DebugEmbyPlaybackProbe {
             return
         }
         guard DebugPlaybackScenario.admitted(arguments, bitrateKbps: options.bitrateKbps) else { return }
+        guard DebugPlaybackProbeSupport.prepareSourceBindingDiscovery(backend: "emby", arguments: arguments) else { return }
         let query = options.query
         let bitrateKbps = options.bitrateKbps
         let seekMs = options.seekMs
@@ -59,8 +60,16 @@ enum DebugEmbyPlaybackProbe {
         var scenarioOwnsCleanup = false
         do {
             let item = try await resolveItem(query: query, service: service)
-            let detailed = (try? await service.metadata(itemId: item.ratingKey)) ?? item
+            let detailed = try await service.metadata(itemId: item.ratingKey)
+            if arguments.contains("--vp-probe-discover-source") {
+                let sourceData = try await service.probeSourceBinding(itemId: detailed.ratingKey)
+                if try DebugPlaybackProbeSupport.exportSourceBindingIfRequested(detailed, backend: "emby",
+                    arguments: arguments, sourceData: sourceData) { return }
+            }
             let mediaIndex = DebugPlaybackProbeSupport.intValue(after: "--vp-probe-media-index", in: arguments) ?? 0
+            guard detailed.media?.indices.contains(mediaIndex) == true else {
+                throw DebugPlaybackScenario.Blocked(reason: .invalidOptions)
+            }
             for (flag, actual) in [
                 ("--vp-probe-expected-item-id", Optional(detailed.ratingKey)),
                 ("--vp-probe-expected-source-id", MediaBrowserPlaybackPreferencePolicy.mediaSourceID(for: detailed, mediaIndex: mediaIndex))

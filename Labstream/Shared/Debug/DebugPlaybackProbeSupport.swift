@@ -61,6 +61,64 @@ enum DebugPlaybackProbeSupport {
         )
     }
 
+    static func prepareSourceBindingDiscovery(backend: String, arguments: [String]) -> Bool {
+        guard arguments.contains("--vp-probe-discover-source") else { return true }
+        guard ["jellyfin", "emby"].contains(backend) else { return false }
+        let output = URL.documentsDirectory.appendingPathComponent("ProbeDiscovery", isDirectory: true)
+            .appendingPathComponent(backend + ".json")
+        do {
+            if FileManager.default.fileExists(atPath: output.path) { try FileManager.default.removeItem(at: output) }
+            return true
+        } catch { return false }
+    }
+
+    /// Explicit read-only per-backend source binding; never exports auth or transport URLs.
+    static func exportSourceBindingIfRequested(_ item: MediaItem, backend: String,
+                                               arguments: [String], sourceData: Data) throws -> Bool {
+        guard arguments.contains("--vp-probe-discover-source") else { return false }
+        guard ["jellyfin", "emby"].contains(backend), let media = item.media, !media.isEmpty, media.count <= 8 else {
+            throw DebugPlaybackScenario.Blocked(reason: .invalidOptions)
+        }
+        struct SourceResponse: Decodable {
+            struct Source: Decodable {
+                let Id: String?
+                let Path: String?
+                let Size: Int64?
+            }
+            let Id: String
+            let MediaSources: [Source]
+        }
+        guard sourceData.count <= 1_048_576 else { throw DebugPlaybackScenario.Blocked(reason: .invalidOptions) }
+        let response = try JSONDecoder().decode(SourceResponse.self, from: sourceData)
+        guard response.Id == item.ratingKey, response.MediaSources.count == media.count else {
+            throw DebugPlaybackScenario.Blocked(reason: .invalidOptions)
+        }
+        let rows: [[String: Any]] = try media.enumerated().map { index, source in
+            let sourceID = MediaBrowserPlaybackPreferencePolicy.mediaSourceID(for: item, mediaIndex: index)
+            let matches = response.MediaSources.filter { $0.Id == sourceID && sourceID != nil }
+            guard matches.count == 1 else { throw DebugPlaybackScenario.Blocked(reason: .invalidOptions) }
+            let raw = matches[0]
+            return
+            ["itemID": item.ratingKey, "title": item.title, "mediaIndex": index,
+             "mediaSourceID": MediaBrowserPlaybackPreferencePolicy.mediaSourceID(for: item, mediaIndex: index) ?? "",
+             "durationMs": source.duration ?? item.duration ?? 0,
+             "videoCodec": source.videoCodec ?? "", "width": source.width ?? 0, "height": source.height ?? 0,
+             "sourceFile": raw.Path?.hasPrefix("/") == true && raw.Path?.hasPrefix("//") == false ? raw.Path! : "",
+             "sourceSize": raw.Size ?? 0,
+             "sourceHDR": source.part.flatMap { $0.streams ?? [] }.compactMap(\.hdrMetadata).map(\.displayLabel),
+             "parts": source.part.map { part in
+                 ["file": part.file?.hasPrefix("/") == true && part.file?.hasPrefix("//") == false ? part.file! : "",
+                  "size": part.size ?? 0] as [String: Any]
+             }]
+        }
+        let directory = URL.documentsDirectory.appendingPathComponent("ProbeDiscovery", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let data = try JSONSerialization.data(withJSONObject: ["sources": rows], options: [.prettyPrinted, .sortedKeys])
+        guard data.count <= 65_536 else { throw DebugPlaybackScenario.Blocked(reason: .invalidOptions) }
+        try data.write(to: directory.appendingPathComponent(backend + ".json"), options: .atomic)
+        return true
+    }
+
     static func querySummary(_ query: String) -> String {
         DiagnosticRedactor.probeQuerySummary(query)
     }

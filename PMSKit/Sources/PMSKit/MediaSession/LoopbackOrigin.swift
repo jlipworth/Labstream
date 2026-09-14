@@ -29,6 +29,7 @@ final class LoopbackOrigin: @unchecked Sendable {
                     do {
                         let params = NWParameters.tcp
                         params.requiredInterfaceType = .loopback
+                        params.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: .any)
                         let listener = try NWListener(using: params, on: .any)
                         guard !state.isCompleted else {
                             listener.cancel()

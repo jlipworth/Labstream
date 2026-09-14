@@ -171,7 +171,9 @@ backend capability claim. Its output intent is **HDR10-base fallback**, not nati
 - The selected unencrypted media playlist must explicitly admit each resource.
   Multi-variant/rendition playlists, encryption, byte-range playlists, discontinuities,
   initialization changes and unknown tags fail closed. Multiple ordinary segments and
-  sliding updates are supported by the candidate policy, not yet live-verified.
+  sliding updates are supported by the candidate policy. Real multi-segment Plex VOD
+  playback is verified; live/sliding-stream behavior remains unverified. The observed
+  legacy `EXT-X-ALLOW-CACHE` YES/NO advisory is accepted without changing authority.
 - Initialization requests are fetched in full with a 1 MiB application read limit;
   playlists have a 256 KiB limit. All candidate redirects are refused before forwarding credentials or player responses. Client initialization
   ranges are served only after full validation/normalization, with recomputed range
@@ -183,9 +185,8 @@ Hermetic coverage includes profile/color/encryption/truncation rejection, exact 
 bytes, multi-segment admission, initialization range slices (including partial atom
 headers), unknown resources and changed initialization rejection. The captured private
 initialization produces exactly the previously proven experimental output. These tests
-are not substitutes for live server seek, reopen or decoded-frame acceptance. Native
-candidate validation currently requires unlocking the test host; no locked-screen
-attempt is counted as a visual pass.
+are not substitutes for live server seek, reopen or decoded-frame acceptance. No locked-screen attempt is counted as a visual pass; subsequent unlocked native
+checks are recorded below.
 
 ### Three-backend acceptance matrix
 
@@ -196,11 +197,11 @@ Jellyfin or Emby, nor classify all decoder failures as DV-specific.
 
 | Source/control | Plex | Jellyfin | Emby |
 | --- | --- | --- | --- |
-| Exact P7 source, unchanged original delivery | Native failure and bounded original-HLS reproduction established | Same-source delivery and native outcome open | Same-source delivery and native outcome open |
-| Exact P7 source, configuration-only HDR10-base candidate | Exact short-clip/local-HLS evidence established; live controller/multi-segment/seek/reopen open | Not enabled; first establish actual packaging and retained DV configuration | Not enabled; first establish actual packaging and retained DV configuration |
+| Exact P7 source, unchanged original delivery | Native failure and bounded original-HLS reproduction established | Exact source size/duration/basename bound; Original copy-request playback yields visible PQ/BT.2020 buffers without candidate; delivered configuration still unverified | Same-source delivery and native outcome open |
+| Exact P7 source, configuration-only HDR10-base candidate | Exact short-clip plus live multi-segment playback, 600-second seek and fresh-session reopen pass with inspected frames | Not enabled; first establish actual packaging and retained DV configuration | Not enabled; first establish actual packaging and retained DV configuration |
 | P5 without compatible base | Existing guard retained; new regression/live coverage open | Existing guard retained; new regression/live coverage open | Existing block retained; new regression/live coverage open |
 | P8 variants | Candidate rejects; representative delivery/visual coverage open | Candidate not enabled; representative coverage open | Candidate not enabled; representative coverage open |
-| Ordinary HDR10 control | Earlier distinct-source native pass; candidate regression and cross-backend binding open | Open | Open |
+| Ordinary HDR10 control | Distinct-source native Original regression passes without selecting candidate; cross-backend binding open | Open | Open |
 | SDR control | Candidate regression and cross-backend binding open | Open | Open |
 
 The current evidence isolates one retained P7 configuration/native decoder boundary.
@@ -209,7 +210,7 @@ production-ready fix. Physical DV processing and HDR luminance remain separate g
 
 ### Candidate validation status
 
-The final candidate revision has 1,705 hermetic Swift Testing cases plus 117 XCTest
+The pre-live candidate revision had 1,705 hermetic Swift Testing cases plus 117 XCTest
 cases passing (including 13 new candidate tests). Fresh macOS, iOS, tvOS and visionOS
 products build. The final iPhone and Apple TV fixture screenshots were inspected and
 show expected browse UI; install identity checks pass. All owned simulators were shut
@@ -224,6 +225,48 @@ reruns pass: macOS 18 tests, iOS 13, tvOS 10. Keep the full-suite failures visib
 than presenting focused passes as all-green hosted evidence. These tests do not exercise
 the opt-in normalization lane; their baseline/reliability classification remains open.
 
-The native host was checked again and remains locked. No new native candidate frame,
-server seek, reopen or three-backend live pass is claimed. The isolated test identity's
-saved authentication and all production installations/data remain untouched.
+### Unlocked native acceptance increment
+
+The isolated macOS development identity now has a development-only network-server
+entitlement. Production entitlements remain unchanged. The listener is explicitly bound
+to IPv4 loopback, and repeated live socket observations show `127.0.0.1`, not a wildcard.
+The listener disappears after stop. Initial failed attempts were listener-permission and
+legacy-playlist-tag failures, not new decoder evidence.
+
+The exact Plex P7 source passes Original video-copy playback over real multiple segments,
+a seek to 600 seconds, and a fresh process/controller/server-session reopen. Inspected
+frames contain changing recognizable scenes without obvious tint or corruption; decoded
+buffers are 3840 × 2160, 10-bit `x420`, PQ and BT.2020. This establishes HDR10-base output,
+not full DV enhancement processing or calibrated display luminance. Audio was encoded;
+video-encoding consent was not granted. An audio-track transition is blocked: the replacement reports video/audio copy,
+its different initialization is rejected with HTTP 502, and the app reaches explicit
+video-encoding consent without granting it. The exact rejected audio description has
+not yet been captured; do not broaden the initialization whitelist by inference.
+Subtitle/quality transitions and server-side cleanup confirmation remain open; local listener teardown alone does not establish server cleanup.
+
+The same-source Jellyfin binding matches exact file size, duration and basename under a
+different mount prefix. Native Original playback and fresh-session reopen at 600 seconds without the candidate
+pass their copy requests and produce inspected visible PQ/BT.2020 buffers. The separate
+seek-to-600 run fails after a controller reopen: the replacement becomes ready and
+buffered, then pauses and fails the hold. No post-seek frame was captured. This is an
+open transition failure, not established DV decoding failure or a seek pass. Actual delivered initialization/sample
+configuration is still unverified, so this is not proof that Jellyfin retained native P7.
+Audio decision is unknown in the bounded report. Browser metadata alone is not delivery
+proof. Emby app authentication and native acceptance remain open; the authorized password
+vault is locked, so normal user credential entry is required.
+
+A distinct ordinary HDR10 source passes Original playback on the candidate build without
+selecting the P7 route. This is not a same-file extracted-base control. The newest debug
+source-discovery and loopback/playlist changes require fresh affected-platform validation;
+the pre-live full-suite failures above remain recorded, not erased by live passes.
+
+Updated hermetic validation passes 1,705 Swift Testing cases plus 118 XCTest cases;
+hygiene, strict documentation, links and Mermaid checks pass. Fresh updated macOS, iOS, tvOS and visionOS products build. Updated full hosted runs
+remain non-green: macOS (633 tests) repeats the replacement-deadline failure and adds
+four revalidation lifecycle expectations in
+`activeToInactiveCancelsOnlyHeldRevalidationAndActiveRetriesExactlyOnce`; iOS (617)
+and tvOS (340) repeat the two Offline preparation expectations. Do not describe these
+as confirmed unrelated or silently replace them with focused passes. Updated owned iPhone/tvOS fixture smoke screenshots are inspected and both runners pass;
+all owned simulators are shut down. The tvOS hosted process did not exit after its final
+failed-test summary and was terminated after a 300-second bound; its separate passing
+smoke does not erase that runner failure.
