@@ -2887,6 +2887,7 @@ final class PlaybackController {
             guard !Task.isCancelled, generation == playbackGeneration else { return }
         }
         #endif
+        let copyMasterURL = streamURL
         diagnostics.applyHDRDisplayEligibility(AVPlayer.eligibleForHDRPlayback)
         if let copyMaster,
            let child = PlexHLSMediaPlaylistPolicy.mediaPlaylist(in: copyMaster,
@@ -2906,6 +2907,44 @@ final class PlaybackController {
         let assetOptions: [String: Any] = [
             "AVURLAssetHTTPHeaderFieldsKey": PlexHeaders.media(identity: identity, token: token),
         ]
+
+        #if DEBUG && os(macOS)
+        // #316 candidate acceptance only: not a user preference or shipping default.
+        // Validate both authoritative selected-source metadata and delivered initialization.
+        if ProcessInfo.processInfo.arguments.contains("--vp-probe-p7-hdr10-candidate"),
+           ProcessInfo.processInfo.arguments.contains("--vp-probe-allow-live"),
+           maxVideoBitrateKbps <= 0,
+           decision?.videoDecision?.lowercased() == "copy",
+           let media = item.media, media.indices.contains(mediaIndex),
+           media[mediaIndex].part.count == 1,
+           let dv = media[mediaIndex].part.first?.videoStreams.first?.hdrMetadata?.dolbyVision,
+           dv.profile == 7, dv.level == 6, dv.blCompatibilityID == 6,
+           dv.blPresent == true, dv.elPresent == true, dv.rpuPresent == true,
+           let copyMaster,
+           let child = PlexHLSMediaPlaylistPolicy.mediaPlaylist(in: copyMaster,
+               baseURL: copyMasterURL, hdrDisplayEligible: false) {
+            let proxy = MediaSessionProxy(p7HDR10Fallback: true,
+                extraUpstreamHeaders: PlexHeaders.media(identity: identity, token: token))
+            do {
+                let handle = try await proxy.standUpLoopback(forStream: child)
+                guard !Task.isCancelled, generation == playbackGeneration else {
+                    await proxy.stop(generation: handle.generation)
+                    return
+                }
+                if let oldProxy = remoteHLSProxy, let oldGeneration = remoteHLSProxyGeneration {
+                    await oldProxy.stop(generation: oldGeneration)
+                }
+                remoteHLSProxy = proxy
+                remoteHLSProxyGeneration = handle.generation
+                streamURL = handle.localURL
+                recordPlaybackDiagnostic("playback.p7_hdr10_candidate_open", fields: [
+                    "output_intent": .label("hdr10_base_not_dolby_vision"),
+                ])
+            } catch {
+                recordPlaybackDiagnostic("playback.p7_hdr10_candidate_failed", fields: ["error": .error(error)])
+            }
+        }
+        #endif
 
         // GH #196 spike (b): with the experimental DV-signalling setting on and a DV P8
         // source, route the Plex HLS session through the loopback proxy so the master

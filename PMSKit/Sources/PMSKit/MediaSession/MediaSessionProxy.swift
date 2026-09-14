@@ -19,6 +19,9 @@ public actor MediaSessionProxy {
     /// Extra headers applied to every upstream fetch (Plex media-plane requests can 400
     /// without the X-Plex identity header set — see PlaybackController's asset options).
     private let extraUpstreamHeaders: [String: String]
+    /// Candidate #316 transport, opt-in only. The caller must select one media playlist
+    /// and establish source/copy authority. No generic DV or P8 transformation is performed.
+    private let p7HDR10Fallback: Bool
     private var connection: UpstreamConnection?
     private var current: MediaSessionHandle?
 
@@ -35,18 +38,20 @@ public actor MediaSessionProxy {
                 strippedPlaylistQueryItemNames: Set<String> = [],
                 injectedPlaylistStartTimeOffsetSeconds: Double? = nil,
                 dolbyVisionInjection: MediaSessionDolbyVisionInjection? = nil,
+         p7HDR10Fallback: Bool = false,
                 extraUpstreamHeaders: [String: String] = [:],
                 now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         // A box so `rebuild` can swap the session that `fetch` reads (the one thing
         // AVFoundation's own media-plane pool won't do — guarantee a fresh socket).
         let box = SessionBox(config: PlexSessionConfiguration.mediaUpstream(timeout: timeout),
-                             delegate: trustDelegate)
+                             delegate: trustDelegate, rejectRedirects: p7HDR10Fallback)
         self.makeUpstreamAttempt = { box.makeAttempt() }
         self.rotateUpstream = { box.rotate(ifCurrent: $0) }
         self.now = now
         self.strippedPlaylistQueryItemNames = strippedPlaylistQueryItemNames.map { $0.lowercased() }.reduce(into: Set<String>()) { $0.insert($1) }
         self.injectedPlaylistStartTimeOffsetSeconds = injectedPlaylistStartTimeOffsetSeconds
         self.dolbyVisionInjection = dolbyVisionInjection
+        self.p7HDR10Fallback = p7HDR10Fallback
         self.extraUpstreamHeaders = extraUpstreamHeaders
     }
 
@@ -56,6 +61,7 @@ public actor MediaSessionProxy {
          strippedPlaylistQueryItemNames: Set<String> = [],
          injectedPlaylistStartTimeOffsetSeconds: Double? = nil,
          dolbyVisionInjection: MediaSessionDolbyVisionInjection? = nil,
+         p7HDR10Fallback: Bool = false,
          extraUpstreamHeaders: [String: String] = [:],
          now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
         let box = ClosureUpstreamTransport(rebuild: {}, fetch: upstreamFetch)
@@ -65,12 +71,14 @@ public actor MediaSessionProxy {
         self.strippedPlaylistQueryItemNames = strippedPlaylistQueryItemNames.map { $0.lowercased() }.reduce(into: Set<String>()) { $0.insert($1) }
         self.injectedPlaylistStartTimeOffsetSeconds = injectedPlaylistStartTimeOffsetSeconds
         self.dolbyVisionInjection = dolbyVisionInjection
+        self.p7HDR10Fallback = p7HDR10Fallback
         self.extraUpstreamHeaders = extraUpstreamHeaders
     }
 
     /// Bind the app-owned loopback origin in front of `streamURL`'s PMS host and return a
     /// handle whose `localURL` mirrors `streamURL`'s path+query onto the loopback.
     public func standUpLoopback(forStream streamURL: URL) async throws -> MediaSessionHandle {
+        guard !p7HDR10Fallback || dolbyVisionInjection == nil else { throw URLError(.unsupportedURL) }
         // Re-open reuses this proxy: tear down any prior listener before binding a fresh one.
         if current != nil {
             origin.stop()
@@ -96,11 +104,12 @@ public actor MediaSessionProxy {
         self.connection = conn
 
         let rewriterBox = RewriterBox()
+        let p7Session = p7HDR10Fallback ? P7HDR10Session(playlist: streamURL) : nil
         let port: Int
         do {
             port = try await origin.start { [mapper, conn, rewriterBox, extraUpstreamHeaders] head in
                 await Self.serve(head, mapper: mapper, connection: conn, rewriter: rewriterBox.value,
-                                 extraHeaders: extraUpstreamHeaders)
+                                 extraHeaders: extraUpstreamHeaders, p7Session: p7Session)
             }
         } catch {
             origin.stop()
@@ -162,9 +171,19 @@ public actor MediaSessionProxy {
                               mapper: UpstreamURLMapper,
                               connection: UpstreamConnection,
                               rewriter: PlaylistRewriter?,
-                              extraHeaders: [String: String] = [:]) async -> HTTPResponse {
+                              extraHeaders: [String: String] = [:],
+                              p7Session: P7HDR10Session? = nil) async -> HTTPResponse {
         guard let upstreamURL = mapper.upstreamURL(forTarget: head.target) else {
             return HTTPResponse(status: 400, reason: "Bad Request", headers: [], body: Data())
+        }
+        let resource: P7HDR10Session.Resource?
+        do {
+            if let p7Session {
+                guard head.method == "GET" else { throw P7HDR10Playlist.Rejection.unsupported }
+                resource = try await p7Session.resource(upstreamURL)
+            } else { resource = nil }
+        } catch {
+            return HTTPResponse(status: 502, reason: "Bad Gateway", headers: [], body: Data())
         }
         var req = URLRequest(url: upstreamURL)
         req.httpMethod = head.method
@@ -176,10 +195,46 @@ public actor MediaSessionProxy {
         for (name, value) in extraHeaders {
             req.setValue(value, forHTTPHeaderField: name)
         }
+        if resource == .initialization {
+            // A range may split the atom header itself. Fetch and validate the full small
+            // init first, then apply the client's range to the normalized representation.
+            req.setValue(nil, forHTTPHeaderField: "Range")
+            req.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        }
         do {
-            let (data, resp) = try await connection.send(req)
+            let limit: Int? = resource == .initialization ? 1_048_576 : (resource == .playlist ? 262_144 : nil)
+            let (data, resp) = try await connection.send(req, maximumBytes: limit)
+            if let resource {
+                guard resp.url == upstreamURL else { throw P7HDR10Playlist.Rejection.unsupported }
+                switch resource {
+                case .playlist:
+                    guard resp.statusCode == 200, head.value(for: "Range") == nil else {
+                        throw P7HDR10Playlist.Rejection.unsupported
+                    }
+                    try await p7Session?.admit(data)
+                case .initialization:
+                    guard resp.statusCode == 200 else { throw P7HDR10Playlist.Rejection.unsupported }
+                    let normalized = try P7HDR10Initialization.normalize(data)
+                    let range: Range<Int>
+                    do { range = try P7HDR10Playlist.range(head.value(for: "Range"), length: normalized.count) }
+                    catch {
+                        return HTTPResponse(status: 416, reason: "Range Not Satisfiable",
+                            headers: [("Content-Range", "bytes */\(normalized.count)")], body: Data())
+                    }
+                    var headers = [("Content-Type", "video/mp4"), ("Accept-Ranges", "bytes"),
+                                   ("Cache-Control", "no-store")]
+                    let partial = head.value(for: "Range") != nil
+                    if partial { headers.append(("Content-Range", "bytes \(range.lowerBound)-\(range.upperBound - 1)/\(normalized.count)")) }
+                    return HTTPResponse(status: partial ? 206 : 200, reason: partial ? "Partial Content" : "OK",
+                                        headers: headers, body: normalized.subdata(in: range))
+                case .segment:
+                    guard [200, 206].contains(resp.statusCode) else { throw P7HDR10Playlist.Rejection.unsupported }
+                    // Byte-identical media, including original RPU/EL NALs. Redirects
+                    // must not escape through a Location response to AVPlayer either.
+                }
+            }
             let contentType = resp.value(forHTTPHeaderField: "Content-Type")
-            let body = rewriter?.rewrite(data, contentType: contentType) ?? data
+            let body = resource == .segment ? data : (rewriter?.rewrite(data, contentType: contentType) ?? data)
             // Forward upstream response headers except framing/encoding ones we (re)compute.
             // Notably preserves Content-Range/Accept-Ranges so 206 range responses stay valid;
             // body length is reset by `HTTPResponse.serialized()`.
@@ -213,13 +268,15 @@ public actor MediaSessionProxy {
 final class SessionBox: @unchecked Sendable {
     private let config: URLSessionConfiguration
     private let delegate: URLSessionDelegate?
+    private let rejectRedirects: Bool
     private let lock = NSLock()
     private var session: URLSession
     private var generation = 0
 
-    init(config: URLSessionConfiguration, delegate: URLSessionDelegate?) {
+    init(config: URLSessionConfiguration, delegate: URLSessionDelegate?, rejectRedirects: Bool = false) {
         self.config = config
         self.delegate = delegate
+        self.rejectRedirects = rejectRedirects
         self.session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
     }
 
@@ -228,11 +285,26 @@ final class SessionBox: @unchecked Sendable {
         let session = session
         let generation = generation
         lock.unlock()
-        return UpstreamFetchAttempt(generation: generation) { req in
-            let (data, resp) = try await session.data(for: req)
+        let rejectRedirects = rejectRedirects
+        var attempt = UpstreamFetchAttempt(generation: generation) { req in
+            let (data, resp) = try await session.data(for: req,
+                delegate: rejectRedirects ? NoMediaRedirect() : nil)
             guard let http = resp as? HTTPURLResponse else { throw URLError(.badServerResponse) }
             return (data, http)
         }
+        attempt.boundedFetch = { req, limit in
+            let (bytes, response) = try await session.bytes(for: req, delegate: NoMediaRedirect())
+            defer { bytes.task.cancel() }
+            guard let http = response as? HTTPURLResponse,
+                  http.expectedContentLength <= Int64(limit) else { throw URLError(.dataLengthExceedsMaximum) }
+            var data = Data()
+            for try await byte in bytes {
+                guard data.count < limit else { throw URLError(.dataLengthExceedsMaximum) }
+                data.append(byte)
+            }
+            return (data, http)
+        }
+        return attempt
     }
 
     /// Compare-and-swap the current generation. New requests immediately use the replacement;
@@ -251,6 +323,17 @@ final class SessionBox: @unchecked Sendable {
 
         drainingSession.finishTasksAndInvalidate()
         return true
+    }
+}
+
+/// Candidate requests use this per-task redirect policy before credentials can follow a redirect. Existing
+/// session trust configuration remains owned by SessionBox; redirects cannot change source.
+private final class NoMediaRedirect: NSObject, URLSessionTaskDelegate, Sendable {
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+        completionHandler(nil)
     }
 }
 

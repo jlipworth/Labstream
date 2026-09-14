@@ -153,3 +153,77 @@ Original could not decode on the current path and that an approved compatibility
 encode may lower resolution and produce SDR. Declining must not launch an encoder.
 Do not globally block all P7, change server configuration, rewrite library files,
 weaken the P5 guard or treat speculative metadata stripping as a repair.
+
+## Scoped implementation candidate (not shipping-enabled)
+
+The worktree candidate adds a macOS DEBUG launch-only controller route and isolated
+proxy policy. It is intentionally **not** enabled by a default, release setting or
+backend capability claim. Its output intent is **HDR10-base fallback**, not native DV.
+
+- Source admission requires the exact selected single-part Plex copy source to report
+  P7, level 6, compatibility 6, BL/EL/RPU present. Missing or other profile facts do not
+  qualify. P5 and P8 policy remains unchanged.
+- Delivered initialization is parsed structurally, not searched for a byte string.
+  It must have one unencrypted `hvc1` Main10 4:2:0 video description, complete parameter
+  arrays, limited-range PQ/BT.2020 `nclx`, and the matching P7 configuration. Unknown
+  extensions, duplicate descriptions/configuration, truncation and unsupported boxes
+  are rejected. Only the validated box type changes to `free`; byte lengths are stable.
+- The selected unencrypted media playlist must explicitly admit each resource.
+  Multi-variant/rendition playlists, encryption, byte-range playlists, discontinuities,
+  initialization changes and unknown tags fail closed. Multiple ordinary segments and
+  sliding updates are supported by the candidate policy, not yet live-verified.
+- Initialization requests are fetched in full with a 1 MiB application read limit;
+  playlists have a 256 KiB limit. All candidate redirects are refused before forwarding credentials or player responses. Client initialization
+  ranges are served only after full validation/normalization, with recomputed range
+  headers. Unsupported/multipart ranges fail; media segments remain byte-identical.
+- Every proxy open owns fresh resource admission. Existing controller generation checks,
+  proxy teardown, Plex session authority, Generic profile and encoding consent remain.
+
+Hermetic coverage includes profile/color/encryption/truncation rejection, exact output
+bytes, multi-segment admission, initialization range slices (including partial atom
+headers), unknown resources and changed initialization rejection. The captured private
+initialization produces exactly the previously proven experimental output. These tests
+are not substitutes for live server seek, reopen or decoded-frame acceptance. Native
+candidate validation currently requires unlocking the test host; no locked-screen
+attempt is counted as a visual pass.
+
+### Three-backend acceptance matrix
+
+All rows require exact per-backend binding to the same underlying source; matching a
+movie title alone is insufficient. Record initial playback, seek, reopen, track/quality
+transitions, delivery decision and cleanup separately. Do not project a Plex result onto
+Jellyfin or Emby, nor classify all decoder failures as DV-specific.
+
+| Source/control | Plex | Jellyfin | Emby |
+| --- | --- | --- | --- |
+| Exact P7 source, unchanged original delivery | Native failure and bounded original-HLS reproduction established | Same-source delivery and native outcome open | Same-source delivery and native outcome open |
+| Exact P7 source, configuration-only HDR10-base candidate | Exact short-clip/local-HLS evidence established; live controller/multi-segment/seek/reopen open | Not enabled; first establish actual packaging and retained DV configuration | Not enabled; first establish actual packaging and retained DV configuration |
+| P5 without compatible base | Existing guard retained; new regression/live coverage open | Existing guard retained; new regression/live coverage open | Existing block retained; new regression/live coverage open |
+| P8 variants | Candidate rejects; representative delivery/visual coverage open | Candidate not enabled; representative coverage open | Candidate not enabled; representative coverage open |
+| Ordinary HDR10 control | Earlier distinct-source native pass; candidate regression and cross-backend binding open | Open | Open |
+| SDR control | Candidate regression and cross-backend binding open | Open | Open |
+
+The current evidence isolates one retained P7 configuration/native decoder boundary.
+It does not yet establish backend-wide DV predictability, all-profile support or a
+production-ready fix. Physical DV processing and HDR luminance remain separate gates.
+
+### Candidate validation status
+
+The final candidate revision has 1,705 hermetic Swift Testing cases plus 117 XCTest
+cases passing (including 13 new candidate tests). Fresh macOS, iOS, tvOS and visionOS
+products build. The final iPhone and Apple TV fixture screenshots were inspected and
+show expected browse UI; install identity checks pass. All owned simulators were shut
+down after the serialized checks. VisionOS install/run remains blocked by the missing
+canonical golden-simulator pointer; no other task's simulator is substituted.
+
+Full hosted suites are **not green**: the final macOS run (633 tests) fails
+`delayedTrackReplacementDoesNotAcceptThePredecessor`; iOS (617) and tvOS (335) fail
+`sustainedOfflineInitialWait`. Earlier candidate runs also showed the Offline timing
+failure on macOS and a download-keepalive cancellation timing failure on iOS. Focused
+reruns pass: macOS 18 tests, iOS 13, tvOS 10. Keep the full-suite failures visible rather
+than presenting focused passes as all-green hosted evidence. These tests do not exercise
+the opt-in normalization lane; their baseline/reliability classification remains open.
+
+The native host was checked again and remains locked. No new native candidate frame,
+server seek, reopen or three-backend live pass is claimed. The isolated test identity's
+saved authentication and all production installations/data remain untouched.
