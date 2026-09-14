@@ -202,7 +202,7 @@ Jellyfin or Emby, nor classify all decoder failures as DV-specific.
 | P5 without compatible base | Exact P5 source stops at encoding consent; no encode or visual pass | Same exact P5 source stops at encoding consent; no encode or visual pass | Exact P5 source is blocked before playback request by the retained guard |
 | P8 variants | Exact-bound P8.1 copy attempt fails then requests encoding consent; no encode or visual pass | Exact-bound P8.1 representative Original produces inspected PQ/BT.2020 frames; no DV processing claim | Same exact P8.1 source passes Original with inspected PQ/BT.2020 frames; final-child configuration unverified |
 | Ordinary HDR10 control | Distinct-source native Original regression passes without selecting candidate | Same-source binding, fresh reopen and corrected copy seek pass with inspected frames | Same-source bound Original video-copy playback passes with inspected PQ/BT.2020 frames |
-| SDR control | Candidate regression and cross-backend binding open | Open | Open |
+| SDR control | Exact existing H.264 SDR library variant passes Original and 600-second seek with video/audio copy and inspected BT.709 frames | Exact-bound direct-file seek passes inspected BT.709 frames; Original report blocked by decision classifier | Same-file direct seek passes inspected BT.709 frames; Original report blocked by decision classifier |
 
 The current evidence isolates one retained P7 configuration/native decoder boundary.
 It does not yet establish backend-wide DV predictability, all-profile support or a
@@ -301,7 +301,7 @@ A distinct ordinary HDR10 source passes Original playback on the candidate build
 selecting the P7 route. This is not a same-file extracted-base control. Latest-source
 validation is recorded below, separately from live media acceptance.
 
-### Candidate validation status
+### Pre-rebase candidate validation status
 
 - Hermetic PMSKit: 1,706 Swift Testing cases and 119 XCTest cases pass, including exact
   AC-3 preservation and rejection boundaries. The final-source focused macOS
@@ -335,3 +335,58 @@ validation is recorded below, separately from live media acceptance.
 - VisionOS install/run remains blocked by the missing canonical golden-simulator pointer;
   no other task's simulator is substituted. Hardware DV processing, HDR luminance,
   backend-wide profile support and release acceptance remain open.
+
+
+### Post-HDR integration follow-up
+
+The DV commits were rebased onto the merged HDR dependency without changing their patches.
+A bounded extension of baseline testing (five full pre-DV macOS runs total) consistently
+reproduces the two Offline expectations; the replacement deadline fails in four runs.
+Neither the extra consent condition nor revalidation first-attempt failure reproduces
+in that bounded baseline sample. The earlier focused 22-test run covered consent and
+startup-admission tests, not the revalidation lifecycle suite. Corrected targeting runs consent plus
+`UnverifiedRevalidationLifecycleTests`: all 24 tests pass. Their behavioral assertions
+and deadlines are unchanged from the base, but this is not sufficient to classify the full-suite failures as unrelated; those gates remain open.
+
+An existing H.264/BT.709 library variant is the SDR control, not a newly requested encode
+or extracted HDR base. Plex binds its exact media/part identifiers and passes inspected
+Original copy playback. Jellyfin exposes HDR and SDR editions as separate same-title
+items. The probe now permits a previously verified, case-sensitive expected item ID to
+disambiguate an exact title; absent an ID, duplicate titles still fail closed. Empty,
+unknown, duplicate-ID, wrong-type and fuzzy-title bindings are rejected by regression
+coverage. The media-source identity check remains independent after metadata retrieval.
+
+
+Both media-browser SDR sources resolve to server-reported direct play of the original
+file, rather than copy HLS. Their Original scenario reports remain **blocked** with
+`decisionUnknown`: the DEBUG snapshot maps Plex decisions and enforced media-browser
+HLS copy, but does not map media-browser direct play. The Original scenario requires
+`.copy` before post-hold capture. This is a diagnosed evidence-classifier gap, not proof
+of an encoding request or a valid Original scenario pass. Separate exact-file seek runs
+to 600 seconds complete advancing holds with inspected BT.709 frames on both backends;
+keep those results distinct. The initial Emby capture was an opening fade and is not
+independent visual acceptance; the post-seek scene supplies the visual evidence.
+
+Targeted test-only timeout diagnostics now record polling gaps and revalidation queue
+counts without extending deadlines or changing consent policy. The first instrumented
+full macOS run did not reproduce consent/revalidation failures, but failed both Offline
+expectations and a home-provider progressive-order expectation. These variable full-suite
+failures remain unresolved; focused passes and instrumented non-reproduction do not waive
+them. Coordinated 1.7.1 build 1 source preparation includes all four apps and PMSKit;
+no release tag, upload, merge or hardware acceptance is implied.
+
+
+### 1.7.1 review-preparation validation
+
+Fresh generic visionOS, iOS and tvOS builds and the isolated macOS hosted product build
+pass. All four generated bundles report 1.7.1 build 1; the PMSKit fallback and sanity
+check match. Hermetic PMSKit passes 1,707 Swift Testing cases and 119 XCTest cases.
+The final owned iPhone and tvOS semantic fixtures pass with their app-view attachments
+inspected. Native 1.7.1 Plex SDR seek also passes with an inspected BT.709 frame.
+The final-source macOS full suite (636) fails the replacement deadline and both Offline
+expectations; iOS (620) fails the two Offline expectations. The tvOS test summary reports
+all 338 tests passing, but its runner did not exit and was terminated after 301 seconds
+without log progress (exit 143). All owned simulators are shut down and the lease is
+released. These are not green full-suite results. The consent/revalidation
+instrumentation does not extend a deadline or suppress any failure. No release tag or
+upload has been created, and the P7 candidate remains default-off DEBUG macOS only.
