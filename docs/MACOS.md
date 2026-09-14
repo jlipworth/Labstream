@@ -103,6 +103,9 @@ toggle the system HDR setting, and disconnect/reconnect the display. Confirm the
 updates without a playback restart or encoding-consent bypass. This requires physical display
 testing; unit tests and a launch smoke do not close that gate.
 
+Current bounded results and open platform gates are in the
+[native HDR investigation](research/native-hdr-validation.md).
+
 ## Cleanup
 
 Clean up host-development state after a one-off test or before removing its worktree:

@@ -148,6 +148,8 @@ enum DebugPlexPlaybackProbe {
                     "videoCodec": media.videoCodec ?? "unknown",
                     "audioCodec": media.audioCodec ?? "unknown",
                     "width": media.width ?? 0, "height": media.height ?? 0,
+                    "sourceHDR": media.part.flatMap { $0.streams ?? [] }.compactMap(\.hdrMetadata)
+                        .map(\.displayLabel),
                     "parts": media.part.map { ["partID": $0.id, "file": $0.file ?? "",
                                                 "size": $0.size ?? 0] as [String: Any] }
                 ])

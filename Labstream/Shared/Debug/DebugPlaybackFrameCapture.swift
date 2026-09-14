@@ -61,8 +61,11 @@ enum DebugPlaybackFrameCapture {
             return
         }
 
+        let inspectHDR = ProcessInfo.processInfo.arguments.contains("--vp-probe-capture-hdr-signaling")
+        let pixelFormat = inspectHDR ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+            : kCVPixelFormatType_32BGRA
         let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferPixelFormatTypeKey as String: pixelFormat,
         ])
         item.add(output)
         defer { item.remove(output) }
@@ -80,6 +83,23 @@ enum DebugPlaybackFrameCapture {
                 continue
             }
 
+            if inspectHDR {
+                // Decoder-output signaling, not measured display luminance. Requested 10-bit
+                // storage alone does not prove the source was 10-bit or HDR.
+                var signal: [String: Any] = ["pixelFormat": CVPixelBufferGetPixelFormatType(pixelBuffer),
+                    "width": CVPixelBufferGetWidth(pixelBuffer), "height": CVPixelBufferGetHeight(pixelBuffer)]
+                for (name, key) in [("transfer", kCVImageBufferTransferFunctionKey),
+                                    ("primaries", kCVImageBufferColorPrimariesKey),
+                                    ("matrix", kCVImageBufferYCbCrMatrixKey)] {
+                    if let value = CVBufferCopyAttachment(pixelBuffer, key, nil) as? String {
+                        signal[name] = value
+                    }
+                }
+                if let data = try? JSONSerialization.data(withJSONObject: signal, options: .sortedKeys) {
+                    try? data.write(to: directory.appendingPathComponent(String(format: "signal-%02d.json", index)),
+                                    options: .atomic)
+                }
+            }
             let image = CIImage(cvPixelBuffer: pixelBuffer)
             if let average = averageRGB(of: image, context: context) {
                 let luma = 0.2126 * average.r + 0.7152 * average.g + 0.0722 * average.b

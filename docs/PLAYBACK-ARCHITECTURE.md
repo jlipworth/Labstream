@@ -302,6 +302,12 @@ mechanics remain shared with remote playback.
 
 ## HDR and Dolby Vision
 
+The **Stream signal** row distinguishes observed AVFoundation signaling from unverified
+copy/encode intent. A source HDR label, compatible base layer, or server decision alone
+cannot establish decoded HDR or display light output. See the
+[native HDR investigation](research/native-hdr-validation.md) for bounded platform evidence.
+
+
 Display capability is live state, not a property of the media file. The controller observes
 AVFoundation HDR-eligibility changes for the current item's lifetime (including while paused),
 refreshes on the diagnostics tick even after stream inspection is conclusive, and re-reads

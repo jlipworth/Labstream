@@ -67,7 +67,7 @@ struct StatsForNerdsView: View {
                 // the old Runtime HDR / Output rows restated (and sometimes contradicted)
                 // this — runtime truth now feeds Rendered directly.
                 if let rendered = diagnostics.renderedLabel {
-                    row("Rendered", rendered, wraps: true)
+                    row("Stream signal", rendered, wraps: true)
                 }
                 row("Display", diagnostics.displayCapabilityLabel, wraps: true)
                 row("Audio", diagnostics.audioFormatText)

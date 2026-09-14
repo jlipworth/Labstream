@@ -2880,6 +2880,13 @@ final class PlaybackController {
                   prewarm.outcome.rawValue, prewarm.elapsedSeconds, prewarm.polls)
         }
 
+        #if DEBUG
+        if let copyMaster {
+            await DebugPlexHDREvidence.capture(master: copyMaster, baseURL: streamURL,
+                headers: PlexHeaders.media(identity: identity, token: token))
+            guard !Task.isCancelled, generation == playbackGeneration else { return }
+        }
+        #endif
         diagnostics.applyHDRDisplayEligibility(AVPlayer.eligibleForHDRPlayback)
         if let copyMaster,
            let child = PlexHLSMediaPlaylistPolicy.mediaPlaylist(in: copyMaster,
@@ -2943,8 +2950,8 @@ final class PlaybackController {
     }
 
     #if DEBUG
-    /// DEBUG-only per-title decision logger for the "Original (Direct Stream)" path. When PMS agrees
-    /// to direct-play a title we commit `directPlayStartM3U8URL()`; this records WHY, so a Debug
+    /// DEBUG-only decision logger for the "Original (Direct Stream)" path. When PMS agrees
+    /// to direct-play, we commit `directPlayStartM3U8URL()`; this records WHY, so a Debug
     /// build can distinguish whole-file direct play (`mde=1000`) from Direct Stream (`video=copy`,
     /// copy video / transcode audio) at a glance, alongside the production verdict we would
     /// otherwise have transcoded on. Logged as `gen= mde= part= video= audio= saves=`. Only the

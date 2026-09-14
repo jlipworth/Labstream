@@ -99,52 +99,24 @@ final class PlaybackDiagnostics {
         }
     }
 
-    /// GH #196: what is actually reaching the display, distinct from the source
-    /// classification. Runtime truth wins once segments have loaded; before that, only
-    /// verdicts we are certain of are shown (guard-forced tone-map, copy-lane
-    /// passthrough). Nil hides the row.
+    /// Stream signaling is not proof of HDR light output. Do not promote source metadata,
+    /// a copy decision, or a tone-map request into an observed rendering claim.
     var renderedLabel: String? {
-        guard let sourceHDRFormat, sourceHDRFormat != .sdr else { return nil }
+        guard sourceHDRFormat != nil || runtimeContainsHDR != nil else { return nil }
         let displayIsSDROnly = displayPotentialEDR.map { $0 <= 1 } ?? false
-        let suffix = runtimeEligibleForHDR == false || displayIsSDROnly ? " · display not HDR-eligible" : ""
-        // Runtime truth: segments are loaded and AVFoundation told us what it sees.
+        let suffix = runtimeEligibleForHDR == false || displayIsSDROnly
+            ? " · display not HDR-eligible" : ""
         if let runtimeContainsHDR {
-            if runtimeContainsHDR {
-                let label: String
-                if sourceHDRFormat == .dolbyVision {
-                    label = dvSignallingActive
-                        ? "Dolby Vision (signalled — unverified)"
-                        : "HDR10 fallback (base layer)"
-                } else {
-                    switch sourceHDRFormat {
-                    case .hdr10Plus: label = "HDR10+"
-                    case .hlg: label = "HLG"
-                    default: label = "HDR10"
-                    }
-                }
-                return label + suffix
-            }
-            return "SDR (server tone-map)" + suffix
+            guard runtimeContainsHDR else { return "SDR stream (observed)" + suffix }
+            // containsHDRVideo cannot establish preservation/application of DV or HDR10+
+            // dynamic metadata. Report only the transfer function actually observed.
+            let transfer = runtimeTransferFunction.map { " · " + $0 } ?? ""
+            return "HDR stream (observed)" + transfer + suffix
         }
-        // Pre-runtime predictions — only where the lane makes the outcome certain.
-        if dvGuardReason != nil {
-            return "SDR (server tone-map)"
-        }
-        if isTranscoding {
-            // Jellyfin/Emby "transcode" may still remux the video; don't guess.
-            return nil
-        }
-        if sourceHDRFormat == .dolbyVision {
-            return (dvSignallingActive
-                ? "Dolby Vision (signalled — unverified)"
-                : "HDR10 fallback (base layer)") + suffix
-        }
-        // Non-DV HDR on a copy lane: the in-bitstream metadata survives the remux.
-        switch sourceHDRFormat {
-        case .hdr10Plus: return "HDR10+" + suffix
-        case .hlg: return "HLG" + suffix
-        default: return "HDR10" + suffix
-        }
+        guard sourceHDRFormat != .sdr else { return nil }
+        return (isTranscoding || dvGuardReason != nil
+            ? "Unverified (video encoding requested)"
+            : "Unverified (video copy requested)") + suffix
     }
     /// Source media bitrate (kbps), when PMS exposes it on the chosen Media row.
     var sourceBitrateKbps: Int = 0

@@ -4,6 +4,26 @@ import Testing
 
 @MainActor
 struct PlaybackExplanationPresentationTests {
+    @Test func sourceHDRAndCopyDecisionDoNotClaimObservedRendering() {
+        let diagnostics = PlaybackDiagnostics()
+        diagnostics.sourceHDRFormat = .dolbyVision
+        diagnostics.applyHDRDisplayEligibility(true)
+        #expect(diagnostics.renderedLabel == "Unverified (video copy requested)")
+        diagnostics.isTranscoding = true
+        #expect(diagnostics.renderedLabel == "Unverified (video encoding requested)")
+    }
+
+    @Test func observedHDRDoesNotProveDynamicMetadataOrToneMapping() {
+        let diagnostics = PlaybackDiagnostics()
+        diagnostics.sourceHDRFormat = .hdr10Plus
+        diagnostics.applyRuntimeHDRProbe(.init(containsHDRVideo: true, transferFunction: "PQ",
+            eligibleForHDRPlayback: true, sawVideoFormatDescriptions: true, videoCodecFourCC: "hvc1"))
+        #expect(diagnostics.renderedLabel == "HDR stream (observed) · PQ")
+        diagnostics.applyRuntimeHDRProbe(.init(containsHDRVideo: false, transferFunction: nil,
+            eligibleForHDRPlayback: true, sawVideoFormatDescriptions: true, videoCodecFourCC: "avc1"))
+        #expect(diagnostics.renderedLabel == "SDR stream (observed)")
+    }
+
     @Test func displayEligibilityUpdatesAfterConclusiveStreamProbeWithoutChangingStreamFacts() {
         let diagnostics = PlaybackDiagnostics()
         diagnostics.applyRuntimeHDRProbe(.init(containsHDRVideo: true, transferFunction: "PQ",

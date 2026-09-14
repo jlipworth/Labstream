@@ -19,8 +19,9 @@ public enum DolbyVisionPlaybackVerdict: Sendable, Equatable {
 /// the fallback transcode stalls, Emby → silent black screen. P5 has no
 /// backwards-compatible base layer, so nothing recoverable reaches the display.
 ///
-/// P7/P8 streams with an HDR10/SDR/HLG-compatible base layer are proven correct on copy
-/// lanes (they render the fallback layer) and must stay there.
+/// P7/P8 streams with a compatible base layer remain eligible for a copy attempt.
+/// This is not a decoder guarantee: retained unsupported DV configuration in a remux
+/// can still fail. Such a failure follows the existing explicit-consent path.
 public enum DolbyVisionPlaybackPolicy {
     /// - Parameter experimentalDVSignallingEnabled: when the user opted into the
     ///   experimental DV signalling lane, the guard defers — that lane's whole point is
