@@ -9,6 +9,66 @@ import PMSKit
 @MainActor
 struct PlaybackAgentEvidenceTests {
     @Test(arguments: [MediaBackendKind.jellyfin, .emby])
+    func directPlayEvidenceDoesNotInventCopyForOtherMethods(backend: MediaBackendKind) throws {
+        let identity = ClientIdentity(clientIdentifier: "fixture-only", product: "Labstream", version: "1", deviceName: "Fixture")
+        let methods: [MediaBrowserPlayMethod?] = [.directPlay, .directStream, .transcode, nil]
+        for method in methods {
+            let session = MediaBrowserPlaybackSession(
+                streamURL: try #require(URL(string: "https://fixture.invalid/video.mp4")),
+                backend: backend, backendLabel: backend.displayName, httpHeaders: [:],
+                playSessionID: "fixture-session", sourceMetadata: .init(videoCodec: "h264"),
+                playMethod: method ?? .directPlay, transcodeReasons: [],
+                progressSession: nil, onStop: {}, reopener: { _ in throw URLError(.cancelled) })
+            session.playMethod = method
+            let controller = PlaybackController(
+                item: MediaItem(ratingKey: "fixture", title: "Fixture", type: "movie"),
+                sessionSource: .mediaBrowser(session), identity: identity,
+                client: PlexClient(identity: identity), maxVideoBitrateKbps: 0)
+            let snapshot = controller.debugEvidenceSnapshot()
+            #expect(snapshot.videoDecision == (method == .directPlay ? .copy : .unknown))
+            #expect(snapshot.audioDecision == (method == .directPlay ? .copy : .unknown))
+            #expect(snapshot.videoProvenance == (method == .directPlay ? .serverDecision : .unknown))
+            #expect(snapshot.renderedFormat == "unknown")
+            #expect(snapshot.serverCleanup == "unknown")
+            #expect(snapshot.visibleAttachment == .detached)
+            session.playMethod = nil
+            #expect(controller.debugEvidenceSnapshot().videoDecision == .unknown)
+            controller.stop()
+        }
+    }
+
+    @Test func initializationCaptureExcludesMediaAndMalformedContainers() {
+        func box(_ type: String) -> Data { Data([0, 0, 0, 8]) + Data(type.utf8) }
+        let valid = box("ftyp") + box("moov")
+        #expect(DebugMediaBrowserHDREvidence.isInitialization(valid))
+        #expect(DebugMediaBrowserHDREvidence.isInitialization(valid + box("free")))
+        for invalid in [Data(), Data(valid.dropLast()), box("moov") + box("ftyp"),
+                        valid + box("mdat"), valid + box("moof"), valid + box("moov"),
+                        valid + box("ftyp"), Data([0, 0, 0, 0]) + Data("ftyp".utf8)] {
+            #expect(!DebugMediaBrowserHDREvidence.isInitialization(invalid))
+        }
+    }
+
+    @Test func initializationCaptureReferencesStayOnTheirBoundOrigin() throws {
+        let base = try #require(URL(string: "https://media.example.internal:8443/video/main.m3u8"))
+        #expect(DebugMediaBrowserHDREvidence.resolve("init.mp4", relativeTo: base)?.path == "/video/init.mp4")
+        for invalid in ["https://other.example.internal:8443/init.mp4", "http://media.example.internal:8443/init.mp4",
+                        "https://media.example.internal/init.mp4", "https://user@media.example.internal:8443/init.mp4",
+                        "init.mp4#fragment"] {
+            #expect(DebugMediaBrowserHDREvidence.resolve(invalid, relativeTo: base) == nil)
+        }
+    }
+
+    @Test func detachedSeekClockRemainsPending() {
+        for position in [Double.nan, .infinity, -.infinity, 0, 597.9, 602.1] {
+            #expect(!DebugPlaybackScenario.seekTargetReached(positionSeconds: position, targetMs: 600_000))
+        }
+        for position in [598.0, 600.0, 602.0] {
+            #expect(DebugPlaybackScenario.seekTargetReached(positionSeconds: position, targetMs: 600_000))
+        }
+    }
+
+    @Test(arguments: [MediaBackendKind.jellyfin, .emby])
     func fixtureConsentTransitions(backend: MediaBackendKind) async throws {
         var stopped = false
         var reopened = false

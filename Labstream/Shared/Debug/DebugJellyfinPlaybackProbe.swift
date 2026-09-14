@@ -31,6 +31,7 @@ enum DebugJellyfinPlaybackProbe {
             return
         }
         guard DebugPlaybackScenario.admitted(arguments, bitrateKbps: options.bitrateKbps) else { return }
+        guard DebugPlaybackProbeSupport.prepareSourceBindingDiscovery(backend: "jellyfin", arguments: arguments) else { return }
         let query = options.query
         let bitrateKbps = options.bitrateKbps
         let seekMs = options.seekMs
@@ -54,13 +55,33 @@ enum DebugJellyfinPlaybackProbe {
         var controller: PlaybackController?
         var scenarioOwnsCleanup = false
         do {
-            let item = try await resolveItem(query: query, service: service)
-            let detailed = (try? await service.metadata(itemId: item.ratingKey)) ?? item
+            let item = try await resolveItem(query: query, service: service,
+                expectedItemID: DebugPlaybackProbeSupport.value(after: "--vp-probe-expected-item-id", in: arguments))
+            let detailed = try await service.metadata(itemId: item.ratingKey)
+            if arguments.contains("--vp-probe-discover-source") {
+                let sourceData = try await service.probeSourceBinding(itemId: detailed.ratingKey)
+                if try DebugPlaybackProbeSupport.exportSourceBindingIfRequested(detailed, backend: "jellyfin",
+                    arguments: arguments, sourceData: sourceData) { return }
+            }
+            let mediaIndex = DebugPlaybackProbeSupport.intValue(after: "--vp-probe-media-index", in: arguments) ?? 0
+            guard detailed.media?.indices.contains(mediaIndex) == true else {
+                throw DebugPlaybackScenario.Blocked(reason: .invalidOptions)
+            }
+            for (flag, actual) in [
+                ("--vp-probe-expected-item-id", Optional(detailed.ratingKey)),
+                ("--vp-probe-expected-source-id", MediaBrowserPlaybackPreferencePolicy.mediaSourceID(for: detailed, mediaIndex: mediaIndex))
+            ] where arguments.contains(flag) {
+                guard PlaybackProbeSelection.matchesExpectedIdentity(
+                    DebugPlaybackProbeSupport.value(after: flag, in: arguments), actual: actual) else {
+                    throw DebugPlaybackScenario.Blocked(reason: .invalidOptions)
+                }
+            }
             log.notice("probe.item_resolved type=\(detailed.type, privacy: .public) duration_ms=\(detailed.duration ?? 0, privacy: .public) chapters=\((detailed.chapters?.count ?? 0), privacy: .public)")
 
             let opened = try await DetailPlaybackLauncher.open(item: detailed,
                                                                backend: .jellyfin,
                                                                appModel: appModel,
+                                                               mediaIndex: mediaIndex,
                                                                maxVideoBitrateKbps: bitrateKbps)
             let playback = DetailPlaybackLauncher.playbackController(
                 remote: opened.playback,
@@ -85,7 +106,8 @@ enum DebugJellyfinPlaybackProbe {
         }
     }
 
-    private static func resolveItem(query: String, service: JellyfinBrowseService) async throws -> MediaItem {
+    private static func resolveItem(query: String, service: JellyfinBrowseService,
+                                    expectedItemID: String?) async throws -> MediaItem {
         let items = try await service.items(parentId: nil,
                                             recursive: true,
                                             limit: 20,
@@ -94,7 +116,8 @@ enum DebugJellyfinPlaybackProbe {
                                             sortOrder: "Ascending",
                                             includeItemTypes: "Movie,Episode")
         let playable = items.filter { !$0.isContainer && !$0.isMusic }
-        if let index = PlaybackProbeSelection.uniqueExactIndex(titles: playable.map(\.title), query: query) {
+        if let index = PlaybackProbeSelection.mediaBrowserItemIndex(
+            items: playable, query: query, expectedItemID: expectedItemID) {
             return playable[index]
         }
         throw DebugPlaybackProbeSupport.ProbeError.itemNotFound(query)

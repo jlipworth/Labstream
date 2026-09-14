@@ -121,6 +121,11 @@ cannot approve another playback request. These changes remain under live accepta
 Jellyfin VOD playlists describe the full timeline. Both copy and encoded playback use a
 client seek on readiness; `StartTimeTicks` must not reach dynamic segment requests. Copy
 playback is not treated as server-primed merely because it owns an FFmpeg audio/remux job.
+Verified Jellyfin video-copy HLS reopens keep automatic waiting enabled with the same
+12-second buffer target. Disabling it reproduced a rate-zero paused hold after both HDR10
+and P7 seeks; the scoped exception passed inspected native seek checks. Approved video
+encoding, paused-loading settings, user pause intent and session authority are unchanged.
+See the [bounded acceptance evidence](research/dv-p7-decoder-boundary.md).
 
 ## Emby
 
@@ -152,8 +157,8 @@ on the offset-primed quality-reopen path, without asserting a shared cause with 
 starvation issue ([evidence and limits](research/emby-hevc-sdr-timeline.md)).
 
 Verified Emby copy HLS reopens retain their 12-second buffer target but keep automatic
-waiting enabled, so buffer exhaustion does not strand AVPlayer at rate zero. Other
-backends and approved video-encode buffering settings remain unchanged. AC-3 copy
+waiting enabled, so buffer exhaustion does not strand AVPlayer at rate zero. Verified
+Jellyfin copy reopens use the same exception; approved video-encode settings remain unchanged. AC-3 copy
 transport also uses AAC as a narrow delivery workaround. Unknown transforms and subtitle
 burn require consent; Maximum explicitly authorizes video encoding. This fallback is
 video-copy Direct Stream, not byte-for-byte original-file Direct Play. Native-file starvation

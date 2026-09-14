@@ -44,10 +44,10 @@ actor UpstreamConnection {
                   rotate: { transport.rotate(ifCurrent: $0) })
     }
 
-    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+    func send(_ request: URLRequest, maximumBytes: Int? = nil) async throws -> (Data, HTTPURLResponse) {
         let attempt = makeAttempt()
         do {
-            return try await attempt.fetch(request)
+            return try await attempt.response(for: request, maximumBytes: maximumBytes)
         } catch {
             let current = makeAttempt()
             if current.generation != attempt.generation {
@@ -57,7 +57,7 @@ actor UpstreamConnection {
                 // its generation began draining may observe URLSession cancellation before its
                 // request was fully registered.
                 try Task.checkCancellation()
-                return try await current.fetch(request)
+                return try await current.response(for: request, maximumBytes: maximumBytes)
             }
 
             guard Self.isWedge(error) else { throw error }
@@ -66,7 +66,7 @@ actor UpstreamConnection {
                 if rotate(attempt.generation) {
                     rotateCount += 1
                 }
-                return try await makeAttempt().fetch(request) // one retry on the fresh socket
+                return try await makeAttempt().response(for: request, maximumBytes: maximumBytes) // one retry on the fresh socket
             case .deferred, .escalate:
                 throw error                        // surface; do not reconnect-storm
             }
@@ -92,6 +92,19 @@ actor UpstreamConnection {
 struct UpstreamFetchAttempt: Sendable {
     let generation: Int
     let fetch: @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
+    var boundedFetch: (@Sendable (URLRequest, Int) async throws -> (Data, HTTPURLResponse))?
+
+    init(generation: Int, fetch: @escaping @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)) {
+        self.generation = generation
+        self.fetch = fetch
+    }
+
+    func response(for request: URLRequest, maximumBytes: Int?) async throws -> (Data, HTTPURLResponse) {
+        if let maximumBytes, let boundedFetch { return try await boundedFetch(request, maximumBytes) }
+        let result = try await fetch(request)
+        if let maximumBytes, result.0.count > maximumBytes { throw URLError(.dataLengthExceedsMaximum) }
+        return result
+    }
 }
 
 /// Generation source for injected transports that have no concrete URLSession to swap. Keeping

@@ -66,6 +66,10 @@ final class PlaybackController {
             if video != .unknown { provenance = .serverDecision }
         } else if mediaBrowserVideoCopyEnforced {
             video = .copy; provenance = .enforcedRequest
+        } else if remotePlayMethod == .directPlay {
+            // The negotiated original-file lane copies both streams. This records the
+            // server decision, not independent verification of rendered media or cleanup.
+            video = .copy; audio = .copy; provenance = .serverDecision
         }
         let backend: DebugPlaybackEvidence.Backend
         switch sessionSource {
@@ -2887,6 +2891,7 @@ final class PlaybackController {
             guard !Task.isCancelled, generation == playbackGeneration else { return }
         }
         #endif
+        let copyMasterURL = streamURL
         diagnostics.applyHDRDisplayEligibility(AVPlayer.eligibleForHDRPlayback)
         if let copyMaster,
            let child = PlexHLSMediaPlaylistPolicy.mediaPlaylist(in: copyMaster,
@@ -2906,6 +2911,44 @@ final class PlaybackController {
         let assetOptions: [String: Any] = [
             "AVURLAssetHTTPHeaderFieldsKey": PlexHeaders.media(identity: identity, token: token),
         ]
+
+        #if DEBUG && os(macOS)
+        // #316 candidate acceptance only: not a user preference or shipping default.
+        // Validate both authoritative selected-source metadata and delivered initialization.
+        if ProcessInfo.processInfo.arguments.contains("--vp-probe-p7-hdr10-candidate"),
+           ProcessInfo.processInfo.arguments.contains("--vp-probe-allow-live"),
+           maxVideoBitrateKbps <= 0,
+           decision?.videoDecision?.lowercased() == "copy",
+           let media = item.media, media.indices.contains(mediaIndex),
+           media[mediaIndex].part.count == 1,
+           let dv = media[mediaIndex].part.first?.videoStreams.first?.hdrMetadata?.dolbyVision,
+           dv.profile == 7, dv.level == 6, dv.blCompatibilityID == 6,
+           dv.blPresent == true, dv.elPresent == true, dv.rpuPresent == true,
+           let copyMaster,
+           let child = PlexHLSMediaPlaylistPolicy.mediaPlaylist(in: copyMaster,
+               baseURL: copyMasterURL, hdrDisplayEligible: false) {
+            let proxy = MediaSessionProxy(p7HDR10Fallback: true,
+                extraUpstreamHeaders: PlexHeaders.media(identity: identity, token: token))
+            do {
+                let handle = try await proxy.standUpLoopback(forStream: child)
+                guard !Task.isCancelled, generation == playbackGeneration else {
+                    await proxy.stop(generation: handle.generation)
+                    return
+                }
+                if let oldProxy = remoteHLSProxy, let oldGeneration = remoteHLSProxyGeneration {
+                    await oldProxy.stop(generation: oldGeneration)
+                }
+                remoteHLSProxy = proxy
+                remoteHLSProxyGeneration = handle.generation
+                streamURL = handle.localURL
+                recordPlaybackDiagnostic("playback.p7_hdr10_candidate_open", fields: [
+                    "output_intent": .label("hdr10_base_not_dolby_vision"),
+                ])
+            } catch {
+                recordPlaybackDiagnostic("playback.p7_hdr10_candidate_failed", fields: ["error": .error(error)])
+            }
+        }
+        #endif
 
         // GH #196 spike (b): with the experimental DV-signalling setting on and a DV P8
         // source, route the Plex HLS session through the loopback proxy so the master
@@ -3080,6 +3123,29 @@ final class PlaybackController {
     }
 
     private func playableRemoteStreamURL(_ url: URL,
+                                         headers: [String: String],
+                                         resumeOffsetMs: Int?,
+                                         playMethod: MediaBrowserPlayMethod?,
+                                         generation: Int,
+                                         sourceMetadata: MediaBrowserPlaybackSourceMetadata? = nil,
+                                         transcodeReasons: [String]? = nil) async -> URL? {
+        guard let prepared = await prepareRemoteStreamURL(
+            url, headers: headers, resumeOffsetMs: resumeOffsetMs, playMethod: playMethod,
+            generation: generation, sourceMetadata: sourceMetadata, transcodeReasons: transcodeReasons),
+            !Task.isCancelled, generation == playbackGeneration else { return nil }
+        #if DEBUG
+        // Capture only after copy-child selection and all delivery rewrites. A negotiated
+        // master before those steps is not evidence of the resource given to AVPlayer.
+        if let backend = mediaBrowserSession?.backend {
+            await DebugMediaBrowserHDREvidence.capture(url: prepared, headers: headers,
+                                                      backend: backend.rawValue, generation: generation)
+            guard !Task.isCancelled, generation == playbackGeneration else { return nil }
+        }
+        #endif
+        return prepared
+    }
+
+    private func prepareRemoteStreamURL(_ url: URL,
                                          headers: [String: String],
                                          resumeOffsetMs: Int?,
                                          playMethod: MediaBrowserPlayMethod?,
@@ -3628,7 +3694,8 @@ final class PlaybackController {
             isRemoteServerEncodedHLS: isRemoteTranscode
                 || PlaybackBufferingPolicy.isServerEncodedHLSPlaylist(url: itemStreamURL),
             preferShortRemoteHLSBuffer: preferShortRemoteHLSBuffer,
-            isEmbyVideoCopyHLS: mediaBrowserSession?.backend == .emby && mediaBrowserVideoCopyEnforced)
+            isEmbyVideoCopyHLS: mediaBrowserSession?.backend == .emby && mediaBrowserVideoCopyEnforced,
+            isJellyfinVideoCopyHLS: mediaBrowserSession?.backend == .jellyfin && mediaBrowserVideoCopyEnforced)
         configureAdaptiveBitratePolicy(usesShortRemoteBuffer: bufferingConfig.usesShortRemoteHLSBuffer)
         activeForwardBufferTargetSeconds = bufferingConfig.preferredForwardBufferSeconds
         playerItem.preferredForwardBufferDuration = bufferingConfig.preferredForwardBufferSeconds
@@ -3902,16 +3969,21 @@ final class PlaybackController {
                                                                    weak pItem = pItem,
                                                                    itemGeneration,
                                                                    observedPlaybackGeneration] finished in
-                                                 guard finished else { return }
                                                  Task { @MainActor [weak self = self,
                                                                     weak pItem = pItem,
                                                                     itemGeneration,
                                                                     observedPlaybackGeneration] in
-                                                     guard let self, let pItem,
-                                                           self.isCurrentObservedItem(pItem,
-                                                                                      itemGeneration: itemGeneration,
-                                                                                      observedPlaybackGeneration: observedPlaybackGeneration),
-                                                           !self.userWantsPaused else { return }
+                                                     guard let self, let pItem else { return }
+                                                     let isCurrent = self.isCurrentObservedItem(
+                                                         pItem, itemGeneration: itemGeneration,
+                                                         observedPlaybackGeneration: observedPlaybackGeneration)
+                                                     self.recordPlaybackDiagnostic("playback.resume_seek_completed", fields: [
+                                                         "finished": .bool(finished),
+                                                         "current_item": .bool(isCurrent),
+                                                         "user_wants_paused": .bool(self.userWantsPaused),
+                                                         "time_control_status": .label(Self.timeControlStatusLabel(self.player.timeControlStatus)),
+                                                     ])
+                                                     guard finished, isCurrent, !self.userWantsPaused else { return }
                                                      self.applyPlaybackSpeed()
                                                      self.refreshVideoNowPlayingMetadata()
                                                  }
@@ -5788,10 +5860,22 @@ final class PlaybackTransportStatusState {
     @ObservationIgnored private var pendingStatus: PlaybackTransportStatus?
     @ObservationIgnored private var pendingStatusTask: Task<Void, Never>?
     @ObservationIgnored private let initialPreparationDelay: Duration
+    @ObservationIgnored private let preparationSleep: @Sendable (Duration) async throws -> Void
 
     init(initialPreparationDelay: Duration = localInitialPreparationDelay) {
         self.initialPreparationDelay = initialPreparationDelay
+        self.preparationSleep = { try await Task.sleep(for: $0) }
     }
+
+    #if DEBUG
+    init(initialPreparationDelay: Duration,
+         preparationSleep: @escaping @Sendable (Duration) async throws -> Void) {
+        self.initialPreparationDelay = initialPreparationDelay
+        self.preparationSleep = preparationSleep
+    }
+
+    var pendingPreparationForTesting: Task<Void, Never>? { pendingStatusTask }
+    #endif
 
     var activeStatus: PlaybackTransportStatus? {
         status == .none ? nil : status
@@ -5809,8 +5893,9 @@ final class PlaybackTransportStatusState {
             pendingStatus = value
             if status != .none { status = .none }
             let delay = initialPreparationDelay
+            let sleep = preparationSleep
             pendingStatusTask = Task { @MainActor [weak self] in
-                try? await Task.sleep(for: delay)
+                try? await sleep(delay)
                 guard !Task.isCancelled, let self, self.pendingStatus == value else { return }
                 self.pendingStatus = nil
                 self.pendingStatusTask = nil

@@ -45,6 +45,12 @@ enum DebugPlaybackScenario {
             status: .blocked, reason: reason, snapshots: []))
     }
 
+    /// A detached AVPlayerItem reports a non-finite clock during remote reopen.
+    /// That is still pending, not a successful comparison or an expired deadline.
+    static func seekTargetReached(positionSeconds: Double, targetMs: Int) -> Bool {
+        positionSeconds.isFinite && abs(positionSeconds - Double(targetMs) / 1000) <= 2
+    }
+
     static func subtitleRequiresReplacement(_ mechanism: PlaybackSubtitleTrack.Mechanism) -> Bool {
         switch mechanism {
         case .plexOff, .plexStream, .mediaBrowserOff, .mediaBrowserStream: true
@@ -127,14 +133,13 @@ enum DebugPlaybackScenario {
             case .seek:
                 controller.performUserSeek(toMs: options.seekMs)
                 let deadline = ContinuousClock.now.advanced(by: .seconds(options.playableTimeoutSeconds))
-                while abs(controller.player.currentTime().seconds - Double(options.seekMs) / 1000) > 2,
+                while !seekTargetReached(positionSeconds: controller.player.currentTime().seconds, targetMs: options.seekMs),
                       ContinuousClock.now < deadline {
                     try Task.checkCancellation()
                     guard backendIsCurrent() else { throw Blocked(reason: .backendChanged) }
                     try await Task.sleep(for: .milliseconds(250))
                 }
-                guard controller.player.currentTime().seconds.isFinite,
-                      abs(controller.player.currentTime().seconds - Double(options.seekMs) / 1000) <= 2 else {
+                guard seekTargetReached(positionSeconds: controller.player.currentTime().seconds, targetMs: options.seekMs) else {
                     throw Blocked(reason: .deadline)
                 }
             case .capped: controller.reload(bitrateKbps: 8_000)

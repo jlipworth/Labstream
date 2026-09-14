@@ -111,11 +111,19 @@ struct PlaybackVideoTranscodeConsentTests {
     }
 
     private func waitUntil(_ condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        let start = ContinuousClock.now
+        let deadline = start.advanced(by: .seconds(5))
+        var priorPoll = start
+        var longestPollGap = Duration.zero
+        var polls = 0
         while !condition(), ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
+            let now = ContinuousClock.now
+            longestPollGap = max(longestPollGap, priorPoll.duration(to: now))
+            priorPoll = now
+            polls += 1
         }
-        try #require(condition(), "Controller did not reach the expected state")
+        try #require(condition(), "Controller state deadline: polls=\(polls), longestGap=\(longestPollGap), elapsed=\(start.duration(to: .now))")
     }
 
     private func makeFixture() throws -> (controller: PlaybackController, session: URLSession,

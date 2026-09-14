@@ -894,7 +894,11 @@ struct UnverifiedRevalidationLifecycleTests {
             publishingTask, for: key, kind: .finalizer)
 
         manager.noteAppSceneRecovery(.aggregateSceneBecameActive)
-        #expect(await validator.waitForAttempts(1))
+        let firstAttemptStart = ContinuousClock.now
+        let observedFirstAttempt = await validator.waitForAttempts(1)
+        let firstAttemptState = manager.unverifiedRevalidationSnapshotForTesting()
+        #expect(observedFirstAttempt,
+                "First revalidation wait: elapsed=\(firstAttemptStart.duration(to: .now)), desired=\(firstAttemptState.desired.count), inFlight=\(firstAttemptState.inFlight.count), finalizers=\(session.diagnosticSnapshot().finalizingRatingKeyCount)")
         #expect(store.record(for: key)?.status == .unverified)
 
         manager.noteAppSceneRecovery(.aggregateSceneBecameInactive)
