@@ -45,6 +45,38 @@ One tested scaled display mode hid the HDR switch; default scaling exposed it. T
 scaling and HDR changes were restored. That host-specific observation is not a universal
 macOS scaling rule or a diagnosis of a cable/adapter.
 
+## Simulator evidence boundaries
+
+| Simulator runtime | HDR10 control | Source-verified HDR10+ file | Remaining gate |
+| --- | --- | --- | --- |
+| iPhone, iOS 27 | Copy, actual 60-second seek/hold, inspected post-seek frames passed. | Same bounded sequence passed; decoded PQ/BT.2020. | Dynamic-metadata preservation/application and physical output unknown. |
+| iPad, iOS 27 | Copy, actual 60-second seek/hold, inspected post-seek frames passed. | Same bounded sequence passed; decoded PQ/BT.2020. | Same limits; normal server selection required. |
+| tvOS 27 | Copy, actual 60-second seek/hold, inspected post-seek frames passed. | Same bounded sequence passed; decoded PQ/BT.2020. | Same limits; hardware decoder/display not established. |
+| visionOS 27 | Not run. | Not run. | Missing root golden simulator pointer; root checkout not modified. |
+
+These are individual source/path results, not universal HDR10+ support. No video-encoding
+consent was granted in these six copy tests. Retain the initial missing-auth, wrong-server
+and UI-harness attempts; they are not decoder failures. Normal tvOS pairing persisted even
+though the first UI test expected a phone-only Copy button; the corrected readiness locator
+compiled but was not re-run live, to avoid signing out the saved session.
+
+A normal Plex link can be completed through the explicitly opted-in mobile live-auth
+UI test and the Codex in-app browser even when Device Hub accessibility is unavailable.
+On iPad, use the actual floating Home button rather than assuming a phone-style tab bar.
+Server selection must finish before UI-test teardown; a successful tap followed by
+“Selecting…” is not a completed server switch. Confirm the exact source after relaunch.
+
+Source HDR10+ classification requires evidence beyond a release filename or Plex's HDR10
+label. A bounded source-frame probe found SMPTE2094-40 dynamic metadata in a corpus
+candidate; private Plex discovery matched its path suffix and size. PQ/BT.2020 delivered
+initialization and decoder-buffer attachments alone cannot establish preservation or
+application of that dynamic metadata. Keep those results unknown unless separately tested.
+
+The `original` scenario verifies progression/hold, **not seek**. A folder named
+`plex-postseek` is reused by the capture helper even for a non-seek scenario; use the
+report's scenario and position snapshots as evidence. Run `seek` at bitrate zero for an
+Original-quality seek test without granting video-encoding consent.
+
 ## Reproducible probes
 
 Use exact source binding and the existing explicit live/encoding admission flags. Native

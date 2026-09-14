@@ -22,9 +22,40 @@ final class LabstreamMobileLiveAuthUITests: XCTestCase {
         attachment.name = "private-plex-link-code"
         attachment.lifetime = .keepAlways
         add(attachment)
-        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 240),
+        XCTAssertTrue(app.buttons["Home"].firstMatch.waitForExistence(timeout: 240),
                       "Browser authorization and server selection did not complete.")
         XCTAssertFalse(prompt.exists)
+    }
+
+    @MainActor
+    func testSelectPlexServer() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["LABSTREAM_LIVE_PLEX_AUTH_ALLOWED"] == "1",
+              let name = environment["LABSTREAM_LIVE_PLEX_SERVER_NAME"], !name.isEmpty else {
+            throw XCTSkip("Explicit normal-UI server selection requires a private exact server label.")
+        }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["LABSTREAM_UNIT_TEST_HOST"] = "0"
+        app.launchArguments = ["--vp-probe-backend", "plex"]
+        app.launch()
+        let settings = app.buttons["Settings"].firstMatch
+        XCTAssertTrue(settings.waitForExistence(timeout: 30))
+        settings.tap()
+        let picker = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Plex Server")).firstMatch
+        XCTAssertTrue(picker.waitForExistence(timeout: 10))
+        picker.tap()
+        let server = app.buttons[name]
+        XCTAssertTrue(server.waitForExistence(timeout: 10))
+        server.tap()
+        let selected = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "label CONTAINS %@", name), object: picker)
+        XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 45), .completed,
+                       "Server selection must finish before test teardown terminates the app.")
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "private-plex-server-selection"
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     @MainActor
