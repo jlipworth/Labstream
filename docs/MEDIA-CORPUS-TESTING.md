@@ -131,3 +131,31 @@ Smallest representatives can be studio logos or secondary encodes. Review durati
 source identity before selecting release cases. Starting a capped scenario at the same
 8 Mbps value is a no-op, not a valid quality-transition test. Use a different initial
 quality. Record first failures even when later repeats pass.
+
+## Plex exact-source probes
+
+Plex playback probes require a private, previously verified binding in addition to the
+exact `--vp-probe-query` title: `--vp-probe-rating-key`, `--vp-probe-media-id`, and
+`--vp-probe-part-id`. Fresh full metadata must match that item, title, Media ID and
+single Part ID before opening playback. Media array order is not an identity; the
+probe resolves the current index from the ID. Missing/mismatched bindings, duplicate
+Media IDs and multipart sources fail closed. Movie/episode items only are supported.
+This removes the old fuzzy-search fallback and unconditional version-zero selection.
+
+For read-only mapping, add `--vp-probe-plex-discover` to the normal
+`--vp-probe-plex-playback --vp-probe-allow-live --vp-probe-query "Exact fixture title"`
+launch. It never opens playback. At most five unique exact-title search hits are
+hydrated; larger results fail closed. Inspect the private
+`Documents/ProbeDiscovery/plex.json` in the app container, then match its source path
+and size to the inventory (server mount prefixes may differ). Review duration, codec,
+resolution and alternate versions; titles alone cannot establish corpus identity.
+An empty result is not a source match. Discovery removes its prior result before
+requesting metadata; external runners must additionally require a fresh file timestamp.
+Never publish this file: it contains media identifiers and source paths, but no token.
+
+The opt-in mobile `LabstreamMobileLiveAuthUITests/testPlexLink` test uses
+`LABSTREAM_LIVE_PLEX_AUTH_ALLOWED=1`, taps ordinary **Sign in with Plex**, and waits
+for the Home tab after browser linking. Approve only the current app-generated code
+in the Codex in-app browser. The test never signs out a saved session or injects a
+credential. Run without test flags afterward to verify session persistence. If server
+selection requires interaction, Home remains an explicit gate rather than a false pass.

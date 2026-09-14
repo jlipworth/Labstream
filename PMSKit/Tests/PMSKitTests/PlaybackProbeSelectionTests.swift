@@ -16,4 +16,25 @@ struct PlaybackProbeSelectionTests {
         #expect(PlaybackProbeSelection.uniqueExactIndex(titles: ["Episode 42", "EPISODE 42"], query: "Episode 42") == nil)
         #expect(PlaybackProbeSelection.uniqueExactIndex(titles: [], query: "Episode 42") == nil)
     }
+    @Test func plexBindsExactItemAndVersionRatherThanFirstEncode() {
+        let first = Media(id: 10, part: [Part(id: 100, key: "/fixture/first")])
+        let intended = Media(id: 20, part: [Part(id: 200, key: "/fixture/intended")])
+        func select(_ media: [Media]?, title: String = "Fixture", key: String = "42",
+                    type: String = "movie") -> Int? {
+            PlaybackProbeSelection.plexMediaIndex(
+                item: MediaItem(ratingKey: key, title: title, type: type, media: media),
+                query: "Fixture", ratingKey: "42", mediaID: 20, partID: 200)
+        }
+        #expect(select([first, intended]) == 1)
+        #expect(select([intended, first]) == 0)
+        #expect(select([first]) == nil)
+        #expect(select([intended], title: "Fixture Extended") == nil)
+        #expect(select([intended], key: "43") == nil)
+        #expect(select([intended], type: "clip") == nil)
+        #expect(select(nil) == nil)
+        #expect(select([intended, intended]) == nil)
+        #expect(select([Media(id: 20, part: [])]) == nil)
+        #expect(select([Media(id: 20, part: first.part)]) == nil)
+        #expect(select([Media(id: 20, part: intended.part + first.part)]) == nil)
+    }
 }

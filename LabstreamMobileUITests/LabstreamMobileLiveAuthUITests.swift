@@ -4,6 +4,30 @@ import XCTest
 /// Keep the xctestrun configuration, screenshots and result bundle in ignored local storage.
 final class LabstreamMobileLiveAuthUITests: XCTestCase {
     @MainActor
+    func testPlexLink() throws {
+        guard ProcessInfo.processInfo.environment["LABSTREAM_LIVE_PLEX_AUTH_ALLOWED"] == "1" else {
+            throw XCTSkip("Live authentication requires explicit local opt-in.")
+        }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment["LABSTREAM_UNIT_TEST_HOST"] = "0"
+        app.launchArguments = ["--vp-probe-backend", "plex"]
+        app.launch()
+        let connect = app.buttons["Sign in with Plex"]
+        XCTAssertTrue(connect.waitForExistence(timeout: 20), "Expected signed-out app; never sign out automatically.")
+        connect.tap()
+        let prompt = app.buttons["Copy Plex pairing code"]
+        XCTAssertTrue(prompt.waitForExistence(timeout: 30))
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "private-plex-link-code"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        XCTAssertTrue(app.tabBars.buttons["Home"].waitForExistence(timeout: 240),
+                      "Browser authorization and server selection did not complete.")
+        XCTAssertFalse(prompt.exists)
+    }
+
+    @MainActor
     func testJellyfinQuickConnect() throws {
         let environment = ProcessInfo.processInfo.environment
         guard environment["LABSTREAM_LIVE_AUTH_ALLOWED"] == "1",

@@ -66,10 +66,31 @@ enum DebugPlexPlaybackProbe {
             server = restoredServer
         }
 
+        if arguments.contains("--vp-probe-plex-discover") {
+            do {
+                try await discover(query: query, appModel: appModel, server: server, token: token)
+                log.notice("probe.discovery_written playback_started=false")
+            } catch {
+                log.error("probe.discovery_failed")
+            }
+            return
+        }
+        guard let ratingKey = DebugPlaybackProbeSupport.value(after: "--vp-probe-rating-key", in: arguments),
+              !ratingKey.isEmpty, !ratingKey.hasPrefix("--"),
+              let mediaID = DebugPlaybackProbeSupport.intValue(after: "--vp-probe-media-id", in: arguments),
+              let partID = DebugPlaybackProbeSupport.intValue(after: "--vp-probe-part-id", in: arguments) else {
+            log.error("probe.fail reason=missing_exact_source_binding")
+            DebugPlaybackScenario.blocked(arguments, reason: .invalidOptions)
+            return
+        }
         var controller: PlaybackController?
         var scenarioOwnsCleanup = false
         do {
-            let item = try await resolveItem(query: query, appModel: appModel, server: server, token: token)
+            let item = try await resolveItem(ratingKey: ratingKey, appModel: appModel, server: server, token: token)
+            guard let mediaIndex = PlaybackProbeSelection.plexMediaIndex(item: item, query: query,
+                ratingKey: ratingKey, mediaID: mediaID, partID: partID) else {
+                throw DebugPlaybackProbeSupport.ProbeError.playbackFailed("source_binding_mismatch", nil)
+            }
             log.notice("probe.item_resolved type=\(item.type, privacy: .public) duration_ms=\(item.duration ?? 0, privacy: .public)")
 
             let playback = PlaybackController(item: item,
@@ -81,7 +102,7 @@ enum DebugPlexPlaybackProbe {
                                               client: appModel.client,
                                               maxVideoBitrateKbps: bitrateKbps,
                                               qualityDefaultsKey: appModel.activeStreamingQualityDefaultsKey,
-                                              mediaIndex: 0)
+                                              mediaIndex: mediaIndex)
             controller = playback
             scenarioOwnsCleanup = true
             controller = nil // The named scenario owns cleanup from this point, including errors.
@@ -99,23 +120,52 @@ enum DebugPlexPlaybackProbe {
         }
     }
 
-    private static func resolveItem(query: String, appModel: AppModel,
-                                    server: URL, token: String) async throws -> MediaItem {
-        let searchReq = BrowseAPI.search(server: server, token: token,
-                                         identity: appModel.identity, query: query)
-        let response = try await appModel.client.send(searchReq, as: HubsResponse.self)
-        let matches = response.mediaContainer.hub.flatMap(\.metadata).filter { !$0.isContainer && !$0.isMusic }
-        let skinny = matches.first { $0.title.localizedCaseInsensitiveCompare(query) == .orderedSame }
-            ?? matches.first { $0.title.localizedCaseInsensitiveContains(query) }
-            ?? matches.first
-        guard let skinny else { throw DebugPlaybackProbeSupport.ProbeError.itemNotFound(query) }
+    /// Explicit read-only discovery. Private source references stay in the app container,
+    /// never diagnostics. A search is bounded and never starts playback or selects a source.
+    private static func discover(query: String, appModel: AppModel, server: URL, token: String) async throws {
+        let directory = URL.documentsDirectory.appendingPathComponent("ProbeDiscovery", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let output = directory.appendingPathComponent("plex.json")
+        try? FileManager.default.removeItem(at: output) // stale results cannot masquerade as this run
+        let request = BrowseAPI.search(server: server, token: token, identity: appModel.identity, query: query)
+        let response = try await appModel.client.send(request, as: HubsResponse.self)
+        let hits = response.mediaContainer.hub.flatMap(\.metadata).filter {
+            ($0.type == "movie" || $0.type == "episode") &&
+                $0.title.localizedCaseInsensitiveCompare(query) == .orderedSame
+        }
+        var seen = Set<String>()
+        let keys = hits.map(\.ratingKey).filter { seen.insert($0).inserted }
+        guard keys.count <= 5 else {
+            throw DebugPlaybackProbeSupport.ProbeError.playbackFailed("discovery_limit", nil)
+        }
+        var rows: [[String: Any]] = []
+        for key in keys {
+            let item = try await resolveItem(ratingKey: key, appModel: appModel, server: server, token: token)
+            for media in item.media ?? [] {
+                rows.append([
+                    "ratingKey": item.ratingKey, "title": item.title, "type": item.type,
+                    "mediaID": media.id, "durationMs": media.duration ?? item.duration ?? 0,
+                    "videoCodec": media.videoCodec ?? "unknown",
+                    "audioCodec": media.audioCodec ?? "unknown",
+                    "width": media.width ?? 0, "height": media.height ?? 0,
+                    "parts": media.part.map { ["partID": $0.id, "file": $0.file ?? "",
+                                                "size": $0.size ?? 0] as [String: Any] }
+                ])
+            }
+        }
+        let data = try JSONSerialization.data(withJSONObject: ["sources": rows], options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: output, options: .atomic)
+    }
 
-        // Search hits are skinny; the player needs full metadata (Media/Part/chapters).
+    private static func resolveItem(ratingKey: String, appModel: AppModel,
+                                    server: URL, token: String) async throws -> MediaItem {
+        // Fetch the manifest's exact item; never guess from a search result.
         let metadataReq = BrowseAPI.metadata(server: server, token: token,
-                                             identity: appModel.identity, ratingKey: skinny.ratingKey)
+                                             identity: appModel.identity, ratingKey: ratingKey)
         let metadata = try await appModel.client.send(metadataReq, as: MetadataResponse.self)
-        guard let item = metadata.mediaContainer.metadata.first else {
-            throw DebugPlaybackProbeSupport.ProbeError.itemNotFound(query)
+        guard metadata.mediaContainer.metadata.count == 1,
+              let item = metadata.mediaContainer.metadata.first else {
+            throw DebugPlaybackProbeSupport.ProbeError.playbackFailed("ambiguous_metadata", nil)
         }
         return item
     }
