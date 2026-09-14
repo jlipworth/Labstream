@@ -60,12 +60,22 @@ enum DebugEmbyPlaybackProbe {
         do {
             let item = try await resolveItem(query: query, service: service)
             let detailed = (try? await service.metadata(itemId: item.ratingKey)) ?? item
+            let mediaIndex = DebugPlaybackProbeSupport.intValue(after: "--vp-probe-media-index", in: arguments) ?? 0
+            for (flag, actual) in [
+                ("--vp-probe-expected-item-id", Optional(detailed.ratingKey)),
+                ("--vp-probe-expected-source-id", MediaBrowserPlaybackPreferencePolicy.mediaSourceID(for: detailed, mediaIndex: mediaIndex))
+            ] where arguments.contains(flag) {
+                guard PlaybackProbeSelection.matchesExpectedIdentity(
+                    DebugPlaybackProbeSupport.value(after: flag, in: arguments), actual: actual) else {
+                    throw DebugPlaybackScenario.Blocked(reason: .invalidOptions)
+                }
+            }
             log.notice("probe.item_resolved type=\(detailed.type, privacy: .public) duration_ms=\(detailed.duration ?? 0, privacy: .public) chapters=\((detailed.chapters?.count ?? 0), privacy: .public)")
 
             let opened = try await DetailPlaybackLauncher.open(item: detailed,
                                                                backend: .emby,
                                                                appModel: appModel,
-                                                               mediaIndex: DebugPlaybackProbeSupport.intValue(after: "--vp-probe-media-index", in: arguments) ?? 0,
+                                                               mediaIndex: mediaIndex,
                                                                maxVideoBitrateKbps: bitrateKbps)
             if arguments.contains("--vp-probe-bare-player"), opened.playback.playMethod == .directPlay {
                 await DebugRawURLPlaybackProbe.run(url: opened.playback.url,

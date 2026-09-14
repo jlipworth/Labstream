@@ -3168,6 +3168,25 @@ final class PlaybackController {
         // Jellyfin VOD manifests span the full timeline for both copy and encode.
         // Client-seek on readiness; never prime segment URLs with StartTimeTicks.
         if mediaBrowserSession?.backend == .jellyfin { return url }
+        // #305: a cold AV1 encoder needed longer than CoreMedia's three-second
+        // media deadline. Client disconnects made Emby stop and restart the encoder
+        // before it could emit its first segment. Warm the same session, not a new
+        // retry, and leave direct/copy, other codecs, and positive-offset handling alone.
+        if mediaBrowserSession?.backend == .emby,
+           EmbyStartupPrewarmPolicy.shouldPrewarm(isTranscode: playMethod == .transcode,
+                videoCodec: (sourceMetadata ?? remoteSourceMetadata)?.videoCodec,
+                resumeMilliseconds: resumeOffsetMs) {
+            let warm = await HLSSessionPrewarmer.prewarm(startURL: url, headers: headers,
+                budgetSeconds: EmbyStartupPrewarmPolicy.budgetSeconds)
+            guard !Task.isCancelled, generation == playbackGeneration else { return nil }
+            recordPlaybackDiagnostic("playback.remote_prewarm", fields: [
+                "outcome": .label(warm.outcome.rawValue),
+                "elapsed_ms": .int(Int(warm.elapsedSeconds * 1000)),
+                "polls": .int(warm.polls),
+                "target": .millisecondsBucket(0),
+            ])
+            return url
+        }
         guard playMethod == .transcode,
               let resumeOffsetMs, resumeOffsetMs > 0,
               let primedURL = jellyfinHLSURL(url, startTimeTicks: resumeOffsetMs * 10_000)

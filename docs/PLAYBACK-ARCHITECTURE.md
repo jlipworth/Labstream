@@ -171,9 +171,12 @@ Current invariants:
 
 - `HLSSessionPrewarmer` is lane-specific rather than a universal HLS prerequisite. Plex uses
   its full 20-second budget only when the selected quality is Direct Play / Maximum.
-  Emby uses an 8-second head start only for a transcoded stream with a nonzero resume
-  or reopen target; progressive/direct streams and zero-offset remote starts attach without
-  that prewarm. Jellyfin skips this legacy priming path and client-seeks its VOD timeline.
+  Emby uses an 8-second head start for a transcoded stream with a nonzero resume
+  or reopen target. At an absent/zero resume, Emby AV1 transcodes instead warm the same
+  session for up to 20 seconds before attachment, without the priming proxy; other codecs
+  and progressive/direct starts are unchanged. This prevents the reproduced cold-encoder
+  deadline/disconnect cycle ([evidence and limits](research/emby-av1-startup.md)).
+  Jellyfin skips this legacy priming path and client-seeks its VOD timeline.
   All prewarm outcomes are soft and AVPlayer still gets a chance to load.
 - After that Emby transcode prewarm, the controller stands up `MediaSessionProxy` to
   strip `starttimeticks` from the playlist and inject a playlist start-time offset, then
