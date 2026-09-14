@@ -302,6 +302,21 @@ mechanics remain shared with remote playback.
 
 ## HDR and Dolby Vision
 
+Display capability is live state, not a property of the media file. The controller observes
+AVFoundation HDR-eligibility changes for the current item's lifetime (including while paused),
+refreshes on the diagnostics tick even after stream inspection is conclusive, and re-reads
+eligibility after asynchronous inspection so an old sample cannot win a display change.
+On macOS the player-layer host samples its own window's screen, observes screen moves and
+screen-parameter changes, and removes its subscriptions when detached. Stats shows a separate
+**Display** row: AVPlayer eligibility, player-screen capability, and current EDR headroom.
+Potential EDR above 1 indicates a capable screen; current headroom of 1 alone does not make
+that screen SDR-only. Missing screen information is shown as unknown, not HDR output proof.
+The Plex single-variant startup policy uses the known player-screen capability rather than
+assuming a device-wide positive answer applies to every monitor. If the view has not attached,
+it falls back to AVFoundation's device-wide eligibility. A later display change updates facts
+only: it never silently requests video encoding, restarts playback, or promises a dynamic
+Dolby Vision/HDR10+ output mode. Physical mixed-display/hot-plug acceptance remains required.
+
 Source classification and runtime observation are deliberately separate. PMSKit maps each
 backend's available stream metadata into `VideoHDRMetadata`; `PlaybackHDRProbe` later reads
 AVFoundation tracks and format descriptions after segments load. Stats may describe the

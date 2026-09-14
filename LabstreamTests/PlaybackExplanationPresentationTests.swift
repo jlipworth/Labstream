@@ -4,6 +4,61 @@ import Testing
 
 @MainActor
 struct PlaybackExplanationPresentationTests {
+    @Test func displayEligibilityUpdatesAfterConclusiveStreamProbeWithoutChangingStreamFacts() {
+        let diagnostics = PlaybackDiagnostics()
+        diagnostics.applyRuntimeHDRProbe(.init(containsHDRVideo: true, transferFunction: "PQ",
+            eligibleForHDRPlayback: true, sawVideoFormatDescriptions: true, videoCodecFourCC: "hvc1"))
+        diagnostics.applyHDRDisplayEligibility(false)
+        #expect(diagnostics.runtimeEligibleForHDR == false)
+        diagnostics.applyRuntimeHDRProbe(.init(containsHDRVideo: true, transferFunction: "PQ",
+            eligibleForHDRPlayback: true, sawVideoFormatDescriptions: true, videoCodecFourCC: "hvc1"))
+        #expect(diagnostics.runtimeEligibleForHDR == false) // Older async sample cannot overwrite it.
+        #expect(diagnostics.runtimeContainsHDR == true)
+        #expect(diagnostics.runtimeTransferFunction == "PQ")
+        #expect(diagnostics.displayCapabilityLabel.contains("AVPlayer HDR unavailable"))
+        diagnostics.applyHDRDisplayEligibility(true)
+        #expect(diagnostics.runtimeEligibleForHDR == true)
+        #expect(diagnostics.runtimeVideoCodecFourCC == "hvc1")
+    }
+
+    @Test func displayUpdatesDoNotInventStreamMetadata() {
+        let diagnostics = PlaybackDiagnostics()
+        diagnostics.applyHDRDisplayEligibility(true)
+        #expect(diagnostics.runtimeContainsHDR == nil)
+        #expect(diagnostics.runtimeTransferFunction == nil)
+    }
+
+    #if os(macOS)
+    @Test func playerScreenCapabilityIsDistinctFromGlobalEligibilityAndCurrentHeadroom() {
+        let diagnostics = PlaybackDiagnostics()
+        diagnostics.applyHDRDisplayEligibility(true)
+        diagnostics.applyHDRDisplayScreen(potentialEDR: 2, currentEDR: 1)
+        #expect(diagnostics.displayCapabilityLabel.contains("HDR-capable player display"))
+        #expect(diagnostics.playerDisplayHDREligible)
+        #expect(diagnostics.displayCurrentEDR == 1) // Low current headroom does not mean SDR-only.
+        diagnostics.applyHDRDisplayScreen(potentialEDR: 1, currentEDR: 1)
+        #expect(diagnostics.displayCapabilityLabel.contains("SDR player display"))
+        #expect(!diagnostics.playerDisplayHDREligible)
+        diagnostics.applyHDRDisplayScreen(potentialEDR: nil, currentEDR: nil)
+        #expect(diagnostics.displayCapabilityLabel.contains("Player display unknown"))
+        diagnostics.applyHDRDisplayScreen(potentialEDR: .nan, currentEDR: .infinity)
+        #expect(diagnostics.displayPotentialEDR == nil)
+        #expect(diagnostics.displayCurrentEDR == nil)
+    }
+
+    @Test func playerDisplayObservationTeardownClearsScreen() async {
+        let diagnostics = PlaybackDiagnostics()
+        let host = PlayerLayerHostView(frame: .zero)
+        host.displayDiagnostics = diagnostics
+        diagnostics.applyHDRDisplayScreen(potentialEDR: 2, currentEDR: 1.5)
+        host.stopDisplayObservation()
+        await Task.yield()
+        #expect(diagnostics.displayPotentialEDR == nil)
+        #expect(diagnostics.displayCurrentEDR == nil)
+        #expect(host.displayDiagnostics == nil)
+    }
+    #endif
+
     @Test func statsExplanationKeepsHeadlineAndAtMostTwoUsefulReasons() {
         let diagnostics = PlaybackDiagnostics()
         diagnostics.applyStatic(item: MediaItem(ratingKey: "item", title: "Private title", type: "movie"),

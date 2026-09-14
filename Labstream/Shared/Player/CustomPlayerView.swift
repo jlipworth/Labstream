@@ -164,6 +164,11 @@ struct CustomPlayerView: View {
                     // hit-testing so the player-surface tap catcher and chrome controls have
                     // deterministic priority on iPhone/iPad.
                     .allowsHitTesting(false)
+                #elseif os(macOS)
+                PlayerLayerView(player: controller?.player,
+                                captionAppearance: controller?.captionAppearance,
+                                diagnostics: controller?.diagnostics)
+                    .ignoresSafeArea()
                 #else
                 PlayerLayerView(player: controller?.player,
                                 captionAppearance: controller?.captionAppearance)
@@ -419,6 +424,7 @@ func maintainWatchTogetherAttachment(coordinator: WatchTogetherCoordinator,
 struct PlayerLayerView: NSViewRepresentable {
     let player: AVPlayer?
     var captionAppearance: CaptionAppearanceController? = nil
+    var diagnostics: PlaybackDiagnostics? = nil
 
     final class Coordinator {
         weak var captionAppearance: CaptionAppearanceController?
@@ -430,6 +436,7 @@ struct PlayerLayerView: NSViewRepresentable {
         let view = PlayerLayerHostView()
         view.playerLayer.videoGravity = .resizeAspect
         view.setPlayer(player)
+        view.displayDiagnostics = diagnostics
         captionAppearance?.attachPlayerLayer(view.playerLayer)
         context.coordinator.captionAppearance = captionAppearance
         return view
@@ -437,6 +444,7 @@ struct PlayerLayerView: NSViewRepresentable {
 
     func updateNSView(_ nsView: PlayerLayerHostView, context: Context) {
         nsView.setPlayer(player)
+        nsView.displayDiagnostics = diagnostics
         captionAppearance?.attachPlayerLayer(nsView.playerLayer)
         context.coordinator.captionAppearance = captionAppearance
     }
@@ -444,6 +452,7 @@ struct PlayerLayerView: NSViewRepresentable {
     static func dismantleNSView(_ nsView: PlayerLayerHostView, coordinator: Coordinator) {
         coordinator.captionAppearance?.stopPreview()
         coordinator.captionAppearance?.attachPlayerLayer(nil)
+        nsView.stopDisplayObservation()
         nsView.playerLayer.player = nil
     }
 }
@@ -451,6 +460,30 @@ struct PlayerLayerView: NSViewRepresentable {
 final class PlayerLayerHostView: NSView {
     let playerLayer = AVPlayerLayer()
     private var loggedZeroSizedLayer = false
+    weak var displayDiagnostics: PlaybackDiagnostics? {
+        didSet { scheduleDisplayRefresh() }
+    }
+    private var displayObservers: [NSObjectProtocol] = []
+
+    func stopDisplayObservation() {
+        displayObservers.forEach(NotificationCenter.default.removeObserver)
+        displayObservers.removeAll()
+        displayDiagnostics?.applyHDRDisplayScreen(potentialEDR: nil, currentEDR: nil)
+        displayDiagnostics = nil
+    }
+
+    private func scheduleDisplayRefresh() {
+        // Avoid publishing Observable changes synchronously inside SwiftUI's view update.
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let screen = self.window?.screen
+            self.displayDiagnostics?.applyHDRDisplayEligibility(AVPlayer.eligibleForHDRPlayback)
+            self.displayDiagnostics?.applyHDRDisplayScreen(
+                potentialEDR: screen.map { Double($0.maximumPotentialExtendedDynamicRangeColorComponentValue) },
+                currentEDR: screen.map { Double($0.maximumExtendedDynamicRangeColorComponentValue) })
+        }
+    }
+
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -488,6 +521,22 @@ final class PlayerLayerHostView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        displayObservers.forEach(NotificationCenter.default.removeObserver)
+        displayObservers.removeAll()
+        if let window {
+            for (name, object) in [
+                (NSWindow.didChangeScreenNotification, window as AnyObject?),
+                (NSApplication.didChangeScreenParametersNotification, nil),
+                (AVPlayer.eligibleForHDRPlaybackDidChangeNotification, nil)
+            ] {
+                displayObservers.append(NotificationCenter.default.addObserver(
+                    forName: name, object: object, queue: .main
+                ) { [weak self] _ in
+                    Task { @MainActor [weak self] in self?.scheduleDisplayRefresh() }
+                })
+            }
+        }
+        scheduleDisplayRefresh()
         NSLog("LabstreamMacPlayerLayer: view %@", window == nil ? "detached from window" : "attached to window")
     }
 

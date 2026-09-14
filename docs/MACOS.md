@@ -73,6 +73,20 @@ the normal Keychain policy, but it should be exercised only for intentional iden
 development: multiple production-identity builds share the same LaunchServices identity,
 sandbox, Keychain behavior, and logs.
 
+## Live display capability
+
+Player Stats separates stream metadata from the **Display** capability row. The native video
+view tracks its window's screen (not `NSScreen.main`), display moves, and screen-parameter
+changes. HDR-capable hardware and current EDR headroom are separate facts: headroom may be
+1 while the display still supports HDR. AVPlayer eligibility changes are observed even when
+playback is paused or the initial stream probe has finished. Disconnecting the view clears its
+screen facts and observers. These are capability diagnostics, not proof of HDR light output.
+
+Hardware acceptance: move a playing and then paused window between HDR and SDR displays,
+toggle the system HDR setting, and disconnect/reconnect the display. Confirm the Display row
+updates without a playback restart or encoding-consent bypass. This requires physical display
+testing; unit tests and a launch smoke do not close that gate.
+
 ## Cleanup
 
 Clean up host-development state after a one-off test or before removing its worktree:

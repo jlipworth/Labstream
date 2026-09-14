@@ -69,6 +69,7 @@ struct StatsForNerdsView: View {
                 if let rendered = diagnostics.renderedLabel {
                     row("Rendered", rendered, wraps: true)
                 }
+                row("Display", diagnostics.displayCapabilityLabel, wraps: true)
                 row("Audio", diagnostics.audioFormatText)
                 Divider().gridCellUnsizedAxes(.horizontal)
                 row("Target", diagnostics.targetBitrateLabel)

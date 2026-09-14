@@ -2880,9 +2880,10 @@ final class PlaybackController {
                   prewarm.outcome.rawValue, prewarm.elapsedSeconds, prewarm.polls)
         }
 
+        diagnostics.applyHDRDisplayEligibility(AVPlayer.eligibleForHDRPlayback)
         if let copyMaster,
            let child = PlexHLSMediaPlaylistPolicy.mediaPlaylist(in: copyMaster,
-               baseURL: streamURL, hdrDisplayEligible: AVPlayer.eligibleForHDRPlayback) {
+               baseURL: streamURL, hdrDisplayEligible: diagnostics.playerDisplayHDREligible) {
             streamURL = child
             recordTranscodeDiagnostic("transcode.media_playlist_selected", fields: [
                 "reason": .label("single_hdr_variant_sdr_display"),
@@ -3718,14 +3719,17 @@ final class PlaybackController {
     /// Stats. Fired on `.readyToPlay` and retried from the 1s diagnostics tick until the
     /// probe sees real format descriptions — HLS items expose none until segments load.
     private func runHDRProbeIfNeeded() {
-        guard !hdrProbeConclusive, let item = player.currentItem else { return }
         let eligible = AVPlayer.eligibleForHDRPlayback
+        diagnostics.applyHDRDisplayEligibility(eligible)
+        guard !hdrProbeConclusive, let item = player.currentItem else { return }
         let observedPlaybackGeneration = playbackGeneration
         Task { @MainActor [weak self] in
             let result = await PlaybackHDRProbe.probe(playerItem: item, eligibleForHDRPlayback: eligible)
             guard let self, self.player.currentItem === item,
                   self.isCurrentPlaybackLifecycle(observedPlaybackGeneration) else { return }
             self.diagnostics.applyRuntimeHDRProbe(result)
+            // Eligibility may have changed while the asynchronous asset probe suspended.
+            self.diagnostics.applyHDRDisplayEligibility(AVPlayer.eligibleForHDRPlayback)
             self.hdrProbeConclusive = result.sawVideoFormatDescriptions
         }
     }
@@ -3929,6 +3933,20 @@ final class PlaybackController {
                 default:
                     break
                 }
+            }
+        })
+
+        // Display eligibility is live state, independent of the conclusive stream probe.
+        // Owned by the item's observer bag, including paused playback and item teardown.
+        observers.storeNotification(NotificationCenter.default.addObserver(
+            forName: AVPlayer.eligibleForHDRPlaybackDidChangeNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self,
+                      self.isCurrentObservedItem(playerItem, itemGeneration: itemGeneration,
+                                                 observedPlaybackGeneration: observedPlaybackGeneration) else { return }
+                self.diagnostics.applyHDRDisplayEligibility(AVPlayer.eligibleForHDRPlayback)
             }
         })
 

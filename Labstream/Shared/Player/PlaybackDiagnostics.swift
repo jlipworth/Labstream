@@ -45,6 +45,39 @@ final class PlaybackDiagnostics {
     /// stream probe is inconclusive.
     private(set) var runtimeEligibleForHDR: Bool?
 
+    /// The screen containing the Mac player window, not the main/primary screen.
+    private(set) var displayPotentialEDR: Double?
+    private(set) var displayCurrentEDR: Double?
+
+    func applyHDRDisplayEligibility(_ eligible: Bool) {
+        runtimeEligibleForHDR = eligible
+    }
+
+    func applyHDRDisplayScreen(potentialEDR: Double?, currentEDR: Double?) {
+        displayPotentialEDR = potentialEDR.flatMap { $0.isFinite && $0 >= 1 ? $0 : nil }
+        displayCurrentEDR = currentEDR.flatMap { $0.isFinite && $0 >= 1 ? $0 : nil }
+    }
+
+    /// Prefer the player window's screen over a device-wide positive answer. Before
+    /// the view attaches, only the AVFoundation capability is available.
+    var playerDisplayHDREligible: Bool {
+        runtimeEligibleForHDR == true && (displayPotentialEDR.map { $0 > 1 } ?? true)
+    }
+
+    /// Capability is not proof that the current stream is being displayed in HDR.
+    var displayCapabilityLabel: String {
+        let eligibility = runtimeEligibleForHDR.map { $0 ? "AVPlayer HDR eligible" : "AVPlayer HDR unavailable" }
+            ?? "AVPlayer HDR eligibility unknown"
+        #if os(macOS)
+        guard let potential = displayPotentialEDR else { return "Player display unknown · " + eligibility }
+        let capability = potential > 1 ? "HDR-capable player display" : "SDR player display"
+        let headroom = displayCurrentEDR.map { String(format: " · EDR headroom %.1f×", $0) } ?? ""
+        return capability + " · " + eligibility + headroom
+        #else
+        return eligibility
+        #endif
+    }
+
     /// GH #196: true when the experimental DV-signalling lane is active for this session
     /// (playlist injection proxy or dvh1 direct play under the experimental setting).
     var dvSignallingActive: Bool = false
@@ -72,7 +105,8 @@ final class PlaybackDiagnostics {
     /// passthrough). Nil hides the row.
     var renderedLabel: String? {
         guard let sourceHDRFormat, sourceHDRFormat != .sdr else { return nil }
-        let suffix = runtimeEligibleForHDR == false ? " · display not HDR-eligible" : ""
+        let displayIsSDROnly = displayPotentialEDR.map { $0 <= 1 } ?? false
+        let suffix = runtimeEligibleForHDR == false || displayIsSDROnly ? " · display not HDR-eligible" : ""
         // Runtime truth: segments are loaded and AVFoundation told us what it sees.
         if let runtimeContainsHDR {
             if runtimeContainsHDR {
@@ -308,7 +342,10 @@ final class PlaybackDiagnostics {
     /// On a Jellyfin/Emby "transcode" session, a runtime codec matching the source proves
     /// the server is remuxing (video copy) — upgrade the Mode/Decision rows accordingly.
     func applyRuntimeHDRProbe(_ result: PlaybackHDRProbeResult) {
-        runtimeEligibleForHDR = result.eligibleForHDRPlayback
+        // A suspended asset probe must not overwrite a newer live display sample.
+        if runtimeEligibleForHDR == nil {
+            runtimeEligibleForHDR = result.eligibleForHDRPlayback
+        }
         guard result.sawVideoFormatDescriptions else { return }
         runtimeContainsHDR = result.containsHDRVideo
         runtimeTransferFunction = result.transferFunction
