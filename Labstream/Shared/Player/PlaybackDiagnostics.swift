@@ -45,6 +45,39 @@ final class PlaybackDiagnostics {
     /// stream probe is inconclusive.
     private(set) var runtimeEligibleForHDR: Bool?
 
+    /// The screen containing the Mac player window, not the main/primary screen.
+    private(set) var displayPotentialEDR: Double?
+    private(set) var displayCurrentEDR: Double?
+
+    func applyHDRDisplayEligibility(_ eligible: Bool) {
+        runtimeEligibleForHDR = eligible
+    }
+
+    func applyHDRDisplayScreen(potentialEDR: Double?, currentEDR: Double?) {
+        displayPotentialEDR = potentialEDR.flatMap { $0.isFinite && $0 >= 1 ? $0 : nil }
+        displayCurrentEDR = currentEDR.flatMap { $0.isFinite && $0 >= 1 ? $0 : nil }
+    }
+
+    /// Prefer the player window's screen over a device-wide positive answer. Before
+    /// the view attaches, only the AVFoundation capability is available.
+    var playerDisplayHDREligible: Bool {
+        runtimeEligibleForHDR == true && (displayPotentialEDR.map { $0 > 1 } ?? true)
+    }
+
+    /// Capability is not proof that the current stream is being displayed in HDR.
+    var displayCapabilityLabel: String {
+        let eligibility = runtimeEligibleForHDR.map { $0 ? "AVPlayer HDR eligible" : "AVPlayer HDR unavailable" }
+            ?? "AVPlayer HDR eligibility unknown"
+        #if os(macOS)
+        guard let potential = displayPotentialEDR else { return "Player display unknown · " + eligibility }
+        let capability = potential > 1 ? "HDR-capable player display" : "SDR player display"
+        let headroom = displayCurrentEDR.map { String(format: " · EDR headroom %.1f×", $0) } ?? ""
+        return capability + " · " + eligibility + headroom
+        #else
+        return eligibility
+        #endif
+    }
+
     /// GH #196: true when the experimental DV-signalling lane is active for this session
     /// (playlist injection proxy or dvh1 direct play under the experimental setting).
     var dvSignallingActive: Bool = false
@@ -66,51 +99,24 @@ final class PlaybackDiagnostics {
         }
     }
 
-    /// GH #196: what is actually reaching the display, distinct from the source
-    /// classification. Runtime truth wins once segments have loaded; before that, only
-    /// verdicts we are certain of are shown (guard-forced tone-map, copy-lane
-    /// passthrough). Nil hides the row.
+    /// Stream signaling is not proof of HDR light output. Do not promote source metadata,
+    /// a copy decision, or a tone-map request into an observed rendering claim.
     var renderedLabel: String? {
-        guard let sourceHDRFormat, sourceHDRFormat != .sdr else { return nil }
-        let suffix = runtimeEligibleForHDR == false ? " · display not HDR-eligible" : ""
-        // Runtime truth: segments are loaded and AVFoundation told us what it sees.
+        guard sourceHDRFormat != nil || runtimeContainsHDR != nil else { return nil }
+        let displayIsSDROnly = displayPotentialEDR.map { $0 <= 1 } ?? false
+        let suffix = runtimeEligibleForHDR == false || displayIsSDROnly
+            ? " · display not HDR-eligible" : ""
         if let runtimeContainsHDR {
-            if runtimeContainsHDR {
-                let label: String
-                if sourceHDRFormat == .dolbyVision {
-                    label = dvSignallingActive
-                        ? "Dolby Vision (signalled — unverified)"
-                        : "HDR10 fallback (base layer)"
-                } else {
-                    switch sourceHDRFormat {
-                    case .hdr10Plus: label = "HDR10+"
-                    case .hlg: label = "HLG"
-                    default: label = "HDR10"
-                    }
-                }
-                return label + suffix
-            }
-            return "SDR (server tone-map)" + suffix
+            guard runtimeContainsHDR else { return "SDR stream (observed)" + suffix }
+            // containsHDRVideo cannot establish preservation/application of DV or HDR10+
+            // dynamic metadata. Report only the transfer function actually observed.
+            let transfer = runtimeTransferFunction.map { " · " + $0 } ?? ""
+            return "HDR stream (observed)" + transfer + suffix
         }
-        // Pre-runtime predictions — only where the lane makes the outcome certain.
-        if dvGuardReason != nil {
-            return "SDR (server tone-map)"
-        }
-        if isTranscoding {
-            // Jellyfin/Emby "transcode" may still remux the video; don't guess.
-            return nil
-        }
-        if sourceHDRFormat == .dolbyVision {
-            return (dvSignallingActive
-                ? "Dolby Vision (signalled — unverified)"
-                : "HDR10 fallback (base layer)") + suffix
-        }
-        // Non-DV HDR on a copy lane: the in-bitstream metadata survives the remux.
-        switch sourceHDRFormat {
-        case .hdr10Plus: return "HDR10+" + suffix
-        case .hlg: return "HLG" + suffix
-        default: return "HDR10" + suffix
-        }
+        guard sourceHDRFormat != .sdr else { return nil }
+        return (isTranscoding || dvGuardReason != nil
+            ? "Unverified (video encoding requested)"
+            : "Unverified (video copy requested)") + suffix
     }
     /// Source media bitrate (kbps), when PMS exposes it on the chosen Media row.
     var sourceBitrateKbps: Int = 0
@@ -146,7 +152,7 @@ final class PlaybackDiagnostics {
 
     // MARK: Dynamic numbers
 
-    /// The requested hard cap (kbps). 0 means "Direct Play / Maximum" (no cap).
+    /// The requested hard cap (kbps). 0 means "Original (Direct Stream)" (no cap).
     var targetBitrateKbps: Int = 0
     /// Last active observed throughput sample (kbps), from the access log. This is empirical
     /// transfer throughput while AVFoundation is downloading, not encoded stream bitrate.
@@ -182,8 +188,8 @@ final class PlaybackDiagnostics {
     /// choices; numeric caps render as "<N> Mbps".
     var targetBitrateLabel: String {
         switch targetBitrateKbps {
-        case ...0: "Direct Play / Maximum"
-        case StreamingQuality.maxTranscodedKbps: "Maximum (HLS)"
+        case ...0: "Original (Direct Stream)"
+        case StreamingQuality.maxTranscodedKbps: "Maximum (Transcode)"
         default: "\(targetBitrateKbps / 1000) Mbps"
         }
     }
@@ -308,7 +314,10 @@ final class PlaybackDiagnostics {
     /// On a Jellyfin/Emby "transcode" session, a runtime codec matching the source proves
     /// the server is remuxing (video copy) — upgrade the Mode/Decision rows accordingly.
     func applyRuntimeHDRProbe(_ result: PlaybackHDRProbeResult) {
-        runtimeEligibleForHDR = result.eligibleForHDRPlayback
+        // A suspended asset probe must not overwrite a newer live display sample.
+        if runtimeEligibleForHDR == nil {
+            runtimeEligibleForHDR = result.eligibleForHDRPlayback
+        }
         guard result.sawVideoFormatDescriptions else { return }
         runtimeContainsHDR = result.containsHDRVideo
         runtimeTransferFunction = result.transferFunction

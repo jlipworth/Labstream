@@ -76,6 +76,10 @@ enum DebugPlaybackScenario {
         guard let scenario = name(arguments), admitted(arguments, bitrateKbps: options.bitrateKbps) else {
             throw Blocked(reason: .missingAdmission)
         }
+        #if os(macOS)
+        let surface = DebugMacPlaybackSurface(controller: controller)
+        defer { surface.close() }
+        #endif
         var snapshots: [DebugPlaybackEvidence.Snapshot] = []
         var status: Status = .blocked
         var reason: Reason = .deadline

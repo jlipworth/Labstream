@@ -214,7 +214,7 @@ final class DiagnosticLoggingTests: XCTestCase {
                                              operatingSystem: "visionOS 26.5",
                                              deviceName: "Apple Vision Pro",
                                              backend: "Plex",
-                                             selectedQuality: "Direct Play / Maximum",
+                                             selectedQuality: "Original (Direct Stream)",
                                              loggingEnabled: true),
             events: [olderSnapshot, latestSnapshot],
             maxEvents: 0,

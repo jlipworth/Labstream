@@ -73,6 +73,40 @@ the normal Keychain policy, but it should be exercised only for intentional iden
 development: multiple production-identity builds share the same LaunchServices identity,
 sandbox, Keychain behavior, and logs.
 
+## Local network permission and Debug launcher identity
+
+The host helper sets `ENABLE_DEBUG_DYLIB=NO`. Xcode's small Debug launcher was observed
+to have the same executable UUID in isolated-development and production-identity builds.
+macOS uses that UUID when enforcing local network privacy; the collision caused local
+connections to fail with `Local network prohibited` even while Settings showed access enabled.
+Rebuilding without the Debug launcher produced distinct main-executable UUIDs. The isolated
+helper app regained live server access after normal permission approval. This affects local
+helper builds, not archive settings. Production app replacement is not part of this workflow.
+
+If this recurs, compare the main executables with `xcrun dwarfdump --uuid`, verify signing,
+and check System Settings → Privacy & Security → Local Network. Relaunch and retry after
+permission changes. Do not disable network security or relax server policy to mask a local
+permission failure. Distinct app identities must not share a main executable UUID; see
+[Apple TN3178](https://developer.apple.com/documentation/technotes/tn3178-checking-for-and-resolving-build-uuid-problems)
+and [TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy).
+
+## Live display capability
+
+Player Stats separates stream metadata from the **Display** capability row. The native video
+view tracks its window's screen (not `NSScreen.main`), display moves, and screen-parameter
+changes. HDR-capable hardware and current EDR headroom are separate facts: headroom may be
+1 while the display still supports HDR. AVPlayer eligibility changes are observed even when
+playback is paused or the initial stream probe has finished. Disconnecting the view clears its
+screen facts and observers. These are capability diagnostics, not proof of HDR light output.
+
+Hardware acceptance: move a playing and then paused window between HDR and SDR displays,
+toggle the system HDR setting, and disconnect/reconnect the display. Confirm the Display row
+updates without a playback restart or encoding-consent bypass. This requires physical display
+testing; unit tests and a launch smoke do not close that gate.
+
+Current bounded results and open platform gates are in the
+[native HDR investigation](research/native-hdr-validation.md).
+
 ## Cleanup
 
 Clean up host-development state after a one-off test or before removing its worktree:

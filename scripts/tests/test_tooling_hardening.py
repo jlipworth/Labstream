@@ -96,6 +96,7 @@ class ToolingHardeningTests(unittest.TestCase):
             subprocess.run(["scripts/deploy-macos-to-host.sh"], cwd=root, check=True,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             args = args_file.read_text()
+            self.assertIn("ENABLE_DEBUG_DYLIB=NO", args)
             branch = subprocess.run(["git", "branch", "--show-current"], cwd=root,
                                     check=True, capture_output=True, text=True).stdout.strip()
             self.assertIn(f"INFOPLIST_KEY_CFBundleDisplayName=Labstream Dev — {branch}", args)
@@ -131,6 +132,7 @@ class ToolingHardeningTests(unittest.TestCase):
             ], cwd=root, env=env, check=True, stdout=subprocess.PIPE,
                stderr=subprocess.PIPE, text=True)
             production_args = args_file.read_text()
+            self.assertIn("ENABLE_DEBUG_DYLIB=NO", production_args)
             self.assertIn("-allowProvisioningUpdates", production_args)
             self.assertIn("-allowProvisioningDeviceRegistration", production_args)
             self.assertIn("DEVELOPMENT_TEAM=TESTTEAM", production_args)

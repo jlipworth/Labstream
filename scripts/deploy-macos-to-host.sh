@@ -181,11 +181,14 @@ if [ "$BUILD" -eq 1 ]; then
     # local ad-hoc signing without a provisioning profile for the synthetic bundle identifier.
     SIGNING_ARGS=("CODE_SIGN_ENTITLEMENTS=Config/LabstreamMacDevelopment.entitlements")
   fi
+  # Avoid the shared Debug launcher UUID across dev/production identities: macOS
+  # local-network privacy uses the main executable UUID (Apple TN3178/TN3179).
   if ! scripts/xcodebuild-versioned.sh \
     -project Labstream.xcodeproj \
     -scheme "$SCHEME" \
     -destination 'platform=macOS,arch=arm64' \
     -configuration Debug \
+    ENABLE_DEBUG_DYLIB=NO \
     -derivedDataPath "$DERIVED_DATA" \
     PRODUCT_BUNDLE_IDENTIFIER="$EFFECTIVE_BUNDLE_ID" \
     INFOPLIST_KEY_CFBundleDisplayName="$DISPLAY_NAME" \

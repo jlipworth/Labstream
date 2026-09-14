@@ -4,9 +4,9 @@ import XCTest
 final class StreamingQualityTests: XCTestCase {
     func testMaximaLabels() {
         XCTAssertEqual(StreamingQuality.label(kbps: StreamingQuality.maximumOriginalKbps),
-                       "Direct Play / Maximum")
+                       "Original (Direct Stream)")
         XCTAssertEqual(StreamingQuality.label(kbps: StreamingQuality.maxTranscodedKbps),
-                       "Maximum (HLS)")
+                       "Maximum (Transcode)")
     }
 
     func testNumericRungLabelsIncludeResolution() {

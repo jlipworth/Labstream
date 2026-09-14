@@ -109,6 +109,7 @@ extension PlaybackController {
         if let eligible = diagnostics.runtimeEligibleForHDR {
             fields["hdr_eligible"] = .bool(eligible)
         }
+        fields["display_capability"] = .label(diagnostics.displayCapabilityLabel)
         if let rendered = diagnostics.renderedLabel {
             fields["rendered"] = .label(rendered)
         }

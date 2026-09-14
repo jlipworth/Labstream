@@ -318,6 +318,11 @@ Use the host helper so builds are staged under a per-worktree development identi
 scripts/deploy-macos-to-host.sh --launch
 ```
 
+The helper disables Xcode's Debug dylib launcher (`ENABLE_DEBUG_DYLIB=NO`): its shared
+main-executable UUID caused macOS to prohibit local-network requests across different app
+identities even with permission enabled. The signed, non-launcher build restored live access.
+See [Mac local-network troubleshooting](MACOS.md#local-network-permission-and-debug-launcher-identity).
+
 For a credential-free semantic agent check, the bounded runner stages an isolated bundle, mounts
 the real browse/detail UI with synthetic data, presses the stable home-item Accessibility target,
 asserts the detail tagline, captures only the Labstream window, and stops its exact process:
@@ -334,6 +339,13 @@ Credential-free App Store capture composes these platform runners into a serial,
 workflow and validates Apple's accepted dimensions, alpha prohibition, and checksums. See
 [App Store screenshot automation](APP-STORE-SCREENSHOTS.md). On Xcode 27 the visionOS lane is
 passive Home capture only; richer visionOS marketing states remain a human/headset gate.
+
+A bounded macOS 27 beta display check found that default scaling exposed a stable HDR
+switch where a higher scaled mode did not. Enabling HDR made AVPlayer eligible and raised
+potential EDR above 1; lowering refresh alone did not. This is host-specific capability
+evidence, not proof of rendered HDR, a universal scaling restriction, or a cable diagnosis.
+Restore temporary display modes and HDR settings after tests; keep per-player-screen and
+physical mixed-display acceptance separate (see [macOS display capability](MACOS.md#live-display-capability)).
 
 The Mac target is a pre-release App Store candidate, not a released compatibility promise. Routine
 host builds still use per-worktree identities to isolate containers and credentials. See the
