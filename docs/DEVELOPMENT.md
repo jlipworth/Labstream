@@ -318,6 +318,11 @@ Use the host helper so builds are staged under a per-worktree development identi
 scripts/deploy-macos-to-host.sh --launch
 ```
 
+The helper disables Xcode's Debug dylib launcher (`ENABLE_DEBUG_DYLIB=NO`): its shared
+main-executable UUID caused macOS to prohibit local-network requests across different app
+identities even with permission enabled. The signed, non-launcher build restored live access.
+See [Mac local-network troubleshooting](MACOS.md#local-network-permission-and-debug-launcher-identity).
+
 For a credential-free semantic agent check, the bounded runner stages an isolated bundle, mounts
 the real browse/detail UI with synthetic data, presses the stable home-item Accessibility target,
 asserts the detail tagline, captures only the Labstream window, and stops its exact process:

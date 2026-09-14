@@ -73,6 +73,22 @@ the normal Keychain policy, but it should be exercised only for intentional iden
 development: multiple production-identity builds share the same LaunchServices identity,
 sandbox, Keychain behavior, and logs.
 
+## Local network permission and Debug launcher identity
+
+The host helper sets `ENABLE_DEBUG_DYLIB=NO`. Xcode's small Debug launcher was observed
+to have the same executable UUID in isolated-development and production-identity builds.
+macOS uses that UUID when enforcing local network privacy; the collision caused local
+connections to fail with `Local network prohibited` even while Settings showed access enabled.
+Rebuilding the signed production app without the Debug launcher produced a distinct UUID
+and restored live server access. This affects local helper builds, not archive settings.
+
+If this recurs, compare the main executables with `xcrun dwarfdump --uuid`, verify signing,
+and check System Settings → Privacy & Security → Local Network. Relaunch and retry after
+permission changes. Do not disable network security or relax server policy to mask a local
+permission failure. Distinct app identities must not share a main executable UUID; see
+[Apple TN3178](https://developer.apple.com/documentation/technotes/tn3178-checking-for-and-resolving-build-uuid-problems)
+and [TN3179](https://developer.apple.com/documentation/technotes/tn3179-understanding-local-network-privacy).
+
 ## Live display capability
 
 Player Stats separates stream metadata from the **Display** capability row. The native video
