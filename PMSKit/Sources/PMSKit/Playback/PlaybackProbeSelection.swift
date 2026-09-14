@@ -14,6 +14,19 @@ public enum PlaybackProbeSelection {
         }
         return matches.count == 1 ? matches[0] : nil
     }
+    /// An explicitly bound item may disambiguate duplicate titles, never a fuzzy title.
+    /// Missing bindings retain the original unique-title requirement.
+    public static func mediaBrowserItemIndex(items: [MediaItem], query: String,
+                                             expectedItemID: String?) -> Int? {
+        let matches = items.indices.filter {
+            let item = items[$0]
+            return (item.type == "movie" || item.type == "episode")
+                && item.title.localizedCaseInsensitiveCompare(query) == .orderedSame
+                && (expectedItemID == nil || matchesExpectedIdentity(expectedItemID, actual: item.ratingKey))
+        }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
     /// Bind a previously verified private corpus manifest to fresh full Plex metadata.
     /// IDs, not array positions, identify the source. Multipart playback is not covered.
     public static func plexMediaIndex(item: MediaItem, query: String, ratingKey: String,

@@ -59,7 +59,8 @@ enum DebugEmbyPlaybackProbe {
         var controller: PlaybackController?
         var scenarioOwnsCleanup = false
         do {
-            let item = try await resolveItem(query: query, service: service)
+            let item = try await resolveItem(query: query, service: service,
+                expectedItemID: DebugPlaybackProbeSupport.value(after: "--vp-probe-expected-item-id", in: arguments))
             let detailed = try await service.metadata(itemId: item.ratingKey)
             if arguments.contains("--vp-probe-discover-source") {
                 let sourceData = try await service.probeSourceBinding(itemId: detailed.ratingKey)
@@ -129,7 +130,8 @@ enum DebugEmbyPlaybackProbe {
         }
     }
 
-    private static func resolveItem(query: String, service: EmbyBrowseService) async throws -> MediaItem {
+    private static func resolveItem(query: String, service: EmbyBrowseService,
+                                    expectedItemID: String?) async throws -> MediaItem {
         let items = try await service.items(parentId: nil,
                                             recursive: true,
                                             limit: 20,
@@ -138,7 +140,8 @@ enum DebugEmbyPlaybackProbe {
                                             sortOrder: "Ascending",
                                             includeItemTypes: "Movie,Episode")
         let playable = items.filter { !$0.isContainer && !$0.isMusic }
-        if let index = PlaybackProbeSelection.uniqueExactIndex(titles: playable.map(\.title), query: query) {
+        if let index = PlaybackProbeSelection.mediaBrowserItemIndex(
+            items: playable, query: query, expectedItemID: expectedItemID) {
             return playable[index]
         }
         throw DebugPlaybackProbeSupport.ProbeError.itemNotFound(query)
