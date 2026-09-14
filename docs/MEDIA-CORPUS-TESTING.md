@@ -176,15 +176,13 @@ authorize automatic encoding. Use the separately admitted `consentApprove` scena
 with the user's encoding authorization; missing admission is a harness block, not a
 server defect. Original/Maximum and Generic-profile production policies are unchanged.
 
-
 Metadata-owned audio and subtitle changes restart asynchronously. Their probes wait for
 a nonnil replacement AVPlayerItem before testing readiness and sustained progress, just
 as quality transitions do. Soft AVFoundation/offline subtitle switches do not require
 replacement. The hold still fails if its item changes unexpectedly; it is not weakened
 to tolerate arbitrary restarts. See [issue #312](https://github.com/jlipworth/Labstream/issues/312).
 
-
-The [bounded Plex audit in PR314](https://github.com/jlipworth/Labstream/pull/314) records the tested
+The [historical bounded Plex audit](evidence/audits/2026-09-13-plex-corpus.md) records the tested
 cohorts, first failures, independent fixes and hardware gates. For focused hosted
 probe tests on Xcode 27, disable coverage with `-enableCodeCoverage NO` and wait for
 terminal xcodebuild success before installing or launching another app process;

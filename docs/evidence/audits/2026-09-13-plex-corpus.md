@@ -1,16 +1,21 @@
 # Bounded Plex corpus audit — 2026-09-13
 
-Status: seven exact source versions exercised; three independent harness defects
+Historical audit status: seven exact source versions exercised; three independent harness defects
 corrected. This is simulator evidence, not release or hardware acceptance.
 
 ## Scope and provenance
 
-Baseline: PR306 at `fbc808cc`. Exact-source work is
+Historical baseline: PR306 at `fbc808cc`. Exact-source work is
 [PR310](https://github.com/jlipworth/Labstream/pull/310), frame/consent evidence is
 [PR313](https://github.com/jlipworth/Labstream/pull/313), and track-transition readiness
-is [PR314](https://github.com/jlipworth/Labstream/pull/314). Their explicit dependency
-order is PR306 → PR310 → PR313 → PR314. None includes PR307/PR308's Emby playback fixes;
+is [PR314](https://github.com/jlipworth/Labstream/pull/314). The audit-time dependency
+order was PR306 → PR310 → PR313 → PR314. The audited stack did not include PR307/PR308's Emby playback fixes;
 none was merged during this audit.
+
+Integration note: PR310 and PR313 subsequently landed on main, which also includes
+PR307/PR308. PR314’s integration base includes those landed changes. This does not
+rerun or replace
+the historical 27-report ledger or the test counts below.
 
 Private inventory paths and sizes were matched to fresh Plex metadata; duration,
 codec, dimensions, exact rating key, Media ID and Part ID were checked. The additional
@@ -34,15 +39,15 @@ profile and encoding-consent production behavior were not changed.
 “Visible” means sampled decoded video was present and reviewed; it does not establish
 reference colorimetry, audible track correctness, or whole-title stability.
 
-| Verified source cohort | Original result | Other bounded checks | Visual result |
-| --- | --- | --- | --- |
-| HEVC8, SD, MP3 stereo | Video copy; audio encode | Original → 8 Mbps retained video copy | Visible before/after |
-| HEVC10, 720p, AAC stereo, no HDR signal | Video/audio copy | Original → 8 Mbps copy; Maximum server-confirmed encode; seek forward to 120 s and backward from resumed playback to 0 s | Visible, including after seeks/encode |
-| H.264, 1080p, multiple AAC tracks | Video/audio copy | Original → 8 Mbps copy; alternate metadata audio selection | Visible after corrected track transition |
-| AV1 10-bit, 2160p, AAC multichannel | Encoding consent required | Explicit consent → encode; 4 Mbps encode with 120 s and 600 s forward seeks | Visible movie frames after deep seek |
-| VC-1, 1080p, AC-3/DTS choices, SubRip | Encoding consent required | Explicit consent → encode; 4 Mbps encode/120 s seek; metadata subtitle selection | Visible video and subtitle text after corrected transition |
-| MPEG-2, 576p episode, AC-3 | Encoding consent required | Explicit consent → encode | Visible animated frames |
-| H.264 MP4, SD, AAC, deliberately selected alternate version | Video/audio copy at media index 1 | Exact nonzero-version binding | Visible |
+| Verified source cohort                                      | Original result                   | Other bounded checks                                                                                                     | Visual result                                              |
+| ----------------------------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------- |
+| HEVC8, SD, MP3 stereo                                       | Video copy; audio encode          | Original → 8 Mbps retained video copy                                                                                    | Visible before/after                                       |
+| HEVC10, 720p, AAC stereo, no HDR signal                     | Video/audio copy                  | Original → 8 Mbps copy; Maximum server-confirmed encode; seek forward to 120 s and backward from resumed playback to 0 s | Visible, including after seeks/encode                      |
+| H.264, 1080p, multiple AAC tracks                           | Video/audio copy                  | Original → 8 Mbps copy; alternate metadata audio selection                                                               | Visible after corrected track transition                   |
+| AV1 10-bit, 2160p, AAC multichannel                         | Encoding consent required         | Explicit consent → encode; 4 Mbps encode with 120 s and 600 s forward seeks                                              | Visible movie frames after deep seek                       |
+| VC-1, 1080p, AC-3/DTS choices, SubRip                       | Encoding consent required         | Explicit consent → encode; 4 Mbps encode/120 s seek; metadata subtitle selection                                         | Visible video and subtitle text after corrected transition |
+| MPEG-2, 576p episode, AC-3                                  | Encoding consent required         | Explicit consent → encode                                                                                                | Visible animated frames                                    |
+| H.264 MP4, SD, AAC, deliberately selected alternate version | Video/audio copy at media index 1 | Exact nonzero-version binding                                                                                            | Visible                                                    |
 
 Even the MP4 version reported `plays_whole_file_directly=false`: this audit establishes
 copy/remux, not whole-file Direct Play. SDR-cohort color metadata is incomplete;
