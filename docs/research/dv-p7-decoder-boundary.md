@@ -197,11 +197,11 @@ Jellyfin or Emby, nor classify all decoder failures as DV-specific.
 
 | Source/control | Plex | Jellyfin | Emby |
 | --- | --- | --- | --- |
-| Exact P7 source, unchanged original delivery | Native failure and bounded original-HLS reproduction established | Exact source size/duration/basename bound; Original copy-request playback yields visible PQ/BT.2020 buffers without candidate; delivered configuration still unverified | Exact source size/duration/basename bound; Original yields visible PQ/BT.2020 buffers without candidate; captured initialization has no DV configuration box |
-| Exact P7 source, configuration-only HDR10-base candidate | Exact short-clip plus live multi-segment playback, 600-second seek and fresh-session reopen pass with inspected frames | Not enabled; first establish actual packaging and retained DV configuration | Not enabled; first establish actual packaging and retained DV configuration |
-| P5 without compatible base | Existing guard retained; new regression/live coverage open | Existing guard retained; new regression/live coverage open | Exact P5 source is blocked before playback request by the retained guard |
-| P8 variants | Candidate rejects; representative delivery/visual coverage open | Exact-bound P8.1 representative Original produces inspected PQ/BT.2020 frames; no DV processing claim | Candidate not enabled; representative coverage open |
-| Ordinary HDR10 control | Distinct-source native Original regression passes without selecting candidate; cross-backend binding open | Open | Open |
+| Exact P7 source, unchanged original delivery | Native failure and bounded original-HLS reproduction established | Exact source size/duration/basename bound; Original copy-request playback yields visible PQ/BT.2020 buffers without candidate; final selected copy initialization has no DV configuration box | Exact source size/duration/basename bound; Original yields visible PQ/BT.2020 buffers without candidate; final selected copy initialization has no DV configuration box |
+| Exact P7 source, configuration-only HDR10-base candidate | Exact short-clip plus live multi-segment playback, 600-second seek and fresh-session reopen pass with inspected frames | Not enabled; final selected copy initialization lacks the retained DV configuration this candidate targets | Not enabled; final selected copy initialization lacks the retained DV configuration this candidate targets |
+| P5 without compatible base | Exact P5 source stops at encoding consent; no encode or visual pass | Same exact P5 source stops at encoding consent; no encode or visual pass | Exact P5 source is blocked before playback request by the retained guard |
+| P8 variants | Exact-bound P8.1 copy attempt fails then requests encoding consent; no encode or visual pass | Exact-bound P8.1 representative Original produces inspected PQ/BT.2020 frames; no DV processing claim | Same exact P8.1 source passes Original with inspected PQ/BT.2020 frames; final-child configuration unverified |
+| Ordinary HDR10 control | Distinct-source native Original regression passes without selecting candidate | Same-source binding, fresh reopen and corrected copy seek pass with inspected frames | Same-source bound Original video-copy playback passes with inspected PQ/BT.2020 frames |
 | SDR control | Candidate regression and cross-backend binding open | Open | Open |
 
 The current evidence isolates one retained P7 configuration/native decoder boundary.
@@ -236,34 +236,66 @@ Quality transitions and server-side cleanup confirmation remain open; local list
 teardown alone does not establish server cleanup.
 
 The same-source Jellyfin binding matches exact file size, duration and basename under a
-different mount prefix. Native Original playback and fresh-session reopen at 600 seconds without the candidate
-pass their copy requests and produce inspected visible PQ/BT.2020 buffers. The separate
-seek-to-600 run and a corrected-probe repeat to 1,200 seconds fail after controller reopen: the replacement becomes ready and
-buffered, then pauses and fails the hold. No post-seek frame was captured. This is an
-open transition failure, not established DV decoding failure or a seek pass. Actual delivered initialization/sample
-configuration is still unverified, so this is not proof that Jellyfin retained native P7.
-Audio decision is unknown in the bounded report. Browser metadata alone is not delivery
-proof.
+different mount prefix. Original playback and fresh-process reopen pass with inspected
+PQ/BT.2020 frames. Earlier seeks to 600 and 1,200 seconds became ready and buffered,
+then paused through a nonadvancing hold. An ordinary HDR10 source reproduced the same
+failure, so it was not specific to P7. Instrumentation showed successful, current-item
+seek completion with no user pause intent but a paused player. A guarded explicit
+`play()` experiment briefly resumed then paused again; it was rejected and reverted.
+A bounded debugger trace observed application `pause()` calls only at deliberate detach
+and final stop, not at the intervening stall. Debugger timing is not acceptance evidence.
 
-Emby normal app authentication and exact-source binding are now complete.
-Original playback produces inspected visible 10-bit PQ/BT.2020 buffers. Its captured
-initialization contains `hvc1`, `hvcC`, `colr` and `pasp`, but no `dvcC`/`dvvC`.
-The `hvcC` payload is byte-identical to the captured Plex configuration and both carry
-limited-range PQ/BT.2020 signaling. This establishes an actual delivered-description
-difference, not native P7 decoding or removal of compressed RPU/enhancement-layer data.
-The opt-in evidence collector is bounded, same-origin and redirect-rejecting; it exports
-initialization bytes only, not credentials, transport URLs or media fragments.
+The existing short-buffer policy disabled automatic waiting for Jellyfin but already
+retained it for Emby video-copy reopens. Extending that exception only to **verified
+Jellyfin video-copy HLS** fixes the bounded reproductions: HDR10 seek from about 3,600
+to 2,400 seconds and P7 seek from about 1,200 to 600 seconds both pass advancing holds
+and inspected PQ/BT.2020 post-seek frames. The 12-second buffer target, paused-loading
+setting, source/session authority and encoding consent are unchanged. This is a transport
+recovery correction, not P7 decoding or DV support. Final selected-copy initialization
+is now captured as described below; compressed
+RPU/enhancement-layer sample inventory remains unverified.
+
+Normal app authentication and exact-source binding are complete on both media-browser
+backends. The corrected collector runs **after** all enforced copy-child selection and
+delivery rewrites, on the final URL handed to AVPlayer. Earlier captures were from the
+negotiated open before those rewrites and are not independently final-child evidence.
+A 256 KiB diagnostic cap declined the long Jellyfin playlist; a technical-only report
+identified its 889,210-byte declared length. The opt-in diagnostic playlist limit is now
+1 MiB, enforced on both declared and received bytes; its initialization limit remains
+1 MiB. **The runtime P7 proxy's 256 KiB playlist limit is unchanged.** Same-origin and
+no-redirect protections remain; only initialization and technical reports are exported.
+
+Fresh final-child P7-source captures from Jellyfin and Emby each contain `hvc1`, `hvcC`,
+`colr` and `pasp`, but no `dvcC`/`dvvC`. Their `hvcC` payloads are byte-identical to the
+captured Plex P7 configuration, and limited-range PQ/BT.2020 signaling matches. Both
+original descriptions pass native decoder construction. This establishes a delivered
+configuration difference and format admission, not native P7 reconstruction or removal
+of compressed RPU/enhancement-layer data. Inspected native frames provide the separate
+bounded playback evidence.
 
 An initial Emby seek report was invalidated by a probe defect: a detached player's NaN
 clock bypassed the wait and immediately reported a deadline. A finite-position predicate
 now keeps that clock pending, with focused regression coverage. The corrected short
 backward seek and a separate forward jump from about 630 to 1,200 seconds pass with
-inspected post-seek frames and advancing 25-second holds. The replacement initialization
-also retains the same HEVC/color configuration without a DV configuration box.
+inspected post-seek frames and advancing 25-second holds. The early negotiated-open
+replacement initialization also retains the same HEVC/color
+configuration without a DV configuration box; its final-child provenance remains open.
 This correction does not explain away Jellyfin's earlier sustained paused hold.
 Read-only, exact-source Jellyfin server logs show video copy and AAC encoding, with the
 seek segment job continuing after the client pause; delayed prior-stop timing alone does
 not establish that cleanup killed the replacement job.
+
+The exact P8.1 representative passes Original through Jellyfin and Emby, but Plex's
+copy attempt fails before inspected frames and stops at encoding consent. Its captured
+initialization has a 23-byte `hvcC` with zero parameter arrays and a `dvvC` atom.
+The decoder-construction probe returns -4 with or without the DV atom. This is not the
+same proven configuration-only P7 boundary, and the P7 candidate must not admit it.
+Other P8 variants remain untested.
+
+Read-only exact-source job checks observed graceful quit in the latest Jellyfin P7 and
+Emby P8 remux logs and absence of their specific playlist/cache paths after stop. These
+are bounded job-cleanup observations, not proof of every backend resource or session's
+cleanup. They do not justify changing session-stop authority.
 
 A distinct ordinary HDR10 source passes Original playback on the candidate build without
 selecting the P7 route. This is not a same-file extracted-base control. Latest-source
@@ -271,22 +303,35 @@ validation is recorded below, separately from live media acceptance.
 
 ### Candidate validation status
 
-- Hermetic PMSKit: 1,705 Swift Testing cases and 119 XCTest cases pass, including exact
-  AC-3 preservation and rejection boundaries. The focused macOS playback-evidence suite
-  passes all nine cases, including the non-finite seek-clock regression.
-- Fresh latest-source native macOS, generic iOS, tvOS and visionOS products build.
-  Latest owned iPhone/tvOS semantic fixtures pass with inspected test-attachment
-  screenshots and verified install identity. Hygiene, strict documentation, links
-  and Mermaid checks pass.
-- Full hosted suites are **not green**. The latest macOS (634), iOS (618) and tvOS (336) runs fail
-  the two `sustainedOfflineInitialWait` expectations. Prior macOS full runs also failed
+- Hermetic PMSKit: 1,706 Swift Testing cases and 119 XCTest cases pass, including exact
+  AC-3 preservation and rejection boundaries. The final-source focused macOS
+  playback-evidence suite passes all 11 cases, including
+  initialization-only and same-origin capture tests. This does not erase full-suite failures.
+- Fresh final-source native macOS and generic iOS/tvOS/visionOS builds pass. The final-source
+  owned iPhone and tvOS semantic fixtures pass with inspected app-view test attachments
+  and verified install identity. Hygiene, strict documentation, link/anchor and Mermaid
+  checks pass.
+- Full hosted suites are **not green**. The final-source macOS run (636 Swift Testing cases)
+  fails both `sustainedOfflineInitialWait` expectations and the replacement deadline in
+  `delayedTrackReplacementDoesNotAcceptThePredecessor`. The final-source iOS run (620)
+  has the same three failures; final tvOS (338) fails the two Offline expectations.
+  Prior macOS full runs also failed
   `delayedTrackReplacementDoesNotAcceptThePredecessor` and four revalidation expectations
   in `activeToInactiveCancelsOnlyHeldRevalidationAndActiveRetriesExactlyOnce`.
-  Prior iOS (617) and tvOS (340) runs failed the two Offline expectations. These failures
-  are not classified as confirmed unrelated or erased by focused passes.
-- Both the prior and latest tvOS hosted processes did not exit after their failed summaries;
-  each was terminated after a 300-second no-progress bound (latest exit 143). Passing
-  fixture evidence does not erase this runner failure. All owned simulators are shut down.
+  Prior iOS (617) and tvOS (340) runs failed the two Offline expectations.
+- A fresh isolated macOS build of the exact inherited pre-DV base `3f1c8e0b` reproduces
+  the same replacement deadline and both Offline expectations in two full 633-case runs.
+  The local preparation-state implementation, replacement wait, and replacement test
+  are byte-identical to the base. This demonstrates those failures predate this DV work
+  on macOS; it is not an iOS/tvOS baseline run or a waiver of full-suite gates. Earlier
+  revalidation failures have not been separately attributed. An immediate full candidate
+  repeat reproduces the same three failures and additionally fails a consent-test condition
+  deadline and the revalidation first-attempt wait (five issues total). Those additional
+  failures remain unresolved; a focused green suite does not remove them.
+- Two earlier tvOS hosted processes did not exit after their failed summaries; each was
+  terminated after a 300-second no-progress bound (exit 143). The final-source tvOS run
+  exits normally with test-failure status 65. Passing fixtures do not erase the earlier
+  runner failures. All owned simulators are shut down.
 - VisionOS install/run remains blocked by the missing canonical golden-simulator pointer;
   no other task's simulator is substituted. Hardware DV processing, HDR luminance,
   backend-wide profile support and release acceptance remain open.

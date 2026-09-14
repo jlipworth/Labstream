@@ -8,6 +8,28 @@ import PMSKit
 
 @MainActor
 struct PlaybackAgentEvidenceTests {
+    @Test func initializationCaptureExcludesMediaAndMalformedContainers() {
+        func box(_ type: String) -> Data { Data([0, 0, 0, 8]) + Data(type.utf8) }
+        let valid = box("ftyp") + box("moov")
+        #expect(DebugMediaBrowserHDREvidence.isInitialization(valid))
+        #expect(DebugMediaBrowserHDREvidence.isInitialization(valid + box("free")))
+        for invalid in [Data(), Data(valid.dropLast()), box("moov") + box("ftyp"),
+                        valid + box("mdat"), valid + box("moof"), valid + box("moov"),
+                        valid + box("ftyp"), Data([0, 0, 0, 0]) + Data("ftyp".utf8)] {
+            #expect(!DebugMediaBrowserHDREvidence.isInitialization(invalid))
+        }
+    }
+
+    @Test func initializationCaptureReferencesStayOnTheirBoundOrigin() throws {
+        let base = try #require(URL(string: "https://media.example.internal:8443/video/main.m3u8"))
+        #expect(DebugMediaBrowserHDREvidence.resolve("init.mp4", relativeTo: base)?.path == "/video/init.mp4")
+        for invalid in ["https://other.example.internal:8443/init.mp4", "http://media.example.internal:8443/init.mp4",
+                        "https://media.example.internal/init.mp4", "https://user@media.example.internal:8443/init.mp4",
+                        "init.mp4#fragment"] {
+            #expect(DebugMediaBrowserHDREvidence.resolve(invalid, relativeTo: base) == nil)
+        }
+    }
+
     @Test func detachedSeekClockRemainsPending() {
         for position in [Double.nan, .infinity, -.infinity, 0, 597.9, 602.1] {
             #expect(!DebugPlaybackScenario.seekTargetReached(positionSeconds: position, targetMs: 600_000))

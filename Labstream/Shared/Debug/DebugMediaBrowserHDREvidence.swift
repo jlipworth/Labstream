@@ -13,48 +13,74 @@ enum DebugMediaBrowserHDREvidence {
         let directory = URL.documentsDirectory.appendingPathComponent("HDRPackaging", isDirectory: true)
             .appendingPathComponent(backend, isDirectory: true)
         let output = directory.appendingPathComponent("init-\(generation).mp4")
+        // Long full-timeline Jellyfin playlists carry query parameters on each segment.
+        // This diagnostic-only cap does not change the P7 proxy's playlist admission limit.
+        let playlistReadLimit = 1_048_576
+        var report: [String: Any] = ["captured": false, "stage": "input", "playlistReadLimit": playlistReadLimit]
+        defer {
+            if let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]) {
+                try? data.write(to: directory.appendingPathComponent("init-\(generation)-report.json"), options: .atomic)
+            }
+        }
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             if FileManager.default.fileExists(atPath: output.path) { try FileManager.default.removeItem(at: output) }
             guard url.pathExtension.lowercased() == "m3u8" else { return }
-            let master = try await read(url, headers: headers, limit: 262_144)
+            report["stage"] = "playlist_fetch"
+            let master = try await read(url, headers: headers, limit: playlistReadLimit)
+            report["playlistBytes"] = master.count
+            report["stage"] = "playlist_parse"
             guard let text = String(data: master, encoding: .utf8), text.hasPrefix("#EXTM3U") else { return }
             var playlist = text
             var base = url
             let lines = text.split(whereSeparator: \.isNewline).map(String.init)
             let variants = lines.indices.filter { lines[$0].hasPrefix("#EXT-X-STREAM-INF:") }
+            report["variantCount"] = variants.count
             if !variants.isEmpty {
+                report["stage"] = "variant_selection"
                 // With more than one variant, a guessed child is not the player's wire evidence.
                 guard variants.count == 1, variants[0] + 1 < lines.count,
                       !lines[variants[0] + 1].hasPrefix("#"),
                       let child = resolve(lines[variants[0] + 1], relativeTo: url) else { return }
                 base = child
-                guard let childText = String(data: try await read(child, headers: headers, limit: 262_144),
+                report["stage"] = "child_fetch"
+                guard let childText = String(data: try await read(child, headers: headers, limit: playlistReadLimit),
                                              encoding: .utf8), childText.hasPrefix("#EXTM3U") else { return }
                 playlist = childText
             }
+            report["stage"] = "map_selection"
             guard !playlist.contains("#EXT-X-KEY:"), !playlist.contains("BYTERANGE") else { return }
             let maps = playlist.split(whereSeparator: \.isNewline).filter { $0.hasPrefix("#EXT-X-MAP:") }
             let prefix = "#EXT-X-MAP:URI=\""
             guard maps.count == 1, let map = maps.first, map.hasPrefix(prefix), map.hasSuffix("\"") else { return }
             let reference = String(map.dropFirst(prefix.count).dropLast())
             guard !reference.contains("\""), let initialization = resolve(reference, relativeTo: base) else { return }
+            report["stage"] = "initialization_fetch"
             let data = try await read(initialization, headers: headers, limit: 1_048_576)
+            report["stage"] = "initialization_validation"
             guard isInitialization(data), !Task.isCancelled else { return }
+            report["stage"] = "initialization_write"
             try data.write(to: output, options: .atomic)
+            report["captured"] = true
+            report["stage"] = "complete"
         } catch {
+            report["errorCode"] = (error as NSError).code
+            if let failure = error as? ReadFailure {
+                report["readFailure"] = failure.reason
+                report["observedValue"] = failure.observedValue
+            }
             // No old file survives this attempt; evidence failure does not change playback policy.
         }
     }
 
-    private static func resolve(_ value: String, relativeTo base: URL) -> URL? {
+    static func resolve(_ value: String, relativeTo base: URL) -> URL? {
         guard let url = URL(string: value, relativeTo: base)?.absoluteURL,
               url.scheme == base.scheme, url.host == base.host, url.port == base.port,
               url.user == nil, url.password == nil, url.fragment == nil else { return nil }
         return url
     }
 
-    private static func isInitialization(_ data: Data) -> Bool {
+    static func isInitialization(_ data: Data) -> Bool {
         let bytes = [UInt8](data)
         var offset = 0
         var types: [String] = []
@@ -69,6 +95,11 @@ enum DebugMediaBrowserHDREvidence {
         }
         return types.first == "ftyp" && types.filter { $0 == "ftyp" }.count == 1
             && types.filter { $0 == "moov" }.count == 1
+    }
+
+    private struct ReadFailure: Error {
+        let reason: String
+        let observedValue: Int64
     }
 
     private final class NoRedirect: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
@@ -89,8 +120,18 @@ enum DebugMediaBrowserHDREvidence {
         request.allHTTPHeaderFields = headers
         let (bytes, response) = try await session.bytes(for: request)
         defer { bytes.task.cancel() }
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200, response.url == url,
-              response.expectedContentLength <= Int64(limit) else { throw URLError(.badServerResponse) }
+        guard let http = response as? HTTPURLResponse else {
+            throw ReadFailure(reason: "not_http", observedValue: 0)
+        }
+        guard http.statusCode == 200 else {
+            throw ReadFailure(reason: "http_status", observedValue: Int64(http.statusCode))
+        }
+        guard response.url == url else {
+            throw ReadFailure(reason: "response_url_changed", observedValue: 0)
+        }
+        guard response.expectedContentLength <= Int64(limit) else {
+            throw ReadFailure(reason: "declared_length_exceeded", observedValue: response.expectedContentLength)
+        }
         var data = Data()
         for try await byte in bytes {
             guard data.count < limit, !Task.isCancelled else { throw URLError(.dataLengthExceedsMaximum) }

@@ -3125,6 +3125,29 @@ final class PlaybackController {
                                          generation: Int,
                                          sourceMetadata: MediaBrowserPlaybackSourceMetadata? = nil,
                                          transcodeReasons: [String]? = nil) async -> URL? {
+        guard let prepared = await prepareRemoteStreamURL(
+            url, headers: headers, resumeOffsetMs: resumeOffsetMs, playMethod: playMethod,
+            generation: generation, sourceMetadata: sourceMetadata, transcodeReasons: transcodeReasons),
+            !Task.isCancelled, generation == playbackGeneration else { return nil }
+        #if DEBUG
+        // Capture only after copy-child selection and all delivery rewrites. A negotiated
+        // master before those steps is not evidence of the resource given to AVPlayer.
+        if let backend = mediaBrowserSession?.backend {
+            await DebugMediaBrowserHDREvidence.capture(url: prepared, headers: headers,
+                                                      backend: backend.rawValue, generation: generation)
+            guard !Task.isCancelled, generation == playbackGeneration else { return nil }
+        }
+        #endif
+        return prepared
+    }
+
+    private func prepareRemoteStreamURL(_ url: URL,
+                                         headers: [String: String],
+                                         resumeOffsetMs: Int?,
+                                         playMethod: MediaBrowserPlayMethod?,
+                                         generation: Int,
+                                         sourceMetadata: MediaBrowserPlaybackSourceMetadata? = nil,
+                                         transcodeReasons: [String]? = nil) async -> URL? {
         guard !Task.isCancelled, generation == playbackGeneration else { return nil }
         usesEmbyHEVCSDRNativeTimeline = false
         var url = url
@@ -3132,12 +3155,6 @@ final class PlaybackController {
         // Explicit diagnostic transport comparison against the same server via a caller-owned
         // loopback port-forward. Never accepts arbitrary remote hosts or persists credentials.
         let args = ProcessInfo.processInfo.arguments
-        if let backend = mediaBrowserSession?.backend {
-            await DebugMediaBrowserHDREvidence.capture(url: url, headers: headers,
-                                                      backend: backend.rawValue, generation: generation)
-            guard !Task.isCancelled, generation == playbackGeneration else { return nil }
-        }
-
         if mediaBrowserSession?.backend == .emby,
            let index = args.firstIndex(of: "--vp-probe-emby-loopback-port"),
            args.indices.contains(index + 1), let port = Int(args[index + 1]),
@@ -3673,7 +3690,8 @@ final class PlaybackController {
             isRemoteServerEncodedHLS: isRemoteTranscode
                 || PlaybackBufferingPolicy.isServerEncodedHLSPlaylist(url: itemStreamURL),
             preferShortRemoteHLSBuffer: preferShortRemoteHLSBuffer,
-            isEmbyVideoCopyHLS: mediaBrowserSession?.backend == .emby && mediaBrowserVideoCopyEnforced)
+            isEmbyVideoCopyHLS: mediaBrowserSession?.backend == .emby && mediaBrowserVideoCopyEnforced,
+            isJellyfinVideoCopyHLS: mediaBrowserSession?.backend == .jellyfin && mediaBrowserVideoCopyEnforced)
         configureAdaptiveBitratePolicy(usesShortRemoteBuffer: bufferingConfig.usesShortRemoteHLSBuffer)
         activeForwardBufferTargetSeconds = bufferingConfig.preferredForwardBufferSeconds
         playerItem.preferredForwardBufferDuration = bufferingConfig.preferredForwardBufferSeconds
@@ -3947,16 +3965,21 @@ final class PlaybackController {
                                                                    weak pItem = pItem,
                                                                    itemGeneration,
                                                                    observedPlaybackGeneration] finished in
-                                                 guard finished else { return }
                                                  Task { @MainActor [weak self = self,
                                                                     weak pItem = pItem,
                                                                     itemGeneration,
                                                                     observedPlaybackGeneration] in
-                                                     guard let self, let pItem,
-                                                           self.isCurrentObservedItem(pItem,
-                                                                                      itemGeneration: itemGeneration,
-                                                                                      observedPlaybackGeneration: observedPlaybackGeneration),
-                                                           !self.userWantsPaused else { return }
+                                                     guard let self, let pItem else { return }
+                                                     let isCurrent = self.isCurrentObservedItem(
+                                                         pItem, itemGeneration: itemGeneration,
+                                                         observedPlaybackGeneration: observedPlaybackGeneration)
+                                                     self.recordPlaybackDiagnostic("playback.resume_seek_completed", fields: [
+                                                         "finished": .bool(finished),
+                                                         "current_item": .bool(isCurrent),
+                                                         "user_wants_paused": .bool(self.userWantsPaused),
+                                                         "time_control_status": .label(Self.timeControlStatusLabel(self.player.timeControlStatus)),
+                                                     ])
+                                                     guard finished, isCurrent, !self.userWantsPaused else { return }
                                                      self.applyPlaybackSpeed()
                                                      self.refreshVideoNowPlayingMetadata()
                                                  }
