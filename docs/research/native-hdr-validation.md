@@ -2,6 +2,8 @@
 
 Active investigation: [Plex DV P7 decoder failure (#316)](https://github.com/jlipworth/Labstream/issues/316).
 This is not a universal platform-support or release-readiness claim.
+The live results below cover Plex only. Equivalent exact-source Jellyfin and Emby
+validation is untested here; cross-backend acceptance remains open.
 
 ## Evidence levels
 
