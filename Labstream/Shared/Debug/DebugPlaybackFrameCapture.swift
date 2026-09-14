@@ -26,6 +26,27 @@ enum DebugPlaybackFrameCapture {
         ProcessInfo.processInfo.arguments.contains(flag)
     }
 
+    /// Clear every label before admission/readiness can fail. Call at probe entry,
+    /// not after AVPlayer has become playable. Consumers must still verify freshness.
+    static func resetIfRequested() -> Bool {
+        guard isRequested else { return true }
+        do {
+            try resetDirectory(at: URL.documentsDirectory.appendingPathComponent("ProbeCaptures", isDirectory: true))
+            return true
+        } catch {
+            Logger(subsystem: "org.labstream.Labstream", category: "PlaybackEvidence")
+                .error("probe.frame_capture.reset_failed")
+            return false
+        }
+    }
+
+    static func resetDirectory(at directory: URL) throws {
+        if FileManager.default.fileExists(atPath: directory.path) {
+            try FileManager.default.removeItem(at: directory)
+        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    }
+
     /// Samples `count` frames `intervalSeconds` apart from the player's current item.
     /// No-op unless launched with `--vp-probe-capture-frames`. Never throws — capture
     /// problems must not fail the transport probe; they are logged instead.

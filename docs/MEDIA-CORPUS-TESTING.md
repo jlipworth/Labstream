@@ -159,3 +159,19 @@ for the Home tab after browser linking. Approve only the current app-generated c
 in the Codex in-app browser. The test never signs out a saved session or injects a
 credential. Run without test flags afterward to verify session persistence. If server
 selection requires interaction, Home remains an explicit gate rather than a false pass.
+
+
+### Startup gates and frame freshness
+
+Capture-enabled probes reset all previous labels before admission/readiness; inability
+to reset blocks the probe. Collect only frames created by the current process/run and
+retain an explicit missing-frame result. Older builds may leave the previous run's
+frames untouched if startup fails before capture. A directory's presence is not proof
+that the current source decoded. See [issue #311](https://github.com/jlipworth/Labstream/issues/311).
+
+An Original source for which Plex requests video encoding remains subject to explicit
+consent. Probes report `blocked/consentRequired`, retaining a pre-cleanup pending-consent
+snapshot and a separate post-stop snapshot. This is not a decoding failure and does not
+authorize automatic encoding. Use the separately admitted `consentApprove` scenario only
+with the user's encoding authorization; missing admission is a harness block, not a
+server defect. Original/Maximum and Generic-profile production policies are unchanged.

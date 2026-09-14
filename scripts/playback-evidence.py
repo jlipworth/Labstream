@@ -134,7 +134,7 @@ def validate_report(payload):
         raise InvalidEvidence("invalid_scenario")
     if payload["status"] not in ("passed", "failed", "blocked"):
         raise InvalidEvidence("invalid_status")
-    reasons = ("completed", "missingAdmission", "invalidOptions", "missingAuth", "unsupportedTrack", "consentNotPending",
+    reasons = ("completed", "missingAdmission", "invalidOptions", "missingAuth", "unsupportedTrack", "consentNotPending", "consentRequired", "evidenceUnavailable",
                "decisionUnknown", "cancelled", "playbackFailed", "deadline", "backendChanged", "staleGeneration")
     if payload["reason"] not in reasons or (payload["status"] == "passed") != (payload["reason"] == "completed"):
         raise InvalidEvidence("invalid_reason")

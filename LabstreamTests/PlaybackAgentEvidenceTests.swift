@@ -32,6 +32,13 @@ struct PlaybackAgentEvidenceTests {
         while !controller.videoTranscodeConsent.isPending, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
+        do {
+            try await DebugPlaybackProbeSupport.waitUntilPlayable(controller, phase: "fixture", timeoutSeconds: 1)
+            Issue.record("A consent gate must not be reported as playable or time out")
+        } catch let error as DebugPlaybackScenario.Blocked {
+            #expect(error.reason == .consentRequired)
+            #expect(controller.debugEvidenceSnapshot().consent == .pending)
+        }
         let generation = try #require(controller.videoTranscodeConsent.generation)
         let pending = controller.debugEvidenceSnapshot()
         #expect(pending.backend.rawValue == backend.rawValue)
@@ -56,6 +63,20 @@ struct PlaybackAgentEvidenceTests {
         #expect(Set(object.keys) == Set(["buildNumber", "phase", "bufferBucketSeconds", "renderedFormat", "schemaVersion",
             "generation", "backend", "qualityKbps", "videoDecision", "videoProvenance", "audioDecision", "consent",
             "visibleAttachment", "positionBucketSeconds", "cleanupRequested", "serverCleanup"]))
+    }
+
+    @Test func runStartResetRemovesEveryPreviousCaptureLabel() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        for label in ["plex-initial", "plex-postseek", "emby-initial"] {
+            let labelDirectory = directory.appendingPathComponent(label)
+            try FileManager.default.createDirectory(at: labelDirectory, withIntermediateDirectories: true)
+            try Data([1, 2, 3]).write(to: labelDirectory.appendingPathComponent("frame-00.png"))
+        }
+        try DebugPlaybackFrameCapture.resetDirectory(at: directory)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+        try DebugPlaybackFrameCapture.resetDirectory(at: directory)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
     }
 
     @Test func changedBackendStopsBeforeStartingPlayback() async throws {

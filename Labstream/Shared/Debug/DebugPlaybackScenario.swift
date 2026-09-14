@@ -12,7 +12,7 @@ enum DebugPlaybackScenario {
     enum Status: String, Codable { case passed, failed, blocked }
     enum Reason: String, Codable {
         case completed, missingAdmission, invalidOptions, missingAuth, unsupportedTrack
-        case consentNotPending, decisionUnknown, cancelled, playbackFailed, deadline, backendChanged, staleGeneration
+        case evidenceUnavailable, consentRequired, consentNotPending, decisionUnknown, cancelled, playbackFailed, deadline, backendChanged, staleGeneration
     }
     struct Report: Encodable {
         let schemaVersion = 1
@@ -169,6 +169,8 @@ enum DebugPlaybackScenario {
             await DebugPlaybackFrameCapture.captureIfRequested(from: controller.player, label: captureBackend + "-postseek", log: log)
             status = .passed; reason = .completed
         } catch let blocked as Blocked {
+            // Capture the gate before stop() clears generation-scoped consent.
+            snapshots.append(controller.debugEvidenceSnapshot())
             reason = blocked.reason
             throw blocked
         } catch is CancellationError {
