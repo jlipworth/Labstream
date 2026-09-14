@@ -398,6 +398,15 @@ Missing frames, repeated black frames, or unreviewed frames cannot establish a v
 pass; a dark scene alone is not failure. Never select the same quality in a transition
 scenario and call its no-op a playback defect. Keep headset/hardware acceptance open.
 
+For potentially shared playback issues (DV/HDR, decoding, buffering, startup, seeking,
+track changes, or shared player code), always verify **Plex, Jellyfin, and Emby** before
+calling the fix validated. Use the same underlying source with exact backend-specific
+item/version bindings, exercise the affected scenarios, and record each backend's actual
+copy/remux/encode decision, delivered format, and inspected playback evidence. Distinguish
+shared player failures from backend-specific packaging; never extrapolate one backend's
+pass to the others. If auth, hardware, or source availability blocks a backend, record it
+as blocked/untested with the remaining gate—not passed—and keep cross-backend acceptance open.
+
 Prefer the Codex in-app browser for normal one-time-code approval; use opt-in semantic
 iPhone auth tests when Device Hub is unavailable. Do not inject tokens or export browser
 cookies. Keep credential-bearing test configurations/results private and remove temporary
