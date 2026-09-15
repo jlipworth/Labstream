@@ -60,6 +60,16 @@ struct SeasonPlannerIntegrationTests {
             try #require(await waitUntil {
                 store.record(for: deleted) == nil && !store.isDeletionPending(ratingKey: deleted)
             })
+            // Row removal precedes the artifact worker's terminal index commit. In-memory
+            // absence is not a durability barrier; await the already-submitted revision
+            // before asking a fresh store to prove deletion survived reopening.
+            let deletionTicket = store.currentPersistenceTicket()
+            let flush = await store.flushPersistence(through: deletionTicket, timeout: 10)
+            guard case .committed(let revision) = flush else {
+                Issue.record("Deletion snapshot did not commit: \(flush)")
+                return
+            }
+            #expect(revision >= deletionTicket.revision)
             // A newly opened index must agree before the suspended response is released.
             #expect(DownloadStore(baseDirectory: directory).record(for: deleted) == nil)
         }
