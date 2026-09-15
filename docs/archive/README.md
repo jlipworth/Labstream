@@ -8,9 +8,15 @@ Current architecture and operating guidance lives in the published pages at the 
 - [`PLAYBACK-ARCHITECTURE.md`](../PLAYBACK-ARCHITECTURE.md)
 - [`BACKENDS.md`](../BACKENDS.md)
 - [`PERSISTENCE.md`](../PERSISTENCE.md)
+- [`DOWNLOADS-OFFLINE.md`](../DOWNLOADS-OFFLINE.md)
+- [`MUSIC-DESIGN.md`](../MUSIC-DESIGN.md)
 - [`DIAGNOSTICS-PRIVACY.md`](../DIAGNOSTICS-PRIVACY.md)
 - [`SYSTEM-INTEGRATION.md`](../SYSTEM-INTEGRATION.md)
 - [`TESTING-STRATEGY.md`](../TESTING-STRATEGY.md)
+- [`DEVELOPMENT.md`](../DEVELOPMENT.md)
+- [`MOBILE-IOS.md`](../MOBILE-IOS.md)
+- [`TVOS.md`](../TVOS.md)
+- [`MACOS.md`](../MACOS.md)
 
 Active implementation plans live in [`docs/plans/`](../plans/), unresolved investigations in [`docs/research/`](../research/), and immutable audit/profiling observations in [`docs/evidence/`](../evidence/).
 
@@ -33,7 +39,7 @@ Preserve established filenames when moving historical material. New archived mat
 
 Historical prose and path literals may remain as written when they are part of the snapshot. Repair live Markdown navigation after moves, add a status banner when necessary to prevent stale instructions from being followed, and scrub private identifiers before anything enters this public lane.
 
-## Archived plans
+## Archived plans and programs
 
 - [`2026-07-20-emby-bif-trickplay.md`](plans/2026-07-20-emby-bif-trickplay.md) — completed Emby ThumbnailSet/BIF online and offline trick-play implementation and accepted #238 verification journal.
 - [`2026-07-20-main-documentation-alignment.md`](plans/2026-07-20-main-documentation-alignment.md) — completed factual alignment, documentation taxonomy, Mermaid, and durable-governance work.
@@ -41,6 +47,11 @@ Historical prose and path literals may remain as written when they are part of t
 - [`2026-07-10-codebase-remediation.md`](plans/2026-07-10-codebase-remediation.md) — completed whole-repository correctness, concurrency, performance, backend/platform sharing, and build-cost remediation journal; accepted as complete 2026-07-24.
 - [`2026-07-20-tvos-implementation.md`](plans/2026-07-20-tvos-implementation.md) — completed first-class tvOS implementation and acceptance plan for #246; accepted as complete 2026-07-24.
 - [`2026-07-21-simplification-performance.md`](plans/2026-07-21-simplification-performance.md) — completed cross-platform simplification and performance program (Wave 5 measurements explicitly forgone); accepted as complete 2026-07-24.
-- [`2026-07-21-tvos-session-report.md`](research/2026-07-21-tvos-session-report.md) — closed evidence-first session record for the tvOS focus/remote-input work; findings absorbed into the archived tvOS plan and the active screen audit.
+
+## Archived research and session records
+
+- [`2026-07-21-tvos-session-report.md`](research/2026-07-21-tvos-session-report.md) — closed
+  evidence-first session record for the tvOS focus/remote-input work; findings absorbed into
+  the archived tvOS plan and the active screen audit.
 
 Archived files may mention retired decisions such as the `Safari` Plex client profile, old proxy-owned seek designs, or pre-Jellyfin assumptions. Do not copy those details back into code or active docs without re-verifying them against current source.

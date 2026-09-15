@@ -23,7 +23,11 @@ When a plan is complete or superseded:
 
 ## Active plans
 
-- [Client-first playback and release acceptance](2026-09-06-client-first-playback.md)
+- [Client-first playback and release acceptance](2026-09-06-client-first-playback.md) —
+  implementation and acceptance remain in progress; [#291](https://github.com/jlipworth/Labstream/issues/291),
+  [#288](https://github.com/jlipworth/Labstream/issues/288), physical-device, and App Store
+  gates remain open. The completed #293/#295 suspended-request follow-up is recorded in the
+  plan but is not an active queue item.
 
 Completed plans live in [`docs/archive/plans/`](../archive/plans/); the most
 recently archived programs (2026-07-24) are the codebase remediation journal, the tvOS

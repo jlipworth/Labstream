@@ -32,9 +32,9 @@ Never infer a visual pass from a stale directory or from `probe.pass` alone.
 ## Run loop
 
 ```sh
-SIMID=$(scripts/worktree-sim.sh id)
+SIMID=$(scripts/worktree-sim.sh --platform visionos id)
 # build + install per CLAUDE.md (versioned script, CODE_SIGNING_ALLOWED=NO), then:
-xcrun simctl terminate "$SIMID" org.labstream.Labstream 2>/dev/null
+xcrun simctl terminate "$SIMID" org.labstream.Labstream 2>/dev/null || true
 xcrun simctl launch "$SIMID" org.labstream.Labstream \
   --vp-probe-backend emby --vp-probe-emby-playback --vp-probe-allow-live \
   --vp-probe-capture-frames --vp-probe-query "Some Movie" \
@@ -47,15 +47,19 @@ xcrun simctl spawn "$SIMID" log show --last 5m --predicate 'process == "Labstrea
 # pull the PNGs and Read them:
 DATA=$(xcrun simctl get_app_container "$SIMID" org.labstream.Labstream data)
 /bin/ls "$DATA/Documents/ProbeCaptures/"*/
+xcrun simctl shutdown "$SIMID"   # release the serialized simulator lease
 ```
 
-Backends: swap `emby`→`jellyfin`→`plex` in both flags (`--vp-probe-backend`,
-`--vp-probe-<backend>-playback`). The app must be signed in to that backend on the sim
-(the probe never authenticates).
+For Jellyfin and Emby, swap `emby`→`jellyfin` in both flags (`--vp-probe-backend`,
+`--vp-probe-<backend>-playback`). Plex is not a title-only flag swap: pass the private exact
+source bindings `--vp-probe-rating-key`, `--vp-probe-media-id`, and `--vp-probe-part-id`, or
+run read-only `--vp-probe-plex-discover` first. Fresh metadata must confirm the same item, Media,
+and Part IDs. The app must be signed in to that backend on the sim (the probe never
+authenticates); keep identifiers and captured frames private. See `docs/MEDIA-CORPUS-TESTING.md`.
 
 Nonzero quality, Maximum, and consent-approval scenarios additionally require
 `--vp-probe-allow-video-encode`, supplied only after separate user authorization. Named
-scenarios and bounded reports are documented in the agent playback evidence plan. Probes
+scenarios and bounded reports are documented in `docs/AGENT-PLAYBACK-TROUBLESHOOTING.md`. Probes
 restore the prior diagnostics setting; leaving diagnostics enabled beforehand preserves it.
 
 ## Reading the numbers

@@ -2,6 +2,10 @@
 
 Status: **complete — archived 2026-07-24.** Waves 0–4 are implemented and validated; the independent Wave 6 simplification pass is complete; the operator accepted the resolved Mac composition regression and explicitly forwent the remaining Wave 5 performance measurements; Wave 7 documentation reconciliation and automated acceptance are complete. The program is merged to `main` and the user accepted the plan as complete, closing the previously deferred physical-device acceptance.
 
+The dated Wave 0 and closeout checkpoints below preserve earlier “physical acceptance remains
+deferred” wording; the status above is authoritative for this program. It does not replace the
+independent physical-platform and App Store gates in [`docs/RELEASES.md`](../../RELEASES.md).
+
 Audit baseline: `b3045bc0` (`Record tvOS merge checkpoint`) on
 `codex/audit-simplification-performance`
 

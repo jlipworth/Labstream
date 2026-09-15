@@ -117,7 +117,7 @@ Minimum verification for every bump:
 
 ```sh
 rg -n 'MARKETING_VERSION|CURRENT_PROJECT_VERSION' Labstream.xcodeproj/project.pbxproj
-cd PMSKit && swift test
+swift test --package-path PMSKit --no-parallel --skip 'Live.*ProbeTests'
 ```
 
 Then build the touched target and verify the generated bundle:
@@ -127,12 +127,15 @@ Then build the touched target and verify the generated bundle:
 ```sh
 SIMID=$(scripts/worktree-sim.sh --platform visionos id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
+DD="$PWD/build/DerivedData-version-visionos"
+rm -rf "$DD"
 scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme Labstream \
   -destination "platform=visionOS Simulator,id=$SIMID" \
-  -configuration Debug build CODE_SIGNING_ALLOWED=NO -quiet
-APP=$(/bin/ls -td "$HOME"/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-xrsimulator/Labstream.app | head -1)
+  -configuration Debug -derivedDataPath "$DD" build CODE_SIGNING_ALLOWED=NO -quiet
+APP="$DD/Build/Products/Debug-xrsimulator/Labstream.app"
 /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist"
 /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist"
+xcrun simctl shutdown "$SIMID"
 ```
 
 ### mobile simulator bundle
@@ -141,12 +144,15 @@ APP=$(/bin/ls -td "$HOME"/Library/Developer/Xcode/DerivedData/Labstream-*/Build/
 printf 'ipad\n' > .simplatform
 SIMID=$(scripts/worktree-sim.sh --platform ipad id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
+DD="$PWD/build/DerivedData-version-ipad"
+rm -rf "$DD"
 scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamMobile \
   -destination "platform=iOS Simulator,id=$SIMID" \
-  -configuration Debug build CODE_SIGNING_ALLOWED=NO -quiet
-APP=$(/bin/ls -td "$HOME"/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-iphonesimulator/Labstream.app | head -1)
+  -configuration Debug -derivedDataPath "$DD" build CODE_SIGNING_ALLOWED=NO -quiet
+APP="$DD/Build/Products/Debug-iphonesimulator/Labstream.app"
 /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist"
 /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist"
+xcrun simctl shutdown "$SIMID"
 ```
 
 ### macOS bundle

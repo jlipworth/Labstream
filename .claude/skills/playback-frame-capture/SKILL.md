@@ -23,18 +23,22 @@ Each run writes, per capture point (`<backend>-initial` after first playable,
 - Log lines `probe.frame … avg_r=… avg_g=… avg_b=… luma=…` — greppable verdicts without
   pulling files.
 
-The capture directory is wiped per run, so frames always belong to the latest probe.
+Capture-enabled probes clear the entire capture directory at entry, before admission or
+readiness can fail. A reset failure blocks playback. Still require a current-run identity
+and fresh file timestamps when collecting artifacts; older builds only cleared a label
+after readiness and could leave the preceding run's frames behind on startup failure.
+Never infer a visual pass from a stale directory or from `probe.pass` alone.
 
 ## Run loop
 
 ```sh
-SIMID=$(scripts/worktree-sim.sh id)
+SIMID=$(scripts/worktree-sim.sh --platform visionos id)
 # build + install per CLAUDE.md (versioned script, CODE_SIGNING_ALLOWED=NO), then:
-xcrun simctl terminate "$SIMID" org.labstream.Labstream 2>/dev/null
+xcrun simctl terminate "$SIMID" org.labstream.Labstream 2>/dev/null || true
 xcrun simctl launch "$SIMID" org.labstream.Labstream \
-  --vp-probe-backend emby --vp-probe-emby-playback \
+  --vp-probe-backend emby --vp-probe-emby-playback --vp-probe-allow-live \
   --vp-probe-capture-frames --vp-probe-query "Some Movie" \
-  --vp-probe-bitrate-kbps 8000        # optional quality cap
+  --vp-probe-bitrate-kbps 0 --vp-probe-evidence  # Original; no implicit encoding approval
 
 # wait for probe.pass/probe.fail, then:
 xcrun simctl spawn "$SIMID" log show --last 5m --predicate 'process == "Labstream"' \
@@ -43,11 +47,20 @@ xcrun simctl spawn "$SIMID" log show --last 5m --predicate 'process == "Labstrea
 # pull the PNGs and Read them:
 DATA=$(xcrun simctl get_app_container "$SIMID" org.labstream.Labstream data)
 /bin/ls "$DATA/Documents/ProbeCaptures/"*/
+xcrun simctl shutdown "$SIMID"   # release the serialized simulator lease
 ```
 
-Backends: swap `emby`→`jellyfin`→`plex` in both flags (`--vp-probe-backend`,
-`--vp-probe-<backend>-playback`). The app must be signed in to that backend on the sim
-(the probe never authenticates).
+For Jellyfin and Emby, swap `emby`→`jellyfin` in both flags (`--vp-probe-backend`,
+`--vp-probe-<backend>-playback`). Plex is not a title-only flag swap: pass the private exact
+source bindings `--vp-probe-rating-key`, `--vp-probe-media-id`, and `--vp-probe-part-id`, or
+run read-only `--vp-probe-plex-discover` first. Fresh metadata must confirm the same item, Media,
+and Part IDs. The app must be signed in to that backend on the sim (the probe never
+authenticates); keep identifiers and captured frames private. See `docs/MEDIA-CORPUS-TESTING.md`.
+
+Nonzero quality, Maximum, and consent-approval scenarios additionally require
+`--vp-probe-allow-video-encode`, supplied only after separate user authorization. Named
+scenarios and bounded reports are documented in `docs/AGENT-PLAYBACK-TROUBLESHOOTING.md`. Probes
+restore the prior diagnostics setting; leaving diagnostics enabled beforehand preserves it.
 
 ## Reading the numbers
 

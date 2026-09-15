@@ -64,7 +64,7 @@ For any documentation content or path change, run:
 scripts/ci-hygiene.sh
 ```
 
-This includes strict MkDocs and Mermaid checks. Also search the whole tracked tree for every old path and validate relative links and heading anchors in unpublished `plans`, `research`, `evidence`, and `archive` lanes; MkDocs does not cover all of them.
+This includes strict MkDocs, rendered link/anchor, and Mermaid checks. Also search the whole tracked tree for every old path and validate relative links and heading anchors in unpublished `plans`, `research`, `evidence`, and `archive` lanes; MkDocs does not cover all of them.
 
 ## 3. Rebase, revalidate, and integrate
 
@@ -127,14 +127,14 @@ scripts/worktree-sim.sh closeout "$WORKTREE"
 git worktree remove "$WORKTREE"
 git branch -d "$SOURCE_BRANCH"
 scripts/worktree-sim.sh prune
-xcrun simctl list devices | rg 'vpwt|iphonewt|ipadwt|<branch-fragment>' || true
+xcrun simctl list devices | rg 'vpwt|iphonewt|ipadwt|tvwt|<branch-fragment>' || true
 ```
 
 Before removal, recheck the lane is clean. The Mac cleanup command is mandatory even when the lane was not primarily a macOS lane: app-code validation may have staged one or more `Labstream Dev — <identity>` builds under that worktree's `build/macos-host/`. It terminates and deletes every Mac app staged by the closing worktree, including any worktree-local production-identity staging, plus its worktree-local Mac build product. Verify that no `Labstream.app` remains below `$WORKTREE/build/macos-host/` and no process is executing from that path.
 
 This cleanup must not delete the canonical `/Applications/Labstream.app`, a Mac app staged from another active worktree, sandbox containers, or Keychain credentials. If `~/Library/Containers/org.labstream.Labstream.dev.*` contains an identity associated with the closing lane, classify it against all active worktrees before removal; delete only a confirmed stale development container, and never reset the production container during ordinary closeout.
 
-`closeout` must remove all of that linked worktree's visionOS/iPhone/iPad simulators and `.simid*` ownership files without deleting main's golden visionOS simulator. Prefer `git branch -d`; use `-D` only after proving the exact source tip is an ancestor of main and only when Git's worktree/rebase bookkeeping makes `-d` reject an already-integrated branch.
+`closeout` must remove all of that linked worktree's visionOS/iPhone/iPad/tvOS simulators and `.simid*` ownership files without deleting main's golden visionOS simulator. Prefer `git branch -d`; use `-D` only after proving the exact source tip is an ancestor of main and only when Git's worktree/rebase bookkeeping makes `-d` reject an already-integrated branch.
 
 If the worktree was already removed, run `scripts/worktree-sim.sh prune` and verify no owned simulator remains. Also inspect the removed path's former `build/macos-host` identities and the live process list; if the path is gone, its staged apps are gone, but any matching stale development container still needs the active-worktree classification above.
 

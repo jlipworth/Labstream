@@ -186,14 +186,14 @@ below. For a bounded agent smoke that builds, installs, launches, records screen
 and shuts down the leased simulator, use:
 
 ```sh
-scripts/agent-sim-run.sh launch-fixture-home-passive   # visionOS named runner
+# The visionOS runner requires the explicit one-simulator lease assertion.
+scripts/agent-sim-run.sh launch-fixture-home-passive --allow-simulator
 scripts/agent-mobile-run.sh iphone fixture-home-passive --allow-simulator
 # Use `ipad` to exercise the regular-width layout.
 ```
 
-The mobile runner requires `--allow-simulator` as an assertion that its caller owns the
-repository's single-simulator lease. The visionOS runner has no such flag, so its caller must still
-hold the lease before invocation. VisionOS evidence defaults to `artifacts/agent-sim-runs/`; mobile
+The mobile and visionOS runners require `--allow-simulator` as an assertion that their caller owns
+the repository's single-simulator lease. VisionOS evidence defaults to `artifacts/agent-sim-runs/`; mobile
 and tvOS runner evidence defaults to `artifacts/agent-platform-runs/`. The fixture exposes stable accessibility targets including
 `labstream.fixture.browse.root` and `labstream.home.fixture-resume.<backend>-orbit`, so Xcode 27
 Device Interaction can inspect and drive it semantically rather than by free-form coordinates.
@@ -258,8 +258,8 @@ capture a screenshot:
 ```sh
 xcrun simctl install "$SIMID" "$APP"
 INSTALLED_APP=$(xcrun simctl get_app_container "$SIMID" org.labstream.Labstream app)
-BUILT_UUID=$(xcrun dwarfdump --uuid "$APP/Labstream" | cut -d' ' -f2)
-INSTALLED_UUID=$(xcrun dwarfdump --uuid "$INSTALLED_APP/Labstream" | cut -d' ' -f2)
+BUILT_UUID=$(xcrun dwarfdump --uuid "$APP/Labstream" | awk '{print $2}')
+INSTALLED_UUID=$(xcrun dwarfdump --uuid "$INSTALLED_APP/Labstream" | awk '{print $2}')
 [ "$BUILT_UUID" = "$INSTALLED_UUID" ] || {
   printf '%s\n' "Installed executable does not match $APP" >&2
   exit 1
@@ -362,6 +362,13 @@ scripts/ci-hygiene.sh
 
 # Documentation build
 uv run --with-requirements requirements.txt mkdocs build --strict
+
+# Validate repository links and anchors, including links in the rendered site.
+# Run after the strict build so `site/` exists.
+uv run python scripts/check-doc-links.py --site-dir site
+
+# Validate that every published Mermaid fence rendered.
+uv run python scripts/check-docs-mermaid.py
 ```
 
 `PMSKit/Tests/PMSKitTests` is the portable package suite. App-owned deterministic tests live in
@@ -396,9 +403,12 @@ scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
 xcrun simctl shutdown "$SIMID"
 
 # Mac-hosted app tests.
+# Keep the unsigned host lane on the isolated development entitlements; the canonical Mac
+# entitlements contain a keychain access group and require a development-signed build.
 scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
   -scheme LabstreamMac -testPlan LabstreamMacTests \
-  -destination 'platform=macOS,arch=arm64' test CODE_SIGNING_ALLOWED=NO
+  -destination 'platform=macOS,arch=arm64' test CODE_SIGNING_ALLOWED=NO \
+  CODE_SIGN_ENTITLEMENTS=Config/LabstreamMacDevelopment.entitlements
 
 # tvOS test build (works with the SDK even before a runtime is installed).
 scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \

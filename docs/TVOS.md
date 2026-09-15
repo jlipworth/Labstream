@@ -78,9 +78,10 @@ screenshots, bounded logs, an
 worktree simulator by default.
 
 On Xcode 27, the local-player XCTest assertions can complete successfully while
-`xcodebuild` remains stuck finalizing the test log. The wrapper caps that phase at 90 seconds and
-reports `blocked` with `xcodebuild-test-log-finalization-timeout` rather than misclassifying the
-completed assertions as a product failure or claiming an incomplete result bundle as a pass.
+`xcodebuild` remains stuck finalizing the test log. The wrapper caps the `xcodebuild` action at
+90 seconds and reports `blocked` with `xcodebuild-test-log-finalization-timeout` rather than
+misclassifying the completed assertions as a product failure or claiming an incomplete result
+bundle as a pass.
 
 ## Deterministic fixtures
 

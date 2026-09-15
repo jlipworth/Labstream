@@ -3,11 +3,13 @@
 > **Archived research snapshot:** retained as dated evidence, not current architecture, feature
 > status, or implementation guidance. Verify any reusable detail against the active docs and
 > current source; old `VisionPlay` names, issue links, branches, and paths below are historical.
+> **Current context:** issue #7 is closed. The deferred app-side work described below is an
+> issue-era snapshot; use the current playback/backend documentation for direct-play behavior.
 
 > **Update (2026-06): partially shipped.** The decision-only probe slice
 > (`directPlayProbeDecisionURL()` + `visionOSDirectPlayProbe`) landed in PMSKit with
 > unit coverage; the app-side half (loading direct-play instead of `start.m3u8`) is
-> deferred and tracked as [GitHub issue #7](https://github.com/jlipworth/VisionPlay/issues/7).
+> deferred and tracked as [GitHub issue #7](https://github.com/jlipworth/Labstream/issues/7).
 > (File renamed from `13-device-profile.md` — the number collided with
 > `13-playback-state-apis.md`.)
 >

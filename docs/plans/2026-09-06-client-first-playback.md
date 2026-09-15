@@ -1,6 +1,13 @@
 # Client-first playback and release acceptance
 
-**Status:** implementation and acceptance in progress; not release-ready.
+**Status:** implementation and acceptance in progress; not release-ready. The suspended-request
+integration follow-up for [#293](https://github.com/jlipworth/Labstream/issues/293) and
+[#295](https://github.com/jlipworth/Labstream/issues/295) is complete and both issues are
+closed; the playback and release gates below remain active.
+
+Current playback behavior belongs in [`docs/PLAYBACK-ARCHITECTURE.md`](../PLAYBACK-ARCHITECTURE.md);
+this file owns the implementation/acceptance journal and its remaining release gates. Dated
+checkpoints below preserve evidence and are not a second operating contract.
 
 ## Agreed behavior
 
@@ -275,5 +282,6 @@ completed successfully with all 13 tests; the TV focused run completed with all 
 passing. Repository hygiene (320 tooling tests), strict MkDocs, links/anchors, and Mermaid
 validation passed. All simulators are shut down, and the isolated Mac smoke app was removed.
 
-Publication must complete before closing either issue. The live #291 Emby,
-#288 Plex, physical-device, and App Store gates remain open; this plan stays active.
+The #293/#295 implementation and publication follow-up is complete and both issues are now
+closed. The live #291 Emby and #288 Plex gates, physical-device acceptance, and App Store
+gates remain open; this plan stays active.

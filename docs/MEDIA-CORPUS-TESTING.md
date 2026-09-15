@@ -182,7 +182,7 @@ as quality transitions do. Soft AVFoundation/offline subtitle switches do not re
 replacement. The hold still fails if its item changes unexpectedly; it is not weakened
 to tolerate arbitrary restarts. See [issue #312](https://github.com/jlipworth/Labstream/issues/312).
 
-The [historical bounded Plex audit](evidence/audits/2026-09-13-plex-corpus.md) records the tested
+The [historical bounded Plex audit](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/audits/2026-09-13-plex-corpus.md) records the tested
 cohorts, first failures, independent fixes and hardware gates. For focused hosted
 probe tests on Xcode 27, disable coverage with `-enableCodeCoverage NO` and wait for
 terminal xcodebuild success before installing or launching another app process;

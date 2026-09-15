@@ -21,7 +21,7 @@ already queued for the old item was cancelled.
 ```mermaid
 sequenceDiagram
   accTitle: Backend playback startup
-  accDescr: Jellyfin and Emby negotiate a stream before constructing the playback controller. Plex and Jellyfin validate video-copy HLS for Original and ask before falling back to video encoding; explicit transcoded qualities authorize encoding. Both lanes then load one app-owned AVPlayer and retain lane-specific progress and cleanup.
+  accDescr: Jellyfin and Emby negotiate a stream before constructing the playback controller. Plex and MediaBrowser lanes validate an available video-copy path for Original and ask before falling back to video encoding; explicit transcoded qualities authorize encoding. Each lane then loads one app-owned AVPlayer and retains lane-specific progress and cleanup.
   participant UI
   participant Backend
   participant PC as PlaybackController
@@ -34,7 +34,7 @@ sequenceDiagram
     Server-->>Backend: stream URL + session metadata
     Backend-->>UI: negotiated remote stream + callbacks
     UI->>PC: construct with negotiated stream
-    opt Jellyfin Original
+    opt MediaBrowser Original HLS copy
       PC->>Server: validate explicit video-copy primary playlist
       opt copy unavailable or video transform required
         PC->>UI: ask before video encoding
@@ -67,7 +67,7 @@ The client-first changes are under active acceptance (see the repository plan
 `docs/plans/2026-09-06-client-first-playback.md`);
 control-plane success is not a claim that live rendering or every platform has passed.
 
-1. **Original (Direct Stream) (Original video).** Negotiate with `directPlay=0` and
+1. **Original (Direct Stream).** Negotiate with `directPlay=0` and
    `directStream=1`, and require an explicit video `copy`/`directplay` decision before
    fetching the media start. Container remux and audio conversion are allowed; this HLS
    route is not byte-for-byte original-file playback. Copy starts omit `offset=` and
@@ -125,7 +125,7 @@ Verified Jellyfin video-copy HLS reopens keep automatic waiting enabled with the
 12-second buffer target. Disabling it reproduced a rate-zero paused hold after both HDR10
 and P7 seeks; the scoped exception passed inspected native seek checks. Approved video
 encoding, paused-loading settings, user pause intent and session authority are unchanged.
-See the [bounded acceptance evidence](research/dv-p7-decoder-boundary.md).
+See the [bounded acceptance evidence](https://github.com/jlipworth/Labstream/blob/main/docs/research/dv-p7-decoder-boundary.md).
 
 ## Emby
 
@@ -138,8 +138,8 @@ playback state only; it does **not** stop an encoder. A source whose open result
 server encoding must also call Emby's active-encoding delete endpoint. Keep those two teardown
 operations separate.
 
-Emby Original prefers a server-accepted static original file over optional transcode
-URLs. If that file stalls, one bounded retry requests video-copy HLS with AAC audio
+Emby Original uses a server-accepted static/direct-play result when available instead of
+silently accepting video encoding. If that file stalls, one bounded retry requests video-copy HLS with AAC audio
 conversion before asking to encode video. Ordinary copy HLS uses Emby's `m4s` dialect, validates
 the same-origin primary child, and preserves session and track authority. H.264 static-file
 recovery instead requests self-contained MPEG-TS segments with video copy and AAC; this
@@ -154,14 +154,14 @@ resume/seek, but retains fragmented MP4 rather than switching to MPEG-TS. Capped
 must have a known bitrate within the ceiling and explicit copy-compatible server reasons;
 unknown facts, transforms, and HDR are excluded. This avoids the reproduced visual corruption
 on the offset-primed quality-reopen path, without asserting a shared cause with the H.264
-starvation issue ([evidence and limits](research/emby-hevc-sdr-timeline.md)).
+starvation issue ([evidence and limits](https://github.com/jlipworth/Labstream/blob/main/docs/research/emby-hevc-sdr-timeline.md)).
 
 Verified Emby copy HLS reopens retain their 12-second buffer target but keep automatic
 waiting enabled, so buffer exhaustion does not strand AVPlayer at rate zero. Verified
 Jellyfin copy reopens use the same exception; approved video-encode settings remain unchanged. AC-3 copy
 transport also uses AAC as a narrow delivery workaround. Unknown transforms and subtitle
 burn require consent; Maximum explicitly authorizes video encoding. This fallback is
-video-copy Direct Stream, not byte-for-byte original-file Direct Play. Native-file starvation
+video-copy Original (Direct Stream), not byte-for-byte original-file Direct Play. Native-file starvation
 itself remains unresolved; the scoped recovery passed Mac playback and deep-seek acceptance.
 
 A reopened result arriving after cancellation must still stop its exact server session.
@@ -185,7 +185,7 @@ Current invariants:
   its full 20-second budget only when the selected quality is Original (Direct Stream).
   Outside native full-timeline lanes, Emby gives nonzero transcode resume/reopen targets
   an 8-second head start. Absent/zero-resume AV1 transcodes instead warm the same session
-  for up to 20 seconds without the proxy ([evidence and limits](research/emby-av1-startup.md)).
+  for up to 20 seconds without the proxy ([evidence and limits](https://github.com/jlipworth/Labstream/blob/main/docs/research/emby-av1-startup.md)).
   Jellyfin skips legacy priming and client-seeks its VOD timeline.
   All prewarm outcomes are soft and AVPlayer still gets a chance to load.
 - After the nonzero-offset Emby prewarm, the controller stands up `MediaSessionProxy` to
@@ -216,9 +216,10 @@ HLS buffer-ahead values advance by completed segment, so a high-bitrate stream c
 stall. Diagnostics distinguish active transfer from a stale/idle observed-bitrate sample.
 
 Network loss frequently leaves AVPlayer waiting with an empty buffer without changing the
-item to `.failed`. Stall deadlines depend on the active lane: Jellyfin/Emby remote transcodes
-use 45 seconds, other Original (Direct Stream)-selected paths use 90 seconds, and all remaining
-paths use 15 seconds. For every network-backed stream—Plex, Jellyfin, or Emby—growth in
+item to `.failed`. Stall deadlines depend on the active route: Jellyfin/Emby remote transcodes
+use 45 seconds; the no-cap Original (Direct Stream) watchdog uses 90 seconds except for Emby's
+direct-file (`Direct Play`) route, which uses 15 seconds; all remaining paths also use 15 seconds.
+For every network-backed stream—Plex, Jellyfin, or Emby—growth in
 transferred bytes or loaded range at expiry rearms the watchdog instead of failing a
 slow-but-working prime. Local-file playback does not use this deferral. Once progress stops, the
 controller uses the startup error log when available and otherwise surfaces a recoverable
@@ -226,10 +227,11 @@ network/capacity message.
 
 Client-driven adaptive bitrate is an optional Settings feature and is default-off. When enabled,
 it can reopen supported capped Plex or MediaBrowser streams at bounded rungs after a sustained
-stall and later upshift after healthy playback. It never silently converts an explicit Direct
-Play / Maximum choice to a capped transcode. The requested forward-buffer duration remains a
-hint, not a guarantee; a full server throttle window, a single-rendition copy stream, or
-AVPlayer's realized buffer is not itself an adaptive bitrate ladder.
+stall and later upshift after healthy playback. It never silently converts an explicit Original
+(Direct Stream) choice to a capped transcode. Maximum (Transcode) is an explicit upper cap; when
+adaptive bitrate is enabled, it may move among bounded transcode rungs below that cap. The requested
+forward-buffer duration remains a hint, not a guarantee; a full server throttle window, a
+single-rendition copy stream, or AVPlayer's realized buffer is not itself an adaptive bitrate ladder.
 
 ## Seeking and restart budgets
 
@@ -310,8 +312,7 @@ mechanics remain shared with remote playback.
 The **Stream signal** row distinguishes observed AVFoundation signaling from unverified
 copy/encode intent. A source HDR label, compatible base layer, or server decision alone
 cannot establish decoded HDR or display light output. See the
-[native HDR investigation](research/native-hdr-validation.md) for bounded platform evidence.
-
+[native HDR investigation](https://github.com/jlipworth/Labstream/blob/main/docs/research/native-hdr-validation.md) for bounded platform evidence.
 
 Display capability is live state, not a property of the media file. The controller observes
 AVFoundation HDR-eligibility changes for the current item's lifetime (including while paused),

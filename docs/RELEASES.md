@@ -3,24 +3,27 @@
 This page is the public source of truth for Labstream's distribution status and the release
 checks that can safely live in the repository. It does not contain signing identities, App Store
 Connect contact details, review credentials, tokens, private server addresses, or other secrets.
+Statements about processed builds and App Store Connect are repository records, not a live account
+query; verify them in App Store Connect again before any upload or submission.
 
 ## Current status
 
-Source is now 1.7.1 (build 1) across all four apps, with a matching PMSKit fallback.
-No 1.7.1 archive has been uploaded by this change. The distribution entries below still
-refer to the previously processed **1.6.1 (build 2)** archives at `abd1ddcac351`.
+The repository source is **1.7.1 (build 1)** across all four app targets, with a matching PMSKit
+fallback. No 1.7.1 archive is recorded here. The latest recorded processed distribution remains
+the **1.6.1 (build 2)** archive set at `abd1ddcac351`; keep the source version and the processed
+binary version separate when reporting release status.
 
-| Product | Source version | Distribution status |
+| Product | Current source | Latest recorded processed distribution |
 | --- | --- | --- |
-| Apple Vision Pro (`Labstream`) | 1.7.1 (build 1) | Clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical TestFlight acceptance and review access remain pending. |
-| iPhone and iPad (`LabstreamMobile`) | 1.7.1 (build 1) | Clean `abd1ddcac351` universal iOS archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical iPhone and iPad acceptance remain pending. |
-| Apple TV (`LabstreamTV`) | 1.7.1 (build 1) | Clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical Apple TV acceptance remains pending. |
-| Mac (`LabstreamMac`) | 1.7.1 (build 1) | Clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and installed from TestFlight on a Mac. Launch and receipt/signature checks passed; deeper sandbox and live-host acceptance remain pending. |
+| Apple Vision Pro (`Labstream`) | 1.7.1 (build 1) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical TestFlight acceptance and review access remain pending. |
+| iPhone and iPad (`LabstreamMobile`) | 1.7.1 (build 1) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` universal iOS archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical iPhone and iPad acceptance remain pending. |
+| Apple TV (`LabstreamTV`) | 1.7.1 (build 1) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical Apple TV acceptance remains pending. |
+| Mac (`LabstreamMac`) | 1.7.1 (build 1) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and installed from TestFlight on a Mac. Launch and receipt/signature checks passed; deeper sandbox and live-host acceptance remain pending. |
 
 The 1.7.1 source milestone includes bounded DV/HDR delivery investigation and probe
 validation. The P7 HDR10-base candidate remains default-off and DEBUG-only on macOS;
 full-suite and cross-backend/hardware acceptance gates remain open in the
-[DV investigation](research/dv-p7-decoder-boundary.md). No release tag, upload, or
+[DV investigation](https://github.com/jlipworth/Labstream/blob/main/docs/research/dv-p7-decoder-boundary.md). No release tag, upload, or
 distribution is authorized by the version increment.
 
 The four targets share the neutral `org.labstream.Labstream` bundle identifier and are intended
@@ -34,22 +37,25 @@ macOS each use their own archive. Metadata, screenshots, build selection, review
 acceptance remain platform-specific even when the platforms share one purchase record. A platform
 must not be marked ready merely because another platform passed review.
 
-App Store Connect currently has the shared app information, free price schedule, published
-**Data Not Collected** privacy answer, platform descriptions, review contacts, build selections,
-manual-release settings, and one privacy-safe synthetic placeholder screenshot for each submitted
-device family. Those screenshots prove the capture and upload path, but they are not the intended
-public product-page set. App availability is not yet enabled. Licensed demo media, final screenshot
-capture and review, demo review access, review notes, physical-platform acceptance, storefront
-scope, Digital Services Act status where applicable, and final submission remain open.
+The latest recorded App Store Connect state includes the shared app information, free price
+schedule, published **Data Not Collected** privacy answer, platform descriptions, review contacts,
+build selections, manual-release settings, and one privacy-safe synthetic placeholder screenshot for
+each submitted device family. Those screenshots prove the capture and upload path, but they are not
+the intended public product-page set. In that recorded state, app availability was not enabled.
+Licensed demo media, final screenshot capture and review, demo review access, review notes,
+physical-platform acceptance, storefront scope, Digital Services Act status where applicable, and
+final submission remain open.
 
 `1.7.1` is the current source marketing version (`CFBundleShortVersionString`). The number in
 parentheses is the App Store build number (`CFBundleVersion`). A new marketing version begins at
 build 1; each replacement upload for the same platform and marketing version must use a higher
 build number.
 
-## Initial publication sequence
+## Coordinated publication sequence
 
-The first neutral-identity deployment should proceed in this order:
+For a new coordinated archive set or the first public release, use this order. If the neutral
+App Store Connect record already exists, verify it and add the required platform version instead of
+creating a duplicate record:
 
 1. In the Apple Developer account, confirm the neutral App ID and required capabilities, then make
    an Apple Distribution signing identity and platform-appropriate App Store provisioning available
@@ -87,13 +93,13 @@ those conditions is uncertain, run a dedicated review-only Jellyfin instance ins
 credentials only in App Store Connect. Test the final instructions from clean installs on Vision
 Pro, iPhone, iPad, Apple TV, and Mac before submission.
 
-The official stable demo is the first evaluation lane before provisioning new infrastructure. It
-currently exposes a passwordless shared account, Quick Connect, Movies/Shows/Music/Playlists, and a
-catalog containing public/open test media. It is useful for compatibility and screenshot trials,
-but it is not yet accepted as the final reviewer dependency: the shared account is mutable,
-downloads are disabled, service resets can interrupt sessions, and the project's permission for
-third-party App Store marketing screenshots still needs to be established. Labstream supports the
-demo's passwordless Jellyfin login as of
+The official stable demo is the first evaluation lane before provisioning new infrastructure. The
+2026-08-22 evaluation recorded a passwordless shared account, Quick Connect,
+Movies/Shows/Music/Playlists, and a catalog containing public/open test media. It is useful for
+compatibility and screenshot trials, but it is not yet accepted as the final reviewer dependency:
+the shared account is mutable, downloads are disabled, service resets can interrupt sessions, and
+the project's permission for third-party App Store marketing screenshots still needs to be
+established. Labstream supports the demo's passwordless Jellyfin login as of
 [issue #283](https://github.com/jlipworth/Labstream/issues/283).
 
 Prefer a Labstream-controlled review instance with a deterministic catalog of original,
@@ -107,19 +113,25 @@ UI matches the environment Apple can actually test.
 
 ### Repository and binary
 
+Checked boxes below reflect the latest recorded evidence; re-verify external account, TestFlight,
+and App Store Connect state before relying on them for a new submission.
+
 - [ ] The release commit contains no credentials, private endpoints, signing files, diagnostic
       bundles, or personal media data, including in newly added files.
 - [ ] `PMSKit` hermetic tests, repository hygiene, strict MkDocs, and the affected native test
       matrix pass.
-- [x] Clean Release archives are produced for iOS/iPadOS, visionOS, tvOS, and macOS with the
-      intended Xcode release and Apple Distribution signing; every archive reports the neutral
-      bundle identifier and expected marketing version and build number.
-- [x] Archives are reproducible from the exact public release commit. If that commit changes after
-      a preflight archive, rebuild rather than treating the older archive as the submission binary.
-- [x] Every platform archive passes Xcode validation and App Store Connect processing without
-      compliance or binary warnings.
-- [x] Each selected App Store Connect build reports the intended minimum OS, device family,
-      entitlements, and supported architecture.
+- [x] The latest processed **1.6.1 (build 2)** Release archives were produced for iOS/iPadOS,
+      visionOS, tvOS, and macOS with the intended Xcode release and Apple Distribution signing;
+      every archive reports the neutral bundle identifier and expected marketing version/build.
+- [x] The latest processed **1.6.1 (build 2)** archives are reproducible from their exact public
+      release commit. If that commit changes after a preflight archive, rebuild rather than treating
+      the older archive as the submission binary.
+- [x] The latest processed **1.6.1 (build 2)** platform archives pass Xcode validation and App Store
+      Connect processing without compliance or binary warnings.
+- [x] Each selected **1.6.1 (build 2)** App Store Connect build reports the intended minimum OS,
+      device family, entitlements, and supported architecture.
+- [ ] Clean Release archives for the current **1.7.1 (build 1)** source are produced, validated,
+      and selected for every platform version.
 - [ ] A physical Vision Pro TestFlight smoke covers first launch, sign-in, browse, playback,
       seeking, subtitles, audio, Cinema, background/foreground, and diagnostics. Simulator smoke
       is useful but does not replace this gate.
@@ -142,7 +154,7 @@ UI matches the environment Apple can actually test.
 - [x] The public support URL and privacy-policy URL resolve over HTTPS:
       [Support](https://jlipworth.github.io/Labstream/support/) and
       [Privacy](https://jlipworth.github.io/Labstream/privacy/).
-- [ ] Replace the currently staged single-image synthetic placeholders with final, reviewed
+- [ ] Replace the staged single-image synthetic placeholders with final, reviewed
       screenshot sets for every required App Store device size;
       the Vision Pro set includes at least one 3840 × 2160 image. Apple permits up to ten
       screenshots and up to three optional app previews per supported size and localization. See
@@ -165,8 +177,8 @@ UI matches the environment Apple can actually test.
 
 ### TestFlight and App Review
 
-- [x] TestFlight beta description, feedback contact, and **What to Test** text are current. Internal
-      builds remain available for 90 days; Apple currently permits up to 100 internal App Store
+- [x] The recorded TestFlight beta description, feedback contact, and **What to Test** text are
+      current. Internal builds remain available for 90 days; Apple currently permits up to 100 internal App Store
       Connect users. See the current [TestFlight overview](https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview).
 - [x] Review contact information is complete in App Store Connect. Do not commit it here.
 - [ ] Because the app requires sign-in, App Review has a stable, non-expiring demo path and clear
