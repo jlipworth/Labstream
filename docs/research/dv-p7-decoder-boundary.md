@@ -442,3 +442,53 @@ decoded-frame or live-backend acceptance. Exact-source live regression of this i
 server-session cleanup confirmation, later-segment extracted-base equivalence, broader
 source coverage and physical acceptance remain open. No new encoding authorization or
 Release enablement follows from this guard.
+
+### Initialization identity: fresh bounded validation
+
+The initialization-pinning revision `bc224b81` was rebuilt from clean native macOS
+DerivedData and run with the existing authenticated, isolated development identity.
+The staged executable matches the freshly built product by SHA-256. These are new
+exact-revision results, not reuse of the earlier candidate's playback evidence.
+
+- Hermetic PMSKit passes 1,707 Swift Testing cases and 121 XCTest cases. The range
+  regressions verify unchanged partial responses, rejection of changed complete and
+  partial initialization responses, failed-first-validation recovery, playlist-refresh
+  pin retention, and acceptance of a different initialization only after a fresh open.
+  No live server initialization was deliberately mutated; that adversarial boundary is
+  established by the hermetic loopback tests.
+- The exact P7 source passes native Plex Original video-copy playback, a seek to
+  600 seconds with a 35-second advancing hold, and a separate close/reopen hold.
+  An audio-track transition also passes with replacement-generation evidence: video
+  remains copy while audio changes from copy to encoding. No video encoding was
+  authorized or requested by these scenarios.
+- The same source, independently bound to each backend's expected item/source,
+  passes Jellyfin's seek to 600 seconds and Emby's forward seek to 1,200 seconds,
+  each with a 25-second hold. Emby's separate Original reopen passes. Jellyfin's
+  first reopen reports `failed/playbackFailed`; its saved progress evidence identifies
+  a 2.014-second observation gap, beyond the unchanged two-second oracle bound,
+  while sampled positions continued advancing. It has no post-hold visual pass.
+  One bounded reopen repeat passes the unchanged 25-second hold and frame gates;
+  this does not retroactively pass the first attempt or resolve older pause findings.
+- Fresh initial and post-scenario decoded frames were inspected for every passing
+  run. They show recognizable, untinted video with 3840-by-2160 PQ/BT.2020 signaling.
+  Some initial capture attempts lack a new pixel buffer; subsequent fresh frames
+  provide the visual evidence. These tone-mapped captures do not establish HDR
+  luminance accuracy, native Dolby Vision reconstruction, or physical audio output.
+- Jellyfin/Emby app evidence reports request-enforced video copy and unknown audio;
+  separate read-only server job logs confirm video copy and AAC encoding. The matched
+  jobs show graceful quit and their specific playlists are absent after stop. Plex
+  seek, reopen and audio-transition stops receive HTTP 200, with observed job exits
+  and removal of the corresponding transcode directories. These are bounded job
+  cleanup observations, not proof of every server resource's lifecycle.
+- Fresh generic visionOS, iOS and tvOS builds pass, as do hygiene and strict
+  documentation checks. Two full macOS hosted runs each pass 703 of 704 tests and
+  fail `delayedTrackReplacementDoesNotAcceptThePredecessor` at its replacement
+  deadline. A separate focused evidence run passes all 12 tests. The full-suite
+  failure remains open; the focused result is not a waiver. No simulator was booted;
+  visionOS run verification remains blocked by the missing golden-simulator pointer,
+  and mobile/tvOS hosted and interactive lanes were not rerun in this validation.
+
+No product code, profile selection, admission guard, session authority or consent policy
+changed during validation. The candidate remains default-off, DEBUG macOS only. Broader
+source coverage, later-segment extracted-base equivalence, full-suite stability and
+physical-device acceptance remain open. No merge, upload or release enablement is implied.
