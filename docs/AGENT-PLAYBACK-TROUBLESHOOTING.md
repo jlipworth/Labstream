@@ -72,3 +72,35 @@ when finished. User-enabled diagnostics remain enabled.
 
 Historical acceptance and the measured AX/screenshot comparison are in the
 [completed implementation journal](https://github.com/jlipworth/Labstream/blob/main/docs/archive/plans/2026-09-06-agent-playback-evidence.md).
+
+## Playback failure codes
+
+Playback failures use a closed, privacy-safe vocabulary shared by the player overlay,
+pre-open playback errors, and `playback.failure_surfaced` diagnostics. Never infer an encoder,
+GPU, or codec implementation failure from a delivery timeout alone.
+
+| Code | Evidence and action |
+| --- | --- |
+| `LS-PB-001` | Backend explicitly rejected the playback decision. Try another version or contact the server administrator. |
+| `LS-PB-002` | Server HTTP failure; show a numeric HTTP status only when supplied by a typed response or a recognized AVPlayer error. Check server/access and explicitly Retry. |
+| `LS-PB-003` | Media delivery or reconnect deadline expired. Check server/network and explicitly Retry. |
+| `LS-PB-004` | A safety policy blocked this playback path before unsafe video could be presented. Try another version. |
+| `LS-PB-005` | Original playback failed without permission for video encoding. Obtain per-item consent rather than silently encoding. |
+| `LS-PB-006` | Connection unavailable. Check server/network. |
+| `LS-PB-007` | No authenticated backend session. Sign in again. |
+| `LS-PB-999` | Evidence does not identify the failure. Retry or provide app diagnostics; do not invent a server-specific diagnosis. |
+
+Raw server text, URLs, paths, and framework descriptions are not user-facing messages.
+Diagnostics retain the stable app code and available numeric HTTP/decision codes. Explicit
+HTTP failures stop the attempt rather than triggering video-encoding consent. At least four
+delivery error-log deadlines spanning 20 seconds within one item's rolling 30-second window
+also stop resource retries; duplicate errors from a brief, recoverable prime do not satisfy
+that time gate. A briefly advancing audio clock is not proof that video delivery recovered.
+Transient deadlines remain eligible for the existing bounded recovery behavior.
+
+Surfacing failure cancels attempt work, detaches the player item, and initiates exact-session
+cleanup without requiring Close. Explicit Retry waits for that cleanup and then starts one
+fresh attempt with the retained position, quality, consent, and pause intent. Repeated Retry
+taps during cleanup do not create overlapping attempts. Server encoder implementation is
+outside the app's acceptance scope: acceptance is an accurate error and safe recovery, not a
+promise that every server can play every codec.

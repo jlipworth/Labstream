@@ -1088,6 +1088,8 @@ final class PlaybackController {
     /// Tear down observers and report a final `stopped` timeline. Call from the
     /// view's `dismantle`.
     func stop() {
+        failureRetryTask?.cancel()
+        failureRetryTask = nil
         // Revoke both queued and in-flight audio mutations before any await can
         // publish preferences or reopen playback after teardown.
         metadataAudioSelectionStopped = true
@@ -1168,6 +1170,7 @@ final class PlaybackController {
     }
 
     private var pendingStopTasks: [Task<Void, Never>] = []
+    private var failureRetryTask: Task<Void, Never>?
 
     /// Join teardown already started by stop(); used before a probe publishes its terminal report.
     /// Completion means requests finished, not that the server has no workers.
@@ -2420,7 +2423,7 @@ final class PlaybackController {
     /// hook so Jellyfin gets the same visible Retry affordance as Plex. No-op for local-file
     /// sessions/static remote streams (nothing to re-fetch).
     func retry() {
-        guard supportsQualityReload else { return }
+        guard supportsQualityReload, playbackError.isFailed, failureRetryTask == nil else { return }
         beginReconnectStatus()
         let snapshot = playheadSnapshotForRestart(cause: .retry)
         let resumeMs = snapshot.positionMs
@@ -2428,9 +2431,19 @@ final class PlaybackController {
         fields["resume"] = .millisecondsBucket(resumeMs)
         fields["uses_remote_reopener"] = .bool(sessionSource.kind == .mediaBrowser)
         recordPlaybackDiagnostic("playback.retry", fields: fields)
-        restartAtCurrentPosition(offsetMs: resumeMs,
-                                 bitrateKbps: maxVideoBitrateKbps,
-                                 intent: .explicitRetry)
+        let generation = playbackGeneration
+        failureRetryTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            // Do not mint a replacement while the failed attempt's exact-session stop
+            // is still in flight (particularly when the backend reuses its session ID).
+            await self.waitForPendingStopRequests()
+            guard !Task.isCancelled, self.playbackGeneration == generation else { return }
+            self.failureRetryTask = nil
+            self.sentTranscodeStop = false
+            self.restartAtCurrentPosition(offsetMs: resumeMs,
+                                          bitrateKbps: self.maxVideoBitrateKbps,
+                                          intent: .explicitRetry)
+        }
     }
 
     /// App-owned scrubber commit hook for the experimental custom player path (#38).
@@ -2819,24 +2832,18 @@ final class PlaybackController {
                 guard !Task.isCancelled, generation == playbackGeneration else { return }
                 decision = response
                 recordTranscodeDiagnostic("transcode.decision", fields: decisionDiagnosticFields(response))
-                if case .unsupported = response.decision {
+                if case .unsupported(let code) = response.decision, code >= 0 {
                     recordTranscodeDiagnostic("transcode.unsupported", fields: decisionDiagnosticFields(response))
-                    NSLog("PlaybackController: transcode decision unsupported code=%@",
-                          response.generalDecisionCode.map(String.init) ?? "nil")
-                    // GH #196: a DV-P5-guarded session with an unsupported decision means PMS
-                    // refuses the tone-map ("DoVi (Profile 5) color space is not supported" —
-                    // its software pipeline can't convert IPTPQc2). The follow-up start.m3u8
-                    // would 400 into an opaque -1008; fail fast with the DV message instead.
-                    if dvGuardReason != nil {
-                        NSLog("PlaybackController: PMS refused DV P5 tone-map, surfacing DV error (#196)")
-                        surfaceFailure(NSError(domain: "Labstream.Playback",
-                                               code: -196,
-                                               userInfo: [NSLocalizedDescriptionKey: DolbyVisionGuard.failureMessage]))
-                        return
-                    }
+                    surfaceFailure(PlaybackFailure(code: .backendUnsupported, backendDecision: code))
+                    return
                 }
             } catch {
                 guard !Task.isCancelled, generation == playbackGeneration else { return }
+                let failure = PlaybackFailure.classify(error)
+                if failure.code != .unknown {
+                    surfaceFailure(failure)
+                    return
+                }
                 recordTranscodeDiagnostic("transcode.decision_failed", fields: [
                     "error": .error(error),
                     "fallback": .label("attempt_start_m3u8"),
@@ -4095,6 +4102,19 @@ final class PlaybackController {
                 ])
                 NSLog("PlaybackController: item error log %d (%@) %@",
                       event.errorStatusCode, event.errorDomain, event.errorComment ?? "-")
+                let now = Date()
+                let recentSignals = (playerItem.errorLog()?.events ?? []).filter {
+                    guard let date = $0.date else { return false }
+                    return (0...30).contains(now.timeIntervalSince(date))
+                }.map { PlaybackFailure.Signal(domain: $0.errorDomain, code: $0.errorStatusCode, date: $0.date) }
+                if let failure = PlaybackFailure.deliveryFailure(signals: recentSignals) {
+                    self.recordPlaybackDiagnostic("playback.delivery_error_budget_exhausted", fields: [
+                        "failure_code": .label(failure.code.rawValue),
+                        "recent_error_count": .int(recentSignals.count),
+                    ])
+                    self.surfaceFailure(failure)
+                    return
+                }
                 // Several entries can be appended before ONE notification posts (seen live:
                 // -12880 then -15628 in the same batch), so scan the log rather than trusting
                 // `events.last` to be the terminal code.
@@ -4863,6 +4883,13 @@ final class PlaybackController {
                                          observedPlaybackGeneration: observedPlaybackGeneration)
             return
         }
+        let observedFailure = PlaybackFailure.classify(error, signals: (playerItem?.errorLog()?.events ?? []).map {
+            .init(domain: $0.errorDomain, code: $0.errorStatusCode)
+        })
+        if observedFailure.code == .serverHTTP || observedFailure.code == .backendUnsupported {
+            surfaceFailure(observedFailure)
+            return
+        }
         if attemptEmbyVideoCopyFallback() { return }
         if let backend = mediaBrowserSession?.backend,
            backend == .jellyfin || backend == .emby, maxVideoBitrateKbps <= 0,
@@ -4936,31 +4963,57 @@ final class PlaybackController {
         surfaceFailure(error)
     }
 
-    /// Pause the player, then surface the failure to the UI. Pausing FIRST is what makes the
-    /// error/Retry overlay stand alone: while stalled the player sits in
-    /// `.waitingToPlayAtSpecifiedRate`, so AVKit paints its own buffering glyph AND our #21
-    /// stall spinner (`isBuffering`) stays up — both would render on top of the dialog. Pausing
-    /// flips `timeControlStatus` to `.paused`, so AVKit swaps in the static play button and our
-    /// `BufferingState` clears (it reports `false` on `.paused`). Recovery still rebuilds the
-    /// player from `currentResumeMs` on Retry, so pausing here never strands the playhead.
-    private func surfaceFailure(_ error: Error?) {
-        // Any surfaced failure ends the in-flight seek — release the scrubber hold so the label
-        // can't freeze on the unreachable target (GH #110).
-        setSeeking(false)
-        cancelPendingFinalTargetRebuild()
-        if let activeFinalTargetRebuildGeneration {
-            finalTargetRebuildPolicy.cancelRebuild(generation: activeFinalTargetRebuildGeneration)
-            self.activeFinalTargetRebuildGeneration = nil
+    /// End the failed attempt immediately, independently of Close. Revoke callbacks,
+    /// detach HLS request producers and stop the exact backend session while retaining
+    /// the source, consent, pause intent and trustworthy position for explicit Retry.
+    func surfaceFailure(_ error: Error?) {
+        guard !playbackError.isFailed else { return }
+        let resumeMs = playheadSnapshotForRestart(cause: .retry).positionMs
+        let signals = (player.currentItem?.errorLog()?.events ?? []).map {
+            PlaybackFailure.Signal(domain: $0.errorDomain, code: $0.errorStatusCode)
         }
+        let failure = PlaybackFailure.classify(error, signals: signals)
         maybeRecordDiagnosticSnapshot(force: true)
+        playbackError.set(failure)
         recordPlaybackDiagnostic("playback.failure_surfaced", fields: [
             "error": .error(error),
-            "resume": .millisecondsBucket(currentResumeMs),
+            "failure_code": .label(failure.code.rawValue),
+            "http_status": .int(failure.httpStatus ?? 0),
+            "backend_decision": .int(failure.backendDecision ?? 0),
+            "resume": .millisecondsBucket(resumeMs),
         ])
+        // Failure is terminal for this attempt, not for user intent. Preserve the source,
+        // approved consent, pause intent and trustworthy position for explicit Retry.
+        setPendingResumeMs(resumeMs, cause: .restartTarget, allowsNearZero: true)
+        rememberTrustworthyPlaybackPosition(resumeMs, cause: .restartTarget, allowsNearZero: true)
+        playbackGeneration += 1
+        metadataAudioSelectionAuthority.invalidate()
+        if let task = playbackTask {
+            task.cancel()
+            pendingStopTasks.append(Task { await task.value })
+        }
+        playbackTask = nil
+        upNextTask?.cancel()
+        upNextTask = nil
+        setSeeking(false)
+        cancelPendingFinalTargetRebuild()
+        finalTargetRebuildPolicy.reset()
+        activeFinalTargetRebuildGeneration = nil
         player.pause()
-        refreshVideoNowPlayingMetadata(playbackRateOverride: 0)
+        removeObservers()
+        player.replaceCurrentItem(with: nil)
+        if let proxy = remoteHLSProxy, let generation = remoteHLSProxyGeneration {
+            pendingStopTasks.append(Task { await proxy.stop(generation: generation) })
+            remoteHLSProxy = nil
+            remoteHLSProxyGeneration = nil
+        }
+        timeline.report(state: .stopped, force: true, positionMs: resumeMs)
+        recordLocalPlaybackPosition(resumeMs)
+        captionAppearance.stopPreview()
+        sendTranscodeStop()
+        stopRemoteSessionIfNeeded()
         stopVideoNowPlayingSession()
-        playbackError.set(error)
+        refreshVideoNowPlayingMetadata(elapsedMillisecondsOverride: resumeMs, playbackRateOverride: 0)
         endReconnectStatus()
         endItemPreparation()
         updateTransportStatus()
@@ -5094,9 +5147,7 @@ final class PlaybackController {
         fields["dv_guard"] = .bool(true)
         recordPlaybackDiagnostic("playback.dv_guard_watchdog_fired", fields: fields)
         NSLog("PlaybackController: DV guard first-frame deadline expired, surfacing failure (#196)")
-        surfaceFailure(NSError(domain: "Labstream.Playback",
-                               code: -196,
-                               userInfo: [NSLocalizedDescriptionKey: DolbyVisionGuard.failureMessage]))
+        surfaceFailure(PlaybackFailure(code: .mediaDeliveryTimeout))
     }
 
     /// Cancel the stall watchdog (genuine resume, teardown, or retry).
@@ -5495,6 +5546,8 @@ final class PlaybackController {
     private func restartAtCurrentPosition(offsetMs: Int,
                                           bitrateKbps: Int,
                                           intent: PlaybackRestartIntent) {
+        failureRetryTask?.cancel()
+        failureRetryTask = nil
         setPendingResumeMs(offsetMs, cause: .restartTarget, allowsNearZero: true)
         rememberTrustworthyPlaybackPosition(offsetMs,
                                             cause: .restartTarget,
@@ -5647,17 +5700,7 @@ final class PlaybackController {
                     "target": .millisecondsBucket(offsetMs),
                 ])
                 NSLog("PlaybackController: remote stream reopen failed (%@)", Self.safeErrorSummary(error))
-                self.surfaceFailure(NSError(
-                    domain: "Labstream.Playback", code: -1004,
-                    userInfo: [NSLocalizedDescriptionKey:
-                        "Couldn't reopen the stream at that position. Tap Retry or try a lower quality setting."]))
-                self.didStopRemoteSession = true
-                self.onStopRemoteSession = nil
-                self.remotePlaySessionId = nil
-                self.mediaBrowserProgressSession = nil
-                self.scheduleDeferredRemoteSessionStop(priorStop,
-                                                       reason: "reopen_failed_after_detach",
-                                                       delaySeconds: 2.0)
+                self.surfaceFailure(error)
             }
         }
     }
@@ -5816,29 +5859,19 @@ final class PlaybackError {
     /// A human-readable description of the failure, if AVFoundation provided one.
     private(set) var message: String?
 
-    /// Mark a failure for display. Raw framework/server error strings are collapsed to a safe
-    /// message; only Labstream-authored playback messages are surfaced verbatim.
+    private(set) var failure: PlaybackFailure?
+
     func set(_ error: Error?) {
+        let classified = PlaybackFailure.classify(error)
+        failure = classified
         isFailed = true
-        message = Self.safeDisplayMessage(for: error)
+        message = classified.message
     }
 
-    /// Clear the failure state (on (re)start / retry).
     func clear() {
         isFailed = false
         message = nil
-    }
-
-    private static func safeDisplayMessage(for error: Error?) -> String? {
-        guard let error else { return nil }
-        if let reconnect = error as? ReconnectTimeoutError {
-            return reconnect.errorDescription
-        }
-        let nsError = error as NSError
-        if nsError.domain == "Labstream.Playback" {
-            return nsError.userInfo[NSLocalizedDescriptionKey] as? String
-        }
-        return DiagnosticRedactor.safeUserFacingErrorMessage(error, operation: "Playback")
+        failure = nil
     }
 }
 

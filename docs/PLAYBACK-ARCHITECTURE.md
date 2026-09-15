@@ -475,6 +475,11 @@ sequenceDiagram
 - Preserve each backend lane's replacement order: Plex stops the superseded in-place transcode
   before replacement, while Jellyfin/Emby detach the old item, attach the replacement, and only
   then schedule deferred prior active-encoding cleanup.
+- Surfaced failure also ends the current attempt: invalidate callbacks, cancel preparation,
+  detach the player item, and stop its exact backend session without waiting for Close.
+  The shared error surface uses the [stable playback codes](AGENT-PLAYBACK-TROUBLESHOOTING.md#playback-failure-codes),
+  not raw server text. Explicit Retry joins pending cleanup before replacing the attempt and
+  preserves trustworthy resume position, quality, approved consent, and user pause intent.
 - Terminal stop detaches the player item before issuing server-stop requests so paused HLS
   resource loading cannot continue against a stopped session. UI teardown remains non-blocking;
   named probes join the controller-owned stop requests before publishing their final report.

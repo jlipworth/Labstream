@@ -138,6 +138,9 @@ enum DebugPlaybackScenario {
                           ContinuousClock.now < deadline {
                         try Task.checkCancellation()
                         guard backendIsCurrent() else { throw Blocked(reason: .backendChanged) }
+                        if controller.playbackError.isFailed {
+                            throw DebugPlaybackProbeSupport.ProbeError.playbackFailed("seek", controller.playbackError.message)
+                        }
                         try await Task.sleep(for: .milliseconds(250))
                     }
                     guard seekTargetReached(positionSeconds: controller.player.currentTime().seconds, targetMs: options.seekMs) else {
@@ -212,6 +215,10 @@ enum DebugPlaybackScenario {
             } catch is CancellationError {
                 reason = .cancelled
                 throw CancellationError()
+            } catch let error as DebugPlaybackProbeSupport.ProbeError {
+                status = .failed
+                if case .timeout = error { reason = .deadline } else { reason = .playbackFailed }
+                throw error
             } catch {
                 status = .failed; reason = .playbackFailed
                 throw error
