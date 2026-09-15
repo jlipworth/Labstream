@@ -183,8 +183,7 @@ replacement. Replacement-wait unit tests inject a monotonic clock and poll step 
 exercise predecessor, detached, replacement, deadline and safety-gate states without
 racing independently scheduled fixture sleeps. Live probes retain the continuous-clock
 deadline and 250-millisecond polling interval. The hold still fails if its item changes
-unexpectedly; it is not weakened
-to tolerate arbitrary restarts. See [issue #312](https://github.com/jlipworth/Labstream/issues/312).
+unexpectedly; it is not weakened to tolerate arbitrary restarts. See [issue #312](https://github.com/jlipworth/Labstream/issues/312).
 
 The [historical bounded Plex audit](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/audits/2026-09-13-plex-corpus.md) records the tested
 cohorts, first failures, independent fixes and hardware gates. For focused hosted

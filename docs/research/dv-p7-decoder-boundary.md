@@ -492,3 +492,86 @@ No product code, profile selection, admission guard, session authority or consen
 changed during validation. The candidate remains default-off, DEBUG macOS only. Broader
 source coverage, later-segment extracted-base equivalence, full-suite stability and
 physical-device acceptance remain open. No merge, upload or release enablement is implied.
+
+
+### Review preparation: deterministic replacement and persistence barriers
+
+The full-suite replacement failure was reproduced with test-only timing diagnostics:
+the fixture's MainActor task did not begin until 1.849 seconds after the wait started,
+and the unchanged two-second wait expired at 2.316 seconds before the first scheduled
+20-millisecond continuation detached the predecessor. The player still held the old
+item. This identifies fixture scheduling contention, not rejection of an observed
+replacement. The diagnostic instrumentation was removed after establishing the cause.
+
+Revision `fed053b9` injects the DEBUG replacement wait's monotonic clock and polling
+step for deterministic tests. The live defaults remain `ContinuousClock` and a
+cancellation-aware 250-millisecond sleep; deadline comparisons, authority, playback
+failure, consent and item-identity checks are unchanged. Coverage now observes the
+predecessor across multiple polls, a detached interval, a distinct replacement,
+predecessor/detached deadline expiry, rejection exactly at the deadline, safety gates
+that become active with replacement, and cancellation before polling. There is no
+deadline extension, skipped test or weaker progress assertion.
+
+The first clean macOS run passed all 712 tests with no skips, including the hermetic
+browse-probe fixtures omitted by the earlier matrix command. An exact-build repeat
+then failed a separate season-planner deletion test: its in-memory absence condition
+could precede the artifact worker's terminal on-disk index commit. The existing store
+explicitly removes the row and enqueues persistence before awaiting that commit; the
+test incorrectly treated the earlier observation as durability proof. The isolated
+prerequisite `f56afe8c` awaits the existing persistence ticket with a bounded ten-second
+flush and asserts its committed revision before preserving the original fresh-index
+deletion assertion. It changes no download production behavior and is kept on `codex/season-deletion-test-barrier` for
+separate review. The P7 branch includes that prerequisite for stacked validation.
+
+At integrated revision `a25c6ec8`, three consecutive full macOS hosted runs pass all
+712 tests with zero skips, the first from clean DerivedData. These runs retain the
+historical failures above rather than retroactively passing them. Hermetic PMSKit
+passes 1,707 Swift Testing cases and 121 XCTest cases. Fresh generic visionOS, iOS
+and tvOS builds also pass. The live host product was built from clean DerivedData at
+`fed053b9`, with a fresh executable mtime and matching staged SHA-256; the prerequisite
+and integration change only tests, so the runtime source is identical.
+
+The fresh isolated Mac product passes the exact P7 source's Plex audio transition
+and 600-second seek with the unchanged 35-second advancing holds. The audio run
+changes replacement generation while video remains copy (audio changes from encoding
+to copy); the seek stays video/audio copy. Fresh initial and post-scenario PNGs were
+inspected and show recognizable untinted video with 3840-by-2160 PQ/BT.2020 signaling.
+These tone-mapped frames do not establish physical HDR or audio-output accuracy.
+
+Later native LaunchServices attempts do **not** extend that acceptance: Plex reopen
+reports `blocked/playbackFailed`, and Jellyfin/Emby audio transitions report
+`blocked/missingAuth`. PID-bounded host logs for each attempt show `Local network
+prohibited` and URL error -1009 before playback; the media-browser report is not proof
+that saved credentials disappeared. No privacy setting was changed or bypassed.
+A preceding reopen launch-orchestration attempt was stopped before a probe result;
+it has no visual pass. Existing pre-increment cross-backend/reopen evidence remains
+historical, not a substitute for these blocked fresh lanes. Fresh cross-backend and
+LaunchServices reopen acceptance therefore remain open pending the host permission
+gate. App reports request cleanup; the earlier bounded server-job cleanup observations
+are not reclassified as fresh server-side proof for this increment.
+
+The owned iPhone's clean-built semantic fixture passes with its detail attachment
+inspected. Its first full hosted run prints 629 Swift Testing and 67 XCTest passes,
+but does not produce a terminal result: a bounded process sample locates the wait in
+Xcode's `collectSimulatorDiagnostics` / `simCtlDiagnose` after the app process exits.
+The run is terminated at the 300-second no-progress boundary and remains non-green.
+One diagnostic repeat of the same compiled tests with `-collect-test-diagnostics never`
+exits normally: 696 of 696 pass, zero skips. This flag disables ancillary verbose
+simulator diagnostics, not tests, assertions or result bundles. The repeat does not
+establish resolution of default diagnostic collection or of historical runner hangs.
+
+The owned tvOS full hosted run exits normally with 383 of 383 passing and zero skips.
+Both named tvOS launch/remote-navigation smoke tests pass from a clean UI DerivedData
+path, with the focused home and leaf-detail attachments inspected. All created iPhone
+and tvOS simulators were shut down and removed; the isolated live Mac staged app was
+removed without resetting its saved container or credentials. visionOS run verification
+remains blocked by the missing golden-simulator pointer; no replacement golden was
+invented. These simulator fixtures are credential-free UI evidence, not live-backend
+or physical-device acceptance.
+
+This branch is reviewable as default-off hardening, not a shipping P7 solution. Local
+network permission, default iOS diagnostic-collection completion, broader source
+coverage, later-segment extracted-base equivalence and physical HDR/DV/audio acceptance
+remain explicit gates. P5 safety, Plex Generic, consent, source/session authority and
+Release behavior are unchanged. No video encoding was authorized, no PR was opened,
+and no merge to the default branch or release upload is implied.
