@@ -223,6 +223,6 @@ Copyright (C) 2026 Jonathan Lipworth
 
 <p align="center">
   <a href="https://www.gnu.org/licenses/gpl-3.0.en.html">
-    <img src="https://www.gnu.org/graphics/gplv3-with-text-136x68.png" alt="GNU GPLv3" width="136" height="68">
+    <img src="https://www.gnu.org/graphics/gplv3-127x51.png" alt="GNU GPLv3" width="127" height="51">
   </a>
 </p>
