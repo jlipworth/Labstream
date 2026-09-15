@@ -243,6 +243,9 @@ debounced into one settled final-target rebuild instead of restarting for every 
   re-mint that copy session merely to seek.
 - Reopen/rebuild paths capture the live playhead, detach stale work, negotiate the final
   target, and hold the scrubber until the replacement item lands or fails.
+- A successful client resume-seek completion explicitly resumes the player when its item
+  and lifecycle are still current and the user has not requested pause. Applying the saved
+  playback speed alone preserves a paused player and cannot restore playback after a seek.
 - `FinalTargetRebuildPolicy` and `SeekRestartBudget` prevent concurrent/unbounded restart
   pipelines. When the budget is exhausted, recovery stops and the user gets Retry rather
   than a hidden server-hammering loop.

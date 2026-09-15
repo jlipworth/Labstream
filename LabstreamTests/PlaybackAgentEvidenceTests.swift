@@ -8,6 +8,32 @@ import PMSKit
 
 @MainActor
 struct PlaybackAgentEvidenceTests {
+    @Test func completedResumeSeekRestartsPausedPlayerOnlyWithCurrentAuthority() {
+        let identity = ClientIdentity(clientIdentifier: "fixture-only", product: "Labstream",
+                                      version: "1", deviceName: "Fixture")
+        let session = MediaBrowserPlaybackSession(
+            streamURL: URL(fileURLWithPath: "/fixture.invalid"), backend: .jellyfin,
+            backendLabel: "Jellyfin", httpHeaders: [:], playSessionID: "fixture-session",
+            sourceMetadata: .init(videoCodec: "h264"), playMethod: .transcode,
+            transcodeReasons: [], progressSession: nil, onStop: {},
+            reopener: { _ in throw URLError(.cancelled) })
+        let controller = PlaybackController(
+            item: MediaItem(ratingKey: "fixture", title: "Fixture", type: "movie"),
+            sessionSource: .mediaBrowser(session), identity: identity,
+            client: PlexClient(identity: identity), maxVideoBitrateKbps: 8_000)
+        defer { controller.stop() }
+        controller.player.pause()
+        controller.resumeAfterCompletedSeek(finished: false, currentItem: true)
+        #expect(controller.player.rate == 0)
+        controller.resumeAfterCompletedSeek(finished: true, currentItem: false)
+        #expect(controller.player.rate == 0)
+        controller.resumeAfterCompletedSeek(finished: true, currentItem: true)
+        #expect(controller.player.rate > 0)
+        controller.requestPause()
+        controller.resumeAfterCompletedSeek(finished: true, currentItem: true)
+        #expect(controller.player.rate == 0)
+    }
+
     @Test(arguments: [MediaBackendKind.jellyfin, .emby])
     func directPlayEvidenceDoesNotInventCopyForOtherMethods(backend: MediaBackendKind) throws {
         let identity = ClientIdentity(clientIdentifier: "fixture-only", product: "Labstream", version: "1", deviceName: "Fixture")

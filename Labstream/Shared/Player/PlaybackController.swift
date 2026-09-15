@@ -2272,6 +2272,16 @@ final class PlaybackController {
         }
     }
 
+    /// A completed client resume seek may leave AVPlayer paused even though the user
+    /// still wants playback. Updating speed alone intentionally preserves a paused
+    /// player, so explicitly resume only after the completion's authority checks.
+    func resumeAfterCompletedSeek(finished: Bool, currentItem: Bool) {
+        guard finished, currentItem, !userWantsPaused else { return }
+        player.play()
+        applyPlaybackSpeed()
+        refreshVideoNowPlayingMetadata()
+    }
+
     // MARK: - User transport intent (#40)
 
     /// Toggle play/pause through the controller instead of talking directly to `AVPlayer`.
@@ -3999,9 +4009,8 @@ final class PlaybackController {
                                                          "user_wants_paused": .bool(self.userWantsPaused),
                                                          "time_control_status": .label(Self.timeControlStatusLabel(self.player.timeControlStatus)),
                                                      ])
-                                                     guard finished, isCurrent, !self.userWantsPaused else { return }
-                                                     self.applyPlaybackSpeed()
-                                                     self.refreshVideoNowPlayingMetadata()
+                                                     self.resumeAfterCompletedSeek(finished: finished,
+                                                                                   currentItem: isCurrent)
                                                  }
                                              })
                         }
