@@ -179,7 +179,11 @@ server defect. Original/Maximum and Generic-profile production policies are unch
 Metadata-owned audio and subtitle changes restart asynchronously. Their probes wait for
 a nonnil replacement AVPlayerItem before testing readiness and sustained progress, just
 as quality transitions do. Soft AVFoundation/offline subtitle switches do not require
-replacement. The hold still fails if its item changes unexpectedly; it is not weakened
+replacement. Replacement-wait unit tests inject a monotonic clock and poll step to
+exercise predecessor, detached, replacement, deadline and safety-gate states without
+racing independently scheduled fixture sleeps. Live probes retain the continuous-clock
+deadline and 250-millisecond polling interval. The hold still fails if its item changes
+unexpectedly; it is not weakened
 to tolerate arbitrary restarts. See [issue #312](https://github.com/jlipworth/Labstream/issues/312).
 
 The [historical bounded Plex audit](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/audits/2026-09-13-plex-corpus.md) records the tested

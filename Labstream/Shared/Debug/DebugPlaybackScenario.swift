@@ -64,15 +64,19 @@ enum DebugPlaybackScenario {
                                    timeoutSeconds: Int,
                                    sessionIsCurrent: () -> Bool = { true },
                                    playbackFailed: () -> Bool = { false },
-                                   consentPending: () -> Bool = { false }) async throws {
-        let deadline = ContinuousClock.now.advanced(by: .seconds(timeoutSeconds))
-        while ContinuousClock.now < deadline {
+                                   consentPending: () -> Bool = { false },
+                                   now: () -> ContinuousClock.Instant = { .now },
+                                   poll: (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) async throws {
+        // Injection is only for deterministic DEBUG tests. Live callers retain the
+        // continuous-clock deadline and 250ms cancellation-aware polling interval.
+        let deadline = now().advanced(by: .seconds(timeoutSeconds))
+        while now() < deadline {
             try Task.checkCancellation()
             guard sessionIsCurrent() else { throw Blocked(reason: .backendChanged) }
             if playbackFailed() { throw Blocked(reason: .playbackFailed) }
             if consentPending() { throw Blocked(reason: .consentRequired) }
             if let current = player.currentItem, current !== priorItem { return }
-            try await Task.sleep(for: .milliseconds(250))
+            try await poll(.milliseconds(250))
         }
         throw Blocked(reason: .deadline)
     }

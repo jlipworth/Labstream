@@ -139,32 +139,122 @@ struct PlaybackAgentEvidenceTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
     }
 
+    /// Virtual polling separates the identity/deadline oracle from MainActor load.
     @Test func delayedTrackReplacementDoesNotAcceptThePredecessor() async throws {
         let old = AVPlayerItem(asset: AVMutableComposition())
         let replacement = AVPlayerItem(asset: AVMutableComposition())
         let player = AVPlayer(playerItem: old)
-        let task = Task { @MainActor in
-            try await Task.sleep(for: .milliseconds(20))
-            player.replaceCurrentItem(with: nil)
-            try await Task.sleep(for: .milliseconds(20))
-            player.replaceCurrentItem(with: replacement)
-        }
-        defer { task.cancel(); player.replaceCurrentItem(with: nil) }
-        try await DebugPlaybackScenario.waitForReplacement(of: old, player: player, timeoutSeconds: 2)
+        defer { player.replaceCurrentItem(with: nil) }
+        var now = ContinuousClock.now
+        var polls = 0
+        try await DebugPlaybackScenario.waitForReplacement(of: old, player: player, timeoutSeconds: 2,
+            now: { now }, poll: { delay in
+                #expect(delay == .milliseconds(250))
+                polls += 1
+                now = now.advanced(by: delay)
+                switch polls {
+                case 1:
+                    #expect(player.currentItem === old)
+                    // Keep the predecessor for another complete observation.
+                case 2:
+                    #expect(player.currentItem === old)
+                    player.replaceCurrentItem(with: nil)
+                case 3:
+                    #expect(player.currentItem == nil)
+                    player.replaceCurrentItem(with: replacement)
+                default:
+                    Issue.record("Replacement must finish without another poll")
+                }
+            })
+        #expect(polls == 3)
         #expect(player.currentItem === replacement)
-        try await task.value
     }
 
-    @Test func missingReplacementFailsClosed() async throws {
+    @Test(arguments: [false, true])
+    func missingReplacementFailsClosed(detached: Bool) async throws {
         let old = AVPlayerItem(asset: AVMutableComposition())
-        let player = AVPlayer(playerItem: old)
+        let player = AVPlayer(playerItem: detached ? nil : old)
         defer { player.replaceCurrentItem(with: nil) }
+        let start = ContinuousClock.now
+        var now = start
+        var polls = 0
         do {
-            try await DebugPlaybackScenario.waitForReplacement(of: old, player: player, timeoutSeconds: 0)
-            Issue.record("The predecessor must not satisfy replacement")
+            try await DebugPlaybackScenario.waitForReplacement(of: old, player: player, timeoutSeconds: 2,
+                now: { now }, poll: { delay in
+                    #expect(delay == .milliseconds(250))
+                    polls += 1
+                    now = now.advanced(by: delay)
+                })
+            Issue.record("Neither predecessor nor detached item may satisfy replacement")
         } catch let error as DebugPlaybackScenario.Blocked {
             #expect(error.reason == .deadline)
         }
+        #expect(polls == 8)
+        #expect(start.duration(to: now) == .seconds(2))
+    }
+
+    @Test func replacementAtExpiredDeadlineIsNotAccepted() async throws {
+        let old = AVPlayerItem(asset: AVMutableComposition())
+        let replacement = AVPlayerItem(asset: AVMutableComposition())
+        let player = AVPlayer(playerItem: old)
+        defer { player.replaceCurrentItem(with: nil) }
+        var now = ContinuousClock.now
+        do {
+            try await DebugPlaybackScenario.waitForReplacement(of: old, player: player, timeoutSeconds: 2,
+                now: { now }, poll: { _ in
+                    now = now.advanced(by: .seconds(2))
+                    player.replaceCurrentItem(with: replacement)
+                })
+            Issue.record("A late replacement must not bypass the deadline")
+        } catch let error as DebugPlaybackScenario.Blocked {
+            #expect(error.reason == .deadline)
+        }
+        #expect(player.currentItem === replacement)
+    }
+
+    @Test(arguments: [DebugPlaybackScenario.Reason.backendChanged, .playbackFailed, .consentRequired])
+    func replacementCannotBypassSafetyGates(reason: DebugPlaybackScenario.Reason) async throws {
+        let old = AVPlayerItem(asset: AVMutableComposition())
+        let replacement = AVPlayerItem(asset: AVMutableComposition())
+        let player = AVPlayer(playerItem: old)
+        defer { player.replaceCurrentItem(with: nil) }
+        var now = ContinuousClock.now
+        var replaced = false
+        do {
+            try await DebugPlaybackScenario.waitForReplacement(of: old, player: player, timeoutSeconds: 2,
+                sessionIsCurrent: { !(replaced && reason == .backendChanged) },
+                playbackFailed: { replaced && reason == .playbackFailed },
+                consentPending: { replaced && reason == .consentRequired },
+                now: { now }, poll: { delay in
+                    now = now.advanced(by: delay)
+                    player.replaceCurrentItem(with: replacement)
+                    replaced = true
+                })
+            Issue.record("A replacement cannot supersede a safety gate")
+        } catch let error as DebugPlaybackScenario.Blocked {
+            #expect(error.reason == reason)
+        }
+        #expect(replaced)
+    }
+
+    @Test func cancelledReplacementWaitDoesNotPoll() async throws {
+        let old = AVPlayerItem(asset: AVMutableComposition())
+        let player = AVPlayer(playerItem: old)
+        defer { player.replaceCurrentItem(with: nil) }
+        let task = Task { @MainActor in
+            do {
+                try await DebugPlaybackScenario.waitForReplacement(of: old, player: player, timeoutSeconds: 2,
+                    poll: { _ in Issue.record("Cancelled wait must not poll") })
+                Issue.record("Cancelled wait must throw")
+            } catch is CancellationError {
+                // Expected before any item observation or suspension.
+            } catch {
+                Issue.record("Unexpected cancellation error: \(error)")
+            }
+        }
+        // Both run on MainActor: cancellation occurs before the task can begin.
+        task.cancel()
+        await task.value
     }
 
     @Test func onlyMetadataSubtitleMechanismsRequireReplacement() {
