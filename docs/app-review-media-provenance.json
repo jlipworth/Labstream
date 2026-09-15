@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "catalogRelease": "open-films-v1",
+  "verifiedOn": "2026-09-15",
+  "sourceManifestSha256": "7954af871fcef8d1f02bf29445257ee3236d791e5c7b2eb720ce6201cd5974fb",
+  "scope": "Public source and derivative identities copied from the deployed review catalog manifest; not a fresh live-server checksum audit.",
+  "openFilms": [
+    {
+      "title": "Spring",
+      "year": 2019,
+      "copyrightHolder": "Blender Foundation",
+      "projectUrl": "https://studio.blender.org/projects/spring/pages/about/",
+      "license": {
+        "name": "Creative Commons Attribution 4.0 International",
+        "spdx": "CC-BY-4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "officialPermissionPage": "https://studio.blender.org/projects/spring/pages/about/",
+        "commercialReuseExplicitlyPermitted": true,
+        "requiredAttribution": "\u00a9 Blender Foundation | cloud.blender.org/spring",
+        "excludedMaterial": "Logos, including the Blender, Spring, and Creative Commons logos, associated trademarks, and clearly third-party material are excluded by the official project page. No logo or title design is used as catalog artwork.",
+        "verifiedOn": "2026-09-15"
+      },
+      "source": {
+        "sourcePage": "https://video.blender.org/w/8B5QmoLSS3mWJ4fmZZu3Ye",
+        "downloadUrl": "https://video.blender.org/download/web-videos/3d95fb3d-c866-42c8-9db1-fe82f48ccb95-804.mp4",
+        "sha256": "9d11691b30a9fd192205224e9b0b59f918f33043ae600a791c9c6c1909d42309",
+        "bytes": 110388897,
+        "container": "MP4",
+        "video": "H.264 1920x804 24fps",
+        "audio": "AAC",
+        "durationSeconds": 464.167007,
+        "authoritativeHost": "video.blender.org",
+        "verifiedOn": "2026-08-22"
+      },
+      "playable": {
+        "relativePath": "Movies/Spring (2019)/Spring (2019).mp4",
+        "transform": "None; the complete authoritative encode, including its end credits, is preserved byte-for-byte.",
+        "sha256": "9d11691b30a9fd192205224e9b0b59f918f33043ae600a791c9c6c1909d42309",
+        "fullEndCreditsPreserved": true
+      },
+      "derivedArtwork": [
+        {
+          "relativePath": "Movies/Spring (2019)/poster.jpg",
+          "basis": "Frame from the licensed complete film at 180 seconds; no title card or logo.",
+          "transform": "Pinned Jellyfin FFmpeg 7.1.4: crop 536x804 at x=950,y=0; Lanczos scale to 600x900; JPEG q=2; metadata removed; single-threaded.",
+          "sha256": "7b3b064d86d05e1fbe78c0dcdbd83e81bb29eec8d3335077e23026bc0aa53326"
+        },
+        {
+          "relativePath": "Movies/Spring (2019)/backdrop.jpg",
+          "basis": "Frame from the licensed complete film at 180 seconds; no title card or logo.",
+          "transform": "Pinned Jellyfin FFmpeg 7.1.4: crop 1429x804 at x=400,y=0; Lanczos scale to 1280x720; JPEG q=2; metadata removed; single-threaded.",
+          "sha256": "3dc0be7badd063463ea5e43e1b5992fd8c7d7f5e1db1510c487ed088f6393253"
+        }
+      ]
+    },
+    {
+      "title": "Wing It!",
+      "year": 2023,
+      "copyrightHolder": "Blender Foundation",
+      "projectUrl": "https://studio.blender.org/projects/wing-it/",
+      "license": {
+        "name": "Creative Commons Attribution 4.0 International",
+        "spdx": "CC-BY-4.0",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "officialPermissionPage": "https://studio.blender.org/projects/wing-it/pages/licensing/",
+        "commercialReuseExplicitlyPermitted": true,
+        "requiredAttribution": "(CC) Blender Foundation | studio.blender.org",
+        "excludedMaterial": "Logos, including the Blender, Wing It!, Creative Commons, and sponsor logos, associated trademarks, and clearly third-party material are excluded by the official project page. No logo or title design is used as catalog artwork.",
+        "verifiedOn": "2026-09-15"
+      },
+      "source": {
+        "sourcePage": "https://video.blender.org/w/vrjS4NB4cwnJhrib8uEwi6",
+        "downloadUrl": "https://video.blender.org/download/web-videos/ee623d80-fd8d-4a2a-8aae-1f5acf796f27-1080.mp4",
+        "sha256": "fdb3666b1f9a738c9fcb8e251286b17fb502cd3880bb43ac3f5868a907f71e4e",
+        "bytes": 48136527,
+        "container": "MP4",
+        "video": "H.264 1920x1080 24fps",
+        "audio": "AAC",
+        "durationSeconds": 237.941,
+        "authoritativeHost": "video.blender.org",
+        "verifiedOn": "2026-08-22"
+      },
+      "playable": {
+        "relativePath": "Movies/Wing It! (2023)/Wing It! (2023).mp4",
+        "transform": "None; the complete authoritative encode, including its end credits, is preserved byte-for-byte.",
+        "sha256": "fdb3666b1f9a738c9fcb8e251286b17fb502cd3880bb43ac3f5868a907f71e4e",
+        "fullEndCreditsPreserved": true
+      },
+      "derivedArtwork": [
+        {
+          "relativePath": "Movies/Wing It! (2023)/poster.jpg",
+          "basis": "Frame from the licensed complete film at 150 seconds; no title card or logo.",
+          "transform": "Pinned Jellyfin FFmpeg 7.1.4: crop 720x1080 at x=300,y=0; Lanczos scale to 600x900; JPEG q=2; metadata removed; single-threaded.",
+          "sha256": "82692ecdf809128778e95f4344cf106fc23cdef829eecbf1b220d2e71b888dc5"
+        },
+        {
+          "relativePath": "Movies/Wing It! (2023)/backdrop.jpg",
+          "basis": "Frame from the licensed complete film at 150 seconds; no title card or logo.",
+          "transform": "Pinned Jellyfin FFmpeg 7.1.4: Lanczos scale to 1280x720; JPEG q=2; metadata removed; single-threaded.",
+          "sha256": "b3e79dec0aab6f553f5ba948083acfe87b1e418e69169ad4fad837cd60954582"
+        }
+      ]
+    }
+  ],
+  "proceduralTechnicalFixtures": {
+    "generator": {
+      "path": "files/generate-media.sh",
+      "runtime": "jellyfin/jellyfin:10.11.11",
+      "runtimeDigest": "sha256:aefb67e6a7ff1debdd154a78a7bbb780fd0c873d8639210a7f6a2016ad2b35db",
+      "sourceSha256": "c6d691f8c40c7acac7627d2f511710f17b72ab9fba97c4ae117714c55fbf410d",
+      "deterministicInputs": true
+    },
+    "origin": "Repository-authored procedural gradients, synthesized audio, subtitles, chapters, and plain fictional technical metadata; no third-party material is incorporated.",
+    "rightsHolder": "Repository owner",
+    "license": "Project-Owned-Original-App-Review-Use",
+    "role": "Secondary codec, subtitle, chapter, seek, audio, and download fixtures. The CC BY open films are the visually dominant Movies catalog."
+  },
+  "noEndorsement": "Labstream is not affiliated with or endorsed by Blender Foundation, Blender Studio, or the film creators. Names appear only to identify and attribute the licensed works.",
+  "storefrontGate": "Every visible asset must match this allowlist, include attribution, and pass editorial/age-suitability review. Final captures are not yet produced."
+}

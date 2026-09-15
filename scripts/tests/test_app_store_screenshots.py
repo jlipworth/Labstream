@@ -22,7 +22,7 @@ class AppStoreScreenshotTests(unittest.TestCase):
     def test_checked_spec_manifest_covers_every_native_target(self) -> None:
         manifest = screenshots.load_specs()
         self.assertEqual(tuple(manifest["targets"]), screenshots.TARGET_ORDER)
-        self.assertEqual(manifest["verifiedAt"], "2026-08-21")
+        self.assertEqual(manifest["verifiedAt"], "2026-09-15")
         self.assertTrue(manifest["officialSource"].startswith("https://developer.apple.com/"))
         for target in screenshots.TARGET_ORDER:
             self.assertIn(

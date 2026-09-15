@@ -1,10 +1,14 @@
 # App Store screenshot automation
 
-Labstream's App Store capture workflow uses the real native shells with the Debug-only synthetic
+The existing **placeholder/layout-validation** capture workflow uses the real native shells with the Debug-only synthetic
 browse catalog. It does not authenticate, contact a media server, or read persisted accounts. Raw
 runner evidence remains ignored; the export contains only JPEGs and a sanitized checksum manifest.
 
-## Apple requirements checked on 2026-08-21
+Final release images must instead use the controlled licensed catalog and ordinary app sessions;
+see the [licensed-media capture plan](https://github.com/jlipworth/Labstream/blob/main/docs/plans/2026-09-15-store-demo-capture.md). The fixture exporter
+does not authenticate to that catalog and a `store-ready` folder name is not release approval.
+
+## Apple requirements checked on 2026-09-15
 
 Apple allows one through ten screenshots per device size in PNG, JPEG, or JPG and forbids alpha
 channels. Apple's current accepted capture sizes relevant to the preferred Labstream lanes are:
@@ -12,10 +16,14 @@ channels. Apple's current accepted capture sizes relevant to the preferred Labst
 | Product | Preferred store export | Other accepted sizes used by fallback checks |
 | --- | --- | --- |
 | Apple Vision Pro | 3840 × 2160 | None |
-| iPhone | 1206 × 2622 portrait (iPhone 17/17 Pro lane) | The checked manifest also includes Apple's current 6.9-, 6.5-, 6.3-, and 6.1-inch portrait sizes |
+| iPhone | Final required lane: 1320 × 2868 portrait (6.9-inch); existing fixture lane: 1206 × 2622 (6.3-inch) | The checked manifest also includes Apple's current 6.9-, 6.5-, 6.3-, and 6.1-inch portrait sizes |
 | iPad | 2064 × 2752 portrait (13-inch M5/M4 lane) | 2048 × 2732 and current 11-inch portrait sizes |
 | Apple TV | 3840 × 2160 | 1920 × 1080 |
 | Mac | 2560 × 1600 | 1280 × 800, 1440 × 900, and 2880 × 1800 |
+
+A 6.3-inch capture alone does **not** satisfy the required iPhone set: supply a 6.9-inch
+set or the 6.5-inch fallback. Likewise, use the required 13-inch iPad set, not only 11-inch.
+The exporter checks accepted dimensions, not required display-class coverage.
 
 The machine-readable checked set and verification date live in
 `scripts/app-store-screenshot-specs.json`. Recheck it before each release against Apple's
