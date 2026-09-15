@@ -423,3 +423,22 @@ prove clean UI builds. Those historical artifacts are retained with that limitat
 replacement fixtures explicitly move the actual UI DerivedData aside before building.
 Both replacement semantic fixtures pass from those clean UI build paths, with the iPhone
 detail and tvOS home app-view attachments inspected. All owned simulators are shut down.
+
+### Initialization representation identity follow-up
+
+The candidate now binds the complete validated initialization bytes to each proxy open,
+not merely its admitted MAP URL. Previously, two independently valid initializations
+served at the same URL could each pass normalization, allowing successive player range
+requests to receive parts of different representations. The session actor now validates
+and pins the first complete initialization atomically, rejects later byte changes before
+serving any full or partial body, and starts without that pin on a fresh open. Failed
+validation cannot seed the pin; playlist refresh cannot replace it. Media bytes, profile
+admission and default-off DEBUG macOS routing are unchanged.
+
+Hermetic coverage exercises unchanged repeats, a malformed first response, two individually
+admissible but different initializations at one URL, full/range rejection through the
+loopback proxy, and fresh-open acceptance. This is a transport identity guard, not new
+decoded-frame or live-backend acceptance. Exact-source live regression of this increment,
+server-session cleanup confirmation, later-segment extracted-base equivalence, broader
+source coverage and physical acceptance remain open. No new encoding authorization or
+Release enablement follows from this guard.
