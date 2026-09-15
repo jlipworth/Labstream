@@ -51,6 +51,19 @@ parentheses is the App Store build number (`CFBundleVersion`). A new marketing v
 build 1; each replacement upload for the same platform and marketing version must use a higher
 build number.
 
+## Current release audit and deferred scope
+
+The [2026-09-15 disclosure audit](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/2026-09-15-prerelease-disclosure-audit.md)
+records source-level checks and remaining gates. Privacy wording and required-reason API
+coverage remain open in [#325](https://github.com/jlipworth/Labstream/issues/325) and
+[#326](https://github.com/jlipworth/Labstream/issues/326); historical App Store answers do not
+certify the current candidate.
+
+[#259](https://github.com/jlipworth/Labstream/issues/259), disconnected cold-launch access to
+completed downloads, is **deferred by user decision**. Keep the issue open; deferral is not
+hardware acceptance. Do not advertise reliable offline cold launch as verified. The remaining
+platform acceptance gates below still apply.
+
 ## Coordinated publication sequence
 
 For a new coordinated archive set or the first public release, use this order. If the neutral
@@ -168,12 +181,14 @@ and App Store Connect state before relying on them for a new submission.
 - [ ] Screenshot automation can reproduce the accepted set from clean fixture/review state for
       iPhone, iPad, Mac, Apple TV, and Apple Vision Pro, and the exported files pass the repository
       size/privacy manifest validator before upload.
-- [x] App Privacy answers match the shipped privacy manifest and runtime behavior. The current
-      intended answer is **Data Not Collected**: Labstream has no developer analytics, tracking,
-      telemetry upload, or developer-operated backend. Re-audit this if dependencies or behavior
-      change.
-- [x] Export-compliance answers match the binary. `ITSAppUsesNonExemptEncryption` is currently
-      false; re-evaluate if cryptography use changes.
+- [ ] Reconcile current App Privacy answers, runtime behavior and the packaged privacy manifests.
+      **Data Not Collected** is the previously recorded answer, not a fresh approval for the
+      candidate. Address #325's review/demo-service disclosure and #326's required-reason API gap.
+- [ ] Verify export-compliance answers against the exact candidate and linked dependencies.
+      `ITSAppUsesNonExemptEncryption` remains false in source; this is not a new binary/account
+      certification.
+- [ ] Evaluate any storefront accessibility feature claims on each submitted platform against
+      Apple's criteria; source labels and passing tests alone do not establish support.
 
 ### TestFlight and App Review
 
