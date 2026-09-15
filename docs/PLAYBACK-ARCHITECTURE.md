@@ -472,6 +472,10 @@ sequenceDiagram
 - Preserve each backend lane's replacement order: Plex stops the superseded in-place transcode
   before replacement, while Jellyfin/Emby detach the old item, attach the replacement, and only
   then schedule deferred prior active-encoding cleanup.
+- Terminal stop detaches the player item before issuing server-stop requests so paused HLS
+  resource loading cannot continue against a stopped session. UI teardown remains non-blocking;
+  named probes join the controller-owned stop requests before publishing their final report.
+  Completed requests alone do not prove server workers exited.
 - Keep Plex transcode stop, MediaBrowser progress-stop, and MediaBrowser active-encoding
   cleanup as distinct operations.
 - Treat cleanup failures as non-fatal where the user-visible playback path can continue.

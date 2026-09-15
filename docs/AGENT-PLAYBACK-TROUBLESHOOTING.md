@@ -50,6 +50,11 @@ request. Unknown fields stay unknown. Request-enforced copy is not independent s
 a client stop is not proof that a server job ended. Detached controller progress is not visible
 rendering. Hardware HDR/audio, black frames and tint remain separate verification gates.
 
+Named scenarios detach the player item and await their controller-owned stop requests before
+publishing the terminal report. This prevents an external runner from terminating the app while
+those requests are still pending. Request completion is not server-worker confirmation: retain
+the separate bounded, exact-session server cleanup check and halt the queue if it fails.
+
 Exports use fixed private app-support files, not arbitrary paths. When sandbox access is not
 available, obtain a bounded exact-PID `PlaybackEvidence` category NDJSON unified-log pull using
 `log show --info`. Public log fields are still strictly allowlisted. Long reports use ordered

@@ -37,6 +37,66 @@ struct PlaybackAgentEvidenceTests {
         }
     }
 
+    @Test(arguments: [MediaBackendKind.jellyfin, .emby])
+    func terminalCleanupDetachesAndCanBeJoinedExactlyOnce(backend: MediaBackendKind) async throws {
+        var asyncStops = 0
+        var legacyStops = 0
+        var finished = false
+        let identity = ClientIdentity(clientIdentifier: "fixture-only", product: "Labstream",
+                                      version: "1", deviceName: "Fixture")
+        let session = MediaBrowserPlaybackSession(
+            streamURL: URL(fileURLWithPath: "/fixture.invalid"), backend: backend,
+            backendLabel: backend.displayName, httpHeaders: [:], playSessionID: "fixture-session",
+            sourceMetadata: .init(videoCodec: "hevc"), playMethod: .transcode,
+            transcodeReasons: [], progressSession: nil, onStop: { legacyStops += 1 },
+            reopener: { _ in throw URLError(.cancelled) }, onStopAndWait: {
+                asyncStops += 1
+                await Task.yield()
+                finished = true
+            })
+        let controller = PlaybackController(
+            item: MediaItem(ratingKey: "fixture", title: "Fixture", type: "movie"),
+            sessionSource: .mediaBrowser(session), identity: identity,
+            client: PlexClient(identity: identity), maxVideoBitrateKbps: 0)
+        controller.player.replaceCurrentItem(with: AVPlayerItem(url: URL(fileURLWithPath: "/fixture.invalid")))
+        controller.stop()
+        #expect(controller.player.currentItem == nil)
+        controller.stop()
+        await controller.waitForPendingStopRequests()
+        #expect(finished)
+        #expect(asyncStops == 1)
+        #expect(legacyStops == 0)
+    }
+
+    @Test func failedScenarioWaitsForRemoteCleanupBeforeReturning() async throws {
+        var finished = false
+        let identity = ClientIdentity(clientIdentifier: "fixture-only", product: "Labstream",
+                                      version: "1", deviceName: "Fixture")
+        let session = MediaBrowserPlaybackSession(
+            streamURL: URL(fileURLWithPath: "/fixture.invalid"), backend: .jellyfin,
+            backendLabel: "Jellyfin", httpHeaders: [:], playSessionID: "fixture-session",
+            sourceMetadata: .init(videoCodec: "hevc"), playMethod: .transcode,
+            transcodeReasons: [], progressSession: nil, onStop: {},
+            reopener: { _ in throw URLError(.cancelled) }, onStopAndWait: {
+                await Task.yield()
+                finished = true
+            })
+        let controller = PlaybackController(
+            item: MediaItem(ratingKey: "fixture", title: "Fixture", type: "movie"),
+            sessionSource: .mediaBrowser(session), identity: identity,
+            client: PlexClient(identity: identity), maxVideoBitrateKbps: 0)
+        let arguments = ["--vp-probe-query", "Fixture", "--vp-probe-allow-live", "--vp-probe-scenario", "original"]
+        let options = try #require(DebugPlaybackProbeSupport.launchOptions(from: arguments, defaultBitrateKbps: 0))
+        do {
+            try await DebugPlaybackScenario.run(controller, options: options, arguments: arguments,
+                backendIsCurrent: { false }, log: Logger(subsystem: "fixture", category: "fixture"))
+            Issue.record("Stale backend must fail")
+        } catch let error as DebugPlaybackScenario.Blocked {
+            #expect(error.reason == .backendChanged)
+        }
+        #expect(finished)
+    }
+
     @Test func initializationCaptureExcludesMediaAndMalformedContainers() {
         func box(_ type: String) -> Data { Data([0, 0, 0, 8]) + Data(type.utf8) }
         let valid = box("ftyp") + box("moov")

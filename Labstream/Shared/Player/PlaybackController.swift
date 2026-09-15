@@ -1133,12 +1133,15 @@ final class PlaybackController {
         upNextTask?.cancel()
         upNextTask = nil
         if let proxy = remoteHLSProxy, let generation = remoteHLSProxyGeneration {
-            Task { await proxy.stop(generation: generation) }
+            pendingStopTasks.append(Task { await proxy.stop(generation: generation) })
             remoteHLSProxy = nil
             remoteHLSProxyGeneration = nil
         }
         timeline.report(state: .stopped, force: true, positionMs: terminalProgressMs)
         recordLocalPlaybackPosition(terminalProgressMs)
+        player.pause()
+        removeObservers()
+        player.replaceCurrentItem(with: nil)
         sendTranscodeStop()
         stopRemoteSessionIfNeeded()
         cancelPendingFinalTargetRebuild()
@@ -1164,13 +1167,26 @@ final class PlaybackController {
         localPlaybackProgress(positionMs ?? currentResumeMs, item.duration)
     }
 
+    private var pendingStopTasks: [Task<Void, Never>] = []
+
+    /// Join teardown already started by stop(); used before a probe publishes its terminal report.
+    /// Completion means requests finished, not that the server has no workers.
+    func waitForPendingStopRequests() async {
+        let tasks = pendingStopTasks
+        for task in tasks { await task.value }
+    }
+
     private func stopRemoteSessionIfNeeded() {
         guard let session = mediaBrowserSession else { return }
         switch RemoteStreamLifecyclePolicy.finalSessionStopDecision(hasRemoteStream: true,
                                                                     didAlreadyStop: session.didStop) {
         case .stop:
             session.didStop = true
-            session.onStop?()
+            if let stop = session.onStopAndWait {
+                pendingStopTasks.append(Task { await stop() })
+            } else {
+                session.onStop?()
+            }
         case .skip:
             return
         }
@@ -1191,7 +1207,7 @@ final class PlaybackController {
         let req = TranscodeRequest.stop(server: server, token: token,
                                         identity: identity, sessionID: sessionID)
         let client = self.client
-        Task.detached { try? await client.send(req) }
+        pendingStopTasks.append(Task.detached { _ = try? await client.send(req) })
     }
 
     // MARK: - Subtitles (soft renditions)

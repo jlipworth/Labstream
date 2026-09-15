@@ -93,132 +93,138 @@ enum DebugPlaybackScenario {
         var snapshots: [DebugPlaybackEvidence.Snapshot] = []
         var status: Status = .blocked
         var reason: Reason = .deadline
-        defer {
-            controller.stop()
-            snapshots.append(controller.debugEvidenceSnapshot())
-            DebugPlaybackEvidence.exportReportIfRequested(Report(scenario: scenario, status: status,
-                reason: reason, snapshots: snapshots))
-        }
-        do {
-            try Task.checkCancellation()
-            guard backendIsCurrent() else { throw Blocked(reason: .backendChanged) }
-            controller.start()
-            if [.consentDecline, .consentApprove].contains(scenario) {
-                let deadline = ContinuousClock.now.advanced(by: .seconds(options.playableTimeoutSeconds))
-                while !controller.videoTranscodeConsent.isPending, ContinuousClock.now < deadline {
-                    try Task.checkCancellation()
-                    guard backendIsCurrent() else { throw Blocked(reason: .backendChanged) }
-                    try await Task.sleep(for: .milliseconds(250))
-                }
-                guard let generation = controller.videoTranscodeConsent.generation else {
-                    throw Blocked(reason: .consentNotPending)
-                }
-                snapshots.append(controller.debugEvidenceSnapshot())
-                if scenario == .consentDecline {
-                    controller.declineVideoTranscoding(generation: generation)
-                    guard !controller.videoTranscodeConsent.isPending else { throw Blocked(reason: .consentNotPending) }
-                    status = .passed; reason = .completed
-                    return
-                }
-                // Admission checked independently above. The actual controller validates
-                // this exact prompt generation and never persists approval globally.
-                controller.approveVideoTranscoding(generation: generation)
-            }
-            try await DebugPlaybackProbeSupport.waitUntilPlayable(controller, phase: "initial", timeoutSeconds: options.playableTimeoutSeconds, sessionIsCurrent: backendIsCurrent)
-            snapshots.append(controller.debugEvidenceSnapshot())
-            let captureBackend = controller.debugEvidenceSnapshot().backend.rawValue
-            await DebugPlaybackFrameCapture.captureIfRequested(from: controller.player, label: captureBackend + "-initial", log: log)
-            guard backendIsCurrent() else { throw Blocked(reason: .backendChanged) }
-            let priorItem = controller.player.currentItem
-            var requiresReplacement = [.capped, .maximum].contains(scenario)
-            var expectedAudio: PlaybackAudioTrack.ID?
-            var expectedSubtitle: PlaybackSubtitleTrack.ID?
-            switch scenario {
-            case .seek:
-                controller.performUserSeek(toMs: options.seekMs)
-                let deadline = ContinuousClock.now.advanced(by: .seconds(options.playableTimeoutSeconds))
-                while !seekTargetReached(positionSeconds: controller.player.currentTime().seconds, targetMs: options.seekMs),
-                      ContinuousClock.now < deadline {
-                    try Task.checkCancellation()
-                    guard backendIsCurrent() else { throw Blocked(reason: .backendChanged) }
-                    try await Task.sleep(for: .milliseconds(250))
-                }
-                guard seekTargetReached(positionSeconds: controller.player.currentTime().seconds, targetMs: options.seekMs) else {
-                    throw Blocked(reason: .deadline)
-                }
-            case .capped: controller.reload(bitrateKbps: 8_000)
-            case .maximum: controller.reload(bitrateKbps: StreamingQuality.maxTranscodedKbps)
-            case .audio:
-                // Metadata-owned and AVFoundation-owned choices have different authority.
-                // Do not guess an index across a backend reload.
-                if controller.supportsMetadataAudioSelection {
-                    guard let snapshot = controller.loadAudioStreamChoices(),
-                          let choice = snapshot.tracks.first(where: { $0.id != snapshot.selectedID }) else {
-                        throw Blocked(reason: .unsupportedTrack)
-                    }
-                    await controller.selectAudioStream(choice)
-                    expectedAudio = choice.id
-                    requiresReplacement = true
-                } else { throw Blocked(reason: .unsupportedTrack) }
-            case .subtitles:
-                let generation = controller.debugEvidenceSnapshot().generation
-                let snapshot = try await controller.loadSubtitleTracks()
+        // Keep asynchronous teardown inside the report's lifetime. External runners may
+        // terminate the process as soon as run.json appears.
+        func perform() async throws {
+            do {
                 try Task.checkCancellation()
                 guard backendIsCurrent() else { throw Blocked(reason: .backendChanged) }
-                guard controller.debugEvidenceSnapshot().generation == generation else { throw Blocked(reason: .staleGeneration) }
-                guard let snapshot, let track = snapshot.tracks.first(where: {
-                    $0.id != snapshot.selectedID && !controller.shouldConfirmSubtitleSelection($0, selectedID: snapshot.selectedID)
-                }) else { throw Blocked(reason: .unsupportedTrack) }
-                // Burn-risk choices are excluded; this does not grant a second approval.
-                try await controller.selectSubtitle(track)
-                expectedSubtitle = track.id
-                requiresReplacement = subtitleRequiresReplacement(track.mechanism)
-            default: break
-            }
-            if requiresReplacement {
-                try await waitForReplacement(of: priorItem, player: controller.player,
-                    timeoutSeconds: options.playableTimeoutSeconds,
-                    sessionIsCurrent: backendIsCurrent,
-                    playbackFailed: { controller.playbackError.isFailed },
-                    consentPending: { controller.videoTranscodeConsent.isPending })
-            }
-            try await DebugPlaybackProbeSupport.waitUntilPlayable(controller, phase: "transition", timeoutSeconds: options.playableTimeoutSeconds, sessionIsCurrent: backendIsCurrent)
-            try await DebugPlaybackProbeSupport.holdWithPlaybackProgress(controller,
-                seconds: options.postSeekHoldSeconds, stallToleranceSeconds: options.stallToleranceSeconds, log: log,
-                sessionIsCurrent: backendIsCurrent)
-            guard backendIsCurrent() else { throw Blocked(reason: .backendChanged) }
-            if let expectedAudio, controller.loadAudioStreamChoices()?.selectedID != expectedAudio {
-                throw Blocked(reason: .decisionUnknown)
-            }
-            if let expectedSubtitle {
-                let generation = controller.debugEvidenceSnapshot().generation
-                let selected = try await controller.loadSubtitleTracks()?.selectedID
-                guard backendIsCurrent(), controller.debugEvidenceSnapshot().generation == generation else {
-                    throw Blocked(reason: .staleGeneration)
+                controller.start()
+                if [.consentDecline, .consentApprove].contains(scenario) {
+                    let deadline = ContinuousClock.now.advanced(by: .seconds(options.playableTimeoutSeconds))
+                    while !controller.videoTranscodeConsent.isPending, ContinuousClock.now < deadline {
+                        try Task.checkCancellation()
+                        guard backendIsCurrent() else { throw Blocked(reason: .backendChanged) }
+                        try await Task.sleep(for: .milliseconds(250))
+                    }
+                    guard let generation = controller.videoTranscodeConsent.generation else {
+                        throw Blocked(reason: .consentNotPending)
+                    }
+                    snapshots.append(controller.debugEvidenceSnapshot())
+                    if scenario == .consentDecline {
+                        controller.declineVideoTranscoding(generation: generation)
+                        guard !controller.videoTranscodeConsent.isPending else { throw Blocked(reason: .consentNotPending) }
+                        status = .passed; reason = .completed
+                        return
+                    }
+                    // Admission checked independently above. The actual controller validates
+                    // this exact prompt generation and never persists approval globally.
+                    controller.approveVideoTranscoding(generation: generation)
                 }
-                guard selected == expectedSubtitle else { throw Blocked(reason: .decisionUnknown) }
+                try await DebugPlaybackProbeSupport.waitUntilPlayable(controller, phase: "initial", timeoutSeconds: options.playableTimeoutSeconds, sessionIsCurrent: backendIsCurrent)
+                snapshots.append(controller.debugEvidenceSnapshot())
+                let captureBackend = controller.debugEvidenceSnapshot().backend.rawValue
+                await DebugPlaybackFrameCapture.captureIfRequested(from: controller.player, label: captureBackend + "-initial", log: log)
+                guard backendIsCurrent() else { throw Blocked(reason: .backendChanged) }
+                let priorItem = controller.player.currentItem
+                var requiresReplacement = [.capped, .maximum].contains(scenario)
+                var expectedAudio: PlaybackAudioTrack.ID?
+                var expectedSubtitle: PlaybackSubtitleTrack.ID?
+                switch scenario {
+                case .seek:
+                    controller.performUserSeek(toMs: options.seekMs)
+                    let deadline = ContinuousClock.now.advanced(by: .seconds(options.playableTimeoutSeconds))
+                    while !seekTargetReached(positionSeconds: controller.player.currentTime().seconds, targetMs: options.seekMs),
+                          ContinuousClock.now < deadline {
+                        try Task.checkCancellation()
+                        guard backendIsCurrent() else { throw Blocked(reason: .backendChanged) }
+                        try await Task.sleep(for: .milliseconds(250))
+                    }
+                    guard seekTargetReached(positionSeconds: controller.player.currentTime().seconds, targetMs: options.seekMs) else {
+                        throw Blocked(reason: .deadline)
+                    }
+                case .capped: controller.reload(bitrateKbps: 8_000)
+                case .maximum: controller.reload(bitrateKbps: StreamingQuality.maxTranscodedKbps)
+                case .audio:
+                    // Metadata-owned and AVFoundation-owned choices have different authority.
+                    // Do not guess an index across a backend reload.
+                    if controller.supportsMetadataAudioSelection {
+                        guard let snapshot = controller.loadAudioStreamChoices(),
+                              let choice = snapshot.tracks.first(where: { $0.id != snapshot.selectedID }) else {
+                            throw Blocked(reason: .unsupportedTrack)
+                        }
+                        await controller.selectAudioStream(choice)
+                        expectedAudio = choice.id
+                        requiresReplacement = true
+                    } else { throw Blocked(reason: .unsupportedTrack) }
+                case .subtitles:
+                    let generation = controller.debugEvidenceSnapshot().generation
+                    let snapshot = try await controller.loadSubtitleTracks()
+                    try Task.checkCancellation()
+                    guard backendIsCurrent() else { throw Blocked(reason: .backendChanged) }
+                    guard controller.debugEvidenceSnapshot().generation == generation else { throw Blocked(reason: .staleGeneration) }
+                    guard let snapshot, let track = snapshot.tracks.first(where: {
+                        $0.id != snapshot.selectedID && !controller.shouldConfirmSubtitleSelection($0, selectedID: snapshot.selectedID)
+                    }) else { throw Blocked(reason: .unsupportedTrack) }
+                    // Burn-risk choices are excluded; this does not grant a second approval.
+                    try await controller.selectSubtitle(track)
+                    expectedSubtitle = track.id
+                    requiresReplacement = subtitleRequiresReplacement(track.mechanism)
+                default: break
+                }
+                if requiresReplacement {
+                    try await waitForReplacement(of: priorItem, player: controller.player,
+                        timeoutSeconds: options.playableTimeoutSeconds,
+                        sessionIsCurrent: backendIsCurrent,
+                        playbackFailed: { controller.playbackError.isFailed },
+                        consentPending: { controller.videoTranscodeConsent.isPending })
+                }
+                try await DebugPlaybackProbeSupport.waitUntilPlayable(controller, phase: "transition", timeoutSeconds: options.playableTimeoutSeconds, sessionIsCurrent: backendIsCurrent)
+                try await DebugPlaybackProbeSupport.holdWithPlaybackProgress(controller,
+                    seconds: options.postSeekHoldSeconds, stallToleranceSeconds: options.stallToleranceSeconds, log: log,
+                    sessionIsCurrent: backendIsCurrent)
+                guard backendIsCurrent() else { throw Blocked(reason: .backendChanged) }
+                if let expectedAudio, controller.loadAudioStreamChoices()?.selectedID != expectedAudio {
+                    throw Blocked(reason: .decisionUnknown)
+                }
+                if let expectedSubtitle {
+                    let generation = controller.debugEvidenceSnapshot().generation
+                    let selected = try await controller.loadSubtitleTracks()?.selectedID
+                    guard backendIsCurrent(), controller.debugEvidenceSnapshot().generation == generation else {
+                        throw Blocked(reason: .staleGeneration)
+                    }
+                    guard selected == expectedSubtitle else { throw Blocked(reason: .decisionUnknown) }
+                }
+                snapshots.append(controller.debugEvidenceSnapshot())
+                if scenario == .original && controller.debugEvidenceSnapshot().videoDecision != .copy {
+                    throw Blocked(reason: .decisionUnknown)
+                }
+                if [.maximum, .consentApprove].contains(scenario) && controller.debugEvidenceSnapshot().videoDecision != .encode {
+                    throw Blocked(reason: .decisionUnknown)
+                }
+                await DebugPlaybackFrameCapture.captureIfRequested(from: controller.player, label: captureBackend + "-postseek", log: log)
+                status = .passed; reason = .completed
+            } catch let blocked as Blocked {
+                // Capture the gate before stop() clears generation-scoped consent.
+                snapshots.append(controller.debugEvidenceSnapshot())
+                reason = blocked.reason
+                throw blocked
+            } catch is CancellationError {
+                reason = .cancelled
+                throw CancellationError()
+            } catch {
+                status = .failed; reason = .playbackFailed
+                throw error
             }
-            snapshots.append(controller.debugEvidenceSnapshot())
-            if scenario == .original && controller.debugEvidenceSnapshot().videoDecision != .copy {
-                throw Blocked(reason: .decisionUnknown)
-            }
-            if [.maximum, .consentApprove].contains(scenario) && controller.debugEvidenceSnapshot().videoDecision != .encode {
-                throw Blocked(reason: .decisionUnknown)
-            }
-            await DebugPlaybackFrameCapture.captureIfRequested(from: controller.player, label: captureBackend + "-postseek", log: log)
-            status = .passed; reason = .completed
-        } catch let blocked as Blocked {
-            // Capture the gate before stop() clears generation-scoped consent.
-            snapshots.append(controller.debugEvidenceSnapshot())
-            reason = blocked.reason
-            throw blocked
-        } catch is CancellationError {
-            reason = .cancelled
-            throw CancellationError()
-        } catch {
-            status = .failed; reason = .playbackFailed
-            throw error
         }
+        var failure: Error?
+        do { try await perform() } catch { failure = error }
+        controller.stop()
+        await controller.waitForPendingStopRequests()
+        snapshots.append(controller.debugEvidenceSnapshot())
+        DebugPlaybackEvidence.exportReportIfRequested(Report(scenario: scenario, status: status,
+            reason: reason, snapshots: snapshots))
+        if let failure { throw failure }
     }
 }
 #endif
