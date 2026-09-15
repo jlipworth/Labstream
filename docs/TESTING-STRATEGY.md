@@ -256,12 +256,12 @@ scripts/agent-mobile-run.sh ipad fixture-detail-semantic --allow-simulator
 scripts/agent-tvos-run.sh fixture-home-semantic --allow-simulator
 scripts/agent-tvos-run.sh fixture-player-basic --allow-simulator
 scripts/agent-macos-run.sh fixture-detail
-scripts/agent-sim-run.sh launch-fixture-home-passive
+scripts/agent-sim-run.sh launch-fixture-home-passive --allow-simulator
 ```
 
-The mobile and TV runners refuse a foreign booted device and require `--allow-simulator` as an
-explicit lease assertion. Invoke the visionOS passive runner only after acquiring the same
-repository lease; it resolves the worktree-owned simulator and shuts it down by default. The
+The mobile, TV, and visionOS simulator runners refuse a foreign booted device and require
+`--allow-simulator` as an explicit lease assertion. Invoke each only after acquiring the same
+repository lease; they resolve the worktree-owned simulator and shut it down by default. The
 platform runners' Xcode invocations have a platform-specific wall-clock bound, including
 result-log finalization. Mobile and TV semantic scenarios retain XCTest attachments and result bundles in
 addition to video, screenshots, logs, and `run.json`. macOS uses semantic Accessibility against an
@@ -310,8 +310,9 @@ Use real hardware for behavior the simulator cannot prove reliably. Follow the c
 Vision Pro for visionOS media-plane and immersive/Cinema checks; use physical iPhone/iPad hardware
 for mobile background playback, PiP/AirPlay, cellular-transfer policy, Control Center/lock-screen
 behavior, and App Intents/Spotlight invocation. Physical Apple TV is still required for Siri
-Remote, HDR, HDMI, audio-route, and long-play cells in [TVOS.md](TVOS.md) and the manual
-checklist; there is no `deploy-tvos` helper yet, so those cells stay open until a physical
+Remote, HDR, HDMI, audio-route, and long-play cells in [TVOS.md](TVOS.md) and the
+[manual validation checklist](https://github.com/jlipworth/Labstream/blob/main/TESTING-CHECKLIST.md);
+there is no `deploy-tvos` helper yet, so those cells stay open until a physical
 deploy/acceptance path exists. Simulator evidence cannot close them.
 
 - AVPlayer media-plane rendering, especially on Apple Vision Pro;

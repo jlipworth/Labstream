@@ -14,6 +14,10 @@ media details out of commits and public issues.
   generated Mermaid containers without external script dependencies.
 - `check-doc-links.py` — validates repository-local links and Markdown heading anchors across all
   tracked Markdown, including unpublished research, evidence, and archive lanes.
+- Documentation gate: after `uv run --with-requirements requirements.txt mkdocs build --strict`,
+  run `uv run python scripts/check-doc-links.py --site-dir site` to validate the rendered Pages
+  links too, then `uv run python scripts/check-docs-mermaid.py` to verify every published Mermaid
+  fence rendered. The `--site-dir` check requires the preceding build.
 - `ci-macos-apple-platforms.sh` — native-runner preflight, isolated unsigned
   visionOS/iOS/iPadOS builds, PMSKit tests, evidence, and cleanup. See
   [`docs/MACOS-CI.md`](../docs/MACOS-CI.md).
@@ -30,6 +34,12 @@ media details out of commits and public issues.
   [App Store screenshot automation](../docs/APP-STORE-SCREENSHOTS.md).
 - `publication-audit.py` — audits tracked text, Git history, and optionally GitHub issue text for
   sensitive publication regressions without echoing matched secrets.
+- `publication-audit-allowlist.json` — checked-in, reasoned exceptions for synthetic fixtures and
+  protocol terminology recognized by `publication-audit.py`; it never contains credentials.
+- `media-corpus.py` — read-only, resumable metadata inventory for an authorized Kubernetes media
+  container; it writes only gitignored listing, cache, inventory, representative, and summary
+  artifacts. See the
+  [private media corpus workflow](../docs/MEDIA-CORPUS-TESTING.md).
 - `loc.sh` — informational per-module source line counts.
 - `perf-log-summary.py` — converts privacy-safe performance signposts into summaries/Markdown and
   produces strict, raw-artifact-bound comparison summaries.
@@ -211,9 +221,17 @@ scripts/perf-compare.py compare \
   target `booted`.
 - `run-bounded-command.py` — wall-clock timeout wrapper used by the mobile and tvOS agent
   runners so a hung `xcodebuild` or simctl step cannot run unbounded.
+- `bounded_process.py` — internal process-group termination helper shared by bounded runners;
+  it is a library module, not a standalone command.
 - `agent-sim-run.sh` — bounded visionOS agent scenarios with build/install/launch, screenshots,
   video, logs, and a machine-readable run result. Prefer `launch-fixture-home-passive` for a
-  credential-free browse surface.
+  credential-free browse surface; pass `--allow-simulator` only after acquiring the one-simulator
+  lease.
+- `agent-playback-run.py` — bounded synthetic hosted-controller consent/stop lifecycle check. It
+  has no credentials or live admission and does not prove visible playback or server cleanup.
+- `playback-evidence.py` — offline, allowlisted progress-evidence validator. A passing result
+  proves only sustained sampled playhead progress; it does not prove visible frames, hardware
+  decode, server cleanup, or video-copy negotiation.
 - `agent-mobile-run.sh` — credential-free iPhone/iPad fixture launch and evidence bundle. It
   requires `--allow-simulator` as the caller's one-simulator lease assertion and publishes the
   stable semantic targets that Xcode 27 Device Interaction should use for the next action step.

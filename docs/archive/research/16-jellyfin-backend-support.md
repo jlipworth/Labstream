@@ -3,6 +3,10 @@
 > **Archived research snapshot:** retained as dated evidence, not current architecture, feature
 > status, or implementation guidance. Verify any reusable detail against the active docs and
 > current source; old `VisionPlay` names, issue links, branches, and paths below are historical.
+> **Current context:** issue #35 is closed and Jellyfin support is implemented on `main`.
+> The recommendation and “implementation should stay…” wording below preserve the pre-implementation
+> snapshot; current boundaries live in [`docs/BACKENDS.md`](../../BACKENDS.md) and
+> [`docs/PLAYBACK-ARCHITECTURE.md`](../../PLAYBACK-ARCHITECTURE.md).
 
 **Research date:** 2026-06-14
 **Issue:** #35 — Support Jellyfin as an alternate media server backend.

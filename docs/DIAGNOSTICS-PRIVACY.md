@@ -1,6 +1,7 @@
 # Diagnostics and privacy
 
-Labstream diagnostics are for user-initiated debugging, not analytics.
+Labstream diagnostics are for user-initiated debugging, not analytics. See [Report a bug](REPORTING-BUGS.md)
+for the user-facing copy/export workflow; this page defines the technical privacy contract.
 
 ```mermaid
 flowchart TD

@@ -50,17 +50,24 @@ nav:
       - Privacy policy: privacy.md
       - Release and App Store status: RELEASES.md
       - License exception: app-store-exception.md
+  - Project policies:
+      - Security policy: https://github.com/jlipworth/Labstream/blob/main/SECURITY.md
+      - Code of conduct: https://github.com/jlipworth/Labstream/blob/main/CODE_OF_CONDUCT.md
+      - GPLv3 license: https://github.com/jlipworth/Labstream/blob/main/LICENSE
   - Developer guide:
       - Contributing: CONTRIBUTING.md
       - Development setup: DEVELOPMENT.md
-      - Testing strategy: TESTING-STRATEGY.md
-      - Private media corpus: MEDIA-CORPUS-TESTING.md
-      - App Store screenshots: APP-STORE-SCREENSHOTS.md
-      - Compile performance: COMPILE-PERFORMANCE.md
-      - iOS and iPadOS target: MOBILE-IOS.md
-      - tvOS target: TVOS.md
-      - macOS target: MACOS.md
-      - Native macOS CI: MACOS-CI.md
+      - Platform targets:
+          - iOS and iPadOS: MOBILE-IOS.md
+          - tvOS: TVOS.md
+          - macOS: MACOS.md
+      - Testing and release:
+          - Testing strategy: TESTING-STRATEGY.md
+          - Agent playback troubleshooting: AGENT-PLAYBACK-TROUBLESHOOTING.md
+          - Private media corpus: MEDIA-CORPUS-TESTING.md
+          - App Store screenshots: APP-STORE-SCREENSHOTS.md
+          - Compile performance: COMPILE-PERFORMANCE.md
+          - Native macOS CI: MACOS-CI.md
       - Scripts catalog: SCRIPTS.md
   - Architecture:
       - Overview: ARCHITECTURE.md

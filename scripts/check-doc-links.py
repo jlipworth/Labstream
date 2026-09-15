@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from html.parser import HTMLParser
 import re
 import subprocess
 import sys
@@ -117,18 +118,74 @@ def validate(root: Path) -> list[str]:
     return errors
 
 
+class RenderedPage(HTMLParser):
+    """Collect browser-visible link targets and anchors after include expansion."""
+
+    def __init__(self):
+        super().__init__()
+        self.links: list[str] = []
+        self.ids: set[str] = set()
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        if attributes.get("id"):
+            self.ids.add(attributes["id"])
+        if tag == "a" and attributes.get("href"):
+            self.links.append(attributes["href"])
+
+
+def validate_site(site: Path) -> list[str]:
+    site = site.resolve()
+    if not (site / "index.html").is_file():
+        return [f"Rendered site has no index.html: {site}"]
+    pages: dict[Path, RenderedPage] = {}
+    for path in site.rglob("*.html"):
+        page = RenderedPage()
+        page.feed(path.read_text(encoding="utf-8"))
+        pages[path] = page
+    errors: list[str] = []
+    for source, page in pages.items():
+        for target in page.links:
+            parsed = urllib.parse.urlsplit(target)
+            # Absolute URLs (including host-root paths) are outside this local build.
+            if parsed.scheme or parsed.netloc or target.startswith("/"):
+                continue
+            destination = (
+                (source.parent / urllib.parse.unquote(parsed.path)).resolve()
+                if parsed.path else source
+            )
+            try:
+                destination.relative_to(site)
+            except ValueError:
+                errors.append(f"{source.relative_to(site)}: link escapes site: {target}")
+                continue
+            if destination.is_dir():
+                destination /= "index.html"
+            if not destination.is_file():
+                errors.append(f"{source.relative_to(site)}: missing rendered target: {target}")
+            elif (parsed.fragment and destination in pages
+                  and urllib.parse.unquote(parsed.fragment) not in pages[destination].ids):
+                errors.append(f"{source.relative_to(site)}: missing rendered anchor: {target}")
+    return errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=None)
+    parser.add_argument("--site-dir", type=Path, help="Also validate a freshly built MkDocs site")
     args = parser.parse_args()
     root = (args.root or Path(__file__).resolve().parents[1]).resolve()
     errors = validate(root)
+    if args.site_dir is not None:
+        errors.extend(validate_site(args.site_dir))
     if errors:
         print("Markdown link validation failed:", file=sys.stderr)
         for error in errors:
             print(f"- {error}", file=sys.stderr)
         return 1
     print("Markdown links and anchors: ok")
+    if args.site_dir is not None:
+        print("Rendered site links and anchors: ok")
     return 0
 
 

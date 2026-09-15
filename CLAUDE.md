@@ -18,12 +18,13 @@ seek/restart, cleanup, HDR/DV, and Cinema invariants live in
 SIMID=$(scripts/worktree-sim.sh --platform visionos id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true   # no-op if already booted
 
-# Build (simulator UDID may differ; `xcrun simctl list devices booted` to check).
+# Build with a worktree-local DerivedData path (the product path is fixed below).
 # ⚠️ LINK-SKIP TRAP (bit us live): after a source edit xcodebuild may recompile the .o
 # but SKIP the Ld step — exit 0, no new binary, and the "fix" you then install is the OLD
-# app. Guard every fix build: delete the .app product first, and verify afterwards that
-# the binary mtime is fresh (and matches the installed copy via
-# `xcrun simctl get_app_container "$SIMID" org.labstream.Labstream app`).
+# app. Guard every fix build: delete the local DerivedData/product first, then require a
+# fresh product mtime. The install UUID check below confirms the installed copy is this
+# product; it cannot prove freshness against the source because this project uses a
+# deterministic UUID.
 # ⚠️ DETERMINISTIC LC_UUID (don't be fooled): this project emits a content-INDEPENDENT
 # Mach-O UUID — two different builds (even a real source change) produce the IDENTICAL
 # `dwarfdump --uuid`, and even a full clean rebuild reuses it. So a cross-build UUID
@@ -45,7 +46,8 @@ scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme Labstream \
 # Install only the exact product from this worktree-local DerivedData path.
 APP="$DD/Build/Products/Debug-xrsimulator/Labstream.app"
 xcrun simctl install "$SIMID" "$APP"
-xcrun simctl terminate "$SIMID" org.labstream.Labstream; xcrun simctl launch "$SIMID" org.labstream.Labstream
+xcrun simctl terminate "$SIMID" org.labstream.Labstream 2>/dev/null || true
+xcrun simctl launch "$SIMID" org.labstream.Labstream
 
 # Hermetic PMSKit correctness (live probes are always opt-in and excluded here)
 swift test --package-path PMSKit --no-parallel --skip 'Live.*ProbeTests'
@@ -117,11 +119,13 @@ scripts/deploy-mobile-to-device.sh --verbose  # show full device/team IDs instea
 ```
 
 If both an iPad and iPhone are paired, set `IOS_DEVICE_ID=<uuid>` (or
-`MOBILE_DEVICE_ID=<uuid>`) so the script targets the intended device. The script uses the
-`LabstreamMobile` scheme, derives the signing team from the Apple Development certificate
-OU unless `IOS_DEVELOPMENT_TEAM` is set, deletes stale `Debug-iphoneos/Labstream.app`
-products before building, and stamps the internal Build ID via
-`scripts/build-version-args.sh`.
+`MOBILE_DEVICE_ID=<uuid>`) so the script targets the intended device. Set the signing team with
+`IOS_DEVELOPMENT_TEAM=<team>` (or `MOBILE_DEVELOPMENT_TEAM`); otherwise the wrapper derives it
+from the Apple Development certificate OU. It accepts `--verbose`/`--full-ids`, deletes stale
+`Debug-iphoneos/Labstream.app` products before building, and stamps the internal Build ID via
+`scripts/build-version-args.sh`. By default it prunes matching short-lived development profiles;
+`IOS_REFRESH_SHORT_DEV_PROFILES=0` opts out. The embedded profile is checked and a short-lived
+profile with fewer than six days remaining is refused.
 
 First hardware deploy still needs the user's one-time setup: connect/pair the device,
 trust this Mac, enable Developer Mode on-device if prompted, and sign the matching Apple
@@ -142,7 +146,11 @@ scripts/deploy-to-device.sh --verbose  # show full device/team IDs instead of ma
 
 Headset must show available/paired — "unavailable" usually means asleep/off-network.
 Wake it, put it on the SAME Wi-Fi as this Mac, enable Developer Mode
-(Settings > Privacy & Security > Developer Mode), and trust this Mac. The script derives
+(Settings > Privacy & Security > Developer Mode), and trust this Mac. The wrapper accepts
+`--verbose`/`--full-ids`; by default it prunes matching short-lived development profiles (set
+`VP_REFRESH_SHORT_DEV_PROFILES=0` to opt out), checks the embedded profile, and refuses a
+short-lived profile with fewer than six days remaining. For longer-lived offline use, prefer the
+`scripts/deploy-ad-hoc-to-device.sh` or TestFlight. The script derives
 the Vision Pro identifier from `devicectl`, the signing team from the certificate OU,
 deletes the stale `Debug-xros/Labstream.app` product before building, and stamps the
 internal Build ID via `scripts/build-version-args.sh`.
@@ -165,8 +173,10 @@ owns the build/install command once signing is unblocked.
 
 Compiling is necessary but not sufficient. Before publishing app or docs changes, run the
 canonical core checks from `docs/DEVELOPMENT.md`: hermetic PMSKit tests
-(`swift test --package-path PMSKit --no-parallel --skip 'Live.*ProbeTests'`),
-`scripts/ci-hygiene.sh`, and strict MkDocs. Any time you change app code — yourself OR via
+(`swift test --package-path PMSKit --no-parallel --skip 'Live.*ProbeTests'`), then the strict
+MkDocs build followed by `uv run python scripts/check-doc-links.py --site-dir site` and
+`uv run python scripts/check-docs-mermaid.py`; `scripts/ci-hygiene.sh` runs this documentation
+sequence plus repository redaction and tooling tests. Any time you change app code — yourself OR via
 a workflow / subagent — also use `scripts/native-test-matrix.py affected` to identify the
 affected targets, then headlessly verify the applicable product actually *runs* on **this
 worktree's own simulator** (or through the isolated Mac host path). Resolve the selected
@@ -201,10 +211,13 @@ sim is signed in to **Plex** — you should reach the browse UI, not login; it i
 configured for Jellyfin/Emby). This is the default close-out for every code change.
 
 **Automated runs must self-test, not be told to.** Any workflow/subagent that builds app code
-is expected to include this install→launch→log→screenshot smoke step on the worktree `$SIMID`
-as its own final gate — it should not need to be spelled out in each workflow prompt. Full
-*interactive* functional testing (synthetic taps, multi-backend flows) remains the USER's half
-(see the `sim-driving` skill status note); the smoke test is what Claude owns automatically.
+is expected to include the applicable install→launch→log→screenshot or named platform-runner
+smoke on this worktree's own product/simulator as its final gate — it should not need to be
+spelled out in each workflow prompt. Agents own credential-free/passive and semantic runner
+artifacts where the platform supports them; full *interactive* functional testing (synthetic
+visionOS taps, interactive live-backend flows, gaze/pinch/immersive interaction, and physical
+hardware) remains the USER's half (see the `sim-driving` skill status note). Do not report an
+agent smoke as live-backend or hardware acceptance.
 
 ## Worktree simulators
 
@@ -363,7 +376,8 @@ SIMID=$(scripts/worktree-sim.sh --platform visionos id)
 # Claude takes its own screenshots after the user interacts
 xcrun simctl io "$SIMID" screenshot /tmp/labstream-test.png   # then Read the PNG
 
-# Claude reads app logs itself (NSLog instrumentation shows up here)
+# Claude reads app-owned NSLog/os.Logger messages itself; AppDiagnostics also records
+# bounded machine-readable evidence for probe/diagnostic workflows.
 xcrun simctl spawn "$SIMID" log show --last 5m --predicate 'process == "Labstream"'
 ```
 
@@ -374,9 +388,10 @@ installed. Before concluding a fix failed from a new .ips crash report, check th
 report's `procLaunch` time and image UUIDs against the build time / `dwarfdump --uuid`
 of the fixed dylib.
 
-When a fix is speculative, instrument it with `NSLog` first and read the log after the
-user exercises it — one build cycle instead of two. NEVER NSLog a raw string that may
-contain `%` — always `NSLog("%@", str)`.
+When a fix is speculative, instrument it with the app's `os.Logger`/`AppDiagnostics` (or
+existing `NSLog` path) and read the log after the user exercises it — one build cycle instead of
+two. If `NSLog` is used, never pass a dynamic raw string as its format; use a format such as
+`NSLog("%@", str)`.
 
 SourceKit diagnostics like "No such module 'PMSKit'/'UIKit'" are phantom noise in this
 project — `xcodebuild` is the only truth.
@@ -430,8 +445,11 @@ into canonical current docs, then archive completed plans and resolved reviews. 
 preserve historical prose while repairing live links, nav, scripts, and current instructions.
 Co-locate Mermaid source with the canonical prose; include accessible title/description and
 complete adjacent prose, and update the diagram whenever depicted behavior or ownership changes.
-After any documentation content or path change, run strict MkDocs, repository-wide link and anchor
-validation, Mermaid structural validation, and `scripts/ci-hygiene.sh`.
+After any documentation content or path change, run the strict MkDocs build first, then
+`uv run python scripts/check-doc-links.py --site-dir site` for rendered-site targets/anchors,
+`uv run python scripts/check-docs-mermaid.py`, and `scripts/ci-hygiene.sh` (which reruns the
+published checks plus tooling tests). Also search unpublished plan/research/evidence/archive
+lanes for links that MkDocs cannot see.
 
 ## Hard constraints (do not regress)
 

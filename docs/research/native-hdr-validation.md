@@ -1,7 +1,9 @@
 # Native HDR validation
 
-Active investigation: [Plex DV P7 decoder failure (#316)](https://github.com/jlipworth/Labstream/issues/316).
-This is not a universal platform-support or release-readiness claim.
+Active investigation: cross-backend HDR and physical-display validation. The Plex DV P7
+decoder failure ([#316](https://github.com/jlipworth/Labstream/issues/316)) is closed for
+the bounded Mac result recorded below; this is not a universal platform-support or
+release-readiness claim.
 The live results below cover Plex only. Equivalent exact-source Jellyfin and Emby
 validation is untested here; cross-backend acceptance remains open.
 

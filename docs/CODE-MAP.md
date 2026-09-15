@@ -214,8 +214,9 @@ are backend-scoped and cross-backend.
   `PMSKit/Sources/PMSKit/Models/PlaybackExplanation.swift` owns the compact Stats **Why**
   lane, at-most-two reasons, and provenance. `DolbyVisionGuard.swift` and
   `CaptionAppearance.swift` own the P5 safety gate and caption-profile preview.
-- `Labstream/Shared/Player/TrickPlayThumbnailProviders.swift` owns remote and local Plex BIF,
-  Jellyfin tile, and Emby chapter thumbnail providers; `Labstream/Shared/Support/CostBoundedLRU.swift`
+- `Labstream/Shared/Player/TrickPlayThumbnailProviders.swift` owns remote/local Plex BIF,
+  online/offline Jellyfin tile-sheet, and online/offline Emby BIF/generated-frame/chapter providers;
+  `Labstream/Shared/Support/CostBoundedLRU.swift`
   owns the cost-and-entry cache bound shared by trick-play and artwork memory caches.
 - `Labstream/Shared/Player/AudioSessionCoordinator.swift` owns non-Mac audio-session policy.
 - `Labstream/Platforms/Mobile/Player/MobilePlayerSystemCoordinator.swift` and

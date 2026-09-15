@@ -24,20 +24,22 @@ flowchart TD
 Not every one of those values is secret, but keeping each backend's session as one
 device-local credential set avoids splitting restoration state between storage systems.
 
-Exactly one item is iCloud-synchronizable: the Plex account token. The per-install client
-identifier, backend/server selection, and Jellyfin/Emby session values remain device-local.
-When a synchronized Plex token is observed, any legacy local copy is retired; deleting the
-token removes both sync domains so a stale local token cannot be promoted after sign-out.
+In the canonical shipping identity, exactly one item is iCloud-synchronizable: the Plex
+account token. The per-install client identifier, backend/server selection, and Jellyfin/Emby
+session values remain device-local. When a synchronized Plex token is observed, any legacy
+local copy is retired; deleting the token removes both sync domains so a stale local token
+cannot be promoted after sign-out. Non-canonical Mac development identities intentionally
+disable Plex-token sync; see the development exception below.
 
 Do not write tokens to logs, diagnostics, issue templates, UserDefaults, or JSON profile indexes.
 
-Credential and selected-backend/session writes fail closed if Keychain persistence fails.
-The non-secret Plex client identifier may fall back to a process-local value for one launch
-so background events can still drain; a later launch retries durable storage. A protected,
-backup-excluded secret-file fallback is allowed only for DEBUG simulator workflows. Native
-macOS development apps with non-canonical, per-worktree keychain service identities may opt
-into the same development file storage to avoid repeated prompts; the canonical shipping
-service continues to use Keychain and Plex-token sync.
+Canonical credential and selected-backend/session writes fail closed if Keychain persistence
+fails. The non-secret Plex client identifier may fall back to a process-local value for one
+launch so background events can still drain; a later launch retries durable storage. A
+protected, backup-excluded secret-file fallback is allowed only for DEBUG simulator workflows.
+Native macOS development apps with non-canonical, per-worktree keychain service identities
+may opt into the same development file storage to avoid repeated prompts; the canonical
+shipping service continues to use Keychain and Plex-token sync.
 
 ## UserDefaults
 
@@ -115,8 +117,9 @@ Container paths are implementation details and should not appear in user-submitt
 
 ## Publication identity boundary
 
-The coordinated 1.6.1 publication uses the neutral `org.labstream.Labstream` identity throughout
-the bundle, Keychain service, background sessions, diagnostics, and Spotlight domains. It does not
-adopt persisted state from the retired private-TestFlight identity. Installing the neutral build is
-therefore a new app installation: users sign in again, and prior downloads, background sessions,
-Spotlight entries, and device-local preferences do not migrate.
+Current app targets use the neutral `org.labstream.Labstream` identity throughout the
+bundle, Keychain service, background sessions, diagnostics, and Spotlight domains. That neutral
+identity was introduced as a fresh-install boundary from the retired private-TestFlight identity:
+it did not adopt credentials, downloads, background sessions, Spotlight entries, or device-local
+preferences from that old identity, so users migrating from it had to sign in again. Updates that
+already use the neutral identity retain their persisted state; this is not a per-release reset.

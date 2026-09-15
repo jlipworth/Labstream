@@ -32,3 +32,10 @@ Each baseline should include:
 - a nonsensitive local-only pointer to raw evidence kept outside the repository.
 
 Do not rewrite an old baseline to match current performance. Add a new dated baseline, promote durable procedures or conclusions into current documentation, and keep this file only while it remains useful for trend comparison.
+
+## Retained baselines
+
+- [`2026-06-19-simulator-plex-home-launch.md`](2026-06-19-simulator-plex-home-launch.md) —
+  small Plex Home launch baseline on the visionOS simulator.
+- [`2026-06-19-simulator-plex-home-artwork-launch.md`](2026-06-19-simulator-plex-home-artwork-launch.md) —
+  Plex Home/artwork launch baseline on the visionOS simulator.

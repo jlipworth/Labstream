@@ -18,12 +18,19 @@ scripts/deploy-to-device.sh            # build (signed) + install to the paired 
 scripts/deploy-to-device.sh --launch   # also launch it (headset must be awake/worn)
 scripts/deploy-to-device.sh --no-build # reinstall the last device build without rebuilding
 scripts/deploy-to-device.sh --verbose  # show full device/team IDs instead of masked IDs
+scripts/deploy-to-device.sh --full-ids # alias for --verbose
 ```
 
 The script auto-derives the device UUID (from `devicectl list devices`) and the signing
 team (from the cert OU — see trap #1). Override with `VP_DEVICE_ID` / `VP_DEVELOPMENT_TEAM`
 only if you have several devices or teams. By default it masks device/team IDs in output;
 `--verbose` / `--full-ids` prints them in full for private debugging.
+
+By default, it prunes matching short-lived development profiles before a signed build;
+set `VP_REFRESH_SHORT_DEV_PROFILES=0` to opt out. It checks the embedded profile and refuses to
+install a short-lived profile with fewer than six days remaining. For travel/offline use, prefer
+`scripts/deploy-ad-hoc-to-device.sh` or TestFlight/App Store rather than relying on a free-team
+profile.
 
 ## Prerequisites (one-time, GUI — the agent cannot do these headlessly)
 
@@ -101,7 +108,8 @@ The dev build and a future App Store ("consumer") build **share one bundle id**
 (`org.labstream.Labstream`). visionOS keys an installed app by bundle id, so:
 
 - **Only one can be installed at a time.** Installing the dev build **replaces** an App
-  Store copy (and its data container), and vice-versa. They are different *signers*
+  Store copy; app state may be unavailable or reset across the signer change, and vice-versa.
+  They are different *signers*
   (personal dev cert vs. App Store), so visionOS may reject installing one straight over
   the other — if `devicectl install` errors with a signing/verification mismatch, delete
   the existing app on the headset first, then re-run the deploy.

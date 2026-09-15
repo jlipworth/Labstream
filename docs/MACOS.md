@@ -105,7 +105,7 @@ updates without a playback restart or encoding-consent bypass. This requires phy
 testing; unit tests and a launch smoke do not close that gate.
 
 Current bounded results and open platform gates are in the
-[native HDR investigation](research/native-hdr-validation.md).
+[native HDR investigation](https://github.com/jlipworth/Labstream/blob/main/docs/research/native-hdr-validation.md).
 
 ## Cleanup
 

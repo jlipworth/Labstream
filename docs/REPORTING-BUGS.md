@@ -36,8 +36,8 @@ useful when they identify the exact platform, version, and build.
 
 ## What's in the diagnostic report — and what isn't
 
-The diagnostic report is built to be safe to share publicly. It **includes** safe
-context like:
+The diagnostic report is designed for public sharing. It **includes** safe context
+like:
 
 - app version/build and device/OS class
 - backend name (Plex / Jellyfin / Emby) and connection scheme

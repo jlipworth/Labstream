@@ -2,7 +2,9 @@
 
 Labstream implements a music surface for browsing and playing tracks from the active backend across
 the visionOS, iOS/iPadOS, macOS, and tvOS targets. Shared source coverage is not proof that every
-backend and platform has passed its hardware, TestFlight, or release-acceptance gates.
+backend and platform has passed its hardware, TestFlight, or release-acceptance gates. Platform-wide
+system-entry and media-publishing ownership remains in [System integration](SYSTEM-INTEGRATION.md);
+this page records the music-specific behavior.
 
 ```mermaid
 flowchart TD
@@ -102,4 +104,5 @@ the Music tab. The current Spotlight and App Intent index deliberately excludes 
 those surfaces remain video-only. On visionOS, Now Playing uses an app-owned player panel
 and inert dimmed backdrop: its top-leading close control and a tap in the surround both
 dismiss without stopping playback or activating the obscured browse UI; Stop remains a
-distinct trailing playback action.
+distinct trailing playback action. For the complete platform ownership split, see [System
+integration](SYSTEM-INTEGRATION.md#system-media-publishing).

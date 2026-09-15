@@ -34,7 +34,8 @@ flowchart TD
 - Offline records must never contain access tokens. They do persist the minimum backend
   context needed to resume and clean up a job, which currently includes the owning backend,
   server base URL/server ID, MediaBrowser user ID where applicable, media/play-session IDs,
-  and route/checkpoint state. Treat `index.json` as private app data, not a shareable profile.
+  and route/checkpoint state. See [Persistence](PERSISTENCE.md#app-container) for the complete
+  on-disk and credential boundary. Treat `index.json` as private app data, not a shareable profile.
 
 ## Backend routes
 
@@ -92,7 +93,7 @@ fundamentally constrained by the platform, not by the server or the app:
   by the system daemon (`nsurlsessiond`) may continue; app-side work (server-prep polling,
   keepalives, timers) is frozen while the app is suspended.
 - **Background transfers are deprioritized.** The OS gives interactive networking and power
-  management priority over background bulk transfers, so throughput can be several times slower
+  management priority over background bulk transfers, so throughput can be substantially slower
   than the same download with the app active.
 - **Background app wake-ups are rate-limited.** Each time the system relaunches the app for a
   background-session event, it may delay the next opportunity to do app work. Any design that
@@ -250,7 +251,7 @@ Paths in the JSON index are one-level paths relative to the Downloads directory 
 re-hydrated against the current sandbox at load time. Absolute container paths are not
 stable across installs. URLSession resume data is stored as a protected, backup-excluded
 sibling artifact and referenced by relative path; it is only valid for static/range-resumable
-sources.
+sources. The storage and backup boundary is detailed in [Persistence](PERSISTENCE.md#app-container).
 
 Side assets such as posters, chapters, and compatible external text subtitles are cached next to the download record when available. They are treated as convenience metadata; the main playable file remains the durable core of the download.
 

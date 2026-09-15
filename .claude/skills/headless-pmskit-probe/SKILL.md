@@ -116,18 +116,33 @@ Run loop (Claude self-serves; the USER must sign in to that backend **once** fir
 the probe does not authenticate):
 
 ```sh
-# 1. Guarded build + install (see CLAUDE.md link-skip / stale-process traps)
-SIMID=$(scripts/worktree-sim.sh id)
+# 1. Guarded worktree-local build + install (see CLAUDE.md link-skip / stale-process traps)
+SIMID=$(scripts/worktree-sim.sh --platform visionos id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
-APP=$(/bin/ls -td $HOME/Library/Developer/Xcode/DerivedData/Labstream-*/Build/Products/Debug-xrsimulator/Labstream.app | head -1)
+DD="$PWD/build/DerivedData-visionos"
+rm -rf "$DD"
+scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme Labstream \
+  -destination "platform=visionOS Simulator,id=$SIMID" \
+  -configuration Debug -derivedDataPath "$DD" build CODE_SIGNING_ALLOWED=NO -quiet
+APP="$DD/Build/Products/Debug-xrsimulator/Labstream.app"
 xcrun simctl install "$SIMID" "$APP"
 # 2. Launch with the probe flag (launch args go AFTER the bundle id). Optional overrides:
 #    --vp-probe-query "<title>"  --vp-probe-bitrate-kbps N  --vp-probe-seek-ms N
-xcrun simctl terminate "$SIMID" org.labstream.Labstream 2>/dev/null
-xcrun simctl launch "$SIMID" org.labstream.Labstream --vp-probe-emby-playback --vp-probe-query "Some Movie"
+xcrun simctl terminate "$SIMID" org.labstream.Labstream 2>/dev/null || true
+xcrun simctl launch "$SIMID" org.labstream.Labstream \
+  --vp-probe-backend emby --vp-probe-emby-playback --vp-probe-allow-live \
+  --vp-probe-query "Some Movie" --vp-probe-bitrate-kbps 0 --vp-probe-evidence
 # 3. Read the probe's own log lines (probe.start / probe.item_resolved / probe.progress / probe.pass|fail)
 xcrun simctl spawn "$SIMID" log show --last 2m --predicate 'process == "Labstream"' | grep -iE 'EmbyProbe|probe\.'
+# 4. Release the simulator lease immediately after collecting evidence.
+xcrun simctl shutdown "$SIMID"
 ```
+
+For Jellyfin and Emby, the query must resolve to one exact title on the signed-in server.
+Plex is different: do not imply that swapping the backend flag is sufficient. A Plex playback
+probe requires private exact-source bindings `--vp-probe-rating-key`, `--vp-probe-media-id`, and
+`--vp-probe-part-id`, or the read-only `--vp-probe-plex-discover` flow to create them. Keep those
+IDs private and verify fresh metadata before each run; see `docs/MEDIA-CORPUS-TESTING.md`.
 
 To add a probe for a new backend, mirror `DebugEmbyPlaybackProbe.swift` (swap the browse
 service, the `--vp-probe-…` flag, and the `activeBackend ==` guard) and add one

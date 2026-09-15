@@ -20,3 +20,6 @@ Name files `YYYY-MM-DD-<subsystem>-<purpose>.md`. Record the source revision, me
 - [`2026-07-10-downloads-state-machines.md`](2026-07-10-downloads-state-machines.md)
 - [`2026-07-11-downloads-fault-injection-harness.md`](2026-07-11-downloads-fault-injection-harness.md)
 - [`2026-07-11-downloads-phase4-coverage-matrix.md`](2026-07-11-downloads-phase4-coverage-matrix.md)
+- [`2026-09-13-plex-corpus.md`](2026-09-13-plex-corpus.md) — bounded Plex exact-source
+  playback-evidence audit. It records simulator results and harness corrections; physical,
+  HDR/colorimetry, long-play, and exhaustive track/version gates remain open.

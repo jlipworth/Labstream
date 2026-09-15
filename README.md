@@ -21,12 +21,12 @@ They share the SwiftUI app core, custom AVFoundation player, and
 `PMSKit` backend layer while owning platform-specific shells, input, and system integration.
 
 > **Distribution status:** Labstream is publicly distributed as source for local builds. The
-> neutral universal-purchase App Store Connect record now has processed 1.6.1 (build 2) builds for
-> visionOS, iOS/iPadOS, tvOS, and macOS in invitation-only internal TestFlight. Product metadata
-> and initial privacy-safe screenshots are staged, but there is no public App Store release.
-> Platform versions remain pre-release until their individual hardware, review-access, storefront,
-> and App Review gates pass. See the
-> [release and App Store status](docs/RELEASES.md).
+> repository records invitation-only internal TestFlight binaries, but there is no public App Store
+> release. It also records staged product metadata and initial privacy-safe screenshots. Platform
+> versions remain pre-release until their individual hardware, review-access, storefront, and App
+> Review gates pass.
+> The [release and App Store status](docs/RELEASES.md) page is the source of truth for exact source
+> versions, processed builds, and open gates.
 
 > **Development status:** This is an active, pre-release project rather than a compatibility
 > promise. Plex, Jellyfin, and Emby paths are implemented, but backend, server-version, media,
@@ -92,8 +92,8 @@ tvOS target deliberately omits the complete download capability and Offline prod
 | Backend | Sign-in | Core support |
 | --- | --- | --- |
 | Plex | Plex PIN/OAuth and server discovery | Implemented across browse, search, playback, progress, music, and downloads/offline; primary live-test backend. |
-| Jellyfin | Server URL plus Jellyfin auth or Quick Connect | Browse, search, playback, progress, music, and downloads/offline paths are implemented; live coverage varies by server and media. |
-| Emby | Emby Connect PIN or manual server login | Browse, search, playback, progress, music, and downloads/offline paths are implemented; live coverage varies by server and media. |
+| Jellyfin | Server URL plus username (password optional) or Quick Connect | Browse, search, playback, progress, music, and downloads/offline paths are implemented; live coverage varies by server and media. |
+| Emby | Emby Connect PIN or manual server URL plus username/password | Browse, search, playback, progress, music, and downloads/offline paths are implemented; live coverage varies by server and media. |
 
 Labstream is unofficial and independent. It is not affiliated with, endorsed by, sponsored by, or officially supported by Plex, the Jellyfin project, or Emby Media.
 
@@ -169,18 +169,19 @@ Labstream/
 ## Documentation
 
 - Documentation source and local site build: [`docs/`](docs/)
-- Release and App Store status: [`docs/RELEASES.md`](docs/RELEASES.md)
-- Development setup: [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md)
-- iOS/iPadOS target: [`docs/MOBILE-IOS.md`](docs/MOBILE-IOS.md)
-- tvOS target: [`docs/TVOS.md`](docs/TVOS.md)
-- macOS target: [`docs/MACOS.md`](docs/MACOS.md)
-- Architecture overview: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-- Backend model: [`docs/BACKENDS.md`](docs/BACKENDS.md)
-- Playback: [`docs/PLAYBACK-ARCHITECTURE.md`](docs/PLAYBACK-ARCHITECTURE.md)
-- Downloads/offline: [`docs/DOWNLOADS-OFFLINE.md`](docs/DOWNLOADS-OFFLINE.md)
-- Diagnostics/privacy: [`docs/DIAGNOSTICS-PRIVACY.md`](docs/DIAGNOSTICS-PRIVACY.md)
-- Compile performance: [`docs/COMPILE-PERFORMANCE.md`](docs/COMPILE-PERFORMANCE.md)
-- Manual validation checklist: [`TESTING-CHECKLIST.md`](TESTING-CHECKLIST.md)
+- User guide: [support](SUPPORT.md), [bug reporting](docs/REPORTING-BUGS.md),
+  [privacy](PRIVACY.md), and [release/App Store status](docs/RELEASES.md)
+- Contributor guide: [contributing](docs/CONTRIBUTING.md), [development setup](docs/DEVELOPMENT.md),
+  [testing strategy](docs/TESTING-STRATEGY.md), and [playback troubleshooting](docs/AGENT-PLAYBACK-TROUBLESHOOTING.md)
+- Platform guides: [iOS/iPadOS](docs/MOBILE-IOS.md), [tvOS](docs/TVOS.md), and [macOS](docs/MACOS.md)
+- Architecture: [overview](docs/ARCHITECTURE.md), [code map](docs/CODE-MAP.md),
+  [backends](docs/BACKENDS.md), [playback](docs/PLAYBACK-ARCHITECTURE.md),
+  [downloads/offline](docs/DOWNLOADS-OFFLINE.md), [music](docs/MUSIC-DESIGN.md),
+  [persistence](docs/PERSISTENCE.md), [system integration](docs/SYSTEM-INTEGRATION.md), and
+  [diagnostics/privacy](docs/DIAGNOSTICS-PRIVACY.md)
+- Validation: [private media corpus](docs/MEDIA-CORPUS-TESTING.md),
+  [App Store screenshots](docs/APP-STORE-SCREENSHOTS.md), [compile performance](docs/COMPILE-PERFORMANCE.md),
+  and [manual validation checklist](TESTING-CHECKLIST.md)
 
 Public pages at the top of `docs/` describe the current app. Internal documents use explicit unpublished lanes: active implementation plans and acceptance journals in `docs/plans/`, unresolved investigations in `docs/research/`, immutable audit/profiling observations in `docs/evidence/`, and completed or superseded context in `docs/archive/`. The repository-root `TESTING-CHECKLIST.md` is the deliberate operational exception and remains the current manual validation matrix.
 

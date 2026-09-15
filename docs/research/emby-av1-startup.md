@@ -1,9 +1,11 @@
 # Emby AV1 cold-start media deadlines
 
 Tracking: [issue #305](https://github.com/jlipworth/Labstream/issues/305).
-This investigation is separate from the HEVC SDR visual defect in
+This investigation is separate from the reproduced and now closed HEVC SDR visual defect in
 [issue #304](https://github.com/jlipworth/Labstream/issues/304) and the Jellyfin-only
-[issue #303](https://github.com/jlipworth/Labstream/issues/303). HDR work remains paused.
+[issue #303](https://github.com/jlipworth/Labstream/issues/303). HDR validation is tracked
+separately in [native HDR validation](native-hdr-validation.md); this note makes no HDR
+support or release claim.
 
 ## Established failure boundary
 

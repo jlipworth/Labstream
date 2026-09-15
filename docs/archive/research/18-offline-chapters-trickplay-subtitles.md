@@ -3,6 +3,9 @@
 > **Archived research snapshot:** retained as dated evidence, not current architecture, feature
 > status, or implementation guidance. Verify any reusable detail against the active docs and
 > current source; old `VisionPlay` names, issue links, branches, and paths below are historical.
+> **Current context:** issue #74 is closed. The “not yet implemented” status below is the
+> original investigation snapshot; Emby BIF/trick-play work was later accepted under the
+> archived [#238 implementation journal](../plans/2026-07-20-emby-bif-trickplay.md).
 
 Status: investigation for issue #74. This is not yet implemented behavior.
 

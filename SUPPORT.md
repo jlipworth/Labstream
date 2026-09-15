@@ -14,7 +14,9 @@ there is no public App Store release yet. Platform-specific status and acceptanc
 - Apple Vision Pro running **visionOS 26.0** or later; an iPhone/iPad running **iOS/iPadOS 26.1**
   or later; Apple TV running **tvOS 26** or later; or an Apple-silicon Mac running **macOS 26**.
 - A reachable **Plex Media Server**, **Jellyfin server**, or **Emby server** you administer or have access to.
-  Plex mode requires a Plex account for PIN/OAuth sign-in; Emby mode can use Emby Connect PIN sign-in or a manual Emby server URL.
+  Plex mode uses a Plex account for PIN/OAuth sign-in; Jellyfin supports a server URL with a
+  username (password optional) or Quick Connect; Emby supports an Emby Connect PIN or a manual
+  server URL with username/password.
 - Labstream does not provide, host, sell, or bundle media. Playback and offline
   downloads are for media you are authorized to access on the server you choose.
 - Local-network playback is free. Under Plex's current

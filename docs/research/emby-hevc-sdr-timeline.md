@@ -1,7 +1,8 @@
 # Emby HEVC 10-bit SDR quality-reopen corruption
 
-[Issue #304](https://github.com/jlipworth/Labstream/issues/304) remains open for
-physical-device, dynamic-fragment/decoder analysis, and broader server-version acceptance.
+[Issue #304](https://github.com/jlipworth/Labstream/issues/304) is closed for the reproduced
+simulator boundary and scoped mitigation. Physical-device playback, dynamic-fragment/decoder
+analysis, and broader server-version acceptance remain unverified here.
 [The H.264 delivery issue #291](https://github.com/jlipworth/Labstream/issues/291) is
 related context, not proof of a shared cause. AV1 startup is separate (#305); HDR is excluded.
 

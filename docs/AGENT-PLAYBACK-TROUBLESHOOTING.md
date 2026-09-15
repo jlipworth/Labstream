@@ -66,4 +66,4 @@ for broader investigation. Stop the exact probe/fixture process and shut down an
 when finished. User-enabled diagnostics remain enabled.
 
 Historical acceptance and the measured AX/screenshot comparison are in the
-[completed implementation journal](archive/plans/2026-09-06-agent-playback-evidence.md).
+[completed implementation journal](https://github.com/jlipworth/Labstream/blob/main/docs/archive/plans/2026-09-06-agent-playback-evidence.md).

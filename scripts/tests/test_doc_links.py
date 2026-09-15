@@ -44,6 +44,31 @@ class DocumentationLinkTests(unittest.TestCase):
         self.assertTrue(any("missing target" in error for error in errors))
         self.assertTrue(any("missing anchor" in error for error in errors))
 
+    def test_rendered_links_include_expansion_and_url_decoding(self):
+        root = self.make_repo({
+            "index.html": '<a href="guide/#included-heading">Guide</a><a href="asset%20one.txt">Asset</a>',
+            "guide/index.html": '<h2 id="included-heading">Included</h2><a href="../">Home</a>',
+            "asset one.txt": "asset",
+        })
+        self.assertEqual(LINKS.validate_site(root), [])
+
+    def test_rendered_links_reject_excluded_pages_and_missing_anchors(self):
+        root = self.make_repo({
+            "index.html": '<a href="research/excluded/">Research</a><a href="guide/#missing">Anchor</a>',
+            "guide/index.html": '<h1 id="present">Present</h1>',
+        })
+        errors = LINKS.validate_site(root)
+        self.assertEqual(len(errors), 2)
+        self.assertTrue(any("missing rendered target" in error for error in errors))
+        self.assertTrue(any("missing rendered anchor" in error for error in errors))
+
+    def test_rendered_links_require_build_and_reject_escape(self):
+        root = self.make_repo({"README.md": "# Test"})
+        self.assertTrue(LINKS.validate_site(root))
+        (root / "index.html").write_text('<a href="../outside.html">Escape</a>')
+        self.assertIn("escapes site", LINKS.validate_site(root)[0])
+
+
 
 if __name__ == "__main__":
     unittest.main()

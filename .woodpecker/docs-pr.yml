@@ -13,5 +13,5 @@ steps:
       - rm -rf /var/lib/apt/lists/*
       - pip install --no-cache-dir -r requirements.txt
       - mkdocs build --strict
-      - python scripts/check-doc-links.py
+      - python scripts/check-doc-links.py --site-dir site
       - python scripts/check-docs-mermaid.py

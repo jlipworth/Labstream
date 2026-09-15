@@ -4,17 +4,17 @@ Labstream integrates with Apple system surfaces through one routing layer so ext
 behave like normal in-app navigation. The implementation is shared by the visionOS and mobile
 targets and reused by the Mac target where the platform surface is available;
 end-to-end validation remains platform-specific. tvOS compiles the shared router and App Intents,
-but Spotlight indexing is a no-op, user-activity Spotlight handoff is compiled out, SharePlay and
-Cinema are absent, and video Now Playing is not published through the iOS/Mac lease or the
-visionOS `MPNowPlayingSession` path.
+but Spotlight indexing and continuation are compiled out, SharePlay and Cinema are absent, and
+video Now Playing is not published through the iOS/Mac lease or the visionOS
+`MPNowPlayingSession` path.
 
 ```mermaid
 flowchart TD
   accTitle: System entry routing
-  accDescr: App Intents, Spotlight, user activities, and participant-locally resolved SharePlay items enter one router, which waits for app restore when necessary and then opens the normal browse, detail, or player route.
+  accDescr: App Intents, Spotlight continuation, Cinema exits, and participant-locally resolved SharePlay items enter one router, which waits for app restore when necessary and then opens the normal browse, detail, or player route.
   Intent[App Intent] --> Router[SystemEntryRouter]
   Spotlight[Spotlight result] --> Router
-  Activity[User activity] --> Router
+  Cinema[Cinema exit] --> Router
   SharePlay[Locally resolved SharePlay item] --> Router
   Router --> Restore{App ready?}
   Restore -->|no| Queue[Queue route]
@@ -39,14 +39,17 @@ App Intents expose selected Labstream actions and media entities to system surfa
 
 Spotlight indexing is user-controllable from Settings. Indexed content uses non-token, backend/server-scoped identifiers and is cleared when the user disables media suggestions, signs out, or switches backend. Treat searchable identifiers as private because they may include a server namespace and media item id.
 
-New backend-scoped identifiers use the neutral `ls1|backend|server|item` shape. The
-router also accepts the legacy `vp1` prefix from early mobile-preview builds so saved
-Shortcuts and Spotlight rows keep routing after upgrade; do not remove that alias without
-a separate migration plan.
+Non-Plex Spotlight entries and backend-scoped App Intent IDs use the neutral
+`ls1|backend|server|item` shape. Plex Spotlight deliberately retains its legacy
+server-scoped `server|item` identifier for index compatibility. The router also accepts the
+legacy `vp1` prefix from early mobile-preview builds so saved Shortcuts and other persisted
+rows keep routing after upgrade; do not remove that alias without a separate migration plan.
 
 ## User activities
 
-User activities follow the same routing path as App Intents and Spotlight. Add new external-entry behavior to the router first, then connect the system surface to that route.
+No separate `NSUserActivity` surface is currently registered. Spotlight continuation arrives
+through `CSSearchableItemActionType` and uses the same router. If a future user-activity surface
+is added, connect it to `SystemEntryRouter` rather than duplicating navigation logic.
 
 ## System media publishing
 
