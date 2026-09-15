@@ -575,3 +575,33 @@ coverage, later-segment extracted-base equivalence and physical HDR/DV/audio acc
 remain explicit gates. P5 safety, Plex Generic, consent, source/session authority and
 Release behavior are unchanged. No video encoding was authorized, no PR was opened,
 and no merge to the default branch or release upload is implied.
+
+### Local-network permission recheck
+
+After the user reported granting local-network access, revision `f4fc8da4` was rebuilt
+from clean native macOS DerivedData and staged under the same isolated development
+identity. Fresh executable mtime and matching built/staged SHA-256 were verified.
+All three bounded LaunchServices retries used the existing saved authentication and
+unchanged exact source bindings. None reproduced `Local network prohibited` or URL
+error -1009 in their PID-bounded host logs; no privacy settings or credentials were
+changed. The earlier permission block is therefore not the current observed blocker.
+
+- Plex Original reopen remains blocked before playback: the exact metadata request
+  returns HTTP 404, while other server requests succeed. No replacement item binding
+  was substituted, and no fresh Plex frame pass is claimed.
+- Jellyfin's audio-transition run now authenticates and plays. Initial decoded frames
+  are fresh, recognizable and untinted, but the unchanged 25-second progress check
+  fails after a 2.135-second observation gap; sampled positions continue advancing.
+  There is no post-hold frame pass, and the failed scenario remains a failure.
+- Emby's audio transition passes the unchanged 25-second hold and replacement-generation
+  check. Request-enforced video copy remains in effect; audio decision and server-side
+  cleanup remain unknown in app evidence. Fresh initial and post-scenario frames were
+  inspected and show recognizable untinted video. These tone-mapped captures do not
+  establish physical HDR or audio-output accuracy.
+
+These results supersede only the outstanding permission diagnosis, not the prior
+failures or broader acceptance gates. Plex exact-source availability and Jellyfin's
+progress-observation failure remain open. No video encoding was requested or authorized;
+P5 safety, Plex Generic, consent, default-off DEBUG macOS routing and Release behavior
+are unchanged. The run processes and staged host app were cleaned up while preserving
+saved sessions. No simulator was booted, and no PR, merge or release action followed.
