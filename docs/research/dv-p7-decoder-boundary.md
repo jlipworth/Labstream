@@ -423,3 +423,185 @@ prove clean UI builds. Those historical artifacts are retained with that limitat
 replacement fixtures explicitly move the actual UI DerivedData aside before building.
 Both replacement semantic fixtures pass from those clean UI build paths, with the iPhone
 detail and tvOS home app-view attachments inspected. All owned simulators are shut down.
+
+### Initialization representation identity follow-up
+
+The candidate now binds the complete validated initialization bytes to each proxy open,
+not merely its admitted MAP URL. Previously, two independently valid initializations
+served at the same URL could each pass normalization, allowing successive player range
+requests to receive parts of different representations. The session actor now validates
+and pins the first complete initialization atomically, rejects later byte changes before
+serving any full or partial body, and starts without that pin on a fresh open. Failed
+validation cannot seed the pin; playlist refresh cannot replace it. Media bytes, profile
+admission and default-off DEBUG macOS routing are unchanged.
+
+Hermetic coverage exercises unchanged repeats, a malformed first response, two individually
+admissible but different initializations at one URL, full/range rejection through the
+loopback proxy, and fresh-open acceptance. This is a transport identity guard, not new
+decoded-frame or live-backend acceptance. Exact-source live regression of this increment,
+server-session cleanup confirmation, later-segment extracted-base equivalence, broader
+source coverage and physical acceptance remain open. No new encoding authorization or
+Release enablement follows from this guard.
+
+### Initialization identity: fresh bounded validation
+
+The initialization-pinning revision `bc224b81` was rebuilt from clean native macOS
+DerivedData and run with the existing authenticated, isolated development identity.
+The staged executable matches the freshly built product by SHA-256. These are new
+exact-revision results, not reuse of the earlier candidate's playback evidence.
+
+- Hermetic PMSKit passes 1,707 Swift Testing cases and 121 XCTest cases. The range
+  regressions verify unchanged partial responses, rejection of changed complete and
+  partial initialization responses, failed-first-validation recovery, playlist-refresh
+  pin retention, and acceptance of a different initialization only after a fresh open.
+  No live server initialization was deliberately mutated; that adversarial boundary is
+  established by the hermetic loopback tests.
+- The exact P7 source passes native Plex Original video-copy playback, a seek to
+  600 seconds with a 35-second advancing hold, and a separate close/reopen hold.
+  An audio-track transition also passes with replacement-generation evidence: video
+  remains copy while audio changes from copy to encoding. No video encoding was
+  authorized or requested by these scenarios.
+- The same source, independently bound to each backend's expected item/source,
+  passes Jellyfin's seek to 600 seconds and Emby's forward seek to 1,200 seconds,
+  each with a 25-second hold. Emby's separate Original reopen passes. Jellyfin's
+  first reopen reports `failed/playbackFailed`; its saved progress evidence identifies
+  a 2.014-second observation gap, beyond the unchanged two-second oracle bound,
+  while sampled positions continued advancing. It has no post-hold visual pass.
+  One bounded reopen repeat passes the unchanged 25-second hold and frame gates;
+  this does not retroactively pass the first attempt or resolve older pause findings.
+- Fresh initial and post-scenario decoded frames were inspected for every passing
+  run. They show recognizable, untinted video with 3840-by-2160 PQ/BT.2020 signaling.
+  Some initial capture attempts lack a new pixel buffer; subsequent fresh frames
+  provide the visual evidence. These tone-mapped captures do not establish HDR
+  luminance accuracy, native Dolby Vision reconstruction, or physical audio output.
+- Jellyfin/Emby app evidence reports request-enforced video copy and unknown audio;
+  separate read-only server job logs confirm video copy and AAC encoding. The matched
+  jobs show graceful quit and their specific playlists are absent after stop. Plex
+  seek, reopen and audio-transition stops receive HTTP 200, with observed job exits
+  and removal of the corresponding transcode directories. These are bounded job
+  cleanup observations, not proof of every server resource's lifecycle.
+- Fresh generic visionOS, iOS and tvOS builds pass, as do hygiene and strict
+  documentation checks. Two full macOS hosted runs each pass 703 of 704 tests and
+  fail `delayedTrackReplacementDoesNotAcceptThePredecessor` at its replacement
+  deadline. A separate focused evidence run passes all 12 tests. The full-suite
+  failure remains open; the focused result is not a waiver. No simulator was booted;
+  visionOS run verification remains blocked by the missing golden-simulator pointer,
+  and mobile/tvOS hosted and interactive lanes were not rerun in this validation.
+
+No product code, profile selection, admission guard, session authority or consent policy
+changed during validation. The candidate remains default-off, DEBUG macOS only. Broader
+source coverage, later-segment extracted-base equivalence, full-suite stability and
+physical-device acceptance remain open. No merge, upload or release enablement is implied.
+
+
+### Review preparation: deterministic replacement and persistence barriers
+
+The full-suite replacement failure was reproduced with test-only timing diagnostics:
+the fixture's MainActor task did not begin until 1.849 seconds after the wait started,
+and the unchanged two-second wait expired at 2.316 seconds before the first scheduled
+20-millisecond continuation detached the predecessor. The player still held the old
+item. This identifies fixture scheduling contention, not rejection of an observed
+replacement. The diagnostic instrumentation was removed after establishing the cause.
+
+Revision `fed053b9` injects the DEBUG replacement wait's monotonic clock and polling
+step for deterministic tests. The live defaults remain `ContinuousClock` and a
+cancellation-aware 250-millisecond sleep; deadline comparisons, authority, playback
+failure, consent and item-identity checks are unchanged. Coverage now observes the
+predecessor across multiple polls, a detached interval, a distinct replacement,
+predecessor/detached deadline expiry, rejection exactly at the deadline, safety gates
+that become active with replacement, and cancellation before polling. There is no
+deadline extension, skipped test or weaker progress assertion.
+
+The first clean macOS run passed all 712 tests with no skips, including the hermetic
+browse-probe fixtures omitted by the earlier matrix command. An exact-build repeat
+then failed a separate season-planner deletion test: its in-memory absence condition
+could precede the artifact worker's terminal on-disk index commit. The existing store
+explicitly removes the row and enqueues persistence before awaiting that commit; the
+test incorrectly treated the earlier observation as durability proof. The isolated
+prerequisite `f56afe8c` awaits the existing persistence ticket with a bounded ten-second
+flush and asserts its committed revision before preserving the original fresh-index
+deletion assertion. It changes no download production behavior and is kept on `codex/season-deletion-test-barrier` for
+separate review. The P7 branch includes that prerequisite for stacked validation.
+
+At integrated revision `a25c6ec8`, three consecutive full macOS hosted runs pass all
+712 tests with zero skips, the first from clean DerivedData. These runs retain the
+historical failures above rather than retroactively passing them. Hermetic PMSKit
+passes 1,707 Swift Testing cases and 121 XCTest cases. Fresh generic visionOS, iOS
+and tvOS builds also pass. The live host product was built from clean DerivedData at
+`fed053b9`, with a fresh executable mtime and matching staged SHA-256; the prerequisite
+and integration change only tests, so the runtime source is identical.
+
+The fresh isolated Mac product passes the exact P7 source's Plex audio transition
+and 600-second seek with the unchanged 35-second advancing holds. The audio run
+changes replacement generation while video remains copy (audio changes from encoding
+to copy); the seek stays video/audio copy. Fresh initial and post-scenario PNGs were
+inspected and show recognizable untinted video with 3840-by-2160 PQ/BT.2020 signaling.
+These tone-mapped frames do not establish physical HDR or audio-output accuracy.
+
+Later native LaunchServices attempts do **not** extend that acceptance: Plex reopen
+reports `blocked/playbackFailed`, and Jellyfin/Emby audio transitions report
+`blocked/missingAuth`. PID-bounded host logs for each attempt show `Local network
+prohibited` and URL error -1009 before playback; the media-browser report is not proof
+that saved credentials disappeared. No privacy setting was changed or bypassed.
+A preceding reopen launch-orchestration attempt was stopped before a probe result;
+it has no visual pass. Existing pre-increment cross-backend/reopen evidence remains
+historical, not a substitute for these blocked fresh lanes. Fresh cross-backend and
+LaunchServices reopen acceptance therefore remain open pending the host permission
+gate. App reports request cleanup; the earlier bounded server-job cleanup observations
+are not reclassified as fresh server-side proof for this increment.
+
+The owned iPhone's clean-built semantic fixture passes with its detail attachment
+inspected. Its first full hosted run prints 629 Swift Testing and 67 XCTest passes,
+but does not produce a terminal result: a bounded process sample locates the wait in
+Xcode's `collectSimulatorDiagnostics` / `simCtlDiagnose` after the app process exits.
+The run is terminated at the 300-second no-progress boundary and remains non-green.
+One diagnostic repeat of the same compiled tests with `-collect-test-diagnostics never`
+exits normally: 696 of 696 pass, zero skips. This flag disables ancillary verbose
+simulator diagnostics, not tests, assertions or result bundles. The repeat does not
+establish resolution of default diagnostic collection or of historical runner hangs.
+
+The owned tvOS full hosted run exits normally with 383 of 383 passing and zero skips.
+Both named tvOS launch/remote-navigation smoke tests pass from a clean UI DerivedData
+path, with the focused home and leaf-detail attachments inspected. All created iPhone
+and tvOS simulators were shut down and removed; the isolated live Mac staged app was
+removed without resetting its saved container or credentials. visionOS run verification
+remains blocked by the missing golden-simulator pointer; no replacement golden was
+invented. These simulator fixtures are credential-free UI evidence, not live-backend
+or physical-device acceptance.
+
+This branch is reviewable as default-off hardening, not a shipping P7 solution. Local
+network permission, default iOS diagnostic-collection completion, broader source
+coverage, later-segment extracted-base equivalence and physical HDR/DV/audio acceptance
+remain explicit gates. P5 safety, Plex Generic, consent, source/session authority and
+Release behavior are unchanged. No video encoding was authorized, no PR was opened,
+and no merge to the default branch or release upload is implied.
+
+### Local-network permission recheck
+
+After the user reported granting local-network access, revision `f4fc8da4` was rebuilt
+from clean native macOS DerivedData and staged under the same isolated development
+identity. Fresh executable mtime and matching built/staged SHA-256 were verified.
+All three bounded LaunchServices retries used the existing saved authentication and
+unchanged exact source bindings. None reproduced `Local network prohibited` or URL
+error -1009 in their PID-bounded host logs; no privacy settings or credentials were
+changed. The earlier permission block is therefore not the current observed blocker.
+
+- Plex Original reopen remains blocked before playback: the exact metadata request
+  returns HTTP 404, while other server requests succeed. No replacement item binding
+  was substituted, and no fresh Plex frame pass is claimed.
+- Jellyfin's audio-transition run now authenticates and plays. Initial decoded frames
+  are fresh, recognizable and untinted, but the unchanged 25-second progress check
+  fails after a 2.135-second observation gap; sampled positions continue advancing.
+  There is no post-hold frame pass, and the failed scenario remains a failure.
+- Emby's audio transition passes the unchanged 25-second hold and replacement-generation
+  check. Request-enforced video copy remains in effect; audio decision and server-side
+  cleanup remain unknown in app evidence. Fresh initial and post-scenario frames were
+  inspected and show recognizable untinted video. These tone-mapped captures do not
+  establish physical HDR or audio-output accuracy.
+
+These results supersede only the outstanding permission diagnosis, not the prior
+failures or broader acceptance gates. Plex exact-source availability and Jellyfin's
+progress-observation failure remain open. No video encoding was requested or authorized;
+P5 safety, Plex Generic, consent, default-off DEBUG macOS routing and Release behavior
+are unchanged. The run processes and staged host app were cleaned up while preserving
+saved sessions. No simulator was booted, and no PR, merge or release action followed.

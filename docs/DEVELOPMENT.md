@@ -388,6 +388,16 @@ uv run python scripts/check-docs-mermaid.py
 Run the app suite for the platform affected by a change (all three hosts — iOS, macOS,
 and tvOS — for shared app infrastructure):
 
+On Xcode 27, a printed test-pass summary is not a completed hosted run: require the
+terminal `xcodebuild` result and a readable `.xcresult`. If the runner stops making
+progress, take a bounded process sample before termination. One observed iOS stall
+was inside `collectSimulatorDiagnostics` / `simCtlDiagnose` after the test host exited.
+A diagnostic repeat with `-collect-test-diagnostics never` can separate test execution
+from that ancillary verbose-diagnostics collection; retain the original non-green run
+and state the flag explicitly. It does not waive test failures, replace result bundles
+or prove every runner hang has the same cause. The [P7 review-preparation evidence](https://github.com/jlipworth/Labstream/blob/main/docs/research/dv-p7-decoder-boundary.md#review-preparation-deterministic-replacement-and-persistence-barriers)
+records the bounded observation and its limitations.
+
 For a deterministic smoke, affected-platform, or full plan, use the checked
 [`native-test-matrix.py`](TESTING-STRATEGY.md#native-apple-matrix-driver) driver. The commands below
 remain the direct forms for an individually leased platform lane.

@@ -105,7 +105,86 @@ final class P7HDR10InitializationTests: XCTestCase {
             XCTAssertThrowsError(try P7HDR10Initialization.normalize(input))
         }
     }
+    func testSessionPinsExactInitializationBytesUntilFreshOpen() async throws {
+        let root = URL(string: "https://plex.example.internal/media.m3u8")!
+        let initURL = root.deletingLastPathComponent().appendingPathComponent("init.mp4")
+        let playlist = Data("#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:10,\n0.m4s\n".utf8)
+        let session = P7HDR10Session(playlist: root)
+        let original = fixture()
+        // Both configurations independently pass admission. A stable URL is not
+        // sufficient to establish that their byte-range representations are identical.
+        let changed = fixture(audio: audioTrack())
+        let expected = try P7HDR10Initialization.normalize(original)
+        _ = try P7HDR10Initialization.normalize(changed)
+        do {
+            _ = try await session.normalizeInitialization(original, at: initURL)
+            XCTFail("unadmitted initialization accepted")
+        } catch {}
+        try await session.admit(playlist)
+        do {
+            _ = try await session.normalizeInitialization(Data(), at: initURL)
+            XCTFail("malformed initialization accepted")
+        } catch {}
+        let first = try await session.normalizeInitialization(original, at: initURL)
+        XCTAssertEqual(first, expected)
+        do {
+            _ = try await session.normalizeInitialization(changed, at: initURL)
+            XCTFail("changed representation accepted at the same URL")
+        } catch {}
+        try await session.admit(playlist)
+        let repeated = try await session.normalizeInitialization(original, at: initURL)
+        XCTAssertEqual(repeated, expected)
+        let reopened = P7HDR10Session(playlist: root)
+        try await reopened.admit(playlist)
+        let fresh = try await reopened.normalizeInitialization(changed, at: initURL)
+        XCTAssertEqual(fresh, try P7HDR10Initialization.normalize(changed))
+    }
+
     #if canImport(Network)
+    func testProxyRejectsChangedInitializationDuringRangeAndResetsOnReopen() async throws {
+        actor Responses {
+            var initialization: Data
+            init(_ data: Data) { initialization = data }
+            func replace(_ data: Data) { initialization = data }
+            func current() -> Data { initialization }
+        }
+        let original = fixture()
+        let changed = fixture(audio: audioTrack())
+        let responses = Responses(original)
+        let playlist = Data("#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:10,\n0.m4s\n".utf8)
+        let proxy = MediaSessionProxy(upstreamFetch: { request in
+            let url = request.url!
+            let body = url.path.hasSuffix("m3u8") ? playlist : await responses.current()
+            return (body, HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil,
+                headerFields: ["Content-Type": url.path.hasSuffix("m3u8") ? "application/vnd.apple.mpegurl" : "video/mp4"])!)
+        }, p7HDR10Fallback: true)
+        let session = URLSession(configuration: .ephemeral)
+        defer { session.invalidateAndCancel() }
+        let root = URL(string: "https://plex.example.internal/media.m3u8")!
+        let first = try await proxy.standUpLoopback(forStream: root)
+        _ = try await session.data(from: first.localURL)
+        let initURL = first.localURL.deletingLastPathComponent().appendingPathComponent("init.mp4")
+        var range = URLRequest(url: initURL)
+        range.setValue("bytes=0-7", forHTTPHeaderField: "Range")
+        let (initial, initialResponse) = try await session.data(for: range)
+        XCTAssertEqual((initialResponse as? HTTPURLResponse)?.statusCode, 206)
+        XCTAssertEqual(initial, Data(try P7HDR10Initialization.normalize(original).prefix(8)))
+        await responses.replace(changed)
+        let (rejected, rejectedResponse) = try await session.data(for: range)
+        XCTAssertEqual((rejectedResponse as? HTTPURLResponse)?.statusCode, 502)
+        XCTAssertTrue(rejected.isEmpty)
+        let (_, fullResponse) = try await session.data(from: initURL)
+        XCTAssertEqual((fullResponse as? HTTPURLResponse)?.statusCode, 502)
+        await proxy.stop(generation: first.generation)
+        let reopened = try await proxy.standUpLoopback(forStream: root)
+        _ = try await session.data(from: reopened.localURL)
+        let freshURL = reopened.localURL.deletingLastPathComponent().appendingPathComponent("init.mp4")
+        let (fresh, freshResponse) = try await session.data(from: freshURL)
+        XCTAssertEqual((freshResponse as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertEqual(fresh, try P7HDR10Initialization.normalize(changed))
+        await proxy.stop(generation: reopened.generation)
+    }
+
     func testProxyNormalizesOnlyAdmittedInitializationAndServesRanges() async throws {
         let initData = fixture()
         let expected = try P7HDR10Initialization.normalize(initData)

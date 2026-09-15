@@ -7,6 +7,7 @@ actor P7HDR10Session {
     private let playlist: URL
     private var initialization: URL?
     private var segments: Set<URL> = []
+    private var initializationBytes: Data?
 
     init(playlist: URL) { self.playlist = playlist }
 
@@ -15,6 +16,20 @@ actor P7HDR10Session {
         if url == initialization { return .initialization }
         if segments.contains(url) { return .segment }
         throw P7HDR10Playlist.Rejection.unsupported
+    }
+
+    /// Pin the complete validated upstream representation before serving any range.
+    /// A stable MAP URI alone cannot prevent different range requests from receiving
+    /// different parameter sets or audio descriptions. This actor method has no await:
+    /// concurrent fetch completions cannot replace the first admitted representation.
+    func normalizeInitialization(_ data: Data, at url: URL) throws -> Data {
+        guard initialization == url else { throw P7HDR10Playlist.Rejection.unsupported }
+        if let initializationBytes, initializationBytes != data {
+            throw P7HDR10Playlist.Rejection.unsupported
+        }
+        let normalized = try P7HDR10Initialization.normalize(data)
+        initializationBytes = data
+        return normalized
     }
 
     func admit(_ data: Data) throws {

@@ -228,7 +228,8 @@ public actor MediaSessionProxy {
                     try await p7Session?.admit(data)
                 case .initialization:
                     guard resp.statusCode == 200 else { throw P7HDR10Playlist.Rejection.unsupported }
-                    let normalized = try P7HDR10Initialization.normalize(data)
+                    guard let p7Session else { throw P7HDR10Playlist.Rejection.unsupported }
+                    let normalized = try await p7Session.normalizeInitialization(data, at: upstreamURL)
                     let range: Range<Int>
                     do { range = try P7HDR10Playlist.range(head.value(for: "Range"), length: normalized.count) }
                     catch {
