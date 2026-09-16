@@ -17,7 +17,8 @@ there is no public App Store release yet. Platform-specific status and acceptanc
   Plex mode uses a Plex account for PIN/OAuth sign-in; Jellyfin supports a server URL with a
   username (password optional) or Quick Connect; Emby supports an Emby Connect PIN or a manual
   server URL with username/password.
-- Labstream does not provide, host, sell, or bundle media. Playback and offline
+- The app does not bundle or sell media. A separate optional project-operated review/demo
+  service hosts licensed sample content; normal use needs no Labstream-operated server. Playback and offline
   downloads are for media you are authorized to access on the server you choose.
 - Local-network playback is free. Under Plex's current
   [remote playback requirements](https://support.plex.tv/articles/requirements-for-remote-playback-of-personal-media/),
@@ -83,7 +84,9 @@ usernames, library paths, filenames, and media titles.
 ## Privacy
 
 See the [Privacy Policy](https://github.com/jlipworth/Labstream/blob/main/PRIVACY.md). Labstream does
-not automatically send analytics, diagnostics, or personal data to the developer. Optional
+not automatically upload app analytics or diagnostic reports. The optional project-operated
+review/demo server receives and retains operational data when you select it; see the policy for
+server records, resets and unresolved retention limits. Optional
 diagnostic reports stay local unless you choose to copy, export, share, or open a GitHub issue;
 ordinary playback progress and other backend operations may still be sent to the media server you
 selected.

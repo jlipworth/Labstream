@@ -2,7 +2,8 @@
 
 Labstream is a native Apple-platform media client for a Plex Media Server, Jellyfin server, or
 Emby server that you administer or are authorized to access. It connects to the server you choose;
-it does not provide, host, sell, or bundle media.
+the app does not bundle or sell media. A separate optional project-operated review/demo service
+hosts licensed sample content; see the [Privacy Policy](privacy.md).
 
 The repository contains four coordinated pre-release targets: Apple Vision Pro, one universal
 iPhone/iPad target, a streaming-only Apple TV target, and a native Mac target. Labstream is
@@ -11,14 +12,15 @@ TestFlight binaries, but there is no public App Store release. The
 [release and App Store status](RELEASES.md) page is the single source of truth for the current
 source version, processed binaries, platform gates, and submission readiness.
 
-Labstream has no developer-operated backend and does not automatically send analytics or
-diagnostics to the developer. A diagnostic report leaves the device only after you explicitly copy,
+Labstream does not automatically upload app analytics or diagnostic reports. If you select the
+project-operated review/demo server, it receives normal server requests and retains operational
+records separately from app diagnostics. A diagnostic report leaves the device only after you explicitly copy,
 export, share, or open a bug report.
 
 ```mermaid
 flowchart TD
   accTitle: Labstream service topology
-  accDescr: Labstream has pre-release targets for Apple Vision Pro, iPhone, iPad, Apple TV, and Mac; it connects directly to a user-selected Plex, Jellyfin, or Emby server and makes a diagnostic report available only after the user chooses to copy, export, or share it.
+  accDescr: Labstream has pre-release targets for Apple Vision Pro, iPhone, iPad, Apple TV, and Mac; it connects directly to a user-selected Plex, Jellyfin, or Emby server, including the optional project-operated Jellyfin demo with retained operational records, and makes a diagnostic report available only after the user chooses to copy, export, or share it.
   Spatial[Apple Vision Pro] --> App[Labstream]
   Mobile[iPhone / iPad] --> App
   TV[Apple TV] --> App
@@ -26,6 +28,8 @@ flowchart TD
   App --> Plex[Plex Media Server]
   App --> Jellyfin[Jellyfin server]
   App --> Emby[Emby server]
+  App --> Demo[Optional project-operated Jellyfin demo]
+  Demo --> Records[Server records, logs and backups]
   App --> Report[User-initiated diagnostic report]
   Report --> Destination[Destination chosen by user]
   Destination --> Issue[Optional GitHub bug report]

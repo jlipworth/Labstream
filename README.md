@@ -11,7 +11,7 @@
 
 **Labstream is a native Apple-platform media client for your own Plex, Jellyfin, or Emby server.**
 
-Labstream does not provide, host, sell, or bundle movies, TV, music, or other media. It connects only to servers you choose, and offline downloads are for media you are authorized to access and download under the applicable server/service terms.
+The app does not bundle or sell media. A separate optional project-operated review/demo service hosts licensed sample content; see the [Privacy Policy](PRIVACY.md). It connects only to servers you choose, and offline downloads are for media you are authorized to access and download under the applicable server/service terms.
 
 The repository contains native targets for Apple Vision Pro, iPhone/iPad, Apple TV, and Mac. The
 visionOS target owns the spatial shell and Cinema experience, `LabstreamMobile` is one universal
