@@ -611,3 +611,33 @@ The current manual validation matrix deliberately remains at the repository root
 [`TESTING-CHECKLIST.md`](https://github.com/jlipworth/Labstream/blob/main/TESTING-CHECKLIST.md).
 Each lane README defines its naming and promotion/archive rules. Preserve historical prose when
 moving snapshots, but repair live links, navigation, includes, and script references.
+
+## Required-reason privacy manifest packaging
+
+The shared `PrivacyInfo.xcprivacy` declares `SystemBootTime` reason `35F9.1` for
+in-app elapsed-time and timer calculations, including PMSKit's statically linked
+media-session retry budget. Raw uptime and boot-relative sample timestamps must
+stay on device. Apple's exception permits information about elapsed time between
+in-app events to leave the device; it does not permit arbitrary uptime-derived
+identifiers or boot epochs. Re-audit new diagnostic/export/network fields before
+changing this contract. The source audit is retained at
+`docs/evidence/2026-09-15-privacy-uptime-audit.md` (unpublished evidence).
+
+`python3 scripts/check-privacy-manifest.py` checks the declaration and all four
+targets' shared-resource membership; repository hygiene runs its regression tests.
+After clean builds, verify the actual app resources (use your worktree-local paths):
+
+```sh
+python3 scripts/check-privacy-manifest.py \
+  --app Labstream=build/DerivedData-privacy-visionos/Build/Products/Release-xrsimulator/Labstream.app \
+  --app LabstreamMobile=build/DerivedData-privacy-ios/Build/Products/Release-iphonesimulator/Labstream.app \
+  --app LabstreamTV=build/DerivedData-privacy-tvos/Build/Products/Release-appletvsimulator/Labstream.app \
+  --app LabstreamMac=build/DerivedData-privacy-macos/Build/Products/Release/Labstream.app
+```
+
+The checker requires all four products, compares their app-level manifests with
+source, and parses every nested manifest. This is **not** Apple's aggregate privacy
+report or signed archive validation. For each exact signed Release archive, inspect
+the archived app and dependency manifests and generate/review Xcode's privacy report
+before release. Keep that gate open when only unsigned builds were inspected.
+Required-reason API declarations do not settle App Store collection disclosures.
