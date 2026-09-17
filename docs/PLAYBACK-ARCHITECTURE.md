@@ -484,6 +484,12 @@ sequenceDiagram
   resource loading cannot continue against a stopped session. UI teardown remains non-blocking;
   named probes join the controller-owned stop requests before publishing their final report.
   Completed requests alone do not prove server workers exited.
+  MediaBrowser `playback.remote_stop_requested` / `playback.remote_stop_finished`
+  diagnostics correlate a hashed play-session ID and report request acknowledgement only.
+  Jellyfin can recreate a job from an already accepted HLS request while its stop endpoint
+  drains the previously snapshotted job; see the
+  [bounded cleanup investigation](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/2026-09-17-jellyfin-terminal-cleanup.md).
+  Do not infer worker absence from acknowledgement or add unbounded cleanup retries.
 - Keep Plex transcode stop, MediaBrowser progress-stop, and MediaBrowser active-encoding
   cleanup as distinct operations.
 - Treat cleanup failures as non-fatal where the user-visible playback path can continue.
