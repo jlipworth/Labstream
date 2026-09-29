@@ -51,6 +51,22 @@ parentheses is the App Store build number (`CFBundleVersion`). A new marketing v
 build 1; each replacement upload for the same platform and marketing version must use a higher
 build number.
 
+## Current release audit and deferred scope
+
+The [2026-09-15 disclosure audit](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/2026-09-15-prerelease-disclosure-audit.md)
+is a historical source audit, not current account certification. Its wording and required-reason
+API fixes landed in PRs #329 and #328. Owner-approved disclosure mapping remains open in
+[#325](https://github.com/jlipworth/Labstream/issues/325), and exact signed-archive privacy reports
+remain open in [#326](https://github.com/jlipworth/Labstream/issues/326).
+
+[#259](https://github.com/jlipworth/Labstream/issues/259), disconnected cold-launch access to
+completed downloads, is **deferred by user decision**. Keep the issue open; deferral is not
+hardware acceptance. Do not advertise reliable offline cold launch as verified.
+
+The [licensed-media capture plan](https://github.com/jlipworth/Labstream/blob/main/docs/plans/2026-09-15-store-demo-capture.md)
+retains final screenshots, storefront attribution, age suitability and clean-install reviewer
+journeys as open gates. Recorded provenance is not a fresh deployed-catalog hash check.
+
 ## Coordinated publication sequence
 
 For a new coordinated archive set or the first public release, use this order. If the neutral
@@ -176,8 +192,11 @@ and App Store Connect state before relying on them for a new submission.
       proposed data-type mapping and owner approval gates. No App Store Connect answer is changed
       by documentation edits. Required-reason API declarations are a separate packaging check
       ([#326](https://github.com/jlipworth/Labstream/issues/326)), not a collection exemption.
-- [x] Export-compliance answers match the binary. `ITSAppUsesNonExemptEncryption` is currently
-      false; re-evaluate if cryptography use changes.
+- [ ] Verify export-compliance answers against the exact candidate and linked dependencies.
+      `ITSAppUsesNonExemptEncryption` remains false in source; this is not a new binary/account
+      certification.
+- [ ] Evaluate any storefront accessibility feature claims on each submitted platform against
+      Apple's criteria; source labels and passing tests alone do not establish support.
 
 - [ ] Inspect app/dependency privacy manifests and the Xcode aggregate privacy report from
       each exact signed Release archive (visionOS, iOS/iPadOS, tvOS, macOS). Confirm the
