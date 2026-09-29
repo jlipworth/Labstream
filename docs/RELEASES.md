@@ -8,17 +8,18 @@ query; verify them in App Store Connect again before any upload or submission.
 
 ## Current status
 
-The repository source is **1.7.1 (build 1)** across all four app targets, with a matching PMSKit
-fallback. No 1.7.1 archive is recorded here. The latest recorded processed distribution remains
+The repository source is **1.7.2 (build 1)** across all four app targets, with a matching PMSKit
+fallback. The 1.7.2 release-candidate archive set is being prepared; no upload is recorded.
+The latest recorded processed distribution remains
 the **1.6.1 (build 2)** archive set at `abd1ddcac351`; keep the source version and the processed
 binary version separate when reporting release status.
 
 | Product | Current source | Latest recorded processed distribution |
 | --- | --- | --- |
-| Apple Vision Pro (`Labstream`) | 1.7.1 (build 1) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical TestFlight acceptance and review access remain pending. |
-| iPhone and iPad (`LabstreamMobile`) | 1.7.1 (build 1) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` universal iOS archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical iPhone and iPad acceptance remain pending. |
-| Apple TV (`LabstreamTV`) | 1.7.1 (build 1) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical Apple TV acceptance remains pending. |
-| Mac (`LabstreamMac`) | 1.7.1 (build 1) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and installed from TestFlight on a Mac. Launch and receipt/signature checks passed; deeper sandbox and live-host acceptance remain pending. |
+| Apple Vision Pro (`Labstream`) | 1.7.2 (build 1) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical TestFlight acceptance and review access remain pending. |
+| iPhone and iPad (`LabstreamMobile`) | 1.7.2 (build 1) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` universal iOS archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical iPhone and iPad acceptance remain pending. |
+| Apple TV (`LabstreamTV`) | 1.7.2 (build 1) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical Apple TV acceptance remains pending. |
+| Mac (`LabstreamMac`) | 1.7.2 (build 1) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and installed from TestFlight on a Mac. Launch and receipt/signature checks passed; deeper sandbox and live-host acceptance remain pending. |
 
 The 1.7.1 source milestone includes bounded DV/HDR delivery investigation and probe
 validation. The P7 HDR10-base candidate remains default-off and DEBUG-only on macOS;
@@ -46,7 +47,7 @@ Licensed demo media, final screenshot capture and review, demo review access, re
 physical-platform acceptance, storefront scope, Digital Services Act status where applicable, and
 final submission remain open.
 
-`1.7.1` is the current source marketing version (`CFBundleShortVersionString`). The number in
+`1.7.2` is the current source marketing version (`CFBundleShortVersionString`). The number in
 parentheses is the App Store build number (`CFBundleVersion`). A new marketing version begins at
 build 1; each replacement upload for the same platform and marketing version must use a higher
 build number.
@@ -66,6 +67,30 @@ hardware acceptance. Do not advertise reliable offline cold launch as verified.
 The [licensed-media capture plan](https://github.com/jlipworth/Labstream/blob/main/docs/plans/2026-09-15-store-demo-capture.md)
 retains final screenshots, storefront attribution, age suitability and clean-install reviewer
 journeys as open gates. Recorded provenance is not a fresh deployed-catalog hash check.
+
+## 1.7.2 release-candidate scope
+
+The coordinated **1.7.2 (build 1)** candidate includes the merged playback-error and
+bounded-cleanup work, required-reason uptime declaration, and current disclosure and
+screenshot guidance. PMSKit's fallback version matches all four app targets.
+
+The release owner explicitly deferred these issues for this candidate on 2026-09-29:
+
+- [#324](https://github.com/jlipworth/Labstream/issues/324): HEVC Rext 4:4:4 playback
+  and the observed Jellyfin server-worker cleanup race;
+- [#322](https://github.com/jlipworth/Labstream/issues/322): Emby P8 deep-seek
+  investigation and remaining controlled validation;
+- [#258](https://github.com/jlipworth/Labstream/issues/258): iOS player-chrome
+  size/position changes and clipping.
+
+These are accepted deferrals, not fixes or passing acceptance results. Keep the issues
+open and preserve their evidence. The previous #259 offline-cold-launch deferral also
+remains in effect. [#331](https://github.com/jlipworth/Labstream/issues/331), Stats
+readability redesign, is low-priority follow-up and not a release blocker.
+
+Candidate preparation does not close the physical-device, privacy/disclosure,
+signed-archive report, screenshot, reviewer-access, or Account Holder gates below.
+TestFlight upload and App Review submission require separate authorization.
 
 ## Coordinated publication sequence
 
@@ -146,7 +171,7 @@ and App Store Connect state before relying on them for a new submission.
       Connect processing without compliance or binary warnings.
 - [x] Each selected **1.6.1 (build 2)** App Store Connect build reports the intended minimum OS,
       device family, entitlements, and supported architecture.
-- [ ] Clean Release archives for the current **1.7.1 (build 1)** source are produced, validated,
+- [ ] Clean Release archives for the current **1.7.2 (build 1)** source are produced, validated,
       and selected for every platform version.
 - [ ] A physical Vision Pro TestFlight smoke covers first launch, sign-in, browse, playback,
       seeking, subtitles, audio, Cinema, background/foreground, and diagnostics. Simulator smoke
