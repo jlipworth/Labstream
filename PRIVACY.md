@@ -1,6 +1,6 @@
 # Labstream — Privacy Policy
 
-_Last updated: 2026-08-22_
+_Last updated: 2026-09-16_
 
 Labstream is a personal media client with pre-release targets for Apple Vision Pro, iPhone/iPad,
 Apple TV, and Mac. It connects to a Plex Media Server, Jellyfin server, or Emby server **that you
@@ -8,16 +8,20 @@ administer or are authorized to access**. Labstream is designed to collect as li
 
 ## What Labstream does not do
 
-- **No automatic developer collection.** Labstream does not automatically collect or transmit analytics, diagnostics, crash reports, media-server data, or personal data to the developer. If you choose to copy, export, share, or open a GitHub issue, the redacted report and any note you include leave the device only via GitHub or the destination you choose.
+- **No automatic app telemetry.** Labstream has no automatic developer analytics,
+  diagnostic-report upload, or crash-report upload. Ordinary server requests are separate:
+  the server you select receives authentication, browsing, and playback requests.
 - **No tracking.** Labstream does not track you across apps or websites and
   contains no third-party tracking SDKs.
-- **No developer servers.** Labstream has no developer-operated backend. Depending on the backend you choose, it contacts Plex services for sign-in/server discovery plus the Plex Media Server you select, the Jellyfin server URL you enter, or Emby Connect plus your selected Emby server.
-- **No bundled media.** Labstream does not provide, host, sell, or bundle movies,
-  TV, music, or other media. It connects only to servers you choose, and offline
-  downloads are for media you are authorized to access and download under the
-  applicable server/service terms.
+- **Your choice of server.** Normal use connects to Plex services and your selected Plex
+  server, your configured Jellyfin server, or Emby Connect and your selected Emby server.
+  You do not need a Labstream-operated server for ordinary use. The project does operate a
+  separate optional review/demo service, described below.
+- **No app-bundled media or media subscription.** The app does not bundle or sell movies,
+  TV, or music. The separate review/demo service hosts licensed sample content. Playback and
+  offline downloads are for media you are authorized to access under the server/service terms.
 
-## What stays on your device
+## Device storage and server communication
 
 - **Your media-server credentials/tokens** are stored in the Apple **Keychain** on visionOS,
   iOS/iPadOS, tvOS, and canonical production-style Mac builds. The Plex account token is the
@@ -26,7 +30,9 @@ administer or are authorized to access**. Labstream is designed to collect as li
   backend/server do not sync. Plex tokens are sent only to Plex and the selected
   Plex server; Jellyfin access tokens are sent only to your Jellyfin server;
   Emby access tokens are sent only to Emby Connect during sign-in and to your
-  selected Emby server. They are never transmitted to the developer.
+  selected Emby server. If you explicitly select the project-operated review/demo
+  server, its credentials and tokens are exchanged with that service, operated by the developer;
+  credentials for your other servers are not sent to it.
 - **Noncanonical Mac development builds** created by the host deploy helper use an
   isolated, backup-excluded credential file inside that development app's sandbox instead of the
   production Keychain path. This avoids repeated Keychain prompts while an ad-hoc local build is
@@ -95,18 +101,58 @@ reporting. That interaction is governed by **Plex's own privacy policy**
 Labstream.
 
 When you use Jellyfin, Labstream talks directly to the Jellyfin server URL you
-configure. That server is controlled by you or your server administrator.
+configure. That server is controlled by you or your server administrator; when you
+select the project-operated review/demo service, the project is that administrator.
 
 When you use Emby, Labstream can use Emby Connect for PIN sign-in and then talks
 to the Emby server URL you select or enter. Emby Connect and your Emby server are
 controlled by Emby Media or your server administrator, not by the developer of
 Labstream.
 
+## Optional project-operated review/demo service
+
+The project operates an isolated Jellyfin service for App Review and controlled demonstrations,
+with licensed sample media rather than a personal library. It is not an app-bundled catalog and
+Labstream does not automatically connect ordinary users to it.
+
+If you use that service, the project and its infrastructure providers process the requests needed
+to authenticate, browse, stream, download, and maintain playback state. These include the review
+account, access tokens, app/device identity and version, network connection information (including
+IP addresses at the network edge), requested sample items, sessions, and playback progress.
+Jellyfin stores account/device/authentication and activity information in its persistent database;
+service administrators can access operational data. Shared review-account progress is not private
+from other users of that account. Do not use a personal password or submit personal media there.
+
+The service uses HTTPS, a non-admin review account, restricted infrastructure access, and read-only
+sample media. The configured application route disables proxy access logs. Jellyfin warning/error
+logs remain enabled; they are not the app's opt-in diagnostic reports. Operational logs and backups
+may retain information beyond a request. The public edge provider also processes traffic; disabling
+one proxy's access logs does not establish that no provider records exist.
+
+A scheduled daily reset clears sample-item playback positions, played state, play counts and
+favorites. **It is not deletion of all session, authentication, activity, log or backup records.**
+Application file logging is configured for daily/size rotation with three retained files, but that
+is not a service-wide deletion deadline. Database, centralized-log, edge-provider and backup
+retention/deletion coverage is still being verified; no fixed maximum retention is promised here.
+Contact the project using the privacy contact below for review-service data questions or deletion
+requests. Do not post credentials or private connection details in a public issue.
+
+## Submitted feedback and retention
+
+Copying a report or saving a file locally does not by itself submit it to the developer. Opening
+the prefilled GitHub form sends its included fields to GitHub before you publish the issue;
+submitting an issue makes its contents and GitHub account association public. Sharing or attaching
+an export sends it to the destination you choose. GitHub and other destinations apply their own
+privacy and retention practices. Submitted issues may remain in project history; local report
+rotation or deleting the app does not delete those copies. Review the report and free-form note
+before every handoff. The project uses submitted feedback for support and troubleshooting, not
+advertising or cross-app tracking.
+
 ## Children
 
-Labstream is not directed at children and does not collect personal information from children for
-the developer. The local device/server data described above is used only to provide the app's
-requested media-client features.
+Labstream is not directed at children. Avoid including children's personal information in the
+shared review service or public feedback. The server and feedback practices above apply whenever
+those optional paths are used.
 
 ## Contact
 

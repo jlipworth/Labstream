@@ -2,7 +2,7 @@
 
 Found something broken in Labstream? Here's the fastest way to get it fixed.
 
-Labstream does not automatically send diagnostics to the developer and has no developer-operated backend (see the [Privacy Policy](privacy.md)). Depending on your sign-in choice it talks to Plex services and your selected Plex server, your Jellyfin server URL, or Emby Connect plus your selected Emby server. A GitHub issue is the way we learn about a problem, and the more reproducible detail
+Labstream does not automatically upload diagnostic reports. The optional project-operated review/demo server retains operational records separately (see the [Privacy Policy](privacy.md)). Depending on your sign-in choice it talks to Plex services and your selected Plex server, your Jellyfin server URL, or Emby Connect plus your selected Emby server. A GitHub issue is the way we learn about a problem, and the more reproducible detail
 you give, the faster it gets fixed. The app has a built-in, **redacted**
 diagnostic report to make that easy and safe.
 

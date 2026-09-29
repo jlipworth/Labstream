@@ -168,10 +168,14 @@ and App Store Connect state before relying on them for a new submission.
 - [ ] Screenshot automation can reproduce the accepted set from clean fixture/review state for
       iPhone, iPad, Mac, Apple TV, and Apple Vision Pro, and the exported files pass the repository
       size/privacy manifest validator before upload.
-- [x] App Privacy answers match the shipped privacy manifest and runtime behavior. The current
-      intended answer is **Data Not Collected**: Labstream has no developer analytics, tracking,
-      telemetry upload, or developer-operated backend. Re-audit this if dependencies or behavior
-      change.
+- [ ] Reconcile App Privacy answers with the exact candidate and actual service behavior.
+      The historically recorded **Data Not Collected** answer is not certified by an empty
+      manifest collection array. Resolve [#325](https://github.com/jlipworth/Labstream/issues/325):
+      project-operated review/demo records, retention enforcement, and optional feedback criteria.
+      See the [bounded privacy audit](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/2026-09-16-review-service-privacy-audit.md) for
+      proposed data-type mapping and owner approval gates. No App Store Connect answer is changed
+      by documentation edits. Required-reason API declarations are a separate packaging check
+      ([#326](https://github.com/jlipworth/Labstream/issues/326)), not a collection exemption.
 - [x] Export-compliance answers match the binary. `ITSAppUsesNonExemptEncryption` is currently
       false; re-evaluate if cryptography use changes.
 
