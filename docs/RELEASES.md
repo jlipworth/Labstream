@@ -179,6 +179,12 @@ and App Store Connect state before relying on them for a new submission.
 - [x] Export-compliance answers match the binary. `ITSAppUsesNonExemptEncryption` is currently
       false; re-evaluate if cryptography use changes.
 
+- [ ] Inspect app/dependency privacy manifests and the Xcode aggregate privacy report from
+      each exact signed Release archive (visionOS, iOS/iPadOS, tvOS, macOS). Confirm the
+      SystemBootTime `35F9.1` declaration and its actual-use restrictions; unsigned/source
+      checks do not close this gate. See [packaging verification](DEVELOPMENT.md#required-reason-privacy-manifest-packaging)
+      and [issue #326](https://github.com/jlipworth/Labstream/issues/326).
+
 ### TestFlight and App Review
 
 - [x] The recorded TestFlight beta description, feedback contact, and **What to Test** text are
