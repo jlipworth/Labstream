@@ -262,20 +262,33 @@ enum DetailPlaybackLauncher {
     static func stopActiveEncodingNow(remote: MediaBrowserRemotePlayback,
                                       appModel: AppModel) async -> Bool {
         guard remote.requiresActiveEncodingStop else { return true }
+        AppDiagnostics.record(.playback, "playback.remote_stop_requested", fields: [
+            "backend": .label(remote.backend.rawValue),
+            "play_session": .identifier(remote.playSessionId),
+        ])
+        let acknowledged: Bool
         switch remote.backend {
         case .jellyfin:
-            return await JellyfinBrowseService(appModel: appModel)
+            acknowledged = await JellyfinBrowseService(appModel: appModel)
                 .stopActiveEncoding(playSessionId: remote.playSessionId,
                                     session: remote.context.session,
                                     identity: remote.context.identity)
         case .emby:
-            return await EmbyBrowseService(appModel: appModel)
+            acknowledged = await EmbyBrowseService(appModel: appModel)
                 .stopActiveEncoding(playSessionId: remote.playSessionId,
                                     session: remote.context.session,
                                     identity: remote.context.identity)
         case .plex:
             return true
         }
+        // HTTP acknowledgement is not proof of worker absence: already accepted HLS
+        // requests may race with the server's active-job snapshot during teardown.
+        AppDiagnostics.record(.playback, "playback.remote_stop_finished", fields: [
+            "backend": .label(remote.backend.rawValue),
+            "play_session": .identifier(remote.playSessionId),
+            "request_acknowledged": .bool(acknowledged),
+        ])
+        return acknowledged
     }
 
     private static func mediaBrowserProgressSession(backend: MediaBrowserPlaybackProgressSession.Backend,
