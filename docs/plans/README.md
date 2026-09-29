@@ -23,6 +23,9 @@ When a plan is complete or superseded:
 
 ## Active plans
 
+- [Licensed demo screenshots and review notes](2026-09-15-store-demo-capture.md) —
+  provenance and capture contract recorded; final images, credits, age suitability and
+  exact-candidate reviewer journeys remain open.
 - [Client-first playback and release acceptance](2026-09-06-client-first-playback.md) —
   implementation and acceptance remain in progress; [#291](https://github.com/jlipworth/Labstream/issues/291),
   [#288](https://github.com/jlipworth/Labstream/issues/288), physical-device, and App Store

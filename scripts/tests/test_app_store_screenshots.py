@@ -22,13 +22,40 @@ class AppStoreScreenshotTests(unittest.TestCase):
     def test_checked_spec_manifest_covers_every_native_target(self) -> None:
         manifest = screenshots.load_specs()
         self.assertEqual(tuple(manifest["targets"]), screenshots.TARGET_ORDER)
-        self.assertEqual(manifest["verifiedAt"], "2026-08-21")
+        self.assertEqual(manifest["verifiedAt"], "2026-09-29")
         self.assertTrue(manifest["officialSource"].startswith("https://developer.apple.com/"))
         for target in screenshots.TARGET_ORDER:
             self.assertIn(
                 manifest["targets"][target]["capturePixels"],
                 manifest["targets"][target]["acceptedPixels"],
             )
+
+    def test_review_media_manifest_preserves_provenance_and_open_capture_gate(self) -> None:
+        manifest = json.loads((ROOT / "docs" / "app-review-media-provenance.json").read_text())
+        self.assertEqual(manifest["schemaVersion"], 1)
+        self.assertEqual(manifest["catalogRelease"], "open-films-v1")
+        self.assertRegex(manifest["sourceManifestSha256"], r"^[0-9a-f]{64}$")
+        self.assertIn("not a fresh live-server", manifest["scope"])
+        self.assertIn("not yet produced", manifest["storefrontGate"])
+        self.assertEqual([film["title"] for film in manifest["openFilms"]], ["Spring", "Wing It!"])
+        paths = set()
+        for film in manifest["openFilms"]:
+            self.assertEqual(film["license"]["spdx"], "CC-BY-4.0")
+            self.assertTrue(film["license"]["requiredAttribution"])
+            self.assertTrue(film["license"]["excludedMaterial"])
+            self.assertEqual(film["source"]["authoritativeHost"], "video.blender.org")
+            self.assertEqual(film["source"]["sha256"], film["playable"]["sha256"])
+            self.assertTrue(film["playable"]["fullEndCreditsPreserved"])
+            self.assertEqual(len(film["derivedArtwork"]), 2)
+            for asset in [film["playable"], *film["derivedArtwork"]]:
+                self.assertRegex(asset["sha256"], r"^[0-9a-f]{64}$")
+                path = Path(asset["relativePath"])
+                self.assertFalse(path.is_absolute())
+                self.assertNotIn("..", path.parts)
+                self.assertNotIn(str(path), paths)
+                paths.add(str(path))
+                self.assertTrue(asset["transform"])
+        self.assertEqual(len(paths), 6)
 
     def test_capture_fails_closed_without_simulator_lease_assertion(self) -> None:
         with self.assertRaisesRegex(screenshots.ScreenshotError, "--allow-simulator"):
