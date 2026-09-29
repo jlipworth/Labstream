@@ -243,6 +243,9 @@ debounced into one settled final-target rebuild instead of restarting for every 
   re-mint that copy session merely to seek.
 - Reopen/rebuild paths capture the live playhead, detach stale work, negotiate the final
   target, and hold the scrubber until the replacement item lands or fails.
+- A successful client resume-seek completion explicitly resumes the player when its item
+  and lifecycle are still current and the user has not requested pause. Applying the saved
+  playback speed alone preserves a paused player and cannot restore playback after a seek.
 - `FinalTargetRebuildPolicy` and `SeekRestartBudget` prevent concurrent/unbounded restart
   pipelines. When the budget is exhausted, recovery stops and the user gets Retry rather
   than a hidden server-hammering loop.
@@ -472,6 +475,21 @@ sequenceDiagram
 - Preserve each backend lane's replacement order: Plex stops the superseded in-place transcode
   before replacement, while Jellyfin/Emby detach the old item, attach the replacement, and only
   then schedule deferred prior active-encoding cleanup.
+- Surfaced failure also ends the current attempt: invalidate callbacks, cancel preparation,
+  detach the player item, and stop its exact backend session without waiting for Close.
+  The shared error surface uses the [stable playback codes](AGENT-PLAYBACK-TROUBLESHOOTING.md#playback-failure-codes),
+  not raw server text. Explicit Retry joins pending cleanup before replacing the attempt and
+  preserves trustworthy resume position, quality, approved consent, and user pause intent.
+- Terminal stop detaches the player item before issuing server-stop requests so paused HLS
+  resource loading cannot continue against a stopped session. UI teardown remains non-blocking;
+  named probes join the controller-owned stop requests before publishing their final report.
+  Completed requests alone do not prove server workers exited.
+  MediaBrowser `playback.remote_stop_requested` / `playback.remote_stop_finished`
+  diagnostics correlate a hashed play-session ID and report request acknowledgement only.
+  Jellyfin can recreate a job from an already accepted HLS request while its stop endpoint
+  drains the previously snapshotted job; see the
+  [bounded cleanup investigation](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/2026-09-17-jellyfin-terminal-cleanup.md).
+  Do not infer worker absence from acknowledgement or add unbounded cleanup retries.
 - Keep Plex transcode stop, MediaBrowser progress-stop, and MediaBrowser active-encoding
   cleanup as distinct operations.
 - Treat cleanup failures as non-fatal where the user-visible playback path can continue.

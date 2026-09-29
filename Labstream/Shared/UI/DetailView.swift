@@ -1516,7 +1516,13 @@ struct DetailView: View {
                 span.end(result: "failure", fields: [
                     "error": PerformanceInstrumentation.errorLabel(error)
                 ])
-                playbackErrorMessage = friendlyMessage(error)
+                let failure = PlaybackFailure.classify(error)
+                AppDiagnostics.record(.playback, "playback.open_failed", fields: [
+                    "failure_code": .label(failure.code.rawValue),
+                    "http_status": .int(failure.httpStatus ?? 0),
+                    "backend_decision": .int(failure.backendDecision ?? 0),
+                ])
+                playbackErrorMessage = failure.message
             }
         }
     }
