@@ -16,9 +16,19 @@
 
 	<!-- Required-reason APIs actually used by the app. Confirmed against source:
 	     UserDefaults (PlaybackController/CustomPlayerView), file timestamps + disk
-	     space (DownloadManager). Reasons follow Apple's approved-reason codes. -->
+	     space (DownloadManager), monotonic elapsed-time/timer calculations
+	     (PlaybackController, PlaybackDiagnostics, PMSKit MediaSessionProxy). Reasons follow Apple's approved-reason codes. -->
 	<key>NSPrivacyAccessedAPITypes</key>
 	<array>
+		<!-- Raw uptime stays on device; exported intervals describe in-app events. -->
+		<dict>
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>35F9.1</string>
+			</array>
+		</dict>
 		<dict>
 			<key>NSPrivacyAccessedAPIType</key>
 			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
