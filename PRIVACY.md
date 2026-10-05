@@ -1,6 +1,6 @@
 # Labstream — Privacy Policy
 
-_Last updated: 2026-09-16_
+_Last updated: 2026-10-04_
 
 Labstream is a personal media client with pre-release targets for Apple Vision Pro, iPhone/iPad,
 Apple TV, and Mac. It connects to a Plex Media Server, Jellyfin server, or Emby server **that you
@@ -146,7 +146,9 @@ an export sends it to the destination you choose. GitHub and other destinations 
 privacy and retention practices. Submitted issues may remain in project history; local report
 rotation or deleting the app does not delete those copies. Review the report and free-form note
 before every handoff. The project uses submitted feedback for support and troubleshooting, not
-advertising or cross-app tracking.
+advertising, cross-app tracking, or sale. Whether received reports or attachments are also
+stored outside GitHub has not yet been verified. No GitHub-only storage claim or fixed
+project-wide retention/deletion period is made.
 
 ## Children
 

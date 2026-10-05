@@ -846,11 +846,26 @@ struct UnverifiedRevalidationLifecycleTests {
                 clientIdentifier: "broker-overtake-test")),
             store: store, session: session, registerForBackgroundEvents: false)
 
+        let finished = AsyncStream<Void>.makeStream(bufferingPolicy: .unbounded)
+        let priorFinished = session.onRevalidationRequestFinished
+        session.onRevalidationRequestFinished = { attempt, request, outcome in
+            priorFinished?(attempt, request, outcome)
+            finished.continuation.yield(())
+        }
+        defer { finished.continuation.finish() }
+        let timeout = Task {
+            do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            finished.continuation.finish()
+        }
+        defer { timeout.cancel() }
+        var completions = finished.stream.makeAsyncIterator()
+
         // Both calls run in one MainActor turn. The session claim is synchronous, while its broker
         // registration is queued; inactive must win without allowing the queued probe to start.
         manager.noteAppSceneRecovery(.aggregateSceneBecameActive)
         manager.noteAppSceneRecovery(.aggregateSceneBecameInactive)
-        for _ in 0..<20 { await Task.yield() }
+        // The cancelled broker's exact completion is the negative-probe assertion boundary.
+        try #require(await completions.next() != nil)
         #expect(await validator.attemptCount == 0)
         #expect(store.record(for: key)?.status == .unverified)
         #expect(session.diagnosticSnapshot().finalizingRatingKeyCount == 0)
@@ -858,9 +873,7 @@ struct UnverifiedRevalidationLifecycleTests {
 
         manager.noteAppSceneRecovery(.aggregateSceneBecameActive)
         #expect(await validator.waitForAttempts(1))
-        for _ in 0..<200 where store.record(for: key)?.status != .complete {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try #require(await completions.next() != nil)
         #expect(store.record(for: key)?.status == .complete)
         #expect(await validator.attemptCount == 1)
     }
@@ -1262,11 +1275,13 @@ private actor HeldRevalidationValidator {
 
     func validate() async -> BackgroundDownloadSession.PlaybackValidation {
         attemptCount += 1
+        signalCounts()
         while !succeeds {
             do {
                 try await Task.sleep(for: .milliseconds(10))
             } catch {
                 cancellationCount += 1
+                signalCounts()
                 return .init(played: false, reason: "cancelled", durationMs: nil, detail: nil)
             }
         }
@@ -1275,21 +1290,45 @@ private actor HeldRevalidationValidator {
 
     func allowSuccess() { succeeds = true }
 
+    private struct Waiter {
+        let expected: Int
+        let cancellations: Bool
+        let continuation: AsyncStream<Void>.Continuation
+    }
+    private var waiters: [UUID: Waiter] = [:]
+
     func waitForAttempts(_ expected: Int) async -> Bool {
-        for _ in 0..<200 {
-            if attemptCount >= expected { return true }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return false
+        await waitForCount(expected, cancellations: false)
     }
 
     func waitForCancellations(_ expected: Int) async -> Bool {
-        for _ in 0..<200 {
-            if cancellationCount >= expected { return true }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return false
+        await waitForCount(expected, cancellations: true)
     }
+
+    private func waitForCount(_ expected: Int, cancellations: Bool) async -> Bool {
+        if (cancellations ? cancellationCount : attemptCount) >= expected { return true }
+        let id = UUID()
+        let events = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        waiters[id] = Waiter(expected: expected, cancellations: cancellations,
+                             continuation: events.continuation)
+        let timeout = Task {
+            do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            events.continuation.finish()
+        }
+        defer { timeout.cancel(); waiters.removeValue(forKey: id); events.continuation.finish() }
+        var iterator = events.stream.makeAsyncIterator()
+        return await iterator.next() != nil
+    }
+
+    private func signalCounts() {
+        for waiter in waiters.values {
+            if (waiter.cancellations ? cancellationCount : attemptCount) >= waiter.expected {
+                waiter.continuation.yield(())
+                waiter.continuation.finish()
+            }
+        }
+    }
+
 }
 
 private final class LockedRevalidationDrainBox: @unchecked Sendable {

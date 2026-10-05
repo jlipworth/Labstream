@@ -52,11 +52,14 @@ struct RemoteStreamOpenResult {
     let transcodeReasons: [String]?
     let onStop: (() -> Void)?
     let onStopAndWait: (() async -> Void)?
+    let onStopAcknowledged: (() async -> Bool)?
 
     /// A canceled preparation task must still deliver the exact-session server DELETE.
     @MainActor
     func stopAndWaitIgnoringCancellation() async {
-        if let onStopAndWait {
+        if let onStopAcknowledged {
+            _ = await Task { await onStopAcknowledged() }.value
+        } else if let onStopAndWait {
             await Task { await onStopAndWait() }.value
         } else {
             onStop?()
@@ -71,7 +74,8 @@ struct RemoteStreamOpenResult {
          playMethod: MediaBrowserPlayMethod? = nil,
          transcodeReasons: [String]? = nil,
          onStop: (() -> Void)? = nil,
-         onStopAndWait: (() async -> Void)? = nil) {
+         onStopAndWait: (() async -> Void)? = nil,
+         onStopAcknowledged: (() async -> Bool)? = nil) {
         self.url = url
         self.headers = headers
         self.playSessionId = playSessionId
@@ -81,6 +85,7 @@ struct RemoteStreamOpenResult {
         self.transcodeReasons = transcodeReasons
         self.onStop = onStop
         self.onStopAndWait = onStopAndWait
+        self.onStopAcknowledged = onStopAcknowledged
     }
 }
 
@@ -129,6 +134,7 @@ final class MediaBrowserPlaybackSession {
     var progressSession: MediaBrowserPlaybackProgressSession?
     var onStop: (() -> Void)?
     var onStopAndWait: (() async -> Void)?
+    var onStopAcknowledged: (() async -> Bool)?
     var didStop = false
 
     init(streamURL: URL,
@@ -142,7 +148,8 @@ final class MediaBrowserPlaybackSession {
          progressSession: MediaBrowserPlaybackProgressSession?,
          onStop: @escaping () -> Void,
          reopener: @escaping RemoteStreamReopener,
-         onStopAndWait: (() async -> Void)? = nil) {
+         onStopAndWait: (() async -> Void)? = nil,
+         onStopAcknowledged: (() async -> Bool)? = nil) {
         self.initialStreamURL = streamURL
         self.backend = backend
             ?? MediaBackendID.allCases.first(where: {
@@ -158,6 +165,7 @@ final class MediaBrowserPlaybackSession {
         self.progressSession = progressSession
         self.onStop = onStop
         self.onStopAndWait = onStopAndWait
+        self.onStopAcknowledged = onStopAcknowledged
         self.reopener = reopener
     }
 }

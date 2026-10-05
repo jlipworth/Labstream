@@ -9,7 +9,8 @@ query; verify them in App Store Connect again before any upload or submission.
 ## Current status
 
 The repository source is **1.7.2 (build 1)** across all four app targets, with a matching PMSKit
-fallback. The 1.7.2 release-candidate archive set is being prepared; no upload is recorded.
+fallback. Local 1.7.2 correction archives have been built and signature-checked with stable Xcode 27;
+no 1.7.2 upload is recorded. These local correction products are not the original tagged binaries.
 The latest recorded processed distribution remains
 the **1.6.1 (build 2)** archive set at `abd1ddcac351`; keep the source version and the processed
 binary version separate when reporting release status.
@@ -38,8 +39,8 @@ macOS each use their own archive. Metadata, screenshots, build selection, review
 acceptance remain platform-specific even when the platforms share one purchase record. A platform
 must not be marked ready merely because another platform passed review.
 
-The latest recorded App Store Connect state includes the shared app information, free price
-schedule, published **Data Not Collected** privacy answer, platform descriptions, review contacts,
+The earlier recorded App Store Connect state included the shared app information, free price
+schedule, a **Data Not Collected** privacy answer, platform descriptions, review contacts,
 build selections, manual-release settings, and one privacy-safe synthetic placeholder screenshot for
 each submitted device family. Those screenshots prove the capture and upload path, but they are not
 the intended public product-page set. In that recorded state, app availability was not enabled.
@@ -56,9 +57,24 @@ build number.
 
 The [2026-09-15 disclosure audit](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/2026-09-15-prerelease-disclosure-audit.md)
 is a historical source audit, not current account certification. Its wording and required-reason
-API fixes landed in PRs #329 and #328. Owner-approved disclosure mapping remains open in
-[#325](https://github.com/jlipworth/Labstream/issues/325), and exact signed-archive privacy reports
-remain open in [#326](https://github.com/jlipworth/Labstream/issues/326).
+API fixes landed in PRs #329 and #328. The October 2026 continuation applied the
+owner-approved collection mapping and generated readable Xcode aggregate reports from all
+four fresh, distribution-signed local correction archives. The shared App Store Connect
+privacy label was published and reloaded to verify the seven declared data types, linked to
+users, with tracking off. Functionality is declared for all seven; user ID, device ID and
+product interaction also declare personalization. The tvOS binary manifest omits crash
+summaries because that MetricKit path is absent on tvOS.
+
+This resolves the exercised blank-report generation problem, not every privacy or release
+gate. Received support storage outside GitHub and end-to-end demo database/log/edge/backup
+retention remain unverified. The updated Apple TV policy was saved for the next app version.
+All four App Store Connect version drafts now show 1.7.2, with descriptions that identify
+the separate optional demo service. Selected 1.6.1 (build 2) binaries were left unchanged;
+the new version drafts are not submission-ready. Review access remains unverified.
+The public policy website update is still pending: normal deployment requires trusted
+`main`, and no merge is authorized. [#325](https://github.com/jlipworth/Labstream/issues/325)
+and [#326](https://github.com/jlipworth/Labstream/issues/326) remain open; neither was closed
+by these checks.
 
 [#259](https://github.com/jlipworth/Labstream/issues/259), disconnected cold-launch access to
 completed downloads, is **deferred by user decision**. Keep the issue open; deferral is not
@@ -91,6 +107,28 @@ readability redesign, is low-priority follow-up and not a release blocker.
 Candidate preparation does not close the physical-device, privacy/disclosure,
 signed-archive report, screenshot, reviewer-access, or Account Holder gates below.
 TestFlight upload and App Review submission require separate authorization.
+
+### Local correction validation
+
+The continuation adds acknowledged Emby stop-before-reopen ordering and preserves failed
+cleanup authority for explicit Retry, together with relative-seek target handling and opt-in
+bounded HLS startup diagnostics. It does not prove server worker exit. See the
+[ordering investigation](https://github.com/jlipworth/Labstream/blob/main/docs/research/emby-reopen-session-overlap.md)
+for evidence limits.
+
+After test-only event synchronization and manual-clock fixes, a clean-build default-parallel
+Mac suite passed all three repetitions: 737 distinct tests (781 parameterized cases per
+repetition). Earlier failing runs remain in local evidence rather than being discarded.
+Hermetic PMSKit, repository hygiene, iPhone/tvOS hosted tests, iPhone/iPad/tvOS semantic
+fixtures, and the passive visionOS fixture also passed in the continuation. Simulator
+evidence used installed beta runtimes with stable Xcode and does not certify stable-runtime
+or physical acceptance.
+
+Per-backend Mac visual smokes and a user-reported in-place iPhone Emby smoke are partial
+acceptance only. Exact source-matched cross-backend parity, audible output, subtitles,
+next-episode behavior, broader source coverage, physical iPad/Vision Pro/Apple TV and
+TestFlight acceptance remain open. No physical Apple TV was available.
+
 
 ## Coordinated publication sequence
 

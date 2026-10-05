@@ -1163,20 +1163,28 @@ struct ArtworkPipelineTests {
 
 private actor CancellationIgnoringArtworkTransport {
     private var started = false
+    private let admission = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
     private var continuation: CheckedContinuation<(Data, URLResponse), Error>?
 
     func fetch() async throws -> (Data, URLResponse) {
-        started = true
-        return try await withCheckedThrowingContinuation { continuation = $0 }
+        return try await withCheckedThrowingContinuation {
+            continuation = $0
+            started = true
+            admission.continuation.yield(())
+            admission.continuation.finish()
+        }
     }
 
     func waitUntilStarted() async throws {
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(2))
-        while !started {
-            guard clock.now < deadline else { throw ArtworkTestTimeout.started }
-            await Task.yield()
+        if started { return }
+        // Await actual transport admission rather than compete with it in a yield loop.
+        let timeout = Task {
+            do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            admission.continuation.finish()
         }
+        defer { timeout.cancel() }
+        var events = admission.stream.makeAsyncIterator()
+        guard await events.next() != nil else { throw ArtworkTestTimeout.started }
     }
 
     func succeed(url: URL, data: Data) {

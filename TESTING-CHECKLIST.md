@@ -127,6 +127,8 @@ Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The 
 | Starts with visible preparation/buffering status, then renders video and audio | [ ] | [ ] | [ ] | [ ] |
 | Resume begins at the expected offset and respects resume-rewind preference | [ ] | [ ] | [ ] | [ ] |
 | Play/pause, relative seek, scrub-to-final-target, and Close are deterministic | [ ] | [ ] | [ ] | [ ] |
+| Rapid opposite relative jumps compose against the newest held target, not stale player time | [ ] | [ ] | [ ] | [ ] |
+| Emby audio/quality/deep-seek reopen awaits old-session acknowledgement; failed stop blocks replacement and Retry preserves position | [ ] | [ ] | [ ] | [ ] |
 | Audio/subtitle selection matches the running stream and survives applicable reopen | [ ] | [ ] | [ ] | [ ] |
 | Chapters and trick-play thumbnails use the correct remote/local provider | [ ] | [ ] | [ ] | [ ] |
 | Playback failure becomes a stable error with an explicit working Retry | [ ] | [ ] | [ ] | [ ] |

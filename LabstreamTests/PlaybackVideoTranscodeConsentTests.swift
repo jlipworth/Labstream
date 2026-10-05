@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import PMSKit
 import Testing
 @testable import Labstream
@@ -10,7 +11,8 @@ struct PlaybackVideoTranscodeConsentTests {
         let fixture = try makeFixture()
         defer { fixture.controller.stop() }
         fixture.controller.start()
-        try await waitUntil { fixture.controller.videoTranscodeConsent.isPending }
+        let controller = fixture.controller
+        try await waitForObservedState { controller.videoTranscodeConsent.isPending }
         #expect(fixture.requests.value.filter { $0.url?.path.hasSuffix("decision") == true }.count == 1)
         #expect(!fixture.requests.value.contains { $0.url?.path.hasSuffix("start.m3u8") == true })
         let generation = try #require(fixture.controller.videoTranscodeConsent.generation)
@@ -23,8 +25,10 @@ struct PlaybackVideoTranscodeConsentTests {
 
     @Test func stopInvalidatesPendingApproval() async throws {
         let fixture = try makeFixture()
-        fixture.controller.start()
-        try await waitUntil { fixture.controller.videoTranscodeConsent.isPending }
+        let controller = fixture.controller
+        defer { controller.stop() }
+        controller.start()
+        try await waitForObservedState { controller.videoTranscodeConsent.isPending }
         let generation = try #require(fixture.controller.videoTranscodeConsent.generation)
         fixture.controller.stop()
         fixture.controller.approveVideoTranscoding(generation: generation)
@@ -108,6 +112,28 @@ struct PlaybackVideoTranscodeConsentTests {
         task.cancel()
         await task.value
         #expect(cleanupWasCancelled == false)
+    }
+
+    /// Observe actual transitions on the caller's actor; timeout only bounds a broken test.
+    private func waitForObservedState(_ condition: @escaping @MainActor () -> Bool) async throws {
+        let events = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let timeout = Task {
+            do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            events.continuation.finish()
+        }
+        defer {
+            timeout.cancel()
+            events.continuation.finish()
+        }
+        var iterator = events.stream.makeAsyncIterator()
+        while !Task.isCancelled {
+            let ready = withObservationTracking { condition() } onChange: {
+                events.continuation.yield(())
+            }
+            if ready { return }
+            guard await iterator.next() != nil else { break }
+        }
+        try #require(condition(), "Observed controller state did not transition before outer test guard")
     }
 
     private func waitUntil(_ condition: () -> Bool) async throws {

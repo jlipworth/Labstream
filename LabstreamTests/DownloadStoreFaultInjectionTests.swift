@@ -47,18 +47,28 @@ struct DownloadStoreFaultInjectionTests {
         }
     }
 
-    @Test func blockedOlderCommitStillFinishesWithNewestFreshStoreSnapshot() async throws {
+    @Test func blockedOlderSubmissionStillFinishesWithNewestFreshStoreSnapshot() async throws {
         try await withTemporaryDirectory { directory in
+            // This establishes ordering of two disjoint full-state submissions while older I/O
+            // is blocked. It does not exercise the synchronous upsert wrapper's wait contract.
+            let seed = DownloadStore(baseDirectory: directory)
+            let firstID = try #require(DownloadAttemptID(rawValue: "first-attempt"))
+            let secondID = try #require(DownloadAttemptID(rawValue: "second-attempt"))
+            guard case .committed(let firstKey) = seed.createAttemptOwnedRecord(
+                Self.record("plex:first", directory: directory, bytes: 1), attemptID: firstID),
+                  case .committed(let secondKey) = seed.createAttemptOwnedRecord(
+                Self.record("plex:second", directory: directory, bytes: 2), attemptID: secondID) else {
+                Issue.record("Seed rows must commit before the ordering experiment")
+                return
+            }
             let firstWriteStarted = DispatchSemaphore(value: 0)
             let releaseFirstWrite = DispatchSemaphore(value: 0)
+            defer { releaseFirstWrite.signal() }
             let writeCount = LockedFaultBox(0)
             let store = DownloadStore(
                 baseDirectory: directory,
                 indexPersistence: .init { data, url in
-                    let count = writeCount.withValue { value in
-                        value += 1
-                        return value
-                    }
+                    let count = writeCount.withValue { value in value += 1; return value }
                     if count == 1 {
                         firstWriteStarted.signal()
                         releaseFirstWrite.wait()
@@ -66,22 +76,30 @@ struct DownloadStoreFaultInjectionTests {
                     try data.write(to: url, options: .atomic)
                 }
             )
-
-            let first = Task.detached {
-                store.upsert(Self.record("plex:first", directory: directory, bytes: 1))
+            guard case .accepted(change: .applied, ticket: let firstTicket?) =
+                    store.submitStatus(for: firstKey, .paused) else {
+                Issue.record("First mutation must return an admitted full-snapshot ticket")
+                return
             }
-            #expect(await waitForSignal(firstWriteStarted))
-            let second = Task.detached {
-                store.upsert(Self.record("plex:second", directory: directory, bytes: 2))
+            // Bounded fixture guard, not a revision-polling deadline or correctness oracle.
+            try #require(await waitForSignal(firstWriteStarted, timeout: 30))
+            guard case .accepted(change: .applied, ticket: let secondTicket?) =
+                    store.submitStatus(for: secondKey, .failed) else {
+                Issue.record("Second mutation must return an admitted full-snapshot ticket")
+                return
             }
-            #expect(await eventually { store.currentPersistenceTicket().revision == 2 })
-
+            #expect(firstTicket.revision == 1)
+            #expect(secondTicket.revision == 2)
+            #expect(store.currentPersistenceTicket() == secondTicket)
+            #expect(store.status(for: firstKey.ratingKey) == .paused)
+            #expect(store.status(for: secondKey.ratingKey) == .failed)
             releaseFirstWrite.signal()
-            await first.value
-            await second.value
-
+            try #require(await store.flushPersistence(through: secondTicket, timeout: 30)
+                == .committed(revision: secondTicket.revision))
             let restored = DownloadStore(baseDirectory: directory)
             #expect(Set(restored.records.map(\.ratingKey)) == ["plex:first", "plex:second"])
+            #expect(restored.status(for: firstKey.ratingKey) == .paused)
+            #expect(restored.status(for: secondKey.ratingKey) == .failed)
             #expect(writeCount.value == 2)
         }
     }
@@ -248,21 +266,12 @@ struct DownloadStoreFaultInjectionTests {
 
     private static func key(_ index: Int) -> String { "plex:item-\(index)" }
 
-    private func waitForSignal(_ semaphore: DispatchSemaphore) async -> Bool {
+    private func waitForSignal(_ semaphore: DispatchSemaphore, timeout: TimeInterval = 1) async -> Bool {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
-                continuation.resume(returning: semaphore.wait(timeout: .now() + 1) == .success)
+                continuation.resume(returning: semaphore.wait(timeout: .now() + timeout) == .success)
             }
         }
-    }
-
-    private func eventually(_ predicate: @escaping @Sendable () -> Bool) async -> Bool {
-        let deadline = ContinuousClock.now + .seconds(1)
-        while ContinuousClock.now < deadline {
-            if predicate() { return true }
-            await Task.yield()
-        }
-        return predicate()
     }
 
     private func withTemporaryDirectory(_ body: (URL) throws -> Void) throws {

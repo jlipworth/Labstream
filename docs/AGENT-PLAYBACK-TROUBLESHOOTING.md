@@ -88,6 +88,7 @@ GPU, or codec implementation failure from a delivery timeout alone.
 | `LS-PB-005` | Original playback failed without permission for video encoding. Obtain per-item consent rather than silently encoding. |
 | `LS-PB-006` | Connection unavailable. Check server/network. |
 | `LS-PB-007` | No authenticated backend session. Sign in again. |
+| `LS-PB-008` | Previous Emby session stop was not acknowledged. No replacement encoder is started; check server connectivity and Retry. Acknowledgement does not prove worker exit. |
 | `LS-PB-999` | Evidence does not identify the failure. Retry or provide app diagnostics; do not invent a server-specific diagnosis. |
 
 Raw server text, URLs, paths, and framework descriptions are not user-facing messages.

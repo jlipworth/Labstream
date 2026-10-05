@@ -91,7 +91,9 @@ struct MetadataRepositoryTests {
     @Test func watchedPatchSurvivesOlderFlightButNewerAuthoritativeReadSupersedesIt() async throws {
         let context = try makeContext()
         let fetch = ControlledMetadataFetch()
-        let repository = MetadataRepository()
+        // This tests provenance/authority, not elapsed time under a contended test host.
+        let clock = ManualTestClock(nowNanoseconds: 0)
+        let repository = MetadataRepository(now: { clock.nowNanoseconds })
         let request = request(repository, context: context, itemID: "item", fetch: fetch)
 
         let olderFlight = Task { try await repository.metadata(for: request, policy: .display) }
@@ -129,7 +131,9 @@ struct MetadataRepositoryTests {
     @Test func watchedPatchUpdatesCachedFullItemWithoutStartingOrAuthorizingARead() async throws {
         let context = try makeContext()
         let fetch = ControlledMetadataFetch()
-        let repository = MetadataRepository()
+        // This tests provenance/authority, not elapsed time under a contended test host.
+        let clock = ManualTestClock(nowNanoseconds: 0)
+        let repository = MetadataRepository(now: { clock.nowNanoseconds })
         let request = request(repository, context: context, itemID: "item", fetch: fetch)
         let original = MediaItem(ratingKey: "item", title: "full", type: "movie",
                                  viewCount: 0, summary: "keep me",
@@ -327,7 +331,9 @@ struct MetadataRepositoryTests {
                                        userID: "user",
                                        serverID: "server")
         let context = try #require(model.activeAuthenticatedBrowseSession)
-        let repository = MetadataRepository()
+        // This tests provenance/authority, not elapsed time under a contended test host.
+        let clock = ManualTestClock(nowNanoseconds: 0)
+        let repository = MetadataRepository(now: { clock.nowNanoseconds })
         let fetch = ControlledMetadataFetch()
         let trustedItem = item("item", title: "trusted-native")
         let request = repository.request(context: context,
@@ -463,7 +469,9 @@ struct MetadataRepositoryTests {
     @Test func systemEntryNativeSnapshotHandoffAutoplaysWithOneMetadataRead() async throws {
         let fixture = try makeModelContext()
         let fetch = ControlledMetadataFetch()
-        let repository = MetadataRepository()
+        // This tests provenance/authority, not elapsed time under a contended test host.
+        let clock = ManualTestClock(nowNanoseconds: 0)
+        let repository = MetadataRepository(now: { clock.nowNanoseconds })
         let request = request(repository, context: fixture.context,
                               itemID: "route-item", fetch: fetch)
         let routeRead = Task {
