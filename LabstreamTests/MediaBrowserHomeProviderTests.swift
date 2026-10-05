@@ -306,12 +306,12 @@ struct MediaBrowserHomeProviderTests {
         #expect(!Set(await harness.browser.latestStarted).contains("hidden"))
         #expect(!Set(await harness.browser.latestStarted).contains("nine"))
 
-        for request in [
+        for (completionIndex, request) in [
             HomeControlledBrowser.Request.latest("eight"),
             .latest("one"),
             .nextUp,
             .resume,
-        ] {
+        ].enumerated() {
             switch request {
             case .resume:
                 await harness.browser.succeed(request, with: [item("resume")])
@@ -319,6 +319,12 @@ struct MediaBrowserHomeProviderTests {
                 await harness.browser.succeed(request, with: [])
             case .latest(let id):
                 await harness.browser.succeed(request, with: [item("latest-\(id)")])
+            }
+            // Resuming a transport continuation does not order task-group consumption.
+            // Observe this publication before releasing the next controlled result, as in
+            // the earlier progressive loop; the indexed assertions below require that order.
+            await waitUntil("final progressive snapshot \(completionIndex + 7)") {
+                recorder.snapshots.count == completionIndex + 7
             }
         }
 

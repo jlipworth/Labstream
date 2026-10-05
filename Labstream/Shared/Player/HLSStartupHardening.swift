@@ -1,4 +1,5 @@
 import Foundation
+import PMSKit
 
 /// GH #196 — copy-lane startup hardening for Plex universal-transcode HLS.
 ///
@@ -31,10 +32,8 @@ enum HLSStartupDeadlinePolicy {
 
     /// User-facing message for a startup-deadline abandonment on the copy lane.
     static func failureMessage(errorLogCodes: [Int]) -> String {
-        let codes = errorLogCodes.map(String.init).joined(separator: ", ")
-        return "The server was too slow to deliver the first video segments, so the player "
-            + "gave up on the stream (CoreMedia \(codes)). The segments are usually ready on "
-            + "a second attempt — tap Retry, or choose a lower quality."
+        // Codes remain in playback diagnostics, not in the user-facing explanation.
+        PlaybackFailureExplanation.deliveryTimeout
     }
 }
 

@@ -4415,21 +4415,27 @@ public final class DownloadManager {
     }
 
     private func recordDownloadHealthSnapshotIfNeeded(records: [DownloadRecord], now: Date) {
-        let sessionSnapshot = session.diagnosticSnapshot()
-        let snapshot = DownloadHealthSnapshotPolicy.makeSnapshot(
-            records: records,
-            activeJobCount: activeJobs.count,
-            retryingCount: retryState.retryingCount,
-            retryHandoffCount: retryState.handoffCount,
-            pendingStaticResumeCount: staticRangeRecovery.pendingResumeCount,
-            finalizingStaticRecoveryCount: staticRangeRecovery.finalizingCount,
-            serverPrepPollerCount: serverPrepPollerTasks.count,
-            jellyfinKeepaliveCount: keepaliveCoordinator.activeCount(for: .jellyfin),
-            forwardStallWatchCount: forwardOnlyStallTracker.trackedCount,
-            session: makeDownloadHealthSessionSnapshot(from: sessionSnapshot))
-        guard DownloadHealthSnapshotPolicy.shouldRecord(snapshot: snapshot,
-                                                        lastRecordedAt: lastDownloadHealthDiagnosticAt,
-                                                        now: now) else { return }
+        // Do not scan the filesystem for a disabled, throttled, or idle diagnostic.
+        guard let snapshot = DownloadHealthSnapshotPolicy.collectIfNeeded(
+            enabled: AppDiagnostics.isEnabled,
+            lastRecordedAt: lastDownloadHealthDiagnosticAt,
+            now: now,
+            makeSnapshot: {
+                let sessionSnapshot = session.diagnosticSnapshot(includePendingTempCleanupBytes: false)
+                return DownloadHealthSnapshotPolicy.makeSnapshot(
+                    records: records,
+                    activeJobCount: activeJobs.count,
+                    retryingCount: retryState.retryingCount,
+                    retryHandoffCount: retryState.handoffCount,
+                    pendingStaticResumeCount: staticRangeRecovery.pendingResumeCount,
+                    finalizingStaticRecoveryCount: staticRangeRecovery.finalizingCount,
+                    serverPrepPollerCount: serverPrepPollerTasks.count,
+                    jellyfinKeepaliveCount: keepaliveCoordinator.activeCount(for: .jellyfin),
+                    forwardStallWatchCount: forwardOnlyStallTracker.trackedCount,
+                    session: makeDownloadHealthSessionSnapshot(from: sessionSnapshot))
+            },
+            pendingTempBytes: { session.diagnosticSnapshot().pendingTempCleanupBytes }
+        ) else { return }
         lastDownloadHealthDiagnosticAt = now
         recordDownloadDiagnostic("downloads.health_snapshot",
                                  fields: DownloadHealthSnapshotPolicy.diagnosticFields(for: snapshot))

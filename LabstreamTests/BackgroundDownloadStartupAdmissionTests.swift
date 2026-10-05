@@ -42,7 +42,7 @@ struct BackgroundDownloadStartupAdmissionTests {
             }
 
             #expect(!session.isTrackingTransfer(ratingKey: ratingKey))
-            let snapshot = session.diagnosticSnapshot()
+            let snapshot = session.diagnosticSnapshot(includePendingTempCleanupBytes: false)
             #expect(snapshot.opaqueInflightCount == 0)
             #expect(snapshot.rangeInflightCount == 0)
         }
@@ -428,12 +428,12 @@ struct BackgroundDownloadStartupAdmissionTests {
                 ratingKey: key.ratingKey, validationLabel: "test"))
             #expect(!session.finalizeCompletedStaticRangeFile(
                 ratingKey: key.ratingKey, validationLabel: "duplicate"))
-            var snapshot = session.diagnosticSnapshot()
+            var snapshot = session.diagnosticSnapshot(includePendingTempCleanupBytes: false)
             #expect(snapshot.finalizingRatingKeyCount == 1)
             #expect(snapshot.pendingBackgroundCompletionOperationCount == 1)
 
             session.abandonFinalizerRequest(try #require(requestBox.load()))
-            snapshot = session.diagnosticSnapshot()
+            snapshot = session.diagnosticSnapshot(includePendingTempCleanupBytes: false)
             #expect(snapshot.finalizingRatingKeyCount == 0)
             #expect(snapshot.pendingBackgroundCompletionOperationCount == 0)
         }
@@ -645,28 +645,34 @@ struct BackgroundDownloadStartupAdmissionTests {
                 Issue.record("Malformed ownership must block startup")
                 return
             }
-            #expect(session.diagnosticSnapshot().pendingBackgroundCompletionOperationCount == 0)
+            #expect(session.diagnosticSnapshot(includePendingTempCleanupBytes: false).pendingBackgroundCompletionOperationCount == 0)
     }
 
     private func withTemporaryDirectory(
         _ body: (URL) throws -> Void
     ) throws {
-        let directory = FileManager.default.temporaryDirectory
+        // Own the parent too: quarantine reclamation enumerates siblings and durable
+        // cleanup authority lives beside the media root, not inside it.
+        let parent = FileManager.default.temporaryDirectory
             .appendingPathComponent("background-startup-admission-\(UUID().uuidString)",
                                   isDirectory: true)
+        let directory = parent.appendingPathComponent("Downloads", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+        defer { try? FileManager.default.removeItem(at: parent) }
         try body(directory)
     }
 
     private func withTemporaryDirectory(
         _ body: (URL) async throws -> Void
     ) async throws {
-        let directory = FileManager.default.temporaryDirectory
+        // Own the parent too: quarantine reclamation enumerates siblings and durable
+        // cleanup authority lives beside the media root, not inside it.
+        let parent = FileManager.default.temporaryDirectory
             .appendingPathComponent("background-startup-admission-\(UUID().uuidString)",
                                   isDirectory: true)
+        let directory = parent.appendingPathComponent("Downloads", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+        defer { try? FileManager.default.removeItem(at: parent) }
         try await body(directory)
     }
 
@@ -868,7 +874,7 @@ struct UnverifiedRevalidationLifecycleTests {
         try #require(await completions.next() != nil)
         #expect(await validator.attemptCount == 0)
         #expect(store.record(for: key)?.status == .unverified)
-        #expect(session.diagnosticSnapshot().finalizingRatingKeyCount == 0)
+        #expect(session.diagnosticSnapshot(includePendingTempCleanupBytes: false).finalizingRatingKeyCount == 0)
         #expect(manager.unverifiedRevalidationSnapshotForTesting().desired.contains(key))
 
         manager.noteAppSceneRecovery(.aggregateSceneBecameActive)
@@ -911,15 +917,15 @@ struct UnverifiedRevalidationLifecycleTests {
         let observedFirstAttempt = await validator.waitForAttempts(1)
         let firstAttemptState = manager.unverifiedRevalidationSnapshotForTesting()
         #expect(observedFirstAttempt,
-                "First revalidation wait: elapsed=\(firstAttemptStart.duration(to: .now)), desired=\(firstAttemptState.desired.count), inFlight=\(firstAttemptState.inFlight.count), finalizers=\(session.diagnosticSnapshot().finalizingRatingKeyCount)")
+                "First revalidation wait: elapsed=\(firstAttemptStart.duration(to: .now)), desired=\(firstAttemptState.desired.count), inFlight=\(firstAttemptState.inFlight.count), finalizers=\(session.diagnosticSnapshot(includePendingTempCleanupBytes: false).finalizingRatingKeyCount)")
         #expect(store.record(for: key)?.status == .unverified)
 
         manager.noteAppSceneRecovery(.aggregateSceneBecameInactive)
         #expect(await validator.waitForCancellations(1))
-        for _ in 0..<100 where session.diagnosticSnapshot().finalizingRatingKeyCount != 0 {
+        for _ in 0..<100 where session.diagnosticSnapshot(includePendingTempCleanupBytes: false).finalizingRatingKeyCount != 0 {
             try await Task.sleep(for: .milliseconds(10))
         }
-        #expect(session.diagnosticSnapshot().finalizingRatingKeyCount == 0)
+        #expect(session.diagnosticSnapshot(includePendingTempCleanupBytes: false).finalizingRatingKeyCount == 0)
         #expect(store.record(for: key)?.status == .unverified)
         #expect(!publishingTask.isCancelled)
         #expect(manager.downloadWorkRegistry.snapshot().attempts
@@ -964,7 +970,7 @@ struct UnverifiedRevalidationLifecycleTests {
         let snapshot = manager.unverifiedRevalidationSnapshotForTesting()
         #expect(snapshot.inFlight.isEmpty)
         #expect(snapshot.desired.contains(key))
-        #expect(session.diagnosticSnapshot().finalizingRatingKeyCount == 0)
+        #expect(session.diagnosticSnapshot(includePendingTempCleanupBytes: false).finalizingRatingKeyCount == 0)
         // Let the manager's initial injected-session reattach callback finish before deleting its
         // temporary index directory.
         try await Task.sleep(for: .milliseconds(100))
@@ -1416,7 +1422,7 @@ struct HeldRangeBodyCompletionGateTests {
         // operation begun before the apply returned must keep the gate open.
         #expect(await waitForSignal(writes.entered, timeout: 5))
         #expect(await waitForSignal(applied, timeout: 5))
-        #expect(session.diagnosticSnapshot().pendingBackgroundCompletionOperationCount == 1)
+        #expect(session.diagnosticSnapshot(includePendingTempCleanupBytes: false).pendingBackgroundCompletionOperationCount == 1)
         #expect(await waitForSignal(fired, timeout: 0) == false)
 
         // Releasing the writer lets the lifecycle complete; its completion replans the train
@@ -1425,7 +1431,7 @@ struct HeldRangeBodyCompletionGateTests {
         #expect(await waitForSignal(rebuildNeeded, timeout: 5))
         var settled = false
         for _ in 0..<200 {
-            if session.diagnosticSnapshot().pendingBackgroundCompletionOperationCount == 1 {
+            if session.diagnosticSnapshot(includePendingTempCleanupBytes: false).pendingBackgroundCompletionOperationCount == 1 {
                 settled = true
                 break
             }

@@ -344,6 +344,13 @@ known to handle untagged P5, and blocks Emby rather than accepting a successful-
 incorrectly colored encode. A guard-forced transcode has a transport-progress-aware
 first-frame deadline and a DV-specific failure surface.
 
+P7 HDR10 initialization normalization remains a **default-off, DEBUG macOS-only**
+experiment with explicit source/copy authority and strict playlist/initialization admission.
+The older automatic Original-quality P7 rewrite is superseded, not an enabled Release path.
+See the [P7 decoder investigation](https://github.com/jlipworth/Labstream/blob/main/docs/research/dv-p7-decoder-boundary.md) for evidence and
+remaining hardware gates. AVPlayer's observed transfer bitrate on a loopback path measures
+local delivery, not upstream network speed; Stats marks it unavailable.
+
 Experimental DV signalling remains default-off and changes two separate decisions when enabled.
 First, it defers the fallback-less Profile 5 safety gate so the experimental copy lane can be
 attempted. Separately, server capability advertising and HLS master-playlist injection are enabled

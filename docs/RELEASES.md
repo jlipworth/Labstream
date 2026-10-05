@@ -11,6 +11,13 @@ query; verify them in App Store Connect again before any upload or submission.
 The repository source is **1.7.2 (build 1)** across all four app targets, with a matching PMSKit
 fallback. Local 1.7.2 correction archives have been built and signature-checked with stable Xcode 27;
 no 1.7.2 upload is recorded. These local correction products are not the original tagged binaries.
+The pre-integration clean correction set was built from `07fba33d`; it must not be
+presented as a binary of the subsequently reconciled source. Local-main integration retains
+stop-item detachment, truthful proxy statistics, subtitle preference handling and safe
+plain-language error explanations. The older automatic P7 rewrite is superseded by the
+default-off DEBUG macOS experiment; prior local commits remain in history. Exact-source
+archives and aggregate report verification must be recorded separately before any authorized
+upload; prior archive sets are not substitutes.
 The latest recorded processed distribution remains
 the **1.6.1 (build 2)** archive set at `abd1ddcac351`; keep the source version and the processed
 binary version separate when reporting release status.
@@ -72,9 +79,23 @@ All four App Store Connect version drafts now show 1.7.2, with descriptions that
 the separate optional demo service. Selected 1.6.1 (build 2) binaries were left unchanged;
 the new version drafts are not submission-ready. Review access remains unverified.
 The public policy website update is still pending: normal deployment requires trusted
-`main`, and no merge is authorized. [#325](https://github.com/jlipworth/Labstream/issues/325)
-and [#326](https://github.com/jlipworth/Labstream/issues/326) remain open; neither was closed
+`main`; local integration is authorized, but no push or deployment has been performed. A fresh issue-state check found
+[#325](https://github.com/jlipworth/Labstream/issues/325) already closed externally; that status
+is not evidence that the retention/storage uncertainties above were resolved.
+[#326](https://github.com/jlipworth/Labstream/issues/326) remains open. Neither issue was closed
 by these checks.
+
+Local integration validation passed 1,712 PMSKit Swift Testing cases plus 121 XCTest
+cases, 731 iPhone-hosted cases, 418 tvOS-hosted cases, semantic iPhone/iPad/TV fixtures,
+and a passive visionOS fixture. The isolated Mac fixture passed home/detail navigation;
+the single-worker full Mac suite passed 747 cases and a focused 20-case integration set
+passed three repetitions. Earlier default-parallel runs exposed season-metadata,
+artwork-admission and authorization-fixture deadline failures. The follow-up below removed
+unnecessary filesystem diagnostics and isolated fixture scheduling/storage assumptions;
+a fresh default-parallel Mac run and an independent repeat each passed all 747 tests across
+five repetitions. Earlier failing evidence is retained; the passing single-worker result was
+not used as a substitute for parallel validation. No new physical-device or source-matched
+live-backend acceptance is implied by this integration.
 
 [#259](https://github.com/jlipworth/Labstream/issues/259), disconnected cold-launch access to
 completed downloads, is **deferred by user decision**. Keep the issue open; deferral is not
@@ -109,6 +130,17 @@ signed-archive report, screenshot, reviewer-access, or Account Holder gates belo
 TestFlight upload and App Review submission require separate authorization.
 
 ### Local correction validation
+
+The parallel-stress follow-up separates cheap download counters from filesystem diagnostics.
+Health collection is now gated before work by logging enablement and its existing reporting
+cadence, and temporary-file bytes are collected only for an eligible active snapshot. Reattach
+also skips diagnostic-only enumeration when logging is off; cleanup/recovery authority is
+unchanged. Eligible enabled diagnostics still inspect the filesystem synchronously. Tests that
+only assert counters omit that inspection, startup fixtures own their parent directory and its
+sibling cleanup authority, and controlled home-rail completions wait for their corresponding
+publication before asserting a particular intermediate order. No production timeout, test
+assertion, or parallel-execution setting is relaxed by these corrections. The updated hermetic
+PMSKit run passed 1,713 Swift Testing cases plus 121 XCTest cases.
 
 The continuation adds acknowledged Emby stop-before-reopen ordering and preserves failed
 cleanup authority for explicit Retry, together with relative-seek target handling and opt-in

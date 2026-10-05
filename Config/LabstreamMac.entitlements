@@ -6,6 +6,9 @@
 	<true/>
 	<key>com.apple.security.network.client</key>
 	<true/>
+	<!-- The media compatibility proxy accepts connections only on loopback. -->
+	<key>com.apple.security.network.server</key>
+	<true/>
 	<!-- The canonical Mac build stores the synchronized Plex token in the same default
 	     application keychain group as the iOS/visionOS app. Xcode expands the prefix from
 	     the selected signing team and injects application/team identifiers from the profile. -->

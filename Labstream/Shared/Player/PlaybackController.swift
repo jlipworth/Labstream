@@ -1159,6 +1159,10 @@ final class PlaybackController {
         refreshVideoNowPlayingMetadata(elapsedMillisecondsOverride: terminalProgressMs,
                                        playbackRateOverride: 0)
         removeObservers()
+        // Pausing does not cancel AVFoundation's HLS fetches. Release the stopped item
+        // after capturing/reporting its final position and invalidating callbacks, so it
+        // cannot keep requesting segments from the server session we just stopped.
+        player.replaceCurrentItem(with: nil)
         // Tear down the session/lifecycle observers (kept separate from the per-item
         // observers above) and release the audio session, notifying other apps so they can
         // resume (#17).
@@ -1484,11 +1488,12 @@ final class PlaybackController {
         let streams = part.subtitleStreams
         guard !streams.isEmpty else { return nil }
 
+        // The source snapshot predates our part-level deselection. Manual/Off preferences
+        // must not resurrect its account-sticky selected flag in the picker.
         let selection: BackendSubtitleSelection = subtitleSelectionOverride
-            ?? part.subtitleStreams.first(where: { $0.selected == true }).map {
+            ?? (subtitlesOffForNewStream() ? .off : streams.first(where: { $0.selected == true }).map {
                 BackendSubtitleSelection.stream($0.id)
-            }
-            ?? .off
+            } ?? .off)
         var tracks: [PlaybackSubtitleTrack] = [makeSubtitleTrack(
             displayName: "Off", mechanism: .plexOff,
             route: .off, isCurrentSelection: selection == .off)]
@@ -1506,16 +1511,9 @@ final class PlaybackController {
                 streamCodec: stream.codec))
         }
 
-        let selectedID: PlaybackSubtitleTrack.ID
-        if let override = subtitleSelectionOverride {
-            selectedID = switch override {
-            case .off: .plexOff
-            case .stream(let streamID): .plexStream(streamID)
-            }
-        } else {
-            selectedID = streams.first(where: { $0.selected == true })
-                .map { .plexStream($0.id) }
-                ?? .plexOff
+        let selectedID: PlaybackSubtitleTrack.ID = switch selection {
+        case .off: .plexOff
+        case .stream(let streamID): .plexStream(streamID)
         }
         let resolvedID = tracks.contains(where: { $0.id == selectedID }) ? selectedID : .plexOff
         return PlaybackTrackSnapshot(tracks: tracks, selectedID: resolvedID)
@@ -3698,6 +3696,9 @@ final class PlaybackController {
     // MARK: - Shared load + observers
 
     private func load(_ playerItem: AVPlayerItem, resumeOffsetMs: Int?) {
+        // Derive this from the actual replacement asset for every backend, including Plex's
+        // HDR compatibility proxy. Never retain localhost throughput across item changes.
+        diagnostics.prepareTransport(url: (playerItem.asset as? AVURLAsset)?.url)
         // A replacement item is a new callback authority even when it belongs to the same
         // control-plane start/reopen operation.
         playbackGeneration += 1
@@ -5970,7 +5971,7 @@ final class VideoTranscodeConsentState {
 final class PlaybackError {
     /// True when playback has failed and the UI should present the error + Retry.
     private(set) var isFailed = false
-    /// A human-readable description of the failure, if AVFoundation provided one.
+    /// Privacy-safe, app-authored explanation with a stable support code.
     private(set) var message: String?
 
     private(set) var failure: PlaybackFailure?
@@ -5980,6 +5981,12 @@ final class PlaybackError {
         failure = classified
         isFailed = true
         message = classified.message
+        // Retain the local plain-language decoder/TLS explanations without weakening the
+        // typed backend/HTTP/consent vocabulary or exposing localized server descriptions.
+        if classified.code == .unknown,
+           let explanation = PlaybackFailureExplanation.message(for: error) {
+            message = "\(explanation) [\(classified.code.rawValue)]"
+        }
     }
 
     func clear() {

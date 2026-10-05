@@ -98,6 +98,48 @@ struct DownloadHealthSnapshotPolicyTests {
         #expect(DownloadHealthSnapshotPolicy.shouldRecord(snapshot: sessionOnly, lastRecordedAt: nil, now: now))
     }
 
+    @Test("Collection skips disabled, throttled, and idle filesystem diagnostics")
+    func lazyCollection() {
+        let now = Date(timeIntervalSince1970: 1_000)
+        // enabled, seconds since last emission (nil = first), active work, cheap calls, I/O calls
+        let cases: [(Bool, TimeInterval?, Bool, Int, Int)] = [
+            (false, nil, true, 0, 0),
+            (true, 59, true, 0, 0),
+            (true, -1, true, 0, 0),
+            (true, nil, false, 1, 0),
+            (true, 60, false, 1, 0),
+            (true, nil, true, 1, 1),
+            (true, 60, true, 1, 1),
+            (true, 61, true, 1, 1),
+        ]
+        for (enabled, elapsed, active, expectedSnapshots, expectedScans) in cases {
+            var snapshotCalls = 0
+            var scanCalls = 0
+            let result = DownloadHealthSnapshotPolicy.collectIfNeeded(
+                enabled: enabled,
+                lastRecordedAt: elapsed.map { now.addingTimeInterval(-$0) },
+                now: now,
+                makeSnapshot: {
+                    snapshotCalls += 1
+                    return DownloadHealthSnapshotPolicy.makeSnapshot(
+                        records: [], activeJobCount: 0, retryingCount: 0, retryHandoffCount: 0,
+                        pendingStaticResumeCount: 0, finalizingStaticRecoveryCount: 0,
+                        serverPrepPollerCount: 0, jellyfinKeepaliveCount: 0, forwardStallWatchCount: 0,
+                        session: DownloadHealthSessionSnapshot(rangeInflightCount: active ? 1 : 0))
+                },
+                pendingTempBytes: { scanCalls += 1; return 123 })
+            #expect(snapshotCalls == expectedSnapshots)
+            #expect(scanCalls == expectedScans)
+            #expect((result != nil) == (expectedScans == 1))
+            if let result {
+                #expect(result.session.pendingTempCleanupBytes == 123)
+                #expect(result.session.rangeInflightCount == 1)
+                #expect(DownloadHealthSnapshotPolicy.diagnosticFields(for: result)[
+                    "session_pending_temp_cleanup_bytes"] == .int(123))
+            }
+        }
+    }
+
     @Test("Diagnostic fields keep existing keys")
     func diagnosticFields() {
         let snapshot = DownloadHealthSnapshotPolicy.makeSnapshot(

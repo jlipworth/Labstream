@@ -48,7 +48,7 @@ struct DeferredDownloadStartupActivationTests {
     )
 
     #expect(manager.startupActivationSubmissionCountForTesting == 0)
-    #expect(session.diagnosticSnapshot().backgroundCompletionHandlerCount == 1)
+    #expect(session.diagnosticSnapshot(includePendingTempCleanupBytes: false).backgroundCompletionHandlerCount == 1)
     #expect(
       await waitUntil {
         manager.startupActivationSubmissionCountForTesting == 1

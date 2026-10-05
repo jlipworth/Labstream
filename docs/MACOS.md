@@ -73,6 +73,10 @@ the normal Keychain policy, but it should be exercised only for intentional iden
 development: multiple production-identity builds share the same LaunchServices identity,
 sandbox, Keychain behavior, and logs.
 
+The sandboxed production and development builds enable both outgoing network access and the
+network-server entitlement required by the media compatibility proxy. The listener remains
+restricted to the loopback interface; it is not a LAN media server. Without the listener
+entitlement, proxy startup fails even when direct server browsing and playback work.
 ## Local network permission and Debug launcher identity
 
 The host helper sets `ENABLE_DEBUG_DYLIB=NO`. Xcode's small Debug launcher was observed
