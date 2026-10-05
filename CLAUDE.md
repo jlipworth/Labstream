@@ -308,6 +308,22 @@ Closeout invariant: only the main worktree owns the golden sim; linked-worktree 
 must remove the relevant `vpwt-*`, `iphonewt-*`, `ipadwt-*`, and/or `tvwt-*` simulator and must not
 remove the golden sim.
 
+**Close out on merge — don't leave merged worktrees behind.** A linked worktree is finished
+once its PR is merged, or once its HEAD tree matches `origin/main` (squash merges leave the
+branch looking unmerged; check with `git fetch && git diff --quiet origin/main HEAD`). In the
+same session, carry any gitignored evidence still needed (e.g. `artifacts/` runs) into the main
+worktree, then run the checklist above through `git branch -D`. A stale linked worktree with its
+`build/` and cloned sims easily holds 40+ GB. When starting work, also check `git worktree list`
+and close out any linked worktree that is already merged and clean.
+
+**`build/` hygiene.** Reuse the canonical per-platform paths (`build/DerivedData-visionos`,
+`build/DerivedData-ios-<platform>`, `build/DerivedData-tvos`, `build/macos-host/`) — they are
+deleted and rebuilt in place by the clean-build rule above. Do not create named snapshot
+DerivedData directories (`DerivedData-<platform>-before-<fix>`, `release-<label>-v<version>`,
+one-off probe/sweep dirs) to keep around for comparison; each costs 0.5–2 GB. If a one-off
+directory is genuinely needed, delete it before the task ends, along with
+`scripts/deploy-macos-to-host.sh --delete-all-staged` for any staged macOS apps.
+
 ## Native macOS host deploy/run and cleanup
 
 There is no macOS simulator lane. Use the host helper, which builds `LabstreamMac` for
