@@ -42,7 +42,7 @@ struct BackgroundDownloadStartupAdmissionTests {
             }
 
             #expect(!session.isTrackingTransfer(ratingKey: ratingKey))
-            let snapshot = session.diagnosticSnapshot()
+            let snapshot = session.diagnosticSnapshot(includePendingTempCleanupBytes: false)
             #expect(snapshot.opaqueInflightCount == 0)
             #expect(snapshot.rangeInflightCount == 0)
         }
@@ -428,12 +428,12 @@ struct BackgroundDownloadStartupAdmissionTests {
                 ratingKey: key.ratingKey, validationLabel: "test"))
             #expect(!session.finalizeCompletedStaticRangeFile(
                 ratingKey: key.ratingKey, validationLabel: "duplicate"))
-            var snapshot = session.diagnosticSnapshot()
+            var snapshot = session.diagnosticSnapshot(includePendingTempCleanupBytes: false)
             #expect(snapshot.finalizingRatingKeyCount == 1)
             #expect(snapshot.pendingBackgroundCompletionOperationCount == 1)
 
             session.abandonFinalizerRequest(try #require(requestBox.load()))
-            snapshot = session.diagnosticSnapshot()
+            snapshot = session.diagnosticSnapshot(includePendingTempCleanupBytes: false)
             #expect(snapshot.finalizingRatingKeyCount == 0)
             #expect(snapshot.pendingBackgroundCompletionOperationCount == 0)
         }
@@ -645,28 +645,34 @@ struct BackgroundDownloadStartupAdmissionTests {
                 Issue.record("Malformed ownership must block startup")
                 return
             }
-            #expect(session.diagnosticSnapshot().pendingBackgroundCompletionOperationCount == 0)
+            #expect(session.diagnosticSnapshot(includePendingTempCleanupBytes: false).pendingBackgroundCompletionOperationCount == 0)
     }
 
     private func withTemporaryDirectory(
         _ body: (URL) throws -> Void
     ) throws {
-        let directory = FileManager.default.temporaryDirectory
+        // Own the parent too: quarantine reclamation enumerates siblings and durable
+        // cleanup authority lives beside the media root, not inside it.
+        let parent = FileManager.default.temporaryDirectory
             .appendingPathComponent("background-startup-admission-\(UUID().uuidString)",
                                   isDirectory: true)
+        let directory = parent.appendingPathComponent("Downloads", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+        defer { try? FileManager.default.removeItem(at: parent) }
         try body(directory)
     }
 
     private func withTemporaryDirectory(
         _ body: (URL) async throws -> Void
     ) async throws {
-        let directory = FileManager.default.temporaryDirectory
+        // Own the parent too: quarantine reclamation enumerates siblings and durable
+        // cleanup authority lives beside the media root, not inside it.
+        let parent = FileManager.default.temporaryDirectory
             .appendingPathComponent("background-startup-admission-\(UUID().uuidString)",
                                   isDirectory: true)
+        let directory = parent.appendingPathComponent("Downloads", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
+        defer { try? FileManager.default.removeItem(at: parent) }
         try await body(directory)
     }
 
@@ -846,21 +852,34 @@ struct UnverifiedRevalidationLifecycleTests {
                 clientIdentifier: "broker-overtake-test")),
             store: store, session: session, registerForBackgroundEvents: false)
 
+        let finished = AsyncStream<Void>.makeStream(bufferingPolicy: .unbounded)
+        let priorFinished = session.onRevalidationRequestFinished
+        session.onRevalidationRequestFinished = { attempt, request, outcome in
+            priorFinished?(attempt, request, outcome)
+            finished.continuation.yield(())
+        }
+        defer { finished.continuation.finish() }
+        let timeout = Task {
+            do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            finished.continuation.finish()
+        }
+        defer { timeout.cancel() }
+        var completions = finished.stream.makeAsyncIterator()
+
         // Both calls run in one MainActor turn. The session claim is synchronous, while its broker
         // registration is queued; inactive must win without allowing the queued probe to start.
         manager.noteAppSceneRecovery(.aggregateSceneBecameActive)
         manager.noteAppSceneRecovery(.aggregateSceneBecameInactive)
-        for _ in 0..<20 { await Task.yield() }
+        // The cancelled broker's exact completion is the negative-probe assertion boundary.
+        try #require(await completions.next() != nil)
         #expect(await validator.attemptCount == 0)
         #expect(store.record(for: key)?.status == .unverified)
-        #expect(session.diagnosticSnapshot().finalizingRatingKeyCount == 0)
+        #expect(session.diagnosticSnapshot(includePendingTempCleanupBytes: false).finalizingRatingKeyCount == 0)
         #expect(manager.unverifiedRevalidationSnapshotForTesting().desired.contains(key))
 
         manager.noteAppSceneRecovery(.aggregateSceneBecameActive)
         #expect(await validator.waitForAttempts(1))
-        for _ in 0..<200 where store.record(for: key)?.status != .complete {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        try #require(await completions.next() != nil)
         #expect(store.record(for: key)?.status == .complete)
         #expect(await validator.attemptCount == 1)
     }
@@ -898,15 +917,15 @@ struct UnverifiedRevalidationLifecycleTests {
         let observedFirstAttempt = await validator.waitForAttempts(1)
         let firstAttemptState = manager.unverifiedRevalidationSnapshotForTesting()
         #expect(observedFirstAttempt,
-                "First revalidation wait: elapsed=\(firstAttemptStart.duration(to: .now)), desired=\(firstAttemptState.desired.count), inFlight=\(firstAttemptState.inFlight.count), finalizers=\(session.diagnosticSnapshot().finalizingRatingKeyCount)")
+                "First revalidation wait: elapsed=\(firstAttemptStart.duration(to: .now)), desired=\(firstAttemptState.desired.count), inFlight=\(firstAttemptState.inFlight.count), finalizers=\(session.diagnosticSnapshot(includePendingTempCleanupBytes: false).finalizingRatingKeyCount)")
         #expect(store.record(for: key)?.status == .unverified)
 
         manager.noteAppSceneRecovery(.aggregateSceneBecameInactive)
         #expect(await validator.waitForCancellations(1))
-        for _ in 0..<100 where session.diagnosticSnapshot().finalizingRatingKeyCount != 0 {
+        for _ in 0..<100 where session.diagnosticSnapshot(includePendingTempCleanupBytes: false).finalizingRatingKeyCount != 0 {
             try await Task.sleep(for: .milliseconds(10))
         }
-        #expect(session.diagnosticSnapshot().finalizingRatingKeyCount == 0)
+        #expect(session.diagnosticSnapshot(includePendingTempCleanupBytes: false).finalizingRatingKeyCount == 0)
         #expect(store.record(for: key)?.status == .unverified)
         #expect(!publishingTask.isCancelled)
         #expect(manager.downloadWorkRegistry.snapshot().attempts
@@ -951,7 +970,7 @@ struct UnverifiedRevalidationLifecycleTests {
         let snapshot = manager.unverifiedRevalidationSnapshotForTesting()
         #expect(snapshot.inFlight.isEmpty)
         #expect(snapshot.desired.contains(key))
-        #expect(session.diagnosticSnapshot().finalizingRatingKeyCount == 0)
+        #expect(session.diagnosticSnapshot(includePendingTempCleanupBytes: false).finalizingRatingKeyCount == 0)
         // Let the manager's initial injected-session reattach callback finish before deleting its
         // temporary index directory.
         try await Task.sleep(for: .milliseconds(100))
@@ -1262,11 +1281,13 @@ private actor HeldRevalidationValidator {
 
     func validate() async -> BackgroundDownloadSession.PlaybackValidation {
         attemptCount += 1
+        signalCounts()
         while !succeeds {
             do {
                 try await Task.sleep(for: .milliseconds(10))
             } catch {
                 cancellationCount += 1
+                signalCounts()
                 return .init(played: false, reason: "cancelled", durationMs: nil, detail: nil)
             }
         }
@@ -1275,21 +1296,45 @@ private actor HeldRevalidationValidator {
 
     func allowSuccess() { succeeds = true }
 
+    private struct Waiter {
+        let expected: Int
+        let cancellations: Bool
+        let continuation: AsyncStream<Void>.Continuation
+    }
+    private var waiters: [UUID: Waiter] = [:]
+
     func waitForAttempts(_ expected: Int) async -> Bool {
-        for _ in 0..<200 {
-            if attemptCount >= expected { return true }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return false
+        await waitForCount(expected, cancellations: false)
     }
 
     func waitForCancellations(_ expected: Int) async -> Bool {
-        for _ in 0..<200 {
-            if cancellationCount >= expected { return true }
-            try? await Task.sleep(for: .milliseconds(10))
-        }
-        return false
+        await waitForCount(expected, cancellations: true)
     }
+
+    private func waitForCount(_ expected: Int, cancellations: Bool) async -> Bool {
+        if (cancellations ? cancellationCount : attemptCount) >= expected { return true }
+        let id = UUID()
+        let events = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        waiters[id] = Waiter(expected: expected, cancellations: cancellations,
+                             continuation: events.continuation)
+        let timeout = Task {
+            do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            events.continuation.finish()
+        }
+        defer { timeout.cancel(); waiters.removeValue(forKey: id); events.continuation.finish() }
+        var iterator = events.stream.makeAsyncIterator()
+        return await iterator.next() != nil
+    }
+
+    private func signalCounts() {
+        for waiter in waiters.values {
+            if (waiter.cancellations ? cancellationCount : attemptCount) >= waiter.expected {
+                waiter.continuation.yield(())
+                waiter.continuation.finish()
+            }
+        }
+    }
+
 }
 
 private final class LockedRevalidationDrainBox: @unchecked Sendable {
@@ -1377,7 +1422,7 @@ struct HeldRangeBodyCompletionGateTests {
         // operation begun before the apply returned must keep the gate open.
         #expect(await waitForSignal(writes.entered, timeout: 5))
         #expect(await waitForSignal(applied, timeout: 5))
-        #expect(session.diagnosticSnapshot().pendingBackgroundCompletionOperationCount == 1)
+        #expect(session.diagnosticSnapshot(includePendingTempCleanupBytes: false).pendingBackgroundCompletionOperationCount == 1)
         #expect(await waitForSignal(fired, timeout: 0) == false)
 
         // Releasing the writer lets the lifecycle complete; its completion replans the train
@@ -1386,7 +1431,7 @@ struct HeldRangeBodyCompletionGateTests {
         #expect(await waitForSignal(rebuildNeeded, timeout: 5))
         var settled = false
         for _ in 0..<200 {
-            if session.diagnosticSnapshot().pendingBackgroundCompletionOperationCount == 1 {
+            if session.diagnosticSnapshot(includePendingTempCleanupBytes: false).pendingBackgroundCompletionOperationCount == 1 {
                 settled = true
                 break
             }

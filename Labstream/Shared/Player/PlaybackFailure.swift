@@ -12,6 +12,7 @@ struct PlaybackFailure: LocalizedError, Equatable, Sendable {
         case consentRequired = "LS-PB-005"
         case connectionUnavailable = "LS-PB-006"
         case authenticationRequired = "LS-PB-007"
+        case priorSessionStopUnconfirmed = "LS-PB-008"
         case unknown = "LS-PB-999"
     }
 
@@ -47,6 +48,8 @@ struct PlaybackFailure: LocalizedError, Equatable, Sendable {
             explanation = "The server could not be reached. Check the server and network, then tap Retry."
         case .authenticationRequired:
             explanation = "Sign in to the server before trying playback again."
+        case .priorSessionStopUnconfirmed:
+            explanation = "The previous Emby stream could not be confirmed stopped. Check the server, then tap Retry."
         case .unknown:
             explanation = "Playback failed for an unknown reason. Tap Retry; if it fails again, share this error code and app diagnostics."
         }

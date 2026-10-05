@@ -117,6 +117,19 @@ layout code changed.
 
 ## 4. Shared video playback
 
+### Playback integration follow-up
+
+- [ ] Keep the P7 HDR10 experiment default-off and DEBUG macOS-only. Any opt-in
+      hardware trial must use the explicit source/copy gates from the P7 investigation;
+      no automatic Release fallback or native P7 Dolby Vision support is claimed.
+- [ ] Seek forward and backward beyond the buffer, pause/resume, switch audio and restore it,
+      and close/reopen. Confirm picture, sound, HDR output, and server-session cleanup.
+- [ ] Through a local compatibility proxy, Stats shows Observed as
+      “Unavailable (local proxy)”, not localhost transfer speed.
+- [ ] With manual/Off subtitle preferences, stale account-selected source metadata does not
+      check a subtitle row. An explicit player selection still wins. If the chosen subtitle
+      needs video encoding, consent remains required; switching Off can return to video copy.
+
 ### Common player matrix
 
 Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The app-owned
@@ -127,6 +140,8 @@ Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The 
 | Starts with visible preparation/buffering status, then renders video and audio | [ ] | [ ] | [ ] | [ ] |
 | Resume begins at the expected offset and respects resume-rewind preference | [ ] | [ ] | [ ] | [ ] |
 | Play/pause, relative seek, scrub-to-final-target, and Close are deterministic | [ ] | [ ] | [ ] | [ ] |
+| Rapid opposite relative jumps compose against the newest held target, not stale player time | [ ] | [ ] | [ ] | [ ] |
+| Emby audio/quality/deep-seek reopen awaits old-session acknowledgement; failed stop blocks replacement and Retry preserves position | [ ] | [ ] | [ ] | [ ] |
 | Audio/subtitle selection matches the running stream and survives applicable reopen | [ ] | [ ] | [ ] | [ ] |
 | Chapters and trick-play thumbnails use the correct remote/local provider | [ ] | [ ] | [ ] | [ ] |
 | Playback failure becomes a stable error with an explicit working Retry | [ ] | [ ] | [ ] | [ ] |

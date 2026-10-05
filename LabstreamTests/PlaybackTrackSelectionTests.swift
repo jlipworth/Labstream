@@ -6,6 +6,34 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct PlaybackTrackSelectionTests {
+    @Test func plexPickerIgnoresStickyMetadataWhenPreferencesAreOff() async throws {
+        let defaults = UserDefaults.standard
+        let key = PlaybackPreferences.Keys.subtitleAutoSelectMode
+        let prior = defaults.object(forKey: key)
+        defaults.set(SubtitleAutoSelectMode.manual.rawValue, forKey: key)
+        defer {
+            if let prior { defaults.set(prior, forKey: key) }
+            else { defaults.removeObject(forKey: key) }
+        }
+        let item = MediaItem(ratingKey: "fixture", title: "Fixture", type: "movie", media: [
+            Media(id: 1, part: [Part(id: 10, key: "/part/10", streams: [
+                PlexStream(id: 7, streamType: StreamType.subtitle.rawValue, selected: true),
+            ])]),
+        ])
+        let identity = ClientIdentity(clientIdentifier: "fixture", product: "Labstream",
+                                      version: "1", deviceName: "Fixture")
+        for explicitSelection: Int? in [nil, 0, 7] {
+            let controller = PlaybackController(
+                item: item,
+                sessionSource: .plex(PlexPlaybackSession(
+                    server: try #require(URL(string: "https://media.invalid")), token: "fixture")),
+                identity: identity, client: PlexClient(identity: identity),
+                initialSubtitleStreamIndex: explicitSelection)
+            let snapshot = try #require(try await controller.loadSubtitleTracks())
+            #expect(snapshot.selectedID == (explicitSelection == 7 ? .plexStream(7) : .plexOff))
+        }
+    }
+
     @Test func snapshotRejectsASelectionThatIsNotInItsRows() {
         let off = PlaybackSubtitleTrack(displayName: "Off", mechanism: .offlineOff)
         let valid = PlaybackTrackSnapshot(tracks: [off], selectedID: off.id)

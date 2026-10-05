@@ -47,6 +47,8 @@ final class PlaybackController {
     private var preferEmbyVideoCopyHLS = false
     private var mediaBrowserVideoCopyEnforced = false
     private var usesEmbyHEVCSDRNativeTimeline = false
+    private let embyReopenStopBarrier = EmbyReopenStopBarrier()
+    private var embyReopenTransactionTail: Task<Void, Never>?
 
     #if DEBUG
     var debugVisibleAttachmentCount = 0
@@ -1157,6 +1159,10 @@ final class PlaybackController {
         refreshVideoNowPlayingMetadata(elapsedMillisecondsOverride: terminalProgressMs,
                                        playbackRateOverride: 0)
         removeObservers()
+        // Pausing does not cancel AVFoundation's HLS fetches. Release the stopped item
+        // after capturing/reporting its final position and invalidating callbacks, so it
+        // cannot keep requesting segments from the server session we just stopped.
+        player.replaceCurrentItem(with: nil)
         // Tear down the session/lifecycle observers (kept separate from the per-item
         // observers above) and release the audio session, notifying other apps so they can
         // resume (#17).
@@ -1179,14 +1185,36 @@ final class PlaybackController {
         for task in tasks { await task.value }
     }
 
+    /// Transfers an acknowledged-only callback together with its legacy aliases, once.
+    private func beginEmbySessionStop(_ session: MediaBrowserPlaybackSession) -> Task<Bool, Never>? {
+        guard session.backend == .emby else { return nil }
+        if !session.didStop, let stop = session.onStopAcknowledged {
+            var owned: (() async -> Bool)? = stop
+            session.onStop = nil
+            session.onStopAndWait = nil
+            session.onStopAcknowledged = nil
+            session.didStop = true
+            return embyReopenStopBarrier.begin(stop: &owned)
+        }
+        return embyReopenStopBarrier.currentTicket
+    }
+
     private func stopRemoteSessionIfNeeded() {
         guard let session = mediaBrowserSession else { return }
+        if session.backend == .emby {
+            _ = beginEmbySessionStop(session)
+            if let barrier = embyReopenStopBarrier.beginFinalStop() {
+                pendingStopTasks.append(Task { _ = await barrier.value })
+            }
+        }
         switch RemoteStreamLifecyclePolicy.finalSessionStopDecision(hasRemoteStream: true,
                                                                     didAlreadyStop: session.didStop) {
         case .stop:
             session.didStop = true
             if let stop = session.onStopAndWait {
                 pendingStopTasks.append(Task { await stop() })
+            } else if let stop = session.onStopAcknowledged {
+                pendingStopTasks.append(Task { _ = await stop() })
             } else {
                 session.onStop?()
             }
@@ -1460,11 +1488,12 @@ final class PlaybackController {
         let streams = part.subtitleStreams
         guard !streams.isEmpty else { return nil }
 
+        // The source snapshot predates our part-level deselection. Manual/Off preferences
+        // must not resurrect its account-sticky selected flag in the picker.
         let selection: BackendSubtitleSelection = subtitleSelectionOverride
-            ?? part.subtitleStreams.first(where: { $0.selected == true }).map {
+            ?? (subtitlesOffForNewStream() ? .off : streams.first(where: { $0.selected == true }).map {
                 BackendSubtitleSelection.stream($0.id)
-            }
-            ?? .off
+            } ?? .off)
         var tracks: [PlaybackSubtitleTrack] = [makeSubtitleTrack(
             displayName: "Off", mechanism: .plexOff,
             route: .off, isCurrentSelection: selection == .off)]
@@ -1482,16 +1511,9 @@ final class PlaybackController {
                 streamCodec: stream.codec))
         }
 
-        let selectedID: PlaybackSubtitleTrack.ID
-        if let override = subtitleSelectionOverride {
-            selectedID = switch override {
-            case .off: .plexOff
-            case .stream(let streamID): .plexStream(streamID)
-            }
-        } else {
-            selectedID = streams.first(where: { $0.selected == true })
-                .map { .plexStream($0.id) }
-                ?? .plexOff
+        let selectedID: PlaybackSubtitleTrack.ID = switch selection {
+        case .off: .plexOff
+        case .stream(let streamID): .plexStream(streamID)
         }
         let resolvedID = tracks.contains(where: { $0.id == selectedID }) ? selectedID : .plexOff
         return PlaybackTrackSnapshot(tracks: tracks, selectedID: resolvedID)
@@ -2383,9 +2405,20 @@ final class PlaybackController {
         if let server, let token {
             await stopPreviousTranscode(server: server, token: token)
         }
-        if let session = mediaBrowserSession, !session.didStop {
-            if let stop = session.onStopAndWait { await stop() } else { session.onStop?() }
-            session.didStop = true
+        if let session = mediaBrowserSession {
+            if session.backend == .emby, let barrier = beginEmbySessionStop(session) {
+                let acknowledged = await barrier.value
+                guard !Task.isCancelled, generation == playbackGeneration else { return }
+                guard acknowledged else {
+                    surfaceFailure(PlaybackFailure(code: .priorSessionStopUnconfirmed))
+                    return
+                }
+            } else if !session.didStop {
+                if let stop = session.onStopAndWait { await stop() }
+                else if let stop = session.onStopAcknowledged { _ = await stop() }
+                else { session.onStop?() }
+                session.didStop = true
+            }
         }
         guard !Task.isCancelled, generation == playbackGeneration else { return }
         videoTranscodeConsentResumeMs = resumeMs
@@ -2516,21 +2549,13 @@ final class PlaybackController {
         if let live {
             noteResumeClockDesyncIfNeeded(liveMs: live)
         }
-        let base = live ?? baseMs ?? playheadSnapshotForRestart(cause: .relativeSeek).positionMs
-        let (deltaMs, deltaOverflow) = deltaSeconds.multipliedReportingOverflow(by: 1000)
-        let upperBound = durationMs.flatMap { $0 > 0 ? $0 : nil } ?? knownDurationMs
-        let (sum, sumOverflow) = base.addingReportingOverflow(deltaMs)
-        let unclamped: Int
-        if deltaOverflow || sumOverflow {
-            unclamped = deltaSeconds < 0 ? Int.min : Int.max
-        } else {
-            unclamped = sum
-        }
-        let target = if let upperBound {
-            min(max(unclamped, 0), upperBound)
-        } else {
-            max(unclamped, 0)
-        }
+        let target = PlaybackRelativeSeekPolicy.target(
+            heldMs: seekHold.target?.positionMs,
+            liveMs: live,
+            explicitBaseMs: baseMs,
+            fallbackMs: playheadSnapshotForRestart(cause: .relativeSeek).positionMs,
+            deltaSeconds: deltaSeconds,
+            durationMs: durationMs.flatMap { $0 > 0 ? $0 : nil } ?? knownDurationMs)
         performUserSeek(toMs: target)
         return target
     }
@@ -3325,9 +3350,16 @@ final class PlaybackController {
         // (its ticks-primed playlist names segments it mints only on demand — verified live:
         // prewarm timed out yet playback resumed fine) — so a long budget would only add
         // latency to every JF deep seek.
+        let observer: (@Sendable (HLSSessionPrewarmer.Observation) -> Void)?
+        if AppDiagnostics.isEnabled {
+            observer = { Self.recordRemotePrewarmObservation($0) }
+        } else {
+            observer = nil
+        }
         let prewarm = await HLSSessionPrewarmer.prewarm(startURL: primedURL,
                                                         headers: headers,
-                                                        budgetSeconds: 8)
+                                                        budgetSeconds: 8,
+                                                        observe: observer)
         guard !Task.isCancelled, generation == playbackGeneration else { return nil }
         recordPlaybackDiagnostic("playback.remote_prewarm", fields: [
             "outcome": .label(prewarm.outcome.rawValue),
@@ -3664,6 +3696,9 @@ final class PlaybackController {
     // MARK: - Shared load + observers
 
     private func load(_ playerItem: AVPlayerItem, resumeOffsetMs: Int?) {
+        // Derive this from the actual replacement asset for every backend, including Plex's
+        // HDR compatibility proxy. Never retain localhost throughput across item changes.
+        diagnostics.prepareTransport(url: (playerItem.asset as? AVURLAsset)?.url)
         // A replacement item is a new callback authority even when it belongs to the same
         // control-plane start/reopen operation.
         playbackGeneration += 1
@@ -5588,6 +5623,7 @@ final class PlaybackController {
                                     preferShortRemoteHLSBuffer: Bool = true) {
         guard let session = mediaBrowserSession else { return }
         let remoteStreamReopener = session.reopener
+        let predecessor = session.backend == .emby ? embyReopenTransactionTail : nil
         beginItemPreparation()
         // Hold the scrubber on the reopen target across the detach→renegotiate→ready window so the
         // label can't fall back to the stale offset while the item is nil (GH #110).
@@ -5600,7 +5636,7 @@ final class PlaybackController {
         playbackGeneration += 1
         let generation = playbackGeneration
         lastPrimedOffsetMs = offsetMs
-        let priorStop = didStopRemoteSession ? nil : onStopRemoteSession
+        var priorStop = didStopRemoteSession ? nil : onStopRemoteSession
         let priorPlaySessionId = remotePlaySessionId
         // Detach the old AVPlayerItem before asking the remote backend for a replacement stream. The
         // simulator logs for #43 showed AVPlayer surfacing NSURLErrorDomain -1008 immediately
@@ -5611,6 +5647,26 @@ final class PlaybackController {
         player.pause()
         captionAppearance.stopPreview()
         player.replaceCurrentItem(with: nil)
+        var stopBarrier: Task<Bool, Never>?
+        if session.backend == .emby {
+            var acknowledgedStop = didStopRemoteSession ? nil : session.onStopAcknowledged
+            if !didStopRemoteSession {
+                // Unknown acknowledgement is a failure, never inferred from the legacy Void API.
+                if acknowledgedStop == nil {
+                    // Keep legacy cleanup authority intact; no permanent synthetic stop ticket.
+                    stopBarrier = Task { false }
+                } else {
+                    session.onStop = nil
+                    session.onStopAndWait = nil
+                    session.onStopAcknowledged = nil
+                    session.didStop = true
+                }
+            }
+            if acknowledgedStop != nil || embyReopenStopBarrier.hasAuthority {
+                stopBarrier = embyReopenStopBarrier.begin(stop: &acknowledgedStop)
+            }
+            priorStop = nil
+        }
         playbackLog.notice("seek: remote stream re-open targetMs=\(offsetMs, privacy: .public) bitrateKbps=\(bitrateKbps, privacy: .public)")
         recordPlaybackDiagnostic("playback.remote_reopen", fields: [
             "target": .millisecondsBucket(offsetMs),
@@ -5619,8 +5675,30 @@ final class PlaybackController {
             "deferred_prior_session_stop": .bool(priorStop != nil),
         ])
         playbackTask = Task { @MainActor [weak self] in
+            // Even a cancelled intermediate waiter must join its predecessor so the chain
+            // includes rejected-result cleanup before a newer transaction negotiates.
+            await predecessor?.value
             guard let self else { return }
             do {
+                guard RemoteStreamLifecyclePolicy.acceptsReopenResult(
+                    capturedGeneration: generation, currentGeneration: self.playbackGeneration,
+                    isCancelled: Task.isCancelled) else { return }
+                // Predecessor cleanup may have replaced the captured old ticket with a
+                // newer failed stop. Current authority always wins; observation is not retry.
+                let currentStopBarrier = session.backend == .emby
+                    ? (self.embyReopenStopBarrier.currentTicket ?? stopBarrier) : stopBarrier
+                if let currentStopBarrier {
+                    let acknowledged = await currentStopBarrier.value
+                    guard RemoteStreamLifecyclePolicy.acceptsReopenResult(
+                        capturedGeneration: generation, currentGeneration: self.playbackGeneration,
+                        isCancelled: Task.isCancelled) else { return }
+                    self.recordPlaybackDiagnostic("playback.remote_reopen_stop", fields: [
+                        "acknowledged": .bool(acknowledged),
+                    ])
+                    guard acknowledged else {
+                        throw PlaybackFailure(code: .priorSessionStopUnconfirmed)
+                    }
+                }
                 let request = RemoteStreamReopenRequest(offsetMs: offsetMs,
                                                         bitrateKbps: bitrateKbps,
                                                         videoTranscodeApproved: videoTranscodeApprovedForCurrentItem,
@@ -5632,7 +5710,7 @@ final class PlaybackController {
                     capturedGeneration: generation,
                     currentGeneration: self.playbackGeneration,
                     isCancelled: Task.isCancelled) else {
-                    await reopened.stopAndWaitIgnoringCancellation()
+                    await self.stopRejectedRemoteStream(reopened, backend: session.backend)
                     return
                 }
                 let nextPlayMethod = reopened.playMethod ?? self.remotePlayMethod
@@ -5647,7 +5725,7 @@ final class PlaybackController {
                           capturedGeneration: generation,
                           currentGeneration: self.playbackGeneration,
                           isCancelled: Task.isCancelled) else {
-                    await reopened.stopAndWaitIgnoringCancellation()
+                    await self.stopRejectedRemoteStream(reopened, backend: session.backend)
                     return
                 }
                 self.remoteHTTPHeaders = reopened.headers
@@ -5675,6 +5753,7 @@ final class PlaybackController {
                 }
                 self.onStopRemoteSession = reopened.onStop
                 self.mediaBrowserSession?.onStopAndWait = reopened.onStopAndWait
+                self.mediaBrowserSession?.onStopAcknowledged = reopened.onStopAcknowledged
                 self.didStopRemoteSession = false
                 self.preferShortRemoteHLSBufferForNextLoad = preferShortRemoteHLSBuffer
                 self.loadRemoteStream(playableURL, headers: reopened.headers, resumeOffsetMs: offsetMs)
@@ -5702,6 +5781,17 @@ final class PlaybackController {
                 NSLog("PlaybackController: remote stream reopen failed (%@)", Self.safeErrorSummary(error))
                 self.surfaceFailure(error)
             }
+        }
+        if session.backend == .emby { embyReopenTransactionTail = playbackTask }
+    }
+
+    private func stopRejectedRemoteStream(_ reopened: RemoteStreamOpenResult, backend: MediaBackendID) async {
+        if backend == .emby, let stop = reopened.onStopAcknowledged {
+            var owned: (() async -> Bool)? = stop
+            let barrier = embyReopenStopBarrier.begin(stop: &owned)
+            _ = await barrier.value
+        } else {
+            await reopened.stopAndWaitIgnoringCancellation()
         }
     }
 
@@ -5781,6 +5871,31 @@ final class PlaybackController {
 
     // MARK: - Opt-in diagnostic event helpers
 
+    private nonisolated static func recordRemotePrewarmObservation(_ observation: HLSSessionPrewarmer.Observation) {
+        guard AppDiagnostics.isEnabled else { return }
+        var fields: [String: DiagnosticFieldValue] = [
+            "phase": .label(observation.phase.rawValue),
+            "elapsed_ms": .int(observation.elapsedMS),
+            "success": .bool(observation.success),
+            "start_time_ticks_present": .bool(observation.startTimeTicksPresent),
+        ]
+        if let status = observation.httpStatus { fields["http_status"] = .int(status) }
+        if let code = observation.urlErrorCode { fields["url_error_code"] = .int(code) }
+        if let kind = observation.playlistKind { fields["playlist_kind"] = .label(kind.rawValue) }
+        if let count = observation.ordinaryURIsWithStartTimeTicks { fields["ordinary_ticks_uris"] = .int(count) }
+        if let count = observation.quotedURIsWithStartTimeTicks { fields["quoted_ticks_uris"] = .int(count) }
+        if let timeline = observation.timeline {
+            fields["segment_count"] = .int(timeline.segmentCount)
+            fields["end_list"] = .bool(timeline.endList)
+            if let value = timeline.mediaSequence { fields["media_sequence"] = .int(value) }
+            if let value = timeline.totalDurationMS { fields["playlist_duration_ms"] = .int(value) }
+            if let value = timeline.startOffsetMS { fields["playlist_start_ms"] = .int(value) }
+            if let value = timeline.firstSegmentExtension { fields["first_segment_format"] = .label(value.rawValue) }
+            if let value = timeline.firstSegmentOrdinal { fields["first_segment_ordinal"] = .int(value) }
+        }
+        AppDiagnostics.record(.playback, "playback.remote_prewarm_phase", fields: fields)
+    }
+
     private func recordPlaybackDiagnostic(_ name: String,
                                           fields: [String: DiagnosticFieldValue] = [:]) {
         AppDiagnostics.record(.playback, name, fields: diagnosticFields(fields))
@@ -5856,7 +5971,7 @@ final class VideoTranscodeConsentState {
 final class PlaybackError {
     /// True when playback has failed and the UI should present the error + Retry.
     private(set) var isFailed = false
-    /// A human-readable description of the failure, if AVFoundation provided one.
+    /// Privacy-safe, app-authored explanation with a stable support code.
     private(set) var message: String?
 
     private(set) var failure: PlaybackFailure?
@@ -5866,6 +5981,12 @@ final class PlaybackError {
         failure = classified
         isFailed = true
         message = classified.message
+        // Retain the local plain-language decoder/TLS explanations without weakening the
+        // typed backend/HTTP/consent vocabulary or exposing localized server descriptions.
+        if classified.code == .unknown,
+           let explanation = PlaybackFailureExplanation.message(for: error) {
+            message = "\(explanation) [\(classified.code.rawValue)]"
+        }
     }
 
     func clear() {

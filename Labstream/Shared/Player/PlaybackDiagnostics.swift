@@ -219,7 +219,7 @@ final class PlaybackDiagnostics {
         case .unavailable:
             return "—"
         case .localProxy:
-            return "— (proxy)"
+            return "Unavailable (local proxy)"
         case .active:
             return Self.bitrateLabel(observedBitrateKbps)
         case .idle:
@@ -429,6 +429,16 @@ final class PlaybackDiagnostics {
         stalls = 0
         likelyToKeepUp = false
         bufferedAheadSeconds = 0
+        lastAccessLogProgress = nil
+        lastObservedProgressUptime = nil
+    }
+
+    /// Reset throughput authority whenever the actual player asset changes.
+    func prepareTransport(url: URL?) {
+        let host = url?.host?.lowercased()
+        usesLocalMediaProxy = ["127.0.0.1", "localhost", "::1", "[::1]"].contains(host ?? "")
+        observedBitrateKbps = 0
+        observedBitrateState = usesLocalMediaProxy ? .localProxy : .unavailable
         lastAccessLogProgress = nil
         lastObservedProgressUptime = nil
     }

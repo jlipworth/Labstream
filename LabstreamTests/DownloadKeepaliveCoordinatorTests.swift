@@ -15,18 +15,22 @@ struct DownloadKeepaliveCoordinatorTests {
         let attemptB = key("attempt-B")
         let heldA = HeldKeepaliveTask()
         let heldB = HeldKeepaliveTask()
+        defer { coordinator.cancel(attemptA); coordinator.cancel(attemptB) }
 
         coordinator.registerTaskForTesting(heldA.task(), for: attemptA, backend: .jellyfin)
         coordinator.registerTaskForTesting(heldB.task(), for: attemptB, backend: .jellyfin)
-        #expect(await waitUntil { heldA.started && heldB.started })
+        #expect(await heldA.waitUntilStarted())
+        #expect(await heldB.waitUntilStarted())
 
         coordinator.cancel(attemptA)
 
-        #expect(await waitUntil { heldA.cancelled })
+        #expect(await heldA.waitUntilFinished())
+        #expect(heldA.cancelled)
         #expect(!heldB.cancelled)
         #expect(coordinator.activeCount(for: .jellyfin) == 1)
         coordinator.cancel(attemptB)
-        #expect(await waitUntil { heldB.cancelled })
+        #expect(await heldB.waitUntilFinished())
+        #expect(heldB.cancelled)
     }
 
     @Test @MainActor
@@ -37,13 +41,16 @@ struct DownloadKeepaliveCoordinatorTests {
         let attempt = key("attempt-A")
         let oldTask = HeldKeepaliveTask()
         let replacementTask = HeldKeepaliveTask()
+        defer { coordinator.cancel(attempt) }
         let oldGeneration = try #require(coordinator.registerTaskForTesting(
             oldTask.task(), for: attempt, backend: .jellyfin))
-        #expect(await waitUntil { oldTask.started })
+        #expect(await oldTask.waitUntilStarted())
         let replacementHandle = replacementTask.task()
         let replacementGeneration = try #require(coordinator.registerTaskForTesting(
             replacementHandle, for: attempt, backend: .jellyfin))
-        #expect(await waitUntil { oldTask.cancelled && replacementTask.started })
+        #expect(await oldTask.waitUntilFinished())
+        #expect(await replacementTask.waitUntilStarted())
+        #expect(oldTask.cancelled)
 
         coordinator.removeTaskForTesting(
             for: attempt, backend: .jellyfin, completingGeneration: oldGeneration)
@@ -53,7 +60,8 @@ struct DownloadKeepaliveCoordinatorTests {
             for: attempt, backend: .jellyfin, completingGeneration: replacementGeneration)
         #expect(coordinator.activeCount(for: .jellyfin) == 0)
         replacementHandle.cancel()
-        #expect(await waitUntil { replacementTask.cancelled })
+        #expect(await replacementTask.waitUntilFinished())
+        #expect(replacementTask.cancelled)
     }
 
     @Test @MainActor
@@ -64,16 +72,20 @@ struct DownloadKeepaliveCoordinatorTests {
         let attempt = key("attempt-A")
         let jellyfin = HeldKeepaliveTask()
         let emby = HeldKeepaliveTask()
+        defer { coordinator.cancel(attempt) }
 
         coordinator.registerTaskForTesting(jellyfin.task(), for: attempt, backend: .jellyfin)
         coordinator.registerTaskForTesting(emby.task(), for: attempt, backend: .emby)
-        #expect(await waitUntil { jellyfin.started && emby.started })
+        #expect(await jellyfin.waitUntilStarted())
+        #expect(await emby.waitUntilStarted())
         #expect(coordinator.activeCount(for: .jellyfin) == 1)
         #expect(coordinator.activeCount(for: .emby) == 1)
         #expect(coordinator.activeCount(for: .plex) == 0)
 
         coordinator.cancel(attempt)
-        #expect(await waitUntil { jellyfin.cancelled && emby.cancelled })
+        #expect(await jellyfin.waitUntilFinished())
+        #expect(await emby.waitUntilFinished())
+        #expect(jellyfin.cancelled && emby.cancelled)
         #expect(coordinator.activeCount(for: .jellyfin) == 0)
         #expect(coordinator.activeCount(for: .emby) == 0)
     }
@@ -106,22 +118,36 @@ struct DownloadKeepaliveCoordinatorTests {
             attemptID: DownloadAttemptID(rawValue: attempt)!)
     }
 
-    private func waitUntil(
-        attempts: Int = 100,
-        _ predicate: @escaping @Sendable () -> Bool
-    ) async -> Bool {
-        for _ in 0..<attempts {
-            if predicate() { return true }
-            await Task.yield()
-        }
-        return predicate()
-    }
+
 }
 
 private final class HeldKeepaliveTask: @unchecked Sendable {
     private let lock = NSLock()
     private var didStart = false
     private var didCancel = false
+    private let startedEvent = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+    private let finishedEvent = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+
+    func waitUntilStarted() async -> Bool { await waitForEvent(startedEvent.stream) }
+
+    func waitUntilFinished() async -> Bool { await waitForEvent(finishedEvent.stream) }
+
+    /// Completion signals establish ordering; this deadline only bounds a broken fixture.
+    private func waitForEvent(_ stream: AsyncStream<Void>) async -> Bool {
+        await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                for await _ in stream { return true }
+                return false
+            }
+            group.addTask {
+                do { try await Task.sleep(for: .seconds(30)) } catch { return false }
+                return false
+            }
+            let result = await group.next() ?? false
+            group.cancelAll()
+            return result
+        }
+    }
 
     var started: Bool { lock.withLock { didStart } }
     var cancelled: Bool { lock.withLock { didCancel } }
@@ -129,6 +155,12 @@ private final class HeldKeepaliveTask: @unchecked Sendable {
     func task() -> Task<Void, Never> {
         Task { [self] in
             lock.withLock { didStart = true }
+            startedEvent.continuation.yield(())
+            startedEvent.continuation.finish()
+            defer {
+                finishedEvent.continuation.yield(())
+                finishedEvent.continuation.finish()
+            }
             do {
                 try await Task.sleep(for: .seconds(60))
             } catch {

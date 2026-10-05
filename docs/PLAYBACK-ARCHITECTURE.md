@@ -344,6 +344,13 @@ known to handle untagged P5, and blocks Emby rather than accepting a successful-
 incorrectly colored encode. A guard-forced transcode has a transport-progress-aware
 first-frame deadline and a DV-specific failure surface.
 
+P7 HDR10 initialization normalization remains a **default-off, DEBUG macOS-only**
+experiment with explicit source/copy authority and strict playlist/initialization admission.
+The older automatic Original-quality P7 rewrite is superseded, not an enabled Release path.
+See the [P7 decoder investigation](https://github.com/jlipworth/Labstream/blob/main/docs/research/dv-p7-decoder-boundary.md) for evidence and
+remaining hardware gates. AVPlayer's observed transfer bitrate on a loopback path measures
+local delivery, not upstream network speed; Stats marks it unavailable.
+
 Experimental DV signalling remains default-off and changes two separate decisions when enabled.
 First, it defers the fallback-less Profile 5 safety gate so the experimental copy lane can be
 attempted. Separately, server capability advertising and HLS master-playlist injection are enabled
@@ -448,7 +455,7 @@ reintroduce an AVKit-only control surface.
 ```mermaid
 sequenceDiagram
   accTitle: Backend replacement and cleanup ordering
-  accDescr: A Plex in-place restart first bounds and awaits the superseded transcode stop, detaches its now-dead item, starts the replacement session, and attaches the new item. Jellyfin and Emby first detach the old item, negotiate and attach the replacement, then defer the prior session and active-encoding cleanup so old resource loads cannot race the new playlist.
+  accDescr: A Plex in-place restart first bounds and awaits the superseded transcode stop, detaches its now-dead item, starts the replacement session, and attaches the new item. Emby detaches the old item and awaits acknowledged prior-session cleanup before negotiating its replacement; unconfirmed cleanup blocks replacement. Jellyfin detaches, replaces, then defers prior cleanup.
   participant PC as PlaybackController
   participant AV as AVPlayer
   participant Backend
@@ -460,7 +467,18 @@ sequenceDiagram
     PC->>Backend: decide and start replacement stream
     Backend->>Server: universal-transcode requests
     PC->>AV: attach replacement item
-  else Jellyfin or Emby reopen
+  else Emby reopen
+    PC->>AV: pause and detach old item
+    PC->>Backend: await exact prior-session stop
+    Backend->>Server: bounded active-encoding cleanup
+    Backend-->>PC: request acknowledgement
+    alt acknowledged
+      PC->>Backend: negotiate replacement after older transactions finish
+      PC->>AV: attach replacement item
+    else unconfirmed
+      PC->>PC: retain cleanup authority and surface Retry failure
+    end
+  else Jellyfin reopen
     PC->>AV: pause and detach old item
     PC->>Backend: request replacement at target
     Backend->>Server: authenticated PlaybackInfo request
@@ -472,9 +490,16 @@ sequenceDiagram
 ```
 
 - Restart player items rather than mutating a stale AVPlayer item in place when the server route changes.
+- Relative jumps compose against the outstanding seek target before an accepted live clock.
+  Once that hold clears, live time resumes precedence; an old pending-resume value must not
+  override normal advancement. Generation fencing prevents an older completion clearing a newer hold.
 - Preserve each backend lane's replacement order: Plex stops the superseded in-place transcode
-  before replacement, while Jellyfin/Emby detach the old item, attach the replacement, and only
-  then schedule deferred prior active-encoding cleanup.
+  before replacement. Emby detaches the old item, awaits its exact-session stop acknowledgement,
+  and serializes replacement negotiation through superseded-result cleanup. A failed stop retains
+  retry authority and blocks a new encoder; terminal cleanup has only one bounded retry.
+  Jellyfin continues to attach the replacement before deferring prior active-encoding cleanup.
+  This Emby ordering addresses a reproduced [overlapping-session failure](https://github.com/jlipworth/Labstream/blob/main/docs/research/emby-reopen-session-overlap.md);
+  acknowledgement is not proof of encoder-process exit.
 - Surfaced failure also ends the current attempt: invalidate callbacks, cancel preparation,
   detach the player item, and stop its exact backend session without waiting for Close.
   The shared error surface uses the [stable playback codes](AGENT-PLAYBACK-TROUBLESHOOTING.md#playback-failure-codes),

@@ -280,7 +280,7 @@ struct DownloadCleanupOrderingTests {
         #expect(FileManager.default.fileExists(atPath: resumeURL.path))
         #expect(manager.activeJobs.isEmpty)
         #expect(manager.downloadWorkRegistry.snapshot().totalCount == 0)
-        let sessionSnapshot = session.diagnosticSnapshot()
+        let sessionSnapshot = session.diagnosticSnapshot(includePendingTempCleanupBytes: false)
         #expect(sessionSnapshot.opaqueInflightCount == 0)
         #expect(sessionSnapshot.rangeInflightCount == 0)
         #expect(sessionSnapshot.finalizingRatingKeyCount == 0)

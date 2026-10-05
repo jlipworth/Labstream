@@ -93,11 +93,18 @@
 			);
 			target = 1C671135434BAB92288B1C40 /* LabstreamTVTests */;
 		};
+		AA0000000000000000000090 /* tvOS privacy manifest override */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Resources/PrivacyInfo.xcprivacy,
+			);
+			target = 08BB83012E40DA7982254087 /* LabstreamTV */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		9740A1E22E5FACDBEAB15AEC /* LabstreamTVUITests */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = LabstreamTVUITests; sourceTree = "<group>"; };
-		AA0000000000000000000006 /* Labstream/Shared */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Labstream/Shared; sourceTree = "<group>"; };
+		AA0000000000000000000006 /* Labstream/Shared */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (AA0000000000000000000090 /* tvOS privacy manifest override */, ); explicitFileTypes = {}; explicitFolders = (); path = Labstream/Shared; sourceTree = "<group>"; };
 		AA0000000000000000000042 /* LabstreamTests */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (AA0000000000000000000060 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = LabstreamTests; sourceTree = "<group>"; };
 		AA0000000000000000000061 /* Labstream/Platforms/visionOS */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Labstream/Platforms/visionOS; sourceTree = "<group>"; };
 		AA0000000000000000000062 /* Labstream/Platforms/Mobile */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Labstream/Platforms/Mobile; sourceTree = "<group>"; };
@@ -848,7 +855,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.7.1;
+				MARKETING_VERSION = 1.7.2;
 				PRODUCT_BUNDLE_IDENTIFIER = org.labstream.Labstream;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "xros xrsimulator";
@@ -881,7 +888,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.7.1;
+				MARKETING_VERSION = 1.7.2;
 				PRODUCT_BUNDLE_IDENTIFIER = org.labstream.Labstream;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "xros xrsimulator";
@@ -916,7 +923,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.7.1;
+				MARKETING_VERSION = 1.7.2;
 				PRODUCT_BUNDLE_IDENTIFIER = org.labstream.Labstream;
 				PRODUCT_NAME = Labstream;
 				SDKROOT = iphoneos;
@@ -951,7 +958,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.7.1;
+				MARKETING_VERSION = 1.7.2;
 				PRODUCT_BUNDLE_IDENTIFIER = org.labstream.Labstream;
 				PRODUCT_NAME = Labstream;
 				SDKROOT = iphoneos;
@@ -986,7 +993,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.7.1;
+				MARKETING_VERSION = 1.7.2;
 				PRODUCT_BUNDLE_IDENTIFIER = org.labstream.Labstream;
 				PRODUCT_NAME = Labstream;
 				SDKROOT = macosx;
@@ -1021,7 +1028,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.7.1;
+				MARKETING_VERSION = 1.7.2;
 				PRODUCT_BUNDLE_IDENTIFIER = org.labstream.Labstream;
 				PRODUCT_NAME = Labstream;
 				SDKROOT = macosx;
@@ -1243,7 +1250,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.7.1;
+				MARKETING_VERSION = 1.7.2;
 				PRODUCT_BUNDLE_IDENTIFIER = org.labstream.Labstream;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "xros xrsimulator";
@@ -1278,7 +1285,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.7.1;
+				MARKETING_VERSION = 1.7.2;
 				PRODUCT_BUNDLE_IDENTIFIER = org.labstream.Labstream;
 				PRODUCT_NAME = Labstream;
 				SDKROOT = iphoneos;
@@ -1313,7 +1320,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.7.1;
+				MARKETING_VERSION = 1.7.2;
 				PRODUCT_BUNDLE_IDENTIFIER = org.labstream.Labstream;
 				PRODUCT_NAME = Labstream;
 				SDKROOT = macosx;
@@ -1346,7 +1353,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.7.1;
+				MARKETING_VERSION = 1.7.2;
 				PRODUCT_BUNDLE_IDENTIFIER = org.labstream.Labstream;
 				PRODUCT_NAME = Labstream;
 				SDKROOT = appletvos;
@@ -1415,7 +1422,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.7.1;
+				MARKETING_VERSION = 1.7.2;
 				PRODUCT_BUNDLE_IDENTIFIER = org.labstream.Labstream;
 				PRODUCT_NAME = Labstream;
 				SDKROOT = appletvos;
@@ -1449,7 +1456,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.7.1;
+				MARKETING_VERSION = 1.7.2;
 				PRODUCT_BUNDLE_IDENTIFIER = org.labstream.Labstream;
 				PRODUCT_NAME = Labstream;
 				SDKROOT = appletvos;

@@ -67,6 +67,26 @@ public struct DownloadHealthRuntimeSnapshot: Equatable, Sendable {
 public enum DownloadHealthSnapshotPolicy {
     public static let diagnosticIntervalSeconds: TimeInterval = 60
 
+    /// Gate collection itself, not just emission: session diagnostics may inspect the filesystem.
+    /// Temporary-file bytes do not determine whether there is active work, so collect them last.
+    public static func collectIfNeeded(
+        enabled: Bool,
+        lastRecordedAt: Date?,
+        now: Date,
+        makeSnapshot: () -> DownloadHealthRuntimeSnapshot,
+        pendingTempBytes: () -> Int
+    ) -> DownloadHealthRuntimeSnapshot? {
+        guard enabled else { return nil }
+        if let lastRecordedAt,
+           now.timeIntervalSince(lastRecordedAt) < diagnosticIntervalSeconds { return nil }
+        var snapshot = makeSnapshot()
+        guard shouldRecord(snapshot: snapshot, lastRecordedAt: lastRecordedAt, now: now) else {
+            return nil
+        }
+        snapshot.session.pendingTempCleanupBytes = pendingTempBytes()
+        return snapshot
+    }
+
     public static func makeSnapshot(records: [DownloadRecord],
                                     activeJobCount: Int,
                                     retryingCount: Int,

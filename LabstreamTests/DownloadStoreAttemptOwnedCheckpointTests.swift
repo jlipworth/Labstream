@@ -35,18 +35,23 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
                     exists: live.exists,
                     size: { url in gate.size(url, using: live.size) },
                     durableCopy: live.durableCopy))
+            let reader = DedicatedCheckpointReader { _ = store.record(for: owner) }
+            defer { reader.begin.signal(); gate.release.signal() }
+            try #require(await signal(reader.ready, timeout: 30))
             guard case .accepted(let ticket) = store.submitStaticRangeCheckpointReset(
                 for: owner, expectedBytes: 100) else {
                 Issue.record("checkpoint submission rejected"); return
             }
-            #expect(await signal(gate.started, timeout: 1))
-            let readerFinished = DispatchSemaphore(value: 0)
-            DispatchQueue.global().async {
-                _ = store.record(for: owner)
-                readerFinished.signal()
-            }
-            #expect(await signal(readerFinished, timeout: 0.25))
+            try #require(await signal(gate.started, timeout: 30))
+            reader.begin.signal()
+            // The proof is completion BEFORE releasing the blocked filesystem operation,
+            // not a 250ms throughput measurement on a contended shared dispatch queue.
+            let completedWhileStatHeld = await signal(reader.finished, timeout: 30)
+            #expect(completedWhileStatHeld)
             gate.release.signal()
+            if !completedWhileStatHeld {
+                try #require(await signal(reader.finished, timeout: 30))
+            }
             #expect(store.resolveStaticCheckpointSynchronously(.accepted(ticket: ticket))
                 == .applied(bytes: 3))
             #expect(store.record(for: owner)?.bytes == 3)
@@ -172,13 +177,16 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
                 Issue.record("terminal checkpoint submission rejected"); return
             }
             #expect(await signal(gate.started, timeout: 1))
-            let readerFinished = DispatchSemaphore(value: 0)
-            DispatchQueue.global().async {
-                _ = failing.record(for: owner)
-                readerFinished.signal()
-            }
-            #expect(await signal(readerFinished, timeout: 0.25))
+            let reader = DedicatedCheckpointReader { _ = failing.record(for: owner) }
+            defer { reader.begin.signal(); gate.release.signal() }
+            try #require(await signal(reader.ready, timeout: 30))
+            reader.begin.signal()
+            let completedWhileCopyHeld = await signal(reader.finished, timeout: 30)
+            #expect(completedWhileCopyHeld)
             gate.release.signal()
+            if !completedWhileCopyHeld {
+                try #require(await signal(reader.finished, timeout: 30))
+            }
             guard failing.resolveStaticCheckpointSynchronously(.accepted(ticket: ticket))
                     == .staleOrMissing else {
                 Issue.record("expected injected copy failure"); return
@@ -1069,6 +1077,26 @@ struct DownloadStoreAttemptOwnedCheckpointTests {
                     timeout: .now() + timeout) == .success)
             }
         }
+    }
+}
+
+/// Starts a dedicated reader before its measurement window, avoiding shared-pool admission
+/// latency. Reading remains forbidden until the test has observed the held filesystem gate.
+private final class DedicatedCheckpointReader: @unchecked Sendable {
+    let ready = DispatchSemaphore(value: 0)
+    let begin = DispatchSemaphore(value: 0)
+    let finished = DispatchSemaphore(value: 0)
+
+    init(read: @escaping @Sendable () -> Void) {
+        let ready = self.ready
+        let begin = self.begin
+        let finished = self.finished
+        Thread {
+            ready.signal()
+            begin.wait()
+            read()
+            finished.signal()
+        }.start()
     }
 }
 

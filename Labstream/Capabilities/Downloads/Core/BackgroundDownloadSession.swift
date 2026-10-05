@@ -488,7 +488,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             || rangeInflight.values.contains { $0.ratingKey == ratingKey }
     }
 
-    func diagnosticSnapshot() -> BackgroundDownloadSessionDiagnosticSnapshot {
+    /// Counter-only callers can omit filesystem inspection; omitted temp bytes are zero.
+    func diagnosticSnapshot(includePendingTempCleanupBytes: Bool = true) -> BackgroundDownloadSessionDiagnosticSnapshot {
         lock.lock()
         let opaqueInflightCount = inflight.count
         let rangeInflightCount = rangeInflight.count
@@ -506,7 +507,7 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
             deferredBackgroundCompletionIdentifierCount: wakeSnapshot.deferredIdentifierCount,
             backgroundCompletionHandlerCount: wakeSnapshot.pendingHandlerCount,
             finalizingRatingKeyCount: finalizingRatingKeyCount,
-            pendingTempCleanupBytes: pendingCFNetworkTempBytes())
+            pendingTempCleanupBytes: includePendingTempCleanupBytes ? pendingCFNetworkTempBytes() : 0)
     }
 
     private lazy var urlSession: URLSession = makeURLSession()
@@ -1759,6 +1760,8 @@ final class BackgroundDownloadSession: NSObject, URLSessionDownloadDelegate, @un
     /// #220: a finished-but-undelivered task can be absent from `getAllTasks` while its payload
     /// remains in a CFNetwork temp. Observe those files during reattach, but never delete them.
     private func recordPendingNetworkTemps(liveTaskCount: Int) {
+        // This observation has no cleanup authority; skip its filesystem work when disabled.
+        guard AppDiagnostics.isEnabled else { return }
         let candidates = cfNetworkTempDirectories()
             .flatMap { directory in cfNetworkTempFiles(in: directory).map { (directory, $0) } }
         guard !candidates.isEmpty else { return }

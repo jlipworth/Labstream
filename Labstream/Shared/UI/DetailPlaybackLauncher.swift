@@ -154,6 +154,9 @@ enum DetailPlaybackLauncher {
             },
             onStopAndWait: {
                 _ = await stopActiveEncodingNow(remote: remote, appModel: appModel)
+            },
+            onStopAcknowledged: {
+                await stopActiveEncodingNow(remote: remote, appModel: appModel)
             })
         return PlaybackController(
             item: item,
@@ -249,6 +252,9 @@ enum DetailPlaybackLauncher {
             },
             onStopAndWait: {
                 _ = await stopActiveEncodingNow(remote: reopened, appModel: appModel)
+            },
+            onStopAcknowledged: {
+                await stopActiveEncodingNow(remote: reopened, appModel: appModel)
             })
     }
 

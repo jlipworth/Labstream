@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import Observation
 import PMSKit
 import Testing
 @testable import Labstream
@@ -72,6 +73,12 @@ struct PlaybackFailureTests {
 
     @Test func surfacedFailureDetachesStopsOnceAndRetryWaitsForCleanup() async throws {
         var release: CheckedContinuation<Void, Never>?
+        let stopStarted = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let stopGuard = Task {
+            do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            stopStarted.continuation.finish()
+        }
+        defer { stopGuard.cancel(); stopStarted.continuation.finish() }
         var stops = 0
         var requests: [RemoteStreamReopenRequest] = []
         let identity = ClientIdentity(clientIdentifier: "fixture-only", product: "Labstream", version: "1", deviceName: "Fixture")
@@ -81,7 +88,13 @@ struct PlaybackFailureTests {
             sourceMetadata: .init(videoCodec: "h264"), playMethod: .transcode,
             transcodeReasons: [], progressSession: nil, onStop: {},
             reopener: { request in requests.append(request); throw MediaBrowserRequestError.httpStatus(503) },
-            onStopAndWait: { stops += 1; await withCheckedContinuation { release = $0 } })
+            onStopAndWait: {
+                stops += 1
+                await withCheckedContinuation {
+                    release = $0
+                    stopStarted.continuation.yield(())
+                }
+            })
         let controller = PlaybackController(
             item: MediaItem(ratingKey: "fixture", title: "Fixture", type: "movie", viewOffset: 600_000),
             sessionSource: .mediaBrowser(session), identity: identity,
@@ -94,14 +107,23 @@ struct PlaybackFailureTests {
         #expect(controller.playbackError.failure?.code == .mediaDeliveryTimeout)
         controller.surfaceFailure(MediaBrowserRequestError.httpStatus(500))
         #expect(controller.playbackError.failure?.code == .mediaDeliveryTimeout)
-        try await waitUntil { release != nil }
+        var stopEvents = stopStarted.stream.makeAsyncIterator()
+        try #require(await stopEvents.next() != nil, "Stop callback did not start before outer test guard")
+        try #require(release != nil)
         controller.retry()
         controller.retry()
         for _ in 0..<10 { await Task.yield() }
         #expect(requests.isEmpty)
         #expect(stops == 1)
         release?.resume(); release = nil
-        try await waitUntil { requests.count == 1 && controller.playbackError.failure?.httpStatus == 503 }
+        do {
+            try await waitForObservedState {
+                controller.playbackError.failure?.httpStatus == 503 && requests.count == 1
+            }
+        } catch {
+            Issue.record("Cleanup/retry boundary: stops=\(stops), reopenRequests=\(requests.count), failed=\(controller.playbackError.isFailed), failureCode=\(controller.playbackError.failure?.code.rawValue ?? "none"), httpStatus=\(controller.playbackError.failure?.httpStatus ?? 0)")
+            throw error
+        }
         #expect(requests[0].offsetMs == 600_000)
         #expect(requests[0].bitrateKbps == 8_000)
         #expect(requests[0].videoTranscodeApproved == false)
@@ -129,20 +151,36 @@ struct PlaybackFailureTests {
             client: PlexClient(identity: identity), maxVideoBitrateKbps: 0)
         defer { controller.stop() }
         controller.start()
-        try await waitUntil { controller.videoTranscodeConsent.isPending }
+        try await waitForObservedState { controller.videoTranscodeConsent.isPending }
         controller.approveVideoTranscoding(generation: try #require(controller.videoTranscodeConsent.generation))
-        try await waitUntil { controller.playbackError.isFailed }
+        try await waitForObservedState { controller.playbackError.isFailed }
         controller.retry()
-        try await waitUntil { requests.count == 2 && controller.playbackError.isFailed }
+        try await waitForObservedState { controller.playbackError.isFailed && requests.count == 2 }
         #expect(requests.allSatisfy { $0.videoTranscodeApproved && $0.offsetMs == 120_000 && $0.bitrateKbps == 0 })
         #expect(!controller.videoTranscodeConsent.isPending)
         #expect(controller.playbackError.failure?.httpStatus == 503)
     }
 
-    private func waitUntil(_ condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-        while !condition(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
-        #expect(condition())
-        if !condition() { throw URLError(.timedOut) }
+    /// Observe actual transitions on the caller's actor; timeout only bounds a broken test.
+    private func waitForObservedState(_ condition: @escaping @MainActor () -> Bool) async throws {
+        let events = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let timeout = Task {
+            do { try await Task.sleep(for: .seconds(30)) } catch { return }
+            events.continuation.finish()
+        }
+        defer {
+            timeout.cancel()
+            events.continuation.finish()
+        }
+        var iterator = events.stream.makeAsyncIterator()
+        while !Task.isCancelled {
+            let ready = withObservationTracking { condition() } onChange: {
+                events.continuation.yield(())
+            }
+            if ready { return }
+            guard await iterator.next() != nil else { break }
+        }
+        try #require(condition(), "Observed controller state did not transition before outer test guard")
     }
+
 }

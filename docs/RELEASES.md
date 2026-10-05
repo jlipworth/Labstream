@@ -8,17 +8,26 @@ query; verify them in App Store Connect again before any upload or submission.
 
 ## Current status
 
-The repository source is **1.7.1 (build 1)** across all four app targets, with a matching PMSKit
-fallback. No 1.7.1 archive is recorded here. The latest recorded processed distribution remains
+The repository source is **1.7.2 (build 1)** across all four app targets, with a matching PMSKit
+fallback. Local 1.7.2 correction archives have been built and signature-checked with stable Xcode 27;
+no 1.7.2 upload is recorded. These local correction products are not the original tagged binaries.
+The pre-integration clean correction set was built from `07fba33d`; it must not be
+presented as a binary of the subsequently reconciled source. Local-main integration retains
+stop-item detachment, truthful proxy statistics, subtitle preference handling and safe
+plain-language error explanations. The older automatic P7 rewrite is superseded by the
+default-off DEBUG macOS experiment; prior local commits remain in history. Exact-source
+archives and aggregate report verification must be recorded separately before any authorized
+upload; prior archive sets are not substitutes.
+The latest recorded processed distribution remains
 the **1.6.1 (build 2)** archive set at `abd1ddcac351`; keep the source version and the processed
 binary version separate when reporting release status.
 
 | Product | Current source | Latest recorded processed distribution |
 | --- | --- | --- |
-| Apple Vision Pro (`Labstream`) | 1.7.1 (build 1) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical TestFlight acceptance and review access remain pending. |
-| iPhone and iPad (`LabstreamMobile`) | 1.7.1 (build 1) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` universal iOS archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical iPhone and iPad acceptance remain pending. |
-| Apple TV (`LabstreamTV`) | 1.7.1 (build 1) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical Apple TV acceptance remains pending. |
-| Mac (`LabstreamMac`) | 1.7.1 (build 1) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and installed from TestFlight on a Mac. Launch and receipt/signature checks passed; deeper sandbox and live-host acceptance remain pending. |
+| Apple Vision Pro (`Labstream`) | 1.7.2 (build 1) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical TestFlight acceptance and review access remain pending. |
+| iPhone and iPad (`LabstreamMobile`) | 1.7.2 (build 1) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` universal iOS archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical iPhone and iPad acceptance remain pending. |
+| Apple TV (`LabstreamTV`) | 1.7.2 (build 1) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical Apple TV acceptance remains pending. |
+| Mac (`LabstreamMac`) | 1.7.2 (build 1) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and installed from TestFlight on a Mac. Launch and receipt/signature checks passed; deeper sandbox and live-host acceptance remain pending. |
 
 The 1.7.1 source milestone includes bounded DV/HDR delivery investigation and probe
 validation. The P7 HDR10-base candidate remains default-off and DEBUG-only on macOS;
@@ -37,8 +46,8 @@ macOS each use their own archive. Metadata, screenshots, build selection, review
 acceptance remain platform-specific even when the platforms share one purchase record. A platform
 must not be marked ready merely because another platform passed review.
 
-The latest recorded App Store Connect state includes the shared app information, free price
-schedule, published **Data Not Collected** privacy answer, platform descriptions, review contacts,
+The earlier recorded App Store Connect state included the shared app information, free price
+schedule, a **Data Not Collected** privacy answer, platform descriptions, review contacts,
 build selections, manual-release settings, and one privacy-safe synthetic placeholder screenshot for
 each submitted device family. Those screenshots prove the capture and upload path, but they are not
 the intended public product-page set. In that recorded state, app availability was not enabled.
@@ -46,7 +55,7 @@ Licensed demo media, final screenshot capture and review, demo review access, re
 physical-platform acceptance, storefront scope, Digital Services Act status where applicable, and
 final submission remain open.
 
-`1.7.1` is the current source marketing version (`CFBundleShortVersionString`). The number in
+`1.7.2` is the current source marketing version (`CFBundleShortVersionString`). The number in
 parentheses is the App Store build number (`CFBundleVersion`). A new marketing version begins at
 build 1; each replacement upload for the same platform and marketing version must use a higher
 build number.
@@ -55,9 +64,38 @@ build number.
 
 The [2026-09-15 disclosure audit](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/2026-09-15-prerelease-disclosure-audit.md)
 is a historical source audit, not current account certification. Its wording and required-reason
-API fixes landed in PRs #329 and #328. Owner-approved disclosure mapping remains open in
-[#325](https://github.com/jlipworth/Labstream/issues/325), and exact signed-archive privacy reports
-remain open in [#326](https://github.com/jlipworth/Labstream/issues/326).
+API fixes landed in PRs #329 and #328. The October 2026 continuation applied the
+owner-approved collection mapping and generated readable Xcode aggregate reports from all
+four fresh, distribution-signed local correction archives. The shared App Store Connect
+privacy label was published and reloaded to verify the seven declared data types, linked to
+users, with tracking off. Functionality is declared for all seven; user ID, device ID and
+product interaction also declare personalization. The tvOS binary manifest omits crash
+summaries because that MetricKit path is absent on tvOS.
+
+This resolves the exercised blank-report generation problem, not every privacy or release
+gate. Received support storage outside GitHub and end-to-end demo database/log/edge/backup
+retention remain unverified. The updated Apple TV policy was saved for the next app version.
+All four App Store Connect version drafts now show 1.7.2, with descriptions that identify
+the separate optional demo service. Selected 1.6.1 (build 2) binaries were left unchanged;
+the new version drafts are not submission-ready. Review access remains unverified.
+The public policy website update is still pending: normal deployment requires trusted
+`main`; local integration is authorized, but no push or deployment has been performed. A fresh issue-state check found
+[#325](https://github.com/jlipworth/Labstream/issues/325) already closed externally; that status
+is not evidence that the retention/storage uncertainties above were resolved.
+[#326](https://github.com/jlipworth/Labstream/issues/326) remains open. Neither issue was closed
+by these checks.
+
+Local integration validation passed 1,712 PMSKit Swift Testing cases plus 121 XCTest
+cases, 731 iPhone-hosted cases, 418 tvOS-hosted cases, semantic iPhone/iPad/TV fixtures,
+and a passive visionOS fixture. The isolated Mac fixture passed home/detail navigation;
+the single-worker full Mac suite passed 747 cases and a focused 20-case integration set
+passed three repetitions. Earlier default-parallel runs exposed season-metadata,
+artwork-admission and authorization-fixture deadline failures. The follow-up below removed
+unnecessary filesystem diagnostics and isolated fixture scheduling/storage assumptions;
+a fresh default-parallel Mac run and an independent repeat each passed all 747 tests across
+five repetitions. Earlier failing evidence is retained; the passing single-worker result was
+not used as a substitute for parallel validation. No new physical-device or source-matched
+live-backend acceptance is implied by this integration.
 
 [#259](https://github.com/jlipworth/Labstream/issues/259), disconnected cold-launch access to
 completed downloads, is **deferred by user decision**. Keep the issue open; deferral is not
@@ -66,6 +104,63 @@ hardware acceptance. Do not advertise reliable offline cold launch as verified.
 The [licensed-media capture plan](https://github.com/jlipworth/Labstream/blob/main/docs/plans/2026-09-15-store-demo-capture.md)
 retains final screenshots, storefront attribution, age suitability and clean-install reviewer
 journeys as open gates. Recorded provenance is not a fresh deployed-catalog hash check.
+
+## 1.7.2 release-candidate scope
+
+The coordinated **1.7.2 (build 1)** candidate includes the merged playback-error and
+bounded-cleanup work, required-reason uptime declaration, and current disclosure and
+screenshot guidance. PMSKit's fallback version matches all four app targets.
+
+The release owner explicitly deferred these issues for this candidate on 2026-09-29:
+
+- [#324](https://github.com/jlipworth/Labstream/issues/324): HEVC Rext 4:4:4 playback
+  and the observed Jellyfin server-worker cleanup race;
+- [#322](https://github.com/jlipworth/Labstream/issues/322): Emby P8 deep-seek
+  investigation and remaining controlled validation;
+- [#258](https://github.com/jlipworth/Labstream/issues/258): iOS player-chrome
+  size/position changes and clipping.
+
+These are accepted deferrals, not fixes or passing acceptance results. Keep the issues
+open and preserve their evidence. The previous #259 offline-cold-launch deferral also
+remains in effect. [#331](https://github.com/jlipworth/Labstream/issues/331), Stats
+readability redesign, is low-priority follow-up and not a release blocker.
+
+Candidate preparation does not close the physical-device, privacy/disclosure,
+signed-archive report, screenshot, reviewer-access, or Account Holder gates below.
+TestFlight upload and App Review submission require separate authorization.
+
+### Local correction validation
+
+The parallel-stress follow-up separates cheap download counters from filesystem diagnostics.
+Health collection is now gated before work by logging enablement and its existing reporting
+cadence, and temporary-file bytes are collected only for an eligible active snapshot. Reattach
+also skips diagnostic-only enumeration when logging is off; cleanup/recovery authority is
+unchanged. Eligible enabled diagnostics still inspect the filesystem synchronously. Tests that
+only assert counters omit that inspection, startup fixtures own their parent directory and its
+sibling cleanup authority, and controlled home-rail completions wait for their corresponding
+publication before asserting a particular intermediate order. No production timeout, test
+assertion, or parallel-execution setting is relaxed by these corrections. The updated hermetic
+PMSKit run passed 1,713 Swift Testing cases plus 121 XCTest cases.
+
+The continuation adds acknowledged Emby stop-before-reopen ordering and preserves failed
+cleanup authority for explicit Retry, together with relative-seek target handling and opt-in
+bounded HLS startup diagnostics. It does not prove server worker exit. See the
+[ordering investigation](https://github.com/jlipworth/Labstream/blob/main/docs/research/emby-reopen-session-overlap.md)
+for evidence limits.
+
+After test-only event synchronization and manual-clock fixes, a clean-build default-parallel
+Mac suite passed all three repetitions: 737 distinct tests (781 parameterized cases per
+repetition). Earlier failing runs remain in local evidence rather than being discarded.
+Hermetic PMSKit, repository hygiene, iPhone/tvOS hosted tests, iPhone/iPad/tvOS semantic
+fixtures, and the passive visionOS fixture also passed in the continuation. Simulator
+evidence used installed beta runtimes with stable Xcode and does not certify stable-runtime
+or physical acceptance.
+
+Per-backend Mac visual smokes and a user-reported in-place iPhone Emby smoke are partial
+acceptance only. Exact source-matched cross-backend parity, audible output, subtitles,
+next-episode behavior, broader source coverage, physical iPad/Vision Pro/Apple TV and
+TestFlight acceptance remain open. No physical Apple TV was available.
+
 
 ## Coordinated publication sequence
 
@@ -146,7 +241,7 @@ and App Store Connect state before relying on them for a new submission.
       Connect processing without compliance or binary warnings.
 - [x] Each selected **1.6.1 (build 2)** App Store Connect build reports the intended minimum OS,
       device family, entitlements, and supported architecture.
-- [ ] Clean Release archives for the current **1.7.1 (build 1)** source are produced, validated,
+- [ ] Clean Release archives for the current **1.7.2 (build 1)** source are produced, validated,
       and selected for every platform version.
 - [ ] A physical Vision Pro TestFlight smoke covers first launch, sign-in, browse, playback,
       seeking, subtitles, audio, Cinema, background/foreground, and diagnostics. Simulator smoke

@@ -94,8 +94,22 @@ class SourceTopologyTests(unittest.TestCase):
             self.target_blocks[name][0]
             for name in ("Labstream", "LabstreamMobile", "LabstreamMac", "LabstreamTV")
         }
-        exception_targets = set(re.findall(r"\btarget = ([A-F0-9]{24})\b", section))
-        self.assertTrue(production_ids.isdisjoint(exception_targets))
+        # The sole production exception swaps a resource, never source membership:
+        # tvOS has no MetricKit crash-report path and owns its matching manifest.
+        exceptions = object_blocks(section)
+        production_exceptions = [
+            (identifier, body) for identifier, body in exceptions.values()
+            if set(re.findall(r"\btarget = ([A-F0-9]{24})\b", body)) & production_ids
+        ]
+        self.assertEqual(len(production_exceptions), 1)
+        identifier, body = production_exceptions[0]
+        self.assertEqual(identifier, "AA0000000000000000000090")
+        self.assertEqual(re.findall(r"\btarget = ([A-F0-9]{24})\b", body),
+                         [self.target_blocks["LabstreamTV"][0]])
+        members = re.search(r"membershipExceptions = \((.*?)\);", body, re.DOTALL)
+        self.assertIsNotNone(members)
+        self.assertEqual([x.strip() for x in members.group(1).split(",") if x.strip()],
+                         ["Resources/PrivacyInfo.xcprivacy"])
 
     def test_platform_sources_have_one_exclusive_home(self) -> None:
         expected = {
