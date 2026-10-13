@@ -8,8 +8,9 @@ query; verify them in App Store Connect again before any upload or submission.
 
 ## Current status
 
-The repository source is **1.7.2 (build 1)** across all four app targets, with a matching PMSKit
-fallback. Local 1.7.2 correction archives have been built and signature-checked with stable Xcode 27;
+The repository source is **1.7.2 (build 2)** across all four app targets, with a matching PMSKit
+fallback. Build 2 supersedes the never-uploaded build 1 source so the next archive set carries its
+own build number; the `v1.7.2` tag remains the build 1 source milestone. Local 1.7.2 correction archives have been built and signature-checked with stable Xcode 27;
 no 1.7.2 upload is recorded. These local correction products are not the original tagged binaries.
 The pre-integration clean correction set was built from `07fba33d`; it must not be
 presented as a binary of the subsequently reconciled source. Local-main integration retains
@@ -24,10 +25,10 @@ binary version separate when reporting release status.
 
 | Product | Current source | Latest recorded processed distribution |
 | --- | --- | --- |
-| Apple Vision Pro (`Labstream`) | 1.7.2 (build 1) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical TestFlight acceptance and review access remain pending. |
-| iPhone and iPad (`LabstreamMobile`) | 1.7.2 (build 1) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` universal iOS archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical iPhone and iPad acceptance remain pending. |
-| Apple TV (`LabstreamTV`) | 1.7.2 (build 1) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical Apple TV acceptance remains pending. |
-| Mac (`LabstreamMac`) | 1.7.2 (build 1) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and installed from TestFlight on a Mac. Launch and receipt/signature checks passed; deeper sandbox and live-host acceptance remain pending. |
+| Apple Vision Pro (`Labstream`) | 1.7.2 (build 2) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical TestFlight acceptance and review access remain pending. |
+| iPhone and iPad (`LabstreamMobile`) | 1.7.2 (build 2) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` universal iOS archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical iPhone and iPad acceptance remain pending. |
+| Apple TV (`LabstreamTV`) | 1.7.2 (build 2) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical Apple TV acceptance remains pending. |
+| Mac (`LabstreamMac`) | 1.7.2 (build 2) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and installed from TestFlight on a Mac. Launch and receipt/signature checks passed; deeper sandbox and live-host acceptance remain pending. |
 
 The 1.7.1 source milestone includes bounded DV/HDR delivery investigation and probe
 validation. The P7 HDR10-base candidate remains default-off and DEBUG-only on macOS;
@@ -107,9 +108,12 @@ journeys as open gates. Recorded provenance is not a fresh deployed-catalog hash
 
 ## 1.7.2 release-candidate scope
 
-The coordinated **1.7.2 (build 1)** candidate includes the merged playback-error and
+The coordinated **1.7.2 (build 2)** candidate includes the merged playback-error and
 bounded-cleanup work, required-reason uptime declaration, and current disclosure and
-screenshot guidance. PMSKit's fallback version matches all four app targets.
+screenshot guidance. Build 2 adds the Search-stack reset for ⌘F and new macOS toolbar
+queries over a pushed result ([#334](https://github.com/jlipworth/Labstream/issues/334));
+the iPad/visionOS ⌘F entry point ([#335](https://github.com/jlipworth/Labstream/issues/335))
+remains open. PMSKit's fallback version matches all four app targets.
 
 The release owner explicitly deferred these issues for this candidate on 2026-09-29:
 
@@ -241,7 +245,7 @@ and App Store Connect state before relying on them for a new submission.
       Connect processing without compliance or binary warnings.
 - [x] Each selected **1.6.1 (build 2)** App Store Connect build reports the intended minimum OS,
       device family, entitlements, and supported architecture.
-- [ ] Clean Release archives for the current **1.7.2 (build 1)** source are produced, validated,
+- [ ] Clean Release archives for the current **1.7.2 (build 2)** source are produced, validated,
       and selected for every platform version.
 - [ ] A physical Vision Pro TestFlight smoke covers first launch, sign-in, browse, playback,
       seeking, subtitles, audio, Cinema, background/foreground, and diagnostics. Simulator smoke
