@@ -69,6 +69,39 @@ struct RootNavigationCoordinatorTests {
     #expect(navigation.searchFocusRequest == 2)
   }
 
+  @Test func searchCommandRevealsTheSearchRootButTabReselectionKeepsTheStack() {
+    let navigation = RootNavigationCoordinator()
+    let result = MediaItem(ratingKey: "result", title: "Result", type: "movie")
+    navigation.selection = .libraries
+    navigation.push(result, on: .search)
+
+    navigation.requestSearchFocus(selectsSearch: false)
+    #expect(navigation.searchPath.count == 1)
+
+    navigation.focusSearchFromCommand()
+    #expect(navigation.selection == .search)
+    #expect(navigation.searchPath.isEmpty)
+    #expect(navigation.searchFocusRequest == 2)
+
+    navigation.push(result, on: .search)
+    navigation.focusSearchFromCommand(selectsSearch: false)
+    #expect(navigation.searchPath.isEmpty)
+    #expect(navigation.searchFocusRequest == 3)
+  }
+
+  @Test func onlyADifferentNonEmptyQueryRevealsSearchResults() {
+    let navigation = RootNavigationCoordinator()
+    let result = MediaItem(ratingKey: "result", title: "Result", type: "movie")
+    navigation.push(result, on: .search)
+
+    navigation.searchQueryDidChange(from: "alien", to: " alien ")
+    navigation.searchQueryDidChange(from: "alien", to: "  ")
+    #expect(navigation.searchPath.count == 1)
+
+    navigation.searchQueryDidChange(from: "alien", to: "aliens")
+    #expect(navigation.searchPath.isEmpty)
+  }
+
   private func populatedCoordinator() -> RootNavigationCoordinator {
     let navigation = RootNavigationCoordinator()
     let item = MediaItem(ratingKey: "item", title: "Item", type: "movie")

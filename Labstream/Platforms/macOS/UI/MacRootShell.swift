@@ -75,6 +75,7 @@ struct PlatformRootShell: View {
     .onChange(of: macSearchText) { oldValue, newValue in
       if !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
         macSearchPresented = true
+        navigation.searchQueryDidChange(from: oldValue, to: newValue)
       } else if !oldValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
         dismissMacSearch()
       }
@@ -129,7 +130,7 @@ struct PlatformRootShell: View {
       case .libraries:
         if case .library = macSelection {} else { macSelection = .home }
       case .search:
-        focusSearch()
+        focusSearch(revealsSearchRoot: false)
       case .music:
         if case .music = macSelection {} else { macSelection = .music(.home) }
       case .offline:
@@ -499,9 +500,13 @@ struct PlatformRootShell: View {
     }
   }
 
-  private func focusSearch() {
+  private func focusSearch(revealsSearchRoot: Bool = true) {
     guard !macPlayerPresenter.isPresented else { return }
     macSearchPresented = true
-    navigation.requestSearchFocus(selectsSearch: false)
+    if revealsSearchRoot {
+      navigation.focusSearchFromCommand(selectsSearch: false)
+    } else {
+      navigation.requestSearchFocus(selectsSearch: false)
+    }
   }
 }

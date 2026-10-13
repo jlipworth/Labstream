@@ -104,6 +104,11 @@ layout code changed.
 - [ ] Search cancellation and rapid query changes do not show stale results from an earlier
       query or backend. Results are grouped sensibly by library/media type and deduplicated.
 - [ ] Music search results route to music detail/playback; video results route to video detail.
+- [ ] With a search result's detail open, ⌘F (iPad keyboard, visionOS, Mac) returns to the
+      Search root with the field focused; plain Search-tab reselection keeps the detail. On
+      Mac, editing the toolbar query to a new non-empty value shows its results, not the
+      detail ([#334](https://github.com/jlipworth/Labstream/issues/334),
+      [#335](https://github.com/jlipworth/Labstream/issues/335)).
 - [ ] Detail refreshes authoritative metadata, keeps the selected media version valid, and
       applies watched/unwatched changes to subsequent browse state.
 - [ ] Play and Download operate on the leaf/version shown in detail, not its show/season

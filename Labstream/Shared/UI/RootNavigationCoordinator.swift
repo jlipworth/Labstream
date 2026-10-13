@@ -75,6 +75,22 @@ final class RootNavigationCoordinator {
     searchFocusRequest += 1
   }
 
+  /// ⌘F always lands on the Search root: its field is unreachable under a pushed result
+  /// (#335). Plain tab reselection uses `requestSearchFocus` and keeps the stack.
+  func focusSearchFromCommand(selectsSearch: Bool = true) {
+    searchPath = NavigationPath()
+    requestSearchFocus(selectsSearch: selectsSearch)
+  }
+
+  /// A window-level field (macOS) stays editable over a pushed result; a different
+  /// non-empty query reveals its results instead of reloading them hidden (#334).
+  func searchQueryDidChange(from oldQuery: String, to newQuery: String) {
+    let old = oldQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    let new = newQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !new.isEmpty, new != old else { return }
+    searchPath = NavigationPath()
+  }
+
   func exitSearch() {
     searchPath = NavigationPath()
     selection = lastNonSearchSelection == .search ? .home : lastNonSearchSelection

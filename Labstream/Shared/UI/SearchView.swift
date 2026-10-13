@@ -233,6 +233,15 @@ struct SearchView: View {
         guard SearchRequestAuthority.accepts(capturedKey: searchKey,
                                              currentKey: currentSearchAuthorityKey,
                                              isCancelled: Task.isCancelled) else { return }
+        #if DEBUG
+        if let fixture = DebugUIFixtureCatalog.searchResults(query: trimmed,
+                                                             backend: appModel.activeBackend) {
+            results = fixture
+            loadedQuery = searchKey
+            loadState = .loaded
+            return
+        }
+        #endif
         let span = PerformanceInstrumentation.begin(.searchLoad,
                                                      backend: appModel.activeBackend.performanceLabel)
 
