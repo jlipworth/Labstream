@@ -104,6 +104,21 @@ enum DebugUIFixtureCatalog {
         }
     }
 
+    /// Title-substring matches over the fixture rows, so agent runs can drive the real Search
+    /// root and its pushed detail without a server.
+    static func searchResults(query: String, backend: MediaBackendKind) -> SearchResults? {
+        guard isBrowseEnabled else { return nil }
+        let matches = fixtureItems(backend: backend).filter {
+            $0.title.localizedCaseInsensitiveContains(query)
+        }
+        return SearchResults(groups: [
+            SearchResultGroup(id: "fixture-search", libraryID: "1", title: "Movies",
+                              hubs: [Hub(title: "Movies", hubIdentifier: "fixture-search-movies",
+                                         metadata: matches)],
+                              backendID: backend.rawValue),
+        ])
+    }
+
     private static let mediaBrowserLibraries = [
         MediaBrowserHomeLibraryLink(id: "movies", title: "Movies", collectionType: "movies"),
         MediaBrowserHomeLibraryLink(id: "shows", title: "TV Shows", collectionType: "tvshows"),
