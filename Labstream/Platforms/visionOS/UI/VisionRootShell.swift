@@ -44,7 +44,7 @@ struct PlatformRootShell: View {
         }
       }
       .background {
-        Button("Search") { navigation.requestSearchFocus() }
+        Button("Search") { navigation.focusSearchFromCommand() }
           .keyboardShortcut("f", modifiers: .command)
           .opacity(0)
           .frame(width: 0, height: 0)
