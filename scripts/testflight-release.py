@@ -13,6 +13,12 @@ Subcommands (run in this order; each is safe to rerun):
   upload --yes   upload validated archives to App Store Connect with the API key.
   status         read-only processing, TestFlight group, and version-selection state.
   select-build   show which platform versions would change; --yes attaches the build.
+  distribute     add processed builds to an internal TestFlight group (--group, --yes).
+  ship --yes     on-demand continuous build: archive, validate, upload, wait, distribute.
+
+--build-number auto stamps the commit count of HEAD as CFBundleVersion, so an on-demand
+upload does not need a version-bump commit. Without it the project's
+CURRENT_PROJECT_VERSION is used.
 
 App Review submission is intentionally not implemented.
 
@@ -356,6 +362,21 @@ class ASCClient:
         pre = next((i["attributes"]["version"] for i in res.get("included", [])), "?")
         return f"{pre} ({res['data']['attributes']['version']})"
 
+    def group_id(self, name: str) -> str:
+        res = self.request("GET", f"/v1/apps/{self.app_id}/betaGroups", {
+            "fields[betaGroups]": "name,isInternalGroup", "limit": "200",
+        })
+        matches = [g for g in res["data"] if g["attributes"]["name"] == name]
+        if not matches:
+            raise ReleaseError(f"no TestFlight group named {name!r}; create it in App Store Connect first")
+        if not matches[0]["attributes"].get("isInternalGroup"):
+            raise ReleaseError(f"{name!r} is an external group; external distribution needs Beta App Review")
+        return matches[0]["id"]
+
+    def add_to_group(self, group_id: str, build_id: str) -> None:
+        self.request("POST", f"/v1/betaGroups/{group_id}/relationships/builds",
+                     body={"data": [{"type": "builds", "id": build_id}]})
+
     def select_build(self, version_id: str, build_id: str) -> None:
         self.request("PATCH", f"/v1/appStoreVersions/{version_id}/relationships/build",
                      body={"data": {"type": "builds", "id": build_id}})
@@ -484,7 +505,19 @@ class Plan:
         return self.profile.team
 
 
-def build_plans(platforms: list[Platform]) -> list[Plan]:
+def build_number(args: argparse.Namespace) -> str | None:
+    """Resolve --build-number: None keeps the project's value; auto uses the commit count."""
+    value = getattr(args, "build_number", None)
+    if not value:
+        return None
+    if value == "auto":
+        return run(["git", "rev-list", "--count", "HEAD"]).stdout.strip()
+    if not value.isdigit():
+        raise ReleaseError("--build-number must be a positive integer or `auto`")
+    return value
+
+
+def build_plans(platforms: list[Platform], build_override: str | None = None) -> list[Plan]:
     identities = installed_identity_sha1s()
     profiles = app_store_profiles()
     plans = []
@@ -494,7 +527,7 @@ def build_plans(platforms: list[Platform]) -> list[Plan]:
             raise ReleaseError(f"{platform.scheme} bundle id is {versions['bundle_id']}, expected {BUNDLE_ID}")
         profile, identity = choose_profile(profiles, platform, identities)
         REDACT.add(profile.team, profile.uuid, identity)
-        plans.append(Plan(platform, versions["version"], versions["build"], profile, identity))
+        plans.append(Plan(platform, versions["version"], build_override or versions["build"], profile, identity))
     if len({(p.version, p.build) for p in plans}) > 1:
         warn("platforms have different version/build numbers: "
              + ", ".join(f"{p.platform.key} {p.version} ({p.build})" for p in plans))
@@ -621,13 +654,13 @@ def check_not_uploaded(plans: list[Plan], creds: Credentials) -> None:
             if client.builds(plan.version, plan.build, plan.platform):
                 raise ReleaseError(
                     f"{plan.platform.key} {plan.version} ({plan.build}) is already on App Store Connect; "
-                    "bump CURRENT_PROJECT_VERSION before archiving a new binary"
+                    "bump CURRENT_PROJECT_VERSION or use --build-number auto for a new binary"
                 )
 
 
 def cmd_preflight(args: argparse.Namespace) -> dict[str, Any]:
     source = source_state(args.allow_unpublished)
-    plans = build_plans(selected_platforms(args))
+    plans = build_plans(selected_platforms(args), build_number(args))
     say(f"source: {source['head'][:12]} ({source['slug']})")
     now = dt.datetime.now(dt.timezone.utc)
     for plan in plans:
@@ -664,6 +697,7 @@ def cmd_archive(args: argparse.Namespace) -> int:
                 "CODE_SIGN_STYLE=Manual", f"DEVELOPMENT_TEAM={plan.team}", f"CODE_SIGN_IDENTITY={plan.identity}",
                 # Scope the profile to the app target; Swift package targets reject a global specifier.
                 "PROVISIONING_PROFILE_SPECIFIER=$(LS_PP_$(TARGET_NAME))", f"LS_PP_{plan.platform.scheme}={plan.profile.uuid}",
+                f"CURRENT_PROJECT_VERSION={plan.build}",
             ])
     finally:
         shutil.rmtree(DERIVED_DATA, ignore_errors=True)
@@ -673,7 +707,7 @@ def cmd_archive(args: argparse.Namespace) -> int:
 
 def cmd_validate(args: argparse.Namespace) -> int:
     source = source_state(args.allow_unpublished)
-    validate_all(build_plans(selected_platforms(args)), source)
+    validate_all(build_plans(selected_platforms(args), build_number(args)), source)
     say("all archives valid; Organizer can also generate the aggregate privacy report from them")
     return 0
 
@@ -695,7 +729,7 @@ def cmd_upload(args: argparse.Namespace) -> int:
     if not args.yes:
         raise ReleaseError("upload sends binaries to App Store Connect; rerun with --yes once it is authorized")
     source = source_state(args.allow_unpublished)
-    plans = build_plans(selected_platforms(args))
+    plans = build_plans(selected_platforms(args), build_number(args))
     archives = validate_all(plans, source)
     creds = load_credentials()
     check_not_uploaded(plans, creds)
@@ -753,12 +787,13 @@ def describe(state: dict[str, Any], version: str, build: str) -> str:
 
 
 def resolve_version(args: argparse.Namespace, platforms: list[Platform]) -> dict[str, tuple[str, str]]:
-    if args.version and args.build:
-        return {p.key: (args.version, args.build) for p in platforms}
+    build = build_number(args)
+    if args.version and build:
+        return {p.key: (args.version, build) for p in platforms}
     out = {}
     for platform in platforms:
         v = scheme_versions(platform)
-        out[platform.key] = (args.version or v["version"], args.build or v["build"])
+        out[platform.key] = (args.version or v["version"], build or v["build"])
     return out
 
 
@@ -814,6 +849,56 @@ def cmd_select_build(args: argparse.Namespace) -> int:
     return 0
 
 
+def testflight_group(args: argparse.Namespace) -> str:
+    group = args.group or setting("LABSTREAM_TESTFLIGHT_GROUP", read_local_env())
+    if not group:
+        raise ReleaseError("name the internal TestFlight group with --group (or LABSTREAM_TESTFLIGHT_GROUP)")
+    return group
+
+
+def cmd_distribute(args: argparse.Namespace) -> int:
+    group = testflight_group(args)
+    platforms = selected_platforms(args)
+    versions = resolve_version(args, platforms)
+    creds = load_credentials()
+    with asc_client(creds) as client:
+        group_id = client.group_id(group)
+        pending = []
+        for platform in platforms:
+            state = platform_status(client, *versions[platform.key], platform)
+            say(describe(state, *versions[platform.key]))
+            target = state["build"]
+            if not target or target["processingState"] != "VALID":
+                raise ReleaseError(f"{platform.key} build is not processed (VALID) yet")
+            if group not in state["groups"]:
+                pending.append((platform, target))
+        if not pending:
+            say(f"every build is already in {group!r}")
+            return 0
+        if not args.yes:
+            say(f"would add to {group!r}: " + ", ".join(p.key for p, _ in pending) + " (rerun with --yes)")
+            return 0
+        for platform, target in pending:
+            client.add_to_group(group_id, target["id"])
+            say(f"  {platform.key}: added to {group!r}")
+    return 0
+
+
+def cmd_ship(args: argparse.Namespace) -> int:
+    if not args.yes:
+        raise ReleaseError("ship uploads and distributes to TestFlight; rerun with --yes once it is authorized")
+    testflight_group(args)  # fail before a long archive if no group is configured
+    if not args.build_number:
+        args.build_number = "auto"
+    cmd_archive(args)
+    cmd_upload(args)
+    args.version = None
+    cmd_status(args)
+    cmd_distribute(args)
+    say("shipped to TestFlight; nothing was submitted for review")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     common = argparse.ArgumentParser(add_help=False)
@@ -821,6 +906,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="limit to a platform (repeatable; default: all four)")
     common.add_argument("--verbose", action="store_true", help="show account identifiers unmasked")
     common.add_argument("--allow-unpublished", action="store_true", help="allow HEAD that is not on origin/main")
+    common.add_argument("--build-number", help="CFBundleVersion to use: an integer or `auto` (commit count)")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("preflight", parents=[common])
     archive = sub.add_parser("archive", parents=[common])
@@ -828,21 +914,28 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("validate", parents=[common])
     upload = sub.add_parser("upload", parents=[common])
     upload.add_argument("--yes", action="store_true", help="confirm the upload is authorized")
-    for name in ("status", "select-build"):
+    for name in ("status", "select-build", "distribute"):
         sp = sub.add_parser(name, parents=[common])
         sp.add_argument("--version", help="marketing version (default: the project's)")
-        sp.add_argument("--build", help="build number (default: the project's)")
         if name == "status":
             sp.add_argument("--wait", action="store_true", help="poll until processing finishes")
             sp.add_argument("--timeout", type=int, default=3600, help="seconds to wait with --wait")
-        else:
+        elif name == "select-build":
             sp.add_argument("--yes", action="store_true", help="confirm attaching builds to App Store versions")
+        else:
+            sp.add_argument("--group", help="internal TestFlight group name (default: LABSTREAM_TESTFLIGHT_GROUP)")
+            sp.add_argument("--yes", action="store_true", help="confirm adding builds to the group")
+    ship = sub.add_parser("ship", parents=[common])
+    ship.add_argument("--group", help="internal TestFlight group name (default: LABSTREAM_TESTFLIGHT_GROUP)")
+    ship.add_argument("--yes", action="store_true", help="confirm the upload and distribution are authorized")
+    ship.set_defaults(force=False, wait=True, timeout=3600, version=None)
     args = parser.parse_args(argv)
     REDACT.verbose = args.verbose
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     handlers: dict[str, Callable[[argparse.Namespace], Any]] = {
         "preflight": cmd_preflight, "archive": cmd_archive, "validate": cmd_validate,
         "upload": cmd_upload, "status": cmd_status, "select-build": cmd_select_build,
+        "distribute": cmd_distribute, "ship": cmd_ship,
     }
     try:
         handlers[args.command](args)

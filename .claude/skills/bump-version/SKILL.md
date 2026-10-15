@@ -65,7 +65,9 @@ For a brand-new marketing version, set that target's `CURRENT_PROJECT_VERSION = 
 
 ### Build-number-only bump
 
-Set only `CURRENT_PROJECT_VERSION` for the selected scope. This is `CFBundleVersion`, not the user-visible version. Each upload under the same marketing version must have a higher build number than previous uploads for that same platform/version. Never decrease it.
+Set only `CURRENT_PROJECT_VERSION` for the selected scope. On-demand TestFlight builds do not need
+this: `scripts/testflight-release.py ship` stamps `--build-number auto` (the commit count) at
+archive time. Once such builds exist for a version, a committed build number must exceed them. This is `CFBundleVersion`, not the user-visible version. Each upload under the same marketing version must have a higher build number than previous uploads for that same platform/version. Never decrease it.
 
 ### PMSKit fallback version
 
