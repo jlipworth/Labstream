@@ -12,7 +12,7 @@ Do not put approved implementation plans here (`docs/plans/`), immutable audit o
 
 ## Naming and lifecycle
 
-Name new notes `YYYY-MM-DD-<topic>.md`. State the unresolved questions and exit criteria near the top, cite primary sources, and avoid presenting hypotheses as shipped behavior.
+Name new notes `YYYY-MM-DD-<topic>.md`. Topic-named notes created before this rule was enforced keep their names until archived. State the unresolved questions and exit criteria near the top, cite primary sources, and avoid presenting hypotheses as shipped behavior.
 
 When the investigation resolves:
 
@@ -35,10 +35,10 @@ When the investigation resolves:
   HEVC 10-bit SDR quality-reopen boundary and its scoped mitigation. [Issue #304](https://github.com/jlipworth/Labstream/issues/304)
   is closed for that reproduced boundary; physical-device, dynamic-fragment/decoder, and
   broader server-version validation remain unresolved.
-- [`2026-08-22-jellyfin-public-demo.md`](2026-08-22-jellyfin-public-demo.md) — evaluates the
-  official public stable demo as the no-new-infrastructure lane for screenshots and App Review;
-  compatibility passed, while artwork rights, shared-state reliability, downloads, and final
-  reviewer suitability remain open.
+- [`emby-reopen-session-overlap.md`](emby-reopen-session-overlap.md) — reproduced Emby
+  overlapping-session reopen failure and the acknowledged stop-before-reopen ordering included
+  in the 1.7.2 (build 2) candidate. Server worker-exit proof, physical-device, and
+  source-matched cross-backend acceptance remain open.
 - [`2026-07-20-tvos-screen-audit.md`](2026-07-20-tvos-screen-audit.md) — exhaustive tvOS
   screen/interaction audit for [issue #246](https://github.com/jlipworth/Labstream/issues/246).
   The implementation plan and 2026-07-21 session report are archived; remaining open

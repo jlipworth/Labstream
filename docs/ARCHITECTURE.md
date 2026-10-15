@@ -328,10 +328,10 @@ privacy and authenticated local-resolution boundary is canonical in
 Structured app diagnostic event logging is local, bounded, redacted, and opt-in. On non-tvOS
 products, MetricKit is a separate passive crash/hang channel: it keeps at most five redacted
 summaries, uploads nothing automatically, and includes them only in a user-generated feedback
-report. Debug performance
-signposts compile to no-op implementations in Release. `RuntimeLifecycleCoordinator` consumes the
-existing aggregate-scene 500 ms handoff grace and emits typed active/inactive recovery reasons;
-best-effort diagnostic flushing happens only on genuine aggregate inactivity.
+report. Performance signposts are live in Debug and PerformanceAudit builds and compile to no-op
+implementations in Release. `RuntimeLifecycleCoordinator` consumes the existing aggregate-scene
+500 ms handoff grace and emits typed active/inactive recovery reasons; best-effort diagnostic
+flushing happens only on genuine aggregate inactivity.
 
 ## Documentation rule
 

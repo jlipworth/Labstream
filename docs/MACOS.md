@@ -142,9 +142,12 @@ hosts the shared `LabstreamTests/` sources in `LabstreamMac`; run it directly wh
 app-owned persistence, lifecycle, auth-storage, or playback/system-media seams:
 
 ```sh
+# Keep the unsigned host lane on the isolated development entitlements; the canonical Mac
+# entitlements contain a keychain access group and require a development-signed build.
 scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
   -scheme LabstreamMac -testPlan LabstreamMacTests \
-  -destination 'platform=macOS,arch=arm64' test CODE_SIGNING_ALLOWED=NO
+  -destination 'platform=macOS,arch=arm64' test CODE_SIGNING_ALLOWED=NO \
+  CODE_SIGN_ENTITLEMENTS=Config/LabstreamMacDevelopment.entitlements
 ```
 
 The current repeatable Mac sweep is:

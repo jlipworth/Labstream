@@ -5,6 +5,14 @@ integration follow-up for [#293](https://github.com/jlipworth/Labstream/issues/2
 [#295](https://github.com/jlipworth/Labstream/issues/295) is complete and both issues are
 closed; the playback and release gates below remain active.
 
+**Current status (2026-10-15):** this work ships in the coordinated 1.7.2 (build 2) candidate.
+Versioning and publication follow [`docs/RELEASES.md`](../RELEASES.md), which supersedes the
+patch-bump step under Release closeout. Remaining gates are
+[#288](https://github.com/jlipworth/Labstream/issues/288) (Plex live),
+[#291](https://github.com/jlipworth/Labstream/issues/291) (Emby), physical-device, and App Store
+acceptance. Test counts in the dated checkpoints below are historical; current counts live in
+`docs/RELEASES.md`.
+
 Current playback behavior belongs in [`docs/PLAYBACK-ARCHITECTURE.md`](../PLAYBACK-ARCHITECTURE.md);
 this file owns the implementation/acceptance journal and its remaining release gates. Dated
 checkpoints below preserve evidence and are not a second operating contract.
@@ -33,7 +41,9 @@ seek/resume, progress reporting, and cleanup invariants. Do not weaken Dolby Vis
 - [x] Bound stall transport-progress deferrals to two existing watchdog intervals.
 - [ ] Verify compatible original-file playback separately from HLS remux; do not claim
   that container remux is byte-for-byte Direct Play.
-- [ ] Complete Plex live acceptance before extending the behavior to Jellyfin and Emby.
+- [ ] Complete Plex live acceptance ([#288](https://github.com/jlipworth/Labstream/issues/288)).
+  The planned Plex-first ordering was not followed: Jellyfin/Emby extension proceeded in
+  parallel; see the checkpoints below.
 - [ ] Verify each MediaBrowser backend's Direct Play, video-copy/audio-only remux,
   and explicit Maximum semantics. Keep server-job cleanup separate from video encoding.
 - [ ] Extend consent to initial negotiation and reopen with pinned source/auth authority,

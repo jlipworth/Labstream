@@ -1,6 +1,6 @@
 ---
 name: deploy-to-device
-description: Build and install Labstream onto a physical Apple Vision Pro over Wi-Fi for on-device testing (NOT the simulator). Use whenever the user asks to load / deploy / install / sideload / "put it on the headset" / test the app on the real Vision Pro. Covers device signing (the team-ID OU trap), the one-command deploy script, provisioning-profile expiry, and how the Xcode-loaded build coexists with the App Store build.
+description: Build and install Labstream onto a physical Apple Vision Pro over Wi-Fi for on-device testing (NOT the simulator). Use whenever the user asks to load / deploy / install / sideload / "put it on the headset" / test the app on the real Vision Pro. Covers device signing (the team-ID OU trap), the one-command deploy script, provisioning-profile expiry, and how the Xcode-loaded build coexists with the TestFlight/App Store build.
 ---
 
 # Deploy Labstream to a physical Apple Vision Pro
@@ -20,6 +20,13 @@ scripts/deploy-to-device.sh --no-build # reinstall the last device build without
 scripts/deploy-to-device.sh --verbose  # show full device/team IDs instead of masked IDs
 scripts/deploy-to-device.sh --full-ids # alias for --verbose
 ```
+
+**Shared DerivedData caveat.** Unlike the simulator loop, the wrapper builds into Xcode's
+global DerivedData (no `-derivedDataPath`). Before building it deletes
+`Debug-xros/Labstream.app` from **every** `Labstream-*` DerivedData directory, which
+includes other worktrees' device products, and it installs whichever matching product is
+newest. So `--no-build` can install another worktree's binary; check the printed `app:`
+path before trusting the install.
 
 The script auto-derives the device UUID (from `devicectl list devices`) and the signing
 team (from the cert OU — see trap #1). Override with `VP_DEVICE_ID` / `VP_DEVELOPMENT_TEAM`
@@ -102,9 +109,9 @@ just re-run `scripts/deploy-to-device.sh` (a fresh `-allowProvisioningUpdates` b
 a new profile). Free teams also cap the number of distinct App IDs and devices — reusing
 the one `org.labstream.Labstream` bundle id keeps us well under it.
 
-## Coexistence: Xcode-loaded build vs. App Store build
+## Coexistence: Xcode-loaded build vs. TestFlight/App Store build
 
-The dev build and a future App Store ("consumer") build **share one bundle id**
+The dev build and the TestFlight/App Store ("consumer") build **share one bundle id**
 (`org.labstream.Labstream`). visionOS keys an installed app by bundle id, so:
 
 - **Only one can be installed at a time.** Installing the dev build **replaces** an App
@@ -113,8 +120,9 @@ The dev build and a future App Store ("consumer") build **share one bundle id**
   (personal dev cert vs. App Store), so visionOS may reject installing one straight over
   the other — if `devicectl install` errors with a signing/verification mismatch, delete
   the existing app on the headset first, then re-run the deploy.
-- **Today this is fine** — we only run the Xcode-loaded build on-device, so the collision
-  is moot. Just be aware the dev install clobbers App Store state and login.
+- **This is live today** — internal TestFlight builds (`scripts/testflight-release.py`
+  `ship`/`distribute`) use the same `org.labstream.Labstream` id, so a dev deploy replaces
+  a TestFlight install and vice-versa; state and login may reset across the swap.
 - **When we need both side-by-side** (e.g. compare consumer vs. dev), the dev build needs
   its **own** bundle id + display name — `org.labstream.Labstream.dev` /
   "Labstream (Dev)" via a Debug-only `PRODUCT_BUNDLE_IDENTIFIER` suffix and
@@ -133,7 +141,8 @@ UI on the headset is the close-out for a device deploy.
 
 ## Codex / cross-agent note
 
-Codex picks this up via `AGENTS.md` (which points here). The script is the portable
-surface — both Claude and Codex should call `scripts/deploy-to-device.sh` rather than
-re-deriving signing. Keep the script as the single source of truth; if the team id,
-device, or bundle-id strategy changes, update the script + this file together.
+Codex reads the mirrored copy at `.codex/skills/deploy-to-device/SKILL.md`; edit both
+copies together. The script is the portable surface — both Claude and Codex should call
+`scripts/deploy-to-device.sh` rather than re-deriving signing. Keep the script as the
+single source of truth; if the team id, device, or bundle-id strategy changes, update the
+script + both copies of this file together.

@@ -31,6 +31,11 @@ flowchart TD
   hand the report to GitHub or another destination selected by the user.
 - Reports must omit or redact tokens, client identifiers, hostnames/IP addresses, full URLs, usernames, library paths, filenames, and media titles.
 - Free-form user notes are best-effort scrubbed, but users should still review the preview before posting publicly.
+- Known redactor residuals that the preview review must catch: media titles written as plain prose
+  (no file extension), dotless personal or device names (for example "Bob's Laptop"), bare or
+  zone-scoped IPv6 literals (for example `2001:db8::1` or `fe80::1%en0`), and credentials under
+  non-standard keys such as `pw=` or `pass=`. `DiagnosticLoggingTests` pins these as documented
+  residuals.
 
 ## Typed fields
 

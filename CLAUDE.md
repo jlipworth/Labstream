@@ -30,7 +30,7 @@ xcrun simctl boot "$SIMID" 2>/dev/null || true   # no-op if already booted
 # `dwarfdump --uuid`, and even a full clean rebuild reuses it. So a cross-build UUID
 # comparison CANNOT detect a stale binary, and grepping the binary for a changed string
 # is unreliable (Swift literal storage). The only thing that proves the Ld step ran is a
-# FULL clean-DerivedData build (`rm -rf …/DerivedData/Labstream-*`) with exit 0 — there
+# FULL clean-DerivedData build (`rm -rf "$DD"`, the worktree-local path) with exit 0 — there
 # is no incremental link to skip — plus a fresh product mtime. The UUID diff below is
 # still valid for ONE thing: confirming the INSTALLED copy == the copy you just built
 # (same build → same UUID), i.e. the STALE-PROCESS/wrong-install guard, NOT staleness vs
@@ -123,7 +123,10 @@ If both an iPad and iPhone are paired, set `IOS_DEVICE_ID=<uuid>` (or
 `IOS_DEVELOPMENT_TEAM=<team>` (or `MOBILE_DEVELOPMENT_TEAM`); otherwise the wrapper derives it
 from the Apple Development certificate OU. It accepts `--verbose`/`--full-ids`, deletes stale
 `Debug-iphoneos/Labstream.app` products before building, and stamps the internal Build ID via
-`scripts/build-version-args.sh`. By default it prunes matching short-lived development profiles;
+`scripts/build-version-args.sh`. Unlike the simulator flow, it builds into Xcode's global
+DerivedData: the pre-build delete covers every `Labstream-*` directory (other worktrees'
+device products too), and it installs the newest matching product from any worktree, so
+`--no-build` can install another worktree's binary — check the printed `app:` path. By default it prunes matching short-lived development profiles;
 `IOS_REFRESH_SHORT_DEV_PROFILES=0` opts out. The embedded profile is checked and a short-lived
 profile with fewer than six days remaining is refused.
 
@@ -153,7 +156,9 @@ short-lived profile with fewer than six days remaining. For longer-lived offline
 `scripts/deploy-ad-hoc-to-device.sh` or TestFlight. The script derives
 the Vision Pro identifier from `devicectl`, the signing team from the certificate OU,
 deletes the stale `Debug-xros/Labstream.app` product before building, and stamps the
-internal Build ID via `scripts/build-version-args.sh`.
+internal Build ID via `scripts/build-version-args.sh`. Like the iOS wrapper, it uses Xcode's
+global DerivedData: the delete covers every worktree's `Labstream-*` device product, and
+`--no-build` installs the newest product from any worktree — check the printed `app:` path.
 
 ⚠️ **RECURRING SIGNING GOTCHA (hit often).** A command-line device build fails with
 `error: No Account for Team "<id>"` / `No profiles for 'org.labstream.Labstream' were found`
@@ -172,9 +177,11 @@ owns the build/install command once signing is unblocked.
 ### Publishing to TestFlight
 
 Use `scripts/testflight-release.py` (`preflight` → `archive` → `validate` → `upload --yes` →
-`status --wait` → `select-build`, or `ship --group <internal group> --yes` for an on-demand build
-to the user's devices) via the `testflight-deploy` skill instead of Xcode Organizer or the App
-Store Connect website. Uploads and build selection need the user's explicit go-ahead;
+`status --wait` → `distribute --group <internal group> --yes` when needed → `select-build`, or
+`ship --group <internal group> --yes` for an on-demand build to the user's devices) via the
+`testflight-deploy` skill instead of Xcode Organizer or the App Store Connect website;
+`prune-archives` trims old Xcode archives. Uploads, `ship`, `distribute`, and build selection
+need the user's explicit go-ahead;
 App Review submission is never automated. The API key comes from 1Password through a read-only
 service account token in the login Keychain (`scripts/asc.local.env`, gitignored); never print or
 commit the key, its identifiers, the team ID, or the token.
@@ -498,5 +505,7 @@ lanes for links that MkDocs cannot see.
 ## Conventions
 
 - Do not add Anthropic/Claude co-author trailers to commits.
+- `.claude/skills/` and `.codex/skills/` are tracked mirrors; edit both together and keep each
+  `SKILL.md` identical (Codex-only `agents/openai.yaml` metadata lives only under `.codex`).
 - Verified platform findings (what works windowed vs expanded, proven-impossible
   approaches) belong in `docs/DEVELOPMENT.md`, not just commit messages.

@@ -12,7 +12,7 @@ The findings below preserve the original audit. PR #328 subsequently added the r
 uptime declaration; PR #329 corrected the disclosure wording. Issues #325 and #326 remain open
 for owner-approved disclosure mapping and exact signed-archive privacy reports respectively.
 PR #327 also landed and closed #323 under its client-handling scope; it does not certify the
-broader codec sweep or server worker cleanup. Consult [current release gates](../RELEASES.md)
+broader codec sweep or server worker cleanup. Consult [current release gates](../../RELEASES.md)
 rather than treating the historical statuses below as today's task list.
 
 ## Findings and disposition

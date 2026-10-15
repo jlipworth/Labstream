@@ -97,6 +97,14 @@ Plex profile name `Generic` plus explicit profile-extra directives. Unknown or m
 profile names can make PMS return HTTP 400, while the previously tried `Safari` profile
 regressed high-bitrate 10-bit HEVC. Do not change these values casually.
 
+Skip Intro and Skip Credits are Plex-only. `PlaybackController` derives skip ranges from the
+item's Plex markers, re-deriving them after the full metadata fetch when the launching item was
+a markerless listing copy. Only intro and credits markers with a valid start/end window become
+ranges; commercial and other markers are excluded. The per-kind Disabled/Manual/Automatic
+setting chooses between no button, a Skip button that seeks to the range end, and an automatic
+seek to the range end. Jellyfin/Emby markers or media segments are not mapped, so those
+backends never show a Skip button.
+
 ## Jellyfin
 
 `DetailPlaybackLauncher` orchestrates Jellyfin's initial PlaybackInfo negotiation through
@@ -264,11 +272,15 @@ debounced into one settled final-target rebuild instead of restarting for every 
 - Every intentional Plex in-place restart that supersedes a transcode (quality/audio
   reload, Retry, or final-target rebuild) stops the old job first with a bounded wait before
   requesting the replacement under the reused session id.
-- Jellyfin/Emby replacement is deliberately ordered differently: detach the old `AVPlayerItem`,
+- Jellyfin replacement is deliberately ordered differently: detach the old `AVPlayerItem`,
   negotiate and attach the replacement item, then defer the prior active-encoding stop. If the
   backend reused the same play-session id, skip that prior stop so it cannot tear down the new
-  stream. A consent boundary instead awaits the old session stop before showing the
-  choice, and cleans up any rejected newly negotiated session without attaching it.
+  stream.
+- Emby detaches the old item, then awaits an acknowledged exact-session stop of the prior session
+  before negotiating the replacement. An unacknowledged stop keeps cleanup authority and fails
+  with `priorSessionStopUnconfirmed` (LS-PB-008) instead of starting a new encoder.
+- On either MediaBrowser backend, a consent boundary awaits the old session stop before showing
+  the choice, and cleans up any rejected newly negotiated session without attaching it.
 
 ## Audio and subtitle selection
 
@@ -513,7 +525,7 @@ sequenceDiagram
   diagnostics correlate a hashed play-session ID and report request acknowledgement only.
   Jellyfin can recreate a job from an already accepted HLS request while its stop endpoint
   drains the previously snapshotted job; see the
-  [bounded cleanup investigation](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/2026-09-17-jellyfin-terminal-cleanup.md).
+  [bounded cleanup investigation](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/audits/2026-09-17-jellyfin-terminal-cleanup.md).
   Do not infer worker absence from acknowledgement or add unbounded cleanup retries.
 - Keep Plex transcode stop, MediaBrowser progress-stop, and MediaBrowser active-encoding
   cleanup as distinct operations.

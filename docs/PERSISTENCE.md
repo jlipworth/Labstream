@@ -117,9 +117,16 @@ Container paths are implementation details and should not appear in user-submitt
 
 ## Publication identity boundary
 
-Current app targets use the neutral `org.labstream.Labstream` identity throughout the
-bundle, Keychain service, background sessions, diagnostics, and Spotlight domains. That neutral
-identity was introduced as a fresh-install boundary from the retired private-TestFlight identity:
-it did not adopt credentials, downloads, background sessions, Spotlight entries, or device-local
-preferences from that old identity, so users migrating from it had to sign in again. Updates that
-already use the neutral identity retain their persisted state; this is not a per-release reset.
+Current app targets use the neutral `org.labstream.Labstream` identity for the bundle, Keychain
+service, diagnostics, and Spotlight domains. That neutral identity was introduced as a
+fresh-install boundary from the retired private-TestFlight identity: it did not adopt credentials,
+downloads, Spotlight entries, or device-local preferences from that old identity, so users
+migrating from it had to sign in again. Updates that already use the neutral identity retain
+their persisted state; this is not a per-release reset.
+
+The iOS/iPadOS and visionOS background URLSession identifier intentionally keeps the shipped
+`com.visionplay.downloads.background` value so in-flight transfers reattach across app updates;
+do not rename it without a reattach migration. macOS instead derives
+`<bundleID>.downloads.background`, so per-worktree dev identities stay isolated. A few internal
+labels (the `visionplay` web-auth callback scheme, dispatch-queue labels, playback session-id
+prefixes, and the SharePlay coordinator-id prefix) also retain the legacy prefix.

@@ -309,6 +309,10 @@ for an existing linked worktree and prunes orphaned Labstream worktree simulator
 already removed, run `scripts/worktree-sim.sh prune` as the cleanup backstop. Neither command deletes
 the main worktree's golden simulator.
 
+The full merge-and-closeout procedure (rebase, validation, doc and plan lifecycle, issue status,
+simulator and macOS host-app teardown, worktree removal, and branch deletion) is the
+[`merge-worktree` skill](https://github.com/jlipworth/Labstream/blob/main/.claude/skills/merge-worktree/SKILL.md).
+
 ## Build and run the macOS target
 
 The `LabstreamMac` target runs directly on the Apple-silicon host; there is no Mac simulator lane.
@@ -497,7 +501,11 @@ those steps.
 
 The development build uses the same bundle identifier as the intended App Store identity, so a local
 install can replace another installed build and its app state. Development provisioning profiles can
-also expire; review the profile lifetime printed by the wrapper before relying on an offline install.
+also expire. By default the wrapper deletes matching short-lived (14 days or less) development
+profiles before building so Xcode fetches a fresh one, prints the embedded profile's lifetime, and
+refuses to install a short-lived profile with fewer than six days remaining. Set
+`VP_REFRESH_SHORT_DEV_PROFILES=0` to skip the pruning. If the refusal persists, confirm the Apple ID
+is signed into Xcode, or use the Ad Hoc wrapper below.
 
 For an install that must outlive a development provisioning profile (for example, offline use away
 from the development Mac), use the distribution-signed Ad Hoc wrapper instead. It requires an Apple
@@ -521,10 +529,16 @@ Use the mobile wrapper for a signed `iphoneos` build:
 scripts/deploy-mobile-to-device.sh
 scripts/deploy-mobile-to-device.sh --launch
 scripts/deploy-mobile-to-device.sh --no-build
+scripts/deploy-mobile-to-device.sh --verbose  # show full device/team IDs for troubleshooting
 ```
 
-If more than one phone or tablet is paired, set `IOS_DEVICE_ID=<device-uuid>` explicitly. First
-use still requires pairing/trust, Developer Mode, and the matching Apple ID in Xcode Settings.
+If more than one phone or tablet is paired, set `IOS_DEVICE_ID=<device-uuid>` (alias
+`MOBILE_DEVICE_ID`) explicitly. The signing team is derived from the Apple Development certificate;
+`IOS_DEVELOPMENT_TEAM=<team-id>` (alias `MOBILE_DEVELOPMENT_TEAM`) is the explicit override. Like
+the visionOS wrapper, it prunes matching short-lived development profiles before building
+(`IOS_REFRESH_SHORT_DEV_PROFILES=0` opts out) and refuses to install a short-lived profile with
+fewer than six days remaining. First use still requires pairing/trust, Developer Mode, and the
+matching Apple ID in Xcode Settings.
 
 ## Credentials and iCloud Keychain sync
 
@@ -614,21 +628,33 @@ moving snapshots, but repair live links, navigation, includes, and script refere
 
 ## Required-reason privacy manifest packaging
 
-The shared `PrivacyInfo.xcprivacy` declares `SystemBootTime` reason `35F9.1` for
-in-app elapsed-time and timer calculations, including PMSKit's statically linked
-media-session retry budget. Raw uptime and boot-relative sample timestamps must
-stay on device. Apple's exception permits information about elapsed time between
-in-app events to leave the device; it does not permit arbitrary uptime-derived
-identifiers or boot epochs. Re-audit new diagnostic/export/network fields before
-changing this contract. The source audit is retained at
-`docs/evidence/2026-09-15-privacy-uptime-audit.md` (unpublished evidence).
+Two source manifests define the contract: the shared
+`Labstream/Shared/Resources/PrivacyInfo.xcprivacy` (visionOS, iOS/iPadOS, and macOS) and the tvOS
+copy `Labstream/Platforms/tvOS/Resources/PrivacyInfo.xcprivacy`. The tvOS copy must stay identical
+except that it omits the `CrashData` collected-data entry; edit both together. Both declare the
+required-reason APIs `SystemBootTime` (`35F9.1`), `UserDefaults` (`CA92.1`), `FileTimestamp`
+(`DDA9.1`), and `DiskSpace` (`85F4.1`), with no tracking.
 
-`python3 scripts/check-privacy-manifest.py` checks the declaration and all four
-targets' shared-resource membership; repository hygiene runs its regression tests.
-After clean builds, verify the actual app resources (use your worktree-local paths):
+`SystemBootTime` reason `35F9.1` covers in-app elapsed-time and timer calculations, including
+PMSKit's statically linked media-session retry budget. Raw uptime and boot-relative sample
+timestamps must stay on device. Apple's exception permits information about elapsed time between
+in-app events to leave the device; it does not permit arbitrary uptime-derived identifiers or boot
+epochs. Re-audit new diagnostic/export/network fields before changing this contract. The source audit is retained at
+`docs/evidence/audits/2026-09-15-privacy-uptime-audit.md` (unpublished evidence).
+
+`uv run python scripts/check-privacy-manifest.py` checks both declarations, the approved
+collected-data mapping, every target's synchronized-resource membership, and the tvOS target's
+membership exception that excludes the shared manifest in favor of its own copy; repository
+hygiene runs its regression tests.
+
+`scripts/testflight-release.py validate` already runs this check against the archived apps when
+all four platform archives are present. For an ad hoc check of built products, build each scheme
+in Release into a one-off path with `scripts/xcodebuild-versioned.sh ... -configuration Release
+-derivedDataPath build/DerivedData-privacy-<platform> build CODE_SIGNING_ALLOWED=NO`, run the
+command below, then delete those `build/DerivedData-privacy-*` directories:
 
 ```sh
-python3 scripts/check-privacy-manifest.py \
+uv run python scripts/check-privacy-manifest.py \
   --app Labstream=build/DerivedData-privacy-visionos/Build/Products/Release-xrsimulator/Labstream.app \
   --app LabstreamMobile=build/DerivedData-privacy-ios/Build/Products/Release-iphonesimulator/Labstream.app \
   --app LabstreamTV=build/DerivedData-privacy-tvos/Build/Products/Release-appletvsimulator/Labstream.app \

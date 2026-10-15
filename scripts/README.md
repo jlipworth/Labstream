@@ -9,12 +9,27 @@ media details out of commits and public issues.
 
 - `xcodebuild-versioned.sh` — wraps `xcodebuild` and stamps a source-derived internal Build ID.
 - `build-version-args.sh` — prints the version/build arguments used by the wrapper and deploy scripts.
-- `ci-hygiene.sh` — repository privacy, signing, placeholder, and tooling guardrails.
-- `testflight-release.py` — preflight, archive, validate, upload, status, and build selection
-  for the coordinated App Store targets. Reads the App Store Connect API key from 1Password at run
-  time (configured in the gitignored `asc.local.env`), masks account identifiers, requires
-  `--yes` for uploads and build selection, and never submits for review. See
+- `ci-hygiene.sh` — repository privacy, signing, placeholder, and tooling guardrails. It also runs
+  the `scripts/tests` suite and, when `mkdocs.yml` is present, the published-docs gate (`mkdocs build
+  --strict`, `check-doc-links.py --site-dir site`, and `check-docs-mermaid.py`). Private forbidden
+  strings (real hostnames, IPs, and similar) are never hardcoded; the redaction scan adds them from
+  the gitignored `ci-hygiene.local` (one string per line; `#` comments and blank lines ignored; the
+  scan fails if this file is ever tracked), from a file named by `CI_EXTRA_FORBIDDEN_FILE`, and from
+  newline-separated `CI_EXTRA_FORBIDDEN`. `publication-audit.py` also reads `ci-hygiene.local`.
+- `testflight-release.py` — preflight, archive, validate, upload, status, `select-build`,
+  `distribute` (to an internal TestFlight group via `--group`), `ship` (on-demand archive, validate,
+  upload, wait, distribute, then prune), and `prune-archives` for the coordinated App Store targets.
+  `--build-number <n|auto>` overrides CFBundleVersion; `auto` stamps the HEAD commit count. Reads
+  the App Store Connect API key from 1Password at run time (configured in the gitignored
+  `asc.local.env`) and masks account identifiers. `--yes` is required for upload, build selection,
+  distribution, `ship`, and archive deletion; without it those commands are dry runs or refusals.
+  It never submits for review. See
   [Releases](../docs/RELEASES.md#coordinated-publication-sequence).
+- `check-privacy-manifest.py` — source check of the shared and tvOS `PrivacyInfo.xcprivacy`
+  contracts and target membership; with `--app TARGET=PATH` for all four products it also checks
+  the built app manifests. `testflight-release.py validate` runs it on archives. It is not Apple's
+  signed-archive privacy report. See
+  [privacy manifest packaging](../docs/DEVELOPMENT.md#required-reason-privacy-manifest-packaging).
 - `check-docs-mermaid.py` — verifies that published Mermaid source fences become
   generated Mermaid containers without external script dependencies.
 - `check-doc-links.py` — validates repository-local links and Markdown heading anchors across all
@@ -234,6 +249,9 @@ scripts/perf-compare.py compare \
   lease.
 - `agent-playback-run.py` — bounded synthetic hosted-controller consent/stop lifecycle check. It
   has no credentials or live admission and does not prove visible playback or server cleanup.
+- `cua/playback-fixture.js` — Computer Use-only player-fixture verifier (checked identity
+  `agent-player-290`); it requires a fixture launch and never drives a live app. See
+  [Agent playback troubleshooting](../docs/AGENT-PLAYBACK-TROUBLESHOOTING.md).
 - `playback-evidence.py` — offline, allowlisted progress-evidence validator. A passing result
   proves only sustained sampled playhead progress; it does not prove visible frames, hardware
   decode, server cleanup, or video-copy negotiation.
@@ -308,6 +326,10 @@ scripts/perf-compare.py compare \
   captures require an unlocked interactive Mac session in which the audit app can become active and
   the invoking process already has Accessibility trust. A locked/background-only session or failed
   activation is an admission failure, not a performance sample.
+- `dv-decoder-init-probe.swift` — read-only native-macOS Dolby Vision format-description
+  experiment for issue #316. Compile it with `swiftc -parse-as-library`; it never rewrites media,
+  submits compressed samples, or establishes a playback pass. See the unpublished
+  `docs/research/dv-p7-decoder-boundary.md`.
 
 There is no macOS simulator lane. See [`docs/MACOS.md`](../docs/MACOS.md).
 
@@ -330,16 +352,23 @@ identifier. Read their `--help` output and the platform documentation before use
 
 ## Simulator download probes
 
-These launch the Debug app using the selected worktree simulator's already signed-in state. They do
+These launch the Debug app on this worktree's visionOS simulator
+(`scripts/worktree-sim.sh --platform visionos id`, regardless of `.simplatform` or
+`LABSTREAM_SIM_PLATFORM`; override with `SIMID=<udid>`) and use its already signed-in state. They do
 not read a token environment file:
 
-- `probe-plex-range-drop.sh` — Plex static-range recoverability with connection-loss (default),
-  validator-flip, and one-shot mid-train 401 transport faults.
+- `probe-plex-range-drop.sh` — Plex static-range recoverability under one `--fault` mode:
+  `connection-drop` (default), `double-connection-drop`, `validator-flip`, `401-mid-train`,
+  `write-failure`, `416-restart`, `200-replace`, `held-body-pause` (with `--pause-resume`),
+  `held-body-delete` (with `--delete-during-transfer`), `held-body-relaunch` (with
+  `--relaunch-held`), `drain-pause` (with `--pause-only`), or `drain-delete` (with
+  `--delete-during-transfer`). See `--help` for the remaining options.
 - `probe-jellyfin-download.sh` — Jellyfin original/static and optimize/transcode download lanes.
 - `probe-emby-download.sh` — Emby route negotiation, converted-source reuse, and optimize/download
   lanes.
 
-Outputs live under `build/probes/` and are local evidence, not publication-ready artifacts.
+Outputs live under `build/probes/<probe>/<timestamp>/` unless `LABSTREAM_PROBE_OUTPUT_DIR` is set,
+and are local evidence, not publication-ready artifacts.
 
 ## Opt-in live-server probes
 
@@ -392,3 +421,32 @@ verdict is readiness evidence only, never live acceptance; acceptance requires a
 Before adding a live probe, document every required environment key, fail or skip safely when
 configuration is absent, clean up any server-side mutation, and ensure output redacts tokens,
 hosts, titles, identifiers, and paths.
+
+### Live suites without a wrapper
+
+These opt-in PMSKit suites have no wrapper script; the wrappers' `--filter` values do not select
+them. Each no-ops when its environment is absent. Export the relevant ignored env file(s) first
+(`set -a; source scripts/plex-live.env; set +a`, and likewise for `jellyfin-live.env` or
+`emby-live.env`), then run from the repository root:
+
+- `swift test --package-path PMSKit --filter LiveBIFIndexProbe` — Plex BIF availability for one
+  item; needs `PLEX_LIVE_SERVER`, `PLEX_LIVE_TOKEN`, and `PLEX_LIVE_BIF_METADATA_KEY`.
+- `swift test --package-path PMSKit --filter LiveClientFirstPlaybackProbe` — Plex video-copy HLS
+  negotiation and start with the app's request builders, then a transcode-session stop; needs
+  `PLEX_LIVE_METADATA_KEY` (optional `PLEX_LIVE_MEDIA_INDEX`). It does not prove rendering, HDR
+  presentation, seeking, or hardware decode.
+- `swift test --package-path PMSKit --filter LiveWatchedFilterProbe` — Plex watched-only browse
+  filter on the live wire; needs only the Plex server and token.
+- `swift test --package-path PMSKit --filter LiveHDRMetadataProbe` — HDR/color/Dolby Vision
+  stream-metadata decoding against Plex, Jellyfin, and Emby; each backend runs only when its env
+  file is exported. Item IDs/titles appear in local output, so never commit it.
+- `swift test --package-path PMSKit --filter LiveEmbyDownloadProbe` — Emby offline-download
+  negotiation, static-original range support, and the read-only F3 conversion-job list; needs
+  `EMBY_LIVE_SERVER`, `EMBY_LIVE_TOKEN`, `EMBY_LIVE_USER_ID`, and `EMBY_LIVE_ITEM_ID`. The F9 idle
+  arm runs only with `EMBY_LIVE_F9_IDLE_SECONDS` (at least 120) and optionally
+  `EMBY_LIVE_F9_KEEPALIVE=ping`; it consumes server encoder time and bandwidth.
+
+  **Warning:** `EMBY_LIVE_F3_CREATE=1` enables a server-mutating conversion test. If the
+  configured item's conversion completes before the probe deletes the job, Emby leaves a rendered
+  file beside the source media. Set it only with explicit approval from the server owner, and only
+  for a long-running test item.

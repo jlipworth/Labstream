@@ -22,7 +22,7 @@ library screenshots into committed evidence.
 | Physical iPhone/iPad | Signed mobile build with required trust/Developer Mode | PiP, AirPlay, Control Center/lock screen, audio routes, cellular policy, background transfers, Spotlight and App Intents |
 | Apple TV simulator | Exact worktree `LabstreamTV` simulator; signed-in test session or production-isolated fixture | Ten-foot shell, deterministic focus/navigation, custom-player remote paths, and absence of downloads; not physical Siri Remote, HDR/audio/HDMI, lifecycle, or performance |
 | Physical Apple TV (future acceptance) | Signed `LabstreamTV` development build on explicitly selected hardware with a real Siri Remote and display/audio chain | Evidence for remote-only operation, focus, system keyboard/dictation, HDR/DV, HDMI/audio, interruptions, lifecycle, accessibility, and long-play performance; this open gate does not establish release acceptance |
-| macOS preview | `LabstreamMac` host build under the worktree development identity | Native split view, menus, Settings window, keyboard/full-screen/media-key behavior, live playback and download reconciliation; record as preview evidence |
+| macOS (pre-release) | `LabstreamMac` host build under the worktree development identity | Native split view, menus, Settings window, keyboard/full-screen/media-key behavior, live playback and download reconciliation; record as pre-release acceptance evidence, not released-platform support |
 
 - [ ] Record the exact target/scheme, configuration, OS/runtime, app marketing/build ID,
       and whether this is an upgrade install or a fresh container.
@@ -213,10 +213,11 @@ Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The 
       timeline scrubs and commits without double seeks; Menu/Back dismisses a submenu before
       exiting playback; every quality/audio/subtitle/chapter/speed/Stats action is reachable; and
       focus returns coherently after auto-hide, errors, item completion, and player close.
-- [ ] **tvOS hardware:** Now Playing, system Play/Pause, interruptions, routes, HDR/DV, HDMI audio,
-      background behavior, and long-play thermal/memory behavior are proven on a physical Apple TV.
+- [ ] **tvOS hardware:** system Play/Pause (no video Now Playing is published, by design),
+      interruptions, routes, HDR/DV, HDMI audio, background behavior, and long-play
+      thermal/memory behavior are proven on a physical Apple TV.
       Simulator focus and remote automation cannot satisfy these cells.
-- [ ] **macOS preview:** overlay/full-screen presentation, Escape/Close, toolbar visibility,
+- [ ] **macOS (pre-release):** overlay/full-screen presentation, Escape/Close, toolbar visibility,
       menu commands, media keys, Now Playing ownership, and restoration to the prior split-view
       state all behave natively.
 

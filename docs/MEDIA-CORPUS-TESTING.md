@@ -20,7 +20,11 @@ GNU `find`, `timeout`, and `ffprobe`; it never starts an authentication flow.
 ## Run and resume
 
 From the repository root, substitute an authorized context and actual read-only source
-roots. The target/container defaults are Jellyfin but can be overridden:
+roots. The target/container defaults are Jellyfin but can be overridden with `--namespace`
+(default `media`), `--target` (`deploy/jellyfin`), `--container` (`jellyfin`) and `--ffprobe`
+(`/usr/lib/jellyfin-ffmpeg/ffprobe`). `--workers` accepts 1 or 2 (default 2) and `--timeout`
+sets per-probe seconds (default 30). `--output` (default `build/media-corpus`) must be
+gitignored and untracked or the script refuses to write:
 
 ```sh
 python3 scripts/media-corpus.py --context YOUR_CONTEXT \
@@ -36,7 +40,7 @@ a server ffprobe upgrade. It is not a content hash: replace the cache when files
 Probe depth is bounded, so absent codec details remain unknown rather than guessed.
 
 Use `--summarize-only` with the same source options to export cached evidence without
-probing missing files. Run it after an interrupted pass to create current manifests.
+probing missing files; it still enumerates files over the live context. Run it after an interrupted pass to create current manifests.
 `complete_file_inventory` records successful enumeration; `complete_probe_coverage`
 is false if files were skipped, remain unprobed, or failed.
 `files.nul` is the complete filesystem listing, including sidecars; recognized video
@@ -121,7 +125,10 @@ Simulator frames established the reported Jellyfin fix; physical Vision Pro and 
 seek/reopen acceptance remain open. Emby corpus defects are separate investigations.
 
 Jellyfin/Emby live probes now require a unique exact playable title in the returned
-search page; missing, fuzzy-only, and duplicate matches fail closed. Emby also supports optional expected-item/source-ID assertions. This is not yet a
+search page; missing, fuzzy-only, and duplicate matches fail closed. Both probes accept
+optional `--vp-probe-expected-item-id` / `--vp-probe-expected-source-id` assertions, which
+fail closed on a mismatch, and `--vp-probe-discover-source` for read-only source-binding
+discovery. This is not yet a
 backend-ID manifest runner: inspect actual source provenance, especially with alternate
 versions or generic episode names. A matching item outside the bounded search page is
 unsupported rather than guessed. The default transport report still requires separate

@@ -5,7 +5,7 @@ import Testing
 /// Wire-shape tests for the Emby Connect PIN (short-code) sign-in flow (GH #72).
 /// Endpoints/fields were reverse-engineered from Emby's official JS/Java clients and
 /// live-verified against connect.emby.media + a real server — see
-/// docs/research/17-emby-backend-support.md.
+/// docs/archive/research/17-emby-backend-support.md.
 @Suite("Emby Connect PIN")
 struct EmbyConnectTests {
     private let identity = EmbyClientIdentity(

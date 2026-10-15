@@ -29,13 +29,18 @@ repository trust have been validated on the real machine.
 2. an unsigned visionOS Simulator build of the `Labstream` scheme;
 3. an unsigned iOS Simulator build of `LabstreamMobile`, the universal
    iPhone/iPad application target;
-4. the PMSKit unit suite with an isolated SwiftPM scratch directory.
+4. the PMSKit unit suite (`--no-parallel`) with an isolated SwiftPM scratch
+   directory; live probe tests are compiled but self-skip because no opt-in
+   environment is provided.
 
 Each Xcode action receives its own DerivedData directory and `.xcresult`
 bundle. Logs, toolchain facts, and result bundles are written beneath
 `build/ci-macos/<run>/evidence`. DerivedData and SwiftPM build state are removed
 through an exit/signal trap; the evidence remains for bounded collection by
-the CI system. The Woodpecker workflow sets `MACOS_CI_ARTIFACT_ROOT` to the
+the CI system. Each log is tail-truncated to `MACOS_CI_MAX_LOG_MB` (default
+10), and any `.xcresult` larger than `MACOS_CI_MAX_RESULT_MB` (default 250) is
+deleted and fails the run. `MACOS_CI_OUTPUT_DIR` overrides the run's evidence
+directory. The Woodpecker workflow sets `MACOS_CI_ARTIFACT_ROOT` to the
 runner-owned persistent artifact directory. Runs older than seven days are
 deleted and at most ten runs are retained. These defaults can be tightened with
 `MACOS_CI_RETENTION_DAYS` and `MACOS_CI_MAX_RUNS`.

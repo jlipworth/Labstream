@@ -34,7 +34,7 @@ The music UI is organized around familiar library pivots:
 - artists;
 - albums;
 - playlists;
-- album and track detail views;
+- artist, album, and playlist detail views, with per-track queue menus;
 - queue and playback controls.
 
 ## Provider boundary

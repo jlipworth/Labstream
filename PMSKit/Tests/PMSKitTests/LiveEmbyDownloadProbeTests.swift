@@ -10,7 +10,7 @@ import Foundation
 /// Opt-in: runs only when the `EMBY_LIVE_*` env vars are present, otherwise a no-op so plain
 /// `swift test` and CI stay hermetic.
 ///
-/// What it proves against the live wire (item 1200 = HEVC/DTS/MKV worst case):
+/// What it proves against the live wire (an HEVC/DTS/MKV worst-case item):
 ///   1. The DOWNLOAD device profile (Static mp4, NOT HLS) negotiates a single-file transcode:
 ///      `SupportsDirectPlay=false`, `TranscodeReasons` contains `ContainerNotSupported`, the
 ///      `TranscodingUrl` is a `/videos/.../stream` (no `.m3u8`), and `Size` is populated.

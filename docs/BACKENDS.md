@@ -33,6 +33,8 @@ flowchart TD
 | Playback | Universal-transcode HLS decisions and direct/copy/transcode routes. | PlaybackInfo, resolved stream URLs, session progress, and active-encoding cleanup. | PlaybackInfo, resolved stream URLs, session progress, and separate active-encoding cleanup. |
 | Downloads | Direct originals, existing server versions, and server-rendered compatible copies. | Static original/range transfers or server-selected stream outputs. | Direct static, prepared static, compatible remux, or convert-then-static lanes. |
 | Music | Plex music provider. | MediaBrowser music provider. | MediaBrowser music provider. |
+| Skip Intro/Credits | Intro and credits ranges from Plex markers. | Not supported; markers/media segments are not mapped. | Not supported; markers are not mapped. |
+| Scrub previews | BIF index (online and offline). | Trickplay tile sheets (online and offline). | `ThumbnailSet` BIF, then per-position images, then chapter images. |
 
 Only the Plex account token may sync across canonical Keychain-backed installs; Jellyfin/Emby tokens are deliberately device-local
 because those servers bind the token to the device id used at sign-in. See `docs/DEVELOPMENT.md`

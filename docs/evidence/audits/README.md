@@ -23,3 +23,11 @@ Name files `YYYY-MM-DD-<subsystem>-<purpose>.md`. Record the source revision, me
 - [`2026-09-13-plex-corpus.md`](2026-09-13-plex-corpus.md) — bounded Plex exact-source
   playback-evidence audit. It records simulator results and harness corrections; physical,
   HDR/colorimetry, long-play, and exhaustive track/version gates remain open.
+- [`2026-09-15-prerelease-disclosure-audit.md`](2026-09-15-prerelease-disclosure-audit.md) —
+  pre-release disclosure audit of public-facing privacy and support statements.
+- [`2026-09-15-privacy-uptime-audit.md`](2026-09-15-privacy-uptime-audit.md) — required-reason
+  API (`SystemBootTime`) usage audit backing the privacy-manifest declaration.
+- [`2026-09-16-review-service-privacy-audit.md`](2026-09-16-review-service-privacy-audit.md) —
+  bounded privacy audit of the review/demo service against the published App Privacy answers.
+- [`2026-09-17-jellyfin-terminal-cleanup.md`](2026-09-17-jellyfin-terminal-cleanup.md) —
+  bounded Jellyfin terminal-cleanup investigation referenced by the playback cleanup invariants.

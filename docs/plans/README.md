@@ -33,5 +33,5 @@ When a plan is complete or superseded:
   plan but is not an active queue item.
 
 Completed plans live in [`docs/archive/plans/`](../archive/plans/); the most
-recently archived programs (2026-07-24) are the codebase remediation journal, the tvOS
-implementation plan, and the cross-platform simplification and performance program.
+recently archived is the agent playback evidence journal (2026-09-06), which
+[AGENT-PLAYBACK-TROUBLESHOOTING.md](../AGENT-PLAYBACK-TROUBLESHOOTING.md) supersedes.

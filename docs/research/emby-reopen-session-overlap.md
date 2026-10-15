@@ -1,6 +1,10 @@
 # Emby overlapping-session reopen investigation
 
-Status: local correction under validation; not release or physical-device acceptance.
+Status: the acknowledged stop-before-reopen correction is merged and included in the
+coordinated 1.7.2 (build 2) candidate; see the seek/restart invariants in
+[PLAYBACK-ARCHITECTURE.md](../PLAYBACK-ARCHITECTURE.md). Open gates: server encoder-process
+exit (a stop acknowledgement is not proof), physical-device, source-matched cross-backend,
+and audible acceptance.
 
 ## Reproduced boundary
 

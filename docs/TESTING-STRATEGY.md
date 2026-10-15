@@ -36,6 +36,12 @@ The app suites are host-app unit tests. They do not replace the canonical
 [install/launch/log/screenshot smoke](DEVELOPMENT.md#install-and-observe-a-simulator-smoke),
 interactive UI checks, live-server probes, or physical-device acceptance.
 
+The checked `LabstreamTests`, `LabstreamMacTests`, and `LabstreamTVTests` plans set
+`LABSTREAM_UNIT_TEST_HOST=1`; in DEBUG builds `AppLaunchMode.isUnitTestHost` then keeps the Mobile,
+Mac, and TV app scenes inert so hosted tests do not boot the real app. UI tests must set
+`app.launchEnvironment["LABSTREAM_UNIT_TEST_HOST"] = "0"` explicitly, and any new test plan must
+choose `1` or `0` deliberately; otherwise a UI test can silently drive an inert host app.
+
 ### Suspended-request integration regressions
 
 Keep async ownership tests at the production publication boundary, not only in pure authority
@@ -200,12 +206,16 @@ that obscures safety-test changes.
 
 Woodpecker provides the repository's default public, portable CI surface:
 
-- `.woodpecker/docs.yml` builds MkDocs strictly and deploys the static site on relevant pushes to
-  `main` (or a manual run).
-- `.woodpecker/docs-pr.yml` performs the same strict build and Mermaid structural check for pull
-  requests without receiving a deployment key or running a deploy command.
-- `.woodpecker/hygiene.yml` runs `scripts/ci-hygiene.sh`, including its Python tooling tests, on
-  pushes, pull requests, and manual runs.
+- `.woodpecker/docs.yml` builds MkDocs strictly, runs `scripts/check-doc-links.py --site-dir site`
+  and `scripts/check-docs-mermaid.py`, and deploys the static site on relevant pushes to `main`
+  (or a manual run).
+- `.woodpecker/docs-pr.yml` performs the same strict build, rendered-link check, and Mermaid
+  structural check for pull requests without receiving a deployment key or running a deploy
+  command.
+- `.woodpecker/hygiene.yml` validates the macOS pipeline trust boundary with
+  `scripts/validate-macos-pipeline.py .woodpecker/macos.yml --default-branch main`, then runs
+  `scripts/ci-hygiene.sh`, including its Python tooling tests, on pushes, pull requests, and
+  manual runs.
 - `.woodpecker/pmskit.yml` runs PMSKit's credential-free Linux suite. Live probe tests are designed
   to skip when their opt-in environment is absent; the pipeline does not select them as live
   acceptance. XCTest and
@@ -269,6 +279,25 @@ isolated development identity. visionOS remains passive/probe-first because Xcod
 Interaction does not support its simulator; gaze, pinch-drag, immersive, and hardware-only checks
 remain human/headset gates. Real backend credentials supplement these fixture loops but are never a
 precondition for platform-loop closure.
+
+### Download transport fault probes
+
+DEBUG builds can inject Plex download transport faults through an in-process `URLProtocol`
+(`--vp-probe-download-fault MODE`, or `--vp-probe-range-drop-after-bytes N` for a single
+connection drop). Drive them through the simulator-only entry point, which uses the visionOS
+worktree simulator's existing Plex sign-in and writes logs under `build/probes/plex-range-drop/`:
+
+```sh
+scripts/probe-plex-range-drop.sh --query TEXT --fault MODE   # or --rating-key KEY
+```
+
+Modes: `connection-drop` (default; `--drop-after-bytes N`), `double-connection-drop`,
+`validator-flip`, `401-mid-train`, `write-failure`, `416-restart`, `200-replace`,
+`held-body-pause` (needs `--pause-resume`), `held-body-delete` (needs
+`--delete-during-transfer`), `held-body-relaunch` (needs `--relaunch-held`), `drain-pause` (needs
+`--pause-only`), and `drain-delete` (needs `--delete-during-transfer`). Run `--help` for the
+remaining options. These probes need the simulator lease and are transport evidence only, not
+physical background-transfer acceptance.
 
 ## macOS host checks
 

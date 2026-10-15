@@ -1,6 +1,12 @@
 # Jellyfin public-demo evaluation for screenshots and App Review
 
-**Status:** active research; do not treat the public service as the accepted App Review
+**Status (2026-10-15):** superseded and archived. The public demo was not adopted; the
+reviewer and screenshot lane is the Labstream-controlled review catalog chosen in the
+[store-demo capture plan](../../plans/2026-09-15-store-demo-capture.md)
+([#280](https://github.com/jlipworth/Labstream/issues/280)). The 2026-08-22 observations below
+are historical.
+
+**Original status:** active research; do not treat the public service as the accepted App Review
 environment yet.
 
 ## Question

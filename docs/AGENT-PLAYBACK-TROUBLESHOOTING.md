@@ -73,6 +73,39 @@ when finished. User-enabled diagnostics remain enabled.
 Historical acceptance and the measured AX/screenshot comparison are in the
 [completed implementation journal](https://github.com/jlipworth/Labstream/blob/main/docs/archive/plans/2026-09-06-agent-playback-evidence.md).
 
+## Probe launch-argument reference
+
+The procedures live in two skills: the
+[`playback-frame-capture` skill](https://github.com/jlipworth/Labstream/blob/main/.claude/skills/playback-frame-capture/SKILL.md)
+covers headless decoded-frame capture, and the
+[`headless-pmskit-probe` skill](https://github.com/jlipworth/Labstream/blob/main/.claude/skills/headless-pmskit-probe/SKILL.md)
+covers PMSKit requests against a real server without a simulator. The table below is a
+compact map of the in-app flags. Unless noted, each flag is compiled only into DEBUG builds.
+Files are under `Labstream/`. "Alters player" means the flag changes shipping player or
+transport behavior for that run, so its results are not evidence for the default path.
+
+| Flags | Owner | Purpose | Alters player |
+| --- | --- | --- | --- |
+| `--vp-probe-plex-playback`, `--vp-probe-jellyfin-playback`, `--vp-probe-emby-playback` | `Shared/Debug/Debug*PlaybackProbe.swift`, `Shared/App/ContentView.swift` | Backend playback probe entry points. | No |
+| `--vp-probe-backend`, `--vp-probe-allow-live`, `--vp-probe-allow-video-encode` | `Shared/App/ContentView.swift`, `Shared/Debug/DebugPlaybackScenario.swift` | Backend switch and live/encoding admission. | No |
+| `--vp-probe-query`, `--vp-probe-bitrate-kbps`, `--vp-probe-seek-ms`, `--vp-probe-playable-timeout-seconds`, `--vp-probe-stall-tolerance-seconds`, `--vp-probe-post-seek-hold-seconds` | `Shared/Debug/DebugPlaybackProbeSupport.swift` | Shared title, quality, seek, and timing options. | No |
+| `--vp-probe-scenario`, `--vp-probe-evidence` | `Shared/Debug/DebugPlaybackScenario.swift`, `DebugPlaybackEvidence.swift` | Named scenarios and structured evidence export. | No |
+| `--vp-probe-media-index`, `--vp-probe-expected-item-id`, `--vp-probe-expected-source-id`, `--vp-probe-discover-source` | `Shared/Debug/DebugJellyfinPlaybackProbe.swift`, `DebugEmbyPlaybackProbe.swift` | Jellyfin/Emby version selection, fail-closed identity checks, read-only source discovery. | No |
+| `--vp-probe-rating-key`, `--vp-probe-media-id`, `--vp-probe-part-id`, `--vp-probe-plex-discover`, `--vp-probe-server-url` | `Shared/Debug/DebugPlexPlaybackProbe.swift` | Plex exact binding, discovery, and transport-endpoint override (keeps the restored token). | Endpoint only |
+| `--vp-probe-decision-only`, `--vp-probe-bare-player` | `Shared/Debug/DebugEmbyPlaybackProbe.swift` | Emby control-plane-only run; Direct Play URL in a bare `AVPlayer`. | Bypasses controller |
+| `--vp-probe-play-url`, `--vp-probe-rawurl-seek-s` | `Shared/Debug/DebugRawURLPlaybackProbe.swift` | Bare `AVPlayer` on a supplied URL, no backend or `PlaybackController`. | Bypasses controller |
+| `--vp-probe-plex-browse` | `Shared/Debug/DebugPlexBrowseProbe.swift` | Read-only Plex browse-service acceptance. | No |
+| `--vp-probe-capture-frames`, `--vp-probe-capture-hdr-signaling` | `Shared/Debug/DebugPlaybackFrameCapture.swift` | Decoded-frame PNG capture, optionally with HDR signaling. | No |
+| `--vp-probe-hdr-evidence` (needs `--vp-probe-allow-live`) | `Shared/Debug/DebugPlexHDREvidence.swift`, `DebugMediaBrowserHDREvidence.swift` | Bounded HDR packaging evidence (playlist and init segment); no credentials or URLs. | No |
+| `--vp-probe-system-buffering` | `Shared/Player/PlaybackController.swift` | Zero forward buffer and no stall waiting, for comparison. | Yes |
+| `--vp-probe-disable-audio` | `Shared/Player/PlaybackController.swift` | Deselects the audible group for comparison. | Yes |
+| `--vp-probe-emby-loopback-port` | `Shared/Player/PlaybackController.swift` | Routes Emby streams through a caller-owned `127.0.0.1` port-forward. | Yes |
+| `--vp-probe-byte-ranges` | `Shared/Player/PlaybackController.swift` | Emby Direct Play range-request checks before playback. | Adds requests |
+| `--vp-probe-p7-hdr10-candidate` (macOS; needs `--vp-probe-allow-live`) | `Shared/Player/PlaybackController.swift` | Plex DV Profile 7 copy opened as an HDR10 base-layer candidate through the loopback proxy. | Yes |
+| `--vp-probe-plex-download`, `--vp-probe-jellyfin-download`, `--vp-probe-emby-download` and their lifecycle options (`start-download`, `start-optimize`, `download-preset`, `observe-*`, `pause-*`, `resume-observed`, `delete-*`, `keep-record`, `refresh-existing`, `existing-version`, `list-versions`, `range-check`, `dump-search`, `part-index`) | `Capabilities/Downloads/Debug/Debug*DownloadProbe.swift` | Download probes. | No |
+| `--vp-probe-download-fault`, `--vp-probe-range-drop-after-bytes`, `--vp-probe-range-segment-bytes` | `Capabilities/Downloads/Core/BackgroundDownloadSession.swift`, `StaticRangeTransferConfiguration.swift` | Download fault injection and range-segment sizing. | Yes |
+| `--vp-probe-background-download-session` (simulator builds, not DEBUG-gated) | `Capabilities/Downloads/Core/BackgroundDownloadSession.swift` | Forces the background `URLSession` in the simulator. | Yes |
+
 ## Playback failure codes
 
 Playback failures use a closed, privacy-safe vocabulary shared by the player overlay,

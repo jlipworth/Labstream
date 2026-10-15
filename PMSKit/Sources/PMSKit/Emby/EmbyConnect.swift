@@ -86,8 +86,8 @@ public struct EmbyConnectExchangeResult: Decodable, Sendable, Equatable {
 
 /// Emby Connect PIN (short-code) sign-in (GH #72). Pure request builders + models; no
 /// networking. Steps 1–5 hit the cloud account host `connect.emby.media`; step 6 (exchange)
-/// hits the target Emby server. See docs/research/17-emby-backend-support.md for the
-/// reverse-engineered, live-verified wire shape. Keep Connect tokens / access keys out of
+/// hits the target Emby server. See docs/archive/research/17-emby-backend-support.md
+/// for the reverse-engineered, live-verified wire shape. Keep Connect tokens / access keys out of
 /// logs and persistence.
 public enum EmbyConnect {
     /// Cloud account service base. Not the user's server.

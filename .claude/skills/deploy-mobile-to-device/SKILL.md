@@ -22,6 +22,12 @@ running. Set the signing team with `IOS_DEVELOPMENT_TEAM=<team>` (or
 the `LabstreamMobile` scheme's signed `Debug-iphoneos/Labstream.app`. `--full-ids` is an alias for
 `--verbose`.
 
+The wrapper builds into Xcode's global DerivedData (no `-derivedDataPath`). Before building it
+deletes `Debug-iphoneos/Labstream.app` from **every** `Labstream-*` DerivedData directory,
+including other worktrees' device products, and then installs whichever matching product is
+newest. So `--no-build` can install another worktree's binary; check the printed `app:` path
+before trusting the install.
+
 By default, the wrapper prunes matching short-lived development profiles before a signed build;
 set `IOS_REFRESH_SHORT_DEV_PROFILES=0` to opt out. It checks the embedded profile and refuses to
 install a short-lived profile with fewer than six days remaining; use TestFlight/App Store for
