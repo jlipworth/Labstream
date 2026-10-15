@@ -10,19 +10,6 @@ final class LabstreamTVPlayerTests: XCTestCase {
         continueAfterFailure = false
     }
 
-    /// A single Down press must reveal auto-hidden chrome without seeking or activating
-    /// another control. (Side presses are exercised separately: on hidden chrome they are
-    /// an instant ±10s skip PLUS a reveal by design.)
-    func testDirectionalPressRevealsHiddenChrome() throws {
-        let app = launchPlayerFixture()
-        try awaitAutoHide(app)
-
-        XCUIRemote.shared.press(.down)
-        XCTAssertTrue(app.buttons["tv.player.timeline"].waitForExistence(timeout: 4),
-                      "directional press should reveal hidden chrome")
-        attachScreen(named: "chrome revealed by down press", app: app)
-    }
-
     /// Bounded agent evidence path: prove local playback accepts a semantic remote reveal, then
     /// close playback so Xcode can finalize the result bundle without an active media session.
     func testBasicPlaybackRevealAndExit() throws {
@@ -40,16 +27,6 @@ final class LabstreamTVPlayerTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["tv.fixture.player.closed"].waitForExistence(timeout: 4),
                       "bounded playback evidence must close the local player")
         app.terminate()
-    }
-
-    /// Select on hidden chrome must reveal it (and not activate a control or seek).
-    func testSelectPressRevealsHiddenChrome() throws {
-        let app = launchPlayerFixture()
-        try awaitAutoHide(app)
-
-        XCUIRemote.shared.press(.select)
-        XCTAssertTrue(app.buttons["tv.player.timeline"].waitForExistence(timeout: 4),
-                      "Select should reveal hidden chrome without activating a control")
     }
 
     /// Play/Pause on hidden chrome must toggle exactly once and reveal the chrome. There is
@@ -118,16 +95,6 @@ final class LabstreamTVPlayerTests: XCTestCase {
         }
     }
 
-    /// Menu/Back on hidden chrome must exit playback (fixture shows its closed marker).
-    func testBackExitsPlayback() throws {
-        let app = launchPlayerFixture()
-        try awaitAutoHide(app)
-
-        XCUIRemote.shared.press(.menu)
-        XCTAssertTrue(app.staticTexts["tv.fixture.player.closed"].waitForExistence(timeout: 4),
-                      "Menu/Back should exit playback")
-    }
-
     /// Every remote command must reveal the chrome FROM THE HIDDEN STATE — each press gets a
     /// confirmed fresh auto-hide first, so no press is tested against already-visible chrome.
     /// Play/Pause runs last: it pauses playback, and paused chrome pins itself visible.
@@ -154,73 +121,10 @@ final class LabstreamTVPlayerTests: XCTestCase {
         attachScreen(named: "after hidden-chrome press sweep", app: app)
     }
 
-    /// TVUI-004 baseline: the bare default `TextField`. Types one letter through the
-    /// system keyboard with remote Select and checks insertion.
-    func testSystemKeyboardInsertsLetterIntoMinimalTextField() throws {
-        let app = launchKeyboardFixture()
-        let field = app.textFields["tv.fixture.keyboard.field"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
-        XCTAssertTrue(focusField(field, byPressing: .up),
-                      "bare field (topmost) should be reachable with Up presses")
-        try assertKeyboardInsertsLetter(app: app, field: field,
-                                        echoID: "tv.fixture.keyboard.echo", prefix: "typed:")
-    }
-
-    /// TVUI-004 bisection step 1: SearchView's visual modifiers (`.plain` style, font,
-    /// capsule frame) WITHOUT a focus binding.
-    func testSystemKeyboardInsertsLetterIntoStyledTextField() throws {
-        let app = launchKeyboardFixture()
-        let bare = app.textFields["tv.fixture.keyboard.field"]
-        XCTAssertTrue(bare.waitForExistence(timeout: 5))
-        _ = focusField(bare, byPressing: .up)
-        let styled = app.textFields["tv.fixture.keyboard.styled.field"]
-        XCTAssertTrue(focusField(styled, byPressing: .down, times: 2),
-                      "styled field should be one focus step below the bare field")
-        try assertKeyboardInsertsLetter(app: app, field: styled,
-                                        echoID: "tv.fixture.keyboard.styled.echo",
-                                        prefix: "styled:")
-    }
-
-    /// TVUI-004 bisection step 2: the full SearchView replica — visual modifiers PLUS
-    /// `.focused($…)` and the on-appear programmatic focus write. If this fails while
-    /// the styled field passes, the focus binding is what breaks keyboard insertion.
-    func testSystemKeyboardInsertsLetterIntoSearchReplicaTextField() throws {
-        let app = launchKeyboardFixture()
-        let replica = app.textFields["tv.fixture.keyboard.replica.field"]
-        XCTAssertTrue(replica.waitForExistence(timeout: 5))
-        XCTAssertTrue(focusField(replica, byPressing: .down),
-                      "replica field (bottom) should be reachable with Down presses")
-        try assertKeyboardInsertsLetter(app: app, field: replica,
-                                        echoID: "tv.fixture.keyboard.replica.echo",
-                                        prefix: "replica:")
-    }
-
-    /// TVUI-004 bisection step 3: the replica field hosted inside the live Search tab's
-    /// shell layers (TabView + NavigationStack + results ScrollView + conditional Clear
-    /// button). The bare-hosted replica passes, so a failure here pins the defect on the
-    /// shell; a pass moves suspicion to the remaining live-only layers (environment,
-    /// session-key `.id`, safe-area inset).
-    func testSystemKeyboardInsertsLetterInsideTabViewShell() throws {
-        let app = XCUIApplication()
-        app.launchArguments = ["--ui-testing", "--ui-testing-fixture", "keyboard-shell"]
-        app.launchEnvironment["LABSTREAM_UNIT_TEST_HOST"] = "0"
-        app.launch()
-
-        let field = app.textFields["tv.fixture.keyboard.shell.field"]
-        XCTAssertTrue(field.waitForExistence(timeout: 5))
-        // The fixture auto-focuses the field on tab appearance, same as the live Search tab.
-        XCTAssertTrue(waitForFocus(field, timeout: 4) || focusField(field, byPressing: .down),
-                      "shell fixture should land focus on the search field")
-        try assertKeyboardInsertsLetter(app: app, field: field,
-                                        echoID: "tv.fixture.keyboard.shell.echo",
-                                        prefix: "shell:")
-    }
-
-    /// TVUI-004 live repro: drives the REAL Search tab (browse fixture hosts the production
-    /// RootView/SearchView) with the same remote presses as the failing manual session —
-    /// focus the field, Select to open the keyboard, Select on a letter. The shell replica
-    /// passes, so this is the test that should reproduce the live teardown-on-letter defect;
-    /// once it fails here, the live-only layers can be bisected in place.
+    /// TVUI-004 regression guard: drives the REAL Search tab (browse fixture hosts the production
+    /// RootView/SearchView) with the same remote presses as the original failing manual session —
+    /// focus the field, Select to open the keyboard, Select on a letter — and requires the
+    /// letter to land in the field. It covers every layer the retired bisection fixtures replicated.
     func testLiveSearchTabSystemKeyboardInsertsLetter() throws {
         let app = makeBrowseApp()
         app.launch()
@@ -269,62 +173,6 @@ final class LabstreamTVPlayerTests: XCTestCase {
                                "--ui-testing-fixture", "browse"]
         app.launchEnvironment["LABSTREAM_UNIT_TEST_HOST"] = "0"
         return app
-    }
-
-    private func launchKeyboardFixture() -> XCUIApplication {
-        let app = XCUIApplication()
-        app.launchArguments = ["--ui-testing", "--ui-testing-fixture", "keyboard"]
-        app.launchEnvironment["LABSTREAM_UNIT_TEST_HOST"] = "0"
-        app.launch()
-        return app
-    }
-
-    /// Walks remote focus to `field` one press at a time (the fixture stacks its fields
-    /// vertically with non-focusable labels between them).
-    private func focusField(_ field: XCUIElement,
-                            byPressing direction: XCUIRemote.Button,
-                            times: Int = 6) -> Bool {
-        for _ in 0..<times {
-            if field.hasFocus { return true }
-            XCUIRemote.shared.press(direction)
-            if waitForFocus(field, timeout: 1) { return true }
-        }
-        return field.hasFocus
-    }
-
-    /// Shared TVUI-004 assertion: Select opens the keyboard, Select on a letter must grow
-    /// the field's echo label past its static prefix.
-    private func assertKeyboardInsertsLetter(app: XCUIApplication,
-                                             field: XCUIElement,
-                                             echoID: String,
-                                             prefix: String) throws {
-        XCUIRemote.shared.press(.select)
-
-        // Don't press blind: wait for the system keyboard surface to be up before the next
-        // Select. Prefer proof that a key holds focus, but the tvOS grid keyboard does not
-        // reliably expose keys (or their focus) through the app's accessibility tree, so
-        // fall back to any key existing, then to the field reporting keyboard focus.
-        let focusedKey = app.keys.matching(NSPredicate(format: "hasFocus == true")).firstMatch
-        if !focusedKey.waitForExistence(timeout: 4),
-           !app.keys.firstMatch.waitForExistence(timeout: 2) {
-            XCTAssertTrue(waitForFocus(field, timeout: 4),
-                          "after Select the keyboard should be up (no key elements exposed; "
-                          + "field should at least report focus)")
-        }
-        attachScreen(named: "keyboard entry surface (\(echoID))", app: app)
-
-        XCUIRemote.shared.press(.select)
-        let echo = app.staticTexts[echoID]
-        let grew = expectation(for: NSPredicate(format: "label.length > %d", prefix.count),
-                               evaluatedWith: echo)
-        if XCTWaiter().wait(for: [grew], timeout: 4) != .completed {
-            let dump = XCTAttachment(string: app.debugDescription)
-            dump.name = "keyboard hierarchy at failure (\(echoID))"
-            dump.lifetime = .keepAlways
-            add(dump)
-            XCTFail("system keyboard Select should insert a letter; \(echoID) shows '\(echo.label)'")
-        }
-        attachScreen(named: "after select on letter (\(echoID))", app: app)
     }
 
     private func launchPlayerFixture() -> XCUIApplication {

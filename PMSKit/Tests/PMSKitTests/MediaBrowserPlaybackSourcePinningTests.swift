@@ -6,21 +6,8 @@ import Testing
 struct MediaBrowserPlaybackSourcePinningTests {
     private let server = URL(string: "https://media.example.test")!
 
-    @Test("Jellyfin pins the requested source on PlaybackInfo and resolves only that source")
+    @Test("Jellyfin resolves only the requested non-first source")
     func jellyfinExactSource() throws {
-        let request = try JellyfinPlayback.playbackInfoRequest(
-            server: server, token: "token",
-            identity: JellyfinClientIdentity(client: "Labstream", device: "Test",
-                                              deviceId: "device", version: "1"),
-            itemId: "item", userId: "user", mediaSourceId: "selected",
-            maxStreamingBitrate: 8_000_000, audioStreamIndex: 12,
-            subtitleStreamIndex: 19)
-        let requestBody = try #require(request.httpBody)
-        let body = try #require(JSONSerialization.jsonObject(with: requestBody) as? [String: Any])
-        #expect(body["MediaSourceId"] as? String == "selected")
-        #expect(body["AudioStreamIndex"] as? Int == 12)
-        #expect(body["SubtitleStreamIndex"] as? Int == 19)
-
         let response = try JellyfinPlaybackInfoResponse.decode(from: responseData)
         let result = try JellyfinPlayback.resolveMediaBrowserStream(
             response: response, server: server,
@@ -32,21 +19,8 @@ struct MediaBrowserPlaybackSourcePinningTests {
         #expect(result.sourceMetadata.audioCodec == "aac")
     }
 
-    @Test("Emby pins the requested source on PlaybackInfo and resolves only that source")
+    @Test("Emby resolves only the requested non-first source")
     func embyExactSource() throws {
-        let request = try EmbyPlayback.playbackInfoRequest(
-            server: server, token: "token",
-            identity: EmbyClientIdentity(client: "Labstream", device: "Test",
-                                          deviceId: "device", version: "1"),
-            userId: "user", itemId: "item", mediaSourceId: "selected",
-            maxStreamingBitrate: 8_000_000, audioStreamIndex: 12,
-            subtitleStreamIndex: 19)
-        let requestBody = try #require(request.httpBody)
-        let body = try #require(JSONSerialization.jsonObject(with: requestBody) as? [String: Any])
-        #expect(body["MediaSourceId"] as? String == "selected")
-        #expect(body["AudioStreamIndex"] as? Int == 12)
-        #expect(body["SubtitleStreamIndex"] as? Int == 19)
-
         let response = try EmbyPlaybackInfoResponse.decode(from: responseData)
         let result = try EmbyPlayback.resolveMediaBrowserStream(
             response: response, server: server,

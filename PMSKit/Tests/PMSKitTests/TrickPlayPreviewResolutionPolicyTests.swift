@@ -35,19 +35,19 @@ struct TrickPlayPreviewResolutionPolicyTests {
 
     @Test("Sparse Emby chapter boundary changes at the exact chapter start")
     func sparseChapterBoundary() {
-        let goldenEyeChapterTimes = [0, 629_940, 800_140]
+        let sparseChapterTimes = [0, 600_000, 800_000]
 
         #expect(SparseTrickPlayFrameSelectionPolicy.frameIndex(
-            nearMs: 629_939,
-            sortedFrameTimesMs: goldenEyeChapterTimes
+            nearMs: 599_999,
+            sortedFrameTimesMs: sparseChapterTimes
         ) == 0)
         #expect(SparseTrickPlayFrameSelectionPolicy.frameIndex(
-            nearMs: 629_940,
-            sortedFrameTimesMs: goldenEyeChapterTimes
+            nearMs: 600_000,
+            sortedFrameTimesMs: sparseChapterTimes
         ) == 1)
         #expect(SparseTrickPlayFrameSelectionPolicy.frameIndex(
-            nearMs: 800_140,
-            sortedFrameTimesMs: goldenEyeChapterTimes
+            nearMs: 800_000,
+            sortedFrameTimesMs: sparseChapterTimes
         ) == 2)
     }
 }
