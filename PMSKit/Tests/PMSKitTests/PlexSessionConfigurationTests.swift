@@ -2,39 +2,20 @@ import Testing
 import Foundation
 @testable import PMSKit
 
-@Test func recoveryControlPlaneSessionUsesShortTimeouts() {
+@Test func recoveryControlPlaneConfiguration() {
     let config = PlexSessionConfiguration.recoveryControlPlane(timeout: 4.5)
 
+    // Short timeouts.
     #expect(config.timeoutIntervalForRequest == 4.5)
     #expect(config.timeoutIntervalForResource == 4.5)
-}
-
-@Test func recoveryControlPlaneSessionAvoidsSharedState() {
-    let config = PlexSessionConfiguration.recoveryControlPlane(timeout: 5)
-
+    // No shared cache or cookie state.
     #expect(config.requestCachePolicy == .reloadIgnoringLocalCacheData)
     #expect(config.urlCache == nil)
     #expect(config.httpCookieStorage == nil)
     #expect(config.httpShouldSetCookies == false)
     #expect(config.httpCookieAcceptPolicy == .never)
-}
-
-// `waitsForConnectivity` is unavailable in swift-corelibs-foundation (Linux CI); this
-// behaviour is asserted only on Apple platforms.
-#if !canImport(FoundationNetworking)
-@Test func recoveryControlPlaneSessionFailsFastInsteadOfWaitingForConnectivity() {
-    let config = PlexSessionConfiguration.recoveryControlPlane(timeout: 5)
-
-    #expect(config.waitsForConnectivity == false)
-}
-#endif
-
-@Test func mediaUpstreamConfigIsEphemeralWithGenerousTimeout() {
-    let config = PlexSessionConfiguration.mediaUpstream(timeout: 20)
-
-    #expect(config.timeoutIntervalForRequest == 20)
-    #expect(config.urlCache == nil)
-    #expect(config.requestCachePolicy == .reloadIgnoringLocalCacheData)
+    // Fails fast instead of waiting for connectivity. `waitsForConnectivity` is unavailable in
+    // swift-corelibs-foundation (Linux CI); asserted only on Apple platforms.
     #if !canImport(FoundationNetworking)
     #expect(config.waitsForConnectivity == false)
     #endif
@@ -46,8 +27,15 @@ import Foundation
 @Test func mediaUpstreamResourceTimeoutBoundsWholeTransferGenerously() {
     let config = PlexSessionConfiguration.mediaUpstream(timeout: 20)
 
+    #expect(config.timeoutIntervalForRequest == 20)
     #expect(config.timeoutIntervalForResource == 300)
     #expect(config.timeoutIntervalForResource > config.timeoutIntervalForRequest)
+    // Ephemeral: no cache, and fails fast instead of waiting for connectivity.
+    #expect(config.urlCache == nil)
+    #expect(config.requestCachePolicy == .reloadIgnoringLocalCacheData)
+    #if !canImport(FoundationNetworking)
+    #expect(config.waitsForConnectivity == false)
+    #endif
 
     let custom = PlexSessionConfiguration.mediaUpstream(timeout: 10, resourceTimeout: 120)
     #expect(custom.timeoutIntervalForRequest == 10)

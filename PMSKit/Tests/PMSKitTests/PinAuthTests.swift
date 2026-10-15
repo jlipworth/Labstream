@@ -4,27 +4,18 @@ import Foundation
 
 private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream", version: "0.1.0", deviceName: "AVP")
 
-@Test func createPinRequest() {
-    let r = PinAuth.createPinRequest(identity: id)
+@Test(arguments: [true, false])
+func createPinRequest(strong: Bool) {
+    let r = PinAuth.createPinRequest(identity: id, strong: strong)
     #expect(r.url.absoluteString == "https://plex.tv/api/v2/pins")
     #expect(r.method == "POST")
-    #expect(r.queryItems.contains(URLQueryItem(name: "strong", value: "true")))
+    #expect(r.queryItems.contains(URLQueryItem(name: "strong", value: strong ? "true" : "false")))
     #expect(r.headers["X-Plex-Client-Identifier"] == "CID")
 }
 
-@Test func createPinRequestNonStrongForLinkCode() {
-    let r = PinAuth.createPinRequest(identity: id, strong: false)
-    #expect(r.url.absoluteString == "https://plex.tv/api/v2/pins")
-    #expect(r.method == "POST")
-    #expect(r.queryItems.contains(URLQueryItem(name: "strong", value: "false")))
-}
-
-@Test func authAppURLEmbedsCodeAndClient() {
-    let url = PinAuth.authAppURL(code: "WXYZ", identity: id)
-    let s = url.absoluteString
-    #expect(s.hasPrefix("https://app.plex.tv/auth#?"))
-    #expect(s.contains("clientID=CID"))
-    #expect(s.contains("code=WXYZ"))
+@Test func createPinRequestDefaultsToStrong() {
+    let r = PinAuth.createPinRequest(identity: id)
+    #expect(r.queryItems.contains(URLQueryItem(name: "strong", value: "true")))
 }
 
 @Test func authAppURLEncodesFragmentValues() {

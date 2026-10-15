@@ -7,18 +7,8 @@ import Testing
 
 @Suite("Emby library")
 struct EmbyLibraryTests {
-    private let server = URL(string: "https://emby.example.test/emby")!
-    private let identity = EmbyClientIdentity(
-        client: "Labstream",
-        device: "Apple Vision Pro",
-        deviceId: "device-123",
-        version: "0.1.0")
-
-    private func query(_ request: URLRequest) throws -> [String: String] {
-        let url = try #require(request.url)
-        let comps = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        return Dictionary(uniqueKeysWithValues: (comps.queryItems ?? []).map { ($0.name, $0.value ?? "") })
-    }
+    private let server = TestFixtures.embyServer
+    private let identity = TestFixtures.embyIdentity
 
     @Test func resumeAndNextUpRequestsCarryExplicitBounds() throws {
         let resume = try EmbyLibrary.resumeItemsRequest(server: server,
@@ -34,24 +24,13 @@ struct EmbyLibraryTests {
                                                 userId: "user-9",
                                                 startIndex: 90,
                                                 limit: 30)
-        let resumeQuery = try query(resume)
-        let nextQuery = try query(next)
+        let resumeQuery = try queryMap(resume)
+        let nextQuery = try queryMap(next)
         #expect(resumeQuery["StartIndex"] == "60")
         #expect(resumeQuery["Limit"] == "30")
         #expect(resumeQuery["ParentId"] == "view-1")
         #expect(nextQuery["StartIndex"] == "90")
         #expect(nextQuery["Limit"] == "30")
-    }
-
-    @Test func userViewsRequestUsesPathStyleAndPreservesBasePath() throws {
-        let request = try EmbyLibrary.userViewsRequest(server: server, token: "token-abc", identity: identity, userId: "user-9")
-        let url = try #require(request.url)
-        let comps = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-
-        #expect(request.httpMethod == "GET")
-        #expect(comps.path == "/emby/Users/user-9/Views")
-        #expect(request.value(forHTTPHeaderField: "X-Emby-Token") == "token-abc")
-        #expect(request.value(forHTTPHeaderField: "Authorization")?.contains("UserId=\"user-9\"") == true)
     }
 
     @Test func audioStreamURLTargetsUniversalEndpointTokenless() throws {
@@ -65,7 +44,7 @@ struct EmbyLibraryTests {
             + "&TranscodingContainer=ts&TranscodingProtocol=hls&AudioCodec=aac"
         #expect(url.absoluteString == expectedURL)
         let comps = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let q = Dictionary(uniqueKeysWithValues: (comps.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        let q = try queryMap(url)
 
         // Path-style endpoint preserving the /emby base path.
         #expect(comps.path == "/emby/Audio/track-9/universal")
@@ -80,6 +59,9 @@ struct EmbyLibraryTests {
     }
 
     @Test func albumArtistsRequestTargetsDedicatedEndpoint() throws {
+        // The Artists A–Z rail probes each letter's count with `NameStartsWith=X`, `Limit=1`
+        // and reads `TotalRecordCount` (#111); that probe shape is pinned byte-for-byte by the
+        // album-artists wire goldens in MediaBrowserLibraryRequestFactoryTests.
         let request = try EmbyLibrary.albumArtistsRequest(server: server,
                                                           token: "token-abc",
                                                           identity: identity,
@@ -89,7 +71,7 @@ struct EmbyLibraryTests {
                                                           limit: 60)
         let url = try #require(request.url)
         let comps = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let q = try query(request)
+        let q = try queryMap(request)
         #expect(comps.path == "/emby/Artists/AlbumArtists")
         #expect(q["ParentId"] == "music-lib")
         #expect(q["UserId"] == "user-9")
@@ -98,22 +80,6 @@ struct EmbyLibraryTests {
         #expect(q["Recursive"] == "true")
         #expect(q["EnableImages"] == "true")
         #expect(q["NameStartsWith"] == nil)
-    }
-
-    @Test func albumArtistsRequestEmitsNameStartsWithForRailProbe() throws {
-        // The Artists A–Z rail probes each letter's count with `NameStartsWith=X`,
-        // `Limit=1` and reads `TotalRecordCount` (#111).
-        let request = try EmbyLibrary.albumArtistsRequest(server: server,
-                                                          token: "token-abc",
-                                                          identity: identity,
-                                                          userId: "user-9",
-                                                          parentId: "music-lib",
-                                                          limit: 1,
-                                                          nameStartsWith: "B")
-        let q = try query(request)
-        #expect(q["NameStartsWith"] == "B")
-        #expect(q["Limit"] == "1")
-        #expect(q["ParentId"] == "music-lib")
     }
 
     @Test func playlistItemsRequestPreservesPlaylistOrder() throws {
@@ -126,7 +92,7 @@ struct EmbyLibraryTests {
                                                            limit: 200)
         let url = try #require(request.url)
         let comps = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let q = try query(request)
+        let q = try queryMap(request)
         #expect(comps.path == "/emby/Playlists/playlist-5/Items")
         #expect(q["UserId"] == "user-9")
         #expect(q["StartIndex"] == "0")
@@ -141,52 +107,12 @@ struct EmbyLibraryTests {
                                                   userId: "user-9", recursive: true,
                                                   includeItemTypes: "MusicAlbum",
                                                   albumArtistIds: "artist-7")
-        #expect(try query(albums)["AlbumArtistIds"] == "artist-7")
+        #expect(try queryMap(albums)["AlbumArtistIds"] == "artist-7")
         let tracks = try EmbyLibrary.itemsRequest(server: server, token: "t", identity: identity,
                                                   userId: "user-9", recursive: true,
                                                   includeItemTypes: "Audio",
                                                   artistIds: "artist-7")
-        #expect(try query(tracks)["ArtistIds"] == "artist-7")
-    }
-
-    @Test func itemsRequestCarriesRecursiveIncludeItemTypesAndFields() throws {
-        let request = try EmbyLibrary.itemsRequest(
-            server: server,
-            token: "token-abc",
-            identity: identity,
-            userId: "user-9",
-            recursive: true,
-            includeItemTypes: "Movie",
-            fields: "MediaSources,Overview,Chapters,Genres")
-
-        let url = try #require(request.url)
-        let comps = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let q = try query(request)
-
-        // Canonical Emby browse path is /Users/{UserId}/Items, base path preserved.
-        #expect(comps.path == "/emby/Users/user-9/Items")
-        #expect(q["Recursive"] == "true")
-        #expect(q["IncludeItemTypes"] == "Movie")
-        #expect(q["Fields"] == "MediaSources,Overview,Chapters,Genres")
-        #expect(q["SortBy"] == "SortName")
-        #expect(q["SortOrder"] == "Ascending")
-    }
-
-    @Test func itemsRequestAppliesPagingAndSearch() throws {
-        let request = try EmbyLibrary.itemsRequest(
-            server: server,
-            token: "token-abc",
-            identity: identity,
-            userId: "user-9",
-            recursive: true,
-            startIndex: 40,
-            limit: 20,
-            searchTerm: "matrix")
-
-        let q = try query(request)
-        #expect(q["StartIndex"] == "40")
-        #expect(q["Limit"] == "20")
-        #expect(q["SearchTerm"] == "matrix")
+        #expect(try queryMap(tracks)["ArtistIds"] == "artist-7")
     }
 
     @Test func itemRequestUsesUserScopedPath() throws {
@@ -210,7 +136,7 @@ struct EmbyLibraryTests {
     @Test func imageURLOmitsTokenFromStoredURL() throws {
         let url = try EmbyLibrary.imageURL(server: server, itemId: "item-1", imageType: .primary, tag: "tag-xyz", width: 400)
         let comps = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let q = Dictionary(uniqueKeysWithValues: (comps.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        let q = try queryMap(url)
 
         #expect(comps.path == "/emby/Items/item-1/Images/Primary")
         #expect(q["tag"] == "tag-xyz")
@@ -231,7 +157,7 @@ struct EmbyLibraryTests {
 
         let url = try #require(request.url)
         let comps = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let q = try query(request)
+        let q = try queryMap(request)
 
         #expect(request.httpMethod == "DELETE")
         // Admin endpoint is uppercase /Videos/, base path preserved.
@@ -273,7 +199,7 @@ struct EmbyLibraryTests {
                                                    includeItemTypes: "Movie",
                                                    browseQuery: LibraryBrowseQuery(sort: .rating,
                                                                                    filter: .watched))
-        let query = try query(request)
+        let query = try queryMap(request)
 
         #expect(query["SortBy"] == "CommunityRating")
         #expect(query["SortOrder"] == "Descending")
