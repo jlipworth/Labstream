@@ -10,15 +10,21 @@ query; verify them in App Store Connect again before any upload or submission.
 
 The repository source is **1.7.2 (build 2)** across all four app targets, with a matching PMSKit
 fallback. Build 2 supersedes the never-uploaded build 1 source so the next archive set carries its
-own build number; the `v1.7.2` tag remains the build 1 source milestone. Local 1.7.2 correction archives have been built and signature-checked with stable Xcode 27;
-no 1.7.2 upload is recorded. These local correction products are not the original tagged binaries.
+own build number; the `v1.7.2` tag remains the build 1 source milestone. On 2026-10-14, clean
+Apple Distribution–signed **1.7.2 (build 2)** Release archives for all four targets were built
+from `ce97958f` with stable Xcode 27, validated as described in the
+[publication sequence](#coordinated-publication-sequence), and uploaded to App Store Connect
+through Xcode Organizer. App Store Connect processing, build selection, and TestFlight
+availability for build 2 are not yet recorded. Build 1 was never uploaded. Earlier local 1.7.2
+correction archives were signature-checked, but they are not the original tagged binaries.
 The pre-integration clean correction set was built from `07fba33d`; it must not be
 presented as a binary of the subsequently reconciled source. Local-main integration retains
 stop-item detachment, truthful proxy statistics, subtitle preference handling and safe
 plain-language error explanations. The older automatic P7 rewrite is superseded by the
-default-off DEBUG macOS experiment; prior local commits remain in history. Exact-source
-archives and aggregate report verification must be recorded separately before any authorized
-upload; prior archive sets are not substitutes.
+default-off DEBUG macOS experiment; prior local commits remain in history. Readable Xcode
+aggregate privacy reports were generated from the four exact build 2 archives. The reports agree
+with the published label, and every packaged app manifest declares SystemBootTime `35F9.1`.
+Prior archive sets are not substitutes for these checks.
 The latest recorded processed distribution remains
 the **1.6.1 (build 2)** archive set at `abd1ddcac351`; keep the source version and the processed
 binary version separate when reporting release status.
@@ -83,8 +89,8 @@ The public policy website update is still pending: normal deployment requires tr
 `main`; local integration is authorized, but no push or deployment has been performed. A fresh issue-state check found
 [#325](https://github.com/jlipworth/Labstream/issues/325) already closed externally; that status
 is not evidence that the retention/storage uncertainties above were resolved.
-[#326](https://github.com/jlipworth/Labstream/issues/326) remains open. Neither issue was closed
-by these checks.
+[#326](https://github.com/jlipworth/Labstream/issues/326) stayed open until the exact signed
+build 2 archive reports were checked on 2026-10-14.
 
 Local integration validation passed 1,712 PMSKit Swift Testing cases plus 121 XCTest
 cases, 731 iPhone-hosted cases, 418 tvOS-hosted cases, semantic iPhone/iPad/TV fixtures,
@@ -181,6 +187,27 @@ creating a duplicate record:
 3. From the exact public release commit, produce and locally validate one archive each for
    `Labstream`, `LabstreamMobile`, `LabstreamTV`, and `LabstreamMac`. Confirm identity, version,
    build, entitlements, minimum OS, architecture, and device family before upload.
+
+   With Xcode 27, `xcodebuild` cannot use an account signed in through Xcode Settings ▸ Apple
+   Accounts (`No Accounts`), and tvOS automatic signing also fails while the team has no
+   registered Apple TV. Archive each scheme through `scripts/xcodebuild-versioned.sh` with
+   manual distribution signing. Scope the profile to the app target, because Swift package
+   targets reject a global `PROVISIONING_PROFILE_SPECIFIER`:
+
+   ```sh
+   scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamTV \
+     -configuration Release -destination generic/platform=tvOS \
+     -derivedDataPath build/DerivedData-archive -archivePath "<archive>" archive \
+     CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="<team>" "CODE_SIGN_IDENTITY=Apple Distribution" \
+     'PROVISIONING_PROFILE_SPECIFIER=$(LS_PP_$(TARGET_NAME))' \
+     "LS_PP_LabstreamTV=<tvOS App Store profile name>"
+   ```
+
+   Use the platform's App Store profile for each scheme; the iOS profile also covers visionOS.
+   Generate the aggregate privacy report from Organizer's archive context menu, and upload with
+   **Distribute App ▸ App Store Connect**, which uses the Xcode account. If Organizer reports
+   that it cannot authenticate with App Store Connect, retry it. Delete
+   `build/DerivedData-archive` afterward.
 4. Upload each archive and wait for App Store Connect processing. Treat warnings or missing
    platform associations as blockers; do not advance a different binary merely because it shares
    the version number.
@@ -245,8 +272,10 @@ and App Store Connect state before relying on them for a new submission.
       Connect processing without compliance or binary warnings.
 - [x] Each selected **1.6.1 (build 2)** App Store Connect build reports the intended minimum OS,
       device family, entitlements, and supported architecture.
-- [ ] Clean Release archives for the current **1.7.2 (build 2)** source are produced, validated,
-      and selected for every platform version.
+- [x] Clean Release archives for the current **1.7.2 (build 2)** source were produced from
+      `ce97958f`, validated, and uploaded for all four platforms on 2026-10-14.
+- [ ] App Store Connect processing completes without compliance or binary warnings for every
+      **1.7.2 (build 2)** upload, and each build is selected for its platform version.
 - [ ] A physical Vision Pro TestFlight smoke covers first launch, sign-in, browse, playback,
       seeking, subtitles, audio, Cinema, background/foreground, and diagnostics. Simulator smoke
       is useful but does not replace this gate.
@@ -297,7 +326,7 @@ and App Store Connect state before relying on them for a new submission.
 - [ ] Evaluate any storefront accessibility feature claims on each submitted platform against
       Apple's criteria; source labels and passing tests alone do not establish support.
 
-- [ ] Inspect app/dependency privacy manifests and the Xcode aggregate privacy report from
+- [x] Inspect app/dependency privacy manifests and the Xcode aggregate privacy report from
       each exact signed Release archive (visionOS, iOS/iPadOS, tvOS, macOS). Confirm the
       SystemBootTime `35F9.1` declaration and its actual-use restrictions; unsigned/source
       checks do not close this gate. See [packaging verification](DEVELOPMENT.md#required-reason-privacy-manifest-packaging)
