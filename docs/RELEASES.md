@@ -14,8 +14,9 @@ own build number; the `v1.7.2` tag remains the build 1 source milestone. On 2026
 Apple Distribution–signed **1.7.2 (build 2)** Release archives for all four targets were built
 from `ce97958f` with stable Xcode 27, validated as described in the
 [publication sequence](#coordinated-publication-sequence), and uploaded to App Store Connect
-through Xcode Organizer. App Store Connect processing, build selection, and TestFlight
-availability for build 2 are not yet recorded. Build 1 was never uploaded. Earlier local 1.7.2
+through Xcode Organizer. All four uploads processed to **Ready to Submit**, are available to
+the internal TestFlight group, and were selected for their 1.7.2 platform versions on
+2026-10-14. Build 1 was never uploaded. Earlier local 1.7.2
 correction archives were signature-checked, but they are not the original tagged binaries.
 The pre-integration clean correction set was built from `07fba33d`; it must not be
 presented as a binary of the subsequently reconciled source. Local-main integration retains
@@ -210,7 +211,8 @@ creating a duplicate record:
    `build/DerivedData-archive` afterward.
 4. Upload each archive and wait for App Store Connect processing. Treat warnings or missing
    platform associations as blockers; do not advance a different binary merely because it shares
-   the version number.
+   the version number. A new platform version can inherit the previous version's build: on each
+   version page, remove any build from an earlier marketing version, add the new build, and save.
 5. Establish the reviewer environment and its licensed sample-media inventory, then capture and
    privacy-review the final platform-specific screenshot sets. Complete shared app information plus
    platform metadata, build selection, privacy/export answers, review notes, and review access.
@@ -274,7 +276,7 @@ and App Store Connect state before relying on them for a new submission.
       device family, entitlements, and supported architecture.
 - [x] Clean Release archives for the current **1.7.2 (build 2)** source were produced from
       `ce97958f`, validated, and uploaded for all four platforms on 2026-10-14.
-- [ ] App Store Connect processing completes without compliance or binary warnings for every
+- [x] App Store Connect processing completes without compliance or binary warnings for every
       **1.7.2 (build 2)** upload, and each build is selected for its platform version.
 - [ ] A physical Vision Pro TestFlight smoke covers first launch, sign-in, browse, playback,
       seeking, subtitles, audio, Cinema, background/foreground, and diagnostics. Simulator smoke
