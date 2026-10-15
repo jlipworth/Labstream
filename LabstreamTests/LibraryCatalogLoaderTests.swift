@@ -205,18 +205,14 @@ struct LibraryCatalogLoaderTests {
             "Labstream/Shared/Backend/LibraryCatalogRepository.swift"), encoding: .utf8)
         #expect(repository.contains("LibraryCatalogLoader(appModel: appModel,"))
 
-        let home = try String(contentsOf: root.appendingPathComponent(
-            "Labstream/Shared/UI/MediaBrowserHomeProvider.swift"), encoding: .utf8)
-        #expect(!home.contains("homeLibraryLinks"))
+        let runtime = try String(contentsOf: root.appendingPathComponent(
+            "Labstream/Shared/App/AppRuntime.swift"), encoding: .utf8)
+        #expect(runtime.contains("let libraryCatalogRepository = LibraryCatalogRepository()"))
 
         let search = try String(contentsOf: root.appendingPathComponent(
             "Labstream/Shared/UI/SearchView.swift"), encoding: .utf8)
         #expect(!search.contains("searchWithLibraries"))
         #expect(search.contains("searchResults(query: trimmed, views: views)"))
-
-        let musicProvider = try String(contentsOf: root.appendingPathComponent(
-            "Labstream/Shared/Music/MediaBrowserMusicProvider.swift"), encoding: .utf8)
-        #expect(!musicProvider.contains("musicLibraryLinks()"))
 
         let shellSources = try [
             "Labstream/Platforms/visionOS/UI/VisionRootShell.swift",
@@ -225,9 +221,13 @@ struct LibraryCatalogLoaderTests {
             "Labstream/Platforms/tvOS/UI/TVRootShell.swift",
         ].map {
             try String(contentsOf: root.appendingPathComponent($0), encoding: .utf8)
-        }.joined(separator: "\n")
-        #expect(shellSources.contains("SearchView("))
-        #expect(shellSources.contains(
+        }
+        #expect(shellSources.allSatisfy {
+            $0.contains("catalogRepository: runtime.libraryCatalogRepository")
+        })
+        let joinedShellSources = shellSources.joined(separator: "\n")
+        #expect(joinedShellSources.contains("SearchView("))
+        #expect(joinedShellSources.contains(
             "MusicLibraryView(catalogRepository: runtime.libraryCatalogRepository)"))
 
         for path in [

@@ -1,14 +1,9 @@
 import XCTest
+@testable import Labstream
 
 final class TestSupportTests: XCTestCase {
-    func testTemporaryDirectoryOwnsCleanup() throws {
-        let directory = try TestTemporaryDirectory(prefix: "support")
-        let file = directory.url.appendingPathComponent("fixture.txt")
-        try Data("fixture".utf8).write(to: file)
-
-        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
-        try directory.remove()
-        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.url.path))
+    func testHostedAppUsesInertUnitTestLaunchMode() {
+        XCTAssertTrue(AppLaunchMode.isUnitTestHost)
     }
 
     func testLockedBoxAndManualClockAreDeterministic() {

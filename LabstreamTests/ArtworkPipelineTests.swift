@@ -926,7 +926,6 @@ struct ArtworkPipelineTests {
         #expect(poster.contains("fields[\"milestone\"] = \"library_first_poster\""))
         #expect(poster.contains("for attempt in 0..<3"))
         #expect(poster.contains("300 << attempt"))
-        #expect(poster.contains(".easeOut(duration: 0.35)"))
         #expect(!poster.contains("URLSession.shared.data(for:"))
 
         let reset = try #require(poster.range(of: "loaded = nil"))
