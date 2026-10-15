@@ -189,30 +189,29 @@ creating a duplicate record:
    `Labstream`, `LabstreamMobile`, `LabstreamTV`, and `LabstreamMac`. Confirm identity, version,
    build, entitlements, minimum OS, architecture, and device family before upload.
 
-   With Xcode 27, `xcodebuild` cannot use an account signed in through Xcode Settings ▸ Apple
-   Accounts (`No Accounts`), and tvOS automatic signing also fails while the team has no
-   registered Apple TV. Archive each scheme through `scripts/xcodebuild-versioned.sh` with
-   manual distribution signing. Scope the profile to the app target, because Swift package
-   targets reject a global `PROVISIONING_PROFILE_SPECIFIER`:
+   Use `scripts/testflight-release.py` for steps 3 and 4 (the `testflight-deploy` skill
+   documents the flow). `preflight` checks clean published source, per-scheme version/build,
+   App Store profiles, the Apple Distribution identity, and that the build number is not already
+   uploaded. `archive` writes manual-distribution-signed archives to Xcode's Organizer folder,
+   `validate` checks each archive plus the four-app privacy manifest comparison, and
+   `upload --yes` uploads with an App Store Connect API key. Organizer remains the place to
+   generate the aggregate privacy report.
 
-   ```sh
-   scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamTV \
-     -configuration Release -destination generic/platform=tvOS \
-     -derivedDataPath build/DerivedData-archive -archivePath "<archive>" archive \
-     CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="<team>" "CODE_SIGN_IDENTITY=Apple Distribution" \
-     'PROVISIONING_PROFILE_SPECIFIER=$(LS_PP_$(TARGET_NAME))' \
-     "LS_PP_LabstreamTV=<tvOS App Store profile name>"
-   ```
+   The script exists because Xcode 27 `xcodebuild` cannot use an account signed in through Xcode
+   Settings ▸ Apple Accounts (`No Accounts`), and tvOS automatic signing fails while the team has
+   no registered Apple TV. It therefore signs manually and scopes the profile to the app target,
+   because Swift package targets reject a global `PROVISIONING_PROFILE_SPECIFIER`.
 
-   Use the platform's App Store profile for each scheme; the iOS profile also covers visionOS.
-   Generate the aggregate privacy report from Organizer's archive context menu, and upload with
-   **Distribute App ▸ App Store Connect**, which uses the Xcode account. If Organizer reports
-   that it cannot authenticate with App Store Connect, retry it. Delete
-   `build/DerivedData-archive` afterward.
+   The API key lives in 1Password and is read through a read-only service account whose token is
+   kept in the login Keychain; local references stay in the gitignored `scripts/asc.local.env`.
+   The key is written only to a private temporary file for the duration of a command. Never
+   commit or publish the key, its identifiers, the team ID, or the service-account token.
 4. Upload each archive and wait for App Store Connect processing. Treat warnings or missing
    platform associations as blockers; do not advance a different binary merely because it shares
-   the version number. A new platform version can inherit the previous version's build: on each
-   version page, remove any build from an earlier marketing version, add the new build, and save.
+   the version number. `scripts/testflight-release.py status --wait` reports processing,
+   TestFlight state, and beta groups. A new platform version can inherit the previous version's
+   build; `select-build` shows which versions still point at an older build and `--yes`
+   attaches the new one. It never submits for review.
 5. Establish the reviewer environment and its licensed sample-media inventory, then capture and
    privacy-review the final platform-specific screenshot sets. Complete shared app information plus
    platform metadata, build selection, privacy/export answers, review notes, and review access.

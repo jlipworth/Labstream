@@ -10,6 +10,11 @@ media details out of commits and public issues.
 - `xcodebuild-versioned.sh` — wraps `xcodebuild` and stamps a source-derived internal Build ID.
 - `build-version-args.sh` — prints the version/build arguments used by the wrapper and deploy scripts.
 - `ci-hygiene.sh` — repository privacy, signing, placeholder, and tooling guardrails.
+- `testflight-release.py` — preflight, archive, validate, upload, status, and build selection
+  for the coordinated App Store targets. Reads the App Store Connect API key from 1Password at run
+  time (configured in the gitignored `asc.local.env`), masks account identifiers, requires
+  `--yes` for uploads and build selection, and never submits for review. See
+  [Releases](../docs/RELEASES.md#coordinated-publication-sequence).
 - `check-docs-mermaid.py` — verifies that published Mermaid source fences become
   generated Mermaid containers without external script dependencies.
 - `check-doc-links.py` — validates repository-local links and Markdown heading anchors across all

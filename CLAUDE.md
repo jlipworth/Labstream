@@ -169,6 +169,15 @@ the user's to perform. Two paths:
 Device testing is otherwise the USER's half (the headset is the device-only gate); Claude
 owns the build/install command once signing is unblocked.
 
+### Publishing to TestFlight
+
+Use `scripts/testflight-release.py` (`preflight` → `archive` → `validate` → `upload --yes` →
+`status --wait` → `select-build`) via the `testflight-deploy` skill instead of Xcode Organizer or
+the App Store Connect website. Uploads and build selection need the user's explicit go-ahead;
+App Review submission is never automated. The API key comes from 1Password through a read-only
+service account token in the login Keychain (`scripts/asc.local.env`, gitignored); never print or
+commit the key, its identifiers, the team ID, or the token.
+
 ### Verification expectation — a green build is NOT "done"
 
 Compiling is necessary but not sufficient. Before publishing app or docs changes, run the
