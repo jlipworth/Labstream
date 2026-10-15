@@ -1,101 +1,78 @@
 import Testing
 @testable import PMSKit
 
+/// Routing tables for the three continuation functions. Precedence in every function is
+/// halt > retry exhausted > request availability; the two retry functions differ only in the
+/// backend-request reason (`.requestRebuildNeeded` vs `.validatorChanged`).
 @Suite("Static range continuation policy")
 struct StaticRangeContinuationPolicyTests {
-    @Test("Finished bodies stop when pause or delete already owns the row")
-    func finishedBodyHalted() {
+    struct Row: Sendable, CustomTestStringConvertible {
+        let note: String
+        let isHalted: Bool
+        let retryAttempt: StaticRangeRetryAttempt
+        let hasRequest: Bool
+        let expected: StaticRangeContinuationDisposition
+
+        init(_ note: String, isHalted: Bool, isExhausted: Bool = false, hasRequest: Bool,
+             expected: StaticRangeContinuationDisposition) {
+            self.note = note
+            self.isHalted = isHalted
+            self.retryAttempt = StaticRangeRetryAttempt(attempt: isExhausted ? 4 : 1, isExhausted: isExhausted)
+            self.hasRequest = hasRequest
+            self.expected = expected
+        }
+
+        var testDescription: String { note }
+    }
+
+    @Test("Finished body routing", arguments: [
+        Row("stops when pause or delete already owns the row",
+            isHalted: true, hasRequest: true, expected: .halted),
+        Row("adopted remainder requests backend auth rebuild",
+            isHalted: false, hasRequest: false, expected: .requestNeeded(.requestRebuildNeeded)),
+        Row("in-memory remainder continues directly",
+            isHalted: false, hasRequest: true, expected: .startInSession),
+    ])
+    func afterFinishedBody(_ row: Row) {
         #expect(StaticRangeContinuationPolicy.afterFinishedBody(
-            isHalted: true,
-            hasRequest: true
-        ) == .halted)
+            isHalted: row.isHalted,
+            hasRequest: row.hasRequest
+        ) == row.expected)
     }
 
-    @Test("Finished adopted remainders request backend auth rebuild")
-    func finishedAdoptedRemainderRequestsBackend() {
-        #expect(StaticRangeContinuationPolicy.afterFinishedBody(
-            isHalted: false,
-            hasRequest: false
-        ) == .requestNeeded(.requestRebuildNeeded))
-    }
-
-    @Test("Finished in-memory remainders continue directly")
-    func finishedInMemoryRemainderContinues() {
-        #expect(StaticRangeContinuationPolicy.afterFinishedBody(
-            isHalted: false,
-            hasRequest: true
-        ) == .startInSession)
-    }
-
-    @Test("Offset mismatches stop behind halt before considering retry exhaustion")
-    func offsetMismatchHaltedWins() {
+    @Test("Offset mismatch routing", arguments: [
+        Row("halt wins before considering retry exhaustion",
+            isHalted: true, isExhausted: true, hasRequest: true, expected: .halted),
+        Row("fails when retry budget is exhausted",
+            isHalted: false, isExhausted: true, hasRequest: true, expected: .failExhausted),
+        Row("adopted remainder routes through backend rebuild",
+            isHalted: false, hasRequest: false, expected: .requestNeeded(.requestRebuildNeeded)),
+        Row("retries in-session when request is available",
+            isHalted: false, hasRequest: true, expected: .startInSession),
+    ])
+    func afterOffsetMismatch(_ row: Row) {
         #expect(StaticRangeContinuationPolicy.afterOffsetMismatch(
-            isHalted: true,
-            retryAttempt: StaticRangeRetryAttempt(attempt: 4, isExhausted: true),
-            hasRequest: true
-        ) == .halted)
+            isHalted: row.isHalted,
+            retryAttempt: row.retryAttempt,
+            hasRequest: row.hasRequest
+        ) == row.expected)
     }
 
-    @Test("Offset mismatches fail when retry budget is exhausted")
-    func offsetMismatchExhaustedFails() {
-        #expect(StaticRangeContinuationPolicy.afterOffsetMismatch(
-            isHalted: false,
-            retryAttempt: StaticRangeRetryAttempt(attempt: 4, isExhausted: true),
-            hasRequest: true
-        ) == .failExhausted)
-    }
-
-    @Test("Offset mismatches route adopted remainders through backend rebuild")
-    func offsetMismatchAdoptedRequestsBackend() {
-        #expect(StaticRangeContinuationPolicy.afterOffsetMismatch(
-            isHalted: false,
-            retryAttempt: StaticRangeRetryAttempt(attempt: 1, isExhausted: false),
-            hasRequest: false
-        ) == .requestNeeded(.requestRebuildNeeded))
-    }
-
-    @Test("Offset mismatches retry in-session when request is available")
-    func offsetMismatchInSessionRetries() {
-        #expect(StaticRangeContinuationPolicy.afterOffsetMismatch(
-            isHalted: false,
-            retryAttempt: StaticRangeRetryAttempt(attempt: 1, isExhausted: false),
-            hasRequest: true
-        ) == .startInSession)
-    }
-
-    @Test("Validator changes stop behind halt before unstable-source failure")
-    func validatorChangeHaltedWins() {
+    @Test("Validator change routing", arguments: [
+        Row("halt wins before unstable-source failure",
+            isHalted: true, isExhausted: true, hasRequest: true, expected: .halted),
+        Row("fails when restart budget is exhausted",
+            isHalted: false, isExhausted: true, hasRequest: true, expected: .failExhausted),
+        Row("adopted remainder routes through backend restart",
+            isHalted: false, hasRequest: false, expected: .requestNeeded(.validatorChanged)),
+        Row("restarts in-session when request is available",
+            isHalted: false, hasRequest: true, expected: .startInSession),
+    ])
+    func afterValidatorChange(_ row: Row) {
         #expect(StaticRangeContinuationPolicy.afterValidatorChange(
-            isHalted: true,
-            retryAttempt: StaticRangeRetryAttempt(attempt: 4, isExhausted: true),
-            hasRequest: true
-        ) == .halted)
-    }
-
-    @Test("Validator changes fail when restart budget is exhausted")
-    func validatorChangeExhaustedFails() {
-        #expect(StaticRangeContinuationPolicy.afterValidatorChange(
-            isHalted: false,
-            retryAttempt: StaticRangeRetryAttempt(attempt: 4, isExhausted: true),
-            hasRequest: true
-        ) == .failExhausted)
-    }
-
-    @Test("Validator changes route adopted remainders through backend restart")
-    func validatorChangeAdoptedRequestsBackend() {
-        #expect(StaticRangeContinuationPolicy.afterValidatorChange(
-            isHalted: false,
-            retryAttempt: StaticRangeRetryAttempt(attempt: 1, isExhausted: false),
-            hasRequest: false
-        ) == .requestNeeded(.validatorChanged))
-    }
-
-    @Test("Validator changes restart in-session when request is available")
-    func validatorChangeInSessionRetries() {
-        #expect(StaticRangeContinuationPolicy.afterValidatorChange(
-            isHalted: false,
-            retryAttempt: StaticRangeRetryAttempt(attempt: 1, isExhausted: false),
-            hasRequest: true
-        ) == .startInSession)
+            isHalted: row.isHalted,
+            retryAttempt: row.retryAttempt,
+            hasRequest: row.hasRequest
+        ) == row.expected)
     }
 }

@@ -3,45 +3,60 @@ import Testing
 
 @Suite("Static range reattach policy")
 struct StaticRangeReattachPolicyTests {
-    @Test("Unowned closed ranges are rejected instead of adopted")
-    func dropsClosedRange() {
+    struct UnownedRangeCase: Sendable, CustomTestStringConvertible {
+        let note: String
+        let durableBytes: Int
+        let requestedOffset: Int?
+        let rangeRequestShape: StaticRangeRequestShape
+        let bodyBytesWritten: Int
+        let taskMarker: String?
+        let rowAttemptID: String?
+
+        var testDescription: String { note }
+    }
+
+    /// Every row fails the current-marker guard, so the range is rejected as unowned rather than
+    /// adopted, with `candidateBaseOffset = requestedOffset ?? durableBytes`. The current-marker
+    /// adopt counterpart is `markedClosedSegmentAdopted`.
+    @Test("Unmarked or legacy-marked ranges are rejected as unowned", arguments: [
+        UnownedRangeCase(note: "unowned closed range", durableBytes: 128, requestedOffset: 64,
+                         rangeRequestShape: .closed, bodyBytesWritten: 10, taskMarker: nil, rowAttemptID: nil),
+        UnownedRangeCase(note: "missing range", durableBytes: 256, requestedOffset: nil,
+                         rangeRequestShape: .missing, bodyBytesWritten: -5, taskMarker: nil, rowAttemptID: nil),
+        UnownedRangeCase(note: "invalid range", durableBytes: 256, requestedOffset: nil,
+                         rangeRequestShape: .invalid, bodyBytesWritten: 0, taskMarker: nil, rowAttemptID: nil),
+        UnownedRangeCase(note: "unmarked closed range at offset 0", durableBytes: 0, requestedOffset: 0,
+                         rangeRequestShape: .closed, bodyBytesWritten: 10, taskMarker: nil, rowAttemptID: nil),
+        UnownedRangeCase(note: "v1 marker (no attempt token) is legacy even at a matching offset",
+                         durableBytes: 0, requestedOffset: 0, rangeRequestShape: .closed, bodyBytesWritten: 10,
+                         taskMarker: "lbs-segment:v1:0", rowAttemptID: "attempt-A"),
+        UnownedRangeCase(note: "malformed marker is treated as unmarked", durableBytes: 0, requestedOffset: 0,
+                         rangeRequestShape: .closed, bodyBytesWritten: 10,
+                         taskMarker: "lbs-segment:v1:abc", rowAttemptID: nil),
+        UnownedRangeCase(note: "v2 marker (legacy format with a matching token) is not current",
+                         durableBytes: 0, requestedOffset: 0, rangeRequestShape: .closed, bodyBytesWritten: 10,
+                         taskMarker: "lbs-segment:v2:0:attempt-A", rowAttemptID: "attempt-A"),
+    ])
+    func unownedOrLegacyMarkerRejected(_ testCase: UnownedRangeCase) {
         let plan = StaticRangeReattachPolicy.plan(
             taskIdentifier: 10,
             downloadID: "plex:item",
-            durableBytes: 128,
-            requestedOffset: 64,
-            rangeRequestShape: .closed,
-            bodyBytesWritten: 10,
-            existingTasks: []
+            durableBytes: testCase.durableBytes,
+            requestedOffset: testCase.requestedOffset,
+            rangeRequestShape: testCase.rangeRequestShape,
+            bodyBytesWritten: testCase.bodyBytesWritten,
+            existingTasks: [],
+            taskMarker: testCase.taskMarker,
+            rowAttemptID: testCase.rowAttemptID.map { DownloadAttemptID(rawValue: $0)! }
         )
 
         #expect(plan == StaticRangeReattachPlan(
-            candidateBaseOffset: 64,
-            disposition: .rejectUnownedRange(requestedOffset: 64, durableBytes: 128, rangeRequestShape: .closed)
+            candidateBaseOffset: testCase.requestedOffset ?? testCase.durableBytes,
+            disposition: .rejectUnownedRange(
+                requestedOffset: testCase.requestedOffset,
+                durableBytes: testCase.durableBytes,
+                rangeRequestShape: testCase.rangeRequestShape)
         ))
-    }
-
-    @Test("Missing or invalid ranges are dropped instead of adopted")
-    func dropsMissingOrInvalidRange() {
-        #expect(StaticRangeReattachPolicy.plan(
-            taskIdentifier: 11,
-            downloadID: "jellyfin:item",
-            durableBytes: 256,
-            requestedOffset: nil,
-            rangeRequestShape: .missing,
-            bodyBytesWritten: -5,
-            existingTasks: []
-        ).disposition == .rejectUnownedRange(requestedOffset: nil, durableBytes: 256, rangeRequestShape: .missing))
-
-        #expect(StaticRangeReattachPolicy.plan(
-            taskIdentifier: 12,
-            downloadID: "jellyfin:item",
-            durableBytes: 256,
-            requestedOffset: nil,
-            rangeRequestShape: .invalid,
-            bodyBytesWritten: 0,
-            existingTasks: []
-        ).disposition == .rejectUnownedRange(requestedOffset: nil, durableBytes: 256, rangeRequestShape: .invalid))
     }
 
     @Test("Open-ended remainders must start at the durable partial checkpoint")
@@ -106,25 +121,6 @@ struct StaticRangeReattachPolicyTests {
         ))
     }
 
-    @Test("Unmarked closed ranges are rejected")
-    func unmarkedClosedRangeIsRejected() {
-        let plan = StaticRangeReattachPolicy.plan(
-            taskIdentifier: 40,
-            downloadID: "plex:item",
-            durableBytes: 0,
-            requestedOffset: 0,
-            rangeRequestShape: .closed,
-            bodyBytesWritten: 10,
-            existingTasks: [],
-            taskMarker: nil
-        )
-
-        #expect(plan == StaticRangeReattachPlan(
-            candidateBaseOffset: 0,
-            disposition: .rejectUnownedRange(requestedOffset: 0, durableBytes: 0, rangeRequestShape: .closed)
-        ))
-    }
-
     @Test("A marked closed segment with matching offset is adopted")
     func markedClosedSegmentAdopted() {
         let plan = StaticRangeReattachPolicy.plan(
@@ -142,21 +138,29 @@ struct StaticRangeReattachPolicyTests {
         #expect(plan == StaticRangeReattachPlan(candidateBaseOffset: 0, disposition: .adopt))
     }
 
-    @Test("A marked closed segment ahead of the durable checkpoint is adopted")
-    func markedClosedSegmentAheadOfDurable() {
+    /// Every row is a matching current marker on a closed range requested ahead of the durable
+    /// checkpoint. (300, 812): the planner anchors its grid at the durable bytes of plan time — a
+    /// legacy open-ended partial (durable 300) plans segments at 300, 812, 1324... None of those
+    /// are aligned to an absolute grid; the attempt token proves ownership, so they must still
+    /// reattach. (350, 812): a crash mid-append leaves durable bytes off the train's own grid
+    /// (e.g. 350 of a head segment [300, 812)); the surviving off-head segments are owned and
+    /// ahead — adopt.
+    @Test("A marked closed segment ahead of the durable checkpoint is adopted",
+          arguments: [(0, 512), (300, 812), (350, 812)])
+    func markedClosedSegmentAheadOfDurableAdopted(durable: Int, requested: Int) {
         let plan = StaticRangeReattachPolicy.plan(
             taskIdentifier: 42,
             downloadID: "plex:item",
-            durableBytes: 0,
-            requestedOffset: 512,
+            durableBytes: durable,
+            requestedOffset: requested,
             rangeRequestShape: .closed,
             bodyBytesWritten: 10,
             existingTasks: [],
-            taskMarker: StaticRangeSegmentMarker.value(offset: 512, attemptID: DownloadAttemptID(rawValue: "attempt-A")!),
+            taskMarker: StaticRangeSegmentMarker.value(offset: requested, attemptID: DownloadAttemptID(rawValue: "attempt-A")!),
             rowAttemptID: DownloadAttemptID(rawValue: "attempt-A")!
         )
 
-        #expect(plan == StaticRangeReattachPlan(candidateBaseOffset: 512, disposition: .adopt))
+        #expect(plan == StaticRangeReattachPlan(candidateBaseOffset: requested, disposition: .adopt))
     }
 
     @Test("A marked segment behind the durable checkpoint is rejected")
@@ -177,45 +181,6 @@ struct StaticRangeReattachPolicyTests {
             candidateBaseOffset: 512,
             disposition: .rejectOffsetMismatch(requestedOffset: 512, durableBytes: 600)
         ))
-    }
-
-    @Test("A marked segment from a train anchored at a mid-file checkpoint is adopted")
-    func markedClosedSegmentMidFileAnchorAdopted() {
-        // The planner anchors its grid at the durable bytes of plan time — a legacy open-ended
-        // partial (durable 300) plans segments at 300, 812, 1324... None of those are aligned to
-        // an absolute grid; the attempt token proves ownership, so they must still reattach.
-        let plan = StaticRangeReattachPolicy.plan(
-            taskIdentifier: 43,
-            downloadID: "plex:item",
-            durableBytes: 300,
-            requestedOffset: 812,
-            rangeRequestShape: .closed,
-            bodyBytesWritten: 10,
-            existingTasks: [],
-            taskMarker: StaticRangeSegmentMarker.value(offset: 812, attemptID: DownloadAttemptID(rawValue: "attempt-A")!),
-            rowAttemptID: DownloadAttemptID(rawValue: "attempt-A")!
-        )
-
-        #expect(plan == StaticRangeReattachPlan(candidateBaseOffset: 812, disposition: .adopt))
-    }
-
-    @Test("A marked segment ahead of a crash-mid-append durable checkpoint is adopted")
-    func markedClosedSegmentAheadOfMidAppendCheckpointAdopted() {
-        // A crash mid-append leaves durable bytes off the train's own grid (e.g. 350 of a head
-        // segment [300, 812)). The surviving off-head segments are owned and ahead — adopt.
-        let plan = StaticRangeReattachPolicy.plan(
-            taskIdentifier: 45,
-            downloadID: "plex:item",
-            durableBytes: 350,
-            requestedOffset: 812,
-            rangeRequestShape: .closed,
-            bodyBytesWritten: 10,
-            existingTasks: [],
-            taskMarker: StaticRangeSegmentMarker.value(offset: 812, attemptID: DownloadAttemptID(rawValue: "attempt-A")!),
-            rowAttemptID: DownloadAttemptID(rawValue: "attempt-A")!
-        )
-
-        #expect(plan == StaticRangeReattachPlan(candidateBaseOffset: 812, disposition: .adopt))
     }
 
     @Test("Two marked segments at different offsets both adopt")
@@ -260,26 +225,6 @@ struct StaticRangeReattachPolicyTests {
         #expect(plan == StaticRangeReattachPlan(
             candidateBaseOffset: 512,
             disposition: .replaceExisting(existingTaskIdentifier: 60, existingBaseOffset: 512)
-        ))
-    }
-
-    @Test("A v1 marker (no attempt token) is legacy — dropped even at a matching offset")
-    func v1MarkerDropsAsLegacy() {
-        let plan = StaticRangeReattachPolicy.plan(
-            taskIdentifier: 45,
-            downloadID: "plex:item",
-            durableBytes: 0,
-            requestedOffset: 0,
-            rangeRequestShape: .closed,
-            bodyBytesWritten: 10,
-            existingTasks: [],
-            taskMarker: "lbs-segment:v1:0",
-            rowAttemptID: DownloadAttemptID(rawValue: "attempt-A")!
-        )
-
-        #expect(plan == StaticRangeReattachPlan(
-            candidateBaseOffset: 0,
-            disposition: .rejectUnownedRange(requestedOffset: 0, durableBytes: 0, rangeRequestShape: .closed)
         ))
     }
 
@@ -349,42 +294,6 @@ struct StaticRangeReattachPolicyTests {
         ))
     }
 
-    @Test("An attempt-stamped open-ended remainder matching the row's attempt is adopted")
-    func openEndedMatchingAttemptAdopted() {
-        let plan = StaticRangeReattachPolicy.plan(
-            taskIdentifier: 49,
-            downloadID: "plex:item",
-            durableBytes: 512,
-            requestedOffset: 512,
-            rangeRequestShape: .openEnded,
-            bodyBytesWritten: 0,
-            existingTasks: [],
-            taskMarker: DownloadAttemptMarker.taskDescription(ratingKey: "plex:item", attemptID: DownloadAttemptID(rawValue: "attempt-A")!),
-            rowAttemptID: DownloadAttemptID(rawValue: "attempt-A")!
-        )
-
-        #expect(plan == StaticRangeReattachPlan(candidateBaseOffset: 512, disposition: .adopt))
-    }
-
-    @Test("A malformed marker is treated as unmarked and legacy-dropped")
-    func malformedMarkerDropsAsLegacy() {
-        let plan = StaticRangeReattachPolicy.plan(
-            taskIdentifier: 70,
-            downloadID: "plex:item",
-            durableBytes: 0,
-            requestedOffset: 0,
-            rangeRequestShape: .closed,
-            bodyBytesWritten: 10,
-            existingTasks: [],
-            taskMarker: "lbs-segment:v1:abc"
-        )
-
-        #expect(plan == StaticRangeReattachPlan(
-            candidateBaseOffset: 0,
-            disposition: .rejectUnownedRange(requestedOffset: 0, durableBytes: 0, rangeRequestShape: .closed)
-        ))
-    }
-
     @Test("A marker whose offset does not match the requested offset is treated as unmarked")
     func markerOffsetMismatchDropsAsLegacy() {
         let plan = StaticRangeReattachPolicy.plan(
@@ -403,36 +312,5 @@ struct StaticRangeReattachPolicyTests {
             candidateBaseOffset: 512,
             disposition: .rejectUnownedRange(requestedOffset: 512, durableBytes: 0, rangeRequestShape: .closed)
         ))
-    }
-
-    @Test("Typed policy adopts only current markers and cancels matching legacy markers")
-    func typedPolicyRequiresCurrentMarker() {
-        let attemptID = DownloadAttemptID(rawValue: "attempt-A")!
-        let current = StaticRangeReattachPolicy.plan(
-            taskIdentifier: 80,
-            downloadID: "plex:item",
-            durableBytes: 0,
-            requestedOffset: 0,
-            rangeRequestShape: .closed,
-            bodyBytesWritten: 10,
-            existingTasks: [],
-            taskMarker: StaticRangeSegmentMarker.value(offset: 0, attemptID: attemptID),
-            rowAttemptID: attemptID
-        )
-        #expect(current.disposition == .adopt)
-
-        let legacy = StaticRangeReattachPolicy.plan(
-            taskIdentifier: 81,
-            downloadID: "plex:item",
-            durableBytes: 0,
-            requestedOffset: 0,
-            rangeRequestShape: .closed,
-            bodyBytesWritten: 10,
-            existingTasks: [],
-            taskMarker: "lbs-segment:v2:0:\(attemptID.rawValue)",
-            rowAttemptID: attemptID
-        )
-        #expect(legacy.disposition == .rejectUnownedRange(
-            requestedOffset: 0, durableBytes: 0, rangeRequestShape: .closed))
     }
 }

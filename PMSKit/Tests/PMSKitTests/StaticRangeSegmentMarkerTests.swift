@@ -15,13 +15,6 @@ struct StaticRangeSegmentMarkerTests {
                 == .currentSegmentV3)
     }
 
-    @Test("String convenience also emits only current marker")
-    func stringBuilderIsCurrent() {
-        let marker = StaticRangeSegmentMarker.value(offset: 512, attemptID: DownloadAttemptID(rawValue: "attempt-A")!)
-        #expect(marker == "lbs-segment:v3:512:attempt-A")
-        #expect(StaticRangeSegmentMarker.version(marker) == .currentV3)
-    }
-
     @Test("Combined description round-trips row offset and attempt")
     func combinedDescriptionRoundTrips() {
         let description = StaticRangeSegmentMarker.taskDescription(
@@ -65,12 +58,8 @@ struct DownloadAttemptMarkerTests {
         #expect(DownloadAttemptMarker.version(fromTaskDescription: description) == .currentV2)
     }
 
-    @Test("String convenience emits current and v1 is rejected")
-    func stringBuilderIsCurrentAndLegacyRejected() {
-        let current = DownloadAttemptMarker.taskDescription(
-            ratingKey: "movie-123", attemptID: DownloadAttemptID(rawValue: "attempt-A")!)
-        #expect(current.contains("lbs-attempt:v2:attempt-A"))
-        #expect(DownloadAttemptMarker.version(fromTaskDescription: current) == .currentV2)
+    @Test("v1 attempt markers are rejected")
+    func legacyV1AttemptMarkerRejected() {
         let legacy = "movie-123\u{1F}lbs-attempt:v1:attempt-A"
         #expect(DownloadAttemptMarker.attemptIdentity(fromTaskDescription: legacy) == nil)
         #expect(DownloadAttemptMarker.version(fromTaskDescription: legacy) == nil)
