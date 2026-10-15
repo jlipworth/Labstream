@@ -44,6 +44,10 @@ scripts/testflight-release.py ship --group "<internal group>" --yes
 `ship` runs preflight, archive, validate, and upload with `--build-number auto` (the commit count
 of HEAD, so no version-bump commit is needed), waits for processing, and adds the builds to the
 internal group. The group can default from `LABSTREAM_TESTFLIGHT_GROUP` in `scripts/asc.local.env`.
+After a successful ship it prunes `~/Library/Developer/Xcode/Archives`: it keeps the newest three
+uploaded archive sets, every set attached to an App Store version, and any set newer than the
+newest upload (pending or failed), and deletes the rest. Run
+`scripts/testflight-release.py prune-archives` for a dry run and `--yes` to prune by hand.
 It uploads to the project's current marketing version, which must still be open in App Store
 Connect (not yet approved or released). Run it in the background: archiving four platforms and
 processing take most of an hour.

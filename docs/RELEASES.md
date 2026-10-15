@@ -198,7 +198,9 @@ creating a duplicate record:
    generate the aggregate privacy report. For an on-demand build to internal testers,
    `ship --group <internal group> --yes` runs the whole sequence with `--build-number auto`
    (the commit count of HEAD) and adds the processed builds to that group; a release candidate
-   can then be one of those builds, selected for review rather than archived again.
+   can then be one of those builds, selected for review rather than archived again. Successful
+   ships prune local archives to the newest three uploaded sets plus any set attached to an App
+   Store version (`prune-archives` dry-runs the same policy).
 
    The script exists because Xcode 27 `xcodebuild` cannot use an account signed in through Xcode
    Settings ▸ Apple Accounts (`No Accounts`), and tvOS automatic signing fails while the team has

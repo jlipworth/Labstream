@@ -14,7 +14,10 @@ Subcommands (run in this order; each is safe to rerun):
   status         read-only processing, TestFlight group, and version-selection state.
   select-build   show which platform versions would change; --yes attaches the build.
   distribute     add processed builds to an internal TestFlight group (--group, --yes).
-  ship --yes     on-demand continuous build: archive, validate, upload, wait, distribute.
+  ship --yes     on-demand continuous build: archive, validate, upload, wait, distribute,
+                 then prune old archives.
+  prune-archives keep the newest uploaded archive sets plus any build attached to an App
+                 Store version; --yes deletes the rest.
 
 --build-number auto stamps the commit count of HEAD as CFBundleVersion, so an on-demand
 upload does not need a version-bump commit. Without it the project's
@@ -61,6 +64,7 @@ BUNDLE_ID = "org.labstream.Labstream"
 PROJECT = "Labstream.xcodeproj"
 LOCAL_ENV = REPO / "scripts" / "asc.local.env"
 ARCHIVES_ROOT = pathlib.Path.home() / "Library/Developer/Xcode/Archives"
+ARCHIVE_SETS_TO_KEEP = 3
 DERIVED_DATA = REPO / "build" / "DerivedData-archive"
 PROFILE_DIRS = [
     pathlib.Path.home() / "Library/Developer/Xcode/UserData/Provisioning Profiles",
@@ -361,6 +365,28 @@ class ASCClient:
         })
         pre = next((i["attributes"]["version"] for i in res.get("included", [])), "?")
         return f"{pre} ({res['data']['attributes']['version']})"
+
+    def build_exists(self, version: str, build: str) -> bool:
+        res = self.request("GET", "/v1/builds", {
+            "filter[app]": self.app_id, "filter[version]": build,
+            "filter[preReleaseVersion.version]": version, "fields[builds]": "version", "limit": "1",
+        })
+        return bool(res["data"])
+
+    def attached_builds(self) -> set[tuple[str, str]]:
+        """(version, build) pairs attached to any App Store version on any platform."""
+        res = self.request("GET", f"/v1/apps/{self.app_id}/appStoreVersions", {
+            "fields[appStoreVersions]": "versionString,build", "include": "build", "limit": "200",
+        })
+        out = set()
+        for item in res["data"]:
+            rel = ((item.get("relationships") or {}).get("build") or {}).get("data") or {}
+            if rel.get("id"):
+                label = self.build_label(rel["id"])
+                match = re.fullmatch(r"(.+) \((.+)\)", label)
+                if match:
+                    out.add((match.group(1), match.group(2)))
+        return out
 
     def group_id(self, name: str) -> str:
         res = self.request("GET", f"/v1/apps/{self.app_id}/betaGroups", {
@@ -849,6 +875,99 @@ def cmd_select_build(args: argparse.Namespace) -> int:
     return 0
 
 
+@dataclass
+class ArchiveSet:
+    version: str
+    build: str
+    created: dt.datetime
+    paths: list[pathlib.Path]
+
+    @property
+    def label(self) -> str:
+        return f"{self.version} ({self.build})"
+
+
+def archive_sets(root: pathlib.Path = ARCHIVES_ROOT) -> list[ArchiveSet]:
+    """Group this app's archives by marketing version and build number."""
+    schemes = {p.scheme for p in PLATFORMS.values()}
+    sets: dict[tuple[str, str], ArchiveSet] = {}
+    for archive in sorted(root.glob("*/*.xcarchive")):
+        try:
+            info = plistlib.loads((archive / "Info.plist").read_bytes())
+        except Exception:
+            continue
+        props = info.get("ApplicationProperties") or {}
+        created = info.get("CreationDate")
+        if (info.get("SchemeName") not in schemes or props.get("CFBundleIdentifier") != BUNDLE_ID
+                or not isinstance(created, dt.datetime)):
+            continue
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=dt.timezone.utc)
+        key = (str(props.get("CFBundleShortVersionString")), str(props.get("CFBundleVersion")))
+        entry = sets.setdefault(key, ArchiveSet(key[0], key[1], created, []))
+        entry.paths.append(archive)
+        entry.created = max(entry.created, created)
+    return sorted(sets.values(), key=lambda s: s.created, reverse=True)
+
+
+def plan_prune(sets: list[ArchiveSet], uploaded: set[tuple[str, str]], attached: set[tuple[str, str]],
+               keep: int = ARCHIVE_SETS_TO_KEEP) -> tuple[list[ArchiveSet], list[ArchiveSet]]:
+    """Return (kept, removed). Sets are newest first.
+
+    Keeps the newest `keep` uploaded sets, every set attached to an App Store version, and any
+    set newer than the newest uploaded one (an archive whose upload is pending or failed).
+    """
+    kept, removed = [], []
+    uploaded_seen = 0
+    newest_uploaded = next((s.created for s in sets if (s.version, s.build) in uploaded), None)
+    for entry in sets:
+        key = (entry.version, entry.build)
+        is_uploaded = key in uploaded
+        if key in attached or (newest_uploaded is None or entry.created > newest_uploaded) and not is_uploaded:
+            kept.append(entry)
+        elif is_uploaded and uploaded_seen < keep:
+            uploaded_seen += 1
+            kept.append(entry)
+        else:
+            removed.append(entry)
+    return kept, removed
+
+
+def size_mb(paths: list[pathlib.Path]) -> int:
+    total = sum(f.stat().st_size for p in paths for f in p.rglob("*") if f.is_file() and not f.is_symlink())
+    return total // (1024 * 1024)
+
+
+def cmd_prune_archives(args: argparse.Namespace) -> int:
+    sets = archive_sets()
+    if not sets:
+        say("no Labstream archives found")
+        return 0
+    creds = load_credentials()
+    with asc_client(creds) as client:
+        uploaded = {(s.version, s.build) for s in sets if client.build_exists(s.version, s.build)}
+        attached = client.attached_builds()
+    kept, removed = plan_prune(sets, uploaded, attached, args.keep)
+    for entry in kept:
+        reason = ("attached to an App Store version" if (entry.version, entry.build) in attached
+                  else "uploaded" if (entry.version, entry.build) in uploaded else "not uploaded yet")
+        say(f"  keep    {entry.label:16} {len(entry.paths)} archive(s), {reason}")
+    for entry in removed:
+        say(f"  remove  {entry.label:16} {len(entry.paths)} archive(s), {size_mb(entry.paths)} MB")
+    if not removed:
+        return 0
+    if not args.yes:
+        say("dry run; rerun with --yes to delete the archives marked remove")
+        return 0
+    for entry in removed:
+        for path in entry.paths:
+            shutil.rmtree(path)
+            with contextlib.suppress(OSError):
+                path.parent.rmdir()  # drop the date folder once it is empty
+    say(f"removed {sum(len(e.paths) for e in removed)} archive(s)")
+    return 0
+
+
 def testflight_group(args: argparse.Namespace) -> str:
     group = args.group or setting("LABSTREAM_TESTFLIGHT_GROUP", read_local_env())
     if not group:
@@ -896,6 +1015,10 @@ def cmd_ship(args: argparse.Namespace) -> int:
     cmd_status(args)
     cmd_distribute(args)
     say("shipped to TestFlight; nothing was submitted for review")
+    try:
+        cmd_prune_archives(argparse.Namespace(keep=ARCHIVE_SETS_TO_KEEP, yes=True))
+    except ReleaseError as exc:
+        warn(f"archive pruning skipped: {exc}")
     return 0
 
 
@@ -929,13 +1052,16 @@ def main(argv: list[str] | None = None) -> int:
     ship.add_argument("--group", help="internal TestFlight group name (default: LABSTREAM_TESTFLIGHT_GROUP)")
     ship.add_argument("--yes", action="store_true", help="confirm the upload and distribution are authorized")
     ship.set_defaults(force=False, wait=True, timeout=3600, version=None)
+    prune = sub.add_parser("prune-archives", parents=[common])
+    prune.add_argument("--keep", type=int, default=ARCHIVE_SETS_TO_KEEP, help="uploaded sets to keep")
+    prune.add_argument("--yes", action="store_true", help="delete the archives marked remove")
     args = parser.parse_args(argv)
     REDACT.verbose = args.verbose
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     handlers: dict[str, Callable[[argparse.Namespace], Any]] = {
         "preflight": cmd_preflight, "archive": cmd_archive, "validate": cmd_validate,
         "upload": cmd_upload, "status": cmd_status, "select-build": cmd_select_build,
-        "distribute": cmd_distribute, "ship": cmd_ship,
+        "distribute": cmd_distribute, "ship": cmd_ship, "prune-archives": cmd_prune_archives,
     }
     try:
         handlers[args.command](args)

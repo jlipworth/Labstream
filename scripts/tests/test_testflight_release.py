@@ -6,6 +6,7 @@ import io
 import json
 import os
 import pathlib
+import plistlib
 import shutil
 import stat
 import subprocess
@@ -277,11 +278,16 @@ class CommandGuardTests(unittest.TestCase):
                 calls.append((name, args.build_number))
                 return 0
             return record
+        def prune(args):
+            calls.append(("prune", args.keep, args.yes))
+            return 0
         with mock.patch.multiple(tf, cmd_archive=step("archive"), cmd_upload=step("upload"),
-                                 cmd_status=step("status"), cmd_distribute=step("distribute")):
+                                 cmd_status=step("status"), cmd_distribute=step("distribute"),
+                                 cmd_prune_archives=prune):
             code, out, _ = self.run_main(["ship", "--group", "Internal", "--yes"])
         self.assertEqual(code, 0)
-        self.assertEqual(calls, [("archive", "auto"), ("upload", "auto"), ("status", "auto"), ("distribute", "auto")])
+        self.assertEqual(calls, [("archive", "auto"), ("upload", "auto"), ("status", "auto"),
+                                 ("distribute", "auto"), ("prune", 3, True)])
         self.assertIn("nothing was submitted for review", out)
 
     def test_build_number_resolution(self):
@@ -301,3 +307,45 @@ class CommandGuardTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ArchivePruneTests(unittest.TestCase):
+    T0 = dt.datetime(2026, 10, 1, tzinfo=dt.timezone.utc)
+
+    def entry(self, build, day, version="1.7.2"):
+        return tf.ArchiveSet(version, str(build), self.T0 + dt.timedelta(days=day), [pathlib.Path(f"b{build}")])
+
+    def test_keeps_newest_uploaded_attached_and_pending_sets(self):
+        sets = [self.entry(b, d) for b, d in [(1500, 9), (1499, 8), (1498, 7), (1497, 6), (1496, 5), (2, 4), (1, 3)]]
+        sets.sort(key=lambda s: s.created, reverse=True)
+        uploaded = {("1.7.2", b) for b in ("1499", "1498", "1497", "1496", "2")}
+        attached = {("1.7.2", "2")}
+        kept, removed = tf.plan_prune(sets, uploaded, attached, keep=3)
+        self.assertEqual([k.build for k in kept], ["1500", "1499", "1498", "1497", "2"])
+        self.assertEqual([r.build for r in removed], ["1496", "1"])
+
+    def test_nothing_uploaded_keeps_everything(self):
+        sets = [self.entry(2, 2), self.entry(1, 1)]
+        kept, removed = tf.plan_prune(sets, set(), set())
+        self.assertEqual((len(kept), removed), (2, []))
+
+    def test_archive_sets_group_by_version_and_build(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            def make(day, name, scheme, build, bundle=tf.BUNDLE_ID, hour=0):
+                path = root / day / f"{name}.xcarchive"
+                path.mkdir(parents=True)
+                (path / "Info.plist").write_bytes(plistlib.dumps({
+                    "SchemeName": scheme,
+                    "CreationDate": dt.datetime(2026, 10, int(day[-2:]), hour),
+                    "ApplicationProperties": {"CFBundleShortVersionString": "1.7.2", "CFBundleVersion": build,
+                                              "CFBundleIdentifier": bundle},
+                }))
+            make("2026-10-04", "a", "Labstream", "1")
+            make("2026-10-04", "b", "LabstreamTV", "1", hour=3)
+            make("2026-10-13", "c", "LabstreamMac", "2")
+            make("2026-10-13", "d", "OtherApp", "2")
+            make("2026-10-13", "e", "Labstream", "2", bundle="org.example.other")
+            sets = tf.archive_sets(root)
+            self.assertEqual([(s.build, len(s.paths)) for s in sets], [("2", 1), ("1", 2)])
+            self.assertEqual(sets[1].created.hour, 3)
