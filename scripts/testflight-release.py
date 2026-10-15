@@ -14,7 +14,10 @@ Subcommands (run in this order; each is safe to rerun):
   status         read-only processing, TestFlight group, and version-selection state.
   select-build   show which platform versions would change; --yes attaches the build.
   distribute     add processed builds to an internal TestFlight group (--group, --yes).
-  ship --yes     on-demand continuous build: archive, validate, upload, wait, distribute.
+  ship --yes     on-demand continuous build: archive, validate, upload, wait, distribute,
+                 then prune old archives.
+  prune-archives keep the newest uploaded archive sets plus any build attached to an App
+                 Store version; --yes deletes the rest.
 
 --build-number auto stamps the commit count of HEAD as CFBundleVersion, so an on-demand
 upload does not need a version-bump commit. Without it the project's
@@ -61,6 +64,7 @@ BUNDLE_ID = "org.labstream.Labstream"
 PROJECT = "Labstream.xcodeproj"
 LOCAL_ENV = REPO / "scripts" / "asc.local.env"
 ARCHIVES_ROOT = pathlib.Path.home() / "Library/Developer/Xcode/Archives"
+ARCHIVE_SETS_TO_KEEP = 3
 DERIVED_DATA = REPO / "build" / "DerivedData-archive"
 PROFILE_DIRS = [
     pathlib.Path.home() / "Library/Developer/Xcode/UserData/Provisioning Profiles",
@@ -362,6 +366,28 @@ class ASCClient:
         pre = next((i["attributes"]["version"] for i in res.get("included", [])), "?")
         return f"{pre} ({res['data']['attributes']['version']})"
 
+    def build_exists(self, version: str, build: str) -> bool:
+        res = self.request("GET", "/v1/builds", {
+            "filter[app]": self.app_id, "filter[version]": build,
+            "filter[preReleaseVersion.version]": version, "fields[builds]": "version", "limit": "1",
+        })
+        return bool(res["data"])
+
+    def attached_builds(self) -> set[tuple[str, str]]:
+        """(version, build) pairs attached to any App Store version on any platform."""
+        res = self.request("GET", f"/v1/apps/{self.app_id}/appStoreVersions", {
+            "fields[appStoreVersions]": "versionString,build", "include": "build", "limit": "200",
+        })
+        out = set()
+        for item in res["data"]:
+            rel = ((item.get("relationships") or {}).get("build") or {}).get("data") or {}
+            if rel.get("id"):
+                label = self.build_label(rel["id"])
+                match = re.fullmatch(r"(.+) \((.+)\)", label)
+                if match:
+                    out.add((match.group(1), match.group(2)))
+        return out
+
     def group_id(self, name: str) -> str:
         res = self.request("GET", f"/v1/apps/{self.app_id}/betaGroups", {
             "fields[betaGroups]": "name,isInternalGroup", "limit": "200",
@@ -421,6 +447,16 @@ def scheme_versions(platform: Platform) -> dict[str, str]:
 def installed_identity_sha1s() -> set[str]:
     out = run(["security", "find-identity", "-p", "codesigning", "-v"]).stdout
     return {m.group(1).upper() for m in re.finditer(r"\b([0-9A-Fa-f]{40})\b", out)}
+
+
+def installer_identity(team: str, listing: str | None = None) -> str:
+    """SHA-1 of the Mac installer identity that signs the App Store .pkg for this team."""
+    listing = listing if listing is not None else run(["security", "find-identity", "-v"]).stdout
+    for line in listing.splitlines():
+        match = re.search(r'\b([0-9A-Fa-f]{40})\s+"(3rd Party Mac Developer Installer|Mac Installer Distribution):.*\((\w+)\)"', line)
+        if match and match.group(3) == team:
+            return match.group(1).upper()
+    raise ReleaseError("no Mac installer signing identity (3rd Party Mac Developer Installer) for the team is installed")
 
 
 def _profile_helper():
@@ -499,6 +535,7 @@ class Plan:
     build: str
     profile: Profile
     identity: str
+    installer: str = ""
 
     @property
     def team(self) -> str:
@@ -527,7 +564,9 @@ def build_plans(platforms: list[Platform], build_override: str | None = None) ->
             raise ReleaseError(f"{platform.scheme} bundle id is {versions['bundle_id']}, expected {BUNDLE_ID}")
         profile, identity = choose_profile(profiles, platform, identities)
         REDACT.add(profile.team, profile.uuid, identity)
-        plans.append(Plan(platform, versions["version"], build_override or versions["build"], profile, identity))
+        installer = installer_identity(profile.team) if platform.macos else ""
+        REDACT.add(installer)
+        plans.append(Plan(platform, versions["version"], build_override or versions["build"], profile, identity, installer))
     if len({(p.version, p.build) for p in plans}) > 1:
         warn("platforms have different version/build numbers: "
              + ", ".join(f"{p.platform.key} {p.version} ({p.build})" for p in plans))
@@ -539,12 +578,30 @@ def archive_path(plan: Plan, head: str, day: str | None = None) -> pathlib.Path:
     return ARCHIVES_ROOT / day / f"{plan.platform.scheme}-{plan.version}-b{plan.build}-{head[:8]}.xcarchive"
 
 
-def find_archive(plan: Plan, head: str) -> pathlib.Path:
-    name = archive_path(plan, head).name
-    matches = sorted(ARCHIVES_ROOT.glob(f"*/{name}"))
+def find_archive(plan: Plan) -> pathlib.Path:
+    """Newest archive for this scheme/version/build, whatever commit it was built from."""
+    pattern = f"{plan.platform.scheme}-{plan.version}-b{plan.build}-*.xcarchive"
+    matches = sorted(ARCHIVES_ROOT.glob(f"*/{pattern}"), key=lambda p: p.stat().st_mtime)
     if not matches:
-        raise ReleaseError(f"no archive named {name} under {ARCHIVES_ROOT}; run `archive` first")
+        raise ReleaseError(f"no archive matching {pattern} under {ARCHIVES_ROOT}; run `archive` first")
     return matches[-1]
+
+
+def slug_problems(slug: Any, archive: pathlib.Path, allow_unpublished: bool) -> list[str]:
+    """An archive must come from a clean, published commit that matches its file name."""
+    match = re.fullmatch(r"\d+-([0-9a-f]{12})-(clean|dirty)", str(slug))
+    if not match:
+        return [f"LabstreamBuildSlug {slug!r} is not a source-derived build ID"]
+    commit, state = match.groups()
+    problems = []
+    if state != "clean":
+        problems.append(f"built from uncommitted source ({slug})")
+    if not archive.name.removesuffix(".xcarchive").endswith(f"-{commit[:8]}"):
+        problems.append(f"archive name does not match its source commit {commit[:8]}")
+    published = run(["git", "merge-base", "--is-ancestor", commit, "origin/main"], check=False).returncode == 0
+    if not published and not allow_unpublished:
+        problems.append(f"source commit {commit[:8]} is not on origin/main")
+    return problems
 
 
 # --- Archive validation --------------------------------------------------------
@@ -557,7 +614,7 @@ def archive_app(archive: pathlib.Path) -> pathlib.Path:
     return apps[0]
 
 
-def validate_archive(plan: Plan, archive: pathlib.Path, expected_slug: str) -> list[str]:
+def validate_archive(plan: Plan, archive: pathlib.Path, allow_unpublished: bool) -> list[str]:
     problems: list[str] = []
     app = archive_app(archive)
     contents = app / "Contents" if plan.platform.macos else app
@@ -566,11 +623,11 @@ def validate_archive(plan: Plan, archive: pathlib.Path, expected_slug: str) -> l
         "CFBundleIdentifier": BUNDLE_ID,
         "CFBundleShortVersionString": plan.version,
         "CFBundleVersion": plan.build,
-        "LabstreamBuildSlug": expected_slug,
     }
     for key, expected in checks.items():
         if info.get(key) != expected:
             problems.append(f"{key} is {info.get(key)!r}, expected {expected!r}")
+    problems += slug_problems(info.get("LabstreamBuildSlug"), archive, allow_unpublished)
     min_os = info.get("LSMinimumSystemVersion" if plan.platform.macos else "MinimumOSVersion")
 
     verify = run(["codesign", "--verify", "--deep", "--strict", str(app)], check=False)
@@ -625,11 +682,11 @@ def check_privacy(archives: dict[str, pathlib.Path]) -> list[str]:
     return ["privacy manifest check failed" + (f": {last[0]}" if last else "")]
 
 
-def validate_all(plans: list[Plan], source: dict[str, str]) -> dict[str, pathlib.Path]:
-    archives = {plan.platform.key: find_archive(plan, source["head"]) for plan in plans}
+def validate_all(plans: list[Plan], allow_unpublished: bool) -> dict[str, pathlib.Path]:
+    archives = {plan.platform.key: find_archive(plan) for plan in plans}
     problems: list[str] = []
     for plan in plans:
-        for problem in validate_archive(plan, archives[plan.platform.key], source["slug"]):
+        for problem in validate_archive(plan, archives[plan.platform.key], allow_unpublished):
             say(f"           FAIL {problem}")
             problems.append(f"{plan.platform.key}: {problem}")
     for problem in check_privacy(archives):
@@ -706,14 +763,13 @@ def cmd_archive(args: argparse.Namespace) -> int:
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
-    source = source_state(args.allow_unpublished)
-    validate_all(build_plans(selected_platforms(args), build_number(args)), source)
+    validate_all(build_plans(selected_platforms(args), build_number(args)), args.allow_unpublished)
     say("all archives valid; Organizer can also generate the aggregate privacy report from them")
     return 0
 
 
 def export_options(plan: Plan) -> dict[str, Any]:
-    return {
+    options = {
         "method": "app-store-connect",
         "destination": "upload",
         "signingStyle": "manual",
@@ -723,14 +779,17 @@ def export_options(plan: Plan) -> dict[str, Any]:
         "manageAppVersionAndBuildNumber": False,
         "uploadSymbols": True,
     }
+    if plan.installer:
+        # The Mac App Store upload is a .pkg signed with the installer identity.
+        options["installerSigningCertificate"] = plan.installer
+    return options
 
 
 def cmd_upload(args: argparse.Namespace) -> int:
     if not args.yes:
         raise ReleaseError("upload sends binaries to App Store Connect; rerun with --yes once it is authorized")
-    source = source_state(args.allow_unpublished)
     plans = build_plans(selected_platforms(args), build_number(args))
-    archives = validate_all(plans, source)
+    archives = validate_all(plans, args.allow_unpublished)
     creds = load_credentials()
     check_not_uploaded(plans, creds)
     with private_key_file(creds) as key_path:
@@ -849,6 +908,99 @@ def cmd_select_build(args: argparse.Namespace) -> int:
     return 0
 
 
+@dataclass
+class ArchiveSet:
+    version: str
+    build: str
+    created: dt.datetime
+    paths: list[pathlib.Path]
+
+    @property
+    def label(self) -> str:
+        return f"{self.version} ({self.build})"
+
+
+def archive_sets(root: pathlib.Path = ARCHIVES_ROOT) -> list[ArchiveSet]:
+    """Group this app's archives by marketing version and build number."""
+    schemes = {p.scheme for p in PLATFORMS.values()}
+    sets: dict[tuple[str, str], ArchiveSet] = {}
+    for archive in sorted(root.glob("*/*.xcarchive")):
+        try:
+            info = plistlib.loads((archive / "Info.plist").read_bytes())
+        except Exception:
+            continue
+        props = info.get("ApplicationProperties") or {}
+        created = info.get("CreationDate")
+        if (info.get("SchemeName") not in schemes or props.get("CFBundleIdentifier") != BUNDLE_ID
+                or not isinstance(created, dt.datetime)):
+            continue
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=dt.timezone.utc)
+        key = (str(props.get("CFBundleShortVersionString")), str(props.get("CFBundleVersion")))
+        entry = sets.setdefault(key, ArchiveSet(key[0], key[1], created, []))
+        entry.paths.append(archive)
+        entry.created = max(entry.created, created)
+    return sorted(sets.values(), key=lambda s: s.created, reverse=True)
+
+
+def plan_prune(sets: list[ArchiveSet], uploaded: set[tuple[str, str]], attached: set[tuple[str, str]],
+               keep: int = ARCHIVE_SETS_TO_KEEP) -> tuple[list[ArchiveSet], list[ArchiveSet]]:
+    """Return (kept, removed). Sets are newest first.
+
+    Keeps the newest `keep` uploaded sets, every set attached to an App Store version, and any
+    set newer than the newest uploaded one (an archive whose upload is pending or failed).
+    """
+    kept, removed = [], []
+    uploaded_seen = 0
+    newest_uploaded = next((s.created for s in sets if (s.version, s.build) in uploaded), None)
+    for entry in sets:
+        key = (entry.version, entry.build)
+        is_uploaded = key in uploaded
+        if key in attached or (newest_uploaded is None or entry.created > newest_uploaded) and not is_uploaded:
+            kept.append(entry)
+        elif is_uploaded and uploaded_seen < keep:
+            uploaded_seen += 1
+            kept.append(entry)
+        else:
+            removed.append(entry)
+    return kept, removed
+
+
+def size_mb(paths: list[pathlib.Path]) -> int:
+    total = sum(f.stat().st_size for p in paths for f in p.rglob("*") if f.is_file() and not f.is_symlink())
+    return total // (1024 * 1024)
+
+
+def cmd_prune_archives(args: argparse.Namespace) -> int:
+    sets = archive_sets()
+    if not sets:
+        say("no Labstream archives found")
+        return 0
+    creds = load_credentials()
+    with asc_client(creds) as client:
+        uploaded = {(s.version, s.build) for s in sets if client.build_exists(s.version, s.build)}
+        attached = client.attached_builds()
+    kept, removed = plan_prune(sets, uploaded, attached, args.keep)
+    for entry in kept:
+        reason = ("attached to an App Store version" if (entry.version, entry.build) in attached
+                  else "uploaded" if (entry.version, entry.build) in uploaded else "not uploaded yet")
+        say(f"  keep    {entry.label:16} {len(entry.paths)} archive(s), {reason}")
+    for entry in removed:
+        say(f"  remove  {entry.label:16} {len(entry.paths)} archive(s), {size_mb(entry.paths)} MB")
+    if not removed:
+        return 0
+    if not args.yes:
+        say("dry run; rerun with --yes to delete the archives marked remove")
+        return 0
+    for entry in removed:
+        for path in entry.paths:
+            shutil.rmtree(path)
+            with contextlib.suppress(OSError):
+                path.parent.rmdir()  # drop the date folder once it is empty
+    say(f"removed {sum(len(e.paths) for e in removed)} archive(s)")
+    return 0
+
+
 def testflight_group(args: argparse.Namespace) -> str:
     group = args.group or setting("LABSTREAM_TESTFLIGHT_GROUP", read_local_env())
     if not group:
@@ -896,6 +1048,10 @@ def cmd_ship(args: argparse.Namespace) -> int:
     cmd_status(args)
     cmd_distribute(args)
     say("shipped to TestFlight; nothing was submitted for review")
+    try:
+        cmd_prune_archives(argparse.Namespace(keep=ARCHIVE_SETS_TO_KEEP, yes=True))
+    except ReleaseError as exc:
+        warn(f"archive pruning skipped: {exc}")
     return 0
 
 
@@ -929,13 +1085,16 @@ def main(argv: list[str] | None = None) -> int:
     ship.add_argument("--group", help="internal TestFlight group name (default: LABSTREAM_TESTFLIGHT_GROUP)")
     ship.add_argument("--yes", action="store_true", help="confirm the upload and distribution are authorized")
     ship.set_defaults(force=False, wait=True, timeout=3600, version=None)
+    prune = sub.add_parser("prune-archives", parents=[common])
+    prune.add_argument("--keep", type=int, default=ARCHIVE_SETS_TO_KEEP, help="uploaded sets to keep")
+    prune.add_argument("--yes", action="store_true", help="delete the archives marked remove")
     args = parser.parse_args(argv)
     REDACT.verbose = args.verbose
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
     handlers: dict[str, Callable[[argparse.Namespace], Any]] = {
         "preflight": cmd_preflight, "archive": cmd_archive, "validate": cmd_validate,
         "upload": cmd_upload, "status": cmd_status, "select-build": cmd_select_build,
-        "distribute": cmd_distribute, "ship": cmd_ship,
+        "distribute": cmd_distribute, "ship": cmd_ship, "prune-archives": cmd_prune_archives,
     }
     try:
         handlers[args.command](args)

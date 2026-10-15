@@ -44,6 +44,10 @@ scripts/testflight-release.py ship --group "<internal group>" --yes
 `ship` runs preflight, archive, validate, and upload with `--build-number auto` (the commit count
 of HEAD, so no version-bump commit is needed), waits for processing, and adds the builds to the
 internal group. The group can default from `LABSTREAM_TESTFLIGHT_GROUP` in `scripts/asc.local.env`.
+After a successful ship it prunes `~/Library/Developer/Xcode/Archives`: it keeps the newest three
+uploaded archive sets, every set attached to an App Store version, and any set newer than the
+newest upload (pending or failed), and deletes the rest. Run
+`scripts/testflight-release.py prune-archives` for a dry run and `--yes` to prune by hand.
 It uploads to the project's current marketing version, which must still be open in App Store
 Connect (not yet approved or released). Run it in the background: archiving four platforms and
 processing take most of an hour.
@@ -81,7 +85,11 @@ scripts/testflight-release.py select-build --yes
 
 Use `--platform visionos|ios|tvos|macos` (repeatable) for a single-platform replacement build;
 the privacy comparison runs only when all four are selected. `status`/`select-build` take
-`--version`/`--build-number` to inspect a set other than the project's current numbers. Every
+`--version`/`--build-number` to inspect a set other than the project's current numbers.
+`validate` and `upload` check the archive itself (clean source-derived build ID from a commit on
+`origin/main`), not the current checkout, so a failed upload can be retried later with
+`upload --platform <p> --build-number <n> --yes`. The Mac upload is a `.pkg` signed with the
+team's installer identity (3rd Party Mac Developer Installer), which must be in the keychain. Every
 command accepts `--build-number auto|<n>`; use the same value across the steps of one build set.
 Build numbers only increase per version and platform, so once `auto` numbers (around the commit
 count) are in use, a hand-bumped `CURRENT_PROJECT_VERSION` must exceed them.

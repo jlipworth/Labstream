@@ -6,6 +6,7 @@ import io
 import json
 import os
 import pathlib
+import plistlib
 import shutil
 import stat
 import subprocess
@@ -151,6 +152,39 @@ class RedactionTests(unittest.TestCase):
         self.assertFalse(any("key" in name.lower() or "issuer" in name.lower() for name in options))
 
 
+class MacAndSourceTests(unittest.TestCase):
+    def test_mac_export_names_installer_identity(self):
+        profile = tf.Profile("P", "UUID-1", "TEAM123456", frozenset({"OSX"}),
+                             dt.datetime(2030, 1, 1, tzinfo=dt.timezone.utc), ["AB" * 20], pathlib.Path("p"))
+        plan = tf.Plan(tf.PLATFORMS["macos"], "1.0", "3", profile, "AB" * 20, "CD" * 20)
+        self.assertEqual(tf.export_options(plan)["installerSigningCertificate"], "CD" * 20)
+        ios = tf.Plan(tf.PLATFORMS["ios"], "1.0", "3", profile, "AB" * 20)
+        self.assertNotIn("installerSigningCertificate", tf.export_options(ios))
+
+    def test_installer_identity_matches_team(self):
+        listing = (
+            '  1) ' + 'A1' * 20 + ' "Apple Distribution: Someone (TEAM123456)"\n'
+            '  2) ' + 'b2' * 20 + ' "3rd Party Mac Developer Installer: Someone (OTHERTEAM1)"\n'
+            '  3) ' + 'c3' * 20 + ' "3rd Party Mac Developer Installer: Someone (TEAM123456)"\n'
+        )
+        self.assertEqual(tf.installer_identity("TEAM123456", listing), "C3" * 20)
+        with self.assertRaisesRegex(tf.ReleaseError, "installer"):
+            tf.installer_identity("MISSING000", listing)
+
+    def test_slug_problems(self):
+        archive = pathlib.Path("LabstreamTV-1.0-b5-abcdef12.xcarchive")
+        published = subprocess.CompletedProcess([], 0)
+        unpublished = subprocess.CompletedProcess([], 1)
+        with mock.patch.object(tf, "run", return_value=published):
+            self.assertEqual(tf.slug_problems("1490-abcdef123456-clean", archive, False), [])
+            self.assertIn("uncommitted", " ".join(tf.slug_problems("1490-abcdef123456-dirty", archive, False)))
+            self.assertIn("does not match", " ".join(tf.slug_problems("1490-123456abcdef-clean", archive, False)))
+            self.assertTrue(tf.slug_problems("dev", archive, False))
+        with mock.patch.object(tf, "run", return_value=unpublished):
+            self.assertIn("origin/main", " ".join(tf.slug_problems("1490-abcdef123456-clean", archive, False)))
+            self.assertEqual(tf.slug_problems("1490-abcdef123456-clean", archive, True), [])
+
+
 class ProfileSelectionTests(unittest.TestCase):
     NOW = dt.datetime(2026, 10, 15, tzinfo=dt.timezone.utc)
 
@@ -277,11 +311,16 @@ class CommandGuardTests(unittest.TestCase):
                 calls.append((name, args.build_number))
                 return 0
             return record
+        def prune(args):
+            calls.append(("prune", args.keep, args.yes))
+            return 0
         with mock.patch.multiple(tf, cmd_archive=step("archive"), cmd_upload=step("upload"),
-                                 cmd_status=step("status"), cmd_distribute=step("distribute")):
+                                 cmd_status=step("status"), cmd_distribute=step("distribute"),
+                                 cmd_prune_archives=prune):
             code, out, _ = self.run_main(["ship", "--group", "Internal", "--yes"])
         self.assertEqual(code, 0)
-        self.assertEqual(calls, [("archive", "auto"), ("upload", "auto"), ("status", "auto"), ("distribute", "auto")])
+        self.assertEqual(calls, [("archive", "auto"), ("upload", "auto"), ("status", "auto"),
+                                 ("distribute", "auto"), ("prune", 3, True)])
         self.assertIn("nothing was submitted for review", out)
 
     def test_build_number_resolution(self):
@@ -301,3 +340,45 @@ class CommandGuardTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ArchivePruneTests(unittest.TestCase):
+    T0 = dt.datetime(2026, 10, 1, tzinfo=dt.timezone.utc)
+
+    def entry(self, build, day, version="1.7.2"):
+        return tf.ArchiveSet(version, str(build), self.T0 + dt.timedelta(days=day), [pathlib.Path(f"b{build}")])
+
+    def test_keeps_newest_uploaded_attached_and_pending_sets(self):
+        sets = [self.entry(b, d) for b, d in [(1500, 9), (1499, 8), (1498, 7), (1497, 6), (1496, 5), (2, 4), (1, 3)]]
+        sets.sort(key=lambda s: s.created, reverse=True)
+        uploaded = {("1.7.2", b) for b in ("1499", "1498", "1497", "1496", "2")}
+        attached = {("1.7.2", "2")}
+        kept, removed = tf.plan_prune(sets, uploaded, attached, keep=3)
+        self.assertEqual([k.build for k in kept], ["1500", "1499", "1498", "1497", "2"])
+        self.assertEqual([r.build for r in removed], ["1496", "1"])
+
+    def test_nothing_uploaded_keeps_everything(self):
+        sets = [self.entry(2, 2), self.entry(1, 1)]
+        kept, removed = tf.plan_prune(sets, set(), set())
+        self.assertEqual((len(kept), removed), (2, []))
+
+    def test_archive_sets_group_by_version_and_build(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            def make(day, name, scheme, build, bundle=tf.BUNDLE_ID, hour=0):
+                path = root / day / f"{name}.xcarchive"
+                path.mkdir(parents=True)
+                (path / "Info.plist").write_bytes(plistlib.dumps({
+                    "SchemeName": scheme,
+                    "CreationDate": dt.datetime(2026, 10, int(day[-2:]), hour),
+                    "ApplicationProperties": {"CFBundleShortVersionString": "1.7.2", "CFBundleVersion": build,
+                                              "CFBundleIdentifier": bundle},
+                }))
+            make("2026-10-04", "a", "Labstream", "1")
+            make("2026-10-04", "b", "LabstreamTV", "1", hour=3)
+            make("2026-10-13", "c", "LabstreamMac", "2")
+            make("2026-10-13", "d", "OtherApp", "2")
+            make("2026-10-13", "e", "Labstream", "2", bundle="org.example.other")
+            sets = tf.archive_sets(root)
+            self.assertEqual([(s.build, len(s.paths)) for s in sets], [("2", 1), ("1", 2)])
+            self.assertEqual(sets[1].created.hour, 3)
