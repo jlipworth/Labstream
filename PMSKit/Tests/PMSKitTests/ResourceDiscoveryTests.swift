@@ -2,7 +2,7 @@ import Testing
 import Foundation
 @testable import PMSKit
 
-private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream", version: "0.1.0", deviceName: "AVP")
+private let id = TestFixtures.plexIdentity
 
 @Test func resourcesRequestShape() {
     let r = ResourceDiscovery.resourcesRequest(token: "tok", identity: id)

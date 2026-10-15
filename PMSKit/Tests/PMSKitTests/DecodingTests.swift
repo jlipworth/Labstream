@@ -99,13 +99,30 @@ import Foundation
     #expect(ids.count == 3)
 }
 
-@Test func decodesMetadataWithoutChapters() throws {
+@Test func decodesBareMetadataLeavesOptionalFieldsNil() throws {
+    // A bare Plex row (Plex never sends PrimaryImageAspectRatio, and plain movies carry no
+    // chapters/markers/playlist/music/extended metadata) must decode every absent optional
+    // key to nil rather than failing or defaulting.
     let json = """
     {"MediaContainer":{"Metadata":[
-      {"ratingKey":"77","title":"No Chapters","type":"movie"}]}}
+      {"ratingKey":"77","title":"Bare","type":"movie"}]}}
     """.data(using: .utf8)!
     let c = try JSONDecoder().decode(MetadataResponse.self, from: json)
-    #expect(c.mediaContainer.metadata[0].chapters == nil)
+    let item = c.mediaContainer.metadata[0]
+    #expect(item.chapters == nil)
+    #expect(item.markers == nil)
+    #expect(item.composite == nil)
+    #expect(item.leafCount == nil)
+    #expect(item.originalTitle == nil)
+    #expect(item.lastViewedAt == nil)
+    #expect(item.parentYear == nil)
+    #expect(item.ratingCount == nil)
+    #expect(item.criticRating == nil)
+    #expect(item.roles == nil)
+    #expect(item.directors == nil)
+    #expect(item.studios == nil)
+    #expect(item.logo == nil)
+    #expect(item.primaryImageAspectRatio == nil)
 }
 
 @Test func decodesMetadataWithoutMedia() throws {
@@ -243,15 +260,6 @@ import Foundation
     """.data(using: .utf8)!
     let c = try JSONDecoder().decode(MetadataResponse.self, from: json)
     #expect(c.mediaContainer.metadata[0].markers![0].kind == .other("recap"))
-}
-
-@Test func decodesMetadataWithoutMarkers() throws {
-    let json = """
-    {"MediaContainer":{"Metadata":[
-      {"ratingKey":"77","title":"No Markers","type":"movie"}]}}
-    """.data(using: .utf8)!
-    let c = try JSONDecoder().decode(MetadataResponse.self, from: json)
-    #expect(c.mediaContainer.metadata[0].markers == nil)
 }
 
 @Test func decodesHubWithoutMetadata() throws {

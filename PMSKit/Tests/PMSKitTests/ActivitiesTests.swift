@@ -2,9 +2,8 @@ import Testing
 import Foundation
 @testable import PMSKit
 
-private let server = URL(string: "https://192.0.2.10:32400")!
-private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream",
-                               version: "0.1.0", deviceName: "AVP")
+private let server = TestFixtures.plexServer
+private let id = TestFixtures.plexIdentity
 
 @Test func activitiesRequestTargetsActivitiesAsJSON() {
     let r = ActivitiesRequest.list(server: server, token: "tok", identity: id)
@@ -35,26 +34,26 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream",
     #expect(act.looksLikeOptimize)
 }
 
-@Test func decodesMissingProgressAsNil() throws {
-    let json = """
-    {"MediaContainer":{"Activity":[
-      {"uuid":"u","type":"media.optimize","title":"t"}
-    ]}}
-    """.data(using: .utf8)!
-    let a = try JSONDecoder().decode(Activities.self, from: json)
-    #expect(a.activities.first?.progress == nil)
+struct ActivityProgressShape: Sendable, CustomTestStringConvertible {
+    /// The activity's `progress` member as a raw JSON fragment, or nil to omit the key.
+    let progressJSON: String?
+    let expected: Int?
+
+    var testDescription: String { "progress \(progressJSON ?? "absent") → \(expected.map { "\($0)" } ?? "nil")" }
 }
 
-@Test func decodesIndeterminateAndStringProgress() throws {
-    let json = """
-    {"MediaContainer":{"Activity":[
-      {"type":"media.optimize","progress":-1},
-      {"type":"media.optimize","progress":"50"}
-    ]}}
-    """.data(using: .utf8)!
-    let a = try JSONDecoder().decode(Activities.self, from: json)
-    #expect(a.activities[0].progress == -1)
-    #expect(a.activities[1].progress == 50)
+@Test(arguments: [
+    ActivityProgressShape(progressJSON: nil, expected: nil),      // absent
+    ActivityProgressShape(progressJSON: "-1", expected: -1),      // indeterminate
+    ActivityProgressShape(progressJSON: #""50""#, expected: 50),  // string-encoded
+    ActivityProgressShape(progressJSON: "37.9", expected: 37),    // double truncates
+])
+func decodesActivityProgressShapes(_ shape: ActivityProgressShape) throws {
+    let progress = shape.progressJSON.map { #","progress":\#($0)"# } ?? ""
+    let json = #"{"MediaContainer":{"Activity":[{"type":"media.optimize"\#(progress)}]}}"#
+    let a = try JSONDecoder().decode(Activities.self, from: Data(json.utf8))
+    #expect(a.activities.count == 1)
+    #expect(a.activities.first?.progress == shape.expected)
 }
 
 @Test func toleratesAlternateTypeStringsAndCasing() throws {
@@ -199,14 +198,6 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream",
     #expect(shape["matched"] == "yes")
     #expect(shape["match_has_metadata_id"] == "1")
     #expect(shape["match_correlation_equal"] == "1")
-}
-
-@Test func decodesDoubleProgress() throws {
-    let json = """
-    {"MediaContainer":{"Activity":[{"type":"media.optimize","progress":37.9}]}}
-    """.data(using: .utf8)!
-    let a = try JSONDecoder().decode(Activities.self, from: json)
-    #expect(a.activities.first?.progress == 37)
 }
 
 @Test func matchingHelperReturnsNilWhenNoOptimizers() throws {

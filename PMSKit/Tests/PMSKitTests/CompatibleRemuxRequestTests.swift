@@ -9,25 +9,15 @@ import Testing
 
 @Suite("Compatible-remux download requests")
 struct CompatibleRemuxRequestTests {
-    private let jfServer = URL(string: "https://jellyfin.example.test/base")!
-    private let jfIdentity = JellyfinClientIdentity(client: "Labstream", device: "Apple Vision Pro",
-                                                    deviceId: "device-123", version: "0.1.0")
+    // Deliberately no `/emby` base path (differs from TestFixtures.embyServer).
     private let embyServer = URL(string: "https://emby.example.test")!
-    private let embyIdentity = EmbyClientIdentity(client: "Labstream", device: "Apple Vision Pro",
-                                                  deviceId: "device-123", version: "0.1.0")
-
-    private func query(_ req: URLRequest) throws -> [String: String] {
-        let url = try #require(req.url)
-        let comps = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        return Dictionary(uniqueKeysWithValues: (comps.queryItems ?? []).map { ($0.name, $0.value ?? "") })
-    }
 
     @Test func jellyfinRemuxRequestEnablesVideoStreamCopyForHEVC() throws {
         let req = try JellyfinLibrary.compatibleRemuxDownloadRequest(
-            server: jfServer, token: "tok", identity: jfIdentity,
+            server: TestFixtures.jellyfinServer, token: "tok", identity: TestFixtures.jellyfinIdentity,
             itemId: "item-1", mediaSourceId: "src-9",
             videoCodec: "hevc", copyAudio: false, playSessionId: "ps-1")
-        let q = try query(req)
+        let q = try queryMap(req)
 
         #expect(try #require(req.url).path == "/base/Videos/item-1/stream.mp4")
         #expect(q["static"] == "false")
@@ -47,10 +37,10 @@ struct CompatibleRemuxRequestTests {
 
     @Test func jellyfinRemuxRequestCopiesAudioWhenCompatible() throws {
         let req = try JellyfinLibrary.compatibleRemuxDownloadRequest(
-            server: jfServer, token: "tok", identity: jfIdentity,
+            server: TestFixtures.jellyfinServer, token: "tok", identity: TestFixtures.jellyfinIdentity,
             itemId: "item-1", mediaSourceId: nil,
             videoCodec: "h264", audioCodec: "eac3", copyAudio: true)
-        let q = try query(req)
+        let q = try queryMap(req)
         #expect(q["videoCodec"] == "h264")            // already h264 → no alias suffix
         // Source codec listed first — copy only engages when the source codec is in the
         // requested list (aac alone silently re-encoded ac3/eac3 to AAC).
@@ -61,19 +51,19 @@ struct CompatibleRemuxRequestTests {
 
     @Test func jellyfinRemuxRequestKeepsPlainAACTargetWhenSourceCodecUnknown() throws {
         let req = try JellyfinLibrary.compatibleRemuxDownloadRequest(
-            server: jfServer, token: "tok", identity: jfIdentity,
+            server: TestFixtures.jellyfinServer, token: "tok", identity: TestFixtures.jellyfinIdentity,
             itemId: "item-1", mediaSourceId: nil,
             videoCodec: "h264", audioCodec: nil, copyAudio: true)
-        let q = try query(req)
+        let q = try queryMap(req)
         #expect(q["audioCodec"] == "aac")
     }
 
     @Test func embyRemuxRequestEnablesVideoStreamCopyAndCarriesPlaySession() throws {
         let req = try EmbyLibrary.compatibleRemuxDownloadRequest(
-            server: embyServer, token: "tok", identity: embyIdentity, userId: "user-1",
+            server: embyServer, token: "tok", identity: TestFixtures.embyIdentity, userId: "user-1",
             itemId: "item-1", mediaSourceId: "src-9", playSessionId: "ps-1",
             videoCodec: "hevc", audioCodec: "ac3", copyAudio: true, audioBitrate: 192_000)
-        let q = try query(req)
+        let q = try queryMap(req)
 
         #expect(try #require(req.url).path == "/videos/item-1/stream.mp4")
         #expect(q["Static"] == "false")

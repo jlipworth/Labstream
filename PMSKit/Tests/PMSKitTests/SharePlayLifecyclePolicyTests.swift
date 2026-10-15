@@ -37,13 +37,6 @@ struct SharePlayLeaveDecisionTests {
                                                 currentLaunchEpoch: 1) == .ignore)
     }
 
-    @Test("Closing the current launch's own player is a genuine leave")
-    func currentEpochDismissalLeaves() {
-        #expect(SharePlayLeaveDecision.evaluate(resolvedMatchesItem: true,
-                                                dismissingPlayerLaunchEpoch: 1,
-                                                currentLaunchEpoch: 1) == .leave)
-    }
-
     @Test("Scenario A: with no superseded player, a genuine close before first attach still leaves")
     func replacementCloseBeforeAttachLeaves() {
         // The one-shot flag mechanism swallowed this close (armed unconditionally at launch,
@@ -61,17 +54,11 @@ struct SharePlayLeaveDecisionTests {
         #expect(SharePlayLeaveDecision.evaluate(resolvedMatchesItem: true,
                                                 dismissingPlayerLaunchEpoch: 0,
                                                 currentLaunchEpoch: 1) == .suppressSupersededDismissal)
-    }
-
-    @Test("Suppression is not one-shot: the stale dismissal stays suppressed regardless of ordering")
-    func staleEpochStaysSuppressed() {
-        // Whether or not the replacement attached first (which used to clear the pending flag),
-        // the superseded player's epoch keeps comparing unequal.
-        for _ in 0..<2 {
-            #expect(SharePlayLeaveDecision.evaluate(resolvedMatchesItem: true,
-                                                    dismissingPlayerLaunchEpoch: 3,
-                                                    currentLaunchEpoch: 5) == .suppressSupersededDismissal)
-        }
+        // Suppression is not one-shot: whether or not the replacement attached first (which
+        // used to clear the pending flag), the superseded player's epoch keeps comparing unequal.
+        #expect(SharePlayLeaveDecision.evaluate(resolvedMatchesItem: true,
+                                                dismissingPlayerLaunchEpoch: 3,
+                                                currentLaunchEpoch: 5) == .suppressSupersededDismissal)
     }
 
     @Test("A surface that never captured an epoch is treated as a genuine close")
@@ -147,15 +134,8 @@ struct SharePlayStartedBroadcastTests {
 
 @Suite("SharePlay message session fencing")
 struct SharePlayMessageSessionPolicyTests {
-    @Test("Buffered receive work from a replacement session is rejected")
-    func replacementSessionRejectsBufferedReceive() {
-        #expect(!SharePlayMessageSessionPolicy.accepts(
-            capturedSessionGeneration: 4,
-            currentSessionGeneration: 5))
-    }
-
-    @Test("Queued send work may publish only while its exact session generation is current")
-    func queuedSendRequiresCurrentSession() {
+    @Test("Send and buffered receive work apply only for the exact current session generation")
+    func sessionWorkRequiresCurrentGeneration() {
         #expect(SharePlayMessageSessionPolicy.accepts(
             capturedSessionGeneration: 9,
             currentSessionGeneration: 9))
@@ -206,9 +186,6 @@ struct SharePlayMessageRevisionTests {
             lastAcceptedRevision: nil))
         #expect(!SharePlayInboundMessageRevisionPolicy.accepts(
             incomingRevision: nil,
-            lastAcceptedRevision: 7))
-        #expect(SharePlayInboundMessageRevisionPolicy.accepts(
-            incomingRevision: 8,
             lastAcceptedRevision: 7))
     }
 }

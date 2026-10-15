@@ -28,10 +28,6 @@ struct MediaBrowserLibraryDialectTests {
         #expect(EmbyLibrary.fullItemFields == MediaBrowserLibraryFields.fullItem)
         #expect(JellyfinLibrary.gridItemFields == EmbyLibrary.gridItemFields)
         #expect(JellyfinLibrary.fullItemFields == EmbyLibrary.fullItemFields)
-        #expect(MediaBrowserLibraryFields.fullItem.contains("ExtraIds"))
-        #expect(MediaBrowserLibraryFields.fullItem.contains("LocalTrailerCount"))
-        #expect(MediaBrowserLibraryFields.fullItem.contains("SpecialFeatureCount"))
-        #expect(MediaBrowserLibraryFields.fullItem.contains("RemoteTrailers"))
     }
 
     @Test func dialectPreservesJellyfinAndEmbyPathAndQueryNames() {

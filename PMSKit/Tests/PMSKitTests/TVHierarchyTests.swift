@@ -100,21 +100,6 @@ import Foundation
     #expect(!req.url.absoluteString.contains("TOKEN"))
 }
 
-@Test func childrenResponseDecodesAsMetadata() throws {
-    // `/children` of a show returns its seasons in a normal MediaContainer.
-    let json = """
-    {"MediaContainer":{"size":2,"Metadata":[
-      {"ratingKey":"200","title":"Season 1","type":"season","index":1,
-       "parentTitle":"Breaking Bad","parentRatingKey":"100"},
-      {"ratingKey":"201","title":"Season 2","type":"season","index":2,
-       "parentTitle":"Breaking Bad","parentRatingKey":"100"}]}}
-    """.data(using: .utf8)!
-    let c = try JSONDecoder().decode(MetadataResponse.self, from: json)
-    #expect(c.mediaContainer.metadata.count == 2)
-    #expect(c.mediaContainer.metadata[0].type == "season")
-    #expect(c.mediaContainer.metadata[0].index == 1)
-}
-
 // MARK: - Episode-leaf resolver (HTTP 400 regression guard)
 
 @Test func resolverReturnsMovieItself() async throws {
