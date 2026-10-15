@@ -6,6 +6,7 @@ import io
 import json
 import os
 import pathlib
+import shutil
 import stat
 import subprocess
 import sys
@@ -22,6 +23,8 @@ spec.loader.exec_module(tf)
 FAKE_KEY_ID = "KEYID12345"
 FAKE_ISSUER = "00000000-1111-2222-3333-444444444444"
 FAKE_APP = "1234567890"
+# Structurally valid PEM framing for tests that never sign with it.
+DUMMY_PEM = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg\n-----END PRIVATE KEY-----\n"
 
 
 def generate_pem() -> str:
@@ -48,10 +51,13 @@ def raw_to_der(raw: bytes) -> bytes:
 
 class CredentialTests(unittest.TestCase):
     def setUp(self):
-        self.pem = generate_pem()
+        self.pem = DUMMY_PEM
         self.creds = tf.Credentials(FAKE_KEY_ID, FAKE_ISSUER, FAKE_APP, self.pem)
 
+    @unittest.skipUnless(shutil.which("openssl"), "openssl is not installed (Linux hygiene image)")
     def test_jwt_is_es256_and_verifies_with_openssl(self):
+        self.pem = generate_pem()
+        self.creds = tf.Credentials(FAKE_KEY_ID, FAKE_ISSUER, FAKE_APP, self.pem)
         with tf.private_key_file(self.creds) as key_path:
             token = tf.make_jwt(self.creds, key_path, now=1_700_000_000)
             header_b64, payload_b64, signature_b64 = token.split(".")
