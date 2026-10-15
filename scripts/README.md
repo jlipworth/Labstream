@@ -337,9 +337,11 @@ There is no macOS simulator lane. See [`docs/MACOS.md`](../docs/MACOS.md).
 
 ## Physical-device deployment and evidence
 
-- `deploy-to-device.sh` — development-signed build/install wrapper for a paired Apple Vision Pro.
+- `deploy-to-device.sh` — development-signed build/install wrapper for a paired Apple Vision Pro;
+  builds into and installs only from the worktree-local `build/DerivedData-device-visionos`.
 - `deploy-mobile-to-device.sh` — development-signed `LabstreamMobile` build/install wrapper for a
-  paired iPhone or iPad; set `IOS_DEVICE_ID` when more than one is paired.
+  paired iPhone or iPad; builds into and installs only from the worktree-local
+  `build/DerivedData-device-ios`. Set `IOS_DEVICE_ID` when more than one is paired.
 - `deploy-ad-hoc-to-device.sh` — distribution-signed Ad Hoc Vision Pro build/export/install path;
   requires an appropriate distribution certificate and provisioning profile.
 - `provisioning-profile-info.py` — provisioning-profile parsing/filtering shared by deploy scripts.

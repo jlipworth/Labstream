@@ -479,9 +479,14 @@ locations, or install commands:
 ```sh
 scripts/deploy-to-device.sh            # signed Debug-xros build + install
 scripts/deploy-to-device.sh --launch   # also launch while the headset is awake/worn
-scripts/deploy-to-device.sh --no-build # reinstall the last Debug-xros build
+scripts/deploy-to-device.sh --no-build # reinstall this worktree's last Debug-xros build
 scripts/deploy-to-device.sh --verbose  # show full device/team IDs for troubleshooting
 ```
+
+The wrapper builds into the worktree-local `build/DerivedData-device-visionos`, wiping it before
+every build, and installs only that exact `Debug-xros/Labstream.app`. It never deletes or installs
+another worktree's product or anything in Xcode's global DerivedData; `--no-build` fails if this
+worktree has no device build yet.
 
 If several visionOS devices are paired, select one with
 `VP_DEVICE_ID=<device-uuid> scripts/deploy-to-device.sh --launch`. The script normally derives the
@@ -528,14 +533,15 @@ Use the mobile wrapper for a signed `iphoneos` build:
 ```sh
 scripts/deploy-mobile-to-device.sh
 scripts/deploy-mobile-to-device.sh --launch
-scripts/deploy-mobile-to-device.sh --no-build
+scripts/deploy-mobile-to-device.sh --no-build # reinstall this worktree's last Debug-iphoneos build
 scripts/deploy-mobile-to-device.sh --verbose  # show full device/team IDs for troubleshooting
 ```
 
 If more than one phone or tablet is paired, set `IOS_DEVICE_ID=<device-uuid>` (alias
 `MOBILE_DEVICE_ID`) explicitly. The signing team is derived from the Apple Development certificate;
 `IOS_DEVELOPMENT_TEAM=<team-id>` (alias `MOBILE_DEVELOPMENT_TEAM`) is the explicit override. Like
-the visionOS wrapper, it prunes matching short-lived development profiles before building
+the visionOS wrapper, it builds into a worktree-local path (`build/DerivedData-device-ios`), installs
+only that worktree's exact product, prunes matching short-lived development profiles before building
 (`IOS_REFRESH_SHORT_DEV_PROFILES=0` opts out) and refuses to install a short-lived profile with
 fewer than six days remaining. First use still requires pairing/trust, Developer Mode, and the
 matching Apple ID in Xcode Settings.

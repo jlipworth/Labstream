@@ -18,7 +18,7 @@
 # Usage:
 #   scripts/deploy-to-device.sh            # build + install to the one paired Vision Pro
 #   scripts/deploy-to-device.sh --launch   # also launch it (headset should be awake/worn)
-#   scripts/deploy-to-device.sh --no-build # install the last build as-is (skip rebuild)
+#   scripts/deploy-to-device.sh --no-build # reinstall this worktree's last device build
 #   scripts/deploy-to-device.sh --verbose  # print full device/team IDs (masked by default)
 #
 # Env overrides (rarely needed):
@@ -33,6 +33,10 @@ set -euo pipefail
 BUNDLE_ID="org.labstream.Labstream"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILE_HELPER="$REPO/scripts/provisioning-profile-info.py"
+# Worktree-local DerivedData: never build into, delete from, or install out of
+# another worktree's (or Xcode's global) DerivedData.
+DD="$REPO/build/DerivedData-device-visionos"
+APP="$DD/Build/Products/Debug-xros/Labstream.app"
 cd "$REPO"
 
 LAUNCH=0
@@ -118,16 +122,17 @@ if [ "${VP_REFRESH_SHORT_DEV_PROFILES:-1}" != "0" ]; then
 fi
 
 # --- Build (signed, device slice) ----------------------------------------------
-# LINK-SKIP guard (see CLAUDE.md): delete the device .app first so a skipped Ld step
-# can't leave us installing a stale binary.
+# LINK-SKIP guard (see CLAUDE.md): wipe this worktree's device DerivedData first so
+# the build is clean (no incremental link to skip) and a stale binary can't survive.
 if [ "$BUILD" -eq 1 ]; then
-  rm -rf "$HOME/Library/Developer/Xcode/DerivedData/Labstream-"*/Build/Products/Debug-xros/Labstream.app 2>/dev/null || true
+  rm -rf "$DD"
   VERSION_ARGS=()
   while IFS= read -r arg; do VERSION_ARGS+=("$arg"); done < <(scripts/build-version-args.sh)
   echo "building (Debug, visionOS device, signed, versioned)…"
   xcodebuild "${VERSION_ARGS[@]}" -project Labstream.xcodeproj -scheme Labstream \
     -destination "platform=visionOS,id=$DEVICE_ID" \
     -configuration Debug \
+    -derivedDataPath "$DD" \
     -allowProvisioningUpdates \
     -allowProvisioningDeviceRegistration \
     DEVELOPMENT_TEAM="$TEAM" \
@@ -135,9 +140,8 @@ if [ "$BUILD" -eq 1 ]; then
     || { tail -25 /tmp/vp-device-build.log | redact_stream >&2; die "build failed (full log: /tmp/vp-device-build.log)"; }
 fi
 
-# --- Locate the freshest device build product -----------------------------------
-APP=$(/bin/ls -td "$HOME/Library/Developer/Xcode/DerivedData/Labstream-"*/Build/Products/Debug-xros/Labstream.app 2>/dev/null | head -1 || true)
-[ -n "$APP" ] && [ -d "$APP" ] || die "no device build product found (Debug-xros/Labstream.app). Build first (omit --no-build)."
+# --- Locate this worktree's device build product (exact path only) -------------
+[ -d "$APP" ] || die "no device build product for this worktree at $APP. Build first (omit --no-build)."
 
 # Sanity: confirm it's signed for our team, not the simulator slice.
 SIGNED_TEAM=$(codesign -dvvv "$APP" 2>&1 | sed -n 's/^TeamIdentifier=//p' | head -1)

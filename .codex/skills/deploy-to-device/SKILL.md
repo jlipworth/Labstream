@@ -16,17 +16,17 @@ traps below never have to be re-derived.
 ```sh
 scripts/deploy-to-device.sh            # build (signed) + install to the paired Vision Pro
 scripts/deploy-to-device.sh --launch   # also launch it (headset must be awake/worn)
-scripts/deploy-to-device.sh --no-build # reinstall the last device build without rebuilding
+scripts/deploy-to-device.sh --no-build # reinstall this worktree's last device build
 scripts/deploy-to-device.sh --verbose  # show full device/team IDs instead of masked IDs
 scripts/deploy-to-device.sh --full-ids # alias for --verbose
 ```
 
-**Shared DerivedData caveat.** Unlike the simulator loop, the wrapper builds into Xcode's
-global DerivedData (no `-derivedDataPath`). Before building it deletes
-`Debug-xros/Labstream.app` from **every** `Labstream-*` DerivedData directory, which
-includes other worktrees' device products, and it installs whichever matching product is
-newest. So `--no-build` can install another worktree's binary; check the printed `app:`
-path before trusting the install.
+**Worktree-local DerivedData.** Like the simulator loop, the wrapper builds into a
+worktree-local path, `build/DerivedData-device-visionos` (`-derivedDataPath`), and wipes it
+before every build so there is no incremental link to skip. It installs only this worktree's
+exact `build/DerivedData-device-visionos/Build/Products/Debug-xros/Labstream.app` and never
+touches Xcode's global DerivedData or another worktree's product. `--no-build` reinstalls this
+worktree's last device build and fails clearly if none exists.
 
 The script auto-derives the device UUID (from `devicectl list devices`) and the signing
 team (from the cert OU — see trap #1). Override with `VP_DEVICE_ID` / `VP_DEVELOPMENT_TEAM`
@@ -74,8 +74,8 @@ ever build by hand, pass `DEVELOPMENT_TEAM=XXXXXXXXXX -allowProvisioningUpdates`
 ### Trap 2 — it's a device build, signed, no simulator shortcuts
 `-destination 'platform=visionOS,id=<UUID>'` (device), product in `Debug-xros`, real
 signing required. The LINK-SKIP trap from `CLAUDE.md` still applies — the script deletes
-the `Debug-xros/Labstream.app` before building so a skipped `Ld` step can't leave a stale
-binary, stamps the internal Build ID via `scripts/build-version-args.sh`, and verifies the
+its worktree-local `build/DerivedData-device-visionos` before building so a skipped `Ld` step
+can't leave a stale binary, stamps the internal Build ID via `scripts/build-version-args.sh`, and verifies the
 built `TeamIdentifier` after.
 
 ## Manual build (only if the script can't be used)
@@ -83,14 +83,15 @@ built `TeamIdentifier` after.
 ```sh
 DEVICE_ID=$(xcrun devicectl list devices | grep -iE 'vision|reality' \
   | grep -oiE '[0-9a-f-]{36}' | head -1)
-rm -rf "$HOME/Library/Developer/Xcode/DerivedData/Labstream-"*/Build/Products/Debug-xros/Labstream.app
+DD="$PWD/build/DerivedData-device-visionos"   # worktree-local; never another worktree's
+rm -rf "$DD"
 VERSION_ARGS=()
 while IFS= read -r arg; do VERSION_ARGS+=("$arg"); done < <(scripts/build-version-args.sh)
 xcodebuild "${VERSION_ARGS[@]}" -project Labstream.xcodeproj -scheme Labstream \
   -destination "platform=visionOS,id=$DEVICE_ID" \
-  -configuration Debug -allowProvisioningUpdates \
+  -configuration Debug -derivedDataPath "$DD" -allowProvisioningUpdates \
   DEVELOPMENT_TEAM=XXXXXXXXXX build
-APP=$(/bin/ls -td "$HOME/Library/Developer/Xcode/DerivedData/Labstream-"*/Build/Products/Debug-xros/Labstream.app | head -1)
+APP="$DD/Build/Products/Debug-xros/Labstream.app"
 xcrun devicectl device install app --device "$DEVICE_ID" "$APP"
 ```
 

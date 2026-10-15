@@ -114,19 +114,19 @@ lands in `Debug-iphoneos`, NOT `Debug-iphonesimulator`):
 ```sh
 scripts/deploy-mobile-to-device.sh            # build (signed, version-stamped) + install
 scripts/deploy-mobile-to-device.sh --launch   # also launch after install
-scripts/deploy-mobile-to-device.sh --no-build # reinstall last iOS device build without rebuilding
+scripts/deploy-mobile-to-device.sh --no-build # reinstall this worktree's last iOS device build
 scripts/deploy-mobile-to-device.sh --verbose  # show full device/team IDs instead of masked IDs
 ```
 
 If both an iPad and iPhone are paired, set `IOS_DEVICE_ID=<uuid>` (or
 `MOBILE_DEVICE_ID=<uuid>`) so the script targets the intended device. Set the signing team with
 `IOS_DEVELOPMENT_TEAM=<team>` (or `MOBILE_DEVELOPMENT_TEAM`); otherwise the wrapper derives it
-from the Apple Development certificate OU. It accepts `--verbose`/`--full-ids`, deletes stale
-`Debug-iphoneos/Labstream.app` products before building, and stamps the internal Build ID via
-`scripts/build-version-args.sh`. Unlike the simulator flow, it builds into Xcode's global
-DerivedData: the pre-build delete covers every `Labstream-*` directory (other worktrees'
-device products too), and it installs the newest matching product from any worktree, so
-`--no-build` can install another worktree's binary — check the printed `app:` path. By default it prunes matching short-lived development profiles;
+from the Apple Development certificate OU. It accepts `--verbose`/`--full-ids`, builds into the
+worktree-local `build/DerivedData-device-ios` (wiped before every build, so there is no
+incremental link to skip), and stamps the internal Build ID via `scripts/build-version-args.sh`.
+It installs only that worktree's exact `Debug-iphoneos/Labstream.app`, never another worktree's
+or Xcode's global DerivedData; `--no-build` reinstalls this worktree's last device build and
+fails if none exists. By default it prunes matching short-lived development profiles;
 `IOS_REFRESH_SHORT_DEV_PROFILES=0` opts out. The embedded profile is checked and a short-lived
 profile with fewer than six days remaining is refused.
 
@@ -143,7 +143,7 @@ hardware. A real headset needs a code-signed **device** build (product lands in
 ```sh
 scripts/deploy-to-device.sh            # build (signed, version-stamped) + install
 scripts/deploy-to-device.sh --launch   # also launch (headset must be awake/worn)
-scripts/deploy-to-device.sh --no-build # reinstall last device build without rebuilding
+scripts/deploy-to-device.sh --no-build # reinstall this worktree's last device build
 scripts/deploy-to-device.sh --verbose  # show full device/team IDs instead of masked IDs
 ```
 
@@ -155,10 +155,10 @@ Wake it, put it on the SAME Wi-Fi as this Mac, enable Developer Mode
 short-lived profile with fewer than six days remaining. For longer-lived offline use, prefer the
 `scripts/deploy-ad-hoc-to-device.sh` or TestFlight. The script derives
 the Vision Pro identifier from `devicectl`, the signing team from the certificate OU,
-deletes the stale `Debug-xros/Labstream.app` product before building, and stamps the
-internal Build ID via `scripts/build-version-args.sh`. Like the iOS wrapper, it uses Xcode's
-global DerivedData: the delete covers every worktree's `Labstream-*` device product, and
-`--no-build` installs the newest product from any worktree — check the printed `app:` path.
+builds into the worktree-local `build/DerivedData-device-visionos` (wiped before every build),
+and stamps the internal Build ID via `scripts/build-version-args.sh`. Like the iOS wrapper, it
+installs only that worktree's exact `Debug-xros/Labstream.app`; `--no-build` reinstalls this
+worktree's last device build and fails if none exists.
 
 ⚠️ **RECURRING SIGNING GOTCHA (hit often).** A command-line device build fails with
 `error: No Account for Team "<id>"` / `No profiles for 'org.labstream.Labstream' were found`
@@ -334,7 +334,8 @@ worktree, then run the checklist above through `git branch -D`. A stale linked w
 and close out any linked worktree that is already merged and clean.
 
 **`build/` hygiene.** Reuse the canonical per-platform paths (`build/DerivedData-visionos`,
-`build/DerivedData-ios-<platform>`, `build/DerivedData-tvos`, `build/macos-host/`) — they are
+`build/DerivedData-ios-<platform>`, `build/DerivedData-tvos`, the device-deploy wrappers'
+`build/DerivedData-device-visionos` and `build/DerivedData-device-ios`, `build/macos-host/`) — they are
 deleted and rebuilt in place by the clean-build rule above. Do not create named snapshot
 DerivedData directories (`DerivedData-<platform>-before-<fix>`, `release-<label>-v<version>`,
 one-off probe/sweep dirs) to keep around for comparison; each costs 0.5–2 GB. If a one-off
