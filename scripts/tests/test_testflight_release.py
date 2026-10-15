@@ -194,6 +194,12 @@ class FakeClient:
     def select_build(self, version_id, build_id):
         self.patched.append((version_id, build_id))
 
+    def group_id(self, name):
+        return f"group-{name}"
+
+    def add_to_group(self, group_id, build_id):
+        self.patched.append((group_id, build_id))
+
 
 class CommandGuardTests(unittest.TestCase):
     def run_main(self, argv):
@@ -218,14 +224,74 @@ class CommandGuardTests(unittest.TestCase):
         creds = tf.Credentials(FAKE_KEY_ID, FAKE_ISSUER, FAKE_APP, "pem")
         with mock.patch.object(tf, "load_credentials", return_value=creds), \
                 mock.patch.object(tf, "asc_client", fake_client):
-            code, out, _ = self.run_main(["select-build", "--version", "1.0", "--build", "2"])
+            code, out, _ = self.run_main(["select-build", "--version", "1.0", "--build-number", "2"])
             self.assertEqual(code, 0)
             self.assertEqual(client.patched, [])
             self.assertIn("would attach the build for: visionos, tvos, macos", out)
-            code, out, _ = self.run_main(["select-build", "--version", "1.0", "--build", "2", "--yes"])
+            code, out, _ = self.run_main(["select-build", "--version", "1.0", "--build-number", "2", "--yes"])
             self.assertEqual(code, 0)
             self.assertEqual([v for v, _ in client.patched], ["asv-visionos", "asv-tvos", "asv-macos"])
             self.assertIn("nothing was submitted for review", out)
+
+    def fake_asc(self, client):
+        @contextlib.contextmanager
+        def fake_client(_creds):
+            yield client
+
+        creds = tf.Credentials(FAKE_KEY_ID, FAKE_ISSUER, FAKE_APP, "pem")
+        return mock.patch.object(tf, "load_credentials", return_value=creds), mock.patch.object(tf, "asc_client", fake_client)
+
+    def test_distribute_dry_run_then_adds_only_missing_builds(self):
+        client = FakeClient({})
+        creds_patch, client_patch = self.fake_asc(client)
+        with creds_patch, client_patch:
+            argv = ["distribute", "--version", "1.0", "--build-number", "5", "--group", "Other"]
+            code, out, _ = self.run_main(argv)
+            self.assertEqual((code, client.patched), (0, []))
+            self.assertIn("would add to 'Other': visionos, ios, tvos, macos", out)
+            code, out, _ = self.run_main(argv + ["--yes"])
+            self.assertEqual(code, 0)
+            self.assertEqual({g for g, _ in client.patched}, {"group-Other"})
+            self.assertEqual(len(client.patched), 4)
+            client.patched.clear()
+            code, out, _ = self.run_main(["distribute", "--version", "1.0", "--build-number", "5", "--group", "Internal", "--yes"])
+            self.assertEqual((code, client.patched), (0, []))
+            self.assertIn("already in 'Internal'", out)
+
+    def test_ship_requires_yes_and_group_before_archiving(self):
+        with mock.patch.object(tf, "cmd_archive", side_effect=AssertionError("must not archive")), \
+                mock.patch.dict(os.environ, {}, clear=False), \
+                mock.patch.object(tf, "read_local_env", return_value={}):
+            os.environ.pop("LABSTREAM_TESTFLIGHT_GROUP", None)
+            code, _, err = self.run_main(["ship", "--group", "Internal"])
+            self.assertEqual(code, 1)
+            self.assertIn("--yes", err)
+            code, _, err = self.run_main(["ship", "--yes"])
+            self.assertEqual(code, 1)
+            self.assertIn("--group", err)
+
+    def test_ship_runs_steps_in_order_with_auto_build_number(self):
+        calls = []
+        def step(name):
+            def record(args):
+                calls.append((name, args.build_number))
+                return 0
+            return record
+        with mock.patch.multiple(tf, cmd_archive=step("archive"), cmd_upload=step("upload"),
+                                 cmd_status=step("status"), cmd_distribute=step("distribute")):
+            code, out, _ = self.run_main(["ship", "--group", "Internal", "--yes"])
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, [("archive", "auto"), ("upload", "auto"), ("status", "auto"), ("distribute", "auto")])
+        self.assertIn("nothing was submitted for review", out)
+
+    def test_build_number_resolution(self):
+        args = mock.Mock(build_number="auto")
+        with mock.patch.object(tf, "run", return_value=subprocess.CompletedProcess([], 0, stdout="1500\n", stderr="")):
+            self.assertEqual(tf.build_number(args), "1500")
+        self.assertIsNone(tf.build_number(mock.Mock(build_number=None)))
+        self.assertEqual(tf.build_number(mock.Mock(build_number="42")), "42")
+        with self.assertRaises(tf.ReleaseError):
+            tf.build_number(mock.Mock(build_number="1.2"))
 
     def test_no_review_submission_surface(self):
         source = (ROOT / "scripts/testflight-release.py").read_text()
