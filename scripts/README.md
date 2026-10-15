@@ -248,7 +248,9 @@ scripts/perf-compare.py compare \
   credential-free browse surface; pass `--allow-simulator` only after acquiring the one-simulator
   lease.
 - `agent-playback-run.py` — bounded synthetic hosted-controller consent/stop lifecycle check. It
-  has no credentials or live admission and does not prove visible playback or server cleanup.
+  runs exactly the four named `PlaybackAgentEvidenceTests` fixture tests and passes only when all
+  selected cases pass with none failed or skipped. It has no credentials or live admission and
+  does not prove visible playback or server cleanup.
 - `cua/playback-fixture.js` — Computer Use-only player-fixture verifier (checked identity
   `agent-player-290`); it requires a fixture launch and never drives a live app. See
   [Agent playback troubleshooting](../docs/AGENT-PLAYBACK-TROUBLESHOOTING.md).

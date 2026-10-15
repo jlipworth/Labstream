@@ -12,8 +12,15 @@ uv run python scripts/agent-playback-run.py fixture-consent
 ```
 
 The first command checks a synthetic progress oracle. The second builds an isolated Mac hosted
-controller fixture and requires four passing tests: consent lifecycle, admission, invalid options,
-and backend-change refusal. It emits pass/fail/blocked JSON under an isolated run directory.
+controller fixture and selects exactly four `PlaybackAgentEvidenceTests` tests: consent lifecycle
+(`fixtureConsentTransitions(backend:)`, parameterized over Jellyfin and Emby), admission
+(`admissionIsSeparateForVideoEncoding()`), invalid options (`invalidOptionsFailClosed()`), and
+backend-change refusal (`changedBackendStopsBeforeStartingPlayback()`). It passes only when
+`xcodebuild` succeeds, the result bundle reports no failed or skipped tests, every selected test
+case and parameterized argument passed, and the passing test identifiers are exactly those four
+(the reported `passedTests` may count parameterized cases separately). Anything else is
+`fixture_failed`; an unreadable result bundle is `blocked`. It emits pass/fail/blocked JSON under
+an isolated run directory.
 Neither command proves visible playback, hardware decoding, or server-job cleanup.
 
 ## Semantic Mac checks
