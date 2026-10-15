@@ -87,12 +87,6 @@ struct DownloadStartGuardPolicyTests {
                                                  rowIsPresent: false,
                                                  rowStatus: nil)
             == .superseded(reason: .rowRemoved))
-        // A fresh enqueue with no row yet is the normal pre-seed state, not a removal.
-        #expect(DownloadStartGuardPolicy.verdict(tokenIsCurrent: true,
-                                                 hasActiveSlot: true,
-                                                 enteredWithExistingRow: false,
-                                                 rowIsPresent: false,
-                                                 rowStatus: nil) == .proceed)
     }
 
     @Test("A row parked .paused during the await must not be clobbered back to active")

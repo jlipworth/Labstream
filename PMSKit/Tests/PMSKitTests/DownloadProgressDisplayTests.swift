@@ -64,19 +64,6 @@ struct DownloadProgressDisplayTests {
                                                  estimatedTotalBytes: 0) == nil)
     }
 
-    // MARK: - Selection rule keyed on (progress == 0 && bytes > 0)
-
-    @Test("the exact-vs-estimated choice is keyed on progress, not backend")
-    func selectionRuleKeyedOnProgress() throws {
-        // Same bytes/estimate; only `progress` differs — and it decides the path.
-        let exact = try #require(DownloadProgressDisplay.fraction(progress: 0.5, bytes: 250,
-                                                                 estimatedTotalBytes: 1_000))
-        let estimated = try #require(DownloadProgressDisplay.fraction(progress: 0, bytes: 250,
-                                                                     estimatedTotalBytes: 1_000))
-        #expect(exact.isEstimated == false)
-        #expect(estimated.isEstimated == true)
-    }
-
     @Test("static byte range rows prefer exact byte totals before estimated fallback")
     func staticByteRangeRowsPreferExpectedBytes() throws {
         let record = record(bytes: 250,

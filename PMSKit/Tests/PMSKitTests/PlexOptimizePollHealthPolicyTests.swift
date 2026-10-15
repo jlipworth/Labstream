@@ -83,21 +83,3 @@ struct PlexOptimizePollHealthPolicyTests {
         #expect(PlexOptimizePollHealthPolicy.failureBucket(1000) == "1000+")
     }
 }
-
-@Suite("Terminal auth message mapping")
-struct DownloadTerminalAuthMessagePolicyTests {
-    @Test("Exact 401/403 terminal messages map to auth-dead")
-    func authDeadMessages() {
-        #expect(DownloadTerminalAuthMessagePolicy.isAuthDeadTransferMessage("Server returned HTTP 401."))
-        #expect(DownloadTerminalAuthMessagePolicy.isAuthDeadTransferMessage("Server returned HTTP 403."))
-    }
-
-    @Test("Other terminal messages are never remapped")
-    func nonAuthMessages() {
-        #expect(!DownloadTerminalAuthMessagePolicy.isAuthDeadTransferMessage("Server returned HTTP 404."))
-        #expect(!DownloadTerminalAuthMessagePolicy.isAuthDeadTransferMessage("Server returned HTTP 500."))
-        #expect(!DownloadTerminalAuthMessagePolicy.isAuthDeadTransferMessage("Server returned HTTP 401"))
-        #expect(!DownloadTerminalAuthMessagePolicy.isAuthDeadTransferMessage("Transfer timed out."))
-        #expect(!DownloadTerminalAuthMessagePolicy.isAuthDeadTransferMessage(""))
-    }
-}

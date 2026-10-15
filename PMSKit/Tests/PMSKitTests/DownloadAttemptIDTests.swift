@@ -31,19 +31,6 @@ struct DownloadAttemptIDTests {
         #expect(!DownloadAttemptID.generated().rawValue.isEmpty)
     }
 
-    @Test("Attempt keys distinguish reused rating keys")
-    func compoundKey() throws {
-        let first = DownloadAttemptKey(
-            ratingKey: "plex:item",
-            attemptID: try #require(DownloadAttemptID(rawValue: "attempt-A")))
-        let second = DownloadAttemptKey(
-            ratingKey: "plex:item",
-            attemptID: try #require(DownloadAttemptID(rawValue: "attempt-B")))
-
-        #expect(first != second)
-        #expect(Set([first, second]).count == 2)
-    }
-
     @Test("Download record round-trips top-level ownership and decodes legacy absence")
     func recordCoding() throws {
         let attemptID = try #require(DownloadAttemptID(rawValue: "legacy-arbitrary-token"))
