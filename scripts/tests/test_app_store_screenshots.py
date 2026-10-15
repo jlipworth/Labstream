@@ -87,29 +87,19 @@ class AppStoreScreenshotTests(unittest.TestCase):
         (root / "manifest.json").write_text(json.dumps(payload))
         return image
 
-    def test_export_validation_rejects_alpha_even_at_an_accepted_size(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            self._export(root)
-            with mock.patch.object(screenshots, "image_properties", return_value=(1206, 2622, True)):
-                with self.assertRaisesRegex(screenshots.ScreenshotError, "alpha"):
-                    screenshots.validate_export(root, required_targets=("iphone",))
-
-    def test_export_validation_rejects_unaccepted_dimensions(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            self._export(root)
-            with mock.patch.object(screenshots, "image_properties", return_value=(1000, 1000, False)):
-                with self.assertRaisesRegex(screenshots.ScreenshotError, "not Apple-accepted"):
-                    screenshots.validate_export(root, required_targets=("iphone",))
-
-    def test_export_validation_binds_checksum(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            self._export(root, checksum="0" * 64)
-            with mock.patch.object(screenshots, "image_properties", return_value=(1206, 2622, False)):
-                with self.assertRaisesRegex(screenshots.ScreenshotError, "checksum"):
-                    screenshots.validate_export(root, required_targets=("iphone",))
+    def test_export_validation_rejects_invalid_exports(self) -> None:
+        cases = (
+            ("alpha", None, (1206, 2622, True), "alpha"),
+            ("unaccepted-dimensions", None, (1000, 1000, False), "not Apple-accepted"),
+            ("checksum", "0" * 64, (1206, 2622, False), "checksum"),
+        )
+        for name, checksum, properties, message in cases:
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                self._export(root, checksum=checksum)
+                with mock.patch.object(screenshots, "image_properties", return_value=properties):
+                    with self.assertRaisesRegex(screenshots.ScreenshotError, message):
+                        screenshots.validate_export(root, required_targets=("iphone",))
 
     def test_platform_runners_keep_fixture_and_exact_worktree_simulator_contracts(self) -> None:
         commands = {

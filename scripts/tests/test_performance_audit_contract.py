@@ -108,22 +108,14 @@ class PerformanceAuditContractTests(unittest.TestCase):
             },
         }
 
-    def test_manifest_accepts_versioned_private_local_evidence(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = pathlib.Path(temporary)
-            contract.validate_manifest(self.manifest(root), root)
+    def test_manifest_accepts_valid_variants(self):
+        def unchanged(manifest):
+            pass
 
-    def test_manifest_accepts_direct_staged_artifact_install_state(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = pathlib.Path(temporary)
-            manifest = self.manifest(root)
+        def direct_staged_artifact(manifest):
             manifest["state"]["install_state"] = "direct_staged_artifact"
-            contract.validate_manifest(manifest, root)
 
-    def test_manifest_accepts_closed_external_automation_provenance(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = pathlib.Path(temporary)
-            manifest = self.manifest(root)
+        def closed_external_automation(manifest):
             manifest["automation"] = {
                 "fixture_implementation_sha256": "d" * 64,
                 "driver_sha256": "e" * 64,
@@ -132,7 +124,17 @@ class PerformanceAuditContractTests(unittest.TestCase):
                 "fixture_protocol_version": 1,
                 "driver_protocol_version": 1,
             }
-            contract.validate_manifest(manifest, root)
+
+        for name, mutate in (
+            ("versioned_private_local_evidence", unchanged),
+            ("direct_staged_artifact_install_state", direct_staged_artifact),
+            ("closed_external_automation_provenance", closed_external_automation),
+        ):
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as temporary:
+                root = pathlib.Path(temporary)
+                manifest = self.manifest(root)
+                mutate(manifest)
+                contract.validate_manifest(manifest, root)
 
     def test_manifest_rejects_incomplete_or_unbounded_automation_provenance(self):
         with tempfile.TemporaryDirectory() as temporary:

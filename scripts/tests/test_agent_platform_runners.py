@@ -16,24 +16,18 @@ class AgentPlatformRunnerTests(unittest.TestCase):
             capture_output=True,
         )
 
-    def test_mobile_help_advertises_passive_and_semantic_scenarios(self) -> None:
-        result = self.run_script("agent-mobile-run.sh", "--help")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("fixture-home-passive", result.stdout)
-        self.assertIn("fixture-detail-semantic", result.stdout)
-
-    def test_macos_help_advertises_passive_and_semantic_scenarios(self) -> None:
-        result = self.run_script("agent-macos-run.sh", "--help")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("fixture-home-passive", result.stdout)
-        self.assertIn("fixture-detail", result.stdout)
-
-    def test_tvos_help_advertises_home_and_local_player_scenarios(self) -> None:
-        result = self.run_script("agent-tvos-run.sh", "--help")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("fixture-home-passive", result.stdout)
-        self.assertIn("fixture-home-semantic", result.stdout)
-        self.assertIn("fixture-player-basic", result.stdout)
+    def test_platform_runner_help_advertises_scenarios(self) -> None:
+        for script, tokens in (
+            ("agent-mobile-run.sh", ("fixture-home-passive", "fixture-detail-semantic")),
+            ("agent-macos-run.sh", ("fixture-home-passive", "fixture-detail")),
+            ("agent-tvos-run.sh",
+             ("fixture-home-passive", "fixture-home-semantic", "fixture-player-basic")),
+        ):
+            with self.subTest(name=script):
+                result = self.run_script(script, "--help")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                for token in tokens:
+                    self.assertIn(token, result.stdout)
 
     def test_simulator_runners_require_explicit_lease_assertion(self) -> None:
         for name, arguments in (

@@ -338,10 +338,6 @@ class CommandGuardTests(unittest.TestCase):
         self.assertNotIn("appStoreVersionSubmissions", source)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ArchivePruneTests(unittest.TestCase):
     T0 = dt.datetime(2026, 10, 1, tzinfo=dt.timezone.utc)
 
@@ -382,3 +378,7 @@ class ArchivePruneTests(unittest.TestCase):
             sets = tf.archive_sets(root)
             self.assertEqual([(s.build, len(s.paths)) for s in sets], [("2", 1), ("1", 2)])
             self.assertEqual(sets[1].created.hour, 3)
+
+
+if __name__ == "__main__":
+    unittest.main()
