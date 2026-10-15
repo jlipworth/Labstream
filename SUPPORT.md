@@ -32,6 +32,9 @@ there is no public App Store release yet. Platform-specific status and acceptanc
 2. Sign in to the selected backend and choose/enter the server.
 3. Browse your libraries, then play. Titles resume where you left off.
 
+Every option on the Settings screen, with its default and the platforms that show it, is described
+in the [Settings reference](https://github.com/jlipworth/Labstream/blob/main/docs/SETTINGS.md).
+
 ## Common questions
 
 - **A reinstall asks me to sign in again.** A normal upgrade install usually preserves app state.
@@ -42,7 +45,8 @@ there is no public App Store release yet. Platform-specific status and acceptanc
 - **Playback failed / spinner won't clear.** Labstream has a stall watchdog
   that can attempt a bounded recovery and otherwise surfaces a **Playback failed** / Retry overlay.
   Choosing Retry rebuilds the player. If the problem persists, confirm the server is reachable and
-  try a lower streaming quality in Settings.
+  try a lower streaming quality in Settings (see the
+  [Settings reference](https://github.com/jlipworth/Labstream/blob/main/docs/SETTINGS.md)).
 - **Can I watch away from home?** Remote Plex video can require Plex Pass / Remote Watch
   Pass on your account, or Plex Pass on the server owner's account (a Plex policy).
   Jellyfin and Emby remote access depend on your server/network setup.

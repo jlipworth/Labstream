@@ -40,6 +40,7 @@ flowchart TD
 ### Users
 
 - [Support and troubleshooting](support.md) — requirements, sign-in, playback, and diagnostics.
+- [Settings reference](SETTINGS.md) — every Settings option, its default, and where it appears.
 - [Report a bug](REPORTING-BUGS.md) — reproducible steps and the redacted report workflow.
 - [Privacy policy](privacy.md) — local storage, server communication, and user-initiated reports.
 - [Release and App Store status](RELEASES.md) — current source version, processed builds, and open

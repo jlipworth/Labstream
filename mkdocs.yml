@@ -46,6 +46,7 @@ nav:
   - Home: index.md
   - User guide:
       - Support & troubleshooting: support.md
+      - Settings reference: SETTINGS.md
       - Report a bug: REPORTING-BUGS.md
       - Privacy policy: privacy.md
       - Release and App Store status: RELEASES.md
