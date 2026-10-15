@@ -195,7 +195,10 @@ creating a duplicate record:
    uploaded. `archive` writes manual-distribution-signed archives to Xcode's Organizer folder,
    `validate` checks each archive plus the four-app privacy manifest comparison, and
    `upload --yes` uploads with an App Store Connect API key. Organizer remains the place to
-   generate the aggregate privacy report.
+   generate the aggregate privacy report. For an on-demand build to internal testers,
+   `ship --group <internal group> --yes` runs the whole sequence with `--build-number auto`
+   (the commit count of HEAD) and adds the processed builds to that group; a release candidate
+   can then be one of those builds, selected for review rather than archived again.
 
    The script exists because Xcode 27 `xcodebuild` cannot use an account signed in through Xcode
    Settings ▸ Apple Accounts (`No Accounts`), and tvOS automatic signing fails while the team has

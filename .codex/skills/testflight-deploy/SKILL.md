@@ -1,6 +1,6 @@
 ---
 name: testflight-deploy
-description: Archive, validate, upload, and select coordinated Labstream builds for TestFlight with scripts/testflight-release.py. Use when the user asks to ship, upload, publish to TestFlight, archive a release, check App Store Connect processing, or attach a build to an App Store version. Never submits for App Review.
+description: Archive, validate, upload, distribute, and select coordinated Labstream builds for TestFlight with scripts/testflight-release.py. Use when the user asks to ship, push a build to their devices, upload, publish to TestFlight, archive a release, check App Store Connect processing, or attach a build to an App Store version. Never submits for App Review.
 ---
 
 # TestFlight deploy
@@ -14,7 +14,8 @@ App Store Connect website for these steps; the canonical sequence and gates are 
 
 - `preflight`, `archive`, `validate`, `status`, and a `select-build` dry run are read-only toward
   App Store Connect and may run without asking.
-- `upload --yes` needs explicit user authorization for that build set.
+- `upload --yes`, `ship --yes`, and `distribute --yes` need explicit user authorization for
+  that build set.
 - `select-build --yes` changes App Store version drafts; confirm with the user first.
 - App Review submission is not implemented and stays an Account Holder action. Never submit,
   release, or change storefront availability.
@@ -31,7 +32,23 @@ App Store Connect website for these steps; the canonical sequence and gates are 
 - Never print, commit, or paste the key, key ID, issuer ID, app ID, team ID, vault/item IDs, or
   the service-account token. The script masks account identifiers; keep `--verbose` local.
 
-## Flow
+## On-demand continuous build
+
+When the user wants the current `main` on their own devices:
+
+```sh
+git switch main && git pull --ff-only
+scripts/testflight-release.py ship --group "<internal group>" --yes
+```
+
+`ship` runs preflight, archive, validate, and upload with `--build-number auto` (the commit count
+of HEAD, so no version-bump commit is needed), waits for processing, and adds the builds to the
+internal group. The group can default from `LABSTREAM_TESTFLIGHT_GROUP` in `scripts/asc.local.env`.
+It uploads to the project's current marketing version, which must still be open in App Store
+Connect (not yet approved or released). Run it in the background: archiving four platforms and
+processing take most of an hour.
+
+## Step-by-step flow
 
 ```sh
 # 1. Version/build bumped and merged first (bump-version skill); release from published main.
@@ -54,6 +71,9 @@ scripts/testflight-release.py upload --yes
 # 6. Processing, TestFlight state, beta groups, and which build each platform version uses.
 scripts/testflight-release.py status --wait
 
+# 6b. Internal group membership (skip if the group distributes automatically).
+scripts/testflight-release.py distribute --group "<internal group>" --yes
+
 # 7. A new App Store version can inherit the previous version's build. Dry run, then confirm.
 scripts/testflight-release.py select-build
 scripts/testflight-release.py select-build --yes
@@ -61,7 +81,10 @@ scripts/testflight-release.py select-build --yes
 
 Use `--platform visionos|ios|tvos|macos` (repeatable) for a single-platform replacement build;
 the privacy comparison runs only when all four are selected. `status`/`select-build` take
-`--version`/`--build` to inspect a set other than the project's current numbers.
+`--version`/`--build-number` to inspect a set other than the project's current numbers. Every
+command accepts `--build-number auto|<n>`; use the same value across the steps of one build set.
+Build numbers only increase per version and platform, so once `auto` numbers (around the commit
+count) are in use, a hand-bumped `CURRENT_PROJECT_VERSION` must exceed them.
 
 ## After upload
 
