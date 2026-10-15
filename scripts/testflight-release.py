@@ -449,6 +449,16 @@ def installed_identity_sha1s() -> set[str]:
     return {m.group(1).upper() for m in re.finditer(r"\b([0-9A-Fa-f]{40})\b", out)}
 
 
+def installer_identity(team: str, listing: str | None = None) -> str:
+    """SHA-1 of the Mac installer identity that signs the App Store .pkg for this team."""
+    listing = listing if listing is not None else run(["security", "find-identity", "-v"]).stdout
+    for line in listing.splitlines():
+        match = re.search(r'\b([0-9A-Fa-f]{40})\s+"(3rd Party Mac Developer Installer|Mac Installer Distribution):.*\((\w+)\)"', line)
+        if match and match.group(3) == team:
+            return match.group(1).upper()
+    raise ReleaseError("no Mac installer signing identity (3rd Party Mac Developer Installer) for the team is installed")
+
+
 def _profile_helper():
     spec = importlib.util.spec_from_file_location("profile_info", REPO / "scripts" / "provisioning-profile-info.py")
     assert spec and spec.loader
@@ -525,6 +535,7 @@ class Plan:
     build: str
     profile: Profile
     identity: str
+    installer: str = ""
 
     @property
     def team(self) -> str:
@@ -553,7 +564,9 @@ def build_plans(platforms: list[Platform], build_override: str | None = None) ->
             raise ReleaseError(f"{platform.scheme} bundle id is {versions['bundle_id']}, expected {BUNDLE_ID}")
         profile, identity = choose_profile(profiles, platform, identities)
         REDACT.add(profile.team, profile.uuid, identity)
-        plans.append(Plan(platform, versions["version"], build_override or versions["build"], profile, identity))
+        installer = installer_identity(profile.team) if platform.macos else ""
+        REDACT.add(installer)
+        plans.append(Plan(platform, versions["version"], build_override or versions["build"], profile, identity, installer))
     if len({(p.version, p.build) for p in plans}) > 1:
         warn("platforms have different version/build numbers: "
              + ", ".join(f"{p.platform.key} {p.version} ({p.build})" for p in plans))
@@ -565,12 +578,30 @@ def archive_path(plan: Plan, head: str, day: str | None = None) -> pathlib.Path:
     return ARCHIVES_ROOT / day / f"{plan.platform.scheme}-{plan.version}-b{plan.build}-{head[:8]}.xcarchive"
 
 
-def find_archive(plan: Plan, head: str) -> pathlib.Path:
-    name = archive_path(plan, head).name
-    matches = sorted(ARCHIVES_ROOT.glob(f"*/{name}"))
+def find_archive(plan: Plan) -> pathlib.Path:
+    """Newest archive for this scheme/version/build, whatever commit it was built from."""
+    pattern = f"{plan.platform.scheme}-{plan.version}-b{plan.build}-*.xcarchive"
+    matches = sorted(ARCHIVES_ROOT.glob(f"*/{pattern}"), key=lambda p: p.stat().st_mtime)
     if not matches:
-        raise ReleaseError(f"no archive named {name} under {ARCHIVES_ROOT}; run `archive` first")
+        raise ReleaseError(f"no archive matching {pattern} under {ARCHIVES_ROOT}; run `archive` first")
     return matches[-1]
+
+
+def slug_problems(slug: Any, archive: pathlib.Path, allow_unpublished: bool) -> list[str]:
+    """An archive must come from a clean, published commit that matches its file name."""
+    match = re.fullmatch(r"\d+-([0-9a-f]{12})-(clean|dirty)", str(slug))
+    if not match:
+        return [f"LabstreamBuildSlug {slug!r} is not a source-derived build ID"]
+    commit, state = match.groups()
+    problems = []
+    if state != "clean":
+        problems.append(f"built from uncommitted source ({slug})")
+    if not archive.name.removesuffix(".xcarchive").endswith(f"-{commit[:8]}"):
+        problems.append(f"archive name does not match its source commit {commit[:8]}")
+    published = run(["git", "merge-base", "--is-ancestor", commit, "origin/main"], check=False).returncode == 0
+    if not published and not allow_unpublished:
+        problems.append(f"source commit {commit[:8]} is not on origin/main")
+    return problems
 
 
 # --- Archive validation --------------------------------------------------------
@@ -583,7 +614,7 @@ def archive_app(archive: pathlib.Path) -> pathlib.Path:
     return apps[0]
 
 
-def validate_archive(plan: Plan, archive: pathlib.Path, expected_slug: str) -> list[str]:
+def validate_archive(plan: Plan, archive: pathlib.Path, allow_unpublished: bool) -> list[str]:
     problems: list[str] = []
     app = archive_app(archive)
     contents = app / "Contents" if plan.platform.macos else app
@@ -592,11 +623,11 @@ def validate_archive(plan: Plan, archive: pathlib.Path, expected_slug: str) -> l
         "CFBundleIdentifier": BUNDLE_ID,
         "CFBundleShortVersionString": plan.version,
         "CFBundleVersion": plan.build,
-        "LabstreamBuildSlug": expected_slug,
     }
     for key, expected in checks.items():
         if info.get(key) != expected:
             problems.append(f"{key} is {info.get(key)!r}, expected {expected!r}")
+    problems += slug_problems(info.get("LabstreamBuildSlug"), archive, allow_unpublished)
     min_os = info.get("LSMinimumSystemVersion" if plan.platform.macos else "MinimumOSVersion")
 
     verify = run(["codesign", "--verify", "--deep", "--strict", str(app)], check=False)
@@ -651,11 +682,11 @@ def check_privacy(archives: dict[str, pathlib.Path]) -> list[str]:
     return ["privacy manifest check failed" + (f": {last[0]}" if last else "")]
 
 
-def validate_all(plans: list[Plan], source: dict[str, str]) -> dict[str, pathlib.Path]:
-    archives = {plan.platform.key: find_archive(plan, source["head"]) for plan in plans}
+def validate_all(plans: list[Plan], allow_unpublished: bool) -> dict[str, pathlib.Path]:
+    archives = {plan.platform.key: find_archive(plan) for plan in plans}
     problems: list[str] = []
     for plan in plans:
-        for problem in validate_archive(plan, archives[plan.platform.key], source["slug"]):
+        for problem in validate_archive(plan, archives[plan.platform.key], allow_unpublished):
             say(f"           FAIL {problem}")
             problems.append(f"{plan.platform.key}: {problem}")
     for problem in check_privacy(archives):
@@ -732,14 +763,13 @@ def cmd_archive(args: argparse.Namespace) -> int:
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
-    source = source_state(args.allow_unpublished)
-    validate_all(build_plans(selected_platforms(args), build_number(args)), source)
+    validate_all(build_plans(selected_platforms(args), build_number(args)), args.allow_unpublished)
     say("all archives valid; Organizer can also generate the aggregate privacy report from them")
     return 0
 
 
 def export_options(plan: Plan) -> dict[str, Any]:
-    return {
+    options = {
         "method": "app-store-connect",
         "destination": "upload",
         "signingStyle": "manual",
@@ -749,14 +779,17 @@ def export_options(plan: Plan) -> dict[str, Any]:
         "manageAppVersionAndBuildNumber": False,
         "uploadSymbols": True,
     }
+    if plan.installer:
+        # The Mac App Store upload is a .pkg signed with the installer identity.
+        options["installerSigningCertificate"] = plan.installer
+    return options
 
 
 def cmd_upload(args: argparse.Namespace) -> int:
     if not args.yes:
         raise ReleaseError("upload sends binaries to App Store Connect; rerun with --yes once it is authorized")
-    source = source_state(args.allow_unpublished)
     plans = build_plans(selected_platforms(args), build_number(args))
-    archives = validate_all(plans, source)
+    archives = validate_all(plans, args.allow_unpublished)
     creds = load_credentials()
     check_not_uploaded(plans, creds)
     with private_key_file(creds) as key_path:

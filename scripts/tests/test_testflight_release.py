@@ -152,6 +152,39 @@ class RedactionTests(unittest.TestCase):
         self.assertFalse(any("key" in name.lower() or "issuer" in name.lower() for name in options))
 
 
+class MacAndSourceTests(unittest.TestCase):
+    def test_mac_export_names_installer_identity(self):
+        profile = tf.Profile("P", "UUID-1", "TEAM123456", frozenset({"OSX"}),
+                             dt.datetime(2030, 1, 1, tzinfo=dt.timezone.utc), ["AB" * 20], pathlib.Path("p"))
+        plan = tf.Plan(tf.PLATFORMS["macos"], "1.0", "3", profile, "AB" * 20, "CD" * 20)
+        self.assertEqual(tf.export_options(plan)["installerSigningCertificate"], "CD" * 20)
+        ios = tf.Plan(tf.PLATFORMS["ios"], "1.0", "3", profile, "AB" * 20)
+        self.assertNotIn("installerSigningCertificate", tf.export_options(ios))
+
+    def test_installer_identity_matches_team(self):
+        listing = (
+            '  1) ' + 'A1' * 20 + ' "Apple Distribution: Someone (TEAM123456)"\n'
+            '  2) ' + 'b2' * 20 + ' "3rd Party Mac Developer Installer: Someone (OTHERTEAM1)"\n'
+            '  3) ' + 'c3' * 20 + ' "3rd Party Mac Developer Installer: Someone (TEAM123456)"\n'
+        )
+        self.assertEqual(tf.installer_identity("TEAM123456", listing), "C3" * 20)
+        with self.assertRaisesRegex(tf.ReleaseError, "installer"):
+            tf.installer_identity("MISSING000", listing)
+
+    def test_slug_problems(self):
+        archive = pathlib.Path("LabstreamTV-1.0-b5-abcdef12.xcarchive")
+        published = subprocess.CompletedProcess([], 0)
+        unpublished = subprocess.CompletedProcess([], 1)
+        with mock.patch.object(tf, "run", return_value=published):
+            self.assertEqual(tf.slug_problems("1490-abcdef123456-clean", archive, False), [])
+            self.assertIn("uncommitted", " ".join(tf.slug_problems("1490-abcdef123456-dirty", archive, False)))
+            self.assertIn("does not match", " ".join(tf.slug_problems("1490-123456abcdef-clean", archive, False)))
+            self.assertTrue(tf.slug_problems("dev", archive, False))
+        with mock.patch.object(tf, "run", return_value=unpublished):
+            self.assertIn("origin/main", " ".join(tf.slug_problems("1490-abcdef123456-clean", archive, False)))
+            self.assertEqual(tf.slug_problems("1490-abcdef123456-clean", archive, True), [])
+
+
 class ProfileSelectionTests(unittest.TestCase):
     NOW = dt.datetime(2026, 10, 15, tzinfo=dt.timezone.utc)
 

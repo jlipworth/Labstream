@@ -85,7 +85,11 @@ scripts/testflight-release.py select-build --yes
 
 Use `--platform visionos|ios|tvos|macos` (repeatable) for a single-platform replacement build;
 the privacy comparison runs only when all four are selected. `status`/`select-build` take
-`--version`/`--build-number` to inspect a set other than the project's current numbers. Every
+`--version`/`--build-number` to inspect a set other than the project's current numbers.
+`validate` and `upload` check the archive itself (clean source-derived build ID from a commit on
+`origin/main`), not the current checkout, so a failed upload can be retried later with
+`upload --platform <p> --build-number <n> --yes`. The Mac upload is a `.pkg` signed with the
+team's installer identity (3rd Party Mac Developer Installer), which must be in the keychain. Every
 command accepts `--build-number auto|<n>`; use the same value across the steps of one build set.
 Build numbers only increase per version and platform, so once `auto` numbers (around the commit
 count) are in use, a hand-bumped `CURRENT_PROJECT_VERSION` must exceed them.
