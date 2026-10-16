@@ -427,7 +427,8 @@ background.
 - DEBUG-only probe and fixture harnesses live in `Labstream/Shared/Debug/` (playback, browse, and
   HDR probes, frame capture, UI-test launch configuration and fixtures),
   `Labstream/Capabilities/Downloads/Debug/` (per-backend download probes), and
-  `Labstream/Platforms/tvOS/Debug/` (TV input evidence and player fixture). They back the probe,
+  `Labstream/Platforms/tvOS/Debug/` (TV input evidence and player fixture), and
+  `Labstream/Platforms/Mobile/Debug/` (iPhone/iPad player fixture and chrome geometry probe). They back the probe,
   frame-capture, and platform-runner workflows and are not shipped.
 
 Use typed `DiagnosticFieldValue`s. Do not add raw tokens, URLs, hosts, usernames, local

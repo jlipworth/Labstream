@@ -43,6 +43,18 @@ root, plus the shared `PMSKit` package. The public mobile support floor is iOS/i
   30s, Shift-←/Shift-→ skip 10s, Esc close). `UIBackgroundModes = audio`
   is set on `LabstreamMobile`; playback still pauses when the app backgrounds unless it is
   continuing through PiP or an external AirPlay route.
+- Player layout contract (#258): `CustomPlayerView` owns its safe-area policy. The black
+  backdrop and `AVPlayerLayer` fill the whole display (Fit/Fill only change `videoGravity`),
+  while the chrome is laid out inside the safe area, so it clears the rounded corners, Dynamic
+  Island, and home indicator. Presenters (Detail streaming/local covers, Downloads) must not
+  wrap the player in `.ignoresSafeArea()`, because that erases the insets for the chrome too.
+  For a fixed device, orientation, and chrome state, the close/utility buttons, center
+  play/pause, and bottom platter keep the same frames for any source aspect and menu set. The
+  phone-landscape transport row never grows wider than its platter. If the item's menu set
+  does not fit beside the four skips, the row drops to the ←10/→30 pair and then scrolls
+  the pills. PiP leads the top-trailing group, so its per-item availability never moves the
+  display-mode or AirPlay buttons. A hairline outline keeps the glass platter legible over
+  letterbox/pillarbox black.
 - Cellular downloads default to **off**. The Settings download toggle controls the
   cellular policy stamped onto freshly created request-based transfer tasks; existing
   active/resume-data tasks keep the policy they were created with. Labstream does not
@@ -80,7 +92,16 @@ The semantic scenario runs `LabstreamMobileFixtureUITests` against the shared sy
 fixture, activates `labstream.home.fixture-resume.plex-orbit`, and asserts the detail summary. Its
 artifact directory contains a screen recording, host screenshots, bounded logs, the `.xcresult`,
 exported XCTest attachments, `test-summary.json`, and machine-readable `run.json`. Use
-`fixture-home-passive` only when launch/render evidence is sufficient. Xcode Device Interaction is
+`fixture-home-passive` only when launch/render evidence is sufficient.
+
+`LabstreamMobileFixtureUITests` also owns the player-chrome geometry regression. It launches
+`--ui-testing --ui-testing-fixture player --ui-testing-player-aspect 16x9|239x100|4x3
+--ui-testing-player-paused`, optionally adding `--ui-testing-player-all-menus` to show the
+streaming-width menu set. The fixture plays a synthetic local clip through the real
+`CustomPlayerView`, and the test asserts identical chrome frames across aspects. On iPad it checks
+portrait and landscape. Adding `--ui-testing-player-geometry` writes a privacy-safe
+`PlayerGeometry` log, with labels, window frames, safe-area insets, and
+`AVPlayerLayer.videoRect`, under the `PlayerGeometry` category. Xcode Device Interaction is
 the preferred exploratory iOS 27 driver when available, but XCUITest is the durable regression
 contract. Neither path needs or may invent real backend credentials.
 
@@ -103,6 +124,9 @@ multiple-device selection, install, and launch.
 
 ## Remaining validation gaps
 
+- Physical iPhone confirmation of the #258 chrome layout contract (stable envelope across source
+  aspects, rounded-corner clearance) and iPad compact Split View/Stage Manager widths, which the
+  simulator fixture does not drive.
 - Physical iPhone/iPad validation for PiP, AirPlay, Control Center/lock-screen Now
   Playing, background interruption behavior, and App Intents/Spotlight invocation.
 - Physical-network validation for the cellular-download toggle and OS background-transfer
