@@ -5,13 +5,13 @@ import Testing
 // Covers GH #86 (Jellyfin/Emby parent/series artwork fallback) and the cross-backend
 // artwork/metadata surfacing in GH #76 (Logo + episode Thumb, cast/studios, critic rating).
 //
-// The MediaBrowser DTO is shared by Jellyfin and Emby, so each fallback assertion is run
-// once on a `JellyfinBaseItemDto` and once on an `EmbyBaseItemDto` where the scheme is the
-// only difference; Plex paths are exercised through `MetadataResponse`.
+// The MediaBrowser DTO is shared by Jellyfin and Emby (the scheme is the only difference),
+// so fallback logic runs on `JellyfinBaseItemDto` with a targeted `EmbyBaseItemDto` scheme
+// check; Plex paths are exercised through `MetadataResponse`.
 
 @Suite("Artwork & metadata (#86 / #76)")
 struct ArtworkMetadataTests {
-    private let fallbackArtworkFields: Set<String> = [
+    private let requiredMediaBrowserFields: Set<String> = [
         "ParentThumbItemId",
         "ParentThumbImageTag",
         "ParentBackdropItemId",
@@ -19,6 +19,9 @@ struct ArtworkMetadataTests {
         "ParentPrimaryImageItemId",
         "ParentPrimaryImageTag",
         "SeriesPrimaryImageTag",
+        // #101: without PrimaryImageAspectRatio the server omits the value and every poster
+        // cell silently falls back to 2:3, defeating the per-item aspect fix.
+        "PrimaryImageAspectRatio",
     ]
 
     private func fieldSet(_ fields: String) -> Set<String> {
@@ -36,7 +39,7 @@ struct ArtworkMetadataTests {
             fieldSet(EmbyLibrary.fullItemFields),
         ]
         for fields in fieldSets {
-            #expect(fields.isSuperset(of: fallbackArtworkFields))
+            #expect(fields.isSuperset(of: requiredMediaBrowserFields))
         }
         #expect(fieldSet(JellyfinLibrary.fullItemFields).isSuperset(of: ["People", "Studios", "CriticRating"]))
         #expect(fieldSet(EmbyLibrary.fullItemFields).isSuperset(of: ["People", "Studios", "CriticRating"]))
@@ -134,21 +137,6 @@ struct ArtworkMetadataTests {
     }
 
     // MARK: - #86 — same fallback on the Emby flavor (shared struct, different scheme)
-
-    @Test func embyEpisodeMissingPrimaryFallsBackToSeasonThumb() throws {
-        let dto = try JSONDecoder().decode(EmbyBaseItemDto.self, from: Data(#"""
-        {
-          "Id": "episode-2", "Name": "Episode", "Type": "Episode",
-          "SeriesId": "series-1", "SeasonId": "season-1", "ParentId": "season-1",
-          "ImageTags": {},
-          "ParentThumbItemId": "season-1", "ParentThumbImageTag": "season-thumb-tag",
-          "SeriesPrimaryImageTag": "series-poster-tag"
-        }
-        """#.utf8))
-        let item = try #require(dto.toMediaItem())
-        #expect(item.thumb == "emby://item/season-1/Thumb?tag=season-thumb-tag")
-        #expect(item.grandparentThumb == "emby://item/series-1/Primary?tag=series-poster-tag")
-    }
 
     @Test func embyEpisodePrefersSeasonPrimaryOverLandscapeSeasonThumb() throws {
         let dto = try JSONDecoder().decode(EmbyBaseItemDto.self, from: Data(#"""
@@ -271,17 +259,4 @@ struct ArtworkMetadataTests {
         #expect(item.logo == "/library/metadata/42/clearLogo/1")
     }
 
-    @Test func plexBareItemHasNoExtendedMetadata() throws {
-        let json = """
-        {"MediaContainer":{"Metadata":[
-          {"ratingKey":"1","title":"Bare","type":"movie"}]}}
-        """.data(using: .utf8)!
-        let c = try JSONDecoder().decode(MetadataResponse.self, from: json)
-        let item = c.mediaContainer.metadata[0]
-        #expect(item.criticRating == nil)
-        #expect(item.roles == nil)
-        #expect(item.directors == nil)
-        #expect(item.studios == nil)
-        #expect(item.logo == nil)
-    }
 }

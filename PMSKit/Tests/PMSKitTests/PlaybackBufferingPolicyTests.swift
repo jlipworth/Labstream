@@ -22,25 +22,17 @@ struct PlaybackBufferingPolicyTests {
         #expect(!initialRemoteHLS.usesShortRemoteHLSBuffer)
     }
 
-    @Test func embyCopyReopenKeepsAutomaticRecoveryWithTheSameShortBuffer() {
+    /// Emby and Jellyfin video-copy reopens keep automatic stall recovery and every other
+    /// short-buffer setting unchanged from the server-encoded baseline.
+    @Test(arguments: [(true, false), (false, true)])
+    func copyReopenKeepsAutomaticRecoveryWithoutChangingOtherSettings(isEmbyVideoCopyHLS: Bool,
+                                                                      isJellyfinVideoCopyHLS: Bool) {
         let baseline = PlaybackBufferingPolicy.configuration(
             isRemoteServerEncodedHLS: true, preferShortRemoteHLSBuffer: true)
         let copy = PlaybackBufferingPolicy.configuration(
             isRemoteServerEncodedHLS: true, preferShortRemoteHLSBuffer: true,
-            isEmbyVideoCopyHLS: true)
-        #expect(copy.automaticallyWaitsToMinimizeStalling)
-        #expect(!baseline.automaticallyWaitsToMinimizeStalling)
-        #expect(copy.preferredForwardBufferSeconds == baseline.preferredForwardBufferSeconds)
-        #expect(copy.usesShortRemoteHLSBuffer == baseline.usesShortRemoteHLSBuffer)
-        #expect(copy.canUseNetworkResourcesForLiveStreamingWhilePaused == baseline.canUseNetworkResourcesForLiveStreamingWhilePaused)
-    }
-
-    @Test func jellyfinCopyReopenKeepsAutomaticRecoveryWithoutChangingOtherSettings() {
-        let baseline = PlaybackBufferingPolicy.configuration(
-            isRemoteServerEncodedHLS: true, preferShortRemoteHLSBuffer: true)
-        let copy = PlaybackBufferingPolicy.configuration(
-            isRemoteServerEncodedHLS: true, preferShortRemoteHLSBuffer: true,
-            isJellyfinVideoCopyHLS: true)
+            isEmbyVideoCopyHLS: isEmbyVideoCopyHLS,
+            isJellyfinVideoCopyHLS: isJellyfinVideoCopyHLS)
         #expect(copy.automaticallyWaitsToMinimizeStalling)
         #expect(!baseline.automaticallyWaitsToMinimizeStalling)
         #expect(copy.preferredForwardBufferSeconds == baseline.preferredForwardBufferSeconds)

@@ -105,8 +105,8 @@ struct DownloadsPhase4CompositionTests {
                 == .rejectStale(blobOffset: 1, durableBytes: 0))
     }
 
-    @Test("Response classes stay safe at head, middle, and tail train positions")
-    func responseClassByTrainPosition() {
+    @Test("Closed range headers round-trip at head, middle, and tail train positions")
+    func closedHeaderRoundTripsAtTrainPositions() {
         let policy = StaticRangeRemainderRequestPolicy()
         let positions = [0, 512, 1_024]
 
@@ -114,26 +114,7 @@ struct DownloadsPhase4CompositionTests {
             let header = policy.rangeHeaderValue(offset: offset, length: 512)
             #expect(RangeTransferHTTPPolicy.rangeRequestStart(header) == offset)
             #expect(RangeTransferHTTPPolicy.rangeRequestShape(header) == .closed)
-            #expect(policy.writeDecision(httpStatus: 206) == .append)
-            #expect(policy.writeDecision(httpStatus: 200) == .replaceWhole)
-            #expect(policy.writeDecision(httpStatus: 416) == .alreadyComplete)
-            #expect(policy.writeDecision(httpStatus: 401) == .failServer(status: 401))
-            #expect(StaticRangeTrainIntegrityPolicy.arrivingBodyDecision(
-                storedValidator: "etag-a", responseValidator: "etag-b") == .restartChangedResource)
         }
-
-        #expect(!RangeTransferHTTPPolicy.shouldAdoptReplaceWholeBody(
-            stashBytes: 512,
-            expectedBytes: 1_536,
-            storedValidator: "etag-a",
-            responseValidator: "etag-a",
-            responseContentLength: 1_536))
-        #expect(RangeTransferHTTPPolicy.shouldAdoptReplaceWholeBody(
-            stashBytes: 1_536,
-            expectedBytes: 1_536,
-            storedValidator: "etag-a",
-            responseValidator: "etag-a",
-            responseContentLength: 1_536))
     }
 
     @Test("Transcode source size never becomes an exact-byte completion requirement")

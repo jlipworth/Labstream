@@ -14,16 +14,43 @@ func secretFileFallbackPolicyIsDebugSimulatorOnly() {
                                       runtimeEnvironment: .device).allowsSecretFileFallback)
 }
 
-@Test("auth artifact writer excludes persisted files from backup")
-func authArtifactWriterExcludesPersistedFilesFromBackup() throws {
+enum CredentialArtifactWriter: String, CaseIterable, Sendable {
+    case authArtifact
+    case credentialFallback
+
+    var fileName: String {
+        switch self {
+        case .authArtifact: "resume.resume"
+        case .credentialFallback: "secret"
+        }
+    }
+
+    var expectedProtection: FileProtectionType {
+        switch self {
+        case .authArtifact: .completeUntilFirstUserAuthentication
+        case .credentialFallback: .complete
+        }
+    }
+
+    func write(_ data: Data, to url: URL) throws {
+        switch self {
+        case .authArtifact: try CredentialArtifactStorage.writeAuthArtifact(data, to: url)
+        case .credentialFallback: try CredentialArtifactStorage.writeCredentialFallback(data, to: url)
+        }
+    }
+}
+
+@Test("credential artifact writers exclude persisted files from backup and apply their protection class",
+      arguments: CredentialArtifactWriter.allCases)
+func credentialArtifactWriterExcludesFromBackupAndAppliesProtection(writer: CredentialArtifactWriter) throws {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("CredentialArtifactStorageTests-")
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
     defer { try? FileManager.default.removeItem(at: directory) }
 
-    let url = directory.appendingPathComponent("resume.resume")
-    let data = Data("resume-data".utf8)
-    try CredentialArtifactStorage.writeAuthArtifact(data, to: url)
+    let url = directory.appendingPathComponent(writer.fileName)
+    let data = Data("\(writer.rawValue)-data".utf8)
+    try writer.write(data, to: url)
 
     #expect(try Data(contentsOf: url) == data)
     #if canImport(Darwin)
@@ -32,28 +59,7 @@ func authArtifactWriterExcludesPersistedFilesFromBackup() throws {
     if CredentialArtifactStorage.supportsFileProtectionAttributes {
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         let protection = try #require(attributes[.protectionKey] as? FileProtectionType)
-        #expect(protection == CredentialArtifactStorage.authArtifactProtection)
-    }
-    #endif
-}
-
-@Test("credential fallback writer uses complete protection")
-func credentialFallbackWriterUsesCompleteProtection() throws {
-    let directory = FileManager.default.temporaryDirectory
-        .appendingPathComponent("CredentialArtifactStorageTests-")
-        .appendingPathComponent(UUID().uuidString, isDirectory: true)
-    defer { try? FileManager.default.removeItem(at: directory) }
-
-    let url = directory.appendingPathComponent("secret")
-    try CredentialArtifactStorage.writeCredentialFallback(Data("secret".utf8), to: url)
-
-    #if canImport(Darwin)
-    let values = try url.resourceValues(forKeys: [.isExcludedFromBackupKey])
-    #expect(values.isExcludedFromBackup == true)
-    if CredentialArtifactStorage.supportsFileProtectionAttributes {
-        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
-        let protection = try #require(attributes[.protectionKey] as? FileProtectionType)
-        #expect(protection == CredentialArtifactStorage.credentialFallbackProtection)
+        #expect(protection == writer.expectedProtection)
     }
     #endif
 }

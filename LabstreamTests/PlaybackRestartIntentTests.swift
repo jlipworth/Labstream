@@ -9,6 +9,8 @@ struct PlaybackRestartIntentTests {
             .qualityChange,
             .adaptiveBitrate,
         ]
+        // Ordinary intents plus explicitRetry; a new case must get its own exact plan test.
+        #expect(PlaybackRestartIntent.allCases.count == 5)
 
         for intent in intents {
             let plan = intent.plan
@@ -32,14 +34,5 @@ struct PlaybackRestartIntentTests {
             .removeObservers,
         ])
         #expect(plan.plexControlClient == .refreshForRecovery)
-    }
-
-    @Test func everyRestartIntentHasAnExplicitPlan() {
-        #expect(PlaybackRestartIntent.allCases.count == 5)
-        #expect(PlaybackRestartIntent.allCases.allSatisfy {
-            $0.plan.preparationSteps.contains(.resetFinalTarget)
-                && $0.plan.preparationSteps.contains(.rearmStartupDeadlineRetry)
-                && $0.plan.preparationSteps.contains(.removeObservers)
-        })
     }
 }

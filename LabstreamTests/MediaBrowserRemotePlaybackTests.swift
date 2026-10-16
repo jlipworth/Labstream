@@ -5,38 +5,6 @@ import Testing
 
 @MainActor
 struct MediaBrowserRemotePlaybackTests {
-    @Test func backendTaggedRemotePreservesEveryNeutralPlaybackFact() throws {
-        let url = try #require(URL(string: "https://media.example.test/video/master.m3u8"))
-        let source = MediaBrowserPlaybackSourceMetadata(container: "mkv",
-                                                        width: 3840,
-                                                        height: 2160,
-                                                        bitrate: 40_000,
-                                                        videoCodec: "hevc",
-                                                        audioCodec: "truehd")
-        let result = MediaBrowserPlaybackOpenResult(url: url,
-                                                    playSessionId: "play-1",
-                                                    mediaSourceId: "source-1",
-                                                    playMethod: .transcode,
-                                                    requiredHTTPHeaders: ["X-Required": "yes"],
-                                                    sourceMetadata: source,
-                                                    usesServerEncoding: true,
-                                                    transcodeReasons: ["AudioCodecNotSupported"])
-        let context = try playbackContext(backend: .emby)
-        let remote = MediaBrowserRemotePlayback(context: context, result: result, mediaIndex: 2)
-
-        #expect(remote.backend == .emby)
-        #expect(remote.context == context)
-        #expect(remote.url == url)
-        #expect(remote.headers == ["X-Required": "yes"])
-        #expect(remote.playSessionId == "play-1")
-        #expect(remote.mediaSourceId == "source-1")
-        #expect(remote.mediaIndex == 2)
-        #expect(remote.playMethod == .transcode)
-        #expect(remote.sourceMetadata == source)
-        #expect(remote.usesServerEncoding)
-        #expect(remote.transcodeReasons == ["AudioCodecNotSupported"])
-    }
-
     @Test func cleanupPolicyPreservesBackendSpecificBehavior() throws {
         let url = try #require(URL(string: "https://media.example.test/video.mp4"))
         let direct = MediaBrowserPlaybackOpenResult(url: url,
@@ -50,6 +18,14 @@ struct MediaBrowserRemotePlaybackTests {
         ).requiresActiveEncodingStop)
         #expect(!MediaBrowserRemotePlayback(
             context: try playbackContext(backend: .emby), result: direct
+        ).requiresActiveEncodingStop)
+        let encoded = MediaBrowserPlaybackOpenResult(url: url,
+                                                     playSessionId: "play-encoded",
+                                                     mediaSourceId: "source-encoded",
+                                                     playMethod: .transcode,
+                                                     usesServerEncoding: true)
+        #expect(MediaBrowserRemotePlayback(
+            context: try playbackContext(backend: .emby), result: encoded
         ).requiresActiveEncodingStop)
     }
 

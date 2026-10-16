@@ -16,12 +16,6 @@ private let id = TestFixtures.plexIdentity
     #expect(r.headers["X-Plex-Client-Identifier"] == "CID")
 }
 
-@Test func albumsRequestUsesAlbumType() {
-    let r = MusicRequest.albums(server: server, token: "tok", identity: id, sectionKey: "3")
-    #expect(r.url.path == "/library/sections/3/all")
-    #expect(queryValue(r, "type") == "9")
-}
-
 @Test func recentlyAddedAlbumsSortsByAddedAtDescending() {
     let r = MusicRequest.recentlyAddedAlbums(server: server, token: "tok",
                                              identity: id, sectionKey: "3")
@@ -51,28 +45,25 @@ private let id = TestFixtures.plexIdentity
 
 @Test func asymmetricPagingEmitsNeitherItem() {
     // Start and size only emit together — a lone X-Plex-Container-Start would
-    // make PMS page wrongly. Either half alone must produce NO paging items.
+    // make PMS page wrongly. Either half alone (or sort alone) must produce NO paging items.
     let startOnly = MusicRequest.artists(server: server, token: "tok", identity: id,
                                          sectionKey: "3", containerStart: 100)
     let sizeOnly = MusicRequest.artists(server: server, token: "tok", identity: id,
                                         sectionKey: "3", containerSize: 50)
-    for r in [startOnly, sizeOnly] {
+    let sortOnly = MusicRequest.artists(server: server, token: "tok", identity: id,
+                                        sectionKey: "3", sort: "titleSort")
+    for r in [startOnly, sizeOnly, sortOnly] {
         let names = r.queryItems.map(\.name)
         #expect(!names.contains("X-Plex-Container-Start"))
         #expect(!names.contains("X-Plex-Container-Size"))
     }
-}
-
-@Test func sortAloneEmitsNoPaging() {
-    let r = MusicRequest.artists(server: server, token: "tok", identity: id,
-                                 sectionKey: "3", sort: "titleSort")
-    #expect(queryValue(r, "sort") == "titleSort")
-    #expect(!r.queryItems.map(\.name).contains("X-Plex-Container-Start"))
+    #expect(queryValue(sortOnly, "sort") == "titleSort")
 }
 
 @Test func albumsAcceptSortAndPaging() {
     let r = MusicRequest.albums(server: server, token: "tok", identity: id, sectionKey: "3",
                                 sort: "titleSort", containerStart: 0, containerSize: 60)
+    #expect(r.url.path == "/library/sections/3/all")
     #expect(queryValue(r, "type") == "9")
     #expect(queryValue(r, "sort") == "titleSort")
     #expect(queryValue(r, "X-Plex-Container-Size") == "60")
@@ -195,21 +186,15 @@ private let id = TestFixtures.plexIdentity
 
 // MARK: - Track stream URL
 
-@Test func trackStreamURLCarriesTokenAndNoDownloadFlag() {
-    let url = MusicRequest.trackStreamURL(server: server, token: "tok",
-                                          partKey: "library/parts/123/456/file.mp3")
+// Part keys with and without a leading slash resolve to the same URL.
+@Test(arguments: ["library/parts/123/456/file.mp3", "/library/parts/123/456/file.mp3"])
+func trackStreamURLCarriesTokenAndNoDownloadFlag(partKey: String) {
+    let url = MusicRequest.trackStreamURL(server: server, token: "tok", partKey: partKey)
+    #expect(url.path == "/library/parts/123/456/file.mp3")
     #expect(url.absoluteString
         == "https://192.0.2.10:32400/library/parts/123/456/file.mp3?X-Plex-Token=tok")
     // Inline playback: download=1 would force attachment disposition.
     #expect(url.absoluteString.contains("download") == false)
-}
-
-@Test func trackStreamURLHandlesLeadingSlashPartKey() {
-    let url = MusicRequest.trackStreamURL(server: server, token: "tok",
-                                          partKey: "/library/parts/123/456/file.mp3")
-    #expect(url.path == "/library/parts/123/456/file.mp3")
-    #expect(url.absoluteString
-        == "https://192.0.2.10:32400/library/parts/123/456/file.mp3?X-Plex-Token=tok")
 }
 
 @Test func trackStreamURLPercentEncodesReservedQuerySeparators() throws {

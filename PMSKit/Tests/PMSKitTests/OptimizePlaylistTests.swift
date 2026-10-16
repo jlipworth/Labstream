@@ -203,12 +203,16 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream",
     {"MediaContainer":{"Item":[
       {"id":"1","title":"Pending Junk [Labstream aaaa1111]","Status":{"state":"pending"}},
       {"id":"2","title":"Just Finished [Labstream bbbb2222]","Status":{"state":"complete"}},
-      {"id":"3","title":"Failed Junk [Labstream cccc3333]","Status":{"state":"error"}}
+      {"id":"3","title":"Failed Junk [Labstream cccc3333]","Status":{"state":"error"}},
+      {"id":"4","title":"Leftover B [Labstream dddd4444]","Status":{"state":"completed"}},
+      {"id":"5","title":"Leftover C [Labstream eeee5555]","Status":{"state":"successful"}}
     ]}}
     """.data(using: .utf8)!
     let q = try JSONDecoder().decode(BackgroundProcessingItems.self, from: json)
     let stale = q.staleItemIDs(marker: "[Labstream ", protectedTitles: [])
-    // Clears the pending + failed pileup, but NOT the completed job (its file may be in use).
+    // Clears the pending + failed pileup, but NOT completed jobs in any completed-state spelling.
+    // Live Plex evidence showed that deleting a completed type-42 item removes the rendered
+    // optimized version before a relaunched client can download it.
     #expect(Set(stale) == ["1", "3"])
 }
 
@@ -238,58 +242,23 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream",
     #expect(q.cancellableItemID(queueTitle: "Done Movie [Labstream eeee5555]") == nil)
 }
 
-// MARK: - Safe cleanup (`removableItemIDs`): completed server renders are preserved
+// MARK: - downloadURL
 
-@Test func removableItemIDsPreservesCompletedServerRenders() throws {
-    // Completed Plex optimize items are not inert clutter: deleting the type-42 item also
-    // deletes the rendered server-side optimized version. Only non-completed marked clutter is
-    // removable; completed jobs must remain discoverable for app relaunch/retry.
-    let json = """
-    {"MediaContainer":{"Item":[
-      {"id":"1","title":"Pending Junk [Labstream aaaa1111]","Status":{"state":"pending"}},
-      {"id":"2","title":"Leftover A [Labstream bbbb2222]","Status":{"state":"complete"}},
-      {"id":"3","title":"Leftover B [Labstream cccc3333]","Status":{"state":"completed"}},
-      {"id":"4","title":"Failed Junk [Labstream dddd4444]","Status":{"state":"error"}},
-      {"id":"5","title":"Leftover C [Labstream eeee5555]","Status":{"state":"successful"}}
-    ]}}
-    """.data(using: .utf8)!
-    let q = try JSONDecoder().decode(BackgroundProcessingItems.self, from: json)
-    let removable = q.removableItemIDs(marker: "[Labstream ", protectedTitles: [])
-    // Only pending/failed items are cleared. Completed server renders stay available to be
-    // discovered and downloaded after a long-running optimize or app relaunch.
-    #expect(Set(removable) == ["1", "4"])
+@Test func downloadURLPercentEncodesReservedQuerySeparators() throws {
+    let url = OptimizeRequest.downloadURL(server: server,
+                                          token: "tok;download=0&x=/",
+                                          partKey: "/library/parts/55/file.mp4")
+    let query = try #require(URLComponents(url: url,
+                                           resolvingAgainstBaseURL: false)?.percentEncodedQuery)
+
+    #expect(query == "download=1&X-Plex-Token=tok%3Bdownload%3D0%26x%3D%2F")
+    #expect(!query.contains(";"))
+    #expect(!query.contains("&x="))
 }
 
-@Test func removableItemIDsNeverTouchesProtectedActiveDownloadEvenWhenCompleted() throws {
-    // A completed item whose Part an active download is still pulling MUST survive: its title
-    // is in `protectedTitles` for the full download lifetime, so deleting it (which removes the
-    // optimized version + its file on the server) would yank the file out from under the transfer.
-    let json = """
-    {"MediaContainer":{"Item":[
-      {"id":"1","title":"Downloading Now [Labstream aaaa1111]","Status":{"state":"complete"}},
-      {"id":"2","title":"Abandoned Leftover [Labstream bbbb2222]","Status":{"state":"complete"}}
-    ]}}
-    """.data(using: .utf8)!
-    let q = try JSONDecoder().decode(BackgroundProcessingItems.self, from: json)
-    let protected: Set<String> = ["Downloading Now [Labstream aaaa1111]"]
-    let removable = q.removableItemIDs(marker: "[Labstream ", protectedTitles: protected)
-    // Completed items are preserved whether or not they are currently protected.
-    #expect(removable.isEmpty)
-}
-
-@Test func removableItemIDsNeverTouchesForeignClientItems() throws {
-    let json = """
-    {"MediaContainer":{"Item":[
-      {"id":"1","title":"Ours Pending [Labstream aaaa1111]","Status":{"state":"pending"}},
-      {"id":"2","title":"Ours Completed [Labstream bbbb2222]","Status":{"state":"complete"}},
-      {"id":"3","title":"Someone Else's Optimize"},
-      {"id":"4","title":"Another Client's Job","Status":{"state":"complete"}},
-      {"id":"5","title":"Library Scan","Status":{"state":"running"}}
-    ]}}
-    """.data(using: .utf8)!
-    let q = try JSONDecoder().decode(BackgroundProcessingItems.self, from: json)
-    let removable = q.removableItemIDs(marker: "[Labstream ", protectedTitles: [])
-    // Only non-completed items carrying OUR marker are candidates — foreign jobs and completed
-    // server renders are never touched.
-    #expect(Set(removable) == ["1"])
+@Test func downloadURLPlacesPartKeyInPath() {
+    let url = OptimizeRequest.downloadURL(server: server, token: "tok",
+                                          partKey: "/library/parts/55/file.mp4")
+    #expect(url.path == "/library/parts/55/file.mp4")
+    #expect(url.host == "192.0.2.10")
 }

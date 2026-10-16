@@ -123,7 +123,6 @@ struct DownloadKeepaliveCoordinatorTests {
 
 private final class HeldKeepaliveTask: @unchecked Sendable {
     private let lock = NSLock()
-    private var didStart = false
     private var didCancel = false
     private let startedEvent = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
     private let finishedEvent = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
@@ -149,12 +148,10 @@ private final class HeldKeepaliveTask: @unchecked Sendable {
         }
     }
 
-    var started: Bool { lock.withLock { didStart } }
     var cancelled: Bool { lock.withLock { didCancel } }
 
     func task() -> Task<Void, Never> {
         Task { [self] in
-            lock.withLock { didStart = true }
             startedEvent.continuation.yield(())
             startedEvent.continuation.finish()
             defer {

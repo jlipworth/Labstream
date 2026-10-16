@@ -4,31 +4,7 @@ import Testing
 
 @Suite("MediaBrowser identity compatibility")
 struct MediaBrowserIdentityCompatibilityTests {
-    @Test("Backend identity names preserve construction and shared value semantics")
-    func backendIdentityAliases() {
-        let jellyfin = JellyfinClientIdentity(
-            client: "Labstream",
-            device: "Apple Vision Pro",
-            deviceId: "device-123",
-            version: "1.2.3"
-        )
-        let emby = EmbyClientIdentity(
-            client: "Labstream",
-            device: "Apple Vision Pro",
-            deviceId: "device-123",
-            version: "1.2.3"
-        )
-
-        #expect(jellyfin == emby)
-        #expect(jellyfin == MediaBrowserClientIdentity(
-            client: "Labstream",
-            device: "Apple Vision Pro",
-            deviceId: "device-123",
-            version: "1.2.3"
-        ))
-    }
-
-    @Test("Jellyfin and Emby authentication aliases decode the same golden wire shape")
+    @Test("Shared authentication result decodes the golden wire shape")
     func authenticationGoldenDecode() throws {
         let data = Data(#"""
         {
@@ -40,9 +16,7 @@ struct MediaBrowserIdentityCompatibilityTests {
         """#.utf8)
 
         let jellyfin = try JSONDecoder().decode(JellyfinAuthenticationResult.self, from: data)
-        let emby = try JSONDecoder().decode(EmbyAuthenticationResult.self, from: data)
 
-        #expect(jellyfin == emby)
         #expect(jellyfin == MediaBrowserAuthenticationResult(
             user: MediaBrowserAuthenticatedUser(id: "user-9", name: "viewer"),
             accessToken: "access-xyz",
@@ -65,7 +39,6 @@ struct MediaBrowserIdentityCompatibilityTests {
         #expect(String(decoding: encoded, as: UTF8.self) ==
             #"{"AccessToken":"access-xyz","ServerId":"server-1","User":{"Id":"user-9","Name":"viewer"}}"#)
         #expect(try JSONDecoder().decode(JellyfinAuthenticationResult.self, from: encoded) == value)
-        #expect(try JSONDecoder().decode(EmbyAuthenticationResult.self, from: encoded) == value)
     }
 
     @Test("Both backend URL wrappers preserve shared successful normalization")
@@ -74,6 +47,8 @@ struct MediaBrowserIdentityCompatibilityTests {
             ("  media.example.test  ", "https://media.example.test"),
             ("http://192.0.2.10:8096", "http://192.0.2.10:8096"),
             ("https://media.example.test/base/path", "https://media.example.test/base/path"),
+            // DIVERGENCE FROM JELLYFIN: a user-entered `/emby` base path must survive
+            // (formerly pinned by EmbyServerURLTests.preservesEmbyBasePath).
             ("media.example.test/emby", "https://media.example.test/emby"),
         ]
 

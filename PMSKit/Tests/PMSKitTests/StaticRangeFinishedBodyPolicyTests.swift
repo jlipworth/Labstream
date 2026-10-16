@@ -9,18 +9,12 @@ struct StaticRangeFinishedBodyPolicyTests {
         #expect(StaticRangeFinishedBodyPolicy.disposition(haltKind: .cancel) == .discardTemp)
     }
 
-    @Test("Pause halt preserves a finished body and then stays paused")
+    @Test("Pause halt preserves a finished body and then stays paused (even before `.paused` is persisted)")
     func pauseHaltPreserves() {
-        #expect(!StaticRangeFinishedBodyPolicy.shouldDiscardBeforeStash(haltKind: .pause))
-        #expect(StaticRangeFinishedBodyPolicy.disposition(haltKind: .pause) == .writeThenPause)
-    }
-
-    @Test("Pause halt preserves even before the async pause chain persists `.paused`")
-    func pauseHaltPreservesBeforeStatusWrite() {
         // The halt KIND is recorded synchronously at the halt site; the row status lands only at
         // the end of the pause chain. A body finishing inside that window must still be preserved.
-        #expect(StaticRangeFinishedBodyPolicy.disposition(haltKind: .pause) == .writeThenPause)
         #expect(!StaticRangeFinishedBodyPolicy.shouldDiscardBeforeStash(haltKind: .pause))
+        #expect(StaticRangeFinishedBodyPolicy.disposition(haltKind: .pause) == .writeThenPause)
     }
 
     @Test("Unhalted finished body continues normally")

@@ -84,13 +84,9 @@ class CompileAuditTests(unittest.TestCase):
         self.assertNotIn("private.invalid", warning)
         self.assertNotIn("secret", warning)
 
-    def test_typecheck_warning_parser_accepts_swift_warning_order(self):
-        match = audit.TYPECHECK_RE.search("warning: function took 451ms to type-check (limit: 300ms)")
-        self.assertEqual(match.group("kind"), "function")
-        self.assertEqual(match.group("ms"), "451")
-
     def test_typecheck_warning_parser_accepts_swift_declaration_kinds(self):
         warnings = {
+            "warning: function took 451ms to type-check (limit: 300ms)": ("function", "451"),
             "instance method 'render()' took 812ms to type-check": ("instance method", "812"),
             "getter for property 'body' took 301.5ms to type-check": ("getter", "301.5"),
             "initializer 'init(value:)' took 777ms to type-check": ("initializer", "777"),

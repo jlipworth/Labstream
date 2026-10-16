@@ -168,15 +168,6 @@ final class MediaSessionProxyTests: XCTestCase {
         XCTAssertFalse(playlist.contains("http://127.0.0.1:\(origin.port)/video/segment0.ts"), playlist)
         await proxy.stop(generation: handle.generation)
     }
-
-    func testMediaSessionHandleAndStatusValueSemantics() {
-        let url = URL(string: "http://127.0.0.1:1234/start.m3u8")!
-        XCTAssertEqual(MediaSessionHandle(localURL: url, generation: 2),
-                       MediaSessionHandle(localURL: url, generation: 2))
-        XCTAssertEqual(MediaSessionStatus(generation: 2, isOpen: true, rotateCount: 1),
-                       MediaSessionStatus(generation: 2, isOpen: true, rotateCount: 1))
-    }
-
 }
 
 private func responseStatus(for baseURL: URL, requestID: String) async throws -> Int? {
@@ -192,7 +183,6 @@ private func responseStatus(for baseURL: URL, requestID: String) async throws ->
 final class StubOrigin: @unchecked Sendable {
     private let origin = LoopbackOrigin()
     private(set) var port = 0
-    var baseURL: URL { URL(string: "http://127.0.0.1:\(port)")! }
     typealias Respond = @Sendable (HTTPRequestHead) -> (status: Int, contentType: String, body: Data)
 
     static func start(_ respond: @escaping Respond) async throws -> StubOrigin {
@@ -222,7 +212,6 @@ private final class Counter: @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0
     @discardableResult func increment() -> Int { lock.lock(); count += 1; let n = count; lock.unlock(); return n }
-    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
 }
 
 private final class URLAttemptCounter: @unchecked Sendable {

@@ -6,7 +6,7 @@ import Testing
 @MainActor
 struct LibraryPagingModelTests {
     @Test func initialPagePublishesBeforeAlphabetRailCompletes() async {
-        let gate = AlphabetGate()
+        let gate = MainActorSignal()
         let source = LibraryPagingSource(
             title: "Movies",
             identity: "plex:test:nonblocking-alphabet",
@@ -34,7 +34,7 @@ struct LibraryPagingModelTests {
         #expect(model.slots.compactMap { $0 }.count == 2)
         #expect(model.alphabetBuckets.isEmpty)
 
-        gate.release()
+        gate.signal()
         await loadTask.value
         #expect(model.alphabetBuckets.map(\.display) == ["A", "C"])
     }
@@ -324,54 +324,10 @@ struct LibraryPagingModelTests {
         #expect(model.alphabetBuckets.map(\.offset) == [0, 1, 2, 3])
     }
 
-    @Test func collapsingLaterPageFailurePreservesPublishedPrefix() async {
-        struct PageFailure: Error {}
-        var laterPageAttempts = 0
-        let source = LibraryPagingSource(
-            title: "Movies",
-            identity: "collapse-partial-failure",
-            backendLabel: "Test",
-            pageSize: 2,
-            cacheEmptyFirstPage: true,
-            collapsesMovieVersions: true,
-            fetchPage: { start, _ in
-                guard start == 0 else {
-                    laterPageAttempts += 1
-                    throw PageFailure()
-                }
-                return LibraryPagingPage(
-                    items: [Self.movie("alpha", title: "Alpha", year: 2020),
-                            Self.movie("bravo", title: "Bravo", year: 2021)],
-                    reportedTotal: 4
-                )
-            },
-            fetchAlphabetCounts: { [] }
-        )
-        let model = LibraryPagingModel()
-
-        await model.load(source: source) { true }
-
-        #expect(model.loadState == .loaded)
-        #expect(model.slots.compactMap { $0 }.map(\.ratingKey) == ["alpha", "bravo"])
-        #expect(model.total == 2)
-        // The final list is unknown, so the final-offset rail must remain unpublished.
-        #expect(model.alphabetBuckets.isEmpty)
-        #expect(laterPageAttempts == 1)
-
-        // The truncation is NOT terminal: because the interrupted load never latched
-        // `loadedIdentity`, a same-identity re-entry re-runs the load (re-attempting the failing
-        // page) instead of short-circuiting the partial grid. This source keeps failing, so the
-        // grid stays partial — but the fresh fetch attempt proves the model can self-heal once the
-        // transient error clears (see collapsingReloadAfterLaterPageFailureCompletesFullSet).
-        await model.load(source: source) { true }
-        #expect(laterPageAttempts == 2)
-        #expect(model.loadState == .loaded)
-        #expect(model.slots.compactMap { $0 }.map(\.ratingKey) == ["alpha", "bravo"])
-    }
-
     @Test func collapsingReloadAfterLaterPageFailureCompletesFullSet() async {
         struct PageFailure: Error {}
         var failLaterPages = true
+        var laterPageAttempts = 0
         let source = LibraryPagingSource(
             title: "Movies",
             identity: "collapse-heal-after-error",
@@ -387,6 +343,7 @@ struct LibraryPagingModelTests {
                         reportedTotal: 4
                     )
                 }
+                laterPageAttempts += 1
                 if failLaterPages { throw PageFailure() }
                 return LibraryPagingPage(
                     items: [Self.movie("charlie", title: "Charlie", year: 2022),
@@ -403,6 +360,18 @@ struct LibraryPagingModelTests {
         #expect(model.loadState == .loaded)
         #expect(model.slots.compactMap { $0 }.map(\.ratingKey) == ["alpha", "bravo"])
         #expect(model.total == 2)
+        // The final list is unknown, so the final-offset rail must remain unpublished.
+        #expect(model.alphabetBuckets.isEmpty)
+        #expect(laterPageAttempts == 1)
+
+        // The truncation is NOT terminal: because the interrupted load never latched
+        // `loadedIdentity`, a same-identity re-entry re-runs the load (re-attempting the failing
+        // page) instead of short-circuiting the partial grid. While the source keeps failing,
+        // the grid stays partial and the rail stays unpublished.
+        await model.load(source: source) { true }
+        #expect(laterPageAttempts == 2)
+        #expect(model.loadState == .loaded)
+        #expect(model.slots.compactMap { $0 }.map(\.ratingKey) == ["alpha", "bravo"])
         #expect(model.alphabetBuckets.isEmpty)
 
         // Transient error clears; same-identity re-entry completes the full item set and builds
@@ -631,23 +600,6 @@ struct LibraryPagingModelTests {
 
     private static func movie(_ id: String, title: String, year: Int) -> MediaItem {
         MediaItem(ratingKey: id, title: title, type: "movie", year: year)
-    }
-
-    @MainActor
-    private final class AlphabetGate {
-        private var continuation: CheckedContinuation<Void, Never>?
-        private var released = false
-
-        func wait() async {
-            guard !released else { return }
-            await withCheckedContinuation { continuation = $0 }
-        }
-
-        func release() {
-            released = true
-            continuation?.resume()
-            continuation = nil
-        }
     }
 
     @MainActor

@@ -69,15 +69,21 @@ struct AlphabetBucketTests {
         let buckets = AlphabetBucket.buckets(fromTitles: ["1917", "300", "Alien"])
         #expect(buckets.map(\.display) == ["#", "A"])
         #expect(buckets.first?.count == 2)
+        #expect(buckets.first?.offset == 0)
     }
 
-    @Test func plexAndProbePathsAgreeForSameLibrary() {
-        // The Plex single-call path and the Jellyfin/Emby per-letter probe path both feed
-        // the SAME `buckets(from:total:)`, so identical `(display, count)` input must yield
-        // identical rails — the cross-backend invariant from GH #96.
-        let counts = [("A", 4), ("M", 6), ("Z", 2)]
-        let plexStyle = AlphabetBucket.buckets(from: counts, total: 12)
-        let probeStyle = AlphabetBucket.buckets(from: counts, total: 12)
-        #expect(plexStyle == probeStyle)
+    @Test func bucketsFromTitlesIndexIntoTheDisplayedList() {
+        // Offsets are list indices (not server offsets), so they line up with the grid's
+        // .id(index) scroll targets.
+        let titles = ["Alpha", "Apple", "Beta", "Zeta"]
+        let buckets = AlphabetBucket.buckets(fromTitles: titles)
+        #expect(buckets.map(\.display) == ["A", "B", "Z"])
+        #expect(buckets.map(\.offset) == [0, 2, 3])
+        #expect(buckets.map(\.count) == [2, 1, 1])
+    }
+
+    @Test func bucketsFromTitlesEmptyForEmptyList() {
+        #expect(AlphabetBucket.buckets(fromTitles: []).isEmpty)
     }
 }
+

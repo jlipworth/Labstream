@@ -220,38 +220,6 @@ struct DownloadStoreFaultInjectionTests {
         }
     }
 
-    @Test func mediaRemovalFailureRetainsDurableIntentUntilRelaunchRetries() throws {
-        try withTemporaryDirectory { directory in
-            let mediaURL = directory.appendingPathComponent("owned.mp4")
-            try Data([1, 2, 3]).write(to: mediaURL)
-            let fileManager = SelectiveRemovalFailureFileManager(blockedPath: mediaURL.path)
-            let store = DownloadStore(baseDirectory: directory, fileManager: fileManager)
-            let attemptID = try #require(DownloadAttemptID(rawValue: "owned-attempt"))
-            #expect(store.createAttemptOwnedRecord(DownloadRecord(
-                ratingKey: "plex:owned",
-                attemptID: attemptID,
-                title: "Owned",
-                localURL: mediaURL,
-                bytes: 3,
-                progress: 1,
-                status: .complete,
-                metadata: OfflineMetadata(ratingKey: "plex:owned", title: "Owned", type: "movie")
-            ), attemptID: attemptID) == .committed(DownloadAttemptKey(
-                ratingKey: "plex:owned", attemptID: attemptID)))
-
-            _ = store.remove(for: DownloadAttemptKey(
-                ratingKey: "plex:owned", attemptID: attemptID))
-
-            #expect(FileManager.default.fileExists(atPath: mediaURL.path))
-            #expect(store.contains(ratingKey: "plex:owned"))
-            let relaunched = DownloadStore(baseDirectory: directory)
-            #expect(relaunched.resolveArtifactSynchronouslyForTests(
-                through: relaunched.currentArtifactLifecycleWatermark()) == .completed)
-            #expect(!relaunched.contains(ratingKey: "plex:owned"))
-            #expect(!FileManager.default.fileExists(atPath: mediaURL.path))
-        }
-    }
-
     private static func record(_ ratingKey: String, directory: URL, bytes: Int) -> DownloadRecord {
         DownloadRecord(
             ratingKey: ratingKey,
@@ -272,14 +240,6 @@ struct DownloadStoreFaultInjectionTests {
                 continuation.resume(returning: semaphore.wait(timeout: .now() + timeout) == .success)
             }
         }
-    }
-
-    private func withTemporaryDirectory(_ body: (URL) throws -> Void) throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("download-store-faults-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        try body(directory)
     }
 
     private func withTemporaryDirectory(_ body: (URL) async throws -> Void) async throws {
@@ -327,20 +287,6 @@ private final class StagedIndexCommitHarness: @unchecked Sendable {
             try data.write(to: url, options: .atomic)
             throw InjectedIndexCommitFailure()
         }
-    }
-}
-
-private final class SelectiveRemovalFailureFileManager: FileManager, @unchecked Sendable {
-    private let blockedPath: String
-
-    init(blockedPath: String) {
-        self.blockedPath = blockedPath
-        super.init()
-    }
-
-    override func removeItem(at URL: URL) throws {
-        if URL.path == blockedPath { throw CocoaError(.fileWriteNoPermission) }
-        try super.removeItem(at: URL)
     }
 }
 

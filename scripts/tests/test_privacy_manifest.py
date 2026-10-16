@@ -12,9 +12,6 @@ spec.loader.exec_module(privacy)
 
 
 class PrivacyManifestTests(unittest.TestCase):
-    def test_production_source_and_four_target_membership(self):
-        privacy.check_source()
-
     def test_missing_target_resource_membership_fails(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

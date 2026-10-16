@@ -11,25 +11,6 @@ import Testing
 
 @Suite("Poster aspect ratio (#101)")
 struct PosterAspectTests {
-    private func fieldSet(_ fields: String) -> Set<String> {
-        Set(fields.split(separator: ",").map(String.init))
-    }
-
-    // MARK: - Field-set requests
-
-    @Test func allMediaBrowserFieldStringsRequestPrimaryImageAspectRatio() {
-        // Without PrimaryImageAspectRatio in the grid + full field sets the server omits the
-        // value, so every cell would silently fall back to 2:3 — defeating the fix.
-        for fields in [
-            JellyfinLibrary.gridItemFields,
-            JellyfinLibrary.fullItemFields,
-            EmbyLibrary.gridItemFields,
-            EmbyLibrary.fullItemFields,
-        ] {
-            #expect(fieldSet(fields).contains("PrimaryImageAspectRatio"))
-        }
-    }
-
     // MARK: - Decode → MediaItem.primaryImageAspectRatio (Jellyfin)
 
     @Test func jellyfinDecodesSixteenNineAspect() throws {
@@ -60,21 +41,6 @@ struct PosterAspectTests {
         #expect(item.resolvedPosterAspect() == 1.0)
     }
 
-    // MARK: - Decode → MediaItem.primaryImageAspectRatio (Emby — shared struct, diff scheme)
-
-    @Test func embyDecodesSixteenNineAspect() throws {
-        let dto = try JSONDecoder().decode(EmbyBaseItemDto.self, from: Data(#"""
-        {
-          "Id": "yt-2", "Name": "A YouTube video", "Type": "Movie",
-          "PrimaryImageAspectRatio": 1.7777777777777777,
-          "ImageTags": { "Primary": "poster" }
-        }
-        """#.utf8))
-        let item = try #require(dto.toMediaItem())
-        let aspect = try #require(item.primaryImageAspectRatio)
-        #expect(abs(aspect - 16.0 / 9.0) < 0.0001)
-    }
-
     // MARK: - Missing field → nil → 2:3 fallback
 
     @Test func itemWithoutAspectDecodesToNilAndFallsBackToTwoThirds() throws {
@@ -89,19 +55,6 @@ struct PosterAspectTests {
         // Falls back to the canonical 2:3 poster shape.
         #expect(item.resolvedPosterAspect() == 2.0 / 3.0)
         #expect(item.resolvedPosterAspect() == MediaItem.defaultPosterAspect)
-    }
-
-    @Test func plexItemHasNoPrimaryImageAspectRatio() throws {
-        // Plex never sends PrimaryImageAspectRatio; its posters are genuinely 2:3, so the
-        // fallback keeps Plex unchanged.
-        let json = """
-        {"MediaContainer":{"Metadata":[
-          {"ratingKey":"1","title":"A Plex Movie","type":"movie"}]}}
-        """.data(using: .utf8)!
-        let c = try JSONDecoder().decode(MetadataResponse.self, from: json)
-        let item = c.mediaContainer.metadata[0]
-        #expect(item.primaryImageAspectRatio == nil)
-        #expect(item.resolvedPosterAspect() == 2.0 / 3.0)
     }
 
     // MARK: - Resolver hardening

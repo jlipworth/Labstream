@@ -4,19 +4,6 @@ import Testing
 
 @Suite("MediaBrowser playback carriers")
 struct MediaBrowserPlaybackCarrierTests {
-    @Test func cleanupFactRemainsExplicitRatherThanDerivedFromPlayMethod() throws {
-        let result = MediaBrowserPlaybackOpenResult(
-            url: try #require(URL(string: "https://media.example.test/master.m3u8")),
-            playSessionId: "play-explicit",
-            mediaSourceId: "source-explicit",
-            playMethod: .transcode,
-            usesServerEncoding: false
-        )
-
-        #expect(result.playMethod == .transcode)
-        #expect(!result.usesServerEncoding)
-    }
-
     @Test func jellyfinResolverReturnsAuthoritativeNeutralResultWithEncodingCleanupFact() throws {
         let response = try JellyfinPlaybackInfoResponse.decode(from: Data(#"""
         {

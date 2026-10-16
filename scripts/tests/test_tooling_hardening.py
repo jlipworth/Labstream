@@ -276,7 +276,10 @@ class ToolingHardeningTests(unittest.TestCase):
                 self.assertRegex(generated_name, r"^vpwt-feature-collision-[0-9a-f]{8}$")
 
 
-    def test_worktree_sim_ipad_platform_creates_ipad_sim_without_golden_clone(self):
+    def assert_worktree_sim_platform_creates_sim_without_golden_clone(
+        self, *, platform, label, runtime, devicetype, devicetype_name, stock_devices,
+        extra_separator, prefix, udid, allow_boot,
+    ):
         with self.make_repo() as root:
             self.copy_script(root, "worktree-sim.sh")
             (root / ".simid").write_text("GOLDEN-0000-0000-0000-000000000000\n")
@@ -284,17 +287,21 @@ class ToolingHardeningTests(unittest.TestCase):
             self.commit_all(root)
             with tempfile.TemporaryDirectory(prefix=f"{root.name}-linked-", dir=root.parent) as linked_tmp:
                 linked = Path(linked_tmp)
-                subprocess.run(["git", "worktree", "add", "-q", "-b", "feature/ipad", str(linked)], cwd=root, check=True)
-                (linked / ".simplatform").write_text("ipad\n")
+                subprocess.run(["git", "worktree", "add", "-q", "-b", f"feature/{platform}", str(linked)], cwd=root, check=True)
+                (linked / ".simplatform").write_text(f"{platform}\n")
                 # The fake repo's golden .simid is committed for fixture simplicity, but the real
-                # repo git-ignores simulator ids. Match production behavior so the iPad platform
-                # proves it writes only .simid-ipad and does not clone the visionOS golden.
+                # repo git-ignores simulator ids. Match production behavior so the iPad/iPhone/tvOS
+                # platform proves it writes only .simid-<platform> and does not clone the visionOS
+                # golden or write the legacy .simid file.
                 (linked / ".simid").unlink(missing_ok=True)
 
                 state = root / "xcrun-state"
                 create_args = root / "xcrun-create-args"
                 fakebin = root / "fakebin"
                 fakebin.mkdir()
+                # tvOS must not shut down or boot anything while resolving an id; the iOS
+                # platforms tolerate it.
+                boot_action = "exit 0" if allow_boot else 'echo "unexpected xcrun $*" >&2; exit 2'
                 (fakebin / "xcrun").write_text(textwrap.dedent(f"""\
                     #!/usr/bin/env bash
                     set -euo pipefail
@@ -302,33 +309,33 @@ class ToolingHardeningTests(unittest.TestCase):
                     create_args={create_args}
                     if [ "$1 $2 $3" = "simctl list devices" ] && [ "${{4:-}}" = "-j" ]; then
                       if [ -f "$state" ]; then
-                        extra=',{{"name":"ipadwt-feature-ipad-created","udid":"IPAD-0000-0000-0000-000000000000","state":"Shutdown"}}'
+                        extra='{extra_separator}{{"name":"{prefix}-feature-{platform}-created","udid":"{udid}","state":"Shutdown"}}'
                       else
                         extra=''
                       fi
-                      printf '{{"devices":{{"com.apple.CoreSimulator.SimRuntime.iOS-27-0":[{{"name":"iPad Pro 13-inch (M5)","udid":"STOCK-IPAD-0000-0000-000000000000","state":"Shutdown"}}%s],"com.apple.CoreSimulator.SimRuntime.xrOS-26-5":[{{"name":"Golden","udid":"GOLDEN-0000-0000-0000-000000000000","state":"Shutdown"}}]}}}}\n' "$extra"
+                      printf '{{"devices":{{"{runtime}":[{stock_devices}%s],"com.apple.CoreSimulator.SimRuntime.xrOS-26-5":[{{"name":"Golden","udid":"GOLDEN-0000-0000-0000-000000000000","state":"Shutdown"}}]}}}}\n' "$extra"
                       exit 0
                     fi
                     if [ "$1 $2 $3" = "simctl list runtimes" ] && [ "${{4:-}}" = "-j" ]; then
-                      printf '{{"runtimes":[{{"identifier":"com.apple.CoreSimulator.SimRuntime.iOS-27-0","version":"27.0","isAvailable":true}}]}}\n'
+                      printf '{{"runtimes":[{{"identifier":"{runtime}","version":"27.0","isAvailable":true}}]}}\n'
                       exit 0
                     fi
                     if [ "$1 $2 $3" = "simctl list devicetypes" ] && [ "${{4:-}}" = "-j" ]; then
-                      printf '{{"devicetypes":[{{"identifier":"com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-12GB","name":"iPad Pro 13-inch (M5)","isAvailable":true}}]}}\n'
+                      printf '{{"devicetypes":[{{"identifier":"{devicetype}","name":"{devicetype_name}","isAvailable":true}}]}}\n'
                       exit 0
                     fi
                     if [ "$1 $2" = "simctl create" ]; then
                       printf '%s\n' "$@" > "$create_args"
                       printf '%s\n' created > "$state"
-                      printf '%s\n' "IPAD-0000-0000-0000-000000000000"
+                      printf '%s\n' "{udid}"
                       exit 0
                     fi
                     if [ "$1 $2" = "simctl clone" ]; then
-                      echo "unexpected golden clone for iPad platform" >&2
+                      echo "unexpected golden clone for {label} platform" >&2
                       exit 2
                     fi
                     if [ "$1 $2" = "simctl shutdown" ] || [ "$1 $2" = "simctl boot" ]; then
-                      exit 0
+                      {boot_action}
                     fi
                     echo "unexpected xcrun $*" >&2
                     exit 2
@@ -338,148 +345,47 @@ class ToolingHardeningTests(unittest.TestCase):
                 env["PATH"] = f"{fakebin}:{env['PATH']}"
 
                 result = subprocess.run(["scripts/worktree-sim.sh", "id"], cwd=linked, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-                self.assertEqual(result.stdout.strip(), "IPAD-0000-0000-0000-000000000000")
-                self.assertEqual((linked / ".simid-ipad").read_text().strip(), "IPAD-0000-0000-0000-000000000000")
+                self.assertEqual(result.stdout.strip(), udid)
+                self.assertEqual((linked / f".simid-{platform}").read_text().strip(), udid)
                 self.assertFalse((linked / ".simid").exists())
                 args = create_args.read_text()
                 self.assertIn("simctl\ncreate", args)
-                self.assertIn("ipadwt-feature-ipad-", args)
-                self.assertIn("com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-12GB", args)
-                self.assertIn("com.apple.CoreSimulator.SimRuntime.iOS-27-0", args)
+                self.assertIn(f"{prefix}-feature-{platform}-", args)
+                self.assertIn(devicetype, args)
+                self.assertIn(runtime, args)
 
-    def test_worktree_sim_iphone_platform_creates_iphone_sim_without_golden_clone(self):
-        with self.make_repo() as root:
-            self.copy_script(root, "worktree-sim.sh")
-            (root / ".simid").write_text("GOLDEN-0000-0000-0000-000000000000\n")
-            (root / "Labstream" / "Existing.swift").write_text("// baseline\n")
-            self.commit_all(root)
-            with tempfile.TemporaryDirectory(prefix=f"{root.name}-linked-", dir=root.parent) as linked_tmp:
-                linked = Path(linked_tmp)
-                subprocess.run(["git", "worktree", "add", "-q", "-b", "feature/iphone", str(linked)], cwd=root, check=True)
-                (linked / ".simplatform").write_text("iphone\n")
-                # iPhone work should never clone the visionOS golden or write the legacy .simid file.
-                (linked / ".simid").unlink(missing_ok=True)
-
-                state = root / "xcrun-state"
-                create_args = root / "xcrun-create-args"
-                fakebin = root / "fakebin"
-                fakebin.mkdir()
-                (fakebin / "xcrun").write_text(textwrap.dedent(f"""\
-                    #!/usr/bin/env bash
-                    set -euo pipefail
-                    state={state}
-                    create_args={create_args}
-                    if [ "$1 $2 $3" = "simctl list devices" ] && [ "${{4:-}}" = "-j" ]; then
-                      if [ -f "$state" ]; then
-                        extra=',{{"name":"iphonewt-feature-iphone-created","udid":"IPHONE-0000-0000-0000-000000000000","state":"Shutdown"}}'
-                      else
-                        extra=''
-                      fi
-                      printf '{{"devices":{{"com.apple.CoreSimulator.SimRuntime.iOS-27-0":[{{"name":"iPhone 17 Pro","udid":"STOCK-IPHONE-0000-0000-000000000000","state":"Shutdown"}}%s],"com.apple.CoreSimulator.SimRuntime.xrOS-26-5":[{{"name":"Golden","udid":"GOLDEN-0000-0000-0000-000000000000","state":"Shutdown"}}]}}}}\n' "$extra"
-                      exit 0
-                    fi
-                    if [ "$1 $2 $3" = "simctl list runtimes" ] && [ "${{4:-}}" = "-j" ]; then
-                      printf '{{"runtimes":[{{"identifier":"com.apple.CoreSimulator.SimRuntime.iOS-27-0","version":"27.0","isAvailable":true}}]}}\n'
-                      exit 0
-                    fi
-                    if [ "$1 $2 $3" = "simctl list devicetypes" ] && [ "${{4:-}}" = "-j" ]; then
-                      printf '{{"devicetypes":[{{"identifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro","name":"iPhone 17 Pro","isAvailable":true}}]}}\n'
-                      exit 0
-                    fi
-                    if [ "$1 $2" = "simctl create" ]; then
-                      printf '%s\n' "$@" > "$create_args"
-                      printf '%s\n' created > "$state"
-                      printf '%s\n' "IPHONE-0000-0000-0000-000000000000"
-                      exit 0
-                    fi
-                    if [ "$1 $2" = "simctl clone" ]; then
-                      echo "unexpected golden clone for iPhone platform" >&2
-                      exit 2
-                    fi
-                    if [ "$1 $2" = "simctl shutdown" ] || [ "$1 $2" = "simctl boot" ]; then
-                      exit 0
-                    fi
-                    echo "unexpected xcrun $*" >&2
-                    exit 2
-                    """))
-                (fakebin / "xcrun").chmod(0o755)
-                env = os.environ.copy()
-                env["PATH"] = f"{fakebin}:{env['PATH']}"
-
-                result = subprocess.run(["scripts/worktree-sim.sh", "id"], cwd=linked, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-                self.assertEqual(result.stdout.strip(), "IPHONE-0000-0000-0000-000000000000")
-                self.assertEqual((linked / ".simid-iphone").read_text().strip(), "IPHONE-0000-0000-0000-000000000000")
-                self.assertFalse((linked / ".simid").exists())
-                args = create_args.read_text()
-                self.assertIn("simctl\ncreate", args)
-                self.assertIn("iphonewt-feature-iphone-", args)
-                self.assertIn("com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro", args)
-                self.assertIn("com.apple.CoreSimulator.SimRuntime.iOS-27-0", args)
-
-    def test_worktree_sim_tvos_platform_creates_current_apple_tv_without_golden_clone(self):
-        with self.make_repo() as root:
-            self.copy_script(root, "worktree-sim.sh")
-            (root / ".simid").write_text("GOLDEN-0000-0000-0000-000000000000\n")
-            (root / "Labstream" / "Existing.swift").write_text("// baseline\n")
-            self.commit_all(root)
-            with tempfile.TemporaryDirectory(prefix=f"{root.name}-linked-", dir=root.parent) as linked_tmp:
-                linked = Path(linked_tmp)
-                subprocess.run(["git", "worktree", "add", "-q", "-b", "feature/tvos", str(linked)], cwd=root, check=True)
-                (linked / ".simplatform").write_text("tvos\n")
-                (linked / ".simid").unlink(missing_ok=True)
-
-                state = root / "xcrun-state"
-                create_args = root / "xcrun-create-args"
-                fakebin = root / "fakebin"
-                fakebin.mkdir()
-                (fakebin / "xcrun").write_text(textwrap.dedent(f"""\
-                    #!/usr/bin/env bash
-                    set -euo pipefail
-                    state={state}
-                    create_args={create_args}
-                    if [ "$1 $2 $3" = "simctl list devices" ] && [ "${{4:-}}" = "-j" ]; then
-                      if [ -f "$state" ]; then
-                        extra='{{"name":"tvwt-feature-tvos-created","udid":"TVOS-0000-0000-0000-000000000000","state":"Shutdown"}}'
-                      else
-                        extra=''
-                      fi
-                      printf '{{"devices":{{"com.apple.CoreSimulator.SimRuntime.tvOS-27-0":[%s],"com.apple.CoreSimulator.SimRuntime.xrOS-26-5":[{{"name":"Golden","udid":"GOLDEN-0000-0000-0000-000000000000","state":"Shutdown"}}]}}}}\n' "$extra"
-                      exit 0
-                    fi
-                    if [ "$1 $2 $3" = "simctl list runtimes" ] && [ "${{4:-}}" = "-j" ]; then
-                      printf '{{"runtimes":[{{"identifier":"com.apple.CoreSimulator.SimRuntime.tvOS-27-0","version":"27.0","isAvailable":true}}]}}\n'
-                      exit 0
-                    fi
-                    if [ "$1 $2 $3" = "simctl list devicetypes" ] && [ "${{4:-}}" = "-j" ]; then
-                      printf '{{"devicetypes":[{{"identifier":"com.apple.CoreSimulator.SimDeviceType.Apple-TV-4K-3rd-generation-4K","name":"Apple TV 4K (3rd generation) (at 4K)","isAvailable":true}}]}}\n'
-                      exit 0
-                    fi
-                    if [ "$1 $2" = "simctl create" ]; then
-                      printf '%s\n' "$@" > "$create_args"
-                      printf '%s\n' created > "$state"
-                      printf '%s\n' "TVOS-0000-0000-0000-000000000000"
-                      exit 0
-                    fi
-                    if [ "$1 $2" = "simctl clone" ]; then
-                      echo "unexpected golden clone for tvOS platform" >&2
-                      exit 2
-                    fi
-                    echo "unexpected xcrun $*" >&2
-                    exit 2
-                    """))
-                (fakebin / "xcrun").chmod(0o755)
-                env = os.environ.copy()
-                env["PATH"] = f"{fakebin}:{env['PATH']}"
-
-                result = subprocess.run(["scripts/worktree-sim.sh", "id"], cwd=linked, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-                self.assertEqual(result.stdout.strip(), "TVOS-0000-0000-0000-000000000000")
-                self.assertEqual((linked / ".simid-tvos").read_text().strip(), "TVOS-0000-0000-0000-000000000000")
-                self.assertFalse((linked / ".simid").exists())
-                args = create_args.read_text()
-                self.assertIn("simctl\ncreate", args)
-                self.assertIn("tvwt-feature-tvos-", args)
-                self.assertIn("com.apple.CoreSimulator.SimDeviceType.Apple-TV-4K-3rd-generation-4K", args)
-                self.assertIn("com.apple.CoreSimulator.SimRuntime.tvOS-27-0", args)
+    def test_worktree_sim_device_platforms_create_sims_without_golden_clone(self):
+        cases = (
+            dict(
+                platform="ipad", label="iPad",
+                runtime="com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+                devicetype="com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M5-12GB",
+                devicetype_name="iPad Pro 13-inch (M5)",
+                stock_devices='{"name":"iPad Pro 13-inch (M5)","udid":"STOCK-IPAD-0000-0000-000000000000","state":"Shutdown"}',
+                extra_separator=",", prefix="ipadwt",
+                udid="IPAD-0000-0000-0000-000000000000", allow_boot=True,
+            ),
+            dict(
+                platform="iphone", label="iPhone",
+                runtime="com.apple.CoreSimulator.SimRuntime.iOS-27-0",
+                devicetype="com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
+                devicetype_name="iPhone 17 Pro",
+                stock_devices='{"name":"iPhone 17 Pro","udid":"STOCK-IPHONE-0000-0000-000000000000","state":"Shutdown"}',
+                extra_separator=",", prefix="iphonewt",
+                udid="IPHONE-0000-0000-0000-000000000000", allow_boot=True,
+            ),
+            dict(
+                platform="tvos", label="tvOS",
+                runtime="com.apple.CoreSimulator.SimRuntime.tvOS-27-0",
+                devicetype="com.apple.CoreSimulator.SimDeviceType.Apple-TV-4K-3rd-generation-4K",
+                devicetype_name="Apple TV 4K (3rd generation) (at 4K)",
+                stock_devices="", extra_separator="", prefix="tvwt",
+                udid="TVOS-0000-0000-0000-000000000000", allow_boot=False,
+            ),
+        )
+        for case in cases:
+            with self.subTest(platform=case["platform"]):
+                self.assert_worktree_sim_platform_creates_sim_without_golden_clone(**case)
 
     def test_worktree_sim_tvos_fails_cleanly_without_runtime(self):
         with self.make_repo() as root:

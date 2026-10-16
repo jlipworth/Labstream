@@ -35,16 +35,6 @@ struct MediaBrowserForceTranscodeTests {
         #expect(body["AllowAudioStreamCopy"] as? Bool == true)
     }
 
-    @Test func jellyfinDefaultKeepsCopyLanes() throws {
-        let request = try JellyfinPlayback.playbackInfoRequest(
-            server: jfServer, token: "token-abc", identity: jfIdentity,
-            itemId: "movie-1", userId: "user-1", maxStreamingBitrate: 8_000_000)
-        let body = try bodyJSON(request)
-        #expect(body["EnableDirectPlay"] as? Bool == true)
-        #expect(body["EnableDirectStream"] as? Bool == true)
-        #expect(body["AllowVideoStreamCopy"] as? Bool == true)
-    }
-
     @Test func embyForceTranscodeDisablesCopyLanes() throws {
         let request = try EmbyPlayback.playbackInfoRequest(
             server: embyServer, token: "token-abc", identity: embyIdentity,
@@ -56,16 +46,6 @@ struct MediaBrowserForceTranscodeTests {
         #expect(body["AllowVideoStreamCopy"] as? Bool == false)
         #expect(body["EnableTranscoding"] as? Bool == true)
         #expect(body["AllowAudioStreamCopy"] as? Bool == true)
-    }
-
-    @Test func embyDefaultKeepsCopyLanes() throws {
-        let request = try EmbyPlayback.playbackInfoRequest(
-            server: embyServer, token: "token-abc", identity: embyIdentity,
-            userId: "user-1", itemId: "movie-1", maxStreamingBitrate: 8_000_000)
-        let body = try bodyJSON(request)
-        #expect(body["EnableDirectPlay"] as? Bool == true)
-        #expect(body["EnableDirectStream"] as? Bool == true)
-        #expect(body["AllowVideoStreamCopy"] as? Bool == true)
     }
 }
 

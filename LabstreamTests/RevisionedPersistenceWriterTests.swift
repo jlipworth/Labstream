@@ -6,7 +6,7 @@ struct RevisionedPersistenceWriterTests {
     @Test func coalescesQueuedFullSnapshotsToNewestRevision() async {
         let firstStarted = DispatchSemaphore(value: 0)
         let releaseFirst = DispatchSemaphore(value: 0)
-        let commits = LockedBox<[Int]>([])
+        let commits = TestLockedBox<[Int]>([])
         let writer = RevisionedPersistenceWriter<Int>(
             encode: { value in
                 if value == 1 {
@@ -31,7 +31,7 @@ struct RevisionedPersistenceWriterTests {
     }
 
     @Test func failedNewestSnapshotStaysDirtyAndFlushRetriesIt() async {
-        let attempts = LockedBox(0)
+        let attempts = TestLockedBox(0)
         let writer = RevisionedPersistenceWriter<Int>(
             encode: { Data(String($0).utf8) },
             commit: { _ in
@@ -60,8 +60,8 @@ struct RevisionedPersistenceWriterTests {
     }
 
     @Test func newerSnapshotSupersedesFailedDirtyRevision() async {
-        let shouldFail = LockedBox(true)
-        let commits = LockedBox<[Int]>([])
+        let shouldFail = TestLockedBox(true)
+        let commits = TestLockedBox<[Int]>([])
         let writer = RevisionedPersistenceWriter<Int>(
             encode: { Data(String($0).utf8) },
             commit: { data in
@@ -82,7 +82,7 @@ struct RevisionedPersistenceWriterTests {
     }
 
     @Test func encodeFailureIsObservableAndRetried() async {
-        let attempts = LockedBox(0)
+        let attempts = TestLockedBox(0)
         let writer = RevisionedPersistenceWriter<Int>(
             encode: { value in
                 let attempt = attempts.withValue { count in
@@ -109,7 +109,7 @@ struct RevisionedPersistenceWriterTests {
     @Test func timeoutDoesNotAbandonInFlightCommit() async {
         let writeStarted = DispatchSemaphore(value: 0)
         let releaseWrite = DispatchSemaphore(value: 0)
-        let writer = makeWriter(commits: LockedBox([])) { _ in
+        let writer = makeWriter(commits: TestLockedBox([])) { _ in
             writeStarted.signal()
             releaseWrite.wait()
         }
@@ -123,7 +123,7 @@ struct RevisionedPersistenceWriterTests {
     }
 
     @Test func ignoresLateSubmissionOlderThanNewestAcceptedRevision() async {
-        let commits = LockedBox<[Int]>([])
+        let commits = TestLockedBox<[Int]>([])
         let writer = makeWriter(commits: commits)
         writer.submit(revision: 2, snapshot: 2)
         writer.submit(revision: 1, snapshot: 1)
@@ -134,7 +134,7 @@ struct RevisionedPersistenceWriterTests {
     }
 
     @Test func invalidTimeoutsReturnImmediatelyWithoutAbandoningTarget() async {
-        let writer = makeWriter(commits: LockedBox([]))
+        let writer = makeWriter(commits: TestLockedBox([]))
         #expect(await writer.flush(through: 1, timeout: -Double.infinity)
             == .timedOut(targetRevision: 1, committedRevision: 0))
         #expect(await writer.flush(through: 1, timeout: Double.nan)
@@ -144,7 +144,7 @@ struct RevisionedPersistenceWriterTests {
     }
 
     private func makeWriter(
-        commits: LockedBox<[Int]>,
+        commits: TestLockedBox<[Int]>,
         beforeCommit: @escaping @Sendable (Int) -> Void = { _ in }
     ) -> RevisionedPersistenceWriter<Int> {
         RevisionedPersistenceWriter<Int>(
@@ -176,23 +176,5 @@ struct RevisionedPersistenceWriterTests {
 
     private enum TestFailure: Error {
         case expected
-    }
-}
-
-private final class LockedBox<Value>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var storage: Value
-
-    init(_ value: Value) { storage = value }
-
-    var value: Value {
-        lock.lock(); defer { lock.unlock() }
-        return storage
-    }
-
-    @discardableResult
-    func withValue<Result>(_ body: (inout Value) -> Result) -> Result {
-        lock.lock(); defer { lock.unlock() }
-        return body(&storage)
     }
 }

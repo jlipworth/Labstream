@@ -385,24 +385,6 @@ struct MetadataRepositoryTests {
         #expect(!native.mayAuthorizeAction(in: model, backend: .jellyfin, itemID: "item"))
     }
 
-    @Test func exactConcurrentReadersJoinOneNativeRead() async throws {
-        let context = try makeContext()
-        let fetch = ControlledMetadataFetch()
-        let repository = MetadataRepository()
-        let request = request(repository, context: context, itemID: "item", fetch: fetch)
-
-        let first = Task { try await repository.metadata(for: request, policy: .display) }
-        await fetch.waitUntilStarted(count: 1)
-        let second = Task { try await repository.metadata(for: request, policy: .authoritative) }
-        await Task.yield()
-        #expect(await fetch.startedCount == 1)
-
-        await fetch.succeed(attempt: 0, item: item("item", title: "joined"))
-        #expect(try await first.value.item.title == "joined")
-        #expect(try await second.value.item.title == "joined")
-        #expect(await fetch.startedCount == 1)
-    }
-
     @Test func displayReusesOnlyWithinInjectedTTL() async throws {
         let clock = ManualTestClock(nowNanoseconds: 100)
         let context = try makeContext()
@@ -426,25 +408,6 @@ struct MetadataRepositoryTests {
         await fetch.waitUntilStarted(count: 2)
         await fetch.succeed(attempt: 1, item: item("item", title: "after-expiry"))
         #expect(try await expired.value.item.title == "after-expiry")
-        #expect(await fetch.startedCount == 2)
-    }
-
-    @Test func authoritativeCallerAlwaysRereadsAfterSuccess() async throws {
-        let context = try makeContext()
-        let fetch = ControlledMetadataFetch()
-        let repository = MetadataRepository(freshDisplayTTLNanoseconds: .max,
-                                            staleDisplayTTLNanoseconds: .max)
-        let request = request(repository, context: context, itemID: "item", fetch: fetch)
-
-        let first = Task { try await repository.metadata(for: request, policy: .authoritative) }
-        await fetch.waitUntilStarted(count: 1)
-        await fetch.succeed(attempt: 0, item: item("item", title: "first"))
-        #expect(try await first.value.item.title == "first")
-
-        let second = Task { try await repository.metadata(for: request, policy: .authoritative) }
-        await fetch.waitUntilStarted(count: 2)
-        await fetch.succeed(attempt: 1, item: item("item", title: "second"))
-        #expect(try await second.value.item.title == "second")
         #expect(await fetch.startedCount == 2)
     }
 

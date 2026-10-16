@@ -5,19 +5,6 @@ import Testing
 @testable import Labstream
 
 struct MediaBrowserPlaybackPreferencePolicyTests {
-    @Test func initialAudioUsesMetadataDefaultWhenNoLanguagePreferenceExists() throws {
-        let defaults = try makeDefaults()
-        let item = itemWithAudioStreams([
-            audio(id: 0, languageCode: "eng", isDefault: true),
-            audio(id: 1, languageCode: "eng"),
-        ])
-
-        #expect(MediaBrowserPlaybackPreferencePolicy.initialAudioStreamIndex(
-            for: item, defaults: defaults) == 0)
-        #expect(MediaBrowserPlaybackPreferencePolicy.initialSelection(
-            for: item, defaults: defaults).audioStreamIndex == 0)
-    }
-
     @Test func initialAudioFallbackMatchesPickerSelectedDefaultFirstOrder() throws {
         let defaults = try makeDefaults()
 

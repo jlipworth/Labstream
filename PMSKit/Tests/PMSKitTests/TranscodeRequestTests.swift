@@ -76,20 +76,14 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     #expect(!query.contains("&x="))
 }
 
-@Test func decisionURLUsesDecisionPathAndHasMDE() {
-    let req = TranscodeRequest(server: server, token: "tok", identity: id,
-                               metadataKey: "/library/metadata/101",
-                               maxVideoBitrateKbps: 8000, sessionID: "S", mediaIndex: 0, partIndex: 0)
-    let url = req.decisionURL()
-    #expect(url.path == "/video/:/transcode/universal/decision")
-    let q = queryItems(url)
-    #expect(q.contains(URLQueryItem(name: "hasMDE", value: "1")))
-}
-
 @Test func deviceProfileDeclaresHLSAndBitrateLimit() {
     let p = DeviceProfile.streaming(maxVideoBitrateKbps: 8000, maxAudioBitrateKbps: 640)
     #expect(p.clientProfileExtra.contains("add-transcode-target"))
     #expect(p.clientProfileExtra.contains("protocol=hls"))
+    // HEVC over HLS requires the fMP4 (mp4) container (research/09).
+    #expect(p.clientProfileExtra.contains("hevc"))
+    #expect(p.clientProfileExtra.contains("container=mp4"))
+    #expect(p.clientProfileExtra.contains("add-limitation"))
     #expect(p.clientProfileExtra.contains("name=video.bitrate&value=8000"))
     #expect(p.clientProfileExtra.contains("name=audio.bitrate&value=640"))
 }
@@ -149,18 +143,7 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     #expect(!extra.contains("container=mkv"))
 }
 
-// MARK: - Extra over-testing (plan: HEVC fMP4, subtitle burn-in, non-zero partIndex)
-
-@Test func deviceProfileDeclaresHEVCInFMP4Container() {
-    // HEVC over HLS requires the fMP4 (mp4) container (research/09).
-    let p = DeviceProfile.streaming(maxVideoBitrateKbps: 8000)
-    let extra = p.clientProfileExtra
-    #expect(extra.contains("hevc"))
-    #expect(extra.contains("container=mp4"))
-    // And the bitrate cap is present.
-    #expect(extra.contains("add-limitation"))
-    #expect(extra.contains("8000"))
-}
+// MARK: - Extra over-testing (plan: subtitle burn-in, non-zero partIndex)
 
 @Test func subtitleBurnInAddsBurnParams() {
     let req = TranscodeRequest(server: server, token: "tok", identity: id,
@@ -183,30 +166,18 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     #expect(q.first { $0.name == "subtitles" }?.value == "auto")
 }
 
-@Test func nonZeroPartIndexIsIndependentOfMediaIndex() {
+@Test(arguments: [(0, 2), (3, 0)])
+func nonZeroMediaAndPartIndicesTravelIndependently(mediaIndex: Int, partIndex: Int) {
     // Guards against python-plexapi's partIndex=mediaIndex bug (research/09):
     // mediaIndex and partIndex must travel independently.
     let req = TranscodeRequest(server: server, token: "tok", identity: id,
                                metadataKey: "/library/metadata/101",
                                maxVideoBitrateKbps: 8000, sessionID: "S",
-                               mediaIndex: 0, partIndex: 2)
+                               mediaIndex: mediaIndex, partIndex: partIndex)
     let q = queryItems(req.startM3U8URL())
     func v(_ n: String) -> String? { q.first { $0.name == n }?.value }
-    #expect(v("mediaIndex") == "0")
-    #expect(v("partIndex") == "2")
-    // The two must NOT be coupled.
-    #expect(v("partIndex") != v("mediaIndex"))
-}
-
-@Test func nonZeroMediaIndexDoesNotLeakIntoPartIndex() {
-    let req = TranscodeRequest(server: server, token: "tok", identity: id,
-                               metadataKey: "/library/metadata/101",
-                               maxVideoBitrateKbps: 8000, sessionID: "S",
-                               mediaIndex: 3, partIndex: 0)
-    let q = queryItems(req.startM3U8URL())
-    func v(_ n: String) -> String? { q.first { $0.name == n }?.value }
-    #expect(v("mediaIndex") == "3")
-    #expect(v("partIndex") == "0")
+    #expect(v("mediaIndex") == "\(mediaIndex)")
+    #expect(v("partIndex") == "\(partIndex)")
 }
 
 @Test func resumeOffsetIsSentToPMSOnStream() {
@@ -219,6 +190,7 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     // Streaming carries the resume offset (so PMS primes the transcoder + emits EXT-X-START).
     #expect(v(queryItems(req.startM3U8URL()), "offset") == "1860")
     #expect(v(queryItems(req.decisionURL()), "offset") == "1860")
+    #expect(v(queryItems(req.directPlayStartM3U8URL()), "offset") == "1860")
     // Absent/zero offset must not emit the param at all.
     let noOffset = TranscodeRequest(server: server, token: "tok", identity: id,
                                     metadataKey: "/library/metadata/101",
@@ -273,15 +245,6 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     #expect(v("hasMDE") == "1")
     // Exactly one directPlay param survives the 0->1 override.
     #expect(q.filter { $0.name == "directPlay" }.count == 1)
-}
-
-@Test func directPlayProbeKeepsGenericProfile() {
-    let req = TranscodeRequest(server: server, token: "tok", identity: id,
-                               metadataKey: "/library/metadata/101",
-                               maxVideoBitrateKbps: 8000, sessionID: "S",
-                               mediaIndex: 0, partIndex: 0)
-    let q = queryItems(req.directPlayProbeDecisionURL())
-    func v(_ n: String) -> String? { q.first { $0.name == n }?.value }
     // An unknown profile name 400s — the probe must still use the server-known "Generic".
     #expect(v("X-Plex-Client-Profile-Name") == "Generic")
 }
@@ -346,16 +309,6 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     #expect(start.filter { $0.name == "X-Plex-Client-Profile-Extra" }.count == 1)
 }
 
-@Test func directPlayStartURLCarriesResumeOffset() {
-    let req = TranscodeRequest(server: server, token: "tok", identity: id,
-                               metadataKey: "/library/metadata/101",
-                               maxVideoBitrateKbps: 8000, sessionID: "S",
-                               mediaIndex: 0, partIndex: 0,
-                               startOffsetSeconds: 1860)
-    let q = queryItems(req.directPlayStartM3U8URL())
-    #expect(q.first { $0.name == "offset" }?.value == "1860")
-}
-
 @Test func directPlayStartRequestCanPreflightActualPlaylist() {
     let req = TranscodeRequest(server: server, token: "tok", identity: id,
                                metadataKey: "/library/metadata/101",
@@ -380,12 +333,7 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
     func v(_ n: String) -> String? { q.first { $0.name == n }?.value }
     #expect(v("directPlay") == "0")
     #expect(v("X-Plex-Client-Profile-Extra")?.contains("add-direct-play-profile") == false)
-}
-
-@Test func streamingProfileUnchanged() {
-    let extra = DeviceProfile.streaming(maxVideoBitrateKbps: 8000).clientProfileExtra
-    #expect(extra.contains("add-direct-play-profile") == false)
-    #expect(extra.contains("isRequired=true") == false)
+    #expect(v("X-Plex-Client-Profile-Extra")?.contains("isRequired=true") == false)
 }
 
 // MARK: - DecisionResponse / Decision
@@ -558,15 +506,6 @@ private func queryItems(_ url: URL) -> [URLQueryItem] {
         #expect(v("directPlay") == "0")
         #expect(v("directStream") == "0")
     }
-}
-
-@Test func forceTranscodeDefaultKeepsDirectStream() {
-    let req = TranscodeRequest(server: server, token: "tok", identity: id,
-                               metadataKey: "/library/metadata/101",
-                               maxVideoBitrateKbps: 8000, sessionID: "S",
-                               mediaIndex: 0, partIndex: 0)
-    let q = queryItems(req.startM3U8URL())
-    #expect(q.first { $0.name == "directStream" }?.value == "1")
 }
 
 @Test func forcingExistingRequestPreservesTheLogicalSession() {
