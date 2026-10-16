@@ -64,6 +64,29 @@ extension View {
     }
 }
 
+extension View {
+    /// DEBUG geometry runs only: an inert accessibility marker filling this view, so UI tests can
+    /// read the chrome envelope even while every visible control is hidden.
+    @ViewBuilder
+    func playerChromeEnvelopeMarker() -> some View {
+        #if DEBUG
+        if PlayerGeometryProbe.isEnabled {
+            overlay {
+                Color.clear
+                    .allowsHitTesting(false)
+                    .accessibilityElement()
+                    .accessibilityLabel("Chrome envelope")
+                    .accessibilityIdentifier("playback.debug.chromeEnvelope")
+            }
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
+}
+
 #if DEBUG
 struct PlayerGeometrySample: Equatable {
     let frame: CGRect

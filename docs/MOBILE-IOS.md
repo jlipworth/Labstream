@@ -45,14 +45,18 @@ root, plus the shared `PMSKit` package. The public mobile support floor is iOS/i
   continuing through PiP or an external AirPlay route.
 - Player layout contract (#258): `CustomPlayerView` owns its safe-area policy. The black
   backdrop and `AVPlayerLayer` fill the whole display (Fit/Fill only change `videoGravity`),
-  while the chrome is laid out inside the safe area, so it clears the rounded corners, Dynamic
-  Island, and home indicator. Presenters (Detail streaming/local covers, Downloads) must not
-  wrap the player in `.ignoresSafeArea()`, because that erases the insets for the chrome too.
-  For a fixed device, orientation, and chrome state, the close/utility buttons, center
-  play/pause, and bottom platter keep the same frames for any source aspect and menu set. The
-  phone-landscape transport row never grows wider than its platter. If the item's menu set
-  does not fit beside the four skips, the row drops to the ←10/→30 pair and then scrolls
-  the pills. PiP leads the top-trailing group, so its per-item availability never moves the
+  while the chrome is laid out inside the leading, trailing, and bottom safe-area insets, so it
+  clears the rounded corners, Dynamic Island, and home indicator. The top edge stays on the
+  full-screen origin, because the chrome shows and hides the status bar with itself and that
+  would otherwise move the envelope by the status-bar height on every reveal/hide on iPad.
+  Presenters (Detail streaming/local covers, Downloads) must use
+  `customPlayerPresentationSafeArea()` rather than `.ignoresSafeArea()`. The helper keeps the
+  previous full-bounds presentation on visionOS, tvOS, and macOS and is a no-op on iOS, where ignoring the
+  safe area would erase the chrome's insets. For a fixed device, orientation, and source/menu
+  set, the close/utility buttons, center play/pause, skips, menu pills, and bottom platter keep
+  the same frames, and hiding the chrome does not move the envelope. The phone-landscape
+  transport row never grows wider than its platter. If the item's menu set does not fit beside
+  the four skips, the row drops to the -10/+30 pair and then scrolls the pills. PiP leads the top-trailing group, so its per-item availability never moves the
   display-mode or AirPlay buttons. A hairline outline keeps the glass platter legible over
   letterbox/pillarbox black.
 - Cellular downloads default to **off**. The Settings download toggle controls the

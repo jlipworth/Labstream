@@ -253,6 +253,7 @@ struct CustomPlayerChrome: View {
             chromeViewportSize = newSize
         }
         .playerGeometryProbe("chromeViewport", detail: mobileChromeGeometryDetail)
+        .playerChromeEnvelopeMarker()
         #endif
         #if os(macOS)
         .background(MacPlayerWindowReader(bridge: macWindowBridge))
@@ -836,7 +837,7 @@ struct CustomPlayerChrome: View {
                 compactScrubberColumn
             }
 
-            // Two skips (matching the hardware-keyboard mapping ←10/→30); the four-skip
+            // Two skips (-10/+30; hardware keys are ←/→ 30 s, Shift-←/→ 10 s); the four-skip
             // strip stays exclusive to the regular/iPad layout. The labeled pill strip
             // (~660 pt ideal) shares the row only when it fully fits (roomy landscape);
             // otherwise it drops to its own full-width row, where it scrolls horizontally

@@ -128,8 +128,9 @@ extension CustomPlayerChrome {
             // The row must never be wider than the platter it sits in (#258): a fixed-size
             // menu strip that overflowed used to widen the platter and, through it, the whole
             // chrome envelope, so the item's menu set (Quality availability) moved every control.
-            // Degrade deterministically instead: drop to the ←10/→30 pair (the hardware-keyboard
-            // mapping), then let the full-size pills scroll.
+            // Degrade deterministically instead: drop to the -10/+30 pair the portrait compact
+            // layout already uses, then let the full-size pills scroll. (Hardware keys are
+            // separate: ←/→ skip 30 s, Shift-←/→ skip 10 s.)
             ViewThatFits(in: .horizontal) {
                 phoneLandscapeTransportRow(skips: [-30, -10, 10, 30], scrollsMenus: false)
                 phoneLandscapeTransportRow(skips: [-10, 30], scrollsMenus: false)

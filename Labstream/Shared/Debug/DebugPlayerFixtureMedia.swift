@@ -41,10 +41,7 @@ enum DebugPlayerFixtureMedia {
                                                     in: .userDomainMask).first else {
             throw FixtureError.cachesUnavailable
         }
-        let name = width == defaultWidth && height == defaultHeight
-            ? "tv-player-fixture-\(durationSeconds)s.mp4"
-            : "player-fixture-\(width)x\(height)-\(durationSeconds)s.mp4"
-        let url = caches.appendingPathComponent(name)
+        let url = caches.appendingPathComponent("player-fixture-\(width)x\(height)-\(durationSeconds)s.mp4")
         if FileManager.default.fileExists(atPath: url.path) { return url }
         let target = url
         try await Task.detached(priority: .userInitiated) {

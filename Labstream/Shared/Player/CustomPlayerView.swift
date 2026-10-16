@@ -185,6 +185,12 @@ struct CustomPlayerView: View {
                                        mobileSystemCoordinator: mobileSystemCoordinator,
                                        onRetry: { controller.retry() },
                                        onClose: onClose == nil ? nil : { requestPlayerClose() })
+                        // The chrome toggles the status bar with its own visibility. On iPad that
+                        // flips the top inset between 0 and the status-bar height, which would
+                        // shift the envelope (and centered overlays) on every reveal/hide. Keep
+                        // the top edge on the fixed full-screen origin; the top chrome's own
+                        // insets already clear the status bar. Leading/trailing/bottom stay safe.
+                        .ignoresSafeArea(.container, edges: .top)
                     #else
                     CustomPlayerChrome(controller: controller,
                                        title: item.title,
@@ -203,15 +209,12 @@ struct CustomPlayerView: View {
                     .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
             }
         }
-        #if os(visionOS) || os(tvOS)
-        // Chrome on these platforms is authored against the full presentation bounds.
-        .ignoresSafeArea()
-        #endif
         // iOS/iPadOS (#258): the black backdrop and AVPlayerLayer above ignore the safe area so the
         // picture can use the whole display, but the chrome is deliberately laid out inside it.
         // That gives every presentation (streaming, Downloads, local-from-Detail) one stable,
-        // rounded-corner/Dynamic-Island-safe envelope. Presenters must not wrap this view in
-        // `.ignoresSafeArea()`, which would erase the insets for the chrome too.
+        // rounded-corner/Dynamic-Island-safe envelope. Presenters use
+        // `customPlayerPresentationSafeArea()` instead of `.ignoresSafeArea()`, which would erase
+        // the insets for the chrome too.
         .task(id: clockTaskID) { await runPlayer() }
         #if os(iOS)
         .onAppear {
@@ -365,6 +368,21 @@ struct CustomPlayerView: View {
                                               launchEpoch: launchEpoch) { controller === playback }
     }
     #endif
+}
+
+extension View {
+    /// The presenter-side safe-area rule for `CustomPlayerView` (#258). On visionOS, tvOS, and
+    /// macOS the call sites that used `.ignoresSafeArea()` keep exactly that behavior. On
+    /// iOS/iPadOS this is a no-op: the player keeps its backdrop and picture full-bleed
+    /// internally and lays its chrome out in the safe area.
+    @ViewBuilder
+    func customPlayerPresentationSafeArea() -> some View {
+        #if os(iOS)
+        self
+        #else
+        ignoresSafeArea()
+        #endif
+    }
 }
 
 /// Offline playback is a strict provenance boundary: if its persisted side-asset owner or content
