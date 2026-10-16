@@ -4,12 +4,13 @@ For review, use the dedicated Jellyfin review server and non-admin account in th
 
 Sign in:
 1. Launch Labstream and choose Jellyfin.
-2. Enter the server address from the Sign-In Information fields, then the username and password, and sign in.
+2. Enter the server address from the Sign-In Information fields, click Username / Password, enter the username and password, and click Sign in with Jellyfin.
 
 Try the main journey:
-1. Open Movies, then Spring or Wing It! (open films by the Blender Foundation). Open the title's details and play it.
-2. Pause, resume, and seek. Leave playback, reopen the same title, and confirm it resumes where you left off.
-3. Browse Shows and Music. Use the technical sample title to change subtitle and audio tracks and chapters from the player controls.
+1. In the sidebar, choose Movies under Libraries (if a Choose Libraries sheet appears, click Done). Open Spring or Wing It! (open films by the Blender Foundation), then play it from the title's details.
+2. Pause, resume, and seek. Leave playback and reopen the same title: its details now offer Resume, and playback continues where you left off.
+3. Browse Shows under Libraries (Reviewer Fixtures > Season 1) and the Music section.
+4. For tracks and chapters, play Playback Diagnostics, a 30-second technical sample in Movies. Pause it first, then use Subs to turn on English subtitles, Audio to switch between Primary Tone and Alternate Tone, and Chapters to jump between Opening, Passage, and Return. The Reviewer Fixtures episode has the same tracks.
 
 The review server is a dedicated sample environment with licensed media. Playback progress resets on a schedule, and the server stays available throughout review. Labstream connects directly to the server the user chooses; when that server is on the local network, the app asks for Local Network access.
 
