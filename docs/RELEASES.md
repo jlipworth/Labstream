@@ -396,3 +396,17 @@ After approval, verify the live product page and its support/privacy links, publ
 corresponding source and release notes, create the authorized annotated tag, and record the
 released platform/version in this page. Do not describe an internal TestFlight build as a public
 App Store release.
+
+## After launch: monitoring
+
+`scripts/asc-digest.py` is a read-only daily digest for the maintainer: new customer reviews (with
+platform where App Store Connect attributes it), Xcode Organizer diagnostic signatures (hangs, disk
+writes, launches) for the newest builds of the current marketing version on each platform, and
+TestFlight crash and screenshot feedback. It reuses the `testflight-release.py` credentials, issues
+only `GET` requests, and writes `digest.md`/`digest.json` to the gitignored
+`artifacts/asc-digest/<date>/`; stdout carries counts only. A state file there limits each run to
+items not seen before (`--all` ignores it; `--since 7d` widens the window). `--logs` and
+`--attachments` save diagnostic/crash logs and feedback screenshots to the same private directory.
+Review text, nicknames, tester emails, and logs are personal data: never paste them into issues,
+commits, or public docs. Endpoints that return 403/404 (common before the app is public) are listed
+as unavailable rather than failing the run. See [Scripts](SCRIPTS.md).

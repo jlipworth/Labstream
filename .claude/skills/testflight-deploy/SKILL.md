@@ -101,3 +101,6 @@ count) are in use, a hand-bumped `CURRENT_PROJECT_VERSION` must exceed them.
 - The aggregate privacy report is still generated from Organizer (archive context menu) when the
   data-collection label needs re-review.
 - Physical TestFlight acceptance on each device family remains the user's gate.
+- Once builds reach testers or the store, `scripts/asc-digest.py` (read-only) collects new reviews,
+  diagnostic signatures, and TestFlight feedback into the private, gitignored
+  `artifacts/asc-digest/`; relay only its stdout counts, never review or tester text.
