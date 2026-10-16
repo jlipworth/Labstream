@@ -123,6 +123,8 @@ regressions cover both HEVC and H.264 and preserve caps/audio/subtitle choices. 
 separate `m4s` dialect is unchanged. See [issue #303](https://github.com/jlipworth/Labstream/issues/303).
 Simulator frames established the reported Jellyfin fix; physical Vision Pro and deep
 seek/reopen acceptance remain open. Emby corpus defects are separate investigations.
+Below-cap video copy plus audio conversion and above-cap video encoding must be tested
+separately.
 
 Jellyfin/Emby live probes now require a unique exact playable title in the returned
 search page; missing, fuzzy-only, and duplicate matches fail closed. Both probes accept
@@ -137,7 +139,8 @@ human/agent visual inspection; an automatic perceptual correctness oracle is not
 Smallest representatives can be studio logos or secondary encodes. Review duration and
 source identity before selecting release cases. Starting a capped scenario at the same
 8 Mbps value is a no-op, not a valid quality-transition test. Use a different initial
-quality. Record first failures even when later repeats pass.
+quality. Record initial, changed-quality, and seek results separately. Record first
+failures even when later repeats pass, and keep failures visible even after retries.
 
 ## Plex exact-source probes
 

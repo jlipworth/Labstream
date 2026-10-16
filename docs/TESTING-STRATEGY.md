@@ -301,23 +301,8 @@ physical background-transfer acceptance.
 
 ## macOS host checks
 
-macOS has no simulator lane. The native `LabstreamMac` target runs on the host under a
-per-worktree development identity. For Mac-specific or widely shared app changes, run the current
-repeatable sweep:
-
-```sh
-scripts/validate-macos-228.sh
-```
-
-The script retains its issue-era filename. It combines static identity checks, a Mac host
-build, extra visionOS and iPhone `xcodebuild` compile steps against this worktree's concrete
-simulator IDs (those `id` lookups may provision sims; this is not a leased simulator test
-run and must not be treated as one), focused PMSKit diagnostics tests
-(`DiagnosticLoggingTests` only), and a bounded launch smoke through
-`scripts/smoke-macos-host.sh`. Shut down any simulator it left booted before another leased
-turn. It does not prove real backend auth, subjective UI behavior,
-media-key ownership, live playback, or background-download durability. See
-[macOS target guide](MACOS.md) for host identity and cleanup rules.
+macOS has no simulator lane; the repeatable host sweep (`scripts/validate-macos-228.sh`), its
+coverage, and its limits are documented in [macOS validation](MACOS.md#validation).
 
 ### Bounded playback troubleshooting
 
@@ -378,19 +363,6 @@ The metadata scanner is read-only, resumable, and requires gitignored output; it
 tests run in the existing repository-hygiene CI lane. It does not download media or
 prove playback support. Full live-library playback is not a per-commit requirement.
 
-Jellyfin capped HLS now requests fMP4 (`mp4`) to support HEVC copy on Apple players.
-Emby's `m4s` packaging policy remains independent. Below-cap video copy plus audio
-conversion and above-cap video encoding must be tested separately. Simulator evidence
-for the Jellyfin fix does not close physical Vision Pro, deep seek, or reopen gates.
-
-For Jellyfin/Emby probes, use a unique exact title and verify the selected source.
-Missing/ambiguous search matches fail closed instead of playing a fuzzy result. Review
-actual decoded frames: transport success alone cannot establish absence of black video
-or corruption. Record initial, changed-quality, and seek results separately; selecting
-an unchanged quality is not a valid transition. Keep failures visible even after retries.
-
-Use the Codex in-app browser for authorized one-time codes. Opt-in iPhone live-auth
-XCUITests provide a normal-UI fallback when Device Hub is unavailable. They skip by
-default; private credentials, pairing codes, logs, and result bundles never enter CI.
-Release automation against private servers remains future opt-in trusted self-hosted
-work, not an expansion of public pull-request permissions.
+Backend-specific packaging, exact-source probe rules, frame-review and transition-evidence
+requirements, opt-in authentication, and future release-CI constraints are documented in
+[Private media corpus testing](MEDIA-CORPUS-TESTING.md#verified-findings-and-current-limits).

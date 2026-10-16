@@ -51,11 +51,63 @@ Historical prose and path literals may remain as written when they are part of t
 
 ## Archived research and session records
 
+- [`01-plex-api-transcoding.md`](research/01-plex-api-transcoding.md) — June 2026 research on Plex auth, browsing, server-side transcoded HLS, and offline download options for the original visionOS client.
+- [`02-visionos-playback-theater.md`](research/02-visionos-playback-theater.md) — June 2026 survey of visionOS HLS playback, cinema environments, and frame-packed 3D presentation.
+- [`03-app-architecture-sideload.md`](research/03-app-architecture-sideload.md) — June 2026 app-structure and free-Apple-ID sideload/provisioning analysis.
+- [`04-competitive-teardown.md`](research/04-competitive-teardown.md) — June 2026 snapshot of competing visionOS Plex clients for the original build/no-build decision.
+- [`05-mobile-client-ux-reference.md`](research/05-mobile-client-ux-reference.md) — June 2026 feature and navigation catalog of mature iOS/iPadOS media-server clients used as UX vocabulary.
+- [`06-prerequisites-licensing.md`](research/06-prerequisites-licensing.md) — June 2026 prerequisites and licensing checklist for the personal-use visionOS build.
+- [`07-plex-official-api-surface.md`](research/07-plex-official-api-surface.md) — 2026-06-08 assessment of official versus community Plex API surface and auth-migration risk.
+- [`08-plex-client-library-catalog.md`](research/08-plex-client-library-catalog.md) — June 2026 catalog of Plex client libraries as transcode/streaming reference implementations.
+- [`09-transcode-api-deep-dive.md`](research/09-transcode-api-deep-dive.md) — version-dependent Plex universal transcode parameter and decision-code reference with per-row confidence tags.
+- [`10-apple-media-api-inventory.md`](research/10-apple-media-api-inventory.md) — visionOS 26 Apple framework inventory, focused on offline download of a bitrate-capped transcode.
+- [`11-offline-download-spike.md`](research/11-offline-download-spike.md) — 2026-06-08 feasibility spike for capped-bitrate offline Plex downloads.
+- [`12-visionos-app-templates.md`](research/12-visionos-app-templates.md) — June 2026 survey of visionOS reference projects considered as structural templates.
+- [`13-playback-state-apis.md`](research/13-playback-state-apis.md) — 2026-06-08 Plex timeline, scrobble, play-queue, hub, and resume API research.
+- [`14-player-downloads-audit-and-roadmap.md`](research/14-player-downloads-audit-and-roadmap.md) — superseded June 2026 player/downloads audit and roadmap; its bugs were fixed and its work moved to GitHub issues.
+- [`15-device-profile.md`](research/15-device-profile.md) — Vision Pro DeviceProfile/direct-play proposal; the decision-only probe shipped and the app-side follow-up (#7) is closed.
+- [`16-jellyfin-backend-support.md`](research/16-jellyfin-backend-support.md) — pre-implementation Jellyfin backend research for #35; Jellyfin support has since shipped.
+- [`17-emby-backend-support.md`](research/17-emby-backend-support.md) — Emby backend research and first-slice record for #68; Emby Connect and downloads have since shipped.
+- [`18-offline-chapters-trickplay-subtitles.md`](research/18-offline-chapters-trickplay-subtitles.md) — closed #74 investigation of offline chapters, trick-play, and subtitles.
+- [`2026-06-27-offline-playback-compatibility.md`](research/2026-06-27-offline-playback-compatibility.md) — closed #167 implementation-research snapshot of offline download compatibility checks.
 - [`2026-07-21-tvos-session-report.md`](research/2026-07-21-tvos-session-report.md) — closed
   evidence-first session record for the tvOS focus/remote-input work; findings absorbed into
   the archived tvOS plan and the active screen audit.
 - [`2026-08-22-jellyfin-public-demo.md`](research/2026-08-22-jellyfin-public-demo.md) —
   superseded evaluation of the official public Jellyfin stable demo for screenshots and App
   Review; compatibility passed, but the Labstream-controlled review catalog was chosen instead.
+
+## Archived downloads notes
+
+- [`DOWNLOADS-REFACTOR-135.md`](downloads/DOWNLOADS-REFACTOR-135.md) — historical #135 downloads audit and staged-refactor record.
+- [`DOWNLOADS-HOLISTIC-REFACTOR-PLAN.md`](downloads/DOWNLOADS-HOLISTIC-REFACTOR-PLAN.md) — completed/superseded holistic downloads refactor plan and branch-era checkpoints.
+- [`2026-07-10-static-range-segment-checkpointing.md`](downloads/2026-07-10-static-range-segment-checkpointing.md) — completed static-range segment-train checkpointing plan.
+- [`2026-07-15-optional-download-side-assets.md`](downloads/2026-07-15-optional-download-side-assets.md) — completed request-family audit behind the process-wide optional side-asset coordinator.
+
+## Archived macOS notes
+
+- [`MACOS-228-REMAINING-WORK.md`](macos/MACOS-228-REMAINING-WORK.md) — issue-era #228 plan for finishing the first native Mac implementation.
+- [`MACOS-228-VALIDATION.md`](macos/MACOS-228-VALIDATION.md) — issue-era #228 split between agent-runnable and user-only Mac validation.
+- [`MACOS-RELEASE-SCAFFOLDING.md`](macos/MACOS-RELEASE-SCAFFOLDING.md) — issue-era #228 release and versioning scaffolding.
+
+## Archived reviews
+
+- [`2026-07-12-remediation-branch-review.md`](reviews/2026-07-12-remediation-branch-review.md) — resolved first review of the remediation branch (Phases 1–2).
+- [`2026-07-12-remediation-delta-review.md`](reviews/2026-07-12-remediation-delta-review.md) — resolved second-pass delta review of the remediation branch.
+
+## Archived proposals
+
+- [`emby-jellyfin-code-sharing.md`](proposals/emby-jellyfin-code-sharing.md) — historical Jellyfin/Emby MediaBrowser code-sharing note from an earlier app version.
+
+## Archived testing snapshots
+
+- [`TESTING-CHECKLIST-2026-07-10.md`](testing/TESTING-CHECKLIST-2026-07-10.md) — the former rolling manual checklist as it existed on 2026-07-10.
+
+## First-public-cleanup snapshot
+
+- [`DEVELOPMENT.md`](first-public-cleanup/DEVELOPMENT.md) — pre-cleanup development notes.
+- [`PROFILING.md`](first-public-cleanup/PROFILING.md) — earlier Instruments profiling workflow.
+- [`TESTING-LIVE-MATRIX.md`](first-public-cleanup/TESTING-LIVE-MATRIX.md) — dated live-server coverage matrix.
+- [`TESTING-LIVE-REQUIREMENTS.md`](first-public-cleanup/TESTING-LIVE-REQUIREMENTS.md) — dated #75 live-server test requirements and proposed CI wiring.
 
 Archived files may mention retired decisions such as the `Safari` Plex client profile, old proxy-owned seek designs, or pre-Jellyfin assumptions. Do not copy those details back into code or active docs without re-verifying them against current source.

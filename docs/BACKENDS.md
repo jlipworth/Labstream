@@ -37,8 +37,8 @@ flowchart TD
 | Scrub previews | BIF index (online and offline). | Trickplay tile sheets (online and offline). | `ThumbnailSet` BIF, then per-position images, then chapter images. |
 
 Only the Plex account token may sync across canonical Keychain-backed installs; Jellyfin/Emby tokens are deliberately device-local
-because those servers bind the token to the device id used at sign-in. See `docs/DEVELOPMENT.md`
-§Credentials and iCloud Keychain sync for the full rationale. Per-worktree Mac development
+because those servers bind the token to the device id used at sign-in. See
+[Persistence](PERSISTENCE.md#icloud-keychain-sync) for the full rationale. Per-worktree Mac development
 identities use isolated credential storage instead of this canonical sync path.
 
 ## Canonical models and MediaBrowser sharing

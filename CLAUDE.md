@@ -382,8 +382,7 @@ Production container reset is intentionally guarded and requires both
 production container unless explicitly testing/resetting the App Store identity. For old
 manual identities, inspect `~/Library/Containers/org.labstream.Labstream.dev.*` and remove
 only stale dev containers after confirming they do not correspond to an active worktree.
-Current contributor guidance: `docs/MACOS.md`. The original host-helper rollout note is retained
-as historical context at `docs/archive/macos/MACOS-HOST-DEPLOYMENT.md`.
+Current contributor guidance: `docs/MACOS.md`.
 
 ## Live-testing workflow
 

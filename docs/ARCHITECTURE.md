@@ -335,7 +335,5 @@ flushing happens only on genuine aggregate inactivity.
 
 ## Documentation rule
 
-Published docs describe current behavior. Active implementation plans and acceptance journals live
-in `docs/plans/`; unresolved investigations in `docs/research/`; immutable audit and profiling
-observations in `docs/evidence/`; and completed or superseded context in `docs/archive/`. None of
-those internal lanes belongs in the public navigation.
+Published docs describe current behavior; internal lanes stay out of public navigation. See
+[Documentation information architecture](CONTRIBUTING.md#documentation-information-architecture).

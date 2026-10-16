@@ -548,39 +548,8 @@ matching Apple ID in Xcode Settings.
 
 ## Credentials and iCloud Keychain sync
 
-The app persists its long-lived secrets in the Keychain (`Labstream/Shared/Auth/KeychainStore.swift`).
-Exactly one item is stored as an iCloud-synchronizable Keychain item: the **Plex account token**.
-Because the canonical visionOS, iPhone/iPad, tvOS, and Mac variants share the
-`org.labstream.Labstream` bundle id and Keychain service string, a Plex sign-in can synchronize to
-another device through iCloud Keychain when the platform and the user's Keychain settings permit.
-The normal per-worktree Mac development build deliberately uses isolated,
-backup-excluded credential storage instead; see the [macOS target guide](MACOS.md).
-
-Everything else is deliberately device-local:
-
-- **Plex `clientIdentifier`** — generated once per install and never synced. Combined with a distinct
-  `X-Plex-Device-Name` (see `Labstream/Shared/App/PlatformClientIdentity.swift`), every device presents a
-  unique `X-Plex-Client-Identifier`, so the server still sees truly independent, per-device-identifiable
-  sessions even though the token is shared. Syncing it would merge all devices into one server-side
-  client identity, breaking per-device session listings and transcode bookkeeping.
-- **Jellyfin/Emby access tokens** — those servers mint the access token bound to the device id
-  presented at authentication (token and device are one server-side record). Syncing the token would
-  make every physical device impersonate a single server-side device, causing session collisions,
-  merged played-on attribution, and broken remote-control targeting. Jellyfin/Emby therefore still
-  require a per-device sign-in; Quick Connect / Emby Connect keeps that to a short-code step.
-- **Backend/server selection** — a per-device preference, not a credential.
-
-Because the Plex token is the shared item, deleting it — a manual sign-out or a 401-triggered wipe —
-propagates sign-out to **all** devices, which matches how an account-level token actually dies.
-When a synced Plex token is successfully read, the app deletes any pre-sync device-local Plex token
-so a later synced/global sign-out cannot re-promote stale local credentials.
-
-Caveat for the simulator: simulator builds use `CODE_SIGNING_ALLOWED=NO` and cannot access the real
-Keychain, so `KeychainStore` falls back to a file store. iCloud sync therefore only manifests on real
-devices with iCloud Keychain enabled; you cannot observe cross-device sign-in in the simulator.
-
-The type doc comment at the top of `KeychainStore.swift` is the source of truth for this behavior; keep
-it and this section in agreement.
+Which credentials sync through iCloud Keychain, and why the rest stay device-local, is documented
+in [Persistence](PERSISTENCE.md#icloud-keychain-sync).
 
 ## Logs
 
@@ -592,6 +561,115 @@ xcrun simctl spawn "$SIMID" log show --last 10m --info --debug \
 
 ## Verified platform findings
 
+These are live-verified platform and backend behaviors that are easy to re-learn the hard way.
+Where a current topic page owns the invariant, the bullet points there instead of repeating it.
+
+### visionOS UI hit-testing
+
+- **Never put a custom `ButtonStyle` on a poster/card link or picker row; use `.cardLink()`.**
+  On visionOS any custom `ButtonStyle` registers the link's gaze/hover hit region displaced
+  (measured at about 1.35× scaled about the window center), so pinches on edge cards and rows
+  route to a neighbor (card N opens card N+1; center cards hide the pattern). Live bisection
+  proved the style is the cause: lazy-to-plain stacks, padding-to-`contentMargins`, and dropping
+  `scrollClipDisabled` or the hover lift changed nothing, and it is not fixable inside the style
+  (`contentShape(.hoverEffect, …)`, `hoverEffect(.highlight)`, or removing the press scale still
+  misroute). Built-in styles register correctly; `.cardLink()` in `DesignSystem.swift` wraps
+  `.plain` plus a `contentShape(.hoverEffect, …)` that shapes the automatic highlight.
+- **Inset lazy rails and pickers with `.contentMargins(…, for: .scrollContent)`, not `.padding`.**
+  Padding the lazy content puts the inset into the cards' own geometry and shifts their
+  gaze/hit shapes; content margins keep it outside. `mediaRailScrollStyle(horizontalMargin:)`
+  applies this for browse rails.
+- **Gaze hover is rendered out of process.** `.onHover` never fires for gaze, so the app cannot
+  observe hover. Diagnose pinch routing by logging a
+  `.simultaneousGesture(SpatialTapGesture(coordinateSpace: .global))` instead. In the simulator,
+  sweeping in from the left can expand the leading tab ornament, whose region may eat the first
+  click (`MRUIFeedbackTypeCircularButtonTouchDown` in the log); that effect is simulator-only.
+- **One main window plus Cinema.** visionOS browsing uses one `WindowGroup`, with video presented
+  over it; Cinema is the only other scene (an `ImmersiveSpace`) and may reopen the main window on
+  exit. Do not add unrelated secondary windows. Cinema ownership, its measured-`visualBounds`
+  attachment scaling, and exit routing are in
+  [Playback architecture](PLAYBACK-ARCHITECTURE.md#cinema-ownership).
+- **The music mini player has no volume control and a passive progress line.** The Digital Crown
+  and system volume own loudness, so an `AVPlayer` slider would diverge from it; a 3-pt drag target
+  violates the 60-pt gaze minimum, so scrubbing lives in Now Playing.
+
+### Simulator testing and app state
+
+- **Test AVFoundation playback inside the app process.** A standalone binary run with
+  `xcrun simctl spawn` can load an asset, but its `AVPlayerItem` never reaches `.readyToPlay`
+  because it lacks the playback environment, so every file falsely times out. Use a `#if DEBUG`,
+  launch-argument-gated in-app probe (see `Labstream/Shared/Debug/`), place test files in the app's
+  data container (`xcrun simctl get_app_container "$SIMID" org.labstream.Labstream data`), and read
+  results from the log.
+- **Install source decides whether app state survives.** Installing over the same bundle ID
+  preserves the app container and sign-in. Deleting the app, erasing the simulator, or replacing
+  an App Store build with a development build starts fresh and requires signing in again. Unsigned
+  simulator builds persist credentials through the DEBUG file fallback described in
+  [Persistence](PERSISTENCE.md#keychain).
+
+### Playback
+
+- **The system ⓘ Info card ignores string dates.** Without an override it shows the stream's
+  creation year after the runtime, which for a live transcode is the current year. Only
+  `.commonIdentifierCreationDate` with an **`NSDate`-typed** value (January 1 of the release year)
+  works; string values under it and the QuickTime, ID3, and iTunes date identifiers were proven
+  ignored live. Title and description work as strings; cap the description near 150 characters or
+  it pushes the title off the card.
+- **Play can beat the metadata backfill.** Listing payloads omit chapters and markers, and the
+  detail screen backfills them asynchronously, so the player must not depend on the caller's copy:
+  `PlaybackController.loadChaptersIfNeeded()` fetches full metadata (chapters, markers, and
+  audio streams), re-derives Skip Intro/Credits ranges, and the chrome re-installs its info tabs
+  when they arrive.
+- **The Plex profile name, transcode stop-before-restart, restart budgets, MediaBrowser progress,
+  and Emby encoder cleanup** are load-bearing invariants owned by
+  [Playback architecture](PLAYBACK-ARCHITECTURE.md); network loss as a stall rather than a
+  `.failed` item is covered under
+  [Buffering and stalls](PLAYBACK-ARCHITECTURE.md#buffering-and-stalls).
+- **PMS transcodes race ahead, then throttle.** The universal transcoder encodes faster than real
+  time until it is `TranscoderThrottleBuffer` seconds ahead of the playhead (default 60 s;
+  "throttled" is the healthy state) and prunes spent segments behind `TranscoderPruneBuffer`
+  (default 300 s). The realized forward buffer is limited by AVPlayer, not PMS: raising
+  `preferredForwardBufferDuration` beyond the server's lead buys nothing on a live transcode.
+- **A segment request outside the produced window respawns PMS's encoder.** PMS starts a new
+  FFmpeg job at that offset (`-ss <offset>`) instead of fast-forwarding, and AVPlayer fetches
+  segments autonomously while scrubbing, so client restraint alone cannot prevent stacked
+  encoders. One starved-scrub session stacked 21 jobs in about a minute and exhausted server
+  memory. This is why out-of-buffer seeks are debounced and budgeted.
+- **PMS HLS media playlists cover the full timeline with absolute-time segment names and PTS.**
+  Segment `0NNNNN.ts` is absolute second NNNNN in every session. A session primed at an offset
+  serves real MPEG-TS only from that offset forward; earlier segments are 188-byte PAT-only stubs,
+  which is why a deep seek on a primed session stalls. Splicing segments from a second session
+  without reloading the item was tried and removed after it drove retry storms.
+
+### Backends and downloads
+
+- **Emby stream URLs carry the access token as an `api_key` query value.** Besides the
+  `Authorization: Emby …` and `X-Emby-Token` headers, server-generated HLS and direct-stream URLs
+  embed the token, so any logged Emby URL must have `api_key` (and `X-Emby-Token`) redacted. Emby
+  PlaybackInfo also needs `UserId` in both the query and the body, with `AutoOpenLiveStream:false`.
+  The authorization-scheme and base-path rules are in [Backends](BACKENDS.md).
+- **Plex ignores `If-Range`.** A ranged GET with a non-matching `If-Range` (ETag or date form)
+  still returns 206 from the requested offset, even though Plex emits a strong ETag and
+  `Last-Modified`. Emby honors a strong-ETag `If-Range` and Jellyfin honors the date form. Range
+  resume therefore relies on a bounded per-body validator-equality check, not on `If-Range`; see
+  [Downloads and offline playback](DOWNLOADS-OFFLINE.md#background-downloads-and-sleeping-devices).
+- **Emby Convert (persistent server conversion) wire facts, verified against Emby 4.9.3:**
+  - a converted copy appears as an extra `File` media source on the same item, and PlaybackInfo
+    returns only the requested source when `MediaSourceId` is supplied, so enumerating existing
+    versions needs a PlaybackInfo call without it;
+  - convert to `originalmediafolder`; `originalmediafolderreplace` replaces the original and must
+    never be used;
+  - `POST /Sync/Jobs` returns the job nested under `"Job"`, while `GET /Sync/Jobs/{id}` returns it
+    at the top level (`EmbyConvertRequest.decodeCreatedJob` versus `decodeJob`);
+  - Emby ignores the submitted job name, so a job is identified and cancelled only by its
+    persisted ID;
+  - job `Progress` stays at 0 until completion, so a preparing row shows indeterminate
+    "Preparing on server…" rather than a percentage;
+  - the `tv` profile scales to the requested bitrate and caps at 1080p; true 4K needs
+    `profile:"custom"`, which requires container, video-codec, and audio-codec criteria (HTTP 400
+    without them) and has no resolution field;
+  - a Sync job cannot select a media source, so a repeat convert can transcode an earlier derived
+    copy; the download path reuses a matching converted source instead of creating a new job.
 - **visionOS wake silently restarts custom-`Range` request bodies, and resume data cannot
   see it.** When a headset is re-worn, the network path re-evaluates and `nsurlsessiond`
   transparently retries the in-flight background task; because Labstream's static-range
@@ -618,19 +696,11 @@ uv run --with-requirements requirements.txt mkdocs serve
 ```
 
 Use the strict documentation build in [Core validation commands](#core-validation-commands) before
-publishing changes. Keep current product, architecture, and contributor guidance in the published
-Markdown files at the top of `docs/`. Classify repository-internal documents into these unpublished
-lanes:
-
-- `docs/plans/` for active implementation plans and acceptance journals;
-- `docs/research/` for unresolved investigations;
-- `docs/evidence/` for immutable audit and profiling observations; and
-- `docs/archive/` for completed, superseded, or closed context that is never canonical.
-
+publishing changes. Where each document belongs (published topic pages versus the unpublished
+plan, research, evidence, and archive lanes) is defined in
+[Documentation information architecture](CONTRIBUTING.md#documentation-information-architecture).
 The current manual validation matrix deliberately remains at the repository root in
 [`TESTING-CHECKLIST.md`](https://github.com/jlipworth/Labstream/blob/main/TESTING-CHECKLIST.md).
-Each lane README defines its naming and promotion/archive rules. Preserve historical prose when
-moving snapshots, but repair live links, navigation, includes, and script references.
 
 ## Required-reason privacy manifest packaging
 
