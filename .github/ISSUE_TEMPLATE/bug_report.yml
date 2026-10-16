@@ -1,7 +1,7 @@
 name: Bug report
 description: Report a problem with Labstream (playback, downloads, browse, music, subtitles, …).
 title: "[Bug]: "
-labels: ["bug"]
+labels: ["bug", "needs-triage"]
 body:
   - type: markdown
     attributes:
@@ -15,7 +15,11 @@ body:
         you. See the field near the bottom of this form.
 
         Before filing, a quick scan of the [Support guide](https://github.com/jlipworth/Labstream/blob/main/SUPPORT.md)
-        may already answer common playback / sign-in / remote-access questions.
+        may already answer common playback / sign-in / remote-access questions, and a quick
+        [search of existing issues](https://github.com/jlipworth/Labstream/issues?q=is%3Aissue)
+        avoids duplicates — if one matches, add your details there instead.
+        Using a coding agent to help? Point it at the
+        [triage playbook](https://github.com/jlipworth/Labstream/blob/main/.github/triage/PLAYBOOK.md).
   - type: textarea
     id: what-happened
     attributes:
@@ -55,6 +59,32 @@ body:
     validations:
       required: true
   - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      description: Which device(s) show the problem? Select every one you have reproduced it on.
+      multiple: true
+      options:
+        - Apple Vision Pro
+        - iPhone
+        - iPad
+        - Apple TV
+        - Mac
+    validations:
+      required: true
+  - type: dropdown
+    id: impact
+    attributes:
+      label: Impact
+      description: How badly does this affect you?
+      options:
+        - Blocker — crash, can't sign in, or nothing plays
+        - Major — a feature is broken with no workaround
+        - Moderate — broken, but there is a workaround
+        - Minor — cosmetic or occasional annoyance
+    validations:
+      required: true
+  - type: dropdown
     id: area
     attributes:
       label: Affected area
@@ -73,16 +103,19 @@ body:
     id: app-version
     attributes:
       label: Labstream version and build
-      description: "From Settings ▸ About (Version and Build). Example: 1.2.0 (1)."
-      placeholder: "1.2.0 (1)"
+      description: >
+        In Labstream, open Settings and scroll to the About section at the bottom; copy the
+        Version and Build values (and Build ID, if shown). Example: 1.2.0 (1). Also say
+        whether you installed from the App Store, TestFlight, or a source build.
+      placeholder: "1.2.0 (1), App Store"
     validations:
       required: true
   - type: input
     id: os-version
     attributes:
       label: Device and OS version
-      description: "Settings ▸ General ▸ About on your device, or About This Mac for a Mac preview build. Examples: visionOS 26.5, iOS 26.5, iPadOS 26.5, macOS 26.5."
-      placeholder: "visionOS 26.5 / iOS 26.5 / iPadOS 26.5 / macOS 26.5 preview"
+      description: "Device model and OS version. Labstream's Settings ▸ About shows the OS line; otherwise use the system Settings ▸ General ▸ About (or About This Mac). Examples: Apple Vision Pro, visionOS 26.5; iPhone 16, iOS 26.5; Apple TV 4K, tvOS 26.5; MacBook Pro, macOS 26.5."
+      placeholder: "Apple Vision Pro, visionOS 26.5"
     validations:
       required: true
   - type: input
