@@ -10,7 +10,9 @@ Thanks for helping improve Labstream. This project touches private media servers
   development identities even though the production target is a release candidate.
 - For tvOS work, read the [tvOS target guide](TVOS.md); `LabstreamTV` is a streaming-only release
   candidate with the Downloads capability compiled out.
-- Check open issues to avoid duplicating work.
+- Check open issues to avoid duplicating work. New issues carry `needs-triage` until the
+  maintainer accepts them; automated triage follows the
+  [bot policy](https://github.com/jlipworth/Labstream/blob/main/.github/triage/BOT-POLICY.md).
 
 ## Local workflow
 
@@ -27,7 +29,9 @@ rather than targeting `booted`.
 
 ## Pull request expectations
 
-A good PR includes:
+The [pull request template](https://github.com/jlipworth/Labstream/blob/main/.github/pull_request_template.md)
+asks for the items below plus a privacy checklist and the AI model/harness used, if any. A good PR
+includes:
 
 - a focused description of the user-visible change;
 - tests for pure policies or request builders when applicable;
