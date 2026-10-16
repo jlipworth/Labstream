@@ -30,7 +30,7 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream",
     #expect(r.headers["X-Plex-Token"] == "tok")
 }
 
-@Test func unpausePutsBackgroundQueueIdlePausedZero() {
+@Test func setBackgroundQueueIdlePausedEncodesBool() {
     let r = BackgroundQueueRequest.setBackgroundQueueIdlePausedRequest(
         server: server, token: "tok", identity: id, paused: false)
     #expect(r.url.path == "/:/prefs")
@@ -38,12 +38,10 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream",
     func v(_ n: String) -> String? { r.queryItems.first { $0.name == n }?.value }
     #expect(v("BackgroundQueueIdlePaused") == "0")
     #expect(r.headers["X-Plex-Token"] == "tok")
-}
 
-@Test func pauseVariantPutsBackgroundQueueIdlePausedOne() {
-    let r = BackgroundQueueRequest.setBackgroundQueueIdlePausedRequest(
+    let paused = BackgroundQueueRequest.setBackgroundQueueIdlePausedRequest(
         server: server, token: "tok", identity: id, paused: true)
-    #expect(r.queryItems.first { $0.name == "BackgroundQueueIdlePaused" }?.value == "1")
+    #expect(paused.queryItems.first { $0.name == "BackgroundQueueIdlePaused" }?.value == "1")
 }
 
 // MARK: - BackgroundTranscodeJobs (running/paused optimization)
@@ -84,54 +82,24 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream",
     #expect(j.jobs.isEmpty)
 }
 
-@Test func decodesTranscodeSpeedAsDouble() throws {
-    let json = """
-    {"MediaContainer":{"TranscodeJob":[{"progress":50,"speed":1.75,"Status":{"state":"running"}}]}}
-    """.data(using: .utf8)!
-    let j = try JSONDecoder().decode(BackgroundTranscodeJobs.self, from: json)
-    #expect(j.firstSpeed == 1.75)
-}
-
-@Test func decodesTranscodeSpeedFromIntAndString() throws {
-    let intSpeed = try JSONDecoder().decode(BackgroundTranscodeJobs.self, from: """
-    {"MediaContainer":{"TranscodeJob":[{"progress":10,"speed":2}]}}
-    """.data(using: .utf8)!)
-    #expect(intSpeed.firstSpeed == 2.0)
-
-    let strSpeed = try JSONDecoder().decode(BackgroundTranscodeJobs.self, from: """
-    {"MediaContainer":{"TranscodeJob":[{"progress":10,"speed":"3.5"}]}}
-    """.data(using: .utf8)!)
-    #expect(strSpeed.firstSpeed == 3.5)
-}
-
-@Test func decodesTranscodeSpeedFromTranscodeSpeedFallbackKey() throws {
+@Test(arguments: [
+    (#"{"progress":50,"speed":1.75,"Status":{"state":"running"}}"#, 1.75),
+    // Int and String speeds decode too.
+    (#"{"progress":10,"speed":2}"#, 2.0),
+    (#"{"progress":10,"speed":"3.5"}"#, 3.5),
     // If `speed` is absent but `transcodeSpeed` is present, use the latter.
-    let json = """
-    {"MediaContainer":{"TranscodeJob":[{"progress":10,"transcodeSpeed":1.2}]}}
-    """.data(using: .utf8)!
-    let j = try JSONDecoder().decode(BackgroundTranscodeJobs.self, from: json)
-    #expect(j.firstSpeed == 1.2)
-}
-
-@Test func transcodeSpeedAbsentOrNonPositiveIsNil() throws {
+    (#"{"progress":10,"transcodeSpeed":1.2}"#, 1.2),
     // No speed key at all → nil (the EMA fallback then drives the ETA).
-    let none = try JSONDecoder().decode(BackgroundTranscodeJobs.self, from: """
-    {"MediaContainer":{"TranscodeJob":[{"progress":42,"Status":{"state":"running"}}]}}
-    """.data(using: .utf8)!)
-    #expect(none.firstSpeed == nil)
-
+    (#"{"progress":42,"Status":{"state":"running"}}"#, nil),
     // A zero/garbage speed is meaningless for an ETA → nil, never a divide-by-zero.
-    let zero = try JSONDecoder().decode(BackgroundTranscodeJobs.self, from: """
-    {"MediaContainer":{"TranscodeJob":[{"progress":42,"speed":0}]}}
-    """.data(using: .utf8)!)
-    #expect(zero.firstSpeed == nil)
-
-    let garbage = try JSONDecoder().decode(BackgroundTranscodeJobs.self, from: """
-    {"MediaContainer":{"TranscodeJob":[{"progress":42,"speed":"fast"}]}}
-    """.data(using: .utf8)!)
-    #expect(garbage.firstSpeed == nil)
+    (#"{"progress":42,"speed":0}"#, nil),
+    (#"{"progress":42,"speed":"fast"}"#, nil),
+] as [(String, Double?)])
+func decodesTranscodeSpeed(job: String, expected: Double?) throws {
+    let json = #"{"MediaContainer":{"TranscodeJob":["# + job + "]}}"
+    let j = try JSONDecoder().decode(BackgroundTranscodeJobs.self, from: Data(json.utf8))
+    #expect(j.firstSpeed == expected)
 }
-
 
 @Test func uniqueJobTitleFallbackRejectsSubstringCollisions() throws {
     let json = """
@@ -282,14 +250,12 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream",
     #expect(r.method == "PUT")
     #expect(r.queryItems.first { $0.name == "after" }?.value == "71")
     #expect(r.headers["X-Plex-Token"] == "tok")
-}
 
-@Test func moveConversionToFrontUsesAfterMinusOne() {
-    let r = BackgroundQueueRequest.moveConversionRequest(
+    // Move-to-front passes the `-1` sentinel straight through.
+    let front = BackgroundQueueRequest.moveConversionRequest(
         server: server, token: "tok", identity: id,
         playQueueItemID: "72", afterItemID: "-1")
-    #expect(r.url.path == "/playQueues/1/items/72/move")
-    #expect(r.queryItems.first { $0.name == "after" }?.value == "-1")
+    #expect(front.queryItems.first { $0.name == "after" }?.value == "-1")
 }
 
 // MARK: - ServerPrefs (BackgroundQueueIdlePaused)

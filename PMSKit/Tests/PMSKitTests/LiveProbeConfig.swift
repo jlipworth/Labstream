@@ -75,11 +75,6 @@ struct LiveProbeConfig {
             options: .regularExpression)
         return out
     }
-
-    /// Instance convenience for the #75 probes that hold a `LiveProbeConfig`.
-    func redact(_ string: String) -> String {
-        Self.redact(string, token: token, server: server)
-    }
 }
 
 /// Shared transport for opt-in live probes. It deliberately returns only response status and

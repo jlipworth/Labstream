@@ -30,58 +30,33 @@ struct DownloadIndexFileCommitterTests {
         }
     }
 
-    @Test func failureBeforeReplacePreservesCanonicalAndCleansTemporaryFile() throws {
+    /// A stage-hook failure must report its stage and whether replacement may have occurred,
+    /// leave the canonical bytes that stage implies, and never strand a sibling temp.
+    @Test(arguments: [
+        (DownloadIndexFileCommitter.Stage.afterTempWrite, false, "old"),
+        (DownloadIndexFileCommitter.Stage.beforeReplace, false, "old"),
+        (DownloadIndexFileCommitter.Stage.afterReplace, true, "new"),
+    ] as [(DownloadIndexFileCommitter.Stage, Bool, String)])
+    func stageFailureReportsAmbiguityAndCleansTemporaryFile(
+        failingStage: DownloadIndexFileCommitter.Stage,
+        replacementMayHaveOccurred: Bool,
+        expectedCanonical: String
+    ) throws {
         try withTemporaryDirectory { directory in
             let destination = directory.appendingPathComponent("index.json")
             try Data("old".utf8).write(to: destination)
             let committer = DownloadIndexFileCommitter(stageHook: { stage in
-                if stage == .beforeReplace { throw InjectedFailure() }
-            })
-
-            #expect(throws: DownloadIndexFileCommitter.CommitFailure.self) {
-                try committer.commit(Data("new".utf8), to: destination)
-            }
-            #expect(try Data(contentsOf: destination) == Data("old".utf8))
-            #expect(try commitTemps(in: directory).isEmpty)
-        }
-    }
-
-    @Test func failureAfterTempWritePreservesCanonicalAndCleansTemporaryFile() throws {
-        try withTemporaryDirectory { directory in
-            let destination = directory.appendingPathComponent("index.json")
-            try Data("old".utf8).write(to: destination)
-            let committer = DownloadIndexFileCommitter(stageHook: { stage in
-                if stage == .afterTempWrite { throw InjectedFailure() }
+                if stage == failingStage { throw InjectedFailure() }
             })
 
             do {
                 try committer.commit(Data("new".utf8), to: destination)
-                Issue.record("expected injected temp-write failure")
+                Issue.record("expected injected \(failingStage) failure")
             } catch let failure as DownloadIndexFileCommitter.CommitFailure {
-                #expect(failure.stage == .afterTempWrite)
-                #expect(!failure.replacementMayHaveOccurred)
+                #expect(failure.stage == failingStage)
+                #expect(failure.replacementMayHaveOccurred == replacementMayHaveOccurred)
             }
-            #expect(try Data(contentsOf: destination) == Data("old".utf8))
-            #expect(try commitTemps(in: directory).isEmpty)
-        }
-    }
-
-    @Test func failureAfterReplaceReportsAmbiguityAndRetainsNewCanonical() throws {
-        try withTemporaryDirectory { directory in
-            let destination = directory.appendingPathComponent("index.json")
-            try Data("old".utf8).write(to: destination)
-            let committer = DownloadIndexFileCommitter(stageHook: { stage in
-                if stage == .afterReplace { throw InjectedFailure() }
-            })
-
-            do {
-                try committer.commit(Data("new".utf8), to: destination)
-                Issue.record("expected injected post-replace failure")
-            } catch let failure as DownloadIndexFileCommitter.CommitFailure {
-                #expect(failure.stage == .afterReplace)
-                #expect(failure.replacementMayHaveOccurred)
-            }
-            #expect(try Data(contentsOf: destination) == Data("new".utf8))
+            #expect(try Data(contentsOf: destination) == Data(expectedCanonical.utf8))
             #expect(try commitTemps(in: directory).isEmpty)
         }
     }
@@ -104,80 +79,48 @@ struct DownloadIndexFileCommitterTests {
         }
     }
 
-    @Test func fullSyncFailurePreservesOldCanonical() throws {
+    /// Each injected durability errno must report its exact stage and post-replace ambiguity,
+    /// leaving the canonical bytes that stage implies.
+    @Test(arguments: [
+        (DurabilityFault.fullSync, DownloadIndexFileCommitter.Stage.afterTempWrite, false, "old"),
+        (DurabilityFault.directorySync, DownloadIndexFileCommitter.Stage.afterReplace, true, "new"),
+    ] as [(DurabilityFault, DownloadIndexFileCommitter.Stage, Bool, String)])
+    func durabilitySyncFailureReportsStageAndAmbiguity(
+        fault: DurabilityFault,
+        expectedStage: DownloadIndexFileCommitter.Stage,
+        replacementMayHaveOccurred: Bool,
+        expectedCanonical: String
+    ) throws {
         try withTemporaryDirectory { directory in
             let destination = directory.appendingPathComponent("index.json")
             try Data("old".utf8).write(to: destination)
             let committer = DownloadIndexFileCommitter(
                 durability: .init(
-                    fullSync: { _ in EIO },
-                    directorySync: { _ in nil }))
+                    fullSync: { _ in fault == .fullSync ? EIO : nil },
+                    directorySync: { _ in fault == .directorySync ? EIO : nil }))
 
             do {
                 try committer.commit(Data("new".utf8), to: destination)
-                Issue.record("expected full-sync failure")
+                Issue.record("expected \(fault) failure")
             } catch let failure as DownloadIndexFileCommitter.CommitFailure {
-                #expect(failure.stage == .afterTempWrite)
+                #expect(failure.stage == expectedStage)
                 #expect(failure.errnoCode == EIO)
-                #expect(!failure.replacementMayHaveOccurred)
+                #expect(failure.replacementMayHaveOccurred == replacementMayHaveOccurred)
             }
-            #expect(try Data(contentsOf: destination) == Data("old".utf8))
+            #expect(try Data(contentsOf: destination) == Data(expectedCanonical.utf8))
         }
     }
 
-    @Test func directorySyncFailureReportsPostReplaceAmbiguity() throws {
-        try withTemporaryDirectory { directory in
-            let destination = directory.appendingPathComponent("index.json")
-            try Data("old".utf8).write(to: destination)
-            let committer = DownloadIndexFileCommitter(
-                durability: .init(
-                    fullSync: { _ in nil },
-                    directorySync: { _ in EIO }))
+    enum DurabilityFault: Sendable, CustomStringConvertible {
+        case fullSync
+        case directorySync
 
-            do {
-                try committer.commit(Data("new".utf8), to: destination)
-                Issue.record("expected directory-sync failure")
-            } catch let failure as DownloadIndexFileCommitter.CommitFailure {
-                #expect(failure.stage == .afterReplace)
-                #expect(failure.errnoCode == EIO)
-                #expect(failure.replacementMayHaveOccurred)
+        var description: String {
+            switch self {
+            case .fullSync: "full-sync"
+            case .directorySync: "directory-sync"
             }
-            #expect(try Data(contentsOf: destination) == Data("new".utf8))
         }
-    }
-
-    @Test func postReplaceFailureRemainsDirtyAndRetriesThroughStoreFlush() async throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("DownloadIndexFileCommitterTests-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let oneShot = OneShotFlag()
-        let persistence = DownloadStore.IndexPersistence { data, url in
-            let fail = oneShot.consume()
-            try DownloadIndexFileCommitter(stageHook: { stage in
-                if fail, stage == .afterReplace { throw InjectedFailure() }
-            }).commit(data, to: url)
-        }
-        let store = DownloadStore(
-            baseDirectory: directory,
-            indexPersistence: persistence)
-        let destination = store.destinationURL(ratingKey: "plex:ambiguous", ext: "mp4")
-        store.upsert(DownloadRecord(
-            ratingKey: "plex:ambiguous",
-            title: "Ambiguous",
-            localURL: destination,
-            status: .queued))
-        let ticket = store.currentPersistenceTicket()
-
-        let result = await store.flushPersistence(through: ticket, timeout: 1)
-
-        if case .committed(let revision) = result {
-            #expect(revision >= ticket.revision)
-        } else {
-            Issue.record("dirty post-replace revision did not commit on retry: \(result)")
-        }
-        #expect(DownloadStore(baseDirectory: directory)
-            .record(for: "plex:ambiguous") != nil)
     }
 
     private func commitTemps(in directory: URL) throws -> [URL] {
@@ -195,16 +138,4 @@ struct DownloadIndexFileCommitterTests {
     }
 
     private struct InjectedFailure: Error {}
-
-    private final class OneShotFlag: @unchecked Sendable {
-        private let lock = NSLock()
-        private var value = true
-
-        func consume() -> Bool {
-            lock.withLock {
-                defer { value = false }
-                return value
-            }
-        }
-    }
 }

@@ -5,39 +5,24 @@ import Testing
 @Suite("Background opaque completion policy")
 struct BackgroundOpaqueCompletionPolicyTests {
 
-    @Test("Cancellation is not a failed transfer")
-    func cancelled() {
+    @Test("Opaque completion maps to the expected disposition", arguments: [
+        // Cancellation is not a failed transfer.
+        (NSURLErrorCancelled, true, true, .cancelled),
+        // Resume data pauses persisted-resume-safe static lanes.
+        (NSURLErrorNetworkConnectionLost, true, true, .pauseWithResumeData),
+        // Forward-only streams fail even if URLSession provides resume data.
+        (NSURLErrorNetworkConnectionLost, true, false, .failNonResumableStream),
+        // Non-cancelled errors without resume data fail normally.
+        (NSURLErrorCannotConnectToHost, false, true, .fail),
+    ] as [(Int, Bool, Bool, BackgroundOpaqueCompletionDisposition)])
+    func disposition(errorCode: Int,
+                     hasResumeData: Bool,
+                     supportsPersistedResumeData: Bool,
+                     expected: BackgroundOpaqueCompletionDisposition) {
         #expect(BackgroundOpaqueCompletionPolicy.disposition(
-            errorCode: NSURLErrorCancelled,
-            hasResumeData: true,
-            supportsPersistedResumeData: true
-        ) == .cancelled)
-    }
-
-    @Test("Resume data pauses persisted-resume-safe static lanes")
-    func pauseWithResumeData() {
-        #expect(BackgroundOpaqueCompletionPolicy.disposition(
-            errorCode: NSURLErrorNetworkConnectionLost,
-            hasResumeData: true,
-            supportsPersistedResumeData: true
-        ) == .pauseWithResumeData)
-    }
-
-    @Test("Forward-only streams fail even if URLSession provides resume data")
-    func failNonResumableStream() {
-        #expect(BackgroundOpaqueCompletionPolicy.disposition(
-            errorCode: NSURLErrorNetworkConnectionLost,
-            hasResumeData: true,
-            supportsPersistedResumeData: false
-        ) == .failNonResumableStream)
-    }
-
-    @Test("Non-cancelled errors without resume data fail normally")
-    func failWithoutResumeData() {
-        #expect(BackgroundOpaqueCompletionPolicy.disposition(
-            errorCode: NSURLErrorCannotConnectToHost,
-            hasResumeData: false,
-            supportsPersistedResumeData: true
-        ) == .fail)
+            errorCode: errorCode,
+            hasResumeData: hasResumeData,
+            supportsPersistedResumeData: supportsPersistedResumeData
+        ) == expected)
     }
 }

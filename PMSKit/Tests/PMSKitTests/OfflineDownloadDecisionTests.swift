@@ -59,32 +59,25 @@ import Foundation
 
 // MARK: - #125 existing server-version offline gate
 
-@Test func existingVersionPlayableForMp4H264() {
-    #expect(OfflineDownloadDecision.existingVersionPlayableOffline(container: "mp4", videoCodec: "h264") == true)
-}
-
-@Test func existingVersionPlayableForMp4Hevc() {
-    #expect(OfflineDownloadDecision.existingVersionPlayableOffline(container: "mp4", videoCodec: "hevc") == true)
+@Test(arguments: [
+    ("mp4", "h264", true),
+    ("mp4", "hevc", true),
     // HEVC aliases normalize and pass too.
-    #expect(OfflineDownloadDecision.existingVersionPlayableOffline(container: "mov", videoCodec: "h265") == true)
-}
-
-@Test func existingVersionNotPlayableForMkv() {
-    #expect(OfflineDownloadDecision.existingVersionPlayableOffline(container: "mkv", videoCodec: "h264") == false)
-    #expect(OfflineDownloadDecision.existingVersionPlayableOffline(container: "ts", videoCodec: "hevc") == false)
-}
-
-@Test func existingVersionFailsClosedOnUnknownContainer() {
-    #expect(OfflineDownloadDecision.existingVersionPlayableOffline(container: nil, videoCodec: "h264") == false)
-    #expect(OfflineDownloadDecision.existingVersionPlayableOffline(container: "", videoCodec: "h264") == false)
-}
-
-@Test func existingVersionFailsClosedOnExoticOrUnknownCodec() {
+    ("mov", "h265", true),
+    ("mkv", "h264", false),
+    ("ts", "hevc", false),
+    // Fail closed on an unknown container.
+    (nil, "h264", false),
+    ("", "h264", false),
     // Right container, wrong/undecodable codec.
-    #expect(OfflineDownloadDecision.existingVersionPlayableOffline(container: "mp4", videoCodec: "av1") == false)
-    #expect(OfflineDownloadDecision.existingVersionPlayableOffline(container: "mp4", videoCodec: "mpeg2video") == false)
+    ("mp4", "av1", false),
+    ("mp4", "mpeg2video", false),
     // Fail closed when the codec token is missing too (no preflight on this lane).
-    #expect(OfflineDownloadDecision.existingVersionPlayableOffline(container: "mp4", videoCodec: nil) == false)
+    ("mp4", nil, false),
+] as [(String?, String?, Bool)])
+func existingVersionPlayableOffline(container: String?, videoCodec: String?, expected: Bool) {
+    #expect(OfflineDownloadDecision.existingVersionPlayableOffline(container: container,
+                                                                    videoCodec: videoCodec) == expected)
 }
 
 // MARK: - #120 offline playback routing

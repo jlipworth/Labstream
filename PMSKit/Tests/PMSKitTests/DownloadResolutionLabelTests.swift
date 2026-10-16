@@ -20,4 +20,12 @@ struct DownloadResolutionLabelTests {
         #expect(DownloadResolutionLabel.label(width: 320, height: 180) == "320×180")
         #expect(DownloadResolutionLabel.label(width: nil, height: nil) == nil)
     }
+
+    @Test func dimensionsParser() {
+        #expect(DownloadResolutionLabel.dimensions(forVideoResolution: "1920x1080")?.width == 1920)
+        #expect(DownloadResolutionLabel.dimensions(forVideoResolution: "1920x1080")?.height == 1080)
+        // Defensive: capital-X also parses now (the old inline copy did not lowercase).
+        #expect(DownloadResolutionLabel.dimensions(forVideoResolution: "1920X1080")?.height == 1080)
+        #expect(DownloadResolutionLabel.dimensions(forVideoResolution: "garbage") == nil)
+    }
 }

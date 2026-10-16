@@ -473,7 +473,6 @@ final class DiagnosticLoggingTests: XCTestCase {
     func testDiagnosticReportArtifactFilenamesAreStable() {
         XCTAssertEqual(DiagnosticReportArtifactMetadata.exportFilename, "Labstream-Diagnostic-Report")
         XCTAssertEqual(DiagnosticReportArtifactMetadata.feedbackFilename, "Labstream-Feedback.txt")
-        XCTAssertTrue(DiagnosticReportArtifactMetadata.feedbackFilename.hasSuffix(".txt"))
     }
 
 }

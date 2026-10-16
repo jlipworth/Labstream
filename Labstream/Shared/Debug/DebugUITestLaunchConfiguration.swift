@@ -35,20 +35,13 @@ enum DebugUITestLaunchConfiguration {
 
     /// Deterministic launch surfaces for tvOS UI tests. `browse` seeds synthetic credentials and
     /// catalog data through the real views; `player` presents the shared custom player over a
-    /// generated local file; `keyboard` shows a minimal native `TextField` used to classify the
-    /// system-keyboard insertion defect (TVUI-004) as app versus runtime behavior.
+    /// generated local file.
     enum FixtureKind: String {
         case browse
         /// Real season container browser with deterministic episode children. This fixture
         /// protects the streaming-only product contract: tvOS must not expose Offline actions.
         case season
         case player
-        case keyboard
-        /// TVUI-004 shell bisection: the replica field passes in isolation, so this variant
-        /// rebuilds the Search tab's hosting shell (TabView + NavigationStack + results
-        /// ScrollView + conditional trailing button) around it to find the layer that kills
-        /// system-keyboard insertion.
-        case keyboardShell = "keyboard-shell"
     }
 
     static var fixtureKind: FixtureKind? {

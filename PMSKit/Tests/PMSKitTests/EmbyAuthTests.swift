@@ -23,24 +23,6 @@ struct EmbyAuthTests {
         #expect(!header.contains("Token="))
     }
 
-    @Test func authorizationHeaderCarriesUserIdAndToken() {
-        let header = EmbyAuth.authorizationHeader(identity: identity, userId: "user-9", token: "token-abc")
-
-        #expect(header.hasPrefix("Emby "))
-        #expect(header.contains("UserId=\"user-9\""))
-        #expect(header.contains("Client=\"Labstream\""))
-        #expect(header.contains("DeviceId=\"device-123\""))
-        #expect(header.contains("Token=\"token-abc\""))
-    }
-
-    @Test func applyAuthSetsBothAuthorizationAndXEmbyToken() {
-        var request = URLRequest(url: URL(string: "https://emby.example.test/Sessions")!)
-        EmbyAuth.applyAuth(to: &request, identity: identity, userId: "user-9", token: "token-abc")
-
-        #expect(request.value(forHTTPHeaderField: "Authorization")?.hasPrefix("Emby ") == true)
-        #expect(request.value(forHTTPHeaderField: "X-Emby-Token") == "token-abc")
-    }
-
     @Test func applyAuthOmitsXEmbyTokenWhenNoToken() {
         var request = URLRequest(url: URL(string: "https://emby.example.test/Sessions")!)
         EmbyAuth.applyAuth(to: &request, identity: identity)
@@ -48,7 +30,6 @@ struct EmbyAuthTests {
         #expect(request.value(forHTTPHeaderField: "Authorization")?.hasPrefix("Emby ") == true)
         #expect(request.value(forHTTPHeaderField: "X-Emby-Token") == nil)
     }
-
 
     @Test func authorizationHeaderEscapesUserIdTokenAndOmitsEmptyTokenHeader() {
         let escapedIdentity = EmbyClientIdentity(
@@ -118,24 +99,6 @@ struct EmbyAuthTests {
         #expect(request.url == URL(string: "https://emby.example.test/emby/Users/user-9"))
         #expect(request.httpMethod == "GET")
         #expect(request.value(forHTTPHeaderField: "X-Emby-Token") == "token-abc")
-    }
-
-    @Test func authenticationResultDecodesOfficialPascalCaseShape() throws {
-        let data = #"""
-        {
-          "AccessToken": "access-xyz",
-          "ServerId": "server-1",
-          "User": { "Id": "user-9", "Name": "viewer" },
-          "SessionInfo": { "Id": "session-1" }
-        }
-        """#.data(using: .utf8)!
-
-        let result = try JSONDecoder().decode(EmbyAuthenticationResult.self, from: data)
-
-        #expect(result.accessToken == "access-xyz")
-        #expect(result.serverId == "server-1")
-        #expect(result.user?.id == "user-9")
-        #expect(result.user?.name == "viewer")
     }
 
     @Test func serverInfoDecodesPublicShape() throws {

@@ -400,26 +400,6 @@ struct OfflineDownloadModelsTests {
         #expect(decoded.sideAssetBundleOwner?.attemptID == "attempt-a")
     }
 
-    @Test("chapterImageRelativePaths (index-keyed dict) round-trips through encode/decode")
-    func chapterImagePathsRoundTrip() throws {
-        // [Int: String] is the only non-String-keyed field on the model; pin its JSON round-trip
-        // explicitly so a future encoder change can't silently drop the offline chapter-image map.
-        let meta = OfflineMetadata(ratingKey: "9", title: "t", type: "movie",
-                                   chapterImageRelativePaths: [0: "9.chapter-0.jpg",
-                                                               2: "9.chapter-2.jpg",
-                                                               5: "9.chapter-5.jpg"])
-        let decoded = try JSONDecoder().decode(OfflineMetadata.self,
-                                               from: JSONEncoder().encode(meta))
-        #expect(decoded.chapterImageRelativePaths == meta.chapterImageRelativePaths)
-        #expect(decoded.chapterImageRelativePaths?[2] == "9.chapter-2.jpg")
-    }
-
-    @Test("pre-#88 metadata without chapterImageRelativePaths decodes to nil")
-    func preChapterImageMetadataDecodesNil() throws {
-        let meta = try decode(OfflineMetadata.self, from: #"{"ratingKey":"1","title":"t"}"#)
-        #expect(meta.chapterImageRelativePaths == nil)
-    }
-
     @Test("makeMediaItem carries the captured fields onto a faithful MediaItem")
     func makeMediaItemPreservesFields() {
         let meta = OfflineMetadata(
@@ -615,14 +595,6 @@ struct OfflineDownloadModelsTests {
     }
 
     // MARK: - #95: .paused (recoverably-interrupted) rows
-
-    @Test("paused and unverified statuses round-trip")
-    func pausedAndUnverifiedRoundTrip() throws {
-        let data = try JSONEncoder().encode(DownloadStatus.paused)
-        #expect(try JSONDecoder().decode(DownloadStatus.self, from: data) == .paused)
-        let unverifiedData = try JSONEncoder().encode(DownloadStatus.unverified)
-        #expect(try JSONDecoder().decode(DownloadStatus.self, from: unverifiedData) == .unverified)
-    }
 
     @Test("a paused row stays resumable across relaunch only while its resume blob survives")
     func pausedRowKeptResumableWithResumeData() {

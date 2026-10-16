@@ -26,16 +26,25 @@ default-off DEBUG macOS experiment; prior local commits remain in history. Reada
 aggregate privacy reports were generated from the four exact build 2 archives. The reports agree
 with the published label, and every packaged app manifest declares SystemBootTime `35F9.1`.
 Prior archive sets are not substitutes for these checks.
-The latest recorded processed distribution is the **1.7.2 (build 2)** archive set at
-`ce97958f`; the previous one was the **1.6.1 (build 2)** set at `abd1ddcac351`. Keep the source
-version and the processed binary version separate when reporting release status.
+On 2026-10-15 the first command-line run of `scripts/testflight-release.py ship` built clean
+**1.7.2 (build 1490)** archives for all four targets from `4c8de88c`, using the commit-count
+build number (`--build-number auto`) without a version-bump commit. All four uploads processed
+to **VALID**, are in beta testing, and are in the internal TestFlight group. They are TestFlight
+builds only: every 1.7.2 platform version still has build 2 selected, and selecting 1490 instead
+needs separate approval. The Mac upload first failed because the `.pkg` export lacked the
+installer signing identity; after that fix landed it was retried from the same archive.
+The latest recorded processed distribution is the **1.7.2 (build 1490)** archive set at
+`4c8de88c`; the selected review candidate remains the **1.7.2 (build 2)** set at `ce97958f`, and
+the previous release was the **1.6.1 (build 2)** set at `abd1ddcac351`. Keep the source version
+and the processed binary version separate when reporting release status. Later `auto` builds
+and any hand-bumped `CURRENT_PROJECT_VERSION` for 1.7.2 must exceed 1490.
 
 | Product | Current source | Latest recorded processed distribution |
 | --- | --- | --- |
-| Apple Vision Pro (`Labstream`) | 1.7.2 (build 2) | **1.7.2 (build 2):** the repository records a clean `ce97958f` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical TestFlight acceptance and review access remain pending. |
-| iPhone and iPad (`LabstreamMobile`) | 1.7.2 (build 2) | **1.7.2 (build 2):** the repository records a clean `ce97958f` universal iOS archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical iPhone and iPad acceptance remain pending. |
-| Apple TV (`LabstreamTV`) | 1.7.2 (build 2) | **1.7.2 (build 2):** the repository records a clean `ce97958f` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical Apple TV acceptance remains pending. |
-| Mac (`LabstreamMac`) | 1.7.2 (build 2) | **1.7.2 (build 2):** the repository records a clean `ce97958f` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. A 1.7.2 TestFlight install on a Mac is not recorded; the earlier 1.6.1 (build 2) build was installed from TestFlight and passed launch and receipt/signature checks. Deeper sandbox and live-host acceptance remain pending. |
+| Apple Vision Pro (`Labstream`) | 1.7.2 (build 2) | **1.7.2 (build 2):** the repository records a clean `ce97958f` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. **1.7.2 (build 1490)** from `4c8de88c` is also processed and in the internal group, not selected. Physical TestFlight acceptance and review access remain pending. |
+| iPhone and iPad (`LabstreamMobile`) | 1.7.2 (build 2) | **1.7.2 (build 2):** the repository records a clean `ce97958f` universal iOS archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. **1.7.2 (build 1490)** from `4c8de88c` is also processed and in the internal group, not selected. Physical iPhone and iPad acceptance remain pending. |
+| Apple TV (`LabstreamTV`) | 1.7.2 (build 2) | **1.7.2 (build 2):** the repository records a clean `ce97958f` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. **1.7.2 (build 1490)** from `4c8de88c` is also processed and in the internal group, not selected. Physical Apple TV acceptance remains pending. |
+| Mac (`LabstreamMac`) | 1.7.2 (build 2) | **1.7.2 (build 2):** the repository records a clean `ce97958f` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. **1.7.2 (build 1490)** from `4c8de88c` is also processed and in the internal group, not selected. A 1.7.2 TestFlight install on a Mac is not recorded; the earlier 1.6.1 (build 2) build was installed from TestFlight and passed launch and receipt/signature checks. Deeper sandbox and live-host acceptance remain pending. |
 
 The 1.7.1 source milestone includes bounded DV/HDR delivery investigation and probe
 validation. The P7 HDR10-base candidate remains default-off and DEBUG-only on macOS;
@@ -289,6 +298,9 @@ and App Store Connect state before relying on them for a new submission.
       `ce97958f`, validated, and uploaded for all four platforms on 2026-10-14.
 - [x] App Store Connect processing completes without compliance or binary warnings for every
       **1.7.2 (build 2)** upload, and each build is selected for its platform version.
+- [x] Clean **1.7.2 (build 1490)** archives from `4c8de88c` were built, validated, uploaded, and
+      processed for all four platforms on 2026-10-15 through `scripts/testflight-release.py`, and
+      added to the internal TestFlight group. They are not selected for the platform versions.
 - [ ] A physical Vision Pro TestFlight smoke covers first launch, sign-in, browse, playback,
       seeking, subtitles, audio, Cinema, background/foreground, and diagnostics. Simulator smoke
       is useful but does not replace this gate.
@@ -388,3 +400,17 @@ After approval, verify the live product page and its support/privacy links, publ
 corresponding source and release notes, create the authorized annotated tag, and record the
 released platform/version in this page. Do not describe an internal TestFlight build as a public
 App Store release.
+
+## After launch: monitoring
+
+`scripts/asc-digest.py` is a read-only daily digest for the maintainer: new customer reviews (with
+platform where App Store Connect attributes it), Xcode Organizer diagnostic signatures (hangs, disk
+writes, launches) for the newest builds of the current marketing version on each platform, and
+TestFlight crash and screenshot feedback. It reuses the `testflight-release.py` credentials, issues
+only `GET` requests, and writes `digest.md`/`digest.json` to the gitignored
+`artifacts/asc-digest/<date>/`; stdout carries counts only. A state file there limits each run to
+items not seen before (`--all` ignores it; `--since 7d` widens the window). `--logs` and
+`--attachments` save diagnostic/crash logs and feedback screenshots to the same private directory.
+Review text, nicknames, tester emails, and logs are personal data: never paste them into issues,
+commits, or public docs. Endpoints that return 403/404 (common before the app is public) are listed
+as unavailable rather than failing the run. See [Scripts](SCRIPTS.md).

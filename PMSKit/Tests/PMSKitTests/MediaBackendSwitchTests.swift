@@ -3,117 +3,94 @@ import Testing
 
 @Suite("Media backend switch")
 struct MediaBackendSwitchTests {
-    @Test func sameBackendIsNoOp() {
-        let credentials = MediaBackendCredentialSnapshot(plexToken: "plex-token",
-                                                         jellyfinServerURLString: nil,
-                                                         jellyfinAccessToken: nil,
-                                                         jellyfinUserID: nil)
+    struct SwitchCase: Sendable, CustomTestStringConvertible {
+        let name: String
+        let credentials: MediaBackendCredentialSnapshot
+        let active: MediaBackendChoice
+        let target: MediaBackendChoice
+        let expected: MediaBackendSwitchResolution
+        /// When non-nil, also pins `hasSavedSession(for: target)`.
+        var expectedTargetHasSavedSession: Bool? = nil
 
-        let resolution = MediaBackendSwitch.resolve(active: .plex,
-                                                    target: .plex,
-                                                    credentials: credentials)
-
-        #expect(resolution == .alreadyActive)
+        var testDescription: String { name }
     }
 
-    @Test func savedPlexTokenCanRestorePlexWhenSwitchingBack() {
-        let credentials = MediaBackendCredentialSnapshot(plexToken: "plex-token",
-                                                         jellyfinServerURLString: "https://jellyfin.example.test",
-                                                         jellyfinAccessToken: "jellyfin-token",
-                                                         jellyfinUserID: "user-1")
+    private static let plexOnly = MediaBackendCredentialSnapshot(plexToken: "plex-token",
+                                                                 jellyfinServerURLString: nil,
+                                                                 jellyfinAccessToken: nil,
+                                                                 jellyfinUserID: nil)
+    private static let plexAndJellyfin = MediaBackendCredentialSnapshot(
+        plexToken: "plex-token",
+        jellyfinServerURLString: "https://jellyfin.example.test",
+        jellyfinAccessToken: "jellyfin-token",
+        jellyfinUserID: "user-1")
 
-        let resolution = MediaBackendSwitch.resolve(active: .jellyfin,
-                                                    target: .plex,
-                                                    credentials: credentials)
+    static let cases: [SwitchCase] = [
+        SwitchCase(name: "same backend is a no-op",
+                   credentials: plexOnly,
+                   active: .plex, target: .plex,
+                   expected: .alreadyActive),
+        SwitchCase(name: "saved Plex token restores Plex when switching back",
+                   credentials: plexAndJellyfin,
+                   active: .jellyfin, target: .plex,
+                   expected: .restoreSavedSession),
+        SwitchCase(name: "saved Jellyfin session restores Jellyfin when switching from Plex",
+                   credentials: plexAndJellyfin,
+                   active: .plex, target: .jellyfin,
+                   expected: .restoreSavedSession),
+        SwitchCase(name: "missing Jellyfin session requires login without forgetting Plex",
+                   credentials: plexOnly,
+                   active: .plex, target: .jellyfin,
+                   expected: .requireLogin),
+        SwitchCase(name: "partial Jellyfin session requires login",
+                   credentials: MediaBackendCredentialSnapshot(
+                       plexToken: "plex-token",
+                       jellyfinServerURLString: "https://jellyfin.example.test",
+                       jellyfinAccessToken: "jellyfin-token",
+                       jellyfinUserID: nil),
+                   active: .plex, target: .jellyfin,
+                   expected: .requireLogin),
+        SwitchCase(name: "saved Emby session restores Emby when switching from Plex",
+                   credentials: MediaBackendCredentialSnapshot(
+                       plexToken: "plex-token",
+                       jellyfinServerURLString: nil,
+                       jellyfinAccessToken: nil,
+                       jellyfinUserID: nil,
+                       embyServerURLString: "https://emby.example.test/emby",
+                       embyAccessToken: "emby-token",
+                       embyUserID: "emby-user-1"),
+                   active: .plex, target: .emby,
+                   expected: .restoreSavedSession,
+                   expectedTargetHasSavedSession: true),
+        SwitchCase(name: "missing Emby session requires login without forgetting Plex",
+                   credentials: plexOnly,
+                   active: .plex, target: .emby,
+                   expected: .requireLogin,
+                   expectedTargetHasSavedSession: false),
+        SwitchCase(name: "partial Emby session requires login",
+                   credentials: MediaBackendCredentialSnapshot(
+                       plexToken: "plex-token",
+                       jellyfinServerURLString: nil,
+                       jellyfinAccessToken: nil,
+                       jellyfinUserID: nil,
+                       embyServerURLString: "https://emby.example.test/emby",
+                       embyAccessToken: "emby-token",
+                       embyUserID: nil),
+                   active: .plex, target: .emby,
+                   expected: .requireLogin,
+                   expectedTargetHasSavedSession: false),
+    ]
 
-        #expect(resolution == .restoreSavedSession)
-    }
+    @Test(arguments: MediaBackendSwitchTests.cases)
+    func resolvesSwitch(_ switchCase: SwitchCase) {
+        let resolution = MediaBackendSwitch.resolve(active: switchCase.active,
+                                                    target: switchCase.target,
+                                                    credentials: switchCase.credentials)
 
-    @Test func savedJellyfinSessionCanRestoreJellyfinWhenSwitchingFromPlex() {
-        let credentials = MediaBackendCredentialSnapshot(plexToken: "plex-token",
-                                                         jellyfinServerURLString: "https://jellyfin.example.test",
-                                                         jellyfinAccessToken: "jellyfin-token",
-                                                         jellyfinUserID: "user-1")
-
-        let resolution = MediaBackendSwitch.resolve(active: .plex,
-                                                    target: .jellyfin,
-                                                    credentials: credentials)
-
-        #expect(resolution == .restoreSavedSession)
-    }
-
-    @Test func missingJellyfinSessionRequiresLoginWithoutForgettingPlex() {
-        let credentials = MediaBackendCredentialSnapshot(plexToken: "plex-token",
-                                                         jellyfinServerURLString: nil,
-                                                         jellyfinAccessToken: nil,
-                                                         jellyfinUserID: nil)
-
-        let resolution = MediaBackendSwitch.resolve(active: .plex,
-                                                    target: .jellyfin,
-                                                    credentials: credentials)
-
-        #expect(resolution == .requireLogin)
-    }
-
-    @Test func partialJellyfinSessionRequiresLogin() {
-        let credentials = MediaBackendCredentialSnapshot(plexToken: "plex-token",
-                                                         jellyfinServerURLString: "https://jellyfin.example.test",
-                                                         jellyfinAccessToken: "jellyfin-token",
-                                                         jellyfinUserID: nil)
-
-        let resolution = MediaBackendSwitch.resolve(active: .plex,
-                                                    target: .jellyfin,
-                                                    credentials: credentials)
-
-        #expect(resolution == .requireLogin)
-    }
-
-    @Test func savedEmbySessionCanRestoreEmbyWhenSwitchingFromPlex() {
-        let credentials = MediaBackendCredentialSnapshot(plexToken: "plex-token",
-                                                         jellyfinServerURLString: nil,
-                                                         jellyfinAccessToken: nil,
-                                                         jellyfinUserID: nil,
-                                                         embyServerURLString: "https://emby.example.test/emby",
-                                                         embyAccessToken: "emby-token",
-                                                         embyUserID: "emby-user-1")
-
-        let resolution = MediaBackendSwitch.resolve(active: .plex,
-                                                    target: .emby,
-                                                    credentials: credentials)
-
-        #expect(resolution == .restoreSavedSession)
-        #expect(credentials.hasSavedSession(for: .emby))
-    }
-
-    @Test func missingEmbySessionRequiresLoginWithoutForgettingPlex() {
-        let credentials = MediaBackendCredentialSnapshot(plexToken: "plex-token",
-                                                         jellyfinServerURLString: nil,
-                                                         jellyfinAccessToken: nil,
-                                                         jellyfinUserID: nil)
-
-        let resolution = MediaBackendSwitch.resolve(active: .plex,
-                                                    target: .emby,
-                                                    credentials: credentials)
-
-        #expect(resolution == .requireLogin)
-        #expect(!credentials.hasSavedSession(for: .emby))
-    }
-
-    @Test func partialEmbySessionRequiresLogin() {
-        let credentials = MediaBackendCredentialSnapshot(plexToken: "plex-token",
-                                                         jellyfinServerURLString: nil,
-                                                         jellyfinAccessToken: nil,
-                                                         jellyfinUserID: nil,
-                                                         embyServerURLString: "https://emby.example.test/emby",
-                                                         embyAccessToken: "emby-token",
-                                                         embyUserID: nil)
-
-        let resolution = MediaBackendSwitch.resolve(active: .plex,
-                                                    target: .emby,
-                                                    credentials: credentials)
-
-        #expect(resolution == .requireLogin)
-        #expect(!credentials.hasSavedSession(for: .emby))
+        #expect(resolution == switchCase.expected)
+        if let expectedSaved = switchCase.expectedTargetHasSavedSession {
+            #expect(switchCase.credentials.hasSavedSession(for: switchCase.target) == expectedSaved)
+        }
     }
 
     @Test func savedEmbyAndJellyfinAreIndependent() {
@@ -137,6 +114,8 @@ struct MediaBackendSwitchTests {
 @Suite("Playback backend resolver (#100)")
 struct PlaybackBackendResolverTests {
     @Test func originAlwaysWinsRegardlessOfActiveBackend() {
+        // Covers every origin/active pair, including the exact #100 bug (an Emby item's Play
+        // after an Emby→Jellyfin switch) and the no-switch case (origin == active).
         for origin in [MediaBackendChoice.plex, .jellyfin, .emby] {
             for active in [MediaBackendChoice.plex, .jellyfin, .emby] {
                 let resolved = PlaybackBackendResolver.backend(forItemOrigin: origin,
@@ -145,19 +124,5 @@ struct PlaybackBackendResolverTests {
                         "origin \(origin) must win over active \(active)")
             }
         }
-    }
-
-    @Test func embyItemNeverResolvesToJellyfinAfterSwitch() {
-        // The exact bug in the report: an Emby movie's Play after an Emby→Jellyfin switch.
-        let resolved = PlaybackBackendResolver.backend(forItemOrigin: .emby,
-                                                       currentActive: .jellyfin)
-        #expect(resolved == .emby)
-    }
-
-    @Test func matchingBackendIsUnchanged() {
-        // No switch occurred: origin == active, resolver still returns the origin.
-        let resolved = PlaybackBackendResolver.backend(forItemOrigin: .plex,
-                                                       currentActive: .plex)
-        #expect(resolved == .plex)
     }
 }

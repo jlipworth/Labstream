@@ -184,26 +184,6 @@ struct DownloadStoreLookupTests {
         }
     }
 
-    @Test(arguments: [10, 100, 1_000])
-    func benchmarkNarrowLookupAgainstFullSnapshot(rowCount: Int) throws {
-        try withSeededStore(rowCount: rowCount) { store, _, _ in
-            let targetKey = ratingKey(rowCount / 2)
-            _ = store.records
-            _ = store.record(for: targetKey)
-
-            let narrow = medianNanoseconds(iterations: 31) {
-                _ = store.record(for: targetKey)
-            }
-            let full = medianNanoseconds(iterations: 31) {
-                _ = store.records.first { $0.ratingKey == targetKey }
-            }
-
-            let result = "PERF02_BENCH rows=\(rowCount) narrow_ns=\(narrow) full_ns=\(full)\n"
-            print(result, terminator: "")
-            #expect(store.record(for: targetKey) == store.records.first { $0.ratingKey == targetKey })
-        }
-    }
-
     private func withSeededStore(
         rowCount: Int,
         _ body: (DownloadStore, CountingFileManager, URL) throws -> Void
@@ -241,17 +221,6 @@ struct DownloadStoreLookupTests {
 
     private func ratingKey(_ index: Int) -> String {
         "plex:item-\(index)"
-    }
-
-    private func medianNanoseconds(iterations: Int, _ body: () -> Void) -> UInt64 {
-        var samples: [UInt64] = []
-        samples.reserveCapacity(iterations)
-        for _ in 0..<iterations {
-            let start = DispatchTime.now().uptimeNanoseconds
-            body()
-            samples.append(DispatchTime.now().uptimeNanoseconds - start)
-        }
-        return samples.sorted()[samples.count / 2]
     }
 
     private func withTemporaryDirectory(_ body: (URL) throws -> Void) throws {

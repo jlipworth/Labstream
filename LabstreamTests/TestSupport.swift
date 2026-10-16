@@ -1,29 +1,5 @@
 import Foundation
 
-/// Shared temporary-directory ownership for app-hosted tests. The directory is
-/// removed both explicitly and on teardown so failed tests do not leak fixtures.
-final class TestTemporaryDirectory: @unchecked Sendable {
-    let url: URL
-    private let fileManager: FileManager
-
-    init(prefix: String = "labstream-test", fileManager: FileManager = .default) throws {
-        self.fileManager = fileManager
-        url = fileManager.temporaryDirectory.appendingPathComponent(
-            "\(prefix)-\(UUID().uuidString)", isDirectory: true
-        )
-        try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
-    }
-
-    func remove() throws {
-        guard fileManager.fileExists(atPath: url.path) else { return }
-        try fileManager.removeItem(at: url)
-    }
-
-    deinit {
-        try? remove()
-    }
-}
-
 /// Lock-backed test state that can safely be captured by `@Sendable` closures.
 final class TestLockedBox<Value>: @unchecked Sendable {
     private let lock = NSLock()
@@ -62,11 +38,6 @@ actor TestGate {
         let pending = waiters
         waiters.removeAll()
         pending.forEach { $0.resume() }
-    }
-
-    func reset() {
-        precondition(waiters.isEmpty, "cannot reset a gate with waiting tasks")
-        isOpen = false
     }
 }
 

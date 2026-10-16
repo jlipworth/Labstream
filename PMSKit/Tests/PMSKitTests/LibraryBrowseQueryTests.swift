@@ -8,7 +8,7 @@ import Testing
 @Suite("Library browse query")
 struct LibraryBrowseQueryTests {
     private let server = URL(string: "https://plex.example.test")!
-    private let identity = ClientIdentity(clientIdentifier: "CID", product: "Labstream", version: "0.1.0", deviceName: "AVP")
+    private let identity = TestFixtures.plexIdentity
 
     @Test func plexSectionItemsCarriesSortFilterAndPaging() throws {
         let request = PlexLibraryBrowseRequest.sectionItems(
@@ -133,11 +133,5 @@ struct LibraryBrowseQueryTests {
         #expect(!capabilities.sorts.contains(.releaseDate))
         #expect(capabilities.filters == [.all, .unwatched, .watched])
         #expect(!capabilities.filters.contains(.inProgress))
-    }
-
-    private func queryMap(_ request: URLRequest) throws -> [String: String] {
-        let url = try #require(request.url)
-        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        return Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
     }
 }

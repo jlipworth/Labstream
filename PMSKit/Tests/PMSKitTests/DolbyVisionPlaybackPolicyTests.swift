@@ -13,6 +13,24 @@ struct DolbyVisionPlaybackPolicyTests {
             hdr10PlusPresent: nil, rangeDescribesHDR: true)!
     }
 
+    struct DVCase: Sendable, CustomTestStringConvertible {
+        let label: String
+        let profile: Int?
+        let blCompatibilityID: Int?
+        let experimental: Bool
+        let serverToneMaps: Bool
+        var testDescription: String { label }
+
+        init(_ label: String, profile: Int?, compat: Int?,
+             experimental: Bool = false, serverToneMaps: Bool = true) {
+            self.label = label
+            self.profile = profile
+            self.blCompatibilityID = compat
+            self.experimental = experimental
+            self.serverToneMaps = serverToneMaps
+        }
+    }
+
     @Test func p5NoFallbackIsForced() {
         let verdict = DolbyVisionPlaybackPolicy.verdict(
             for: dvMetadata(profile: 5, blCompatibilityID: 0),
@@ -24,41 +42,39 @@ struct DolbyVisionPlaybackPolicyTests {
         #expect(reason.contains("P5"))
     }
 
-    @Test func p5UnknownCompatIsForced() {
+    @Test(arguments: [
         // Emby DoviProfile5x may omit compat; profile 5 alone means no fallback layer.
-        let verdict = DolbyVisionPlaybackPolicy.verdict(
-            for: dvMetadata(profile: 5, blCompatibilityID: nil),
-            experimentalDVSignallingEnabled: false)
-        #expect(verdict != .allowCopyLanes)
-    }
-
-    @Test func unknownProfileCompatZeroIsForced() {
+        DVCase("P5 with unknown compat", profile: 5, compat: nil),
         // Compat 0 = no fallback regardless of which profile the backend failed to report.
+        DVCase("unknown profile with compat 0", profile: nil, compat: 0),
+    ])
+    func fallbackLessDVIsForced(_ dvCase: DVCase) {
         let verdict = DolbyVisionPlaybackPolicy.verdict(
-            for: dvMetadata(profile: nil, blCompatibilityID: 0),
-            experimentalDVSignallingEnabled: false)
+            for: dvMetadata(profile: dvCase.profile, blCompatibilityID: dvCase.blCompatibilityID),
+            experimentalDVSignallingEnabled: dvCase.experimental,
+            serverToneMapsUntaggedDV: dvCase.serverToneMaps)
         #expect(verdict != .allowCopyLanes)
     }
 
-    @Test func p7WithHDR10FallbackAllowsCopy() {
-        let verdict = DolbyVisionPlaybackPolicy.verdict(
-            for: dvMetadata(profile: 7, blCompatibilityID: 6),
-            experimentalDVSignallingEnabled: false)
-        #expect(verdict == .allowCopyLanes)
-    }
-
-    @Test func p8WithHDR10FallbackAllowsCopy() {
-        let verdict = DolbyVisionPlaybackPolicy.verdict(
-            for: dvMetadata(profile: 8, blCompatibilityID: 1),
-            experimentalDVSignallingEnabled: false)
-        #expect(verdict == .allowCopyLanes)
-    }
-
-    @Test func unknownProfileUnknownCompatAllowsCopy() {
+    @Test(arguments: [
+        DVCase("P7 with HDR10 fallback", profile: 7, compat: 6),
+        DVCase("P8 with HDR10 fallback", profile: 8, compat: 1),
         // No positive evidence of a fallback-less stream — stay out of the way.
+        DVCase("unknown profile and unknown compat", profile: nil, compat: nil),
+        // The no-tone-map flag only changes the P5 outcome; fallback-bearing DV is untouched.
+        DVCase("P7 when server cannot tone-map", profile: 7, compat: 6, serverToneMaps: false),
+        // User opted into the DV lane; neither the block nor the forced transcode applies.
+        DVCase("experimental signalling defers the block", profile: 5, compat: 0,
+               experimental: true, serverToneMaps: false),
+        // User opted into the DV lane; the guard must not force a transcode it would contradict.
+        DVCase("experimental signalling defers the guard", profile: 5, compat: 0,
+               experimental: true, serverToneMaps: true),
+    ])
+    func dvAllowsCopyLanes(_ dvCase: DVCase) {
         let verdict = DolbyVisionPlaybackPolicy.verdict(
-            for: dvMetadata(profile: nil, blCompatibilityID: nil),
-            experimentalDVSignallingEnabled: false)
+            for: dvMetadata(profile: dvCase.profile, blCompatibilityID: dvCase.blCompatibilityID),
+            experimentalDVSignallingEnabled: dvCase.experimental,
+            serverToneMapsUntaggedDV: dvCase.serverToneMaps)
         #expect(verdict == .allowCopyLanes)
     }
 
@@ -90,30 +106,5 @@ struct DolbyVisionPlaybackPolicyTests {
             return
         }
         #expect(reason.contains("P5"))
-    }
-
-    @Test func p7StillAllowsCopyWhenServerCannotToneMap() {
-        // The no-tone-map flag only changes the P5 outcome; fallback-bearing DV is untouched.
-        let verdict = DolbyVisionPlaybackPolicy.verdict(
-            for: dvMetadata(profile: 7, blCompatibilityID: 6),
-            experimentalDVSignallingEnabled: false,
-            serverToneMapsUntaggedDV: false)
-        #expect(verdict == .allowCopyLanes)
-    }
-
-    @Test func experimentalSignallingAlsoDefersTheBlock() {
-        let verdict = DolbyVisionPlaybackPolicy.verdict(
-            for: dvMetadata(profile: 5, blCompatibilityID: 0),
-            experimentalDVSignallingEnabled: true,
-            serverToneMapsUntaggedDV: false)
-        #expect(verdict == .allowCopyLanes)
-    }
-
-    @Test func experimentalSignallingDefersTheGuard() {
-        // User opted into the DV lane; the guard must not force a transcode it would contradict.
-        let verdict = DolbyVisionPlaybackPolicy.verdict(
-            for: dvMetadata(profile: 5, blCompatibilityID: 0),
-            experimentalDVSignallingEnabled: true)
-        #expect(verdict == .allowCopyLanes)
     }
 }

@@ -9,13 +9,6 @@ import Testing
 /// Default-off is a hard acceptance criterion — the shipping profiles must be unchanged.
 @Suite("Device profile DV advertising (experimental)")
 struct DeviceProfileDVTests {
-    private let jfServer = URL(string: "https://jellyfin.example.test/base")!
-    private let jfIdentity = JellyfinClientIdentity(client: "Labstream", device: "Apple Vision Pro",
-                                                    deviceId: "device-123", version: "0.1.0")
-    private let embyServer = URL(string: "https://emby.example.test/emby")!
-    private let embyIdentity = EmbyClientIdentity(client: "Labstream", device: "Apple Vision Pro",
-                                                  deviceId: "device-123", version: "0.1.0")
-
     @Test func plexProfilesOmitDVByDefault() {
         let streaming = DeviceProfile.streaming(maxVideoBitrateKbps: 8000)
         let probe = DeviceProfile.directPlayProbe(maxVideoBitrateKbps: 8000)
@@ -46,7 +39,7 @@ struct DeviceProfileDVTests {
 
     @Test func jellyfinProfileOmitsDVByDefault() throws {
         let req = try JellyfinPlayback.playbackInfoRequest(
-            server: jfServer, token: "t", identity: jfIdentity,
+            server: TestFixtures.jellyfinServer, token: "t", identity: TestFixtures.jellyfinIdentity,
             itemId: "m1", userId: "u1", maxStreamingBitrate: 8_000_000)
         let json = try deviceProfileJSON(req)
         #expect(!json.contains("DOVI"))
@@ -55,7 +48,7 @@ struct DeviceProfileDVTests {
 
     @Test func jellyfinProfileAdvertisesDVWhenEnabled() throws {
         let req = try JellyfinPlayback.playbackInfoRequest(
-            server: jfServer, token: "t", identity: jfIdentity,
+            server: TestFixtures.jellyfinServer, token: "t", identity: TestFixtures.jellyfinIdentity,
             itemId: "m1", userId: "u1", maxStreamingBitrate: 8_000_000,
             advertiseDolbyVision: true)
         let json = try deviceProfileJSON(req)
@@ -66,7 +59,7 @@ struct DeviceProfileDVTests {
 
     @Test func embyProfileOmitsDVByDefault() throws {
         let req = try EmbyPlayback.playbackInfoRequest(
-            server: embyServer, token: "t", identity: embyIdentity,
+            server: TestFixtures.embyServer, token: "t", identity: TestFixtures.embyIdentity,
             userId: "u1", itemId: "m1", maxStreamingBitrate: 8_000_000)
         let json = try deviceProfileJSON(req)
         #expect(!json.contains("DOVI"))
@@ -75,7 +68,7 @@ struct DeviceProfileDVTests {
 
     @Test func embyProfileAdvertisesDVWhenEnabled() throws {
         let req = try EmbyPlayback.playbackInfoRequest(
-            server: embyServer, token: "t", identity: embyIdentity,
+            server: TestFixtures.embyServer, token: "t", identity: TestFixtures.embyIdentity,
             userId: "u1", itemId: "m1", maxStreamingBitrate: 8_000_000,
             advertiseDolbyVision: true)
         let json = try deviceProfileJSON(req)

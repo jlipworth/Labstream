@@ -379,24 +379,55 @@ struct DownloadCleanupOrderingTests {
         #expect(pending.map(\.operation) == [.embyConvert(.knownJob(jobID: 42))])
     }
 
+    enum LeakBranch: String, Sendable {
+        case activeEncoding = "leak-active"
+        case embyConvert = "leak-convert"
+
+        func metadata(for key: DownloadAttemptKey) -> OfflineMetadata {
+            switch self {
+            case .activeEncoding:
+                // backendUserID nil makes the cleanup intent unbuildable → the fail-open leak branch.
+                return OfflineMetadata(
+                    ratingKey: key.ratingKey, title: "Leaky", type: "movie",
+                    backendKind: .emby, backendBaseURLString: "https://emby.example",
+                    backendServerID: "server-1", backendUserID: nil,
+                    playSessionID: "session-A")
+            case .embyConvert:
+                // No playSessionID (skips the encoder branch); embyConvertJobID present but
+                // backendUserID nil makes the convert intent unbuildable → the convert fail-open
+                // leak branch.
+                return OfflineMetadata(
+                    ratingKey: key.ratingKey, title: "Converting", type: "movie",
+                    backendKind: .emby, backendBaseURLString: "https://emby.example",
+                    backendServerID: "server-1", backendUserID: nil,
+                    embyConvertJobID: 42)
+            }
+        }
+
+        var disclosure: String {
+            switch self {
+            case .activeEncoding:
+                return "Downloaded file deleted; server cleanup identity was unavailable."
+            case .embyConvert:
+                return "Downloaded file deleted; server conversion cleanup identity was unavailable."
+            }
+        }
+    }
+
     // D8: a delete() that loses the server encoder identity (makeActiveEncodingCleanupIntent
     // returns nil) still deletes locally and discloses the leak. That disclosure is ABOUT the
     // deletion succeeding, so it must survive the success path's `lastError = nil` clear.
-    @Test @MainActor
-    func deleteDisclosesActiveEncodingLeakThatSurvivesSuccessfulRemoval() async throws {
-        let directory = try makeTemporaryDirectory("leak-active")
+    // D8: the Emby convert-job identity branch carries the same survival guarantee.
+    @Test(arguments: [LeakBranch.activeEncoding, .embyConvert]) @MainActor
+    func deleteDisclosesCleanupLeakThatSurvivesSuccessfulRemoval(_ branch: LeakBranch) async throws {
+        let directory = try makeTemporaryDirectory(branch.rawValue)
         defer { try? FileManager.default.removeItem(at: directory) }
         let key = attemptKey("attempt-A")
         let store = DownloadStore(baseDirectory: directory)
         let mediaURL = store.destinationURL(ratingKey: key.ratingKey, ext: "mp4")
-        // backendUserID nil makes the cleanup intent unbuildable → the fail-open leak branch.
-        let metadata = OfflineMetadata(
-            ratingKey: key.ratingKey, title: "Leaky", type: "movie",
-            backendKind: .emby, backendBaseURLString: "https://emby.example",
-            backendServerID: "server-1", backendUserID: nil,
-            playSessionID: "session-A")
+        let metadata = branch.metadata(for: key)
         let record = DownloadRecord(
-            ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Leaky",
+            ratingKey: key.ratingKey, attemptID: key.attemptID, title: metadata.title,
             localURL: mediaURL, status: .complete, metadata: metadata)
         #expect(store.createAttemptOwnedRecord(record, attemptID: key.attemptID) == .committed(key))
         try Data("main".utf8).write(to: mediaURL)
@@ -404,7 +435,7 @@ struct DownloadCleanupOrderingTests {
         defer { session.invalidateInjectedSessionForTesting() }
         let manager = DownloadManager(
             appModel: AppModel(identity: PlatformClientIdentity.make(
-                clientIdentifier: "leak-active"), activeBackend: .emby),
+                clientIdentifier: branch.rawValue), activeBackend: .emby),
             store: store, session: session,
             cleanupIntentJournal: DownloadCleanupIntentJournal(directory: directory),
             registerForBackgroundEvents: false)
@@ -416,48 +447,7 @@ struct DownloadCleanupOrderingTests {
         #expect(await waitUntil { store.record(for: key.ratingKey) == nil })
         // The row is gone but the disclosure must persist past `.removed`, not be cleared to nil.
         #expect(await waitUntil {
-            manager.lastError[key.ratingKey] == .transferFailed(
-                "Downloaded file deleted; server cleanup identity was unavailable.")
-        })
-    }
-
-    // D8: same survival guarantee for the Emby convert-job identity branch.
-    @Test @MainActor
-    func deleteDisclosesEmbyConvertLeakThatSurvivesSuccessfulRemoval() async throws {
-        let directory = try makeTemporaryDirectory("leak-convert")
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let key = attemptKey("attempt-A")
-        let store = DownloadStore(baseDirectory: directory)
-        let mediaURL = store.destinationURL(ratingKey: key.ratingKey, ext: "mp4")
-        // No playSessionID (skips the encoder branch); embyConvertJobID present but backendUserID
-        // nil makes the convert intent unbuildable → the convert fail-open leak branch.
-        let metadata = OfflineMetadata(
-            ratingKey: key.ratingKey, title: "Converting", type: "movie",
-            backendKind: .emby, backendBaseURLString: "https://emby.example",
-            backendServerID: "server-1", backendUserID: nil,
-            embyConvertJobID: 42)
-        let record = DownloadRecord(
-            ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Converting",
-            localURL: mediaURL, status: .complete, metadata: metadata)
-        #expect(store.createAttemptOwnedRecord(record, attemptID: key.attemptID) == .committed(key))
-        try Data("main".utf8).write(to: mediaURL)
-        let session = BackgroundDownloadSession(store: store, protocolClasses: [])
-        defer { session.invalidateInjectedSessionForTesting() }
-        let manager = DownloadManager(
-            appModel: AppModel(identity: PlatformClientIdentity.make(
-                clientIdentifier: "leak-convert"), activeBackend: .emby),
-            store: store, session: session,
-            cleanupIntentJournal: DownloadCleanupIntentJournal(directory: directory),
-            registerForBackgroundEvents: false)
-        #expect(await waitUntil { manager.startupRecoveryState == .ready })
-        #expect(manager.lastError[key.ratingKey] == nil)
-
-        manager.delete(ratingKey: key.ratingKey)
-
-        #expect(await waitUntil { store.record(for: key.ratingKey) == nil })
-        #expect(await waitUntil {
-            manager.lastError[key.ratingKey] == .transferFailed(
-                "Downloaded file deleted; server conversion cleanup identity was unavailable.")
+            manager.lastError[key.ratingKey] == .transferFailed(branch.disclosure)
         })
     }
 

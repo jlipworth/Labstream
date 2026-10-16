@@ -5,20 +5,15 @@ import Testing
 struct StaticRangeTrainIntegrityPolicyTests {
     // MARK: Train teardown (B.2 restart, B.3(b) adopted 200)
 
-    @Test("Changed-resource restart supersedes the whole train, purges holds, and advances the epoch")
-    func restartSupersedesTrain() {
-        let actions = StaticRangeTrainIntegrityPolicy.teardownActions(for: .changedResourceRestart)
-        #expect(actions.supersedeInFlightTasks)
-        #expect(actions.purgeHeldSegments)
-        #expect(actions.advanceTrainEpoch)
-    }
-
-    @Test("Adopted whole-file 200 supersedes the whole train, purges holds, and advances the epoch")
-    func adoptedReplaceWholeSupersedesTrain() {
-        let actions = StaticRangeTrainIntegrityPolicy.teardownActions(for: .adoptedWholeFileReplace)
-        #expect(actions.supersedeInFlightTasks)
-        #expect(actions.purgeHeldSegments)
-        #expect(actions.advanceTrainEpoch)
+    @Test("Changed-resource restart and adopted whole-file 200 supersede the whole train, purge holds, and advance the epoch")
+    func teardownTriggersSupersedeTrain() {
+        for trigger in [StaticRangeTrainIntegrityPolicy.TrainTeardownTrigger.changedResourceRestart,
+                        .adoptedWholeFileReplace] {
+            let actions = StaticRangeTrainIntegrityPolicy.teardownActions(for: trigger)
+            #expect(actions.supersedeInFlightTasks, "\(trigger)")
+            #expect(actions.purgeHeldSegments, "\(trigger)")
+            #expect(actions.advanceTrainEpoch, "\(trigger)")
+        }
     }
 
     @Test("A late sibling body from a superseded train generation is ignored, never applied")

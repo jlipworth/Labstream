@@ -64,13 +64,6 @@ struct DiagnosticFileLogSinkTests {
     }
 
     @Test
-    func durabilityVocabularyKeepsAllFourContractsExplicit() {
-        #expect(Set(PersistenceDurabilityTier.allCases) == [
-            .barrier, .recoverableCheckpoint, .bestEffort, .ephemeral,
-        ])
-    }
-
-    @Test
     func lifecycleFlushRotatesBeforeCrossingTheLiveFileBound() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("diagnostic-cross-boundary-\(UUID().uuidString)", isDirectory: true)

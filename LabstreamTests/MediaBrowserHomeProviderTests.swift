@@ -896,8 +896,6 @@ private final class HomeControlledBrowser: MediaBrowserHomeBrowsing {
 
     var started: [Request] { get async { await state.started } }
     var latestStarted: [String] { get async { await state.latestStarted } }
-    var activeLatest: [String] { get async { await state.activeLatest } }
-    var maximumLatestInFlight: Int { get async { await state.maximumLatestInFlight } }
     var activeRequests: [Request] { get async { await state.activeRequests } }
     var maximumTotalInFlight: Int { get async { await state.maximumTotalInFlight } }
 
@@ -937,8 +935,6 @@ private actor HomeControlledBrowserState {
 
     private(set) var started: [Request] = []
     private(set) var latestStarted: [String] = []
-    private(set) var activeLatest: [String] = []
-    private(set) var maximumLatestInFlight = 0
     private(set) var activeRequests: [Request] = []
     private(set) var maximumTotalInFlight = 0
     private var continuations: [Request: CheckedContinuation<[MediaItem], Error>] = [:]
@@ -949,8 +945,6 @@ private actor HomeControlledBrowserState {
         maximumTotalInFlight = max(maximumTotalInFlight, activeRequests.count)
         if case .latest(let id) = request {
             latestStarted.append(id)
-            activeLatest.append(id)
-            maximumLatestInFlight = max(maximumLatestInFlight, activeLatest.count)
         }
         return try await withCheckedThrowingContinuation { continuation in
             continuations[request] = continuation
@@ -975,9 +969,6 @@ private actor HomeControlledBrowserState {
 
     private func removeActive(_ request: Request) {
         activeRequests.removeAll { $0 == request }
-        if case .latest(let id) = request {
-            activeLatest.removeAll { $0 == id }
-        }
     }
 
     private enum Failure: Error {

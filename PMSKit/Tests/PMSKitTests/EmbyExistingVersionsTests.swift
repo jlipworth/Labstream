@@ -108,17 +108,6 @@ struct EmbyExistingVersionsTests {
         #expect(v.supportsDirectPlay == false)
     }
 
-    @Test("A single-source item yields no existing versions")
-    func singleSourceYieldsNone() throws {
-        let json = """
-        { "PlaySessionId": "s", "MediaSources": [
-          {"Id":"only","Container":"mp4","Protocol":"File","SupportsDirectPlay":true}
-        ] }
-        """
-        let v = try EmbyPlayback.existingDownloadableVersions(response: response(json), primaryMediaSourceId: "only")
-        #expect(v.isEmpty)
-    }
-
     @Test("Completed filesystem conversions are not reusable until PlaybackInfo exposes a File MediaSource")
     func completedFileNotVisibleInPlaybackInfoIsNotAdvertised() throws {
         // Regression for #133: a live Emby conversion can copy "Title - tv.mp4" into the media

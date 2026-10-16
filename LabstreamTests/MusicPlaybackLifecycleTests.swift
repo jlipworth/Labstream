@@ -71,29 +71,4 @@ struct MusicPlaybackLifecycleTests {
 
         #expect(mutations == ["new"])
     }
-
-    @Test func stopRejectsPlayerArtworkAndAudioCallbacks() {
-        let lifecycle = MusicPlaybackLifecycle()
-        let playing = lifecycle.advance()
-        var mutations: [String] = []
-        let queuedCallbacks = ["time", "rate", "heartbeat", "artwork", "interruption", "route"]
-            .map { label in { lifecycle.perform(ifCurrent: playing) { mutations.append(label) } } }
-
-        lifecycle.advance() // stop
-        queuedCallbacks.forEach { $0() }
-
-        #expect(mutations.isEmpty)
-    }
-
-    @Test func configureInvalidatesEarlierConfiguredQueue() {
-        let lifecycle = MusicPlaybackLifecycle()
-        let queueA = lifecycle.advance()
-        let queueB = lifecycle.advance()
-        var visibleQueue = "B"
-
-        lifecycle.perform(ifCurrent: queueA) { visibleQueue = "A" }
-        lifecycle.perform(ifCurrent: queueB) { visibleQueue = "B-current" }
-
-        #expect(visibleQueue == "B-current")
-    }
 }

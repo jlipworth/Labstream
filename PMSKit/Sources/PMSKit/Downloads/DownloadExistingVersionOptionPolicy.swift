@@ -117,12 +117,6 @@ public enum DownloadExistingVersionOptionPolicy {
         return Int(result.rounded())
     }
 
-    /// Extract a MediaBrowser MediaSource id from a selected `Media`/`Part` pair. The app sheet and
-    /// backend planners both receive PMS-shaped `Part.key` values, so keep this parsing in one place.
-    public static func selectedMediaSourceID(media: Media?, part: Part?) -> String? {
-        DownloadMediaSelectionPolicy.mediaSourceID(media: media, part: part)
-    }
-
     /// Primary label for a Plex existing-version row: resolution · codec · bitrate.
     public static func mediaVersionLabel(_ media: Media) -> String {
         var parts: [String] = []

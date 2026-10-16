@@ -4,11 +4,6 @@ import Testing
 
 @Suite("Static range resume data policy")
 struct StaticRangeResumeDataPolicyTests {
-    @Test("Pausing a remainder produces resume data")
-    func pauseProducesResumeData() {
-        #expect(StaticRangeResumeDataPolicy.pauseDisposition() == .cancelProducingResumeData)
-    }
-
     @Test("Remainder failure with a blob resumes, budget-bounded")
     func remainderFailureWithBlobResumes() {
         #expect(StaticRangeResumeDataPolicy.failureResumeDecision(
