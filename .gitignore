@@ -83,3 +83,6 @@ artifacts/app-store-artwork/
 # Local performance-audit evidence (raw traces and manifests may be sensitive)
 artifacts/performance-audit/
 artifacts/publication-audit/
+
+# Private App Store Connect digest (customer reviews, tester feedback, crash logs)
+artifacts/asc-digest/

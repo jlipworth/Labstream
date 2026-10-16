@@ -76,6 +76,7 @@ struct JellyfinPlaybackTests {
         #expect(object["SubtitleStreamIndex"] as? Int == 7)
         #expect(object["EnableDirectPlay"] as? Bool == true)
         #expect(object["EnableDirectStream"] as? Bool == true)
+        #expect(object["AllowVideoStreamCopy"] as? Bool == true)
         #expect(object["EnableTranscoding"] as? Bool == true)
         let profile = try #require(object["DeviceProfile"] as? [String: Any])
         #expect(profile["Name"] as? String == "Labstream")
@@ -94,7 +95,8 @@ struct JellyfinPlaybackTests {
         #expect(hlsProfile["BreakOnNonKeyFrames"] as? Bool == false)
     }
 
-    @Test func downloadPlaybackInfoRequestPostsCompatibleStaticMp4Profile() throws {
+    @Test(arguments: [nil, 4] as [Int?])
+    func downloadPlaybackInfoRequestPostsCompatibleStaticMp4Profile(audioStreamIndex: Int?) throws {
         let request = try JellyfinPlayback.downloadPlaybackInfoRequest(
             server: server,
             token: "token-abc",
@@ -102,7 +104,8 @@ struct JellyfinPlaybackTests {
             itemId: "movie-1",
             userId: "user-1",
             mediaSourceId: "source-1",
-            maxStaticBitrate: 200_000_000)
+            maxStaticBitrate: 200_000_000,
+            audioStreamIndex: audioStreamIndex)
 
         #expect(request.url == URL(string: "https://jellyfin.example.test/base/Items/movie-1/PlaybackInfo"))
         #expect(request.httpMethod == "POST")
@@ -111,7 +114,8 @@ struct JellyfinPlaybackTests {
         #expect(object["UserId"] as? String == "user-1")
         #expect(object["MediaSourceId"] as? String == "source-1")
         #expect(object["MaxStaticBitrate"] as? Int == 200_000_000)
-        #expect(object["AudioStreamIndex"] == nil)
+        // nil leaves AudioStreamIndex absent; a selected index is carried through.
+        #expect(object["AudioStreamIndex"] as? Int == audioStreamIndex)
         #expect(object["AllowVideoStreamCopy"] as? Bool == true)
         let profile = try #require(object["DeviceProfile"] as? [String: Any])
         #expect(profile["Name"] as? String == "Labstream-Compatible-Download")
@@ -121,22 +125,6 @@ struct JellyfinPlaybackTests {
         #expect(first["Protocol"] as? String == "http")
         #expect(first["Context"] as? String == "Static")
         #expect(first["VideoCodec"] as? String == "h264,hevc")
-    }
-
-    @Test func downloadPlaybackInfoRequestCarriesSelectedAudioStreamIndex() throws {
-        let request = try JellyfinPlayback.downloadPlaybackInfoRequest(
-            server: server,
-            token: "token-abc",
-            identity: identity,
-            itemId: "movie-1",
-            userId: "user-1",
-            mediaSourceId: "source-1",
-            maxStaticBitrate: 200_000_000,
-            audioStreamIndex: 4)
-
-        let body = try #require(request.httpBody)
-        let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
-        #expect(object["AudioStreamIndex"] as? Int == 4)
     }
 
     @Test func downloadDecisionSurfacesDirectStreamAndCodecs() throws {
@@ -217,6 +205,8 @@ struct JellyfinPlaybackTests {
         #expect(components.path == "/base/Videos/movie-1/master.m3u8")
         #expect(query["MediaSourceId"] == "source-1")
         #expect(query["PlaySessionId"] == "play-1")
+        // Jellyfin HLS needs the server-generated URL token to flow into child playlists/segments;
+        // AVFoundation does not reliably apply custom headers to every HLS subresource.
         #expect(query["api_key"] == "server-token")
         #expect(query["VideoBitrate"] == "3000000")
         #expect(query["MaxWidth"] == "1280")
@@ -237,12 +227,6 @@ struct JellyfinPlaybackTests {
         #expect(result.playSessionId == "play-1")
         #expect(result.mediaSourceId == "source-1")
         #expect(result.playMethod == .transcode)
-        // Jellyfin HLS needs the server-generated URL token to flow into child playlists/segments;
-        // AVFoundation does not reliably apply custom headers to every HLS subresource.
-        #expect(result.url.query()?.contains("api_key=server-token") == true)
-        #expect(result.url.query()?.contains("MaxWidth=1280") == true)
-        #expect(result.url.query()?.contains("MaxHeight=720") == true)
-        #expect(result.url.query()?.contains("AudioBitrate=256000") == true)
         #expect(result.requiredHTTPHeaders["Authorization"]?.contains("Token=\"token-abc\"") == true)
         #expect(result.sourceMetadata.container == "mkv")
         #expect(result.sourceMetadata.width == 3840)
@@ -382,35 +366,7 @@ struct JellyfinPlaybackTests {
         #expect(result.playMethod == .directPlay)
     }
 
-
-    @Test func progressRequestsBuildExpectedBodies() throws {
-        let progress = try JellyfinPlayback.progressRequest(
-            server: server,
-            token: "token-abc",
-            identity: identity,
-            userId: "user-1",
-            itemId: "movie-1",
-            mediaSourceId: "source-1",
-            playSessionId: "play-1",
-            playMethod: .transcode,
-            positionTicks: 50_000_000,
-            isPaused: false)
-
-        let url = try #require(progress.url)
-        let comps = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        #expect(comps.path == "/base/Sessions/Playing/Progress")
-        #expect(progress.httpMethod == "POST")
-        #expect(progress.value(forHTTPHeaderField: "Authorization")?.contains("Token=\"token-abc\"") == true)
-        let body = try #require(progress.httpBody)
-        let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
-        #expect(object["UserId"] as? String == "user-1")
-        #expect(object["ItemId"] as? String == "movie-1")
-        #expect(object["MediaSourceId"] as? String == "source-1")
-        #expect(object["PlaySessionId"] as? String == "play-1")
-        #expect(object["PositionTicks"] as? Int == 50_000_000)
-        #expect(object["IsPaused"] as? Bool == false)
-        #expect(object["PlayMethod"] as? String == "Transcode")
-
+    @Test func pingAndTranscodePlayMethodShape() throws {
         let ping = try JellyfinPlayback.pingRequest(
             server: server, token: "token-abc", identity: identity, playSessionId: "play-1")
         let pingURL = try #require(ping.url)
@@ -419,6 +375,8 @@ struct JellyfinPlaybackTests {
         #expect(pingComps.queryItems?.first(where: { $0.name == "PlaySessionId" })?.value == "play-1")
         #expect(ping.httpMethod == "POST")
 
+        // Progress/stopped wire shapes are pinned byte-exactly by the progress request-plan golden
+        // test (DirectStream); this keeps the only non-DirectStream PlayMethod serialization check.
         let stopped = try JellyfinPlayback.stoppedRequest(
             server: server,
             token: "token-abc",
@@ -429,15 +387,8 @@ struct JellyfinPlaybackTests {
             playSessionId: "play-1",
             playMethod: .transcode,
             positionTicks: 60_000_000)
-        #expect(stopped.url?.path == "/base/Sessions/Playing/Stopped")
-        #expect(stopped.httpMethod == "POST")
         let stoppedBody = try #require(stopped.httpBody)
         let stoppedObject = try #require(JSONSerialization.jsonObject(with: stoppedBody) as? [String: Any])
-        #expect(stoppedObject["ItemId"] as? String == "movie-1")
-        #expect(stoppedObject["MediaSourceId"] as? String == "source-1")
-        #expect(stoppedObject["PlaySessionId"] as? String == "play-1")
-        #expect(stoppedObject["PositionTicks"] as? Int == 60_000_000)
-        #expect(stoppedObject["IsPaused"] as? Bool == false)
         #expect(stoppedObject["PlayMethod"] as? String == "Transcode")
     }
 

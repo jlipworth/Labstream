@@ -30,17 +30,6 @@ struct BackgroundDownloadTaskIdentityTests {
         #expect(withDescription == "movie-123")
     }
 
-    @Test("Combined current segment description resolves its row")
-    func combinedSegmentDescriptionResolves() {
-        let resolved = BackgroundDownloadTaskIdentity.ratingKey(
-            taskDescription: StaticRangeSegmentMarker.taskDescription(
-                ratingKey: "movie-123", offset: 536870912, attemptID: DownloadAttemptID(rawValue: "attempt-A")!),
-            knownKeys: ["movie-123"]
-        )
-
-        #expect(resolved == "movie-123")
-    }
-
     @Test("Current segment and attempt-stamped descriptions resolve their row")
     func attemptStampedDescriptionsResolve() {
         let segment = BackgroundDownloadTaskIdentity.ratingKey(

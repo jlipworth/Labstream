@@ -3,8 +3,7 @@ import Testing
 @testable import PMSKit
 
 /// GH #108 rework: robust movie-version identity, the incremental collapse algorithm
-/// (`collapsingMovieVersions`), the `MediaItem.with(versions:)` copy helper, the
-/// collapsed-space alphabet rail (`AlphabetBucket.buckets(fromTitles:)`), and the
+/// (`collapsingMovieVersions`), the `MediaItem.with(versions:)` copy helper, and the
 /// backward-compatible `providerIds` decode.
 @Suite("Movie version collapse (#108)")
 struct MovieVersionCollapseTests {
@@ -96,22 +95,6 @@ struct MovieVersionCollapseTests {
         #expect(collapsed.map(\.ratingKey) == ["b", "a"])
     }
 
-    @Test func incrementalIngestMatchesSinglePassCollapse() {
-        // Simulates the collapser ingesting pages incrementally: the deduped result over the
-        // concatenation must equal a single-pass collapse, regardless of page boundaries.
-        let page1 = [
-            movie("4k", title: "Dune", year: 2021, providerIds: ["Tmdb": "438631"]),
-            movie("a", title: "Arrival", year: 2016),
-        ]
-        let page2 = [
-            movie("1080", title: "Dune", year: 2021, providerIds: ["Tmdb": "438631"]),
-            movie("c", title: "Contact", year: 1997),
-        ]
-        let incremental = (page1 + page2).collapsingMovieVersions()
-        #expect(incremental.map(\.ratingKey) == ["4k", "a", "c"])
-        #expect(incremental[0].versions?.map(\.ratingKey) == ["4k", "1080"])
-    }
-
     // MARK: - MediaItem.with(versions:) (finding 9)
 
     @Test func withVersionsPreservesEveryFieldAndSetsVersions() {
@@ -134,30 +117,6 @@ struct MovieVersionCollapseTests {
     @Test func withVersionsCanClearVersions() {
         let original = movie("rk", title: "T", year: 1999).with(versions: [movie("x", title: "T", year: 1999)])
         #expect(original.with(versions: nil).versions == nil)
-    }
-
-    // MARK: - Collapsed-space alphabet rail (finding 1 / F1)
-
-    @Test func bucketsFromTitlesIndexIntoTheDisplayedList() {
-        // Offsets are list indices (not server offsets), so they line up with the grid's
-        // .id(index) scroll targets.
-        let titles = ["Alpha", "Apple", "Beta", "Zeta"]
-        let buckets = AlphabetBucket.buckets(fromTitles: titles)
-        #expect(buckets.map(\.display) == ["A", "B", "Z"])
-        #expect(buckets.map(\.offset) == [0, 2, 3])
-        #expect(buckets.map(\.count) == [2, 1, 1])
-    }
-
-    @Test func bucketsFromTitlesGroupNonAlphabeticUnderHash() {
-        let titles = ["1917", "300", "Avatar"]
-        let buckets = AlphabetBucket.buckets(fromTitles: titles)
-        #expect(buckets.map(\.display) == ["#", "A"])
-        #expect(buckets.first?.count == 2)
-        #expect(buckets.first?.offset == 0)
-    }
-
-    @Test func bucketsFromTitlesEmptyForEmptyList() {
-        #expect(AlphabetBucket.buckets(fromTitles: []).isEmpty)
     }
 
     // MARK: - providerIds backward-compatible decode

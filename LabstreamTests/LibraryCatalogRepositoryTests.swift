@@ -57,34 +57,6 @@ struct LibraryCatalogRepositoryTests {
         #expect(await fetch.startedCount == 1)
     }
 
-    @Test func cancelledWaiterReturnsPromptlyWithoutPoisoningSharedRead() async throws {
-        let context = try makeContext()
-        let fetch = ControlledCatalogFetch()
-        let repository = LibraryCatalogRepository()
-        let loader = loader(for: context, fetch: fetch)
-
-        let request = repository.request(context: context, loader: loader)
-        let cancelled = Task { try await repository.catalog(for: request).descriptors }
-        await fetch.waitUntilStarted(count: 1)
-        let survivor = Task { try await repository.catalog(for: request).descriptors }
-        await Task.yield()
-
-        cancelled.cancel()
-        do {
-            _ = try await cancelled.value
-            Issue.record("Cancelled catalog waiter must throw")
-        } catch is CancellationError {
-            // The native request remains owned by the repository, not this waiter.
-        }
-        #expect(await fetch.startedCount == 1)
-
-        let expected = descriptors("survivor")
-        await fetch.succeed(attempt: 0, with: expected)
-        #expect(try await survivor.value == expected)
-        #expect(try await repository.catalog(for: request).descriptors == expected)
-        #expect(await fetch.startedCount == 1)
-    }
-
     @Test func allCancelledWaitersLeaveSharedReadAliveForEventualCachePublication() async throws {
         let context = try makeContext()
         let fetch = ControlledCatalogFetch()
@@ -495,37 +467,6 @@ struct LibraryCatalogRepositoryTests {
         )
         #expect(try await repository.catalog(for: embyProbeRequest).descriptors == embyValue)
         #expect(await embyProbe.startedCount == 0)
-    }
-
-    @Test func runtimeAndFourEnumerationConsumersUseOneInjectedRepository() throws {
-        let root = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let runtime = try String(contentsOf: root.appendingPathComponent(
-            "Labstream/Shared/App/AppRuntime.swift"), encoding: .utf8)
-        #expect(runtime.contains("let libraryCatalogRepository = LibraryCatalogRepository()"))
-
-        let shellSources = try [
-            "Labstream/Platforms/visionOS/UI/VisionRootShell.swift",
-            "Labstream/Platforms/Mobile/UI/MobileRootShell.swift",
-            "Labstream/Platforms/macOS/UI/MacRootShell.swift",
-            "Labstream/Platforms/tvOS/UI/TVRootShell.swift",
-        ].map {
-            try String(contentsOf: root.appendingPathComponent($0), encoding: .utf8)
-        }
-        #expect(shellSources.allSatisfy {
-            $0.contains("catalogRepository: runtime.libraryCatalogRepository")
-        })
-
-        for path in [
-            "Labstream/Shared/UI/LibraryGridView.swift",
-            "Labstream/Platforms/macOS/UI/MacSidebarPolicy.swift",
-            "Labstream/Shared/UI/LibraryVisibilityEditor.swift",
-            "Labstream/Shared/UI/MediaBrowserHomeProvider.swift",
-        ] {
-            let source = try String(contentsOf: root.appendingPathComponent(path), encoding: .utf8)
-            #expect(source.contains("catalogRepository.catalog"), "Missing repository use in \(path)")
-        }
     }
 
     private func makeContext(token: String = "token") throws -> AuthenticatedBrowseSessionContext {

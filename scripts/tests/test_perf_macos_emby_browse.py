@@ -867,24 +867,6 @@ class BrowseRunnerTests(unittest.TestCase):
             with self.assertRaisesRegex(runner.RunnerError, "incomplete or unsafe"):
                 runner.seed_browse_preferences(container, service)
 
-    def test_driver_result_must_prove_exact_pid_scenario_and_success(self):
-        valid = {
-            "schema_version": 1,
-            "tool": {"name": "labstream-macos-ax-driver", "version": 1},
-            "pid": 123, "scenario": "search", "status": "success",
-            "completed_stage": "search_loaded", "action_count": 7,
-            "elapsed_milliseconds": 100, "error_code": None,
-        }
-        with tempfile.TemporaryDirectory() as temporary:
-            path = pathlib.Path(temporary) / "driver.json"
-            path.write_text(json.dumps(valid))
-            path.chmod(0o600)
-            self.assertEqual(runner.validate_driver_result(path, pid=123, scenario="search"), valid)
-            valid["pid"] = 124
-            path.write_text(json.dumps(valid))
-            with self.assertRaisesRegex(runner.RunnerError, "exact-PID"):
-                runner.validate_driver_result(path, pid=123, scenario="search")
-
     def test_success_selector_preserves_binding_and_excludes_cancelled_attempt(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
@@ -994,7 +976,7 @@ class BrowseRunnerTests(unittest.TestCase):
              "pixel_width", "pixel_height", "delivery"),
         )
 
-    def test_driver_result_rejects_nonterminal_stage_for_every_scenario(self):
+    def test_driver_result_requires_exact_pid_and_terminal_stage_for_every_scenario(self):
         expected = {
             "home": "home_loaded", "catalog": "catalog_loaded",
             "search": "search_loaded", "artwork": "artwork_loaded",
@@ -1012,11 +994,18 @@ class BrowseRunnerTests(unittest.TestCase):
                     }
                     path.write_text(json.dumps(value))
                     path.chmod(0o600)
-                    runner.validate_driver_result(path, pid=123, scenario=scenario)
+                    self.assertEqual(
+                        runner.validate_driver_result(path, pid=123, scenario=scenario), value)
                     value["completed_stage"] = "authenticated"
                     path.write_text(json.dumps(value))
                     with self.assertRaisesRegex(runner.RunnerError, "exact-PID"):
                         runner.validate_driver_result(path, pid=123, scenario=scenario)
+                    value["completed_stage"] = completed
+                    value["pid"] = 124
+                    path.write_text(json.dumps(value))
+                    with self.assertRaisesRegex(runner.RunnerError, "exact-PID"):
+                        runner.validate_driver_result(path, pid=123, scenario=scenario)
+
     def test_ledger_is_closed_idle_and_bound_to_ready_identity(self):
         ready = {"fixture_id": "fixture-123456789abc", "fixture_sha256": "a" * 64}
         ledger = {

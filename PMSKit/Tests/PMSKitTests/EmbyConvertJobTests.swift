@@ -1,5 +1,8 @@
 import Testing
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 @testable import PMSKit
 
 /// Hermetic tests for the Emby "Convert Media" request layer (`EmbyConvertRequest`).
@@ -379,42 +382,39 @@ struct EmbyConvertJobTests {
 
     // MARK: - isTerminal / didSucceed
 
-    @Test("isTerminal is true only for Completed/Failed/Cancelled")
-    func terminalHelper() {
-        #expect(EmbyConvertJobStatus.queued.isTerminal == false)
-        #expect(EmbyConvertJobStatus.converting.isTerminal == false)
-        #expect(EmbyConvertJobStatus.transferring.isTerminal == false)
-        #expect(EmbyConvertJobStatus.unknown.isTerminal == false)
-        #expect(EmbyConvertJobStatus.completed.isTerminal == true)
-        #expect(EmbyConvertJobStatus.failed.isTerminal == true)
-        #expect(EmbyConvertJobStatus.cancelled.isTerminal == true)
-    }
-
-    @Test("didSucceed is true only for Completed")
-    func succeededHelper() {
-        #expect(EmbyConvertJobStatus.completed.didSucceed == true)
-        for s: EmbyConvertJobStatus in [.queued, .converting, .transferring, .failed, .cancelled, .unknown] {
-            #expect(s.didSucceed == false)
-        }
+    @Test("isTerminal is true only for Completed/Failed/Cancelled; didSucceed only for Completed",
+          arguments: [
+              (EmbyConvertJobStatus.queued, false, false),
+              (.converting, false, false),
+              (.transferring, false, false),
+              (.unknown, false, false),
+              (.completed, true, true),
+              (.failed, true, false),
+              (.cancelled, true, false),
+          ] as [(status: EmbyConvertJobStatus, terminal: Bool, succeeded: Bool)])
+    func terminalAndSuccessFlags(row: (status: EmbyConvertJobStatus, terminal: Bool, succeeded: Bool)) {
+        #expect(row.status.isTerminal == row.terminal)
+        #expect(row.status.didSucceed == row.succeeded)
     }
 
     // MARK: - createJobRequest body shape
 
-    private func createJobBody() throws -> [String: Any] {
-        let req = try EmbyConvertRequest.createJobRequest(
+    private func createJobRequest() throws -> URLRequest {
+        try EmbyConvertRequest.createJobRequest(
             server: server, token: token, identity: identity,
             userId: userId, itemId: "item-placeholder",
             quality: "custom", profile: "tv", bitrate: 8_000_000, name: "Title [Labstream abcd1234]")
+    }
+
+    private func createJobBody() throws -> [String: Any] {
+        let req = try createJobRequest()
         let data = try #require(req.httpBody)
         return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
     @Test("createJobRequest is a POST application/json to /Sync/Jobs")
     func createJobRequestEnvelope() throws {
-        let req = try EmbyConvertRequest.createJobRequest(
-            server: server, token: token, identity: identity,
-            userId: userId, itemId: "item-placeholder",
-            quality: "custom", profile: "tv", bitrate: 8_000_000, name: "Title [Labstream abcd1234]")
+        let req = try createJobRequest()
         #expect(req.httpMethod == "POST")
         #expect(req.url?.path == "/Sync/Jobs")
         #expect(req.value(forHTTPHeaderField: "Content-Type") == "application/json")
@@ -424,7 +424,7 @@ struct EmbyConvertJobTests {
         #expect(req.value(forHTTPHeaderField: "X-Emby-Token") == token)
     }
 
-    @Test("createJobRequest body is lowercase camelCase with targetId originalmediafolder")
+    @Test("createJobRequest body is lowercase camelCase with targetId originalmediafolder and an itemIds array")
     func createJobBodyCamelCase() throws {
         let body = try createJobBody()
         #expect(body["targetId"] as? String == "originalmediafolder")
@@ -439,6 +439,9 @@ struct EmbyConvertJobTests {
         #expect(body["parentId"] is NSNull)
         #expect(body["itemLimit"] is NSNull)
         #expect(body["audioStreamIndex"] == nil)
+        // itemIds is a JSON array containing the single itemId.
+        let itemIds = try #require(body["itemIds"] as? [String])
+        #expect(itemIds == ["item-placeholder"])
     }
 
     @Test("createJobRequest carries selected audio stream when provided")
@@ -452,13 +455,6 @@ struct EmbyConvertJobTests {
         let data = try #require(req.httpBody)
         let body = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(body["audioStreamIndex"] as? Int == 4)
-    }
-
-    @Test("itemIds is an array containing the single itemId")
-    func itemIdsIsArray() throws {
-        let body = try createJobBody()
-        let itemIds = try #require(body["itemIds"] as? [String])
-        #expect(itemIds == ["item-placeholder"])
     }
 
     @Test("createJobRequest body contains NO PascalCase keys")

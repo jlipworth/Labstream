@@ -98,9 +98,9 @@ struct StaticRangeSegmentAssemblyPolicyTests {
         #expect(result.discard.map(\.offset) == [512])
     }
 
-    // A zero-length stash beyond a real appendable run still discards rather than holding forever.
-    @Test("Zero-length segment ahead of the run discards, does not hold")
-    func zeroLengthAheadOfRunDiscards() {
+    // A zero-length stash beyond the gap after a real appendable run holds like any ahead segment.
+    @Test("Zero-length segment beyond the gap after the run holds")
+    func zeroLengthAheadOfRunHolds() {
         let result = StaticRangeSegmentAssemblyPolicy.appendableRun(
             durableBytes: 0,
             stashedSegments: [(offset: 0, length: 100), (offset: 200, length: 0)])

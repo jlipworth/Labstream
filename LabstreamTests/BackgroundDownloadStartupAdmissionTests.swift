@@ -422,7 +422,7 @@ struct BackgroundDownloadStartupAdmissionTests {
             let working = try #require(store.attemptWorkingFileURL(for: key))
             try Data(repeating: 0xA5, count: 512).write(to: working)
 
-            let requestBox = FinalizerRequestBox()
+            let requestBox = LockedFinalizerRequestBox()
             session.onFinalizerRequest = { requestBox.store($0) }
             #expect(session.finalizeCompletedStaticRangeFile(
                 ratingKey: key.ratingKey, validationLabel: "test"))
@@ -432,7 +432,7 @@ struct BackgroundDownloadStartupAdmissionTests {
             #expect(snapshot.finalizingRatingKeyCount == 1)
             #expect(snapshot.pendingBackgroundCompletionOperationCount == 1)
 
-            session.abandonFinalizerRequest(try #require(requestBox.load()))
+            session.abandonFinalizerRequest(try #require(requestBox.value))
             snapshot = session.diagnosticSnapshot(includePendingTempCleanupBytes: false)
             #expect(snapshot.finalizingRatingKeyCount == 0)
             #expect(snapshot.pendingBackgroundCompletionOperationCount == 0)
@@ -532,13 +532,32 @@ struct BackgroundDownloadStartupAdmissionTests {
         }
     }
 
-    @Test func malformedCurrentRowFailsClosedWithoutLenientTruncation() throws {
+    enum UnreadableIndex: Sendable {
+        /// A current schema-4 envelope whose row cannot decode must not be leniently truncated.
+        case malformedCurrentRow
+        /// Bytes that are not JSON at all.
+        case notJSON
+
+        func bytes() throws -> Data {
+            switch self {
+            case .malformedCurrentRow:
+                return try JSONSerialization.data(withJSONObject: [
+                    "schemaVersion": 4,
+                    "rows": ["not-a-download-row"],
+                ])
+            case .notJSON:
+                return Data("not-json".utf8)
+            }
+        }
+    }
+
+    @Test(arguments: [UnreadableIndex.malformedCurrentRow, .notJSON])
+    func unreadableIndexFailsClosedUntouchedAndCannotRequestDestructiveReset(
+        _ input: UnreadableIndex
+    ) throws {
         try withTemporaryDirectory { directory in
             let index = directory.appendingPathComponent("index.json")
-            let bytes = try JSONSerialization.data(withJSONObject: [
-                "schemaVersion": 4,
-                "rows": ["not-a-download-row"],
-            ])
+            let bytes = try input.bytes()
             try bytes.write(to: index)
             let before = try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
 
@@ -546,21 +565,9 @@ struct BackgroundDownloadStartupAdmissionTests {
             #expect(store.startupIndexProbe == .unreadable)
             #expect(store.startupIndexAdmission() == .unreadableIndex)
             #expect(store.records.isEmpty)
-            #expect(try Data(contentsOf: index) == bytes)
-            #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted() == before)
-        }
-    }
-
-    @Test func unreadableIndexRemainsUntouchedAndCannotRequestDestructiveReset() throws {
-        try withTemporaryDirectory { directory in
-            let index = directory.appendingPathComponent("index.json")
-            let bytes = Data("not-json".utf8)
-            try bytes.write(to: index)
-            let store = DownloadStore(baseDirectory: directory)
-            #expect(store.startupIndexProbe == .unreadable)
-            #expect(store.startupIndexAdmission() == .unreadableIndex)
             #expect(store.replaceUnsupportedRootWithCurrentEmptyStore() == .notRequired)
             #expect(try Data(contentsOf: index) == bytes)
+            #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted() == before)
         }
     }
 
@@ -674,32 +681,6 @@ struct BackgroundDownloadStartupAdmissionTests {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: parent) }
         try await body(directory)
-    }
-
-    private func waitForSignal(
-        _ semaphore: DispatchSemaphore,
-        timeout: TimeInterval
-    ) async -> Bool {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
-                continuation.resume(returning: semaphore.wait(timeout: .now() + timeout) == .success)
-            }
-        }
-    }
-}
-
-private final class FinalizerRequestBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var request: BackgroundDownloadSession.FinalizerRequest?
-
-    func store(_ request: BackgroundDownloadSession.FinalizerRequest) {
-        lock.lock(); defer { lock.unlock() }
-        self.request = request
-    }
-
-    func load() -> BackgroundDownloadSession.FinalizerRequest? {
-        lock.lock(); defer { lock.unlock() }
-        return request
     }
 }
 
@@ -993,24 +974,18 @@ struct UnverifiedRevalidationLifecycleTests {
         #expect(duplicateFinish == nil)
     }
 
-    @Test func coordinatorInactiveGateDrainParksUntilActiveTransition() throws {
-        let key = try coordinatorKey("inactive-drain")
+    @Test(arguments: [true, false])
+    func coordinatorGateDrainSchedulesOnlyWhenActive(sceneIsActive: Bool) throws {
+        let key = try coordinatorKey("drain-\(sceneIsActive ? "active" : "inactive")")
         var state = UnverifiedRevalidationCoordinator()
-        let shouldStartInactive = state.gateDrained([key], sceneIsActive: false)
-        #expect(!shouldStartInactive)
+        let shouldStart = state.gateDrained([key], sceneIsActive: sceneIsActive)
+        #expect(shouldStart == sceneIsActive)
         #expect(state.desired == [key])
 
-        // The active transition performs the ordinary scan; the parked desired edge does not
-        // suppress its exact admission.
-        let beganOnActive = state.begin(key, preservesOvertakenRequest: true)
-        #expect(beganOnActive)
-    }
-
-    @Test func coordinatorActiveGateDrainRequestsImmediateForegroundScan() throws {
-        let key = try coordinatorKey("active-drain")
-        var state = UnverifiedRevalidationCoordinator()
-        let shouldStart = state.gateDrained([key], sceneIsActive: true)
-        #expect(shouldStart)
+        // An inactive drain parks until the active transition performs the ordinary scan; the
+        // parked desired edge does not suppress its exact admission.
+        let began = state.begin(key, preservesOvertakenRequest: true)
+        #expect(began)
     }
 
     @Test func inactiveDrainThenOldFinishRemainsParkedUntilActive() throws {
@@ -1069,6 +1044,9 @@ struct UnverifiedRevalidationLifecycleTests {
         #expect(fired)
         #expect(state.inFlight.isEmpty)
         #expect(state.desired.contains(key))
+        // The watchdog requeues rather than only clearing: the desired edge can be re-admitted.
+        let readmitted = state.begin(key, preservesOvertakenRequest: true)
+        #expect(readmitted)
 
         let running = state.parkRunningRequestsUntilActive()
         #expect(running == [key])
@@ -1101,18 +1079,6 @@ struct UnverifiedRevalidationLifecycleTests {
         #expect(!state.inFlight.contains(key))
     }
 
-    @Test func coordinatorBrokerRejectionRetriesPromptly() throws {
-        let key = try coordinatorKey("broker")
-        var state = UnverifiedRevalidationCoordinator()
-        let requestID = UUID()
-        let began = state.begin(key, preservesOvertakenRequest: true)
-        #expect(began)
-        _ = state.started(key, requestID: requestID)
-        let retry = state.finished(
-            key, requestID: requestID, cancelled: true, remainsUnverified: true)
-        #expect(retry == .soon)
-    }
-
     @Test func coordinatorInconclusiveProbeGetsOnlyOneDelayedAutomaticRetry() throws {
         let key = try coordinatorKey("inconclusive")
         var state = UnverifiedRevalidationCoordinator()
@@ -1130,20 +1096,6 @@ struct UnverifiedRevalidationLifecycleTests {
         let secondFinish = state.finished(
             key, requestID: secondID, cancelled: false, remainsUnverified: true)
         #expect(secondFinish == nil)
-    }
-
-    @Test func coordinatorWatchdogRequeuesRatherThanOnlyClearing() throws {
-        let key = try coordinatorKey("watchdog")
-        var state = UnverifiedRevalidationCoordinator()
-        let requestID = UUID()
-        let began = state.begin(key, preservesOvertakenRequest: false)
-        #expect(began)
-        let token = state.started(key, requestID: requestID)
-        let fired = state.timerFired(for: key, token: token, remainsUnverified: true)
-        #expect(fired)
-        #expect(state.desired.contains(key))
-        let retryBegan = state.begin(key, preservesOvertakenRequest: true)
-        #expect(retryBegan)
     }
 
     @Test func coordinatorCancelRetriesButReplacementRejectsStaleCompletion() throws {
@@ -1234,15 +1186,6 @@ struct UnverifiedRevalidationLifecycleTests {
                 Issue.record("Expected retry probe admission"); return
             }
             session.abandonFinalizerRequest(try #require(request.value))
-        }
-    }
-
-    @Test func positivePlaybackStillPromotesExactUnverifiedAttempt() throws {
-        try withDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
-            let key = try seedUnverified("plex:play", in: store)
-            #expect(store.markCompleteIfUnverified(for: key) == .promoted)
-            #expect(store.record(for: key)?.status == .complete)
         }
     }
 

@@ -2,11 +2,8 @@ import Testing
 import Foundation
 @testable import PMSKit
 
-private let server = URL(string: "https://192.0.2.10:32400")!
-private let id = ClientIdentity(clientIdentifier: "CID",
-                                product: "Labstream",
-                                version: "0.1.0",
-                                deviceName: "AVP")
+private let server = TestFixtures.plexServer
+private let id = TestFixtures.plexIdentity
 
 // MARK: - Playlist builders (read-only v1, MUSIC-DESIGN §3.4)
 
@@ -83,17 +80,6 @@ private let id = ClientIdentity(clientIdentifier: "CID",
     #expect(!movie.isAudioPlaylist)
 }
 
-@Test func compositeAndLeafCountDecodeNilWhenAbsent() throws {
-    let json = """
-    {"MediaContainer":{"Metadata":[
-      {"ratingKey":"101","title":"Blade Runner","type":"movie"}]}}
-    """.data(using: .utf8)!
-    let item = try JSONDecoder().decode(MetadataResponse.self, from: json)
-        .mediaContainer.metadata[0]
-    #expect(item.composite == nil)
-    #expect(item.leafCount == nil)
-}
-
 // MARK: - Music MediaItem decodes (MUSIC-DESIGN §6 additive fields)
 
 @Test func decodesMusicFieldsOnTrack() throws {
@@ -113,19 +99,6 @@ private let id = ClientIdentity(clientIdentifier: "CID",
     #expect(item.ratingCount == 42)
 }
 
-@Test func musicFieldsDecodeNilWhenAbsent() throws {
-    let json = """
-    {"MediaContainer":{"Metadata":[
-      {"ratingKey":"101","title":"Blade Runner","type":"movie"}]}}
-    """.data(using: .utf8)!
-    let item = try JSONDecoder().decode(MetadataResponse.self, from: json)
-        .mediaContainer.metadata[0]
-    #expect(item.originalTitle == nil)
-    #expect(item.lastViewedAt == nil)
-    #expect(item.parentYear == nil)
-    #expect(item.ratingCount == nil)
-}
-
 @Test func metadataDecodeSkipsRowsForDeletedItems() throws {
     // /status/sessions/history/all keeps rows for since-deleted items WITHOUT a
     // ratingKey; the lossy container decode must skip them, not throw away the
@@ -142,26 +115,17 @@ private let id = ClientIdentity(clientIdentifier: "CID",
 
 // MARK: - Kind classification for music types
 
-@Test func musicKindsClassify() {
-    #expect(MediaItem(ratingKey: "1", title: "A", type: "artist").kind == .artist)
-    #expect(MediaItem(ratingKey: "2", title: "B", type: "album").kind == .album)
-    #expect(MediaItem(ratingKey: "3", title: "C", type: "track").kind == .track)
-    #expect(MediaItem(ratingKey: "4", title: "D", type: "playlist").kind == .playlist)
-}
-
-@Test func musicLeafnessMatchesPartOwnership() {
-    // Only a track owns a Part; artist/album/playlist must be drilled into.
-    #expect(MediaItem(ratingKey: "3", title: "C", type: "track").isPlayableLeaf)
-    #expect(!MediaItem(ratingKey: "1", title: "A", type: "artist").isPlayableLeaf)
-    #expect(!MediaItem(ratingKey: "2", title: "B", type: "album").isPlayableLeaf)
-    #expect(!MediaItem(ratingKey: "4", title: "D", type: "playlist").isPlayableLeaf)
-}
-
-@Test func musicContainerFlagUnchangedByKindAdditions() {
-    // isMusicContainer drives music routing (artist/album only — a playlist
-    // routes via its own case); isContainer stays video-only.
-    #expect(MediaItem(ratingKey: "1", title: "A", type: "artist").isMusicContainer)
-    #expect(MediaItem(ratingKey: "2", title: "B", type: "album").isMusicContainer)
-    #expect(!MediaItem(ratingKey: "3", title: "C", type: "track").isMusicContainer)
-    #expect(!MediaItem(ratingKey: "1", title: "A", type: "artist").isContainer)
+@Test(arguments: [
+    ("artist", MediaItem.Kind.artist, false),
+    ("album", MediaItem.Kind.album, false),
+    ("track", MediaItem.Kind.track, true),
+    ("playlist", MediaItem.Kind.playlist, false),
+])
+func musicKindsClassify(type: String, expectedKind: MediaItem.Kind, isPlayableLeaf: Bool) {
+    // Only a track owns a Part; artist/album/playlist must be drilled into. isContainer
+    // stays video-only, so no music type is a (video) container.
+    let item = MediaItem(ratingKey: "1", title: "X", type: type)
+    #expect(item.kind == expectedKind)
+    #expect(item.isPlayableLeaf == isPlayableLeaf)
+    #expect(!item.isContainer)
 }

@@ -225,7 +225,7 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
 
     func testConcurrencyIsBoundedAcrossOwnersAtOneOrigin() async throws {
         let clock = AdvancingSideAssetClock()
-        let gate = SideAssetGate()
+        let gate = TestGate()
         let recorder = SideAssetStartRecorder(clock: clock)
         let coordinator = SideAssetFetchCoordinator(
             policy: .init(maximumRequestStartsPerSecond: 100, maximumConcurrentRequests: 2),
@@ -248,47 +248,14 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
         await waitUntil { await recorder.count == 2 }
         let maximumWhileBlocked = await recorder.maximumActive
         XCTAssertEqual(maximumWhileBlocked, 2)
-        await gate.releaseAll()
+        await gate.open()
         for task in tasks { _ = try await task.value }
         let finalMaximum = await recorder.maximumActive
         XCTAssertEqual(finalMaximum, 2)
     }
 
-    func testIdenticalInFlightRequestIsCoalesced() async throws {
-        let clock = AdvancingSideAssetClock()
-        let gate = SideAssetGate()
-        let calls = SideAssetCounter()
-        let coordinator = SideAssetFetchCoordinator(clock: clock.dependency)
-        let origin = SideAssetOrigin(rawValue: "origin")
-        let request = SideAssetRequestKey(rawValue: "same")
-        let first = Task {
-            try await coordinator.fetch(origin: origin, owner: .init(rawValue: "a"), requestKey: request) {
-                await calls.increment()
-                await gate.wait()
-                return Data([7])
-            }
-        }
-        await waitUntil { await calls.value == 1 }
-        let second = Task {
-            try await coordinator.fetch(origin: origin, owner: .init(rawValue: "b"), requestKey: request) {
-                XCTFail("coalesced operation must not run")
-                return Data()
-            }
-        }
-        await waitUntil {
-            await coordinator.waiterCountForTesting(origin: origin, requestKey: request) == 2
-        }
-        await gate.releaseAll()
-        let firstData = try await first.value
-        let secondData = try await second.value
-        let callCount = await calls.value
-        XCTAssertEqual(firstData, Data([7]))
-        XCTAssertEqual(secondData, Data([7]))
-        XCTAssertEqual(callCount, 1)
-    }
-
     func testTransportAdmissionChargesOnlyTheOperationThatActuallyStarts() async throws {
-        let gate = SideAssetGate()
+        let gate = TestGate()
         let admissions = SideAssetCounter()
         let operations = SideAssetCounter()
         let coordinator = SideAssetFetchCoordinator(clock: AdvancingSideAssetClock().dependency)
@@ -322,8 +289,10 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
             await coordinator.waiterCountForTesting(
                 origin: origin, requestKey: requestKey) == 2
         }
-        await gate.releaseAll()
-        _ = try await (first.value, second.value)
+        await gate.open()
+        let (firstData, secondData) = try await (first.value, second.value)
+        XCTAssertEqual(firstData, Data([1]))
+        XCTAssertEqual(secondData, Data([1]))
         let admissionCount = await admissions.value
         let operationCount = await operations.value
         XCTAssertEqual(admissionCount, 1)
@@ -331,7 +300,7 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
     }
 
     func testSuccessfulSuspendedAdmissionFundsSurvivorWhenFundingWaiterCancels() async throws {
-        let admissionGate = SideAssetGate()
+        let admissionGate = TestGate()
         let firstAdmissions = SideAssetCounter()
         let secondAdmissions = SideAssetCounter()
         let operations = SideAssetCounter()
@@ -368,7 +337,7 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
         await waitUntil {
             await coordinator.waiterCountForTesting(origin: origin, requestKey: request) == 1
         }
-        await admissionGate.releaseAll()
+        await admissionGate.open()
 
         do {
             _ = try await first.value
@@ -385,7 +354,7 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
     }
 
     func testWaiterJoiningCancelledEmptyRunningJobIsReadmittedAndSucceeds() async throws {
-        let cancelledOperationGate = SideAssetGate()
+        let cancelledOperationGate = TestGate()
         let firstAdmissions = SideAssetCounter()
         let survivorAdmissions = SideAssetCounter()
         let operationCalls = SideAssetCounter()
@@ -423,7 +392,7 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
         await waitUntil {
             await coordinator.waiterCountForTesting(origin: origin, requestKey: request) == 1
         }
-        await cancelledOperationGate.releaseAll()
+        await cancelledOperationGate.open()
 
         let survivorData = try await survivor.value
         let firstAdmissionCount = await firstAdmissions.value
@@ -436,7 +405,7 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
     }
 
     func testQueuedCancellationMovesAdmissionAuthorityToSurvivingOwner() async throws {
-        let gate = SideAssetGate()
+        let gate = TestGate()
         let coordinator = SideAssetFetchCoordinator(
             policy: .init(maximumRequestStartsPerSecond: 1_000,
                           maximumConcurrentRequests: 1),
@@ -482,7 +451,7 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
         await waitUntil {
             await coordinator.waiterCountForTesting(origin: origin, requestKey: request) == 1
         }
-        await gate.releaseAll()
+        await gate.open()
         _ = try await blocker.value
         let survivorData = try await second.value
         XCTAssertEqual(survivorData, Data([1])) // transport is request-equivalent
@@ -493,7 +462,7 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
     }
 
     func testRejectedCoalescedAdmissionHandsOffWithoutDoubleCharging() async throws {
-        let gate = SideAssetGate()
+        let gate = TestGate()
         let coordinator = SideAssetFetchCoordinator(
             policy: .init(maximumRequestStartsPerSecond: 1_000,
                           maximumConcurrentRequests: 1),
@@ -537,7 +506,7 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
         await waitUntil {
             await coordinator.waiterCountForTesting(origin: origin, requestKey: request) == 2
         }
-        await gate.releaseAll()
+        await gate.open()
         _ = try await blocker.value
         do {
             _ = try await rejected.value
@@ -562,7 +531,7 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
         // regardless of whether completion or cancelWaiter reaches the coordinator first.
         for iteration in 0..<100 {
             let clock = AdvancingSideAssetClock()
-            let gate = SideAssetGate()
+            let gate = TestGate()
             let calls = SideAssetCounter()
             let coordinator = SideAssetFetchCoordinator(clock: clock.dependency)
             let task = Task {
@@ -579,7 +548,7 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
 
             await waitUntil { await calls.value == 1 }
             task.cancel()
-            await gate.releaseAll()
+            await gate.open()
 
             do {
                 _ = try await task.value
@@ -596,7 +565,7 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
 
     func testWaiterJobIndexTracksCoalescedCancellationAndCompletion() async throws {
         let clock = AdvancingSideAssetClock()
-        let gate = SideAssetGate()
+        let gate = TestGate()
         let calls = SideAssetCounter()
         let coordinator = SideAssetFetchCoordinator(clock: clock.dependency)
         let origin = SideAssetOrigin(rawValue: "origin")
@@ -633,7 +602,7 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
             XCTFail("expected cancellation")
         } catch is CancellationError {}
 
-        await gate.releaseAll()
+        await gate.open()
         let survivorData = try await survivor.value
         XCTAssertEqual(survivorData, Data([3]))
         let finalIndexCount = await coordinator.waiterJobIndexCountForTesting()
@@ -707,7 +676,7 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
 
     func testParkedCoalescedOwnerDoesNotBlockActiveOwnerOrCancelSharedRequest() async throws {
         let clock = AdvancingSideAssetClock()
-        let gate = SideAssetGate()
+        let gate = TestGate()
         let calls = SideAssetCounter()
         let coordinator = SideAssetFetchCoordinator(clock: clock.dependency)
         let parked = SideAssetOwner(rawValue: "parked")
@@ -731,7 +700,7 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
         }
         await waitUntil { await calls.value == 1 }
         await coordinator.cancel(owner: parked)
-        await gate.releaseAll()
+        await gate.open()
         do {
             _ = try await first.value
             XCTFail("parked owner's waiter should be cancelled")
@@ -744,7 +713,7 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
 
     func testDifferentOriginsProgressIndependently() async throws {
         let clock = AdvancingSideAssetClock()
-        let gate = SideAssetGate()
+        let gate = TestGate()
         let recorder = SideAssetStartRecorder(clock: clock)
         let coordinator = SideAssetFetchCoordinator(
             policy: .init(maximumRequestStartsPerSecond: 1, maximumConcurrentRequests: 1),
@@ -766,7 +735,7 @@ final class SideAssetFetchCoordinatorTests: XCTestCase {
         await waitUntil { await recorder.count == 2 }
         let maximumActive = await recorder.maximumActive
         XCTAssertEqual(maximumActive, 2)
-        await gate.releaseAll()
+        await gate.open()
         for task in tasks { _ = try await task.value }
     }
 
@@ -818,23 +787,6 @@ private actor SideAssetStartRecorder {
     }
 
     func end() { active -= 1 }
-}
-
-private actor SideAssetGate {
-    private var open = false
-    private var waiters: [CheckedContinuation<Void, Never>] = []
-
-    func wait() async {
-        guard !open else { return }
-        await withCheckedContinuation { waiters.append($0) }
-    }
-
-    func releaseAll() {
-        open = true
-        let pending = waiters
-        waiters.removeAll()
-        pending.forEach { $0.resume() }
-    }
 }
 
 private actor SideAssetCounter {

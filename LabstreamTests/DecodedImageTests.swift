@@ -131,16 +131,16 @@ final class DecodedImageTests: XCTestCase {
                                            type: "public.png" as CFString,
                                            orientation: .right))
 
-        let executorProbe = LockedDecodeExecutorProbe()
+        let didExecute = TestLockedBox(false)
         let result = await DecodedImage.decodeEagerlyOffMain(
             data: encoded,
             scale: 2,
             executorProbe: {
                 dispatchPrecondition(condition: .notOnQueue(.main))
-                executorProbe.recordExecution()
+                didExecute.withValue { $0 = true }
             }
         )
-        XCTAssertTrue(executorProbe.didExecute)
+        XCTAssertTrue(didExecute.value)
         let decoded = try XCTUnwrap(result)
 
         XCTAssertEqual(decoded.pixelWidth, 3)
@@ -245,18 +245,5 @@ final class DecodedImageTests: XCTestCase {
             kCGImagePropertyOrientation: orientation.rawValue,
         ] as CFDictionary)
         return CGImageDestinationFinalize(destination) ? output as Data : nil
-    }
-}
-
-private final class LockedDecodeExecutorProbe: @unchecked Sendable {
-    private let lock = NSLock()
-    private var executed = false
-
-    var didExecute: Bool {
-        lock.withLock { executed }
-    }
-
-    func recordExecution() {
-        lock.withLock { executed = true }
     }
 }

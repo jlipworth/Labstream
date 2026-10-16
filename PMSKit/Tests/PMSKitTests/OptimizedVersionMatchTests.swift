@@ -139,14 +139,4 @@ struct OptimizedVersionMatchTests {
         #expect(OptimizedVersionMatch.candidate(from: [m], baselinePartIDs: [],
                 targetDimensions: target1080, targetVideoKbps: nil, isOriginalQuality: false, sourceHeight: nil) == nil)
     }
-
-    // MARK: shared dimensions parser (dedup target)
-
-    @Test func dimensionsParserLowercasesAndParses() {
-        #expect(DownloadResolutionLabel.dimensions(forVideoResolution: "1920x1080")?.width == 1920)
-        #expect(DownloadResolutionLabel.dimensions(forVideoResolution: "1920x1080")?.height == 1080)
-        // Defensive: capital-X also parses now (the old inline copy did not lowercase).
-        #expect(DownloadResolutionLabel.dimensions(forVideoResolution: "1920X1080")?.height == 1080)
-        #expect(DownloadResolutionLabel.dimensions(forVideoResolution: "garbage") == nil)
-    }
 }

@@ -14,12 +14,6 @@ struct EmbyConnectTests {
         deviceId: "device-123",
         version: "1.0")
 
-    // MARK: X-Application
-
-    @Test func xApplicationHeaderIsClientSlashVersion() {
-        #expect(EmbyConnect.xApplication(identity) == "Labstream/1.0")
-    }
-
     // MARK: Cloud request builders
 
     @Test func createPinRequestPostsDeviceIdWithXApplicationAndNoToken() {
@@ -159,19 +153,17 @@ struct EmbyConnectTests {
 
     // MARK: API base from a Connect address
 
-    @Test func apiBaseAppendsEmbyToBareWanAddress() throws {
-        let url = try EmbyConnect.apiBaseURL(forConnectAddress: "https://emby.example.org")
-        #expect(url == URL(string: "https://emby.example.org/emby"))
-    }
-
-    @Test func apiBaseAppendsEmbyToLanAddressWithPort() throws {
-        let url = try EmbyConnect.apiBaseURL(forConnectAddress: "http://192.0.2.10:8096")
-        #expect(url == URL(string: "http://192.0.2.10:8096/emby"))
-    }
-
-    @Test func apiBaseDoesNotDoubleEmbyWhenAlreadyPresent() throws {
-        let url = try EmbyConnect.apiBaseURL(forConnectAddress: "https://emby.example.org/emby")
-        #expect(url == URL(string: "https://emby.example.org/emby"))
+    @Test(arguments: [
+        // Bare WAN address gains the /emby base path.
+        ("https://emby.example.org", "https://emby.example.org/emby"),
+        // LAN address with port gains the /emby base path.
+        ("http://192.0.2.10:8096", "http://192.0.2.10:8096/emby"),
+        // An address that already carries /emby is not doubled.
+        ("https://emby.example.org/emby", "https://emby.example.org/emby"),
+    ])
+    func apiBaseNormalizesConnectAddress(input: String, expected: String) throws {
+        let url = try EmbyConnect.apiBaseURL(forConnectAddress: input)
+        #expect(url == URL(string: expected))
     }
 
     @Test func apiBaseThrowsOnGarbage() {

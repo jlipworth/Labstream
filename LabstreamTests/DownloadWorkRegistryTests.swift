@@ -119,22 +119,6 @@ struct DownloadWorkRegistryTests {
         await waitUntil { registry.snapshot().totalCount == 0 }
     }
 
-    @Test func terminalReleaseCanPreserveRunningFinalizerOnly() {
-        let registry = DownloadWorkRegistry()
-        let attempt = key("plex:terminal", "attempt-A")
-        let finalizer = pendingTask()
-        let poster = pendingTask()
-        defer { finalizer.cancel(); poster.cancel() }
-        let finalizerToken = registry.register(finalizer, for: attempt, kind: .finalizer)
-        let posterToken = registry.register(poster, for: attempt, kind: .sideCache(.poster))
-
-        #expect(registry.cancelCancellableWork(
-            for: attempt, mode: .preservingFinalizer) == [posterToken])
-        #expect(!finalizer.isCancelled)
-        #expect(poster.isCancelled)
-        #expect(registry.snapshot().attempts.first?.entries.map(\.token) == [finalizerToken])
-    }
-
     @Test func terminalRefreshPreservesBothPublishingAndRevalidationFinalizers() {
         let registry = DownloadWorkRegistry()
         let attempt = key("plex:terminal-revalidation", "attempt-A")
@@ -142,8 +126,9 @@ struct DownloadWorkRegistryTests {
         let revalidation = pendingTask()
         let poster = pendingTask()
         defer { publishing.cancel(); revalidation.cancel(); poster.cancel() }
-        _ = registry.register(publishing, for: attempt, kind: .finalizer)
-        _ = registry.register(revalidation, for: attempt, kind: .revalidationFinalizer)
+        let publishingToken = registry.register(publishing, for: attempt, kind: .finalizer)
+        let revalidationToken = registry.register(
+            revalidation, for: attempt, kind: .revalidationFinalizer)
         let posterToken = registry.register(poster, for: attempt, kind: .sideCache(.poster))
 
         #expect(registry.cancelCancellableWork(
@@ -151,6 +136,9 @@ struct DownloadWorkRegistryTests {
         #expect(!publishing.isCancelled)
         #expect(!revalidation.isCancelled)
         #expect(poster.isCancelled)
+        // Snapshot order follows the registry sort key: finalizer, then revalidation finalizer.
+        #expect(registry.snapshot().attempts.first?.entries.map(\.token)
+                == [publishingToken, revalidationToken])
     }
 
     @Test func inactiveCancellationTargetsRevalidationButPreservesPublishingFinalizer() {
