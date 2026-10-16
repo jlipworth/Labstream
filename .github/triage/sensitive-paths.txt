@@ -1,0 +1,63 @@
+# Paths whose changes need close maintainer review before any merge.
+# scripts/check-sensitive-paths.py reads this file; the triage bot applies the
+# `sensitive-paths` label when a pull request touches any of them.
+#
+# Syntax: one glob per line, relative to the repository root. `*` matches within a
+# path segment, `**` across segments, and a trailing `/` matches everything below a
+# directory. `## ` lines name the category reported for the globs that follow.
+
+## Signing, entitlements, and app identity
+**/*.entitlements
+**/*.xcconfig
+**/*.plist
+**/PrivacyInfo.xcprivacy
+Labstream.xcodeproj/
+
+## Authentication, credentials, and diagnostics redaction
+Labstream/Shared/Auth/
+Labstream/Shared/Diagnostics/
+PMSKit/Sources/PMSKit/Auth/
+PMSKit/Sources/PMSKit/Security/
+PMSKit/Sources/PMSKit/Diagnostics/
+PMSKit/Sources/PMSKit/ClientIdentity.swift
+PMSKit/Sources/PMSKit/PlexHeaders.swift
+
+## Transcode profile (hard constraint in CLAUDE.md)
+PMSKit/Sources/PMSKit/Transcode/
+
+## Dependencies
+**/Package.swift
+**/Package.resolved
+requirements*.txt
+pyproject.toml
+uv.lock
+
+## CI, release, and publication tooling
+.woodpecker/
+.github/
+.gitignore
+.gitleaksignore
+mkdocs.yml
+scripts/ci-*.sh
+scripts/testflight-release.py
+scripts/asc-*.py
+scripts/deploy-*.sh
+scripts/publication-audit*
+scripts/check-privacy-manifest.py
+scripts/check-sensitive-paths.py
+
+## App Store text and review notes
+appstore/
+
+## Agent instructions
+CLAUDE.md
+AGENTS.md
+.claude/
+.codex/
+
+## Policies and licensing
+SECURITY.md
+PRIVACY.md
+LICENSE
+APP-STORE-EXCEPTION.md
+CODE_OF_CONDUCT.md

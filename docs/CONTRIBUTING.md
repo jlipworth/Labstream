@@ -40,6 +40,15 @@ includes:
 - tvOS build/smoke notes when a change touches the `LabstreamTV` target;
 - screenshots only when they do not reveal private server or media details.
 
+Pull requests are welcome as proposals. The maintainer may merge one as is, or re-implement the
+idea on a maintainer branch and close the PR with credit to its author; either outcome means the
+idea landed. Changes to the paths in
+[`sensitive-paths.txt`](https://github.com/jlipworth/Labstream/blob/main/.github/triage/sensitive-paths.txt)
+(signing and entitlements, authentication and credentials, the transcode profile, dependencies,
+CI and release tooling, App Store text, agent instructions, and policies) get the
+`sensitive-paths` label and close review, and are usually re-implemented rather than merged.
+Open an issue first for those.
+
 Run the [core validation commands](DEVELOPMENT.md#core-validation-commands) before opening or
 updating a PR. For app-owned changes, also run the affected host-app unit suite(s): `LabstreamTests`
 through the `LabstreamMobile` scheme on an iOS simulator, `LabstreamMacTests` through the

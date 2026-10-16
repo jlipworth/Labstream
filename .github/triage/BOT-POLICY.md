@@ -38,6 +38,7 @@ amends this file, anything not listed under **Allowed actions** is forbidden.
 | `backend:plex`, `backend:jellyfin`, `backend:emby` | From the Media backend field or clear evidence. |
 | `player`, `downloads` | The area is clearly in-player playback or offline downloads. |
 | `security` | See **Security** below. |
+| `sensitive-paths` | A pull request changes any file, or renames one away from a path, listed in [sensitive-paths.txt](sensitive-paths.txt) (`scripts/check-sensitive-paths.py --pr N` lists them). Never remove it. |
 
 **Maintainer-only labels** (the bot may suggest them in its comment, never apply or remove them):
 `accepted`, `priority:p0`-`priority:p3`, every `status:*` label, `wontfix`, `invalid`,
@@ -109,6 +110,8 @@ authorization bypass, signing, private-data leakage, or a vulnerability:
   affected surface, verification evidence, privacy checklist, AI assistance) in the single bot
   comment.
 - Apply `platform:*` and `backend:*` labels from the changed paths or description.
+- Apply `sensitive-paths` when the PR touches a listed path, and name the matched categories in
+  the bot comment without judging whether the change is safe.
 - Never approve, request changes, comment on merge readiness, merge, push commits, trigger
   workflows, or run PR code.
 
