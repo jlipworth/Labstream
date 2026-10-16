@@ -1,0 +1,16 @@
+Labstream is a client for media servers that the user runs or is allowed to use (Plex, Jellyfin, or Emby). It does not include, sell, or subscribe to any media.
+
+For review, use the dedicated Jellyfin review server and non-admin account in the Sign-In Information fields. No personal server or account is needed.
+
+Sign in:
+1. Launch Labstream and choose Jellyfin.
+2. Enter the server address from the Sign-In Information fields, then the username and password, and sign in.
+
+Try the main journey:
+1. Open Movies, then Spring or Wing It! (open films by the Blender Foundation). Open the title's details and play it.
+2. Pause, resume, and seek. Leave playback, reopen the same title, and confirm it resumes where you left off.
+3. Browse Shows and Music. Use the technical sample title to change subtitle and audio tracks and chapters from the player controls.
+
+The review server is a dedicated sample environment with licensed media. Playback progress resets on a schedule, and the server stays available throughout review. Labstream connects directly to the server the user chooses; when that server is on the local network, the app asks for Local Network access.
+
+This is a native, sandboxed Mac app with standard windows, menus, and keyboard shortcuts. Downloads for offline playback are available from a title's details.

@@ -32,6 +32,10 @@ media details out of commits and public issues.
   while printing counts only. `--since Nd|Nh|<ISO date>` (default `1d`), `--all` ignores the
   seen-state file, `--version`, `--logs`, and `--attachments`. See
   [After launch: monitoring](../docs/RELEASES.md#after-launch-monitoring).
+- `asc-metadata.py` — `check`, `pull`, `diff`, and `push` for the App Store product-page text and
+  review notes kept in `appstore/metadata/`. Uses the same credentials as `testflight-release.py`;
+  `push` is a dry run unless `--yes`. Never reads or stores review contact details, demo
+  credentials, or the review server address.
 - `check-privacy-manifest.py` — source check of the shared and tvOS `PrivacyInfo.xcprivacy`
   contracts and target membership; with `--app TARGET=PATH` for all four products it also checks
   the built app manifests. `testflight-release.py validate` runs it on archives. It is not Apple's
