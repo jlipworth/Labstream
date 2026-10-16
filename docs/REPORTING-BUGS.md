@@ -27,8 +27,8 @@ diagnostic report to make that easy and safe.
 5. **Turn logging back off** in Settings ▸ Diagnostics if you no longer need it.
 
 That's it. The form will also ask for your Labstream version and build
-(**Settings ▸ About**), your OS version, and which backend you use
-(Plex / Jellyfin / Emby).
+(the **About** section at the bottom of Settings), your platform and OS version, which
+backend you use (Plex / Jellyfin / Emby), and how badly the problem affects you.
 
 If you are testing Mac or Apple TV, say so explicitly and include macOS or tvOS as the platform.
 All platform targets remain pre-release, and reproducible source-build or TestFlight reports are
@@ -67,6 +67,13 @@ report, **screenshots, and any logs** — and remove anything you'd rather not
 share: in particular tokens, your server's name / URL / IP, usernames, and media
 titles. The bug form has a checkbox confirming you've done this.
 
+## Using a coding agent?
+
+If an AI coding agent (Claude Code, Codex, or similar) is helping you, have it follow the
+[triage playbook](https://github.com/jlipworth/Labstream/blob/main/.github/triage/PLAYBOOK.md).
+It searches for duplicates, collects the fields above, keeps private data out, and asks for your
+approval before anything is posted.
+
 ## No diagnostic report? Still file it
 
 A report is optional. If you can't capture one, open the
@@ -77,7 +84,7 @@ enough to get started.
 ## Requesting a feature instead?
 
 Use the
-[feature request form](https://github.com/jlipworth/Labstream/issues/new?template=feature_request.yml),
-or start a thread in
-[Discussions](https://github.com/jlipworth/Labstream/discussions) for open-ended
-ideas and questions.
+[feature request form](https://github.com/jlipworth/Labstream/issues/new?template=feature_request.yml)
+for a concrete, scoped change. Open-ended ideas belong in
+[Discussions ▸ Ideas](https://github.com/jlipworth/Labstream/discussions/categories/ideas), and
+questions in [Discussions ▸ Q&A](https://github.com/jlipworth/Labstream/discussions/categories/q-a).

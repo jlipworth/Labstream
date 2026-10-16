@@ -53,9 +53,14 @@ in the [Settings reference](https://github.com/jlipworth/Labstream/blob/main/doc
 
 ## Reporting a problem
 
-Use the [bug report form](https://github.com/jlipworth/Labstream/issues/new?template=bug_report.yml).
+Search [existing issues](https://github.com/jlipworth/Labstream/issues?q=is%3Aissue) first; if one
+matches, add your details there. Otherwise use the
+[bug report form](https://github.com/jlipworth/Labstream/issues/new?template=bug_report.yml).
 Include steps to reproduce, your device type (Apple Vision Pro, iPhone, iPad, Apple TV, or Mac),
-OS version, backend (Plex, Jellyfin, or Emby), and the app version from **Settings ▸ About**.
+OS version, backend (Plex, Jellyfin, or Emby), and the app version and build from the **About**
+section of Settings. Ideas belong in
+[Discussions ▸ Ideas](https://github.com/jlipworth/Labstream/discussions/categories/ideas) and
+questions in [Discussions ▸ Q&A](https://github.com/jlipworth/Labstream/discussions/categories/q-a).
 
 For hard-to-reproduce issues, turn on **Settings ▸ Diagnostics ▸ Enable diagnostic logging**,
 reproduce the problem once, then tap **Send feedback to developer**. The report is redacted before

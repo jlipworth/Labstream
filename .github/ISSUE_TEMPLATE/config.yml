@@ -9,6 +9,9 @@ contact_links:
   - name: How to report a bug (with a redacted diagnostic report)
     url: https://github.com/jlipworth/Labstream/blob/main/docs/REPORTING-BUGS.md
     about: Step-by-step guide to capturing a privacy-safe diagnostic report before you open a bug.
-  - name: Questions & discussion
-    url: https://github.com/jlipworth/Labstream/discussions
-    about: For questions, ideas, and help that aren't a confirmed bug or a specific feature request.
+  - name: Ideas and wishlist
+    url: https://github.com/jlipworth/Labstream/discussions/categories/ideas
+    about: Open-ended ideas and feature brainstorming. Use the feature request form only for a concrete, scoped change.
+  - name: Questions & help
+    url: https://github.com/jlipworth/Labstream/discussions/categories/q-a
+    about: Setup, usage, and "is this expected?" questions that aren't a confirmed bug.
