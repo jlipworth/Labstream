@@ -86,8 +86,8 @@ Apple TV is streaming-only, so this section does not appear there.
 | **Send feedback to developer** | Opens a preview of the redacted report that you can share or attach to a GitHub bug report. | — | All |
 
 Reports leave out sensitive values such as sign-in tokens, server addresses, usernames, file paths,
-and media titles. See [Support and troubleshooting](support.md#reporting-a-problem) for the full
-reporting steps.
+and media titles. See "Reporting a problem" in [Support and troubleshooting](support.md) for the
+full reporting steps.
 
 ## About
 
