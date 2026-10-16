@@ -15,22 +15,16 @@ struct DownloadOptionsModelTests {
         #expect(selection.mediaSourceIDOverride == nil)
     }
 
-    @Test func embyExistingVersionCarriesExactSourceAndReportedSize() throws {
+    @Test(arguments: [42, nil] as [Int?])
+    func embyExistingVersionCarriesExactSourceAndReportedSize(sizeBytes: Int?) throws {
         var model = DownloadOptionsModel()
-        model.selection = .embyExistingVersion(mediaSourceId: "source-b", sizeBytes: 42)
+        model.selection = .embyExistingVersion(mediaSourceId: "source-b", sizeBytes: sizeBytes)
         let selection = try #require(model.resolvedSelection(
             baseMediaIndex: 1, basePartIndex: 2, audioStreamIndex: 9))
         #expect(selection.intent.choice == .existingVersion)
         #expect(selection.mediaSourceIDOverride == "source-b")
-        #expect(selection.sizing == .reported(42))
-    }
-
-    @Test func unknownEmbyExistingVersionSizeStaysExplicitlyUnknown() throws {
-        var model = DownloadOptionsModel()
-        model.selection = .embyExistingVersion(mediaSourceId: "source-b", sizeBytes: nil)
-        let selection = try #require(model.resolvedSelection(
-            baseMediaIndex: 1, basePartIndex: 2, audioStreamIndex: 9))
-        #expect(selection.sizing == .reported(nil))
+        // An unknown size stays explicitly unknown rather than collapsing to a default.
+        #expect(selection.sizing == .reported(sizeBytes))
     }
 
     @Test func remuxKeepsSelectedAudioAndSourceCoordinates() throws {

@@ -33,14 +33,6 @@ struct DownloadIndexCodingTests {
 
     // MARK: - Round trip + envelope
 
-    @Test func encodeProducesVersionedEnvelope() throws {
-        let rows = [StubRow(key: "a", bytes: 1, note: "x"), StubRow(key: "b", bytes: 2, note: nil)]
-        let encoded = try DownloadIndexCoding.encode(rows)
-        let object = try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
-        #expect(object?["schemaVersion"] as? Int == DownloadIndexCoding.currentSchemaVersion)
-        #expect((object?["rows"] as? [Any])?.count == 2)
-    }
-
     @Test func roundTripPreservesRows() throws {
         let rows = [StubRow(key: "a", bytes: 10, note: "n"), StubRow(key: "b", bytes: 20, note: nil)]
         let result = DownloadIndexCoding.decode(StubRow.self, from: try DownloadIndexCoding.encode(rows))

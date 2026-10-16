@@ -18,11 +18,6 @@ private func makeBudget() -> SeekRestartBudget {
     SeekRestartBudget(cooldownSeconds: 5, burstLimit: 3, burstWindowSeconds: 60)
 }
 
-@Test func firstRestartIsAllowed() {
-    var budget = makeBudget()
-    #expect(budget.requestRestart(now: 100) == .allow)
-}
-
 @Test func restartInsideCooldownIsDeferredWithRemainingTime() {
     var budget = makeBudget()
     #expect(budget.requestRestart(now: 100) == .allow)
@@ -51,14 +46,6 @@ private func makeBudget() -> SeekRestartBudget {
     #expect(budget.requestRestart(now: 10) == .allow)
     // Three allowed restarts in the window — the next one must escalate, no sooner.
     #expect(budget.requestRestart(now: 15) == .escalate(recentCount: 3))
-}
-
-@Test func fourthRestartInsideWindowEscalates() {
-    var budget = makeBudget()
-    #expect(budget.requestRestart(now: 0) == .allow)
-    #expect(budget.requestRestart(now: 10) == .allow)
-    #expect(budget.requestRestart(now: 20) == .allow)
-    #expect(budget.requestRestart(now: 30) == .escalate(recentCount: 3))
 }
 
 @Test func escalationDoesNotRecordAndWindowRollsOff() {

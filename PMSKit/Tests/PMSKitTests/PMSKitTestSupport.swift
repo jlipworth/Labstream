@@ -48,15 +48,6 @@ func queryValue(_ request: URLRequest, _ name: String) throws -> String? {
     try queryMap(request)[name]
 }
 
-func assertHeaderTokenNotInURL(_ request: URLRequest,
-                               header: String,
-                               token: String,
-                               sourceLocation: SourceLocation = #_sourceLocation) throws {
-    let url = try #require(request.url, sourceLocation: sourceLocation)
-    #expect(request.value(forHTTPHeaderField: header) == token, sourceLocation: sourceLocation)
-    #expect(!url.absoluteString.contains(token), sourceLocation: sourceLocation)
-}
-
 func assertAuthHeaderContainsTokenNotInURL(_ request: URLRequest,
                                            token: String,
                                            sourceLocation: SourceLocation = #_sourceLocation) throws -> String {

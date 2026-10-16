@@ -7,40 +7,35 @@ import Testing
 
 @Suite("MediaBrowser playback policies")
 struct MediaBrowserPlaybackPolicyTests {
-    @Test func qualityPolicyKeepsUnlimitedAtServerMaximumWithoutCaps() {
-        let policy = MediaBrowserPlaybackQualityPolicy(maxVideoBitrateKbps: 0)
+    struct QualityRow: Sendable, CustomTestStringConvertible {
+        let kbps: Int
+        let maxStreamingBitrateBps: Int
+        let maxWidth: Int?
+        let maxHeight: Int?
+        let audioBitrateBps: Int?
 
-        #expect(policy.maxStreamingBitrateBps == 200_000_000)
-        #expect(policy.maxWidth == nil)
-        #expect(policy.maxHeight == nil)
-        #expect(policy.audioBitrateBps == nil)
+        var testDescription: String { "\(kbps) kbps" }
     }
 
-    @Test func qualityPolicyMapsFourMbpsTo720pAndAudioCap() {
-        let policy = MediaBrowserPlaybackQualityPolicy(maxVideoBitrateKbps: 4_000)
+    @Test(arguments: [
+        // Unlimited stays at the server maximum without resolution or audio caps.
+        QualityRow(kbps: 0, maxStreamingBitrateBps: 200_000_000,
+                   maxWidth: nil, maxHeight: nil, audioBitrateBps: nil),
+        QualityRow(kbps: 4_000, maxStreamingBitrateBps: 4_000_000,
+                   maxWidth: 1280, maxHeight: 720, audioBitrateBps: 256_000),
+        QualityRow(kbps: 20_000, maxStreamingBitrateBps: 20_000_000,
+                   maxWidth: 1920, maxHeight: 1080, audioBitrateBps: 640_000),
+        // 4K keeps audio uncapped.
+        QualityRow(kbps: 40_000, maxStreamingBitrateBps: 40_000_000,
+                   maxWidth: 3840, maxHeight: 2160, audioBitrateBps: nil),
+    ])
+    func qualityPolicyMapsBitrateToResolutionAndAudioCaps(_ row: QualityRow) {
+        let policy = MediaBrowserPlaybackQualityPolicy(maxVideoBitrateKbps: row.kbps)
 
-        #expect(policy.maxStreamingBitrateBps == 4_000_000)
-        #expect(policy.maxWidth == 1280)
-        #expect(policy.maxHeight == 720)
-        #expect(policy.audioBitrateBps == 256_000)
-    }
-
-    @Test func qualityPolicyMapsTwentyMbpsTo1080pAndAudioCap() {
-        let policy = MediaBrowserPlaybackQualityPolicy(maxVideoBitrateKbps: 20_000)
-
-        #expect(policy.maxStreamingBitrateBps == 20_000_000)
-        #expect(policy.maxWidth == 1920)
-        #expect(policy.maxHeight == 1080)
-        #expect(policy.audioBitrateBps == 640_000)
-    }
-
-    @Test func qualityPolicyMapsFortyMbpsTo4KWithoutAudioCap() {
-        let policy = MediaBrowserPlaybackQualityPolicy(maxVideoBitrateKbps: 40_000)
-
-        #expect(policy.maxStreamingBitrateBps == 40_000_000)
-        #expect(policy.maxWidth == 3840)
-        #expect(policy.maxHeight == 2160)
-        #expect(policy.audioBitrateBps == nil)
+        #expect(policy.maxStreamingBitrateBps == row.maxStreamingBitrateBps)
+        #expect(policy.maxWidth == row.maxWidth)
+        #expect(policy.maxHeight == row.maxHeight)
+        #expect(policy.audioBitrateBps == row.audioBitrateBps)
     }
 
     @Test func qualityPolicyConvertsMillisecondsToTicks() {

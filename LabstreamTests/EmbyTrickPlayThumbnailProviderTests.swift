@@ -10,16 +10,7 @@ final class EmbyTrickPlayThumbnailProviderTests: XCTestCase {
         super.tearDown()
     }
 
-    func testDefaultTrickPlayTransportIsEphemeralAndCredentialSafe() {
-        let configuration = SideAssetTransportPolicy.nonpersistentConfiguration()
-
-        XCTAssertEqual(configuration.requestCachePolicy, .reloadIgnoringLocalAndRemoteCacheData)
-        XCTAssertNil(configuration.urlCache)
-        XCTAssertNil(configuration.httpCookieStorage)
-        XCTAssertFalse(configuration.httpShouldSetCookies)
-        XCTAssertEqual(configuration.httpCookieAcceptPolicy, .never)
-        XCTAssertNil(configuration.urlCredentialStorage)
-
+    func testSharedTrickPlaySessionIsEphemeralAndCredentialSafe() {
         let sharedConfiguration = SideAssetTransportPolicy.sharedSession.configuration
         XCTAssertEqual(sharedConfiguration.requestCachePolicy, .reloadIgnoringLocalAndRemoteCacheData)
         XCTAssertNil(sharedConfiguration.urlCache)

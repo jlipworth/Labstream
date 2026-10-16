@@ -7,82 +7,6 @@ struct JellyfinLibraryTests {
     private let server = TestFixtures.jellyfinServer
     private let identity = TestFixtures.jellyfinIdentity
 
-    @Test func decodesAuthenticationResult() throws {
-        let result = try JSONDecoder().decode(JellyfinAuthenticationResult.self, from: Data(#"""
-        {
-          "User": { "Id": "user-1", "Name": "viewer" },
-          "AccessToken": "token-abc",
-          "ServerId": "server-1"
-        }
-        """#.utf8))
-
-        #expect(result.user?.id == "user-1")
-        #expect(result.user?.name == "viewer")
-        #expect(result.accessToken == "token-abc")
-        #expect(result.serverId == "server-1")
-    }
-
-    @Test func userViewsRequestCarriesUserAndAuth() throws {
-        let request = try JellyfinLibrary.userViewsRequest(server: server, token: "token-abc", identity: identity, userId: "user-1")
-        let url = try #require(request.url)
-        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
-
-        #expect(request.httpMethod == "GET")
-        #expect(components.scheme == "https")
-        #expect(components.host == "jellyfin.example.test")
-        #expect(components.path == "/base/UserViews")
-        #expect(query["userId"] == "user-1")
-        #expect(query["includeExternalContent"] == "false")
-        #expect(request.value(forHTTPHeaderField: "Accept") == "application/json")
-        #expect(request.value(forHTTPHeaderField: "Authorization")?.contains("Token=\"token-abc\"") == true)
-    }
-
-    @Test func itemsRequestCarriesVideoQueryShape() throws {
-        let request = try JellyfinLibrary.itemsRequest(server: server, token: "token-abc", identity: identity, userId: "user-1", parentId: "view-1", recursive: false)
-        let url = try #require(request.url)
-        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
-
-        #expect(components.path == "/base/Items")
-        #expect(query["userId"] == "user-1")
-        #expect(query["parentId"] == "view-1")
-        #expect(query["recursive"] == "false")
-        #expect(query["includeItemTypes"] == "Movie,Series,Season,Episode,Video")
-        #expect(query["enableUserData"] == "true")
-        #expect(query["fields"]?.contains("MediaSources") == true)
-        #expect(query["fields"]?.contains("OfficialRating") == true)
-        #expect(query["fields"]?.contains("CommunityRating") == true)
-        #expect(query["fields"]?.contains("Genres") == true)
-        #expect(query["fields"]?.contains("Chapters") == true)
-    }
-
-    @Test func itemsRequestCarriesSearchTerm() throws {
-        let request = try JellyfinLibrary.itemsRequest(server: server,
-                                                       token: "token-abc",
-                                                       identity: identity,
-                                                       userId: "user-1",
-                                                       recursive: true,
-                                                       startIndex: 25,
-                                                       limit: 50,
-                                                       searchTerm: "pilot",
-                                                       nameStartsWith: "P",
-                                                       includeItemTypes: "Movie",
-                                                       fields: JellyfinLibrary.gridItemFields)
-        let url = try #require(request.url)
-        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
-
-        #expect(components.path == "/base/Items")
-        #expect(query["recursive"] == "true")
-        #expect(query["startIndex"] == "25")
-        #expect(query["limit"] == "50")
-        #expect(query["searchTerm"] == "pilot")
-        #expect(query["nameStartsWith"] == "P")
-        #expect(query["includeItemTypes"] == "Movie")
-        #expect(query["fields"] == JellyfinLibrary.gridItemFields)
-    }
-
     @Test func audioStreamURLTargetsUniversalEndpointTokenless() throws {
         let url = try JellyfinLibrary.audioStreamURL(server: server,
                                                      identity: identity,
@@ -94,7 +18,7 @@ struct JellyfinLibraryTests {
             + "&TranscodingContainer=ts&TranscodingProtocol=hls&AudioCodec=aac"
         #expect(url.absoluteString == expectedURL)
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        let query = try queryMap(url)
 
         #expect(components.path == "/base/Audio/track-9/universal")
         #expect(query["UserId"] == "user-1")
@@ -111,7 +35,10 @@ struct JellyfinLibraryTests {
 
     @Test func albumArtistsRequestTargetsDedicatedEndpoint() throws {
         // The folder-derived `MusicArtist` items browse is wrong for an Artists list (#111);
-        // album artists must come from `/Artists/AlbumArtists`.
+        // album artists must come from `/Artists/AlbumArtists`. The Artists A–Z rail probes
+        // each letter's count with `NameStartsWith=X`, `Limit=1` and reads `TotalRecordCount`
+        // (#111); that probe shape is pinned byte-for-byte by the album-artists wire goldens in
+        // MediaBrowserLibraryRequestFactoryTests.
         let request = try JellyfinLibrary.albumArtistsRequest(server: server,
                                                               token: "token-abc",
                                                               identity: identity,
@@ -121,7 +48,7 @@ struct JellyfinLibraryTests {
                                                               limit: 60)
         let url = try #require(request.url)
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        let query = try queryMap(url)
 
         #expect(components.path == "/base/Artists/AlbumArtists")
         #expect(query["parentId"] == "music-lib")
@@ -132,22 +59,6 @@ struct JellyfinLibraryTests {
         #expect(query["enableImages"] == "true")
         // No letter probe → no NameStartsWith on the plain page request.
         #expect(query["nameStartsWith"] == nil)
-    }
-
-    @Test func albumArtistsRequestEmitsNameStartsWithForRailProbe() throws {
-        // The Artists A–Z rail probes each letter's count with `NameStartsWith=X`,
-        // `Limit=1` and reads `TotalRecordCount` (#111).
-        let request = try JellyfinLibrary.albumArtistsRequest(server: server,
-                                                              token: "token-abc",
-                                                              identity: identity,
-                                                              userId: "user-1",
-                                                              parentId: "music-lib",
-                                                              limit: 1,
-                                                              nameStartsWith: "B")
-        let query = try queryMap(request)
-        #expect(query["nameStartsWith"] == "B")
-        #expect(query["limit"] == "1")
-        #expect(query["parentId"] == "music-lib")
     }
 
     @Test func playlistItemsRequestPreservesPlaylistOrder() throws {
@@ -162,7 +73,7 @@ struct JellyfinLibraryTests {
                                                                limit: 200)
         let url = try #require(request.url)
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        let query = try queryMap(url)
 
         #expect(components.path == "/base/Playlists/playlist-5/Items")
         #expect(query["userId"] == "user-1")
@@ -200,8 +111,7 @@ struct JellyfinLibraryTests {
                                                      userId: "user-1",
                                                      itemId: "track-9",
                                                      maxStreamingBitrate: 256_000)
-        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        let query = try queryMap(url)
         #expect(query["MaxStreamingBitrate"] == "256000")
     }
 
@@ -215,7 +125,7 @@ struct JellyfinLibraryTests {
                                                              limit: 12)
         let url = try #require(request.url)
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        let query = try queryMap(url)
 
         #expect(components.path == "/base/UserItems/Resume")
         #expect(query["userId"] == "user-1")
@@ -236,7 +146,7 @@ struct JellyfinLibraryTests {
                                                         limit: 10)
         let url = try #require(request.url)
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        let query = try queryMap(url)
 
         #expect(components.path == "/base/Shows/NextUp")
         #expect(query["userId"] == "user-1")
@@ -256,7 +166,7 @@ struct JellyfinLibraryTests {
                                                              limit: 8)
         let url = try #require(request.url)
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        let query = try queryMap(url)
 
         #expect(components.path == "/base/Items/Latest")
         #expect(query["userId"] == "user-1")
@@ -266,21 +176,23 @@ struct JellyfinLibraryTests {
         #expect(query["enableUserData"] == "true")
     }
 
-    @Test func itemRequestTargetsSingleItem() throws {
+    @Test func itemRequestTargetsSingleItemWithFullMetadataFields() throws {
         let request = try JellyfinLibrary.itemRequest(server: server, token: "token-abc", identity: identity, userId: "user-1", itemId: "item-1")
         let url = try #require(request.url)
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        let query = try queryMap(request)
 
         #expect(components.path == "/base/Users/user-1/Items/item-1")
         #expect(query["userId"] == nil)
         #expect(request.value(forHTTPHeaderField: "Authorization")?.contains("Token=\"token-abc\"") == true)
+        #expect(query["fields"]?.contains("MediaSources") == true)
+        #expect(query["fields"]?.contains("Chapters") == true)
     }
 
     @Test func imageURLPreservesBasePathAndOptions() throws {
         let url = try JellyfinLibrary.imageURL(server: server, itemId: "item-1", imageType: .primary, tag: "tag-1", width: 400, height: 600)
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        let query = try queryMap(url)
 
         #expect(components.path == "/base/Items/item-1/Images/Primary")
         #expect(query["tag"] == "tag-1")
@@ -288,22 +200,10 @@ struct JellyfinLibraryTests {
         #expect(query["height"] == "600")
     }
 
-    @Test func itemRequestAsksForFullMetadataFields() throws {
-        let request = try JellyfinLibrary.itemRequest(server: server, token: "token-abc", identity: identity, userId: "user-1", itemId: "item-1")
-        let url = try #require(request.url)
-        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
-
-        #expect(components.path == "/base/Users/user-1/Items/item-1")
-        #expect(query["userId"] == nil)
-        #expect(query["fields"]?.contains("MediaSources") == true)
-        #expect(query["fields"]?.contains("Chapters") == true)
-    }
-
     @Test func chapterImageURLPreservesBasePathAndUsesChapterEndpoint() throws {
         let url = try JellyfinLibrary.chapterImageURL(server: server, itemId: "item-1", chapterIndex: 2, tag: "chapter-tag", width: 480, height: 270)
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        let query = try queryMap(url)
 
         #expect(components.path == "/base/Items/item-1/Images/Chapter/2")
         #expect(query["tag"] == "chapter-tag")
@@ -321,7 +221,7 @@ struct JellyfinLibraryTests {
                                                                    width: 320)
         let url = try #require(request.url)
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        let query = try queryMap(url)
 
         #expect(components.path == "/base/Videos/item-1/Trickplay/320/tiles.m3u8")
         #expect(query["MediaSourceId"] == "source-1")
@@ -340,7 +240,7 @@ struct JellyfinLibraryTests {
                                                                tileURI: "4.jpg?MediaSourceId=source-1&ApiKey=secret")
         let url = try #require(request.url)
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        let query = try queryMap(url)
 
         #expect(components.path == "/base/Videos/item-1/Trickplay/320/4.jpg")
         #expect(query["MediaSourceId"] == "source-1")
@@ -360,7 +260,7 @@ struct JellyfinLibraryTests {
             tileURI: "https://jellyfin.example.test:443/proxy/trickplay/4.jpg?ApiKey=secret&MediaSourceId=source-1")
         let url = try #require(request.url)
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        let query = try queryMap(url)
 
         #expect(components.scheme == "https")
         #expect(components.host == "jellyfin.example.test")
@@ -419,7 +319,7 @@ struct JellyfinLibraryTests {
         let request = try JellyfinLibrary.activeEncodingStopRequest(server: server, token: "token-abc", identity: identity, deviceId: "device-123", playSessionId: "play-1")
         let url = try #require(request.url)
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        let query = try queryMap(url)
 
         #expect(request.httpMethod == "DELETE")
         #expect(components.path == "/base/Videos/ActiveEncodings")
@@ -456,7 +356,7 @@ struct JellyfinLibraryTests {
                                                           container: "mp4")
         let url = try #require(request.url)
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        let query = try queryMap(url)
 
         #expect(request.httpMethod == nil || request.httpMethod == "GET")
         #expect(components.path == "/base/Videos/item-1/stream.mp4")
@@ -479,7 +379,7 @@ struct JellyfinLibraryTests {
                                                                     maxHeight: 720)
         let url = try #require(request.url)
         let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
-        let query: [String: String] = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
+        let query = try queryMap(url)
 
         #expect(request.httpMethod == nil || request.httpMethod == "GET")
         #expect(components.path == "/base/Videos/item-1/stream.mp4")

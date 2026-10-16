@@ -159,8 +159,7 @@ struct LibrariesView: View {
         // could compute a track narrower than the card, laying the 300pt cards edge-to-edge
         // with no gap (#124). Pinning the minimum to the card width guarantees the grid can
         // never compute a sub-card track, so even a degenerate first pass yields one correctly
-        // gapped column instead of bunched cards. The spacing-collapse invariant this preserves
-        // is asserted by `LibraryGridLayout` / `LibraryGridLayoutTests` in PMSKit.
+        // gapped column instead of bunched cards.
         return [GridItem(.adaptive(minimum: 300, maximum: 340), spacing: DS.Space.xl)]
         #endif
     }

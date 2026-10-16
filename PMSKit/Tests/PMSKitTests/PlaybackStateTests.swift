@@ -17,26 +17,26 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream", v
     #expect(v("key") == "/library/metadata/101")   // key is a PATH here
 }
 
-@Test func scrobbleUsesRatingKeyNumber() {
-    let r = TimelineRequest.scrobble(server: server, token: "tok", identity: id, ratingKey: "101")
-    #expect(r.url.path == "/:/scrobble")
+@Test(arguments: ["/:/scrobble", "/:/unscrobble"])
+func markerRequestsUseRatingKeyNumber(path: String) {
+    let r = path == "/:/scrobble"
+        ? TimelineRequest.scrobble(server: server, token: "tok", identity: id, ratingKey: "101")
+        : TimelineRequest.unscrobble(server: server, token: "tok", identity: id, ratingKey: "101")
+    #expect(r.url.path == path)
     #expect(r.queryItems.first { $0.name == "key" }?.value == "101")  // key is a NUMBER here
     #expect(r.queryItems.first { $0.name == "identifier" }?.value == "com.plexapp.plugins.library")
 }
 
-@Test func timelineDefaultsToLegacyGET() {
-    let r = TimelineRequest.timeline(server: server, token: "tok", identity: id,
+@Test func timelineDefaultsToLegacyGETAndKnobFlipsToPOST() {
+    let g = TimelineRequest.timeline(server: server, token: "tok", identity: id,
                                      ratingKey: "101", key: "/library/metadata/101",
                                      state: .paused, timeMs: 0, durationMs: 1)
-    #expect(r.method == "GET")
-}
-
-@Test func timelineMethodKnobHonorsOfficialPOST() {
-    let r = TimelineRequest.timeline(server: server, token: "tok", identity: id,
+    #expect(g.method == "GET")
+    let p = TimelineRequest.timeline(server: server, token: "tok", identity: id,
                                      ratingKey: "101", key: "/library/metadata/101",
                                      state: .stopped, timeMs: 0, durationMs: 1,
                                      method: "POST")
-    #expect(r.method == "POST")
+    #expect(p.method == "POST")
 }
 
 @Test func timelineCarriesDurationAndToken() {
@@ -55,13 +55,6 @@ private let id = ClientIdentity(clientIdentifier: "CID", product: "Labstream", v
     #expect(g.method == "GET")
     let p = TimelineRequest.scrobble(server: server, token: "tok", identity: id, ratingKey: "101", method: "PUT")
     #expect(p.method == "PUT")
-}
-
-@Test func unscrobbleTargetsUnscrobblePathWithRatingKeyNumber() {
-    let r = TimelineRequest.unscrobble(server: server, token: "tok", identity: id, ratingKey: "101")
-    #expect(r.url.path == "/:/unscrobble")
-    #expect(r.queryItems.first { $0.name == "key" }?.value == "101")
-    #expect(r.queryItems.first { $0.name == "identifier" }?.value == "com.plexapp.plugins.library")
 }
 
 @Test func playQueueCreateShape() {

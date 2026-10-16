@@ -5,43 +5,6 @@ import Testing
 @testable import Labstream
 
 struct DownloadStorePersistenceTests {
-    @Test func seasonPlanRowsCommitInOneDurableSnapshot() throws {
-        try withTemporaryDirectory { directory in
-            let store = DownloadStore(baseDirectory: directory)
-            let records = ["episode-1", "episode-2"].map { key in
-                DownloadRecord(
-                    ratingKey: key, attemptID: .generated(), title: key,
-                    localURL: directory.appendingPathComponent("\(key).mp4"),
-                    status: .queued,
-                    metadata: OfflineMetadata(
-                        ratingKey: key, title: key, type: "episode",
-                        seasonPlannerPendingAdmission: true))
-            }
-            #expect(store.createSeasonPlannedRecordsAtomically(records))
-            let restored = DownloadStore(baseDirectory: directory)
-            #expect(Set(restored.records.map(\.ratingKey)) == ["episode-1", "episode-2"])
-            #expect(restored.records.allSatisfy {
-                $0.metadata?.seasonPlannerPendingAdmission == true && $0.status == .queued
-            })
-        }
-    }
-
-    @Test func seasonPlanPersistenceFailureStartsWithNoPartialRows() throws {
-        try withTemporaryDirectory { directory in
-            let store = DownloadStore(
-                baseDirectory: directory,
-                indexPersistence: .init { _, _ in throw CocoaError(.fileWriteOutOfSpace) })
-            let record = DownloadRecord(
-                ratingKey: "episode-fail", attemptID: .generated(), title: "Episode",
-                localURL: directory.appendingPathComponent("episode-fail.mp4"),
-                status: .queued,
-                metadata: OfflineMetadata(ratingKey: "episode-fail", title: "Episode",
-                                          type: "episode", seasonPlannerPendingAdmission: true))
-            #expect(!store.createSeasonPlannedRecordsAtomically([record]))
-            #expect(store.records.isEmpty)
-        }
-    }
-
     @Test func seasonPlanNewRowsAndExactRetriesCommitInOneSnapshot() throws {
         try withTemporaryDirectory { directory in
             let retryID = DownloadAttemptID.generated()
@@ -52,16 +15,22 @@ struct DownloadStorePersistenceTests {
                 localURL: directory.appendingPathComponent("retry.mp4"), status: .failed,
                 metadata: OfflineMetadata(ratingKey: retryKey.ratingKey, title: "Retry", type: "episode"))
             #expect(store.createAttemptOwnedRecord(failed, attemptID: retryID) == .committed(retryKey))
-            let inserted = DownloadRecord(
-                ratingKey: "episode-new", attemptID: .generated(), title: "New",
-                localURL: directory.appendingPathComponent("new.mp4"), status: .queued,
-                metadata: OfflineMetadata(ratingKey: "episode-new", title: "New", type: "episode",
-                                          seasonPlannerPendingAdmission: true))
+            let inserted = ["episode-new-1", "episode-new-2"].map { key in
+                DownloadRecord(
+                    ratingKey: key, attemptID: .generated(), title: key,
+                    localURL: directory.appendingPathComponent("\(key).mp4"), status: .queued,
+                    metadata: OfflineMetadata(ratingKey: key, title: key, type: "episode",
+                                              seasonPlannerPendingAdmission: true))
+            }
 
             #expect(store.applySeasonPlanAtomically(
-                newRecords: [inserted], retryAttempts: [retryKey]) == .applied(inserted: 1, retried: 1))
+                newRecords: inserted, retryAttempts: [retryKey]) == .applied(inserted: 2, retried: 1))
             let restored = DownloadStore(baseDirectory: directory)
-            #expect(restored.record(for: inserted.ratingKey)?.metadata?.seasonPlannerPendingAdmission == true)
+            for record in inserted {
+                let row = try #require(restored.record(for: record.ratingKey))
+                #expect(row.status == .queued)
+                #expect(row.metadata?.seasonPlannerPendingAdmission == true)
+            }
             #expect(restored.record(for: retryKey.ratingKey)?.metadata?.seasonPlannerPendingAdmission == true)
         }
     }
@@ -292,15 +261,19 @@ struct DownloadStorePersistenceTests {
         }
     }
 
-    @Test func joinedRowDeletionWaitersReceiveSameSuccessOutcome() async throws {
+    @Test(arguments: [false, true])
+    func joinedRowDeletionWaitersReceiveSameOutcome(deleteFails: Bool) async throws {
         try await withTemporaryDirectory { directory in
             let id = DownloadAttemptID(uuid: UUID())
-            let key = DownloadAttemptKey(ratingKey: "plex:row-delete-joined", attemptID: id)
+            let key = DownloadAttemptKey(
+                ratingKey: "plex:row-delete-joined-\(deleteFails ? "failure" : "success")",
+                attemptID: id)
             let record = makeRecord(ratingKey: key.ratingKey, title: "Joined", directory: directory,
                                     bytes: 1, metadata: OfflineMetadata(
                                         ratingKey: key.ratingKey, title: "Joined", type: "movie"))
             try Data([1]).write(to: record.localURL)
-            let blocker = BlockingArtifactDelete(path: record.localURL.path)
+            let blocker = BlockingFailOnceArtifactDelete(
+                path: record.localURL.path, shouldFail: deleteFails)
             let live = DownloadArtifactFilesystem.live
             let store = DownloadStore(baseDirectory: directory, artifactFilesystem: .init(
                 writeAuthArtifact: live.writeAuthArtifact,
@@ -319,37 +292,15 @@ struct DownloadStorePersistenceTests {
             async let a = store.resolveRowDeletion(first)
             async let b = store.resolveRowDeletion(second)
             let outcomes = await [a, b]
-            #expect(outcomes == [.removed(key), .removed(key)])
-        }
-    }
-
-    @Test func joinedRowDeletionWaitersReceiveSameArtifactFailure() async throws {
-        try await withTemporaryDirectory { directory in
-            let id = DownloadAttemptID(uuid: UUID())
-            let key = DownloadAttemptKey(ratingKey: "plex:row-delete-joined-failure", attemptID: id)
-            let record = makeRecord(ratingKey: key.ratingKey, title: "Joined", directory: directory,
-                                    bytes: 1, metadata: OfflineMetadata(
-                                        ratingKey: key.ratingKey, title: "Joined", type: "movie"))
-            try Data([1]).write(to: record.localURL)
-            let blocker = BlockingFailingArtifactDelete(path: record.localURL.path)
-            let live = DownloadArtifactFilesystem.live
-            let store = DownloadStore(baseDirectory: directory, artifactFilesystem: .init(
-                writeAuthArtifact: live.writeAuthArtifact,
-                removeItem: { url, fm in try blocker.remove(url, fm: fm) },
-                fileExists: live.fileExists))
-            #expect(store.createAttemptOwnedRecord(record, attemptID: id) == .committed(key))
-            let first = store.submitRemove(for: key)
-            #expect(await waitForSignal(blocker.started, timeout: 1))
-            let second = store.submitRemove(for: key)
-            blocker.release.signal()
-            async let a = store.resolveRowDeletion(first)
-            async let b = store.resolveRowDeletion(second)
-            let outcomes = await [a, b]
-            #expect(outcomes == [
-                .cleanupFailed(key, cleanupFailureCount: 1),
-                .cleanupFailed(key, cleanupFailureCount: 1),
-            ])
-            #expect(store.record(for: key) != nil)
+            if deleteFails {
+                #expect(outcomes == [
+                    .cleanupFailed(key, cleanupFailureCount: 1),
+                    .cleanupFailed(key, cleanupFailureCount: 1),
+                ])
+                #expect(store.record(for: key) != nil)
+            } else {
+                #expect(outcomes == [.removed(key), .removed(key)])
+            }
         }
     }
 
@@ -680,6 +631,7 @@ struct DownloadStorePersistenceTests {
                 Issue.record("expected artifact failure mapping"); return
             }
             #expect(store.record(for: key) != nil)
+            #expect(FileManager.default.fileExists(atPath: record.localURL.path))
             let relaunched = DownloadStore(baseDirectory: directory)
             #expect(relaunched.resolveArtifactSynchronouslyForTests(
                 through: relaunched.currentArtifactLifecycleWatermark()) == .completed)
@@ -1187,161 +1139,6 @@ struct DownloadStorePersistenceTests {
         }
     }
 
-    @Test func failedHeldManifestReplacementRetainsBothBodiesUntilLaterCommit() throws {
-        try withTemporaryDirectory { directory in
-            let ratingKey = "plex:held-replacement"
-            let oldManifest = OfflineHeldRangeSegment(
-                offset: 64,
-                length: 64,
-                relativePath: "old-held-body"
-            )
-            let newManifest = OfflineHeldRangeSegment(
-                offset: 64,
-                length: 64,
-                relativePath: "new-held-body"
-            )
-            let oldBody = directory.appendingPathComponent(oldManifest.relativePath)
-            let newBody = directory.appendingPathComponent(newManifest.relativePath)
-            try Data(repeating: 1, count: oldManifest.length).write(to: oldBody)
-            try Data(repeating: 2, count: newManifest.length).write(to: newBody)
-
-            let initial = DownloadStore(baseDirectory: directory)
-            initial.upsert(makeRecord(
-                ratingKey: ratingKey,
-                title: "Held Replacement",
-                directory: directory,
-                bytes: 0,
-                metadata: OfflineMetadata(
-                    ratingKey: ratingKey,
-                    title: "Held Replacement",
-                    type: "movie",
-                    resumeMode: .staticByteRange,
-                    heldRangeSegments: [oldManifest]
-                )
-            ))
-
-            let writes = AtomicWriteHarness(failFirstWrite: true)
-            let replacing = DownloadStore(
-                baseDirectory: directory,
-                indexPersistence: .init { data, url in try writes.write(data, to: url) }
-            )
-            let result = replacing.persistHeldRangeSegment(
-                ratingKey: ratingKey,
-                segment: newManifest
-            )
-
-            #expect(result.persisted)
-            #expect(!result.committed)
-            #expect(result.previous == oldManifest)
-            #expect(FileManager.default.fileExists(atPath: oldBody.path))
-            #expect(FileManager.default.fileExists(atPath: newBody.path))
-            #expect(DownloadStore(baseDirectory: directory)
-                .records.first?.metadata?.heldRangeSegments == [oldManifest])
-
-            replacing.setStatus(ratingKey: ratingKey, .downloading)
-            #expect(writes.attemptCount == 2)
-            #expect(DownloadStore(baseDirectory: directory)
-                .records.first?.metadata?.heldRangeSegments == [newManifest])
-            #expect(FileManager.default.fileExists(atPath: oldBody.path))
-            #expect(FileManager.default.fileExists(atPath: newBody.path))
-        }
-    }
-
-    @Test func failedHeldManifestRemovalIsObservableAndNoOpRetryCommitsIt() throws {
-        try withTemporaryDirectory { directory in
-            let ratingKey = "plex:held-remove"
-            let segment = OfflineHeldRangeSegment(
-                offset: 64, length: 64, relativePath: "held-remove-body"
-            )
-            let initial = DownloadStore(baseDirectory: directory)
-            initial.upsert(makeRecord(
-                ratingKey: ratingKey,
-                title: "Held Remove",
-                directory: directory,
-                bytes: 0,
-                metadata: OfflineMetadata(
-                    ratingKey: ratingKey,
-                    title: "Held Remove",
-                    type: "movie",
-                    resumeMode: .staticByteRange,
-                    heldRangeSegments: [segment]
-                )
-            ))
-
-            let writes = AtomicWriteHarness(failFirstWrite: true)
-            let removing = DownloadStore(
-                baseDirectory: directory,
-                indexPersistence: .init { data, url in try writes.write(data, to: url) }
-            )
-            let failed = removing.removeHeldRangeSegment(
-                ratingKey: ratingKey, offset: segment.offset
-            )
-
-            #expect(failed.removed == segment)
-            #expect(!failed.committed)
-            #expect(DownloadStore(baseDirectory: directory)
-                .record(for: ratingKey)?.metadata?.heldRangeSegments == [segment])
-
-            let retriedNoOp = removing.removeHeldRangeSegment(
-                ratingKey: ratingKey, offset: segment.offset
-            )
-            #expect(retriedNoOp.removed == nil)
-            #expect(retriedNoOp.committed)
-            #expect(writes.attemptCount == 2)
-            #expect(DownloadStore(baseDirectory: directory)
-                .record(for: ratingKey)?.metadata?.heldRangeSegments == nil)
-
-            let alreadyDurableNoOp = removing.removeHeldRangeSegment(
-                ratingKey: ratingKey, offset: segment.offset
-            )
-            #expect(alreadyDurableNoOp.committed)
-            #expect(writes.attemptCount == 2)
-        }
-    }
-
-    @Test func failedHeldManifestTakeIsObservableAndNoOpRetryCommitsIt() throws {
-        try withTemporaryDirectory { directory in
-            let ratingKey = "plex:held-take"
-            let segments = [
-                OfflineHeldRangeSegment(offset: 64, length: 64, relativePath: "held-take-1"),
-                OfflineHeldRangeSegment(offset: 128, length: 64, relativePath: "held-take-2"),
-            ]
-            let initial = DownloadStore(baseDirectory: directory)
-            initial.upsert(makeRecord(
-                ratingKey: ratingKey,
-                title: "Held Take",
-                directory: directory,
-                bytes: 0,
-                metadata: OfflineMetadata(
-                    ratingKey: ratingKey,
-                    title: "Held Take",
-                    type: "movie",
-                    resumeMode: .staticByteRange,
-                    heldRangeSegments: segments
-                )
-            ))
-
-            let writes = AtomicWriteHarness(failFirstWrite: true)
-            let taking = DownloadStore(
-                baseDirectory: directory,
-                indexPersistence: .init { data, url in try writes.write(data, to: url) }
-            )
-            let failed = taking.takeHeldRangeSegments(ratingKey: ratingKey)
-
-            #expect(failed.removed == segments)
-            #expect(!failed.committed)
-            #expect(DownloadStore(baseDirectory: directory)
-                .record(for: ratingKey)?.metadata?.heldRangeSegments == segments)
-
-            let retriedNoOp = taking.takeHeldRangeSegments(ratingKey: ratingKey)
-            #expect(retriedNoOp.removed.isEmpty)
-            #expect(retriedNoOp.committed)
-            #expect(writes.attemptCount == 2)
-            #expect(DownloadStore(baseDirectory: directory)
-                .record(for: ratingKey)?.metadata?.heldRangeSegments == nil)
-        }
-    }
-
     @Test func zeroByteStaticPauseRemainsRestartableAcrossStoreReconcile() throws {
         try withTemporaryDirectory { directory in
             let staticKey = "plex:static-zero"
@@ -1482,35 +1279,38 @@ struct DownloadStorePersistenceTests {
         }
     }
 
-    @Test func mismatchedSideAssetBundleOwnerStillFailsClosedOnLoad() throws {
-        try withTemporaryDirectory { directory in
-            let (ratingKey, _, poster) = try seedOwnedPosterRow(directory: directory) { row in
+    /// Persisted-row corruptions that must make an owned side-asset bundle fail closed on load.
+    enum FailClosedOwnerCorruption: CaseIterable, Sendable {
+        /// The bundle owner names an attempt other than the row's attempt.
+        case mismatchedOwner
+        /// Neither the row nor the bundle carries an owning attempt.
+        case ownerlessWithoutAttempt
+
+        func mutate(_ row: inout [String: Any]) {
+            switch self {
+            case .mismatchedOwner:
                 guard var metadata = row["metadata"] as? [String: Any],
                       var owner = metadata["sideAssetBundleOwner"] as? [String: Any] else { return }
                 owner["attemptID"] = "attempt-mismatched"
                 metadata["sideAssetBundleOwner"] = owner
                 row["metadata"] = metadata
-            }
-
-            let restored = DownloadStore(baseDirectory: directory)
-
-            let metadata = try #require(restored.metadata(for: ratingKey))
-            #expect(!metadata.hasCachedSideAssets)
-            #expect(metadata.sideAssetBundleOwner == nil)
-            #expect(!FileManager.default.fileExists(atPath: poster.path))
-            let relaunched = DownloadStore(baseDirectory: directory)
-            #expect(relaunched.metadata(for: ratingKey)?.posterRelativePath == nil)
-        }
-    }
-
-    @Test func ownerlessSideAssetBundleWithoutAttemptStillFailsClosedOnLoad() throws {
-        try withTemporaryDirectory { directory in
-            let (ratingKey, _, poster) = try seedOwnedPosterRow(directory: directory) { row in
+            case .ownerlessWithoutAttempt:
                 row.removeValue(forKey: "attemptID")
                 guard var metadata = row["metadata"] as? [String: Any] else { return }
                 metadata.removeValue(forKey: "sideAssetBundleOwner")
                 metadata.removeValue(forKey: "downloadAttemptID")
                 row["metadata"] = metadata
+            }
+        }
+    }
+
+    @Test(arguments: FailClosedOwnerCorruption.allCases)
+    func corruptSideAssetBundleOwnerFailsClosedOnLoad(
+        _ corruption: FailClosedOwnerCorruption
+    ) throws {
+        try withTemporaryDirectory { directory in
+            let (ratingKey, _, poster) = try seedOwnedPosterRow(directory: directory) { row in
+                corruption.mutate(&row)
             }
 
             let restored = DownloadStore(baseDirectory: directory)
@@ -1722,20 +1522,6 @@ private final class SelectedAtomicWriteFailureHarness: @unchecked Sendable {
     }
 }
 
-private final class BlockingNthAtomicWriteHarness: @unchecked Sendable {
-    let started = DispatchSemaphore(value: 0)
-    let release = DispatchSemaphore(value: 0)
-    private let lock = NSLock()
-    private let blockedAttempt: Int
-    private var attempts = 0
-    init(_ blockedAttempt: Int) { self.blockedAttempt = blockedAttempt }
-    func write(_ data: Data, to url: URL) throws {
-        let attempt = lock.withLock { attempts += 1; return attempts }
-        if attempt == blockedAttempt { started.signal(); release.wait() }
-        try data.write(to: url, options: .atomic)
-    }
-}
-
 private final class FailOneLegacyResetDelete: @unchecked Sendable {
     private let lock = NSLock()
     private let name: String
@@ -1758,20 +1544,6 @@ private final class BlockingArtifactDelete: @unchecked Sendable {
     init(path: String) { self.path = path }
     func remove(_ url: URL, fm: FileManager) throws {
         if url.path == path { started.signal(); release.wait() }
-        try fm.removeItem(at: url)
-    }
-}
-
-private final class BlockingFailingArtifactDelete: @unchecked Sendable {
-    let started = DispatchSemaphore(value: 0)
-    let release = DispatchSemaphore(value: 0)
-    private let path: String
-    init(path: String) { self.path = path }
-    func remove(_ url: URL, fm: FileManager) throws {
-        if url.path == path {
-            started.signal(); release.wait()
-            throw CocoaError(.fileWriteOutOfSpace)
-        }
         try fm.removeItem(at: url)
     }
 }

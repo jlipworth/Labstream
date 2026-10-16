@@ -3,83 +3,49 @@ import Testing
 
 @Suite("Keychain synchronized credential migration policy")
 struct KeychainSynchronizedCredentialMigrationPolicyTests {
-    @Test("Reading synced primary retires legacy local token")
-    func primaryReadRetiresLegacyLocalToken() {
-        let actions = KeychainSynchronizedCredentialMigrationPolicy.actions(
-            isSynchronized: true,
-            primaryValueFound: true,
-            legacyLocalValueFound: true)
+    struct Row: Sendable, CustomTestStringConvertible {
+        let isSynchronized: Bool
+        let primaryValueFound: Bool
+        let legacyLocalValueFound: Bool
+        let shouldDeleteLegacyLocal: Bool
+        let shouldPromoteLegacyLocal: Bool
 
-        #expect(actions.shouldDeleteLegacyLocal)
-        #expect(!actions.shouldPromoteLegacyLocal)
-    }
-
-    @Test("Global delete does not re-promote stale local token after primary cleanup")
-    func globalDeleteDoesNotRePromoteStaleLocalToken() {
-        var keychain = FakeSynchronizedTokenKeychain(syncedToken: "synced-token",
-                                                     legacyLocalToken: "stale-local-token")
-
-        #expect(keychain.readToken() == "synced-token")
-        #expect(keychain.legacyLocalToken == nil)
-
-        keychain.syncedToken = nil
-
-        #expect(keychain.readToken() == nil)
-        #expect(keychain.syncedToken == nil)
-        #expect(keychain.legacyLocalToken == nil)
-    }
-
-    @Test("Pre-sync local token still promotes when no synced primary exists")
-    func preSyncLocalTokenStillPromotes() {
-        var keychain = FakeSynchronizedTokenKeychain(syncedToken: nil,
-                                                     legacyLocalToken: "legacy-token")
-
-        #expect(keychain.readToken() == "legacy-token")
-        #expect(keychain.syncedToken == "legacy-token")
-        #expect(keychain.legacyLocalToken == nil)
-    }
-
-    @Test("Device-local accounts do not run synchronized migration")
-    func deviceLocalAccountsDoNotMigrate() {
-        let actions = KeychainSynchronizedCredentialMigrationPolicy.actions(
-            isSynchronized: false,
-            primaryValueFound: true,
-            legacyLocalValueFound: true)
-
-        #expect(!actions.shouldDeleteLegacyLocal)
-        #expect(!actions.shouldPromoteLegacyLocal)
-    }
-}
-
-private struct FakeSynchronizedTokenKeychain {
-    var syncedToken: String?
-    var legacyLocalToken: String?
-
-    mutating func readToken() -> String? {
-        let primaryFound = syncedToken != nil
-        var actions = KeychainSynchronizedCredentialMigrationPolicy.actions(
-            isSynchronized: true,
-            primaryValueFound: primaryFound,
-            legacyLocalValueFound: legacyLocalToken != nil)
-
-        if primaryFound {
-            if actions.shouldDeleteLegacyLocal {
-                legacyLocalToken = nil
-            }
-            return syncedToken
+        var testDescription: String {
+            "sync=\(isSynchronized) primary=\(primaryValueFound) legacy=\(legacyLocalValueFound)"
         }
+    }
 
-        actions = KeychainSynchronizedCredentialMigrationPolicy.actions(
-            isSynchronized: true,
-            primaryValueFound: false,
-            legacyLocalValueFound: legacyLocalToken != nil)
+    @Test("Migration actions cover every (synchronized, primary, legacy) combination", arguments: [
+        // Synchronized + primary found: always retire the legacy local token and never promote.
+        // A global delete must not re-promote a stale local token after a primary read has
+        // already retired it; (true, true, false) is the exact call KeychainStore.read makes
+        // once the primary exists.
+        Row(isSynchronized: true, primaryValueFound: true, legacyLocalValueFound: true,
+            shouldDeleteLegacyLocal: true, shouldPromoteLegacyLocal: false),
+        Row(isSynchronized: true, primaryValueFound: true, legacyLocalValueFound: false,
+            shouldDeleteLegacyLocal: true, shouldPromoteLegacyLocal: false),
+        // Synchronized, no primary: a pre-sync legacy local token still promotes.
+        Row(isSynchronized: true, primaryValueFound: false, legacyLocalValueFound: true,
+            shouldDeleteLegacyLocal: false, shouldPromoteLegacyLocal: true),
+        Row(isSynchronized: true, primaryValueFound: false, legacyLocalValueFound: false,
+            shouldDeleteLegacyLocal: false, shouldPromoteLegacyLocal: false),
+        // Device-local accounts never run synchronized migration.
+        Row(isSynchronized: false, primaryValueFound: true, legacyLocalValueFound: true,
+            shouldDeleteLegacyLocal: false, shouldPromoteLegacyLocal: false),
+        Row(isSynchronized: false, primaryValueFound: true, legacyLocalValueFound: false,
+            shouldDeleteLegacyLocal: false, shouldPromoteLegacyLocal: false),
+        Row(isSynchronized: false, primaryValueFound: false, legacyLocalValueFound: true,
+            shouldDeleteLegacyLocal: false, shouldPromoteLegacyLocal: false),
+        Row(isSynchronized: false, primaryValueFound: false, legacyLocalValueFound: false,
+            shouldDeleteLegacyLocal: false, shouldPromoteLegacyLocal: false),
+    ])
+    func migrationActions(row: Row) {
+        let actions = KeychainSynchronizedCredentialMigrationPolicy.actions(
+            isSynchronized: row.isSynchronized,
+            primaryValueFound: row.primaryValueFound,
+            legacyLocalValueFound: row.legacyLocalValueFound)
 
-        if actions.shouldPromoteLegacyLocal, let legacyLocalToken {
-            syncedToken = legacyLocalToken
-            self.legacyLocalToken = nil
-            return legacyLocalToken
-        }
-
-        return nil
+        #expect(actions.shouldDeleteLegacyLocal == row.shouldDeleteLegacyLocal)
+        #expect(actions.shouldPromoteLegacyLocal == row.shouldPromoteLegacyLocal)
     }
 }

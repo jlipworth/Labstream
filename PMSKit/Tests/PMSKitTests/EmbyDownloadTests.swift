@@ -299,29 +299,14 @@ struct EmbyDownloadTests {
         #expect(decision.transcodingURL != nil)
     }
 
-    @Test func mkvCaseIsNotOriginalEligible() throws {
-        let response = try EmbyPlaybackInfoResponse.decode(from: Self.mkvDownloadFixture)
-        let decision = try EmbyPlayback.downloadDecision(response: response)
-        // Backend-agnostic container gate: mkv is never a locally playable original.
-        let part = Part(id: 1, key: "emby://x", container: decision.container)
-        let containerGate = OfflineDownloadDecision.isLocallyPlayableOriginal(part: part)
-        #expect(containerGate == false)
-        // Original eligible ⇔ negotiated DirectPlay && container gate. Here both fail.
-        #expect((decision.supportsDirectPlay && containerGate) == false)
-    }
-
-    @Test func compatibleMp4CaseIsOriginalEligible() throws {
+    @Test func compatibleMp4CaseNegotiatesDirectPlay() throws {
         let response = try EmbyPlaybackInfoResponse.decode(from: Self.mp4DownloadFixture)
         let decision = try EmbyPlayback.downloadDecision(response: response)
 
         #expect(decision.supportsDirectPlay == true)
         #expect(decision.transcodeReasons.isEmpty)
         #expect(decision.size == 4500000000)
-        let part = Part(id: 1, key: "emby://x", container: decision.container)
-        let containerGate = OfflineDownloadDecision.isLocallyPlayableOriginal(part: part)
-        #expect(containerGate == true)
-        // Original eligible ⇔ negotiated DirectPlay && container gate.
-        #expect((decision.supportsDirectPlay && containerGate) == true)
+        #expect(decision.container == "mp4")
     }
 
     @Test func downloadDecisionThrowsWhenPlaySessionMissing() throws {

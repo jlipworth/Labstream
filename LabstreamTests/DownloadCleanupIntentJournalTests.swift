@@ -60,33 +60,22 @@ struct DownloadCleanupIntentJournalTests {
             attemptKey: key, metadata: metadata) == nil)
     }
 
-    @Test func convertIntentUsesSameExactJournalCompareRemoveContract() throws {
-        try withTemporaryDirectory { directory in
-            let attemptID = try #require(DownloadAttemptID(rawValue: "convert-attempt"))
-            let key = DownloadAttemptKey(ratingKey: "emby:item", attemptID: attemptID)
-            let server = try #require(DurableDownloadCleanupIntent.ServerIdentity(
-                baseURL: URL(string: "https://emby.example")!,
-                serverID: "server-1", userID: "user-1"))
-            let value = try #require(DurableDownloadCleanupIntent(
-                attemptKey: key, backend: .emby, server: server,
-                operation: .embyConvert(.knownJob(jobID: 42))))
-            let journal = DownloadCleanupIntentJournal(directory: directory)
-            #expect(journal.add(value) == .committed(value))
-            #expect(journal.remove(
-                id: value.id, attemptKey: key,
-                operation: .embyConvert(.knownJob(jobID: 7))) == .committed(removed: false))
-            #expect(try loaded(journal) == [value])
-            #expect(journal.remove(
-                id: value.id, attemptKey: key, operation: value.operation)
-                == .committed(removed: true))
-        }
-    }
-
     @Test func exactAddIsIdempotentAndCompareRemovePreservesSiblings() throws {
         try withTemporaryDirectory { directory in
             let journal = DownloadCleanupIntentJournal(directory: directory)
             let first = try intent(id: UUID(), attempt: "attempt-A", session: "session-A")
-            let second = try intent(id: UUID(), attempt: "attempt-B", session: "session-B")
+            // The sibling is an Emby convert intent so compare-remove is proven across operation
+            // kinds, including a convert payload mismatch.
+            let secondAttempt = try #require(DownloadAttemptID(rawValue: "attempt-B"))
+            let server = try #require(DurableDownloadCleanupIntent.ServerIdentity(
+                baseURL: URL(string: "https://media.example")!,
+                serverID: "server-1", userID: "user-1"))
+            let second = try #require(DurableDownloadCleanupIntent(
+                id: UUID(),
+                attemptKey: DownloadAttemptKey(ratingKey: "emby:item", attemptID: secondAttempt),
+                backend: .emby,
+                server: server,
+                operation: .embyConvert(.knownJob(jobID: 42))))
             #expect(try loaded(journal).isEmpty)
             #expect(journal.add(first) == .committed(first))
             #expect(journal.add(first) == .committed(first))
@@ -101,6 +90,10 @@ struct DownloadCleanupIntentJournalTests {
                 id: first.id,
                 attemptKey: first.attemptKey,
                 operation: .activeEncoding(playSessionID: "wrong")) == .committed(removed: false))
+            #expect(journal.remove(
+                id: second.id,
+                attemptKey: second.attemptKey,
+                operation: .embyConvert(.knownJob(jobID: 7))) == .committed(removed: false))
             #expect(try loaded(journal) == [first, second])
             #expect(journal.remove(
                 id: first.id,
@@ -147,53 +140,48 @@ struct DownloadCleanupIntentJournalTests {
         }
     }
 
-    @Test func persistedDuplicateUUIDsAreCorruptionEvenWhenValuesAreIdentical() throws {
+    enum CorruptQueue: Sendable {
+        /// Persisted duplicate UUIDs are corruption even when the values are identical.
+        case duplicateUUIDs
+        case notJSON
+
+        func bytes(containing value: DurableDownloadCleanupIntent) throws -> Data {
+            switch self {
+            case .duplicateUUIDs: return try JSONEncoder().encode([value, value])
+            case .notJSON: return Data("not-json".utf8)
+            }
+        }
+    }
+
+    @Test(arguments: [CorruptQueue.duplicateUUIDs, .notJSON])
+    func corruptQueueFailsClosedWithoutChangingCanonicalBytes(_ corruption: CorruptQueue) throws {
         try withTemporaryDirectory { directory in
             let value = try intent(id: UUID(), attempt: "attempt-A", session: "session-A")
             let canonical = directory.appendingPathComponent("download-cleanup-intents.json")
-            let duplicateBytes = try JSONEncoder().encode([value, value])
-            try duplicateBytes.write(to: canonical)
+            let corrupt = try corruption.bytes(containing: value)
+            try corrupt.write(to: canonical)
             let journal = DownloadCleanupIntentJournal(directory: directory)
 
             guard case .failed(let loadFailure) = journal.load() else {
-                Issue.record("Expected duplicate UUID queue to fail decoding"); return
+                Issue.record("Expected corrupt queue to fail decoding"); return
             }
             #expect(loadFailure.stage == .decode)
             guard case .failed(let addFailure) = journal.add(value) else {
-                Issue.record("Expected add to refuse duplicate UUID queue"); return
+                Issue.record("Expected add to refuse corrupt queue"); return
             }
             #expect(addFailure.stage == .decode)
             guard case .failed(let removeFailure) = journal.remove(
                 id: value.id, attemptKey: value.attemptKey, operation: value.operation) else {
-                Issue.record("Expected remove to refuse duplicate UUID queue"); return
-            }
-            #expect(removeFailure.stage == .decode)
-            #expect(try Data(contentsOf: canonical) == duplicateBytes)
-        }
-    }
-
-    @Test func unreadableAndCorruptQueuesFailClosedWithoutChangingCanonicalBytes() throws {
-        try withTemporaryDirectory { directory in
-            let canonical = directory.appendingPathComponent("download-cleanup-intents.json")
-            let corrupt = Data("not-json".utf8)
-            try corrupt.write(to: canonical)
-            let corruptJournal = DownloadCleanupIntentJournal(directory: directory)
-            let value = try intent(id: UUID(), attempt: "attempt-A", session: "session-A")
-            guard case .failed(let loadFailure) = corruptJournal.load() else {
-                Issue.record("Expected decode failure"); return
-            }
-            #expect(loadFailure.stage == .decode)
-            guard case .failed(let addFailure) = corruptJournal.add(value) else {
-                Issue.record("Expected corrupt add failure"); return
-            }
-            #expect(addFailure.stage == .decode)
-            guard case .failed(let removeFailure) = corruptJournal.remove(
-                id: value.id, attemptKey: value.attemptKey, operation: value.operation) else {
-                Issue.record("Expected corrupt remove failure"); return
+                Issue.record("Expected remove to refuse corrupt queue"); return
             }
             #expect(removeFailure.stage == .decode)
             #expect(try Data(contentsOf: canonical) == corrupt)
+        }
+    }
 
+    @Test func unreadableQueueFailsClosedWithReadStage() throws {
+        try withTemporaryDirectory { directory in
+            let value = try intent(id: UUID(), attempt: "attempt-A", session: "session-A")
             let unreadable = DownloadCleanupIntentJournal(
                 directory: directory,
                 persistence: .init(

@@ -59,11 +59,6 @@ struct DownloadCompletionValidationTests {
         #expect(!DownloadCompletionValidation.isTruncated(expectedDurationMs: 10_000, actualDurationMs: 10_000))
     }
 
-    @Test func shortClipComparedAgainstItsOwnDurationIsNotTruncated() {
-        // A legitimate 30s trailer that decodes to ~30s is complete, not truncated.
-        #expect(!DownloadCompletionValidation.isTruncated(expectedDurationMs: 30_000, actualDurationMs: 30_000))
-    }
-
     // MARK: Terminal outcome
 
     @Test func outcomePlayedAndFullIsComplete() {

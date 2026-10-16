@@ -71,12 +71,6 @@ private func episode(_ rk: String, parentIndex: Int? = 1, index: Int?, title: St
     #expect(order == ["noSeason", "s1e1"])
 }
 
-@Test func alreadySortedInputIsUnchanged() {
-    let input = [episode("e1", index: 1), episode("e2", index: 2), episode("e3", index: 3)]
-    let order = input.sortedByEpisodeOrder().map(\.index)
-    #expect(order == [1, 2, 3])
-}
-
 @Test func emptyInputReturnsEmpty() {
     #expect([MediaItem]().sortedByEpisodeOrder().isEmpty)
 }

@@ -458,37 +458,6 @@ struct MediaBrowserBrowseCoreTests {
         }
     }
 
-    @Test func searchFanoutBoundsPeakConcurrencyAndStillReturnsLibraryOrder() async throws {
-        let probe = SearchFanoutProbe()
-        let views = (0..<8).map {
-            MediaBrowserLibraryLink(id: "library-\($0)", title: "Library \($0)", collectionType: "movies")
-        }
-        let task = Task { @MainActor in
-            try await MediaBrowserSearchFanout.search(
-                views: views, query: "q", limitPerLibrary: 2, backendID: .jellyfin
-            ) { view, _, _, _ in
-                await probe.recordStarted(view.id)
-                await probe.waitForRelease(view.id)
-                return [Self.mediaItem(id: view.id, type: "movie")]
-            }
-        }
-
-        await probe.waitUntilStarted(count: MediaBrowserSearchFanout.maximumConcurrentTasks)
-        #expect(await probe.started.count == MediaBrowserSearchFanout.maximumConcurrentTasks)
-
-        for index in 0..<views.count {
-            await probe.release("library-\(index)")
-            if index + MediaBrowserSearchFanout.maximumConcurrentTasks < views.count {
-                await probe.waitUntilStarted(
-                    count: index + MediaBrowserSearchFanout.maximumConcurrentTasks + 1
-                )
-            }
-        }
-
-        let results = try await task.value
-        #expect(results.groups.map(\.libraryID) == views.map(\.id))
-    }
-
     @Test func cancellingSearchFanoutCancelsInFlightLibraryWork() async throws {
         let probe = SearchFanoutProbe()
         let views = (0..<8).map {

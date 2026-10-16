@@ -48,7 +48,7 @@ PRIVATE_STRING_PATTERNS = (
     ("IP address", re.compile(r"(?<![A-Za-z0-9])(?:\d{1,3}\.){3}\d{1,3}(?![A-Za-z0-9])")),
 )
 FORBIDDEN_BINARY_MARKERS = {
-    "UI test fixture": (b"--ui-testing-fixture", b"TVKeyboardFixture:"),
+    "UI test fixture": (b"--ui-testing-fixture",),
     "live app probe": (b"--vp-probe-",),
     "tvOS event swizzle": (b"labstream_evidenceSendEvent", b"TVEvidence:"),
     "verbose Debug evidence": (

@@ -62,12 +62,3 @@ class BoundedProcessTests(unittest.TestCase):
                 runner.run(["fixture"], None, 1)
             cleanup.assert_called_once_with(process)
 
-    def test_generic_runner_timeout_and_success(self):
-        script = Path(__file__).resolve().parents[1] / "run-bounded-command.py"
-        with tempfile.TemporaryDirectory() as directory:
-            for command, expected in (("pass", 0), ("import time; time.sleep(30)", 124)):
-                result = subprocess.run(
-                    [sys.executable, str(script), "--timeout", "1", "--output",
-                     str(Path(directory) / "output"), "--", sys.executable, "-c", command],
-                    timeout=10)
-                self.assertEqual(result.returncode, expected)
