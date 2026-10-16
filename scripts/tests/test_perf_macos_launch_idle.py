@@ -347,30 +347,9 @@ class RunnerTests(unittest.TestCase):
                     apps, "idle", 0, 1, 1, 7, root / "idle.json",
                     launch_phase="runtime.download_store", **common)
 
-    def test_launch_child_profile_selects_exact_span_for_strict_summary(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = pathlib.Path(temporary)
-            apps = (runner.validate_app("control", self.make_app(root, "A.app")),
-                    runner.validate_app("candidate", self.make_app(root, "B.app")))
-            plan = runner.command_plan(
-                apps, "launch", 0, 1, 1, 9, root / "result.json",
-                containers_root=root / "Containers",
-                control_commit="a" * 40, candidate_commit="b" * 40,
-                device_label="local-device-07", launch_phase="runtime.download_store")
-            self.prepare_container(plan)
-
-            result = runner.capture(
-                plan, apps, FakeExecutor(launch_phase="runtime.download_store"))
-
-            self.assertEqual(result["capture_status"], "success")
-            for record in result["records"]:
-                summary = json.loads(
-                    (pathlib.Path(record["manifest"]).parent / "summary/redacted.json").read_text())
-                self.assertEqual(summary["workload"]["phase"], "runtime.download_store")
-                self.assertEqual(summary["workload"]["fields"], {"default_store": "1"})
-
-    def test_launch_transport_profiles_select_exact_spans_for_strict_summary(self):
+    def test_launch_child_profiles_select_exact_spans_for_strict_summary(self):
         profiles = (
+            ("runtime.download_store", {"default_store": "1"}),
             ("runtime.download_transport_construct", {"background_session": "1"}),
             ("runtime.download_transport_submission", {"startup_submission": "1"}),
         )

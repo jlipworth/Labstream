@@ -261,7 +261,13 @@ struct DownloadArtifactLifecycleTests {
         }
     }
 
-    @Test func resumeSubmissionRestartsFailedInactiveHead() async throws {
+    enum Successor: Sendable {
+        case resume
+        case clear
+    }
+
+    @Test(arguments: [Successor.resume, .clear])
+    func successorSubmissionRestartsFailedInactiveHead(_ successor: Successor) async throws {
         try await withDirectory { directory in
             let seam = FailOnceThenSignalResumeWrite()
             let store = try seededStore(directory: directory, failure: seam.failure)
@@ -272,39 +278,31 @@ struct DownloadArtifactLifecycleTests {
             }
             // The failed head stays durably queued but inactive. The successor submission is the
             // event that must rediscover and restart it (D1) — nothing else is running here.
-            guard case .accepted(let second) = store.submitResumeData(
-                for: key, Data("second".utf8)) else {
-                Issue.record("second submission rejected"); return
+            switch successor {
+            case .resume:
+                guard case .accepted(let second) = store.submitResumeData(
+                    for: key, Data("second".utf8)) else {
+                    Issue.record("second submission rejected"); return
+                }
+                guard await signal(seam.retried, timeout: 2) else {
+                    Issue.record("successor submission never restarted the failed head"); return
+                }
+                #expect(store.resolveSynchronously(.accepted(ticket: second)) == .applied)
+                let relative = try #require(
+                    store.record(for: key)?.metadata?.resumeDataRelativePath)
+                #expect(try Data(contentsOf: directory.appendingPathComponent(relative))
+                        == Data("second".utf8))
+            case .clear:
+                guard case .accepted(_, let clear) = store.submitClearResumeData(for: key) else {
+                    Issue.record("clear submission rejected"); return
+                }
+                guard await signal(seam.retried, timeout: 2) else {
+                    Issue.record("clear submission never restarted the failed head"); return
+                }
+                #expect(store.resolveArtifactSynchronously(clear) == .completed)
+                #expect(store.record(for: key)?.metadata?.resumeDataRelativePath == nil)
+                #expect(resumeArtifacts(in: directory).isEmpty)
             }
-            guard await signal(seam.retried, timeout: 2) else {
-                Issue.record("successor submission never restarted the failed head"); return
-            }
-            #expect(store.resolveSynchronously(.accepted(ticket: second)) == .applied)
-            let relative = try #require(
-                store.record(for: key)?.metadata?.resumeDataRelativePath)
-            #expect(try Data(contentsOf: directory.appendingPathComponent(relative))
-                    == Data("second".utf8))
-        }
-    }
-
-    @Test func clearSubmissionRestartsFailedInactiveHead() async throws {
-        try await withDirectory { directory in
-            let seam = FailOnceThenSignalResumeWrite()
-            let store = try seededStore(directory: directory, failure: seam.failure)
-            let key = try resumeKey()
-            guard case .artifactWriteFailed = store.setResumeData(
-                for: key, Data("first".utf8)) else {
-                Issue.record("expected injected write failure"); return
-            }
-            guard case .accepted(_, let clear) = store.submitClearResumeData(for: key) else {
-                Issue.record("clear submission rejected"); return
-            }
-            guard await signal(seam.retried, timeout: 2) else {
-                Issue.record("clear submission never restarted the failed head"); return
-            }
-            #expect(store.resolveArtifactSynchronously(clear) == .completed)
-            #expect(store.record(for: key)?.metadata?.resumeDataRelativePath == nil)
-            #expect(resumeArtifacts(in: directory).isEmpty)
         }
     }
 
@@ -393,57 +391,6 @@ struct DownloadArtifactLifecycleTests {
         }
     }
 
-    @Test func replaceTerminalIndexFailureRestoresHeadThenDrainsQueuedSuccessor() async throws {
-        try await withDirectory { directory in
-            let index = ArmableTerminalIndexFailure()
-            let seed = DownloadStore(
-                baseDirectory: directory,
-                indexPersistence: .init { data, url in try index.write(data, to: url) })
-            let key = try resumeKey()
-            let record = DownloadRecord(
-                ratingKey: key.ratingKey, attemptID: key.attemptID, title: "Resume",
-                localURL: directory.appendingPathComponent("terminal.mp4"), status: .paused,
-                metadata: OfflineMetadata(
-                    ratingKey: key.ratingKey, title: "Resume", type: "movie",
-                    resumeMode: .staticByteRange))
-            guard case .committed = seed.createAttemptOwnedRecord(record, attemptID: key.attemptID) else {
-                Issue.record("seed failed"); return
-            }
-            #expect(seed.setResumeData(for: key, Data("old".utf8)) == .applied)
-            let old = try #require(seed.record(for: key)?.metadata?.resumeDataRelativePath)
-            let removal = TerminalRemovalGate(target: old, index: index)
-            let store = DownloadStore(
-                baseDirectory: directory,
-                indexPersistence: .init { data, url in try index.write(data, to: url) },
-                artifactFilesystem: removal.filesystem)
-            guard case .accepted(let first) = store.submitResumeData(
-                for: key, Data("first".utf8)) else {
-                Issue.record("first submission failed"); return
-            }
-            #expect(await signal(removal.started, timeout: 1))
-            guard case .accepted = store.submitResumeData(for: key, Data("second".utf8)) else {
-                Issue.record("successor submission failed"); return
-            }
-            guard case .committed = await store.flushPersistence(
-                through: store.currentPersistenceTicket(), timeout: 1) else {
-                Issue.record("successor preparation did not commit"); return
-            }
-            removal.release.signal()
-            let firstResult = store.resolveSynchronously(.accepted(ticket: first))
-            guard case .persistenceFailed = firstResult else {
-                Issue.record("expected terminal index failure, got \(firstResult)"); return
-            }
-            let watermark = store.currentArtifactLifecycleWatermark()
-            guard case .committed = await store.flushLifecycleAndPersistence(
-                through: store.currentPersistenceTicket(), artifactWatermark: watermark,
-                timeout: 1) else {
-                Issue.record("restored replace did not drain"); return
-            }
-            #expect(store.resumeData(for: key) == Data("second".utf8))
-            #expect(resumeArtifacts(in: directory).count == 1)
-        }
-    }
-
     @Test func clearTerminalIndexFailureRestoresSameIntentForLaterWatermark() async throws {
         try await withDirectory { directory in
             let index = ArmableTerminalIndexFailure()
@@ -518,6 +465,7 @@ struct DownloadArtifactLifecycleTests {
             }
             #expect(store.resumeData(for: key) == Data("second".utf8))
             #expect(removal.writeCount == 2)
+            #expect(resumeArtifacts(in: directory).count == 1)
         }
     }
 

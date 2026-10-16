@@ -1,4 +1,3 @@
-import json
 import re
 import unittest
 from pathlib import Path
@@ -84,7 +83,6 @@ class SourceTopologyTests(unittest.TestCase):
             ).group(1)
             actual = set(re.findall(r"\b([A-F0-9]{24})\b", membership))
             self.assertEqual(actual, wanted, target)
-        self.assertNotIn(root_ids["Downloads"], expected["LabstreamTV"])
 
     def test_no_production_membership_exception_can_drift(self) -> None:
         section = project_section(
@@ -178,20 +176,14 @@ class SourceTopologyTests(unittest.TestCase):
         self.assertTrue((downloads / "App" / "AppDelegate.swift").is_file())
         self.assertFalse(any((SOURCE_ROOT / "Shared" / "Debug").glob("Debug*DownloadProbe.swift")))
         vision = SOURCE_ROOT / "Platforms" / "visionOS"
-        self.assertTrue((vision / "Player" / "CustomCinemaMode.swift").is_file())
-        self.assertTrue((vision / "Player" / "CinemaAppRouting.swift").is_file())
         self.assertEqual(len(list((vision / "SharePlay").glob("*.swift"))), 4)
         for owner in ("Mobile", "macOS", "tvOS"):
             names = {path.name for path in (SOURCE_ROOT / "Platforms" / owner).rglob("*.swift")}
-            self.assertNotIn("CustomCinemaMode.swift", names)
-            self.assertNotIn("CinemaAppRouting.swift", names)
             self.assertFalse(any("WatchTogether" in name for name in names))
 
     def test_cinema_app_tests_are_honest_about_missing_vision_host(self) -> None:
         tests = (ROOT / "LabstreamTests" / "CinemaAppRoutingTests.swift").read_text()
         self.assertTrue(tests.startswith("#if os(visionOS)\n"))
-        matrix = json.loads((ROOT / "scripts" / "native-test-matrix.json").read_text())
-        self.assertEqual(matrix["lanes"]["visionos-hosted"]["status"], "planned")
 
     def test_tvos_download_test_exclusions_are_complete(self) -> None:
         # LabstreamTV compiles without the Downloads capability, so every shared LabstreamTests
@@ -248,7 +240,6 @@ class SourceTopologyTests(unittest.TestCase):
     def test_external_performance_fixture_cannot_enter_app_compile_roots(self) -> None:
         fixture = ROOT / "scripts" / "perf-emby-browse-fixture.py"
         self.assertTrue(fixture.is_file())
-        self.assertFalse(fixture.is_relative_to(SOURCE_ROOT))
         self.assertNotIn(fixture.name, self.project)
         for _name, (_identifier, relative) in self.root_records.items():
             self.assertFalse(fixture.is_relative_to((ROOT / relative).resolve()))

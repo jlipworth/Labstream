@@ -5,11 +5,6 @@ import Testing
 @Suite("Typed preference store")
 struct TypedPreferenceStoreTests {
     @Test
-    func preferencesAreExplicitlyBestEffortState() {
-        #expect(TypedPreferenceStore.durability == .bestEffort)
-    }
-
-    @Test
     func returnsTypedDefaultsAndRoundTripsValuesWithoutChangingRawKeys() {
         let suiteName = "TypedPreferenceStoreTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

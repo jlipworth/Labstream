@@ -106,77 +106,29 @@ class PerfLogSummaryTests(unittest.TestCase):
         )[1], "invalid_boolean_field")
 
     def test_launch_spans_use_closed_backend_and_correctness_fields(self):
-        composition = perf.parse_span_line(
-            "perf.span phase=runtime.composition backend=App result=success duration_ms=4 "
-            "downloads_capable=1"
+        cases = (
+            ("runtime.composition", "App", "success", 4, "downloads_capable", "1"),
+            ("runtime.download_manager", "App", "success", 3, "background_events", "1"),
+            ("runtime.download_store", "App", "success", 2, "default_store", "1"),
+            ("runtime.download_transport_construct", "App", "success", 2, "background_session", "1"),
+            ("runtime.download_transport_submission", "App", "success", 1, "startup_submission", "1"),
+            ("session.restore", "Emby", "partial", 7, "restored", "0"),
         )
-        download_manager = perf.parse_span_line(
-            "perf.span phase=runtime.download_manager backend=App result=success duration_ms=3 "
-            "background_events=1"
-        )
-        download_store = perf.parse_span_line(
-            "perf.span phase=runtime.download_store backend=App result=success duration_ms=2 "
-            "default_store=1"
-        )
-        transport_construct = perf.parse_span_line(
-            "perf.span phase=runtime.download_transport_construct backend=App result=success "
-            "duration_ms=2 background_session=1"
-        )
-        transport_submission = perf.parse_span_line(
-            "perf.span phase=runtime.download_transport_submission backend=App result=success "
-            "duration_ms=1 startup_submission=1"
-        )
-        restore = perf.parse_span_line(
-            "perf.span phase=session.restore backend=Emby result=partial duration_ms=7 "
-            "restored=0"
-        )
+        for phase, backend, result, duration, field, value in cases:
+            with self.subTest(phase=phase):
+                span = perf.parse_span_line(
+                    f"perf.span phase={phase} backend={backend} result={result} "
+                    f"duration_ms={duration} {field}={value}"
+                )
+                self.assertEqual(span.fields, {field: value})
+                self.assertEqual(
+                    perf.evidence_schema.validate_correctness_fields(phase, backend, [field]),
+                    (field,),
+                )
         cancelled = perf.parse_span_line(
             "perf.span phase=session.restore backend=Plex result=cancelled duration_ms=3 restored=0"
         )
-
-        self.assertEqual(composition.fields, {"downloads_capable": "1"})
-        self.assertEqual(download_manager.fields, {"background_events": "1"})
-        self.assertEqual(download_store.fields, {"default_store": "1"})
-        self.assertEqual(transport_construct.fields, {"background_session": "1"})
-        self.assertEqual(transport_submission.fields, {"startup_submission": "1"})
-        self.assertEqual(restore.fields, {"restored": "0"})
         self.assertEqual(cancelled.result, "cancelled")
-        self.assertEqual(
-            perf.evidence_schema.validate_correctness_fields(
-                "runtime.composition", "App", ["downloads_capable"]
-            ),
-            ("downloads_capable",),
-        )
-        self.assertEqual(
-            perf.evidence_schema.validate_correctness_fields(
-                "runtime.download_manager", "App", ["background_events"]
-            ),
-            ("background_events",),
-        )
-        self.assertEqual(
-            perf.evidence_schema.validate_correctness_fields(
-                "runtime.download_store", "App", ["default_store"]
-            ),
-            ("default_store",),
-        )
-        self.assertEqual(
-            perf.evidence_schema.validate_correctness_fields(
-                "runtime.download_transport_construct", "App", ["background_session"]
-            ),
-            ("background_session",),
-        )
-        self.assertEqual(
-            perf.evidence_schema.validate_correctness_fields(
-                "runtime.download_transport_submission", "App", ["startup_submission"]
-            ),
-            ("startup_submission",),
-        )
-        self.assertEqual(
-            perf.evidence_schema.validate_correctness_fields(
-                "session.restore", "Emby", ["restored"]
-            ),
-            ("restored",),
-        )
         self.assertEqual(perf.parse_span_line_diagnostic(
             "perf.span phase=runtime.composition backend=Plex result=success duration_ms=4 "
             "downloads_capable=1"

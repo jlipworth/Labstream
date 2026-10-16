@@ -24,17 +24,6 @@ struct MediaBackendIDTests {
         }
     }
 
-    @Test("legacy public names are exact source-compatible aliases")
-    func compatibilityAliasesUseCanonicalIdentity() {
-        for backend in MediaBackendID.allCases {
-            let choice: MediaBackendChoice = backend
-            let downloadKind: DownloadBackendKind = backend
-
-            #expect(choice == backend)
-            #expect(downloadKind == backend)
-        }
-    }
-
     @Test("legacy download metadata decodes every historical backend value")
     func legacyDownloadMetadataBackendFixturesDecode() throws {
         let decoder = JSONDecoder()

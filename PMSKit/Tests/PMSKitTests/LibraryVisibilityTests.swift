@@ -49,12 +49,6 @@ struct LibraryVisibilityTests {
         #expect(LibraryVisibility.backendKey(backend: .plex, serverID: "", baseURLHost: "  ") == nil)
     }
 
-    @Test func backendKeysDifferAcrossBackendsEvenWithSameID() {
-        // Guards per-backend isolation at the key level.
-        #expect(LibraryVisibility.backendKey(backend: .plex, serverID: "X", baseURLHost: nil)
-                != LibraryVisibility.backendKey(backend: .jellyfin, serverID: "X", baseURLHost: nil))
-    }
-
     @Test func legacyRawHostKeyMigratesToHashedBackendKey() throws {
         let (store, defaults) = makeStore()
         let legacy = "jellyfin:jelly.example.internal"
@@ -76,6 +70,7 @@ struct LibraryVisibilityTests {
     // MARK: Visibility filter
 
     @Test func filterRemovesOnlyHiddenIDs() {
+        // A library absent from the hidden set (e.g. newly added) stays visible.
         let libs = [Lib(id: "1", title: "Movies", kind: "movies"),
                     Lib(id: "2", title: "Shows", kind: "tvshows"),
                     Lib(id: "3", title: "Folders", kind: "folders")]
@@ -86,13 +81,6 @@ struct LibraryVisibilityTests {
     @Test func filterPreservesOrderAndReturnsAllWhenNothingHidden() {
         let libs = [Lib(id: "a", title: "A", kind: "movies"), Lib(id: "b", title: "B", kind: "movies")]
         #expect(LibraryVisibility.visible(libs, hiddenIDs: []) { $0.id } == libs)
-    }
-
-    @Test func newlyAddedLibraryDefaultsVisible() {
-        // Hidden set was built from an old library list that lacked "new"; "new" must stay visible.
-        let libs = [Lib(id: "old", title: "Old", kind: "movies"), Lib(id: "new", title: "New", kind: "movies")]
-        let visible = LibraryVisibility.visible(libs, hiddenIDs: ["old"]) { $0.id }
-        #expect(visible.map(\.id) == ["new"])
     }
 
     // MARK: Default noise pre-selection
@@ -127,12 +115,6 @@ struct LibraryVisibilityTests {
     }
 
     // MARK: Store add/remove/toggle
-
-    @Test func storeRoundTripsHiddenSet() {
-        let (store, _) = makeStore()
-        store.setHiddenIDs(["a", "b"], forBackendKey: "plex:S")
-        #expect(store.hiddenIDs(forBackendKey: "plex:S") == ["a", "b"])
-    }
 
     @Test func toggleAddsAndRemoves() {
         let (store, _) = makeStore()

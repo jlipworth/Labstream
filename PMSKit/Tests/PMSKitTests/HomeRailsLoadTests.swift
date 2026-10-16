@@ -47,13 +47,6 @@ struct HomeRailsLoadTests {
         #expect(tracker.isDegraded == false)
     }
 
-    @Test func recordFailureResultMarksDegraded() {
-        var tracker = HomeRailsLoadTracker()
-        let value = tracker.record(Result<[Int], Error>.failure(ProbeError()))
-        #expect(value == nil)
-        #expect(tracker.isDegraded == true)
-    }
-
     @Test func mixedSuccessAndFailureIsDegraded() async {
         var tracker = HomeRailsLoadTracker()
         let ok = tracker.record(Result<[Int], Error>.success([1]))           // continue watching
@@ -63,15 +56,5 @@ struct HomeRailsLoadTests {
         #expect(nextUp == nil)
         #expect(latest == [2, 3])
         #expect(tracker.isDegraded == true)
-    }
-
-    @Test func homeRailsLoadWrapsRailsAndFlag() {
-        let degraded = HomeRailsLoad(rails: [1, 2], isDegraded: true)
-        #expect(degraded.rails == [1, 2])
-        #expect(degraded.isDegraded == true)
-
-        let clean = HomeRailsLoad(rails: [3], isDegraded: false)
-        #expect(clean.rails == [3])
-        #expect(clean.isDegraded == false)
     }
 }

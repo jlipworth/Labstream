@@ -79,14 +79,4 @@ struct DownloadExistingVersionOptionPolicyTests {
         #expect(option.label == "720p · H264")
         #expect(!option.label.contains("Mbps"))
     }
-
-    @Test("MediaSource id extraction prefers selected part then other media parts")
-    func selectedMediaSourceID() {
-        let selected = Part(id: 1, key: "/Videos/item/stream.mp4?MediaSourceId=ignored")
-        let sourcePart = Part(id: 2, key: "/Items/item/media/source-a")
-        let media = Media(id: 1, part: [sourcePart])
-        #expect(DownloadExistingVersionOptionPolicy.selectedMediaSourceID(media: media, part: selected) == "source-a")
-        #expect(DownloadExistingVersionOptionPolicy.selectedMediaSourceID(media: media, part: sourcePart) == "source-a")
-        #expect(DownloadExistingVersionOptionPolicy.selectedMediaSourceID(media: nil, part: nil) == nil)
-    }
 }

@@ -4,28 +4,34 @@ import Testing
 
 @Suite("Mac player Escape policy")
 struct MacPlayerEscapePolicyTests {
-    @Test func menuGetsFirstEscape() {
-        #expect(macPlayerEscapeAction(isMenuPresented: true,
-                                      isFullScreen: true,
-                                      hasCloseAction: true) == .closeMenu)
+    struct EscapeCase: Sendable, CustomTestStringConvertible {
+        let name: String
+        let isMenuPresented: Bool
+        let isFullScreen: Bool
+        let hasCloseAction: Bool
+        let expected: MacPlayerEscapeAction
+
+        var testDescription: String { name }
     }
 
-    @Test func fullscreenExitsBeforeThePlayerCloses() {
-        #expect(macPlayerEscapeAction(isMenuPresented: false,
-                                      isFullScreen: true,
-                                      hasCloseAction: true) == .exitFullScreen)
-    }
-
-    @Test func playerClosesWhenNoMenuOrFullscreenIsActive() {
-        #expect(macPlayerEscapeAction(isMenuPresented: false,
-                                      isFullScreen: false,
-                                      hasCloseAction: true) == .closePlayer)
-    }
-
-    @Test func escapePassesThroughWhenThePlayerHasNothingToDismiss() {
-        #expect(macPlayerEscapeAction(isMenuPresented: false,
-                                      isFullScreen: false,
-                                      hasCloseAction: false) == .passThrough)
+    @Test(arguments: [
+        EscapeCase(name: "menuGetsFirstEscape",
+                   isMenuPresented: true, isFullScreen: true, hasCloseAction: true,
+                   expected: .closeMenu),
+        EscapeCase(name: "fullscreenExitsBeforeThePlayerCloses",
+                   isMenuPresented: false, isFullScreen: true, hasCloseAction: true,
+                   expected: .exitFullScreen),
+        EscapeCase(name: "playerClosesWhenNoMenuOrFullscreenIsActive",
+                   isMenuPresented: false, isFullScreen: false, hasCloseAction: true,
+                   expected: .closePlayer),
+        EscapeCase(name: "escapePassesThroughWhenThePlayerHasNothingToDismiss",
+                   isMenuPresented: false, isFullScreen: false, hasCloseAction: false,
+                   expected: .passThrough),
+    ])
+    func escapeResolvesInPriorityOrder(_ escapeCase: EscapeCase) {
+        #expect(macPlayerEscapeAction(isMenuPresented: escapeCase.isMenuPresented,
+                                      isFullScreen: escapeCase.isFullScreen,
+                                      hasCloseAction: escapeCase.hasCloseAction) == escapeCase.expected)
     }
 }
 #endif

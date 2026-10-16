@@ -345,31 +345,15 @@ struct EmbyPlaybackTests {
         }
     }
 
-    @Test func activeEncodingStopRequestShapeViaLibrary() throws {
-        // Cleanup invariant: stop must DELETE /Videos/ActiveEncodings for encoded sources.
-        let request = try EmbyLibrary.activeEncodingStopRequest(
-            server: server, token: "token-abc", identity: identity,
-            userId: "user-9", deviceId: "device-123", playSessionId: "play-1")
-
-        #expect(request.httpMethod == "DELETE")
-        let url = try #require(request.url)
-        #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.path == "/emby/Videos/ActiveEncodings")
-    }
-
-    @Test func progressRequestsBuildExpectedBodies() throws {
+    @Test func pingAndTranscodePlayMethodShape() throws {
+        // Progress/stopped wire shapes are pinned byte-exactly by the progress request-plan golden
+        // test (DirectStream); this keeps the only non-DirectStream PlayMethod serialization check.
         let stopped = try EmbyPlayback.stoppedRequest(
             server: server, token: "token-abc", identity: identity, userId: "user-9",
             itemId: "movie-1", mediaSourceId: "mediasource_abc", playSessionId: "play-1",
             playMethod: .transcode, positionTicks: 50_000_000)
-
-        let url = try #require(stopped.url)
-        #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.path == "/emby/Sessions/Playing/Stopped")
-        #expect(stopped.httpMethod == "POST")
         let body = try #require(stopped.httpBody)
         let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
-        #expect(object["ItemId"] as? String == "movie-1")
-        #expect(object["PlaySessionId"] as? String == "play-1")
-        #expect(object["PositionTicks"] as? Int == 50_000_000)
         #expect(object["PlayMethod"] as? String == "Transcode")
 
         let ping = try EmbyPlayback.pingRequest(

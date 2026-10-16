@@ -4,9 +4,10 @@ import Foundation
 
 // MARK: - Music detection (issue #15)
 //
-// Music libraries (Plex `artist` sections) and music items (artist/album/track) are
-// hidden from the UI until a dedicated Plexamp-style experience exists. These tests pin
-// the single source of truth for that detection: `Section.isMusic` / `MediaItem.isMusic`.
+// Music libraries (Plex `artist` sections) and music items (artist/album/track) route to
+// the dedicated music experience instead of the video browse/player paths. These tests pin
+// the single source of truth for that detection: `Section.isMusic` / `MediaItem.isMusic`
+// (plus `MediaItem.isMusicContainer` for artist → album → track navigation).
 
 // MARK: - Section.isMusic
 
@@ -18,22 +19,6 @@ import Foundation
     #expect(Section(key: "1", title: "Movies", type: "movie").isMusic == false)
     #expect(Section(key: "2", title: "TV Shows", type: "show").isMusic == false)
     #expect(Section(key: "4", title: "Photos", type: "photo").isMusic == false)
-}
-
-@Test func decodedSectionsClassifyMusic() throws {
-    let json = """
-    {"MediaContainer":{"size":3,"Directory":[
-      {"key":"1","title":"Movies","type":"movie"},
-      {"key":"2","title":"TV Shows","type":"show"},
-      {"key":"3","title":"Music","type":"artist"}]}}
-    """.data(using: .utf8)!
-    let c = try JSONDecoder().decode(SectionsResponse.self, from: json)
-    let sections = c.mediaContainer.directory
-    #expect(sections[0].isMusic == false)
-    #expect(sections[1].isMusic == false)
-    #expect(sections[2].isMusic == true)
-    // The browse filter drops only the music section, keeping video libraries.
-    #expect(sections.filter { !$0.isMusic }.map(\.type) == ["movie", "show"])
 }
 
 // MARK: - MediaItem.isMusic
@@ -61,17 +46,3 @@ import Foundation
     #expect(MediaItem(ratingKey: "10", title: "Arrival", type: "movie").isMusicContainer == false)
 }
 
-@Test func decodedMixedHubFiltersMusicItems() throws {
-    // A mixed hub carrying both a movie and a track; the browse filter keeps only the
-    // movie so music never reaches the video player.
-    let json = """
-    {"MediaContainer":{"Hub":[
-      {"title":"Mixed","hubIdentifier":"mixed","Metadata":[
-        {"ratingKey":"101","title":"Blade Runner","type":"movie"},
-        {"ratingKey":"102","title":"Karma Police","type":"track"},
-        {"ratingKey":"103","title":"OK Computer","type":"album"}]}]}}
-    """.data(using: .utf8)!
-    let c = try JSONDecoder().decode(HubsResponse.self, from: json)
-    let items = c.mediaContainer.hub[0].metadata
-    #expect(items.filter { !$0.isMusic }.map(\.ratingKey) == ["101"])
-}

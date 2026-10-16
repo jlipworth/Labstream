@@ -28,32 +28,36 @@ struct PerformanceInstrumentationTests {
         ])
     }
 
-    @Test("A span end gate can be claimed exactly once across concurrent callers")
-    func endGateIsConcurrentExactlyOnce() {
-        let gate = PerformanceSpanEndGate()
-        let successfulClaims = TestLockedBox(0)
+    struct ClaimOnceGateCase: Sendable, CustomTestStringConvertible {
+        let name: String
+        let makeClaim: @Sendable () -> @Sendable () -> Bool
 
-        DispatchQueue.concurrentPerform(iterations: 128) { _ in
-            guard gate.claim() else { return }
-            successfulClaims.withValue { $0 += 1 }
-        }
-
-        #expect(successfulClaims.value == 1)
-        #expect(!gate.claim())
+        var testDescription: String { name }
     }
 
-    @Test("Cold first-poster measurement target can be claimed exactly once")
-    func artworkMeasurementTargetIsProcessSafeExactlyOnce() {
-        let gate = ArtworkMeasurementTargetGate()
+    @Test("Claim-once gates can be claimed exactly once across concurrent callers", arguments: [
+        // A span end gate can be claimed exactly once across concurrent callers.
+        ClaimOnceGateCase(name: "span-end") {
+            let gate = PerformanceSpanEndGate()
+            return { gate.claim() }
+        },
+        // Cold first-poster measurement target can be claimed exactly once.
+        ClaimOnceGateCase(name: "artwork-target") {
+            let gate = ArtworkMeasurementTargetGate()
+            return { gate.claim() }
+        },
+    ])
+    func claimOnceGateIsConcurrentExactlyOnce(_ gateCase: ClaimOnceGateCase) {
+        let claim = gateCase.makeClaim()
         let successfulClaims = TestLockedBox(0)
 
         DispatchQueue.concurrentPerform(iterations: 128) { _ in
-            guard gate.claim() else { return }
+            guard claim() else { return }
             successfulClaims.withValue { $0 += 1 }
         }
 
         #expect(successfulClaims.value == 1)
-        #expect(!gate.claim())
+        #expect(!claim())
     }
 
     @Test("Span result and fields are evaluated only by the winning end")

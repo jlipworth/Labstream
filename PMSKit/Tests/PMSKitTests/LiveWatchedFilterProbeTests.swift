@@ -26,10 +26,7 @@ import FoundationNetworking
 ///   cd PMSKit && swift test --filter LiveWatchedFilterProbe
 struct LiveWatchedFilterProbeTests {
 
-    private func send(_ req: PlexRequest) async throws -> (Data, Int) {
-        let (data, response) = try await URLSession.shared.data(for: req.urlRequest())
-        return (data, (response as? HTTPURLResponse)?.statusCode ?? -1)
-    }
+    private let transport = LiveProbeTransport()
 
     /// Fetch one section page via the real browse builder; nil (with a diagnostic) on non-200
     /// or an undecodable body so a bad leg is a SKIP, never a silent pass.
@@ -46,7 +43,7 @@ struct LiveWatchedFilterProbeTests {
                                                         containerSize: 50,
                                                         browseQuery: browseQuery,
                                                         extraQueryItems: extraQueryItems)
-        let (data, status) = try await send(req)
+        let (data, status) = try await transport.send(req.urlRequest())
         print(">>> WATCHED [\(label)] HTTP \(status), \(data.count) bytes")
         guard status == 200 else { return nil }
         guard let decoded = try? JSONDecoder().decode(MetadataResponse.self, from: data) else {
@@ -71,7 +68,7 @@ struct LiveWatchedFilterProbeTests {
         let sectionsReq = PlexRequest(url: cfg.server.appendingPathComponent("/library/sections"),
                                       method: "GET",
                                       headers: PlexHeaders.standard(identity: cfg.identity, token: cfg.token))
-        let (sectionsData, sectionsStatus) = try await send(sectionsReq)
+        let (sectionsData, sectionsStatus) = try await transport.send(sectionsReq.urlRequest())
         print(">>> WATCHED [sections] HTTP \(sectionsStatus), \(sectionsData.count) bytes")
         guard sectionsStatus == 200,
               let sections = try? JSONDecoder().decode(SectionsResponse.self, from: sectionsData)

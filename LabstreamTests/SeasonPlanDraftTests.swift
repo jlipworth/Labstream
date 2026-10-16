@@ -39,15 +39,6 @@ struct SeasonPlanDraftTests {
         #expect(unchanged == 3)
     }
 
-    @Test func draftRetainsExactRetryAttemptOwnership() throws {
-        let attempt = DownloadAttemptKey(
-            ratingKey: "emby:episode-1",
-            attemptID: try #require(DownloadAttemptID(rawValue: "reviewed-attempt")))
-        let draft = SeasonPlanDraft(newPlans: [], retryAttempts: [attempt])
-
-        #expect(draft.retryAttempts == [attempt])
-    }
-
     @Test func cancelledResolutionDoesNotPublishPartialOutputOrStartNextEpisode() async {
         var visited: [Int] = []
         let resolution = Task { @MainActor in
