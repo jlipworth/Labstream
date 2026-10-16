@@ -671,6 +671,14 @@ final class AuthManager {
         }
     }
 
+    /// Username/password sign-in answered HTTP 403: the server refused this account rather
+    /// than the password (for example a disabled or locked-out user, or one not allowed remote
+    /// access). A 401 keeps the "invalid username or password" message.
+    static func forbiddenSignInMessage(backendName: String) -> String {
+        "This \(backendName) account isn’t allowed to sign in. Ask the server owner to check that "
+            + "it’s enabled and allows remote access."
+    }
+
     func loginToJellyfin(server: URL, username: String, password: String) async {
         cancelPendingLogin()
         guard keychain.saveSelectedBackend(.jellyfin) else {
@@ -691,8 +699,13 @@ final class AuthManager {
                 switch http.statusCode {
                 case 200..<300:
                     break
-                case 401, 403:
+                case 401:
                     throw JellyfinAuthError.unauthorized
+                case 403:
+                    // The server refused this account (disabled or locked out, remote access not
+                    // allowed, outside its access schedule) rather than the password. As in
+                    // session restore, only a 401 means the credentials were rejected.
+                    throw JellyfinAuthError.forbidden
                 default:
                     throw JellyfinAuthError.http(http.statusCode)
                 }
@@ -706,6 +719,10 @@ final class AuthManager {
             guard isCurrentAuthAttempt(attemptID) else { return }
             finishAuthAttempt(attemptID)
             state = .failed("Invalid Jellyfin username or password.")
+        } catch JellyfinAuthError.forbidden {
+            guard isCurrentAuthAttempt(attemptID) else { return }
+            finishAuthAttempt(attemptID)
+            state = .failed(Self.forbiddenSignInMessage(backendName: "Jellyfin"))
         } catch JellyfinAuthError.http(let status) {
             guard isCurrentAuthAttempt(attemptID) else { return }
             finishAuthAttempt(attemptID)
@@ -909,8 +926,11 @@ final class AuthManager {
                 switch http.statusCode {
                 case 200..<300:
                     break
-                case 401, 403:
+                case 401:
                     throw EmbyAuthError.unauthorized
+                case 403:
+                    // Same split as Jellyfin: a refused account is not a wrong password.
+                    throw EmbyAuthError.forbidden
                 default:
                     throw EmbyAuthError.http(http.statusCode)
                 }
@@ -926,6 +946,11 @@ final class AuthManager {
             finishAuthAttempt(attemptID)
             recordAuthDiagnostic("auth.emby.login.unauthorized")
             state = .failed("Invalid Emby username or password.")
+        } catch EmbyAuthError.forbidden {
+            guard isCurrentAuthAttempt(attemptID) else { return }
+            finishAuthAttempt(attemptID)
+            recordAuthDiagnostic("auth.emby.login.forbidden")
+            state = .failed(Self.forbiddenSignInMessage(backendName: "Emby"))
         } catch EmbyAuthError.http(let status) {
             guard isCurrentAuthAttempt(attemptID) else { return }
             finishAuthAttempt(attemptID)
@@ -1698,6 +1723,8 @@ struct PlexSessionDiscovery {
 
 private enum JellyfinAuthError: Error {
     case unauthorized
+    /// Username/password sign-in refused with HTTP 403 (account not allowed), not a bad password.
+    case forbidden
     /// A 2xx identity probe returned a different (normalized) user id than the saved session.
     /// Ambiguous, not a revoked credential — restore preserves the keychain snapshot.
     case identityMismatch
@@ -1709,6 +1736,8 @@ private enum JellyfinAuthError: Error {
 
 enum EmbyAuthError: Error {
     case unauthorized
+    /// Username/password sign-in refused with HTTP 403 (account not allowed), not a bad password.
+    case forbidden
     case http(Int)
     case missingCredentials
     case secureStorageFailed

@@ -943,6 +943,43 @@ struct AuthSecureStorageTests {
         #expect(manager.sessionRestoreOutcome == .missingCredential)
     }
 
+    // MARK: - Username/password sign-in: 401 vs 403
+
+    @Test(arguments: [MediaBackendKind.jellyfin, .emby], [401, 403])
+    func passwordSignInDistinguishesRejectedPasswordFromRefusedAccount(backend: MediaBackendKind,
+                                                                       status: Int) async throws {
+        let store = KeychainStore(service: "com.visionplay.tests.signin-status.\(UUID().uuidString)",
+                                  synchronizesPlexToken: false, usesDevelopmentFileStorage: true)
+        defer { cleanupBackendKeys(store) }
+        let model = AppModel(identity: PlatformClientIdentity.make(clientIdentifier: "signin-status"))
+        let manager = AuthManager(appModel: model, keychain: store, authDataLoader: { request in
+            (Data("{}".utf8), HTTPURLResponse(url: request.url!, statusCode: status,
+                                              httpVersion: nil, headerFields: nil)!)
+        })
+        let server = try #require(URL(string: "https://media.example.invalid"))
+
+        let backendName: String
+        switch backend {
+        case .jellyfin:
+            backendName = "Jellyfin"
+            await manager.loginToJellyfin(server: server, username: "user", password: "password")
+        case .emby:
+            backendName = "Emby"
+            await manager.loginToEmby(server: server, username: "user", password: "password")
+        case .plex:
+            Issue.record("Plex sign-in is PIN-based and has no username/password path")
+            return
+        }
+
+        let expected = status == 401
+            ? "Invalid \(backendName) username or password."
+            : AuthManager.forbiddenSignInMessage(backendName: backendName)
+        #expect(manager.state == .failed(expected))
+        #expect(!model.isBrowseReady)
+        #expect(store.jellyfinAccessToken == nil)
+        #expect(store.embyAccessToken == nil)
+    }
+
     private func makeDevelopmentStore(faults: StorageFaults) -> KeychainStore {
         KeychainStore(service: "com.visionplay.tests.rollback.\(UUID().uuidString)",
                       synchronizesPlexToken: false,

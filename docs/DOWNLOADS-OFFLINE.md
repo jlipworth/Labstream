@@ -313,7 +313,7 @@ all report through `AuthManager.sessionRestoreOutcome` (PMSKit `SessionRestoreOu
 | `missingCredential` | no saved credential, or explicit sign-out | absent | sign-in |
 | `invalidCredential` | HTTP 401 (Emby: probe reports another user); a Plex 401 on inactive download hydration also classifies here but keeps the token | retired | sign-in |
 | `unconfirmedCredential` | HTTP 403, or Jellyfin 2xx probe for a different user | kept | sign-in/retry |
-| `temporarilyUnavailable` | transport, DNS, TLS, timeout, Plex discovery, HTTP 429/5xx, or an unreadable reply | kept | Offline if a completed local file exists, otherwise sign-in/retry |
+| `temporarilyUnavailable` | transport, DNS, TLS, timeout, Plex discovery, HTTP 429/5xx or any other non-401/403 status (a reverse proxy can answer 404 while its upstream is down), or an unreadable reply such as a captive portal | kept | Offline if a completed local file exists, otherwise sign-in/retry |
 
 `OfflineLaunchAvailability.admitsOfflineLaunch` is the pure gate. Reconnect re-runs the selected
 restore in place; a successful restore flips `isBrowseReady` and `BrowseUIGate` mounts the normal

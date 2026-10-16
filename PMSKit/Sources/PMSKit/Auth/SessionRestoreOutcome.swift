@@ -18,7 +18,9 @@ public enum SessionRestoreOutcome: Sendable, Equatable {
     /// Offline launch surface.
     case unconfirmedCredential
     /// The credential is preserved but the server could not be used right now: network, DNS,
-    /// TLS, timeout, discovery, server-unreachable, HTTP 429/5xx, or an unreadable reply.
+    /// TLS, timeout, discovery, server-unreachable, HTTP 429/5xx, an unreadable reply (for
+    /// example a captive portal), or any other non-401/403 HTTP status (a reverse proxy can
+    /// answer 404 while its upstream is down).
     case temporarilyUnavailable
 
     /// True when the saved credential survives this outcome (a later retry can restore it).
@@ -31,7 +33,8 @@ public enum SessionRestoreOutcome: Sendable, Equatable {
 
     /// Classify a restore failure that preserved the saved credential. An HTTP 403 is the server
     /// answering with a denial, so it never counts as transient; every other preserved failure
-    /// (transport, discovery, 429, 5xx, unreadable reply) is temporarily unavailable.
+    /// (transport, discovery, 429, 5xx, any other non-401 status, unreadable reply) is
+    /// temporarily unavailable.
     public static func preservedFailure(httpStatus: Int?) -> Self {
         httpStatus == 403 ? .unconfirmedCredential : .temporarilyUnavailable
     }
