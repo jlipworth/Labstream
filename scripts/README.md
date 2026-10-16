@@ -25,6 +25,13 @@ media details out of commits and public issues.
   distribution, `ship`, and archive deletion; without it those commands are dry runs or refusals.
   It never submits for review. See
   [Releases](../docs/RELEASES.md#coordinated-publication-sequence).
+- `asc-digest.py` — read-only, private daily App Store Connect digest: new customer reviews,
+  diagnostic signatures for the newest builds of the current version per platform, and TestFlight
+  crash/screenshot feedback. Reuses the `testflight-release.py` credentials, issues only `GET`
+  requests, and writes `digest.md`/`digest.json` under the gitignored `artifacts/asc-digest/<date>/`
+  while printing counts only. `--since Nd|Nh|<ISO date>` (default `1d`), `--all` ignores the
+  seen-state file, `--version`, `--logs`, and `--attachments`. See
+  [After launch: monitoring](../docs/RELEASES.md#after-launch-monitoring).
 - `check-privacy-manifest.py` — source check of the shared and tvOS `PrivacyInfo.xcprivacy`
   contracts and target membership; with `--app TARGET=PATH` for all four products it also checks
   the built app manifests. `testflight-release.py validate` runs it on archives. It is not Apple's

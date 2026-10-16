@@ -99,6 +99,14 @@ class ReleaseError(RuntimeError):
     pass
 
 
+class APIError(ReleaseError):
+    """An App Store Connect HTTP error; `status` lets read-only callers degrade gracefully."""
+
+    def __init__(self, message: str, status: int) -> None:
+        super().__init__(message)
+        self.status = status
+
+
 # --- Output and redaction ------------------------------------------------------
 
 
@@ -321,7 +329,7 @@ class ASCClient:
             detail = exc.read().decode(errors="replace")
             with contextlib.suppress(Exception):
                 detail = "; ".join(e.get("detail") or e.get("title", "") for e in json.loads(detail)["errors"])
-            raise ReleaseError(f"App Store Connect API {method} {path} -> HTTP {exc.code}: {detail}") from None
+            raise APIError(f"App Store Connect API {method} {path} -> HTTP {exc.code}: {detail}", exc.code) from None
         return json.loads(raw) if raw else None
 
     def builds(self, version: str, build: str, platform: Platform) -> list[dict[str, Any]]:
