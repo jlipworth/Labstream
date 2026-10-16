@@ -608,5 +608,21 @@ private final class PlayerLayerHostView: UIView {
     var playerLayer: AVPlayerLayer {
         layer as! AVPlayerLayer
     }
+
+    #if os(iOS) && DEBUG
+    private var videoRectObservation: NSKeyValueObservation?
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard PlayerGeometryProbe.isEnabled else { return }
+        videoRectObservation = window == nil ? nil : playerLayer.observe(\.videoRect,
+                                                                         options: [.initial, .new]) { [weak self] _, _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                PlayerGeometryProbe.recordVideoRect(self.playerLayer)
+            }
+        }
+    }
+    #endif
 }
 #endif

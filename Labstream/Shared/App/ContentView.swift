@@ -50,6 +50,14 @@ struct ContentView: View {
         case .browse, nil:
             mainBody
         }
+        #elseif os(iOS) && DEBUG
+        if DebugUITestLaunchConfiguration.fixtureKind == .player {
+            MobilePlayerFixtureView()
+                .environment(musicPlayer)
+                .environment(appModel)
+        } else {
+            mainBody
+        }
         #else
         mainBody
         #endif

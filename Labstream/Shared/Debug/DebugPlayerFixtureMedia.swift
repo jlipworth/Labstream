@@ -21,8 +21,8 @@ enum DebugPlayerFixtureMedia {
     private static let durationSeconds = 1200
     private static var durationMs: Int { durationSeconds * 1000 }
     private static let frameDurationSeconds = 2
-    private static let width = 1280
-    private static let height = 720
+    private static let defaultWidth = 1280
+    private static let defaultHeight = 720
 
     enum FixtureError: Error {
         case cachesUnavailable
@@ -31,20 +31,29 @@ enum DebugPlayerFixtureMedia {
     }
 
     static func ensureVideoFile() async throws -> URL {
+        try await ensureVideoFile(width: defaultWidth, height: defaultHeight)
+    }
+
+    /// Same synthetic fixture at an explicit encoded size, so player-geometry work can compare
+    /// source aspects (16:9, 2.39:1, 4:3) without any server media. Dimensions must be even.
+    static func ensureVideoFile(width: Int, height: Int) async throws -> URL {
         guard let caches = FileManager.default.urls(for: .cachesDirectory,
                                                     in: .userDomainMask).first else {
             throw FixtureError.cachesUnavailable
         }
-        let url = caches.appendingPathComponent("tv-player-fixture-\(durationSeconds)s.mp4")
+        let name = width == defaultWidth && height == defaultHeight
+            ? "tv-player-fixture-\(durationSeconds)s.mp4"
+            : "player-fixture-\(width)x\(height)-\(durationSeconds)s.mp4"
+        let url = caches.appendingPathComponent(name)
         if FileManager.default.fileExists(atPath: url.path) { return url }
         let target = url
         try await Task.detached(priority: .userInitiated) {
-            try writeVideo(to: target)
+            try writeVideo(to: target, width: width, height: height)
         }.value
         return url
     }
 
-    private nonisolated static func writeVideo(to url: URL) throws {
+    private nonisolated static func writeVideo(to url: URL, width: Int, height: Int) throws {
         try? FileManager.default.removeItem(at: url)
         let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [

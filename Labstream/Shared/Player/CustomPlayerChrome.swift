@@ -150,6 +150,7 @@ struct CustomPlayerChrome: View {
             // material, where it reads as a second action directly behind the dialog.
             if shouldShowChrome, selectedMenu == nil, !isTransportStatusPresented {
                 iosCenterPlayPauseButton
+                    .playerGeometryProbe("centerPlayPause")
                     .transition(.scale(scale: 0.92).combined(with: .opacity))
             }
             #endif
@@ -248,6 +249,7 @@ struct CustomPlayerChrome: View {
         } action: { newSize in
             chromeViewportSize = newSize
         }
+        .playerGeometryProbe("chromeViewport", detail: mobileChromeGeometryDetail)
         #endif
         #if os(macOS)
         .background(MacPlayerWindowReader(bridge: macWindowBridge))
@@ -531,6 +533,7 @@ struct CustomPlayerChrome: View {
                     }
                     .buttonStyle(.plain)
                     .iosPlayerTopUtilityButtonStyle(isPhoneLandscape: isPhoneLandscapeChrome)
+                    .playerGeometryProbe("topClose")
                     // Sit a touch lower than the visionOS chrome so the circle clears
                     // the status-bar corner radius comfortably.
                     .padding(.top, topUtilityButtonExtraTopPadding)
@@ -554,6 +557,7 @@ struct CustomPlayerChrome: View {
 
                 #if os(iOS)
                 displayModeButton
+                    .playerGeometryProbe("topDisplayMode")
                     .padding(.top, topUtilityButtonExtraTopPadding)
 
                 // System-player parity: AirPlay + Picture in Picture sit as monochrome glass
@@ -561,11 +565,13 @@ struct CustomPlayerChrome: View {
                 // pauses ordinary video, but active AirPlay/PiP routes keep playing.
                 if mobileSystemCoordinator != nil {
                     airPlayButton
+                        .playerGeometryProbe("topAirPlay")
                         .padding(.top, topUtilityButtonExtraTopPadding)
                 }
 
                 if mobileSystemCoordinator?.isPictureInPicturePossible == true {
                     pipButton
+                        .playerGeometryProbe("topPiP")
                         .padding(.top, topUtilityButtonExtraTopPadding)
                 }
                 #endif
@@ -691,16 +697,19 @@ struct CustomPlayerChrome: View {
                 .background(.black.opacity(0.16), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .foregroundStyle(.white)
                 .colorScheme(.dark)
+                .playerGeometryProbe("bottomPlatter", detail: "branch=phoneLandscape menus=\(availableMenus.count)")
         } else if isCompactMobileChrome {
             compactControls
                 .padding(.horizontal, 14)
                 .padding(.vertical, 14)
                 .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .playerGeometryProbe("bottomPlatter", detail: "branch=compact menus=\(availableMenus.count)")
         } else {
             regularControls
                 .padding(.horizontal, 18)
                 .padding(.vertical, 16)
                 .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .playerGeometryProbe("bottomPlatter", detail: "branch=regular menus=\(availableMenus.count)")
         }
         #else
         if isCompactMobileChrome {
@@ -1109,6 +1118,9 @@ struct CustomPlayerChrome: View {
                 return false
             #endif
             case .quality:
+                #if DEBUG
+                if DebugUITestLaunchConfiguration.playerFixtureShowsAllMenus { return true }
+                #endif
                 return controller.supportsQualityReload
             case .subtitles, .audio, .chapters, .speed, .stats:
                 return true

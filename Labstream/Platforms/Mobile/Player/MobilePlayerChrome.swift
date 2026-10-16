@@ -13,6 +13,13 @@ extension CustomPlayerChrome {
                                        viewportSize: chromeViewportSize)
     }
 
+    var mobileChromeGeometryDetail: String {
+        let layout = mobileChromeLayout
+        return "phoneLandscape=\(layout.isPhoneLandscape) compact=\(layout.usesCompactChrome)"
+            + " h=\(horizontalSizeClass.map { "\($0)" } ?? "nil")"
+            + " v=\(verticalSizeClass.map { "\($0)" } ?? "nil")"
+    }
+
     var topUtilityButtonExtraTopPadding: CGFloat {
         10
     }
@@ -129,6 +136,7 @@ extension CustomPlayerChrome {
                 phoneLandscapeMenuStrip
                     .fixedSize(horizontal: true, vertical: false)
             }
+            .playerGeometryProbe("bottomMenuRow")
         }
     }
     /// iPhone and iPad follow the familiar full-screen player hierarchy: the primary
