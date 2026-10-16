@@ -144,8 +144,8 @@ forbidden_strings=(
 #   1. scripts/ci-hygiene.local — an untracked, gitignored local file.
 #      One string per line; blank lines and lines starting with '#' are ignored.
 #   2. CI_EXTRA_FORBIDDEN_FILE — env var holding a path to a file with the same
-#      format as (1). Intended for a future CI system to materialize from a
-#      secret store (CI is not set up yet; this is just the hook).
+#      format as (1). Intended for CI to materialize from a secret store (the
+#      Woodpecker hygiene pipeline does not set it yet; this is just the hook).
 #   3. CI_EXTRA_FORBIDDEN — env var holding newline-separated strings directly
 #      (same comment/blank-line rules), for CI secrets injected as variables.
 #

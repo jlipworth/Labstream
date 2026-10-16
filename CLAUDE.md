@@ -30,7 +30,7 @@ xcrun simctl boot "$SIMID" 2>/dev/null || true   # no-op if already booted
 # `dwarfdump --uuid`, and even a full clean rebuild reuses it. So a cross-build UUID
 # comparison CANNOT detect a stale binary, and grepping the binary for a changed string
 # is unreliable (Swift literal storage). The only thing that proves the Ld step ran is a
-# FULL clean-DerivedData build (`rm -rf …/DerivedData/Labstream-*`) with exit 0 — there
+# FULL clean-DerivedData build (`rm -rf "$DD"`, the worktree-local path) with exit 0 — there
 # is no incremental link to skip — plus a fresh product mtime. The UUID diff below is
 # still valid for ONE thing: confirming the INSTALLED copy == the copy you just built
 # (same build → same UUID), i.e. the STALE-PROCESS/wrong-install guard, NOT staleness vs
@@ -107,74 +107,33 @@ Remote, HDR/audio/HDMI, lifecycle, accessibility, performance, or release gates.
 
 ### Installing on a physical iPhone or iPad (device testing)
 
-The mobile simulator flow builds with `CODE_SIGNING_ALLOWED=NO`, which will NOT install
-on hardware. A real iPhone/iPad needs a code-signed **iphoneos** device build (product
-lands in `Debug-iphoneos`, NOT `Debug-iphonesimulator`):
-
-```sh
-scripts/deploy-mobile-to-device.sh            # build (signed, version-stamped) + install
-scripts/deploy-mobile-to-device.sh --launch   # also launch after install
-scripts/deploy-mobile-to-device.sh --no-build # reinstall last iOS device build without rebuilding
-scripts/deploy-mobile-to-device.sh --verbose  # show full device/team IDs instead of masked IDs
-```
-
-If both an iPad and iPhone are paired, set `IOS_DEVICE_ID=<uuid>` (or
-`MOBILE_DEVICE_ID=<uuid>`) so the script targets the intended device. Set the signing team with
-`IOS_DEVELOPMENT_TEAM=<team>` (or `MOBILE_DEVELOPMENT_TEAM`); otherwise the wrapper derives it
-from the Apple Development certificate OU. It accepts `--verbose`/`--full-ids`, deletes stale
-`Debug-iphoneos/Labstream.app` products before building, and stamps the internal Build ID via
-`scripts/build-version-args.sh`. By default it prunes matching short-lived development profiles;
-`IOS_REFRESH_SHORT_DEV_PROFILES=0` opts out. The embedded profile is checked and a short-lived
-profile with fewer than six days remaining is refused.
-
-First hardware deploy still needs the user's one-time setup: connect/pair the device,
-trust this Mac, enable Developer Mode on-device if prompted, and sign the matching Apple
-ID into Xcode Settings ▸ Accounts so CLI automatic provisioning works.
+Simulator builds (`CODE_SIGNING_ALLOWED=NO`) will not install on hardware. Use
+`scripts/deploy-mobile-to-device.sh` (`--launch` to also launch, `--no-build` to reinstall the
+last build); the `deploy-mobile-to-device` skill and
+`docs/DEVELOPMENT.md#physical-iphone-or-ipad-install` own device selection, env vars, worktree-local
+DerivedData, and profile rules. A `No Account for Team` / missing-profile error means the user must
+sign the matching Apple ID into Xcode Settings ▸ Accounts — Claude cannot do that. Device testing
+is the USER's half; Claude owns the build/install command once signing is unblocked.
 
 ### Installing on a physical Vision Pro (device testing)
 
-The simulator flow above builds with `CODE_SIGNING_ALLOWED=NO`, which will NOT install on
-hardware. A real headset needs a code-signed **device** build (product lands in
-`Debug-xros`, NOT `Debug-xrsimulator`):
-
-```sh
-scripts/deploy-to-device.sh            # build (signed, version-stamped) + install
-scripts/deploy-to-device.sh --launch   # also launch (headset must be awake/worn)
-scripts/deploy-to-device.sh --no-build # reinstall last device build without rebuilding
-scripts/deploy-to-device.sh --verbose  # show full device/team IDs instead of masked IDs
-```
-
-Headset must show available/paired — "unavailable" usually means asleep/off-network.
-Wake it, put it on the SAME Wi-Fi as this Mac, enable Developer Mode
-(Settings > Privacy & Security > Developer Mode), and trust this Mac. The wrapper accepts
-`--verbose`/`--full-ids`; by default it prunes matching short-lived development profiles (set
-`VP_REFRESH_SHORT_DEV_PROFILES=0` to opt out), checks the embedded profile, and refuses a
-short-lived profile with fewer than six days remaining. For longer-lived offline use, prefer the
-`scripts/deploy-ad-hoc-to-device.sh` or TestFlight. The script derives
-the Vision Pro identifier from `devicectl`, the signing team from the certificate OU,
-deletes the stale `Debug-xros/Labstream.app` product before building, and stamps the
-internal Build ID via `scripts/build-version-args.sh`.
-
-⚠️ **RECURRING SIGNING GOTCHA (hit often).** A command-line device build fails with
-`error: No Account for Team "<id>"` / `No profiles for 'org.labstream.Labstream' were found`
-**even though** `security find-identity -p codesigning -v` shows a valid "Apple Development"
-cert. The keychain cert alone is NOT enough for CLI automatic provisioning — Xcode must have
-the matching Apple ID **account** signed in (Xcode → Settings → Accounts → + → Apple ID).
-**Claude cannot do this** (it needs the user's credentials), so when it surfaces, the fix is
-the user's to perform. Two paths:
-- **User signs the account into Xcode once**, then Claude re-runs the `xcodebuild` above.
-- **User installs straight from Xcode** (open the project, pick the headset, Run) — Xcode
-  signs interactively and is the most reliable path for a first device install.
-
-Device testing is otherwise the USER's half (the headset is the device-only gate); Claude
-owns the build/install command once signing is unblocked.
+Use `scripts/deploy-to-device.sh` (`--launch` to also launch while the headset is awake/worn,
+`--no-build` to reinstall the last build); the `deploy-to-device` skill and
+`docs/DEVELOPMENT.md#physical-apple-vision-pro-install` own pairing, Developer Mode/same-Wi-Fi
+setup, env vars, worktree-local DerivedData, the six-day profile refusal, and the Ad Hoc/TestFlight
+alternatives. ⚠️ **Recurring signing gotcha:** `No Account for Team` / `No profiles for
+'org.labstream.Labstream'` despite a valid keychain cert means the user must sign the Apple ID into
+Xcode Settings ▸ Accounts (or install once from Xcode) — **Claude cannot do this**. Device testing
+is the USER's half; Claude owns the build/install command once signing is unblocked.
 
 ### Publishing to TestFlight
 
 Use `scripts/testflight-release.py` (`preflight` → `archive` → `validate` → `upload --yes` →
-`status --wait` → `select-build`, or `ship --group <internal group> --yes` for an on-demand build
-to the user's devices) via the `testflight-deploy` skill instead of Xcode Organizer or the App
-Store Connect website. Uploads and build selection need the user's explicit go-ahead;
+`status --wait` → `distribute --group <internal group> --yes` when needed → `select-build`, or
+`ship --group <internal group> --yes` for an on-demand build to the user's devices) via the
+`testflight-deploy` skill instead of Xcode Organizer or the App Store Connect website;
+`prune-archives` trims old Xcode archives. Uploads, `ship`, `distribute`, and build selection
+need the user's explicit go-ahead;
 App Review submission is never automated. The API key comes from 1Password through a read-only
 service account token in the login Keychain (`scripts/asc.local.env`, gitignored); never print or
 commit the key, its identifiers, the team ID, or the token.
@@ -327,7 +286,8 @@ worktree, then run the checklist above through `git branch -D`. A stale linked w
 and close out any linked worktree that is already merged and clean.
 
 **`build/` hygiene.** Reuse the canonical per-platform paths (`build/DerivedData-visionos`,
-`build/DerivedData-ios-<platform>`, `build/DerivedData-tvos`, `build/macos-host/`) — they are
+`build/DerivedData-ios-<platform>`, `build/DerivedData-tvos`, the device-deploy wrappers'
+`build/DerivedData-device-visionos` and `build/DerivedData-device-ios`, `build/macos-host/`) — they are
 deleted and rebuilt in place by the clean-build rule above. Do not create named snapshot
 DerivedData directories (`DerivedData-<platform>-before-<fix>`, `release-<label>-v<version>`,
 one-off probe/sweep dirs) to keep around for comparison; each costs 0.5–2 GB. If a one-off
@@ -374,8 +334,7 @@ Production container reset is intentionally guarded and requires both
 production container unless explicitly testing/resetting the App Store identity. For old
 manual identities, inspect `~/Library/Containers/org.labstream.Labstream.dev.*` and remove
 only stale dev containers after confirming they do not correspond to an active worktree.
-Current contributor guidance: `docs/MACOS.md`. The original host-helper rollout note is retained
-as historical context at `docs/archive/macos/MACOS-HOST-DEPLOYMENT.md`.
+Current contributor guidance: `docs/MACOS.md`.
 
 ## Live-testing workflow
 
@@ -498,5 +457,7 @@ lanes for links that MkDocs cannot see.
 ## Conventions
 
 - Do not add Anthropic/Claude co-author trailers to commits.
+- `.claude/skills/` and `.codex/skills/` are tracked mirrors; edit both together and keep each
+  `SKILL.md` identical (Codex-only `agents/openai.yaml` metadata lives only under `.codex`).
 - Verified platform findings (what works windowed vs expanded, proven-impossible
   approaches) belong in `docs/DEVELOPMENT.md`, not just commit messages.

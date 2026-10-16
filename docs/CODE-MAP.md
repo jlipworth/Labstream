@@ -24,6 +24,12 @@ would become stale as implementations move.
 - `Labstream/Platforms/macOS/App/LabstreamMac.swift` is the native macOS entry point and declares the
   one retained main-window group, removes the New Window command, owns the singleton Mac Settings
   scene, and supplies deterministic window reactivation and menu commands.
+- `Labstream/Platforms/tvOS/App/LabstreamTV.swift` is the streaming-only Apple TV entry point; it
+  builds the shared `AppRuntime` without Downloads.
+- `Labstream/Shared/App/RuntimeLifecycleCoordinator.swift` and `AppSceneActivity.swift`, built by
+  `AppRuntime` on download-capable products, own aggregate scene-phase lifecycle: the 500 ms
+  scene-handoff grace, typed download-recovery reasons, and the best-effort diagnostic flush on
+  genuine inactivity.
 - `Labstream/Shared/App/ContentView.swift` registers system routing, runs the one-time restore,
   and applies PMSKit's `BrowseUIGate` to select restoring, restricted offline, login, or
   authenticated browse state. The restricted offline path exists only on download-capable
@@ -159,8 +165,13 @@ not necessarily the backend currently visible in the UI.
 
 Request/DTO implementations live under `PMSKit/Sources/PMSKit/Auth/`,
 `PMSKit/Sources/PMSKit/Jellyfin/`, `PMSKit/Sources/PMSKit/Emby/`,
-`PMSKit/Sources/PMSKit/MediaBrowser/`, and `PMSKit/Sources/PMSKit/Models/`, plus the
-root Plex request files such as `PlexRequest.swift` and `PlexPhotoTranscode.swift`.
+`PMSKit/Sources/PMSKit/MediaBrowser/`, `PMSKit/Sources/PMSKit/Models/`, and
+`PMSKit/Sources/PMSKit/Optimize/` (Plex optimizer, Activities, and BackgroundQueue requests),
+plus the root Plex request files such as `PlexRequest.swift` and `PlexPhotoTranscode.swift`.
+`PMSKit/Sources/PMSKit/Security/` owns credential-artifact storage and the credential
+validation/migration policies. In the app, `Labstream/Shared/Networking/PlexClient.swift` is the
+shared Plex transport and `Labstream/Shared/Platform/PlatformFeaturePolicy.swift` answers
+per-product capability questions such as Downloads support.
 
 ## Root navigation and shared UI
 
@@ -204,6 +215,11 @@ are backend-scoped and cross-backend.
   owns the separate immersive presenter for the same live controller.
 - `Labstream/Shared/Player/CustomPlayerChrome.swift` owns the shared transport/menu/scrubber UI
   and contains the largest concentration of platform conditional compilation.
+- Platform-exclusive chrome leaves extend `CustomPlayerChrome` in
+  `Labstream/Platforms/<platform>/Player/*PlayerChrome.swift` (`VisionPlayerChrome`,
+  `MobilePlayerChrome`, `MacPlayerChrome`, `TVPlayerChrome`). `TVPlayerChrome.swift` owns tvOS
+  focus and Siri Remote input; on Mac, `MacPlayerInputRouter.swift` resolves Escape priority
+  (menu, then full screen, then the player).
 - `Labstream/Shared/UI/DetailPlaybackLauncher.swift` negotiates Jellyfin/Emby playback and
   supplies remote reopen, progress, and encoding-cleanup callbacks to the controller.
 - `Labstream/Shared/Player/TimelineReporter.swift` serializes/coalesces Plex timeline and
@@ -399,14 +415,20 @@ background.
 - `BrowseDiagnostics.swift` creates privacy-safe browse facts.
 - `MetricKitDiagnostics.swift` stores a bounded set of redacted crash/hang summaries for
   user-generated feedback; it does not upload them.
-- `PerformanceInstrumentation.swift` is real signpost instrumentation in Debug and an
-  API-compatible no-op in Release. Its terminal gate emits at most one end/signpost record per
+- `PerformanceInstrumentation.swift` is real signpost instrumentation in Debug and the
+  nonshipping PerformanceAudit configuration (`PERFORMANCE_AUDIT`), and an API-compatible no-op
+  in Release. Its terminal gate emits at most one end/signpost record per
   span even when cancellation and completion race. Launch evidence includes app-wide runtime
   composition (`downloads_capable=0|1`) and selected-backend session restore (`restored=0|1`),
   without identities, URLs, or credentials; `scripts/perf_evidence_schema.py` is the closed
   allowlist for every emitted terminal field and phase/backend pairing.
 - `PMSKit/Sources/PMSKit/Diagnostics/` owns typed fields, redaction, the bounded event
   store, report rendering, and MetricKit summary models.
+- DEBUG-only probe and fixture harnesses live in `Labstream/Shared/Debug/` (playback, browse, and
+  HDR probes, frame capture, UI-test launch configuration and fixtures),
+  `Labstream/Capabilities/Downloads/Debug/` (per-backend download probes), and
+  `Labstream/Platforms/tvOS/Debug/` (TV input evidence and player fixture). They back the probe,
+  frame-capture, and platform-runner workflows and are not shipped.
 
 Use typed `DiagnosticFieldValue`s. Do not add raw tokens, URLs, hosts, usernames, local
 paths, filenames, client identifiers, or media titles to diagnostics.
@@ -416,6 +438,10 @@ paths, filenames, client identifiers, or media titles to diagnostics.
 - `PMSKit/Tests/PMSKitTests/` covers pure policies, request builders, decoders, state
   machines, and redaction. Run the hermetic suite with
   `swift test --package-path PMSKit --no-parallel --skip 'Live.*ProbeTests'`.
+- `LabstreamTests/` holds app-hosted unit tests shared by the `LabstreamTests`,
+  `LabstreamMacTests`, and `LabstreamTVTests` targets (each with its own `.xctestplan`);
+  `LabstreamMobileUITests/` and `LabstreamTVUITests/` hold the semantic XCUITest runners. See
+  [Testing strategy](TESTING-STRATEGY.md).
 - `Labstream.xcodeproj/project.pbxproj` is the source of truth for the four native app target
   versions, platforms, and deployment settings.
 - `scripts/worktree-sim.sh` provisions the visionOS worktree simulator or explicit
@@ -423,7 +449,11 @@ paths, filenames, client identifiers, or media titles to diagnostics.
 - `scripts/deploy-mobile-to-device.sh` deploys the signed mobile target to iPhone/iPad;
   `scripts/deploy-to-device.sh` deploys the signed visionOS target.
 - `scripts/deploy-macos-to-host.sh` builds/installs/cleans up the native Mac host app (no
-  simulator); `scripts/deploy-ad-hoc-to-device.sh` deploys an Ad Hoc/distribution-profile
-  build to a device.
+  simulator); `scripts/deploy-ad-hoc-to-device.sh` builds, exports, and installs an Ad Hoc
+  distribution-signed visionOS build on a registered Apple Vision Pro.
+- `scripts/xcodebuild-versioned.sh` is the canonical build wrapper;
+  `scripts/native-test-matrix.py affected` selects the targets a change must verify;
+  `scripts/agent-*-run.sh` and `agent-playback-run.py` are the platform runners; and
+  `scripts/testflight-release.py` drives archive, validate, upload, and build selection.
 - `scripts/` also contains docs, hygiene, version stamping, and optional live-probe tools.
 - `.woodpecker/` contains portable CI definitions.

@@ -46,6 +46,11 @@ hosts (iOS, macOS, and tvOS); these
 tests supplement rather than replace the affected app build and
 [observable simulator smoke](DEVELOPMENT.md#install-and-observe-a-simulator-smoke).
 
+When a linked worktree's work is complete, follow the
+[`merge-worktree` skill](https://github.com/jlipworth/Labstream/blob/main/.claude/skills/merge-worktree/SKILL.md)
+to integrate it and close out its simulators, staged Mac apps, worktree, and branch; see also
+[Linked-worktree simulator cleanup](DEVELOPMENT.md#linked-worktree-simulator-cleanup).
+
 ## Documentation information architecture
 
 Classify a document before creating it:
@@ -87,6 +92,10 @@ Never commit or paste:
 - signing files, provisioning profiles, or local team IDs.
 
 Use placeholders such as `plex.example.internal`, `192.0.2.10`, `<server-url>`, `<token>`, and `<media title>`.
+
+To make `scripts/ci-hygiene.sh` reject your own real hostnames, IPs, or other private strings, list
+them one per line in the gitignored `scripts/ci-hygiene.local`; see the `ci-hygiene.sh` entry in
+[Scripts](SCRIPTS.md#build-and-validation) for the other injection options.
 
 Security vulnerabilities and reports containing private data must use the private route in the
 [security policy](https://github.com/jlipworth/Labstream/blob/main/SECURITY.md), not an issue,

@@ -31,7 +31,7 @@ class AppStoreScreenshotTests(unittest.TestCase):
             )
 
     def test_review_media_manifest_preserves_provenance_and_open_capture_gate(self) -> None:
-        manifest = json.loads((ROOT / "docs" / "app-review-media-provenance.json").read_text())
+        manifest = json.loads((ROOT / "scripts" / "app-review-media-provenance.json").read_text())
         self.assertEqual(manifest["schemaVersion"], 1)
         self.assertEqual(manifest["catalogRelease"], "open-films-v1")
         self.assertRegex(manifest["sourceManifestSha256"], r"^[0-9a-f]{64}$")

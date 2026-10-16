@@ -1,5 +1,11 @@
 # Emby HEVC 10-bit SDR quality-reopen corruption
 
+> **Status:** dated evidence record (2026-09-13), moved from `docs/research/`. The scoped
+> mitigation has shipped; current behavior lives in
+> [`PLAYBACK-ARCHITECTURE.md`](../../PLAYBACK-ARCHITECTURE.md#emby). The precise
+> fragment/init or decoder mechanism remains unexplained and is recorded here as a limit,
+> not an open work queue.
+
 [Issue #304](https://github.com/jlipworth/Labstream/issues/304) is closed for the reproduced
 simulator boundary and scoped mitigation. Physical-device playback, dynamic-fragment/decoder
 analysis, and broader server-version acceptance remain unverified here.
@@ -21,7 +27,7 @@ mechanism. A stored server playlist does not establish what its dynamic endpoint
 
 ## Mitigation and evidence
 
-[Current playback policy](../PLAYBACK-ARCHITECTURE.md#emby)
+[Current playback policy](../../PLAYBACK-ARCHITECTURE.md#emby)
 keeps the negotiated session, audio and container, removes only `StartTimeTicks`, and uses
 native full-timeline resume/seek for eligible HEVC 10-bit SDR copy-compatible HLS. It neither
 substitutes MPEG-TS nor forces encoding. Unknown facts, transforms, HDR, other codecs/bit

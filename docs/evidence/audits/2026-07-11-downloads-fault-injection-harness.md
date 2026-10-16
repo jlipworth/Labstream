@@ -4,6 +4,10 @@
 > names below still document retained probes, but code and `--help` output are authoritative
 > for invocation details. This file does not replace the current testing strategy in
 > [`docs/TESTING-STRATEGY.md`](../../TESTING-STRATEGY.md).
+> The parent [audit plan](../../archive/downloads/2026-07-10-downloads-engine-audit-plan.md),
+> its [state-machine extraction](../../archive/downloads/2026-07-10-downloads-state-machines.md),
+> and the [Phase-4 coverage matrix](../../archive/downloads/2026-07-11-downloads-phase4-coverage-matrix.md)
+> are archived under `docs/archive/downloads/`.
 
 Phase 6 now has a smallest-real transport harness: a DEBUG-only `URLProtocol` drives the
 foreground `URLSession` owned by the real `BackgroundDownloadSession`. It does not model or call

@@ -13,9 +13,11 @@ import Security
 ///
 /// ## iCloud Keychain sync (shared sign-in across the user's devices)
 ///
-/// Exactly ONE item syncs via iCloud Keychain: the Plex account token. All three app
-/// variants (visionOS, iPhone, iPad) share the bundle id and this service string, so a
-/// Plex sign-in on any device signs the others in on next launch. This is safe for Plex
+/// Exactly ONE item syncs via iCloud Keychain: the Plex account token. The canonical
+/// visionOS, iPhone/iPad, tvOS, and Mac variants share the bundle id and this service
+/// string, so a Plex sign-in can sign the others in on next launch where the platform and
+/// the user's iCloud Keychain settings permit. (Per-worktree Mac development builds use
+/// isolated, backup-excluded credential storage instead.) This is safe for Plex
 /// specifically because the token is account-scoped while each install keeps its OWN
 /// `clientIdentifier` (deliberately non-synced): every device still presents a distinct
 /// `X-Plex-Client-Identifier` + `X-Plex-Device-Name`, so the server sees truly

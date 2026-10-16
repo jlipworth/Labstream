@@ -24,14 +24,47 @@ flowchart TD
 Not every one of those values is secret, but keeping each backend's session as one
 device-local credential set avoids splitting restoration state between storage systems.
 
-In the canonical shipping identity, exactly one item is iCloud-synchronizable: the Plex
-account token. The per-install client identifier, backend/server selection, and Jellyfin/Emby
-session values remain device-local. When a synchronized Plex token is observed, any legacy
-local copy is retired; deleting the token removes both sync domains so a stale local token
-cannot be promoted after sign-out. Non-canonical Mac development identities intentionally
-disable Plex-token sync; see the development exception below.
-
 Do not write tokens to logs, diagnostics, issue templates, UserDefaults, or JSON profile indexes.
+
+### iCloud Keychain sync
+
+In the canonical shipping identity, exactly one item is iCloud-synchronizable: the Plex
+account token. The canonical visionOS, iPhone/iPad, tvOS, and Mac variants share the
+`org.labstream.Labstream` bundle ID and Keychain service string, so a Plex sign-in can reach the
+user's other devices through iCloud Keychain where the platform and the user's Keychain settings
+permit. Non-canonical Mac development identities intentionally disable Plex-token sync and use
+isolated, backup-excluded storage; see the development exception below and the
+[macOS target guide](MACOS.md).
+
+Everything else is deliberately device-local:
+
+- **Plex `clientIdentifier`.** It is generated once per install and never synced. Together with a
+  distinct `X-Plex-Device-Name` (`Labstream/Shared/App/PlatformClientIdentity.swift`), every device
+  presents its own `X-Plex-Client-Identifier`, so the server still sees independent,
+  per-device-identifiable sessions even though the token is shared. Syncing it would merge all
+  devices into one server-side client identity and break per-device session listings and
+  transcode bookkeeping.
+- **Jellyfin/Emby access tokens.** Those servers bind the token to the device ID presented at
+  authentication; token and device are one server-side record. A synced token would make every
+  physical device impersonate one server-side device, colliding sessions, merging played-on
+  attribution, and breaking remote-control targeting. Jellyfin and Emby therefore require a
+  per-device sign-in; Quick Connect and Emby Connect reduce that to a short-code step.
+- **Backend/server selection.** This is a per-device preference, not a credential.
+
+Because the Plex token is the shared item, deleting it (a manual sign-out or a 401-triggered
+wipe) propagates sign-out to **all** devices, which matches how an account-level token actually
+dies. When a synchronized Plex token is read successfully, any pre-sync device-local copy is
+deleted; deleting the token removes both sync domains, so a stale local token cannot be promoted
+after a synced or global sign-out.
+
+Sync cannot be observed in the simulator. Unsigned simulator builds cannot reach the real
+Keychain and use the DEBUG file fallback described below, so cross-device sign-in only manifests
+on real devices with iCloud Keychain enabled.
+
+The type doc comment at the top of `Labstream/Shared/Auth/KeychainStore.swift` is the source of
+truth for this behavior; keep it and this section in agreement.
+
+### Storage failures and development fallbacks
 
 Canonical credential and selected-backend/session writes fail closed if Keychain persistence
 fails. The non-secret Plex client identifier may fall back to a process-local value for one
@@ -117,9 +150,16 @@ Container paths are implementation details and should not appear in user-submitt
 
 ## Publication identity boundary
 
-Current app targets use the neutral `org.labstream.Labstream` identity throughout the
-bundle, Keychain service, background sessions, diagnostics, and Spotlight domains. That neutral
-identity was introduced as a fresh-install boundary from the retired private-TestFlight identity:
-it did not adopt credentials, downloads, background sessions, Spotlight entries, or device-local
-preferences from that old identity, so users migrating from it had to sign in again. Updates that
-already use the neutral identity retain their persisted state; this is not a per-release reset.
+Current app targets use the neutral `org.labstream.Labstream` identity for the bundle, Keychain
+service, diagnostics, and Spotlight domains. That neutral identity was introduced as a
+fresh-install boundary from the retired private-TestFlight identity: it did not adopt credentials,
+downloads, Spotlight entries, or device-local preferences from that old identity, so users
+migrating from it had to sign in again. Updates that already use the neutral identity retain
+their persisted state; this is not a per-release reset.
+
+The iOS/iPadOS and visionOS background URLSession identifier intentionally keeps the shipped
+`com.visionplay.downloads.background` value so in-flight transfers reattach across app updates;
+do not rename it without a reattach migration. macOS instead derives
+`<bundleID>.downloads.background`, so per-worktree dev identities stay isolated. A few internal
+labels (the `visionplay` web-auth callback scheme, dispatch-queue labels, playback session-id
+prefixes, and the SharePlay coordinator-id prefix) also retain the legacy prefix.

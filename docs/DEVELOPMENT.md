@@ -309,6 +309,10 @@ for an existing linked worktree and prunes orphaned Labstream worktree simulator
 already removed, run `scripts/worktree-sim.sh prune` as the cleanup backstop. Neither command deletes
 the main worktree's golden simulator.
 
+The full merge-and-closeout procedure (rebase, validation, doc and plan lifecycle, issue status,
+simulator and macOS host-app teardown, worktree removal, and branch deletion) is the
+[`merge-worktree` skill](https://github.com/jlipworth/Labstream/blob/main/.claude/skills/merge-worktree/SKILL.md).
+
 ## Build and run the macOS target
 
 The `LabstreamMac` target runs directly on the Apple-silicon host; there is no Mac simulator lane.
@@ -318,38 +322,9 @@ Use the host helper so builds are staged under a per-worktree development identi
 scripts/deploy-macos-to-host.sh --launch
 ```
 
-The helper disables Xcode's Debug dylib launcher (`ENABLE_DEBUG_DYLIB=NO`): its shared
-main-executable UUID caused macOS to prohibit local-network requests across different app
-identities even with permission enabled. The signed, non-launcher build restored live access.
-See [Mac local-network troubleshooting](MACOS.md#local-network-permission-and-debug-launcher-identity).
-
-For a credential-free semantic agent check, the bounded runner stages an isolated bundle, mounts
-the real browse/detail UI with synthetic data, presses the stable home-item Accessibility target,
-asserts the detail tagline, captures only the Labstream window, and stops its exact process:
-
-```sh
-scripts/agent-macos-run.sh fixture-detail
-```
-
-Evidence is written beneath ignored `artifacts/agent-platform-runs/`. Exit code `2` means a host
-precondition such as Accessibility or Screen Recording permission is unavailable; the runner does
-not fall back to coordinates or full-desktop capture.
-
-Credential-free App Store capture composes these platform runners into a serial, exact-worktree-ID
-workflow and validates Apple's accepted dimensions, alpha prohibition, and checksums. See
-[App Store screenshot automation](APP-STORE-SCREENSHOTS.md). On Xcode 27 the visionOS lane is
-passive Home capture only; richer visionOS marketing states remain a human/headset gate.
-
-A bounded macOS 27 beta display check found that default scaling exposed a stable HDR
-switch where a higher scaled mode did not. Enabling HDR made AVPlayer eligible and raised
-potential EDR above 1; lowering refresh alone did not. This is host-specific capability
-evidence, not proof of rendered HDR, a universal scaling restriction, or a cable diagnosis.
-Restore temporary display modes and HDR settings after tests; keep per-player-screen and
-physical mixed-display acceptance separate (see [macOS display capability](MACOS.md#live-display-capability)).
-
-The Mac target is a pre-release App Store candidate, not a released compatibility promise. Routine
-host builds still use per-worktree identities to isolate containers and credentials. See the
-[macOS target guide](MACOS.md) for identity isolation, cleanup, validation, and release gates.
+The [macOS target guide](MACOS.md) owns identity isolation, the Debug-launcher local-network
+workaround, the credential-free `agent-macos-run.sh` runner, display capability, cleanup,
+validation, and release gates.
 
 ## Core validation commands
 
@@ -475,9 +450,15 @@ locations, or install commands:
 ```sh
 scripts/deploy-to-device.sh            # signed Debug-xros build + install
 scripts/deploy-to-device.sh --launch   # also launch while the headset is awake/worn
-scripts/deploy-to-device.sh --no-build # reinstall the last Debug-xros build
+scripts/deploy-to-device.sh --no-build # reinstall this worktree's last Debug-xros build
 scripts/deploy-to-device.sh --verbose  # show full device/team IDs for troubleshooting
 ```
+
+The wrapper builds into the worktree-local `build/DerivedData-device-visionos`, wiping it before
+every build, and installs only that exact `Debug-xros/Labstream.app`. It never deletes or installs
+another worktree's product or anything in Xcode's global DerivedData; `--no-build` fails if this
+worktree has no device build yet. Each build stamps the internal Build ID through
+`scripts/build-version-args.sh`.
 
 If several visionOS devices are paired, select one with
 `VP_DEVICE_ID=<device-uuid> scripts/deploy-to-device.sh --launch`. The script normally derives the
@@ -497,10 +478,16 @@ those steps.
 
 The development build uses the same bundle identifier as the intended App Store identity, so a local
 install can replace another installed build and its app state. Development provisioning profiles can
-also expire; review the profile lifetime printed by the wrapper before relying on an offline install.
+also expire. By default the wrapper deletes matching short-lived (14 days or less) development
+profiles before building so Xcode fetches a fresh one, prints the embedded profile's lifetime, and
+refuses to install a short-lived profile with fewer than six days remaining. Set
+`VP_REFRESH_SHORT_DEV_PROFILES=0` to skip the pruning. If the refusal persists, confirm the Apple ID
+is signed into Xcode, or use the Ad Hoc wrapper below.
 
 For an install that must outlive a development provisioning profile (for example, offline use away
-from the development Mac), use the distribution-signed Ad Hoc wrapper instead. It requires an Apple
+from the development Mac), use TestFlight (see the
+[`testflight-deploy` skill](https://github.com/jlipworth/Labstream/blob/main/.claude/skills/testflight-deploy/SKILL.md))
+or the distribution-signed Ad Hoc wrapper instead. It requires an Apple
 Distribution certificate and a non-expired Ad Hoc provisioning profile that includes the headset's UDID:
 
 ```sh
@@ -520,47 +507,26 @@ Use the mobile wrapper for a signed `iphoneos` build:
 ```sh
 scripts/deploy-mobile-to-device.sh
 scripts/deploy-mobile-to-device.sh --launch
-scripts/deploy-mobile-to-device.sh --no-build
+scripts/deploy-mobile-to-device.sh --no-build # reinstall this worktree's last Debug-iphoneos build
+scripts/deploy-mobile-to-device.sh --verbose  # show full device/team IDs for troubleshooting
 ```
 
-If more than one phone or tablet is paired, set `IOS_DEVICE_ID=<device-uuid>` explicitly. First
-use still requires pairing/trust, Developer Mode, and the matching Apple ID in Xcode Settings.
+If more than one phone or tablet is paired, set `IOS_DEVICE_ID=<device-uuid>` (alias
+`MOBILE_DEVICE_ID`) explicitly. The signing team is derived from the Apple Development certificate;
+`IOS_DEVELOPMENT_TEAM=<team-id>` (alias `MOBILE_DEVELOPMENT_TEAM`) is the explicit override. Like
+the visionOS wrapper, it builds into a worktree-local path (`build/DerivedData-device-ios`), wiping
+it first so no stale `Debug-iphoneos/Labstream.app` survives, stamps the internal Build ID through
+`scripts/build-version-args.sh`, installs only that worktree's exact product, prunes matching short-lived development profiles before building
+(`IOS_REFRESH_SHORT_DEV_PROFILES=0` opts out) and refuses to install a short-lived profile with
+fewer than six days remaining; use TestFlight for longer-lived installs. First use still requires
+pairing/trust, Developer Mode, and the matching Apple ID in Xcode Settings. As with the headset, a
+`No Account for Team` or missing-profile error means that Apple ID is not signed into Xcode
+Settings > Accounts; installing once from Xcode is also a valid first-install path.
 
 ## Credentials and iCloud Keychain sync
 
-The app persists its long-lived secrets in the Keychain (`Labstream/Shared/Auth/KeychainStore.swift`).
-Exactly one item is stored as an iCloud-synchronizable Keychain item: the **Plex account token**.
-Because the canonical visionOS, iPhone/iPad, tvOS, and Mac variants share the
-`org.labstream.Labstream` bundle id and Keychain service string, a Plex sign-in can synchronize to
-another device through iCloud Keychain when the platform and the user's Keychain settings permit.
-The normal per-worktree Mac development build deliberately uses isolated,
-backup-excluded credential storage instead; see the [macOS target guide](MACOS.md).
-
-Everything else is deliberately device-local:
-
-- **Plex `clientIdentifier`** — generated once per install and never synced. Combined with a distinct
-  `X-Plex-Device-Name` (see `Labstream/Shared/App/PlatformClientIdentity.swift`), every device presents a
-  unique `X-Plex-Client-Identifier`, so the server still sees truly independent, per-device-identifiable
-  sessions even though the token is shared. Syncing it would merge all devices into one server-side
-  client identity, breaking per-device session listings and transcode bookkeeping.
-- **Jellyfin/Emby access tokens** — those servers mint the access token bound to the device id
-  presented at authentication (token and device are one server-side record). Syncing the token would
-  make every physical device impersonate a single server-side device, causing session collisions,
-  merged played-on attribution, and broken remote-control targeting. Jellyfin/Emby therefore still
-  require a per-device sign-in; Quick Connect / Emby Connect keeps that to a short-code step.
-- **Backend/server selection** — a per-device preference, not a credential.
-
-Because the Plex token is the shared item, deleting it — a manual sign-out or a 401-triggered wipe —
-propagates sign-out to **all** devices, which matches how an account-level token actually dies.
-When a synced Plex token is successfully read, the app deletes any pre-sync device-local Plex token
-so a later synced/global sign-out cannot re-promote stale local credentials.
-
-Caveat for the simulator: simulator builds use `CODE_SIGNING_ALLOWED=NO` and cannot access the real
-Keychain, so `KeychainStore` falls back to a file store. iCloud sync therefore only manifests on real
-devices with iCloud Keychain enabled; you cannot observe cross-device sign-in in the simulator.
-
-The type doc comment at the top of `KeychainStore.swift` is the source of truth for this behavior; keep
-it and this section in agreement.
+Which credentials sync through iCloud Keychain, and why the rest stay device-local, is documented
+in [Persistence](PERSISTENCE.md#icloud-keychain-sync).
 
 ## Logs
 
@@ -572,6 +538,122 @@ xcrun simctl spawn "$SIMID" log show --last 10m --info --debug \
 
 ## Verified platform findings
 
+These are live-verified platform and backend behaviors that are easy to re-learn the hard way.
+Where a current topic page owns the invariant, the bullet points there instead of repeating it.
+
+### visionOS UI hit-testing
+
+- **Never put a custom `ButtonStyle` on a poster/card link or picker row; use `.cardLink()`.**
+  On visionOS any custom `ButtonStyle` registers the link's gaze/hover hit region displaced
+  (measured at about 1.35× scaled about the window center), so pinches on edge cards and rows
+  route to a neighbor (card N opens card N+1; center cards hide the pattern). Live bisection
+  proved the style is the cause: lazy-to-plain stacks, padding-to-`contentMargins`, and dropping
+  `scrollClipDisabled` or the hover lift changed nothing, and it is not fixable inside the style
+  (`contentShape(.hoverEffect, …)`, `hoverEffect(.highlight)`, or removing the press scale still
+  misroute). Built-in styles register correctly; `.cardLink()` in `DesignSystem.swift` wraps
+  `.plain` plus a `contentShape(.hoverEffect, …)` that shapes the automatic highlight.
+- **Inset lazy rails and pickers with `.contentMargins(…, for: .scrollContent)`, not `.padding`.**
+  Padding the lazy content puts the inset into the cards' own geometry and shifts their
+  gaze/hit shapes; content margins keep it outside. `mediaRailScrollStyle(horizontalMargin:)`
+  applies this for browse rails.
+- **Gaze hover is rendered out of process.** `.onHover` never fires for gaze, so the app cannot
+  observe hover. Diagnose pinch routing by logging a
+  `.simultaneousGesture(SpatialTapGesture(coordinateSpace: .global))` instead. In the simulator,
+  sweeping in from the left can expand the leading tab ornament, whose region may eat the first
+  click (`MRUIFeedbackTypeCircularButtonTouchDown` in the log); that effect is simulator-only.
+- **One main window plus Cinema.** visionOS browsing uses one `WindowGroup`, with video presented
+  over it; Cinema is the only other scene (an `ImmersiveSpace`) and may reopen the main window on
+  exit. Do not add unrelated secondary windows. Cinema ownership, its measured-`visualBounds`
+  attachment scaling, and exit routing are in
+  [Playback architecture](PLAYBACK-ARCHITECTURE.md#cinema-ownership).
+- **The music mini player has no volume control and a passive progress line.** The Digital Crown
+  and system volume own loudness, so an `AVPlayer` slider would diverge from it; a 3-pt drag target
+  violates the 60-pt gaze minimum, so scrubbing lives in Now Playing.
+
+### Simulator testing and app state
+
+- **Test AVFoundation playback inside the app process.** A standalone binary run with
+  `xcrun simctl spawn` can load an asset, but its `AVPlayerItem` never reaches `.readyToPlay`
+  because it lacks the playback environment, so every file falsely times out. Use a `#if DEBUG`,
+  launch-argument-gated in-app probe (see `Labstream/Shared/Debug/`), place test files in the app's
+  data container (`xcrun simctl get_app_container "$SIMID" org.labstream.Labstream data`), and read
+  results from the log.
+- **Install source decides whether app state survives.** Installing over the same bundle ID
+  preserves the app container and sign-in. Deleting the app, erasing the simulator, or replacing
+  an App Store build with a development build starts fresh and requires signing in again. Unsigned
+  simulator builds persist credentials through the DEBUG file fallback described in
+  [Persistence](PERSISTENCE.md#keychain).
+
+### Playback
+
+- **The system ⓘ Info card ignores string dates.** Without an override it shows the stream's
+  creation year after the runtime, which for a live transcode is the current year. Only
+  `.commonIdentifierCreationDate` with an **`NSDate`-typed** value (January 1 of the release year)
+  works; string values under it and the QuickTime, ID3, and iTunes date identifiers were proven
+  ignored live. Title and description work as strings; cap the description near 150 characters or
+  it pushes the title off the card.
+- **Play can beat the metadata backfill.** Listing payloads omit chapters and markers, and the
+  detail screen backfills them asynchronously, so the player must not depend on the caller's copy:
+  `PlaybackController.loadChaptersIfNeeded()` fetches full metadata (chapters, markers, and
+  audio streams), re-derives Skip Intro/Credits ranges, and the chrome re-installs its info tabs
+  when they arrive.
+- **The Plex profile name, transcode stop-before-restart, restart budgets, MediaBrowser progress,
+  and Emby encoder cleanup** are load-bearing invariants owned by
+  [Playback architecture](PLAYBACK-ARCHITECTURE.md); network loss as a stall rather than a
+  `.failed` item is covered under
+  [Buffering and stalls](PLAYBACK-ARCHITECTURE.md#buffering-and-stalls).
+- **PMS transcodes race ahead, then throttle.** The universal transcoder encodes faster than real
+  time until it is `TranscoderThrottleBuffer` seconds ahead of the playhead (default 60 s;
+  "throttled" is the healthy state) and prunes spent segments behind `TranscoderPruneBuffer`
+  (default 300 s). The realized forward buffer is limited by AVPlayer, not PMS: raising
+  `preferredForwardBufferDuration` beyond the server's lead buys nothing on a live transcode.
+- **A segment request outside the produced window respawns PMS's encoder.** PMS starts a new
+  FFmpeg job at that offset (`-ss <offset>`) instead of fast-forwarding, and AVPlayer fetches
+  segments autonomously while scrubbing, so client restraint alone cannot prevent stacked
+  encoders. One starved-scrub session stacked 21 jobs in about a minute and exhausted server
+  memory. This is why out-of-buffer seeks are debounced and budgeted.
+- **PMS HLS media playlists cover the full timeline with absolute-time segment names and PTS.**
+  Segment `0NNNNN.ts` is absolute second NNNNN in every session. A session primed at an offset
+  serves real MPEG-TS only from that offset forward; earlier segments are 188-byte PAT-only stubs,
+  which is why a deep seek on a primed session stalls. Splicing segments from a second session
+  without reloading the item was tried and removed after it drove retry storms.
+- **macOS display scaling can gate HDR eligibility.** A bounded macOS 27 beta display check found
+  that default scaling exposed a stable HDR switch where a higher scaled mode did not. Enabling HDR
+  made AVPlayer eligible and raised potential EDR above 1; lowering refresh alone did not. This is
+  host-specific capability evidence, not proof of rendered HDR, a universal scaling restriction, or
+  a cable diagnosis. Restore temporary display modes and HDR settings after tests; keep
+  per-player-screen and physical mixed-display acceptance separate (see
+  [macOS display capability](MACOS.md#live-display-capability)).
+
+### Backends and downloads
+
+- **Emby stream URLs carry the access token as an `api_key` query value.** Besides the
+  `Authorization: Emby …` and `X-Emby-Token` headers, server-generated HLS and direct-stream URLs
+  embed the token, so any logged Emby URL must have `api_key` (and `X-Emby-Token`) redacted. Emby
+  PlaybackInfo also needs `UserId` in both the query and the body, with `AutoOpenLiveStream:false`.
+  The authorization-scheme and base-path rules are in [Backends](BACKENDS.md).
+- **Plex ignores `If-Range`.** A ranged GET with a non-matching `If-Range` (ETag or date form)
+  still returns 206 from the requested offset, even though Plex emits a strong ETag and
+  `Last-Modified`. Emby honors a strong-ETag `If-Range` and Jellyfin honors the date form. Range
+  resume therefore relies on a bounded per-body validator-equality check, not on `If-Range`; see
+  [Downloads and offline playback](DOWNLOADS-OFFLINE.md#background-downloads-and-sleeping-devices).
+- **Emby Convert (persistent server conversion) wire facts, verified against Emby 4.9.3:**
+  - a converted copy appears as an extra `File` media source on the same item, and PlaybackInfo
+    returns only the requested source when `MediaSourceId` is supplied, so enumerating existing
+    versions needs a PlaybackInfo call without it;
+  - convert to `originalmediafolder`; `originalmediafolderreplace` replaces the original and must
+    never be used;
+  - `POST /Sync/Jobs` returns the job nested under `"Job"`, while `GET /Sync/Jobs/{id}` returns it
+    at the top level (`EmbyConvertRequest.decodeCreatedJob` versus `decodeJob`);
+  - Emby ignores the submitted job name, so a job is identified and cancelled only by its
+    persisted ID;
+  - job `Progress` stays at 0 until completion, so a preparing row shows indeterminate
+    "Preparing on server…" rather than a percentage;
+  - the `tv` profile scales to the requested bitrate and caps at 1080p; true 4K needs
+    `profile:"custom"`, which requires container, video-codec, and audio-codec criteria (HTTP 400
+    without them) and has no resolution field;
+  - a Sync job cannot select a media source, so a repeat convert can transcode an earlier derived
+    copy; the download path reuses a matching converted source instead of creating a new job.
 - **visionOS wake silently restarts custom-`Range` request bodies, and resume data cannot
   see it.** When a headset is re-worn, the network path re-evaluates and `nsurlsessiond`
   transparently retries the in-flight background task; because Labstream's static-range
@@ -598,37 +680,41 @@ uv run --with-requirements requirements.txt mkdocs serve
 ```
 
 Use the strict documentation build in [Core validation commands](#core-validation-commands) before
-publishing changes. Keep current product, architecture, and contributor guidance in the published
-Markdown files at the top of `docs/`. Classify repository-internal documents into these unpublished
-lanes:
-
-- `docs/plans/` for active implementation plans and acceptance journals;
-- `docs/research/` for unresolved investigations;
-- `docs/evidence/` for immutable audit and profiling observations; and
-- `docs/archive/` for completed, superseded, or closed context that is never canonical.
-
+publishing changes. Where each document belongs (published topic pages versus the unpublished
+plan, research, evidence, and archive lanes) is defined in
+[Documentation information architecture](CONTRIBUTING.md#documentation-information-architecture).
 The current manual validation matrix deliberately remains at the repository root in
 [`TESTING-CHECKLIST.md`](https://github.com/jlipworth/Labstream/blob/main/TESTING-CHECKLIST.md).
-Each lane README defines its naming and promotion/archive rules. Preserve historical prose when
-moving snapshots, but repair live links, navigation, includes, and script references.
 
 ## Required-reason privacy manifest packaging
 
-The shared `PrivacyInfo.xcprivacy` declares `SystemBootTime` reason `35F9.1` for
-in-app elapsed-time and timer calculations, including PMSKit's statically linked
-media-session retry budget. Raw uptime and boot-relative sample timestamps must
-stay on device. Apple's exception permits information about elapsed time between
-in-app events to leave the device; it does not permit arbitrary uptime-derived
-identifiers or boot epochs. Re-audit new diagnostic/export/network fields before
-changing this contract. The source audit is retained at
-`docs/evidence/2026-09-15-privacy-uptime-audit.md` (unpublished evidence).
+Two source manifests define the contract: the shared
+`Labstream/Shared/Resources/PrivacyInfo.xcprivacy` (visionOS, iOS/iPadOS, and macOS) and the tvOS
+copy `Labstream/Platforms/tvOS/Resources/PrivacyInfo.xcprivacy`. The tvOS copy must stay identical
+except that it omits the `CrashData` collected-data entry; edit both together. Both declare the
+required-reason APIs `SystemBootTime` (`35F9.1`), `UserDefaults` (`CA92.1`), `FileTimestamp`
+(`DDA9.1`), and `DiskSpace` (`85F4.1`), with no tracking.
 
-`python3 scripts/check-privacy-manifest.py` checks the declaration and all four
-targets' shared-resource membership; repository hygiene runs its regression tests.
-After clean builds, verify the actual app resources (use your worktree-local paths):
+`SystemBootTime` reason `35F9.1` covers in-app elapsed-time and timer calculations, including
+PMSKit's statically linked media-session retry budget. Raw uptime and boot-relative sample
+timestamps must stay on device. Apple's exception permits information about elapsed time between
+in-app events to leave the device; it does not permit arbitrary uptime-derived identifiers or boot
+epochs. Re-audit new diagnostic/export/network fields before changing this contract. The source audit is retained at
+`docs/evidence/audits/2026-09-15-privacy-uptime-audit.md` (unpublished evidence).
+
+`uv run python scripts/check-privacy-manifest.py` checks both declarations, the approved
+collected-data mapping, every target's synchronized-resource membership, and the tvOS target's
+membership exception that excludes the shared manifest in favor of its own copy; repository
+hygiene runs its regression tests.
+
+`scripts/testflight-release.py validate` already runs this check against the archived apps when
+all four platform archives are present. For an ad hoc check of built products, build each scheme
+in Release into a one-off path with `scripts/xcodebuild-versioned.sh ... -configuration Release
+-derivedDataPath build/DerivedData-privacy-<platform> build CODE_SIGNING_ALLOWED=NO`, run the
+command below, then delete those `build/DerivedData-privacy-*` directories:
 
 ```sh
-python3 scripts/check-privacy-manifest.py \
+uv run python scripts/check-privacy-manifest.py \
   --app Labstream=build/DerivedData-privacy-visionos/Build/Products/Release-xrsimulator/Labstream.app \
   --app LabstreamMobile=build/DerivedData-privacy-ios/Build/Products/Release-iphonesimulator/Labstream.app \
   --app LabstreamTV=build/DerivedData-privacy-tvos/Build/Products/Release-appletvsimulator/Labstream.app \

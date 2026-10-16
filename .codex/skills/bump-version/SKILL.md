@@ -129,7 +129,7 @@ Then build the touched target and verify the generated bundle:
 ```sh
 SIMID=$(scripts/worktree-sim.sh --platform visionos id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
-DD="$PWD/build/DerivedData-version-visionos"
+DD="$PWD/build/DerivedData-visionos"
 rm -rf "$DD"
 scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme Labstream \
   -destination "platform=visionOS Simulator,id=$SIMID" \
@@ -146,7 +146,7 @@ xcrun simctl shutdown "$SIMID"
 printf 'ipad\n' > .simplatform
 SIMID=$(scripts/worktree-sim.sh --platform ipad id)
 xcrun simctl boot "$SIMID" 2>/dev/null || true
-DD="$PWD/build/DerivedData-version-ipad"
+DD="$PWD/build/DerivedData-ios-ipad"
 rm -rf "$DD"
 scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamMobile \
   -destination "platform=iOS Simulator,id=$SIMID" \
@@ -160,10 +160,12 @@ xcrun simctl shutdown "$SIMID"
 ### macOS bundle
 
 ```sh
+DD="$PWD/build/DerivedData-macos"   # the macOS host helper's DerivedData path
+rm -rf "$DD"
 scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamMac \
   -destination 'platform=macOS,arch=arm64' -configuration Debug \
-  -derivedDataPath build/DerivedData-version-macos build CODE_SIGNING_ALLOWED=NO
-APP=build/DerivedData-version-macos/Build/Products/Debug/Labstream.app
+  -derivedDataPath "$DD" build CODE_SIGNING_ALLOWED=NO
+APP="$DD/Build/Products/Debug/Labstream.app"
 /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Contents/Info.plist"
 ```
@@ -171,10 +173,12 @@ APP=build/DerivedData-version-macos/Build/Products/Debug/Labstream.app
 ### tvOS bundle
 
 ```sh
+DD="$PWD/build/DerivedData-tvos"
+rm -rf "$DD"
 scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj -scheme LabstreamTV \
   -destination 'generic/platform=tvOS Simulator' -configuration Debug \
-  -derivedDataPath build/DerivedData-version-tvos build CODE_SIGNING_ALLOWED=NO
-APP=build/DerivedData-version-tvos/Build/Products/Debug-appletvsimulator/Labstream.app
+  -derivedDataPath "$DD" build CODE_SIGNING_ALLOWED=NO
+APP="$DD/Build/Products/Debug-appletvsimulator/Labstream.app"
 /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist"
 /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist"
 ```

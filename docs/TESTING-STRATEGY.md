@@ -36,6 +36,12 @@ The app suites are host-app unit tests. They do not replace the canonical
 [install/launch/log/screenshot smoke](DEVELOPMENT.md#install-and-observe-a-simulator-smoke),
 interactive UI checks, live-server probes, or physical-device acceptance.
 
+The checked `LabstreamTests`, `LabstreamMacTests`, and `LabstreamTVTests` plans set
+`LABSTREAM_UNIT_TEST_HOST=1`; in DEBUG builds `AppLaunchMode.isUnitTestHost` then keeps the Mobile,
+Mac, and TV app scenes inert so hosted tests do not boot the real app. UI tests must set
+`app.launchEnvironment["LABSTREAM_UNIT_TEST_HOST"] = "0"` explicitly, and any new test plan must
+choose `1` or `0` deliberately; otherwise a UI test can silently drive an inert host app.
+
 ### Suspended-request integration regressions
 
 Keep async ownership tests at the production publication boundary, not only in pure authority
@@ -200,12 +206,16 @@ that obscures safety-test changes.
 
 Woodpecker provides the repository's default public, portable CI surface:
 
-- `.woodpecker/docs.yml` builds MkDocs strictly and deploys the static site on relevant pushes to
-  `main` (or a manual run).
-- `.woodpecker/docs-pr.yml` performs the same strict build and Mermaid structural check for pull
-  requests without receiving a deployment key or running a deploy command.
-- `.woodpecker/hygiene.yml` runs `scripts/ci-hygiene.sh`, including its Python tooling tests, on
-  pushes, pull requests, and manual runs.
+- `.woodpecker/docs.yml` builds MkDocs strictly, runs `scripts/check-doc-links.py --site-dir site`
+  and `scripts/check-docs-mermaid.py`, and deploys the static site on relevant pushes to `main`
+  (or a manual run).
+- `.woodpecker/docs-pr.yml` performs the same strict build, rendered-link check, and Mermaid
+  structural check for pull requests without receiving a deployment key or running a deploy
+  command.
+- `.woodpecker/hygiene.yml` validates the macOS pipeline trust boundary with
+  `scripts/validate-macos-pipeline.py .woodpecker/macos.yml --default-branch main`, then runs
+  `scripts/ci-hygiene.sh`, including its Python tooling tests, on pushes, pull requests, and
+  manual runs.
 - `.woodpecker/pmskit.yml` runs PMSKit's credential-free Linux suite. Live probe tests are designed
   to skip when their opt-in environment is absent; the pipeline does not select them as live
   acceptance. XCTest and
@@ -270,25 +280,29 @@ Interaction does not support its simulator; gaze, pinch-drag, immersive, and har
 remain human/headset gates. Real backend credentials supplement these fixture loops but are never a
 precondition for platform-loop closure.
 
-## macOS host checks
+### Download transport fault probes
 
-macOS has no simulator lane. The native `LabstreamMac` target runs on the host under a
-per-worktree development identity. For Mac-specific or widely shared app changes, run the current
-repeatable sweep:
+DEBUG builds can inject Plex download transport faults through an in-process `URLProtocol`
+(`--vp-probe-download-fault MODE`, or `--vp-probe-range-drop-after-bytes N` for a single
+connection drop). Drive them through the simulator-only entry point, which uses the visionOS
+worktree simulator's existing Plex sign-in and writes logs under `build/probes/plex-range-drop/`:
 
 ```sh
-scripts/validate-macos-228.sh
+scripts/probe-plex-range-drop.sh --query TEXT --fault MODE   # or --rating-key KEY
 ```
 
-The script retains its issue-era filename. It combines static identity checks, a Mac host
-build, extra visionOS and iPhone `xcodebuild` compile steps against this worktree's concrete
-simulator IDs (those `id` lookups may provision sims; this is not a leased simulator test
-run and must not be treated as one), focused PMSKit diagnostics tests
-(`DiagnosticLoggingTests` only), and a bounded launch smoke through
-`scripts/smoke-macos-host.sh`. Shut down any simulator it left booted before another leased
-turn. It does not prove real backend auth, subjective UI behavior,
-media-key ownership, live playback, or background-download durability. See
-[macOS target guide](MACOS.md) for host identity and cleanup rules.
+Modes: `connection-drop` (default; `--drop-after-bytes N`), `double-connection-drop`,
+`validator-flip`, `401-mid-train`, `write-failure`, `416-restart`, `200-replace`,
+`held-body-pause` (needs `--pause-resume`), `held-body-delete` (needs
+`--delete-during-transfer`), `held-body-relaunch` (needs `--relaunch-held`), `drain-pause` (needs
+`--pause-only`), and `drain-delete` (needs `--delete-during-transfer`). Run `--help` for the
+remaining options. These probes need the simulator lease and are transport evidence only, not
+physical background-transfer acceptance.
+
+## macOS host checks
+
+macOS has no simulator lane; the repeatable host sweep (`scripts/validate-macos-228.sh`), its
+coverage, and its limits are documented in [macOS validation](MACOS.md#validation).
 
 ### Bounded playback troubleshooting
 
@@ -349,19 +363,6 @@ The metadata scanner is read-only, resumable, and requires gitignored output; it
 tests run in the existing repository-hygiene CI lane. It does not download media or
 prove playback support. Full live-library playback is not a per-commit requirement.
 
-Jellyfin capped HLS now requests fMP4 (`mp4`) to support HEVC copy on Apple players.
-Emby's `m4s` packaging policy remains independent. Below-cap video copy plus audio
-conversion and above-cap video encoding must be tested separately. Simulator evidence
-for the Jellyfin fix does not close physical Vision Pro, deep seek, or reopen gates.
-
-For Jellyfin/Emby probes, use a unique exact title and verify the selected source.
-Missing/ambiguous search matches fail closed instead of playing a fuzzy result. Review
-actual decoded frames: transport success alone cannot establish absence of black video
-or corruption. Record initial, changed-quality, and seek results separately; selecting
-an unchanged quality is not a valid transition. Keep failures visible even after retries.
-
-Use the Codex in-app browser for authorized one-time codes. Opt-in iPhone live-auth
-XCUITests provide a normal-UI fallback when Device Hub is unavailable. They skip by
-default; private credentials, pairing codes, logs, and result bundles never enter CI.
-Release automation against private servers remains future opt-in trusted self-hosted
-work, not an expansion of public pull-request permissions.
+Backend-specific packaging, exact-source probe rules, frame-review and transition-evidence
+requirements, opt-in authentication, and future release-CI constraints are documented in
+[Private media corpus testing](MEDIA-CORPUS-TESTING.md#verified-findings-and-current-limits).

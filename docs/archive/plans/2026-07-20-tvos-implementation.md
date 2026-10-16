@@ -16,7 +16,7 @@ Research baseline: 2026-07-20 against repository commit `44839793`, with parity 
 This document is the durable repository plan. Keep its phase status synchronized with issue #246 during implementation, then promote proven behavior into the current architecture, development, testing, and platform documentation. Archive this note only after every required acceptance gate is complete or explicitly moved to a linked follow-up.
 
 The per-screen visual and remote-interaction inventory lives in
-[`2026-07-20-tvos-screen-audit.md`](../../research/2026-07-20-tvos-screen-audit.md). A phase item cannot be treated
+[`2026-07-20-tvos-screen-audit.md`](../../plans/2026-07-20-tvos-screen-audit.md). A phase item cannot be treated
 as visually checked merely because it inherited shared metrics; the corresponding audit rows need
 actual tvOS evidence.
 

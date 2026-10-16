@@ -142,9 +142,12 @@ hosts the shared `LabstreamTests/` sources in `LabstreamMac`; run it directly wh
 app-owned persistence, lifecycle, auth-storage, or playback/system-media seams:
 
 ```sh
+# Keep the unsigned host lane on the isolated development entitlements; the canonical Mac
+# entitlements contain a keychain access group and require a development-signed build.
 scripts/xcodebuild-versioned.sh -project Labstream.xcodeproj \
   -scheme LabstreamMac -testPlan LabstreamMacTests \
-  -destination 'platform=macOS,arch=arm64' test CODE_SIGNING_ALLOWED=NO
+  -destination 'platform=macOS,arch=arm64' test CODE_SIGNING_ALLOWED=NO \
+  CODE_SIGN_ENTITLEMENTS=Config/LabstreamMacDevelopment.entitlements
 ```
 
 The current repeatable Mac sweep is:
@@ -164,6 +167,12 @@ uses Accessibility to activate the stable Home item, asserts the detail text, an
 window-scoped before/after screenshots, bounded logs, `driver.json`, and `run.json`. It terminates
 the exact staged process it launched and does not read or mutate the production Labstream
 container.
+Evidence is written beneath ignored `artifacts/agent-platform-runs/`. Exit code `2` means a host
+precondition such as Accessibility or Screen Recording permission is unavailable; the runner does
+not fall back to coordinates or full-desktop capture.
+
+Credential-free App Store capture composes this runner with the other platform runners into a
+serial, exact-worktree-ID workflow; see [App Store screenshot automation](APP-STORE-SCREENSHOTS.md).
 
 The script retains its issue-era filename for now. It covers static identity checks, the Mac
 build, extra visionOS and iPhone `xcodebuild` compile steps against this worktree's concrete
@@ -184,6 +193,8 @@ and version policy are decided; they are not remaining design questions. The ope
 Apple Distribution archive and validation, App Store sandbox/entitlement review, processed
 TestFlight build, fresh-install sign-in, real-backend playback, keyboard/media-key and window
 lifecycle behavior, download recovery, accessibility, screenshots, metadata, and App Review.
+Direct-download (Developer ID-signed, notarized) distribution outside the App Store is deferred;
+the Mac app ships only through the App Store universal purchase.
 
 Downloads remain inside the app container. External download folders and
 security-scoped bookmark migration are deferred product work, not prerequisites for this release.

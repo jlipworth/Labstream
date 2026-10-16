@@ -43,13 +43,13 @@ like:
 - backend name (Plex / Jellyfin / Emby) and connection scheme
 - server product/version where known
 - your selected quality settings
-- bucketed download queue and storage state
+- download counts and queue state, with bucketed storage totals (not on Apple TV)
 - a recent playback snapshot, passive redacted MetricKit diagnostic summaries
   when available, and up to 80 recent **redacted** events from the current app run
 
 It is designed to **omit** sensitive values, including:
 
-- Plex tokens and client identifiers
+- Plex, Jellyfin, and Emby access tokens and client identifiers
 - your server's hostname, IP address, or full URLs
 - usernames, library paths, filenames, and media titles
 

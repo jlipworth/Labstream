@@ -2,8 +2,8 @@ import Foundation
 
 /// Rate-limit policy for seek-triggered transcode restarts (#27). Each restart costs PMS a
 /// fresh (possibly software) transcoder job; restarts stacking faster than PMS reaps them is
-/// the mechanism behind the live server OOM (docs/PLEX_AVP_TRANSCODE_OOM_REPORT.md). Pure and
-/// clock-injected — the caller passes a monotonic `now` (e.g. `ProcessInfo.systemUptime`) —
+/// the mechanism behind the live server OOM (see #27 and the seek/restart invariants in
+/// docs/PLAYBACK-ARCHITECTURE.md). Pure and clock-injected — the caller passes a monotonic `now` (e.g. `ProcessInfo.systemUptime`) —
 /// so the whole abusive-session shape is unit-testable without timers.
 ///
 /// Two layers, mirroring what the player enforces:

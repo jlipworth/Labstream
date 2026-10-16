@@ -28,7 +28,7 @@ flowchart TD
 
 ## App Intents
 
-App Intents expose selected Labstream actions and media entities to system surfaces. Intent handlers should:
+App Intents expose selected Labstream actions and media entities to system surfaces. `LabstreamIntents.swift` ships `PlayMediaIntent` ("Play Media"), `OpenMediaIntent` ("Open Media"), and `ResumeContinueWatchingIntent` ("Continue Watching"). `LabstreamShortcuts` registers Siri phrases such as "Play <item> on Labstream", "Open <item> in Labstream", and "Resume Labstream"; parameterized phrases draw their vocabulary from the entity query's suggestions, refreshed through `updateAppShortcutParameters()` at launch (non-tvOS), when Home hubs load, and when the Settings media-suggestions toggle changes. Intent handlers should:
 
 - avoid leaking server URLs, tokens, or private identifiers in logs, docs, and shared diagnostics;
 - fail clearly when signed out or when the active backend cannot satisfy the request;

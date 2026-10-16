@@ -16,6 +16,54 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from bounded_process import terminate_process_group
 
+SUITE = "PlaybackAgentEvidenceTests"
+# The fixture contract: consent lifecycle (parameterized over Jellyfin/Emby), admission,
+# invalid options, and backend-change refusal. Swift Testing identifiers keep the `()` or
+# argument-label suffix; xcodebuild accepts them verbatim in -only-testing.
+REQUIRED_TESTS = (
+    "fixtureConsentTransitions(backend:)",
+    "admissionIsSeparateForVideoEncoding()",
+    "invalidOptionsFailClosed()",
+    "changedBackendStopsBeforeStartingPlayback()",
+)
+
+
+def test_case_results(nodes):
+    """Yield (nodeIdentifier, result, argument results) for every Test Case node."""
+    for node in nodes or []:
+        if not isinstance(node, dict):
+            raise ValueError("malformed test node")
+        if node.get("nodeType") == "Test Case":
+            arguments = [child.get("result") for child in node.get("children") or []
+                         if isinstance(child, dict) and child.get("nodeType") == "Arguments"]
+            yield node.get("nodeIdentifier"), node.get("result"), arguments
+        else:
+            yield from test_case_results(node.get("children"))
+
+
+def fixture_passed(summary, tests):
+    """Fail closed unless exactly the required tests ran and every selected case passed."""
+    if summary.get("result") != "Passed" or summary.get("failedTests") != 0 or summary.get("skippedTests") != 0:
+        return False
+    passed = summary.get("passedTests")
+    if type(passed) is not int or passed < len(REQUIRED_TESTS):
+        return False
+    cases = list(test_case_results(tests.get("testNodes")))
+    if not cases or any(result != "Passed" or any(arg != "Passed" for arg in arguments)
+                        for _, result, arguments in cases):
+        return False
+    return {identifier for identifier, _, _ in cases} == {f"{SUITE}/{name}" for name in REQUIRED_TESTS}
+
+
+def xcresult_json(kind, bundle):
+    completed = subprocess.run(["xcrun", "xcresulttool", "get", "test-results", kind, "--path",
+                                str(bundle), "--format", "json"],
+                               capture_output=True, timeout=30, check=True)
+    value = json.loads(completed.stdout)
+    if not isinstance(value, dict):
+        raise ValueError("malformed xcresult")
+    return value
+
 
 def run(command, log, timeout):
     with subprocess.Popen(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
@@ -48,17 +96,15 @@ def main():
                    "-scheme", "LabstreamMac", "-testPlan", "LabstreamMacTests",
                    "-destination", "platform=macOS,arch=arm64", "-derivedDataPath", str(output / "DerivedData"),
                    "-resultBundlePath", str(output / "fixture.xcresult"),
-                   "-only-testing:LabstreamMacTests/PlaybackAgentEvidenceTests", "test",
+                   *(f"-only-testing:LabstreamMacTests/{SUITE}/{name}" for name in REQUIRED_TESTS), "test",
                    "CODE_SIGNING_ALLOWED=NO", "-enableCodeCoverage", "NO",
                    "PRODUCT_BUNDLE_IDENTIFIER=org.labstream.Labstream.dev." + run_id]
         with (output / "private-build.log").open("w") as log:
             code = run(command, log, args.timeout)
-        summary = subprocess.run(["xcrun", "xcresulttool", "get", "test-results", "summary", "--path",
-                                  str(output / "fixture.xcresult"), "--format", "json"],
-                                 capture_output=True, timeout=30, check=True)
-        facts = json.loads(summary.stdout)
-        passed = facts.get("passedTests", 0)
-        valid = code == 0 and facts.get("result") == "Passed" and passed == 4 and facts.get("failedTests") == 0 and facts.get("skippedTests") == 0
+        summary = xcresult_json("summary", output / "fixture.xcresult")
+        tests = xcresult_json("tests", output / "fixture.xcresult")
+        passed = summary.get("passedTests", 0)
+        valid = code == 0 and fixture_passed(summary, tests)
         result.update(status="passed" if valid else "failed", reason="fixture_assertions" if valid else "fixture_failed",
                       passedTests=passed if type(passed) is int else 0)
     except (OSError, ValueError, subprocess.SubprocessError):

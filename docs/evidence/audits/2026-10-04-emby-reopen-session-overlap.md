@@ -1,6 +1,15 @@
 # Emby overlapping-session reopen investigation
 
-Status: local correction under validation; not release or physical-device acceptance.
+> **Status:** dated evidence record (2026-10-04), moved from `docs/research/`. The
+> stop-before-reopen fix has shipped in the 1.7.2 (build 2) builds. The server's precise
+> encoder-resource or device-session mechanism, and whether a stop acknowledgement means the
+> worker exited, remain unestablished and are recorded here as limits.
+
+Status: the acknowledged stop-before-reopen correction is merged and included in the
+coordinated 1.7.2 (build 2) candidate; see the seek/restart invariants in
+[PLAYBACK-ARCHITECTURE.md](../../PLAYBACK-ARCHITECTURE.md). Open gates: server encoder-process
+exit (a stop acknowledgement is not proof), physical-device, source-matched cross-backend,
+and audible acceptance.
 
 ## Reproduced boundary
 

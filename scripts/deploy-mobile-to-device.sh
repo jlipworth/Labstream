@@ -11,7 +11,7 @@
 # Usage:
 #   scripts/deploy-mobile-to-device.sh            # build + install to the paired iPhone/iPad
 #   scripts/deploy-mobile-to-device.sh --launch   # also launch after install
-#   scripts/deploy-mobile-to-device.sh --no-build # install the last Debug-iphoneos build
+#   scripts/deploy-mobile-to-device.sh --no-build # reinstall this worktree's last device build
 #   scripts/deploy-mobile-to-device.sh --verbose  # print full device/team IDs (masked by default)
 #
 # Env overrides:
@@ -30,6 +30,10 @@ APP_NAME="Labstream"
 SCHEME="LabstreamMobile"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILE_HELPER="$REPO/scripts/provisioning-profile-info.py"
+# Worktree-local DerivedData: never build into, delete from, or install out of
+# another worktree's (or Xcode's global) DerivedData.
+DD="$REPO/build/DerivedData-device-ios"
+APP="$DD/Build/Products/Debug-iphoneos/$APP_NAME.app"
 cd "$REPO"
 
 LAUNCH=0
@@ -116,16 +120,17 @@ if [ "${IOS_REFRESH_SHORT_DEV_PROFILES:-1}" != "0" ]; then
 fi
 
 # --- Build signed iOS/iPadOS device slice -------------------------------------
-# LINK-SKIP guard: remove the old device .app before building so a skipped link
-# cannot leave us installing a stale binary.
+# LINK-SKIP guard: wipe this worktree's device DerivedData before building so the
+# build is clean (no incremental link to skip) and a stale binary can't survive.
 if [ "$BUILD" -eq 1 ]; then
-  rm -rf "$HOME/Library/Developer/Xcode/DerivedData/Labstream-"*/Build/Products/Debug-iphoneos/$APP_NAME.app 2>/dev/null || true
+  rm -rf "$DD"
   VERSION_ARGS=()
   while IFS= read -r arg; do VERSION_ARGS+=("$arg"); done < <(scripts/build-version-args.sh)
   echo "building (Debug, iOS/iPadOS device, signed, versioned)…"
   xcodebuild "${VERSION_ARGS[@]}" -project Labstream.xcodeproj -scheme "$SCHEME" \
     -destination "platform=iOS,id=$DEVICE_ID" \
     -configuration Debug \
+    -derivedDataPath "$DD" \
     -allowProvisioningUpdates \
     -allowProvisioningDeviceRegistration \
     DEVELOPMENT_TEAM="$TEAM" \
@@ -133,9 +138,8 @@ if [ "$BUILD" -eq 1 ]; then
     || { tail -25 /tmp/labstream-mobile-device-build.log | redact_stream >&2; die "build failed (full log: /tmp/labstream-mobile-device-build.log)"; }
 fi
 
-# --- Locate and sanity-check the freshest device build product -----------------
-APP=$(/bin/ls -td "$HOME/Library/Developer/Xcode/DerivedData/Labstream-"*/Build/Products/Debug-iphoneos/$APP_NAME.app 2>/dev/null | head -1 || true)
-[ -n "$APP" ] && [ -d "$APP" ] || die "no iOS device build product found (Debug-iphoneos/$APP_NAME.app). Build first (omit --no-build)."
+# --- Locate and sanity-check this worktree's device build product (exact path) --
+[ -d "$APP" ] || die "no iOS device build product for this worktree at $APP. Build first (omit --no-build)."
 
 SIGNED_TEAM=$(codesign -dvvv "$APP" 2>&1 | sed -n 's/^TeamIdentifier=//p' | head -1)
 [ "$SIGNED_TEAM" = "$TEAM" ] || echo "  ⚠️  built app TeamIdentifier=$(mask_id "$SIGNED_TEAM") (expected $(mask_id "$TEAM"))"

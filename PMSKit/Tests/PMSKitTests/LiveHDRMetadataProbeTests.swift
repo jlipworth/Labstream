@@ -16,7 +16,7 @@ import FoundationNetworking
 /// Output is shape-only where it must be (no tokens/hosts); item ids/titles stay in the
 /// local terminal only — do not commit probe output.
 ///
-/// Run: set -a; source scripts/plex-live.env scripts/jellyfin-live.env scripts/emby-live.env; set +a
+/// Run: set -a; source scripts/plex-live.env; source scripts/jellyfin-live.env; source scripts/emby-live.env; set +a
 ///      cd PMSKit && swift test --filter LiveHDRMetadataProbe
 struct LiveHDRMetadataProbeTests {
 

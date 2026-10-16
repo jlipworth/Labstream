@@ -11,7 +11,7 @@ Use the repository wrapper; do not adapt simulator commands because unsigned
 ```sh
 scripts/deploy-mobile-to-device.sh            # signed build and install
 scripts/deploy-mobile-to-device.sh --launch   # install and launch
-scripts/deploy-mobile-to-device.sh --no-build # reinstall the last device product
+scripts/deploy-mobile-to-device.sh --no-build # reinstall this worktree's last device build
 scripts/deploy-mobile-to-device.sh --verbose  # show unmasked device/team IDs
 scripts/deploy-mobile-to-device.sh --full-ids # alias for --verbose
 ```
@@ -21,6 +21,12 @@ running. Set the signing team with `IOS_DEVELOPMENT_TEAM=<team>` (or
 `MOBILE_DEVELOPMENT_TEAM`); otherwise the wrapper derives the certificate OU. The product must be
 the `LabstreamMobile` scheme's signed `Debug-iphoneos/Labstream.app`. `--full-ids` is an alias for
 `--verbose`.
+
+The wrapper builds into the worktree-local `build/DerivedData-device-ios` (`-derivedDataPath`),
+wiping that directory before every build so there is no incremental link to skip. It installs only
+this worktree's exact `build/DerivedData-device-ios/Build/Products/Debug-iphoneos/Labstream.app`
+and never touches Xcode's global DerivedData or another worktree's product. `--no-build`
+reinstalls this worktree's last device build and fails clearly if none exists.
 
 By default, the wrapper prunes matching short-lived development profiles before a signed build;
 set `IOS_REFRESH_SHORT_DEV_PROFILES=0` to opt out. It checks the embedded profile and refuses to

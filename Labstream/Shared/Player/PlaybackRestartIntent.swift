@@ -38,8 +38,9 @@ enum PlaybackRestartIntent: CaseIterable, Sendable {
 ///
 /// Backend replacement ordering is deliberately not represented here. `PlaybackController`
 /// still owns the load-bearing fork: Plex refreshes its control client when requested and stops
-/// the superseded transcode before replacement, while MediaBrowser sessions detach and reopen
-/// before deferring prior-session cleanup.
+/// the superseded transcode before replacement, Jellyfin detaches and reopens before deferring
+/// prior-session cleanup, and Emby detaches and awaits acknowledged prior-session cleanup before
+/// reopening.
 struct PlaybackRestartPlan: Equatable, Sendable {
     enum PreparationStep: Equatable, Sendable {
         case resetFinalTarget

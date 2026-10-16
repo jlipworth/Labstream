@@ -3,6 +3,15 @@
 > **Archived research snapshot:** retained as dated evidence, not current architecture, feature
 > status, or implementation guidance. Verify any reusable detail against the active docs and
 > current source; old `VisionPlay` names, issue links, branches, and paths below are historical.
+> **Current context:** the Emby lane is implemented on `main`, including the work the status line
+> below lists as unbuilt: Emby Connect PIN sign-in (`EmbyConnect.swift`) and Emby downloads/offline
+> playback (direct static, prepared static, compatible remux, and persistent Convert-then-static
+> routes under `PMSKit/Sources/PMSKit/Downloads/Emby*`). Emby BIF trick-play was later accepted under
+> the archived [#238 implementation journal](../plans/2026-07-20-emby-bif-trickplay.md). Emby LAN/UDP
+> discovery is still not built; sign-in uses Emby Connect or a manual server URL. Current behavior
+> lives in [`docs/BACKENDS.md`](../../BACKENDS.md) and
+> [`docs/DOWNLOADS-OFFLINE.md`](../../DOWNLOADS-OFFLINE.md); the status text below is the original
+> snapshot, and this doc is no longer a planning map.
 
 Status: IMPLEMENTED (first slice) on `feature/emby-backend` and live-validated against a real Emby server. Sign-in (password), browse/DTO mapping, PlaybackInfo stream resolution, progress, and active-encoding cleanup are built as a parallel Emby lane (`PMSKit/Sources/PMSKit/Emby/*`, `VisionPlay/Backend/Emby/EmbyBrowseService.swift`) and verified by the opt-in `LiveEmbyProbe` test. Proven behavior has been promoted into [`docs/BACKENDS.md`](../../BACKENDS.md), [`docs/PERSISTENCE.md`](../../PERSISTENCE.md), [`docs/PLAYBACK-ARCHITECTURE.md`](../../PLAYBACK-ARCHITECTURE.md), [`docs/TESTING-STRATEGY.md`](../../TESTING-STRATEGY.md), and [`docs/DEVELOPMENT.md`](../../DEVELOPMENT.md). Still unbuilt: Emby downloads/offline, Emby Connect, and LAN discovery — this doc remains the planning map for those. The open documentation ambiguities below were resolved by the live probe and are annotated inline as RESOLVED.
 

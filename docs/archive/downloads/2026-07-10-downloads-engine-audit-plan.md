@@ -371,7 +371,7 @@ Phase results (full reports in session transcript):
   B.4 downgraded (bounded waste). Slot accounting, attempt UUIDs, keepalives, DownloadStore
   row state all CLEAN. Open (small): side-cache orphan files after quick delete;
   dangling `lastError` writers (deliberate in one case).
-- Phase 2: `docs/audits/2026-07-10-downloads-state-machines.md` written (3 machines,
+- Phase 2: [`2026-07-10-downloads-state-machines.md`](2026-07-10-downloads-state-machines.md) written (3 machines,
   incoherent composite states, 11 executable invariants, Phase-6 model skeleton).
   Correction: audit plan B.8 wrong — free-space preflight EXISTS in start() (+500 MB
   headroom); only mid-transfer disk-full classification open. Open: IC-4 JF keepalive
@@ -587,7 +587,7 @@ The audit documents were committed on main (`23b0bac`) and the three remaining p
 resumed in parallel from that checkpoint.
 
 - **Phase 4 complete — `a6c964f`.** Added
-  `2026-07-11-downloads-phase4-coverage-matrix.md` and five targeted PMSKit composition tests:
+  [`2026-07-11-downloads-phase4-coverage-matrix.md`](2026-07-11-downloads-phase4-coverage-matrix.md) and five targeted PMSKit composition tests:
   backend/lane/resume-mode resolution; retry budget + v2 marker + reattach + segment-local blob
   adoption; head/mid/tail response classes; expected-byte/completion gating; and forward-schema
   corrupt-row isolation. Combined suite: 1365 Swift Testing + 89 XCTest, zero failures.
@@ -595,7 +595,7 @@ resumed in parallel from that checkpoint.
   `BackgroundDownloadSession` now has a DEBUG-only injectable `URLProtocol` seam. The existing
   Plex range-drop probe also drives deterministic validator-flip and one-shot mid-train 401
   scenarios and requires both injection and engine-reaction diagnostics. See
-  `2026-07-11-downloads-fault-injection-harness.md`. A live fault-path pass is still outstanding:
+  [`2026-07-11-downloads-fault-injection-harness.md`](../../evidence/audits/2026-07-11-downloads-fault-injection-harness.md). A live fault-path pass is still outstanding:
   the available probe records entered Plex optimize instead of an immediate static train.
   Pause-mid-drain, reset→blob→reset, relaunch-with-stashes, and filesystem-write injection remain
   open Phase-6 cells.
@@ -826,7 +826,7 @@ follow-up defects. The same process entered background from 12:53:59–13:27:39 
 13:29:37–14:14:58 UTC. Although SwiftUI/delegate progress callbacks were mostly deferred until wake,
 `downloads.health_snapshot.session_pending_temp_cleanup_bytes` grew from 528,455,202 to
 2,071,853,711 bytes in the first interval (+1,543,398,509) and from 2,152,600,219 to 4,504,388,449
-bytes in the second (+2,351,788,230). A 512 MiB Tropic Thunder segment completed and was durably held
+bytes in the second (+2,351,788,230). A 512 MiB segment completed and was durably held
 at the second wake. No process death, auth rejection, or waiting-for-connectivity event occurred;
 completed-task metrics reported HTTP/3 on a constrained, non-cellular, non-expensive path. Thus the
 background URLSession **did transfer off-head**, averaging roughly 0.76–0.86 MB/s across the active
@@ -863,8 +863,8 @@ tests, and a signed physical-device build passed before deployment.
 
 The 64 MiB/depth-two build was then left off-head from 14:59:44–19:44:40 UTC. Comparing the
 14:57:54 and 19:46:30 headset indexes proves **1,744,830,464 durable bytes** were committed while
-off-head: King of New York advanced 134,217,728 bytes, Legend 134,217,728 bytes, Steve Jobs
-671,088,640 bytes, and Tropic Thunder 805,306,368 bytes. Repeated background URLSession completion
+off-head: the four active rows advanced 134,217,728, 134,217,728, 671,088,640, and 805,306,368
+bytes. Repeated background URLSession completion
 cycles occurred in the same app process, and the active task count never exceeded ten. This closes
 the primary phase-7 question: the corrected train does both transfer and checkpoint useful progress
 while the headset is not being worn.

@@ -26,16 +26,16 @@ default-off DEBUG macOS experiment; prior local commits remain in history. Reada
 aggregate privacy reports were generated from the four exact build 2 archives. The reports agree
 with the published label, and every packaged app manifest declares SystemBootTime `35F9.1`.
 Prior archive sets are not substitutes for these checks.
-The latest recorded processed distribution remains
-the **1.6.1 (build 2)** archive set at `abd1ddcac351`; keep the source version and the processed
-binary version separate when reporting release status.
+The latest recorded processed distribution is the **1.7.2 (build 2)** archive set at
+`ce97958f`; the previous one was the **1.6.1 (build 2)** set at `abd1ddcac351`. Keep the source
+version and the processed binary version separate when reporting release status.
 
 | Product | Current source | Latest recorded processed distribution |
 | --- | --- | --- |
-| Apple Vision Pro (`Labstream`) | 1.7.2 (build 2) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical TestFlight acceptance and review access remain pending. |
-| iPhone and iPad (`LabstreamMobile`) | 1.7.2 (build 2) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` universal iOS archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical iPhone and iPad acceptance remain pending. |
-| Apple TV (`LabstreamTV`) | 1.7.2 (build 2) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical Apple TV acceptance remains pending. |
-| Mac (`LabstreamMac`) | 1.7.2 (build 2) | **1.6.1 (build 2):** the repository records a clean `abd1ddcac351` archive uploaded and processed, selected for the platform version, and installed from TestFlight on a Mac. Launch and receipt/signature checks passed; deeper sandbox and live-host acceptance remain pending. |
+| Apple Vision Pro (`Labstream`) | 1.7.2 (build 2) | **1.7.2 (build 2):** the repository records a clean `ce97958f` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical TestFlight acceptance and review access remain pending. |
+| iPhone and iPad (`LabstreamMobile`) | 1.7.2 (build 2) | **1.7.2 (build 2):** the repository records a clean `ce97958f` universal iOS archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical iPhone and iPad acceptance remain pending. |
+| Apple TV (`LabstreamTV`) | 1.7.2 (build 2) | **1.7.2 (build 2):** the repository records a clean `ce97958f` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. Physical Apple TV acceptance remains pending. |
+| Mac (`LabstreamMac`) | 1.7.2 (build 2) | **1.7.2 (build 2):** the repository records a clean `ce97958f` archive uploaded and processed, selected for the platform version, and available to the internal TestFlight group. A 1.7.2 TestFlight install on a Mac is not recorded; the earlier 1.6.1 (build 2) build was installed from TestFlight and passed launch and receipt/signature checks. Deeper sandbox and live-host acceptance remain pending. |
 
 The 1.7.1 source milestone includes bounded DV/HDR delivery investigation and probe
 validation. The P7 HDR10-base candidate remains default-off and DEBUG-only on macOS;
@@ -66,11 +66,13 @@ final submission remain open.
 `1.7.2` is the current source marketing version (`CFBundleShortVersionString`). The number in
 parentheses is the App Store build number (`CFBundleVersion`). A new marketing version begins at
 build 1; each replacement upload for the same platform and marketing version must use a higher
-build number.
+build number. The repository's
+[`bump-version` skill](https://github.com/jlipworth/Labstream/blob/main/.claude/skills/bump-version/SKILL.md)
+owns the per-platform bump, PMSKit fallback, tagging, and verification procedure.
 
 ## Current release audit and deferred scope
 
-The [2026-09-15 disclosure audit](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/2026-09-15-prerelease-disclosure-audit.md)
+The [2026-09-15 disclosure audit](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/audits/2026-09-15-prerelease-disclosure-audit.md)
 is a historical source audit, not current account certification. Its wording and required-reason
 API fixes landed in PRs #329 and #328. The October 2026 continuation applied the
 owner-approved collection mapping and generated readable Xcode aggregate reports from all
@@ -84,10 +86,11 @@ This resolves the exercised blank-report generation problem, not every privacy o
 gate. Received support storage outside GitHub and end-to-end demo database/log/edge/backup
 retention remain unverified. The updated Apple TV policy was saved for the next app version.
 All four App Store Connect version drafts now show 1.7.2, with descriptions that identify
-the separate optional demo service. Selected 1.6.1 (build 2) binaries were left unchanged;
-the new version drafts are not submission-ready. Review access remains unverified.
-The public policy website update is still pending: normal deployment requires trusted
-`main`; local integration is authorized, but no push or deployment has been performed. A fresh issue-state check found
+the separate optional demo service. On 2026-10-14 each draft was switched from the
+inherited 1.6.1 (build 2) binary to 1.7.2 (build 2); the drafts are still not
+submission-ready. Review access remains unverified.
+The updated public policy is live on GitHub Pages, deployed from `main` at `52afc52` on
+2026-10-15. A fresh issue-state check found
 [#325](https://github.com/jlipworth/Labstream/issues/325) already closed externally; that status
 is not evidence that the retention/storage uncertainties above were resolved.
 [#326](https://github.com/jlipworth/Labstream/issues/326) stayed open until the exact signed
@@ -156,7 +159,7 @@ PMSKit run passed 1,713 Swift Testing cases plus 121 XCTest cases.
 The continuation adds acknowledged Emby stop-before-reopen ordering and preserves failed
 cleanup authority for explicit Retry, together with relative-seek target handling and opt-in
 bounded HLS startup diagnostics. It does not prove server worker exit. See the
-[ordering investigation](https://github.com/jlipworth/Labstream/blob/main/docs/research/emby-reopen-session-overlap.md)
+[ordering investigation](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/audits/2026-10-04-emby-reopen-session-overlap.md)
 for evidence limits.
 
 After test-only event synchronization and manual-clock fixes, a clean-build default-parallel
@@ -194,8 +197,9 @@ creating a duplicate record:
    App Store profiles, the Apple Distribution identity, and that the build number is not already
    uploaded. `archive` writes manual-distribution-signed archives to Xcode's Organizer folder,
    `validate` checks each archive plus the four-app privacy manifest comparison, and
-   `upload --yes` uploads with an App Store Connect API key. Organizer remains the place to
-   generate the aggregate privacy report. For an on-demand build to internal testers,
+   `upload --yes` uploads with an App Store Connect API key.
+   `distribute --group <internal group> --yes` adds already-processed builds to an internal
+   TestFlight group. Organizer remains the place to generate the aggregate privacy report. For an on-demand build to internal testers,
    `ship --group <internal group> --yes` runs the whole sequence with `--build-number auto`
    (the commit count of HEAD) and adds the processed builds to that group; a release candidate
    can then be one of those builds, selected for review rather than archived again. Successful
@@ -241,14 +245,13 @@ those conditions is uncertain, run a dedicated review-only Jellyfin instance ins
 credentials only in App Store Connect. Test the final instructions from clean installs on Vision
 Pro, iPhone, iPad, Apple TV, and Mac before submission.
 
-The official stable demo is the first evaluation lane before provisioning new infrastructure. The
-2026-08-22 evaluation recorded a passwordless shared account, Quick Connect,
-Movies/Shows/Music/Playlists, and a catalog containing public/open test media. It is useful for
-compatibility and screenshot trials, but it is not yet accepted as the final reviewer dependency:
-the shared account is mutable, downloads are disabled, service resets can interrupt sessions, and
-the project's permission for third-party App Store marketing screenshots still needs to be
-established. Labstream supports the demo's passwordless Jellyfin login as of
-[issue #283](https://github.com/jlipworth/Labstream/issues/283).
+The reviewer and screenshot lane is the Labstream-controlled Jellyfin review catalog chosen in the
+[licensed-media capture plan](https://github.com/jlipworth/Labstream/blob/main/docs/plans/2026-09-15-store-demo-capture.md)
+([#280](https://github.com/jlipworth/Labstream/issues/280)). The 2026-08-22 evaluation of the
+official stable public demo established compatibility only; Labstream supports its passwordless
+Jellyfin login as of [issue #283](https://github.com/jlipworth/Labstream/issues/283). It was not
+adopted because its shared account is mutable, downloads are disabled, service resets can
+interrupt sessions, and permission for third-party App Store marketing screenshots is unverified.
 
 Prefer a Labstream-controlled review instance with a deterministic catalog of original,
 public-domain, or appropriately Creative Commons media. Record every title, artwork source,
@@ -268,13 +271,13 @@ and App Store Connect state before relying on them for a new submission.
       bundles, or personal media data, including in newly added files.
 - [ ] `PMSKit` hermetic tests, repository hygiene, strict MkDocs, and the affected native test
       matrix pass.
-- [x] The latest processed **1.6.1 (build 2)** Release archives were produced for iOS/iPadOS,
+- [x] The previous processed **1.6.1 (build 2)** Release archives were produced for iOS/iPadOS,
       visionOS, tvOS, and macOS with the intended Xcode release and Apple Distribution signing;
       every archive reports the neutral bundle identifier and expected marketing version/build.
-- [x] The latest processed **1.6.1 (build 2)** archives are reproducible from their exact public
+- [x] The previous processed **1.6.1 (build 2)** archives are reproducible from their exact public
       release commit. If that commit changes after a preflight archive, rebuild rather than treating
       the older archive as the submission binary.
-- [x] The latest processed **1.6.1 (build 2)** platform archives pass Xcode validation and App Store
+- [x] The previous processed **1.6.1 (build 2)** platform archives pass Xcode validation and App Store
       Connect processing without compliance or binary warnings.
 - [x] Each selected **1.6.1 (build 2)** App Store Connect build reports the intended minimum OS,
       device family, entitlements, and supported architecture.
@@ -318,12 +321,13 @@ and App Store Connect state before relying on them for a new submission.
 - [ ] Screenshot automation can reproduce the accepted set from clean fixture/review state for
       iPhone, iPad, Mac, Apple TV, and Apple Vision Pro, and the exported files pass the repository
       size/privacy manifest validator before upload.
-- [ ] Reconcile App Privacy answers with the exact candidate and actual service behavior.
-      The historically recorded **Data Not Collected** answer is not certified by an empty
-      manifest collection array. Resolve [#325](https://github.com/jlipworth/Labstream/issues/325):
-      project-operated review/demo records, retention enforcement, and optional feedback criteria.
-      See the [bounded privacy audit](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/2026-09-16-review-service-privacy-audit.md) for
-      proposed data-type mapping and owner approval gates. No App Store Connect answer is changed
+- [ ] App Privacy: the shared label is published with seven data types linked to the user and
+      tracking off; the earlier **Data Not Collected** answer is superseded. Still open: verify
+      received support storage outside GitHub and end-to-end demo database/log/edge/backup
+      retention against the published answers
+      ([#325](https://github.com/jlipworth/Labstream/issues/325) is closed, but its closure does
+      not resolve these). See the [bounded privacy audit](https://github.com/jlipworth/Labstream/blob/main/docs/evidence/audits/2026-09-16-review-service-privacy-audit.md) for
+      the data-type mapping and owner approval gates. No App Store Connect answer is changed
       by documentation edits. Required-reason API declarations are a separate packaging check
       ([#326](https://github.com/jlipworth/Labstream/issues/326)), not a collection exemption.
 - [ ] Verify export-compliance answers against the exact candidate and linked dependencies.

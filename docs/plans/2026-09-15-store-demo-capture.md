@@ -14,7 +14,7 @@ download restrictions, or unverified third-party artwork. [Issue #280](https://g
 records the infrastructure close-loop; that does not prove any final client screenshots or hardware journey.
 Do not reprovision it, reset shared progress, or change credentials without coordination.
 
-The [public media manifest](../app-review-media-provenance.json) records exact source URLs, complete
+The [public media manifest](../../scripts/app-review-media-provenance.json) records exact source URLs, complete
 encode hashes, derived poster/backdrop hashes, crops, rights holders, and attribution. It is a
 sanitized snapshot of infrastructure catalog `open-films-v1`, not a new live-server asset audit.
 Retain the source-manifest hash and compare it with the deployed catalog before capture. The four

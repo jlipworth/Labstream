@@ -38,6 +38,12 @@ class ToolingHardeningTests(unittest.TestCase):
         subprocess.run(["git", "add", "."], cwd=root, check=True)
         subprocess.run(["git", "commit", "-q", "-m", "baseline"], cwd=root, check=True)
 
+    def copy_deploy_scripts(self, root: Path, name: str):
+        for helper in (name, "build-version-args.sh", "provisioning-profile-info.py"):
+            self.copy_script(root, helper)
+        self.commit_all(root)
+        return root / "scripts" / name
+
     def test_build_version_args_marks_untracked_app_source_dirty(self):
         with self.make_repo() as root:
             self.copy_script(root, "build-version-args.sh")
@@ -509,10 +515,11 @@ class ToolingHardeningTests(unittest.TestCase):
     def test_deploy_masks_device_and_team_ids_by_default(self):
         device = "12345678-1234-1234-1234-123456789ABC"
         team = "TEAMID1234"
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_root = Path(tmp)
+        with self.make_repo() as root:
+            tmp_root = root
+            script = self.copy_deploy_scripts(root, "deploy-to-device.sh")
             home = tmp_root / "home"
-            app = home / "Library" / "Developer" / "Xcode" / "DerivedData" / "Labstream-TEST" / "Build" / "Products" / "Debug-xros" / "Labstream.app"
+            app = root / "build" / "DerivedData-device-visionos" / "Build" / "Products" / "Debug-xros" / "Labstream.app"
             app.mkdir(parents=True)
             fakebin = tmp_root / "fakebin"
             fakebin.mkdir()
@@ -541,14 +548,14 @@ class ToolingHardeningTests(unittest.TestCase):
                 "VP_DEVELOPMENT_TEAM": team,
             })
 
-            masked = subprocess.run([str(REPO / "scripts" / "deploy-to-device.sh"), "--no-build"], cwd=REPO, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            masked = subprocess.run([str(script), "--no-build"], cwd=root, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
             combined = masked.stdout + masked.stderr
             self.assertNotIn(device, combined)
             self.assertNotIn(team, combined)
             self.assertIn("1234…9ABC", combined)
             self.assertIn("TEAM…1234", combined)
 
-            verbose = subprocess.run([str(REPO / "scripts" / "deploy-to-device.sh"), "--no-build", "--verbose"], cwd=REPO, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            verbose = subprocess.run([str(script), "--no-build", "--verbose"], cwd=root, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
             verbose_combined = verbose.stdout + verbose.stderr
             self.assertIn(device, verbose_combined)
             self.assertIn(team, verbose_combined)
@@ -603,10 +610,11 @@ class ToolingHardeningTests(unittest.TestCase):
     def test_deploy_build_uses_versioned_xcodebuild_args(self):
         device = "12345678-1234-1234-1234-123456789ABC"
         team = "TEAMID1234"
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_root = Path(tmp)
+        with self.make_repo() as root:
+            tmp_root = root
+            script = self.copy_deploy_scripts(root, "deploy-to-device.sh")
             home = tmp_root / "home"
-            app = home / "Library" / "Developer" / "Xcode" / "DerivedData" / "Labstream-TEST" / "Build" / "Products" / "Debug-xros" / "Labstream.app"
+            app = root / "build" / "DerivedData-device-visionos" / "Build" / "Products" / "Debug-xros" / "Labstream.app"
             fakebin = tmp_root / "fakebin"
             fakebin.mkdir()
             args_file = tmp_root / "xcodebuild-args.txt"
@@ -642,8 +650,19 @@ class ToolingHardeningTests(unittest.TestCase):
                 "VP_DEVELOPMENT_TEAM": team,
             })
 
-            subprocess.run([str(REPO / "scripts" / "deploy-to-device.sh")], cwd=REPO, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            # Another worktree's/global product must be neither deleted nor installed, and
+            # this worktree's DerivedData must be wiped for a clean (no link-skip) build.
+            decoy = home / "Library" / "Developer" / "Xcode" / "DerivedData" / "Labstream-OTHER" / "Build" / "Products" / "Debug-xros" / "Labstream.app"
+            decoy.mkdir(parents=True)
+            dd = root / "build" / "DerivedData-device-visionos"
+            stale = dd / "stale-marker"
+            stale.parent.mkdir(parents=True)
+            stale.write_text("old")
+            subprocess.run([str(script)], cwd=root, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
             args = args_file.read_text()
+            self.assertIn(f"-derivedDataPath\n{dd}\n", args)
+            self.assertTrue(decoy.is_dir())
+            self.assertFalse(stale.exists())
             self.assertIn("LABSTREAM_BUILD_SLUG=", args)
             self.assertIn("LABSTREAM_BUILD_DATE_UTC=", args)
             self.assertIn("DEVELOPMENT_TEAM=TEAMID1234", args)
@@ -652,10 +671,11 @@ class ToolingHardeningTests(unittest.TestCase):
     def test_mobile_deploy_masks_device_and_team_ids_by_default(self):
         device = "87654321-4321-4321-4321-CBA987654321"
         team = "TEAMID1234"
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_root = Path(tmp)
+        with self.make_repo() as root:
+            tmp_root = root
+            script = self.copy_deploy_scripts(root, "deploy-mobile-to-device.sh")
             home = tmp_root / "home"
-            app = home / "Library" / "Developer" / "Xcode" / "DerivedData" / "Labstream-TEST" / "Build" / "Products" / "Debug-iphoneos" / "Labstream.app"
+            app = root / "build" / "DerivedData-device-ios" / "Build" / "Products" / "Debug-iphoneos" / "Labstream.app"
             app.mkdir(parents=True)
             fakebin = tmp_root / "fakebin"
             fakebin.mkdir()
@@ -685,14 +705,14 @@ class ToolingHardeningTests(unittest.TestCase):
                 "IOS_REFRESH_SHORT_DEV_PROFILES": "0",
             })
 
-            masked = subprocess.run([str(REPO / "scripts" / "deploy-mobile-to-device.sh"), "--no-build"], cwd=REPO, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            masked = subprocess.run([str(script), "--no-build"], cwd=root, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
             combined = masked.stdout + masked.stderr
             self.assertNotIn(device, combined)
             self.assertNotIn(team, combined)
             self.assertIn("8765…4321", combined)
             self.assertIn("TEAM…1234", combined)
 
-            verbose = subprocess.run([str(REPO / "scripts" / "deploy-mobile-to-device.sh"), "--no-build", "--verbose"], cwd=REPO, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            verbose = subprocess.run([str(script), "--no-build", "--verbose"], cwd=root, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
             verbose_combined = verbose.stdout + verbose.stderr
             self.assertIn(device, verbose_combined)
             self.assertIn(team, verbose_combined)
@@ -700,10 +720,11 @@ class ToolingHardeningTests(unittest.TestCase):
     def test_mobile_deploy_build_uses_labstreammobile_iphoneos_destination(self):
         device = "87654321-4321-4321-4321-CBA987654321"
         team = "TEAMID1234"
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_root = Path(tmp)
+        with self.make_repo() as root:
+            tmp_root = root
+            script = self.copy_deploy_scripts(root, "deploy-mobile-to-device.sh")
             home = tmp_root / "home"
-            app = home / "Library" / "Developer" / "Xcode" / "DerivedData" / "Labstream-TEST" / "Build" / "Products" / "Debug-iphoneos" / "Labstream.app"
+            app = root / "build" / "DerivedData-device-ios" / "Build" / "Products" / "Debug-iphoneos" / "Labstream.app"
             fakebin = tmp_root / "fakebin"
             fakebin.mkdir()
             args_file = tmp_root / "xcodebuild-args.txt"
@@ -740,13 +761,68 @@ class ToolingHardeningTests(unittest.TestCase):
                 "IOS_REFRESH_SHORT_DEV_PROFILES": "0",
             })
 
-            subprocess.run([str(REPO / "scripts" / "deploy-mobile-to-device.sh")], cwd=REPO, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+            # Another worktree's/global product must be neither deleted nor installed, and
+            # this worktree's DerivedData must be wiped for a clean (no link-skip) build.
+            decoy = home / "Library" / "Developer" / "Xcode" / "DerivedData" / "Labstream-OTHER" / "Build" / "Products" / "Debug-iphoneos" / "Labstream.app"
+            decoy.mkdir(parents=True)
+            dd = root / "build" / "DerivedData-device-ios"
+            stale = dd / "stale-marker"
+            stale.parent.mkdir(parents=True)
+            stale.write_text("old")
+            subprocess.run([str(script)], cwd=root, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
             args = args_file.read_text()
+            self.assertIn(f"-derivedDataPath\n{dd}\n", args)
+            self.assertTrue(decoy.is_dir())
+            self.assertFalse(stale.exists())
             self.assertIn("-scheme\nLabstreamMobile", args)
             self.assertIn(f"platform=iOS,id={device}", args)
             self.assertIn("DEVELOPMENT_TEAM=TEAMID1234", args)
             self.assertIn("LABSTREAM_BUILD_SLUG=", args)
             self.assertIn("LABSTREAM_BUILD_DATE_UTC=", args)
+
+    def _assert_no_build_refuses_foreign_product(self, script_name, kind, device_line, env_prefix, device):
+        with self.make_repo() as root:
+            script = self.copy_deploy_scripts(root, script_name)
+            home = root / "home"
+            foreign = home / "Library" / "Developer" / "Xcode" / "DerivedData" / "Labstream-OTHER" / "Build" / "Products" / kind / "Labstream.app"
+            foreign.mkdir(parents=True)
+            fakebin = root / "fakebin"
+            fakebin.mkdir()
+            install_log = root / "install.log"
+            (fakebin / "xcrun").write_text(textwrap.dedent(f"""\
+                #!/usr/bin/env bash
+                if [ "$1 $2 $3" = "devicectl list devices" ]; then
+                  printf '{device_line} ({device}) available\\n'
+                  exit 0
+                fi
+                if [ "$1 $2 $3 $4" = "devicectl device install app" ]; then
+                  printf '%s\\n' "$*" >> {install_log}
+                  exit 0
+                fi
+                exit 2
+                """))
+            (fakebin / "xcrun").chmod(0o755)
+            env = os.environ.copy()
+            env.update({
+                "PATH": f"{fakebin}:{env['PATH']}",
+                "HOME": str(home),
+                f"{env_prefix}_DEVICE_ID": device,
+                f"{env_prefix}_DEVELOPMENT_TEAM": "TEAMID1234",
+                f"{env_prefix}_REFRESH_SHORT_DEV_PROFILES": "0",
+            })
+            result = subprocess.run([str(script), "--no-build"], cwd=root, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("for this worktree", result.stderr)
+            self.assertFalse(install_log.exists())
+            self.assertTrue(foreign.is_dir())
+
+    def test_deploy_no_build_never_installs_another_worktrees_product(self):
+        self._assert_no_build_refuses_foreign_product(
+            "deploy-to-device.sh", "Debug-xros", "Vision Pro", "VP", "12345678-1234-1234-1234-123456789ABC")
+
+    def test_mobile_deploy_no_build_never_installs_another_worktrees_product(self):
+        self._assert_no_build_refuses_foreign_product(
+            "deploy-mobile-to-device.sh", "Debug-iphoneos", "Jonathan iPhone", "IOS", "87654321-4321-4321-4321-CBA987654321")
 
 
 if __name__ == "__main__":

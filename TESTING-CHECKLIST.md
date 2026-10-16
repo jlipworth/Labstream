@@ -22,7 +22,7 @@ library screenshots into committed evidence.
 | Physical iPhone/iPad | Signed mobile build with required trust/Developer Mode | PiP, AirPlay, Control Center/lock screen, audio routes, cellular policy, background transfers, Spotlight and App Intents |
 | Apple TV simulator | Exact worktree `LabstreamTV` simulator; signed-in test session or production-isolated fixture | Ten-foot shell, deterministic focus/navigation, custom-player remote paths, and absence of downloads; not physical Siri Remote, HDR/audio/HDMI, lifecycle, or performance |
 | Physical Apple TV (future acceptance) | Signed `LabstreamTV` development build on explicitly selected hardware with a real Siri Remote and display/audio chain | Evidence for remote-only operation, focus, system keyboard/dictation, HDR/DV, HDMI/audio, interruptions, lifecycle, accessibility, and long-play performance; this open gate does not establish release acceptance |
-| macOS preview | `LabstreamMac` host build under the worktree development identity | Native split view, menus, Settings window, keyboard/full-screen/media-key behavior, live playback and download reconciliation; record as preview evidence |
+| macOS (pre-release) | `LabstreamMac` host build under the worktree development identity | Native split view, menus, Settings window, keyboard/full-screen/media-key behavior, live playback and download reconciliation; record as pre-release acceptance evidence, not released-platform support |
 
 - [ ] Record the exact target/scheme, configuration, OS/runtime, app marketing/build ID,
       and whether this is an upgrade install or a fresh container.
@@ -213,10 +213,11 @@ Run the applicable rows for Plex, Jellyfin, Emby, and a local offline file. The 
       timeline scrubs and commits without double seeks; Menu/Back dismisses a submenu before
       exiting playback; every quality/audio/subtitle/chapter/speed/Stats action is reachable; and
       focus returns coherently after auto-hide, errors, item completion, and player close.
-- [ ] **tvOS hardware:** Now Playing, system Play/Pause, interruptions, routes, HDR/DV, HDMI audio,
-      background behavior, and long-play thermal/memory behavior are proven on a physical Apple TV.
+- [ ] **tvOS hardware:** system Play/Pause (no video Now Playing is published, by design),
+      interruptions, routes, HDR/DV, HDMI audio, background behavior, and long-play
+      thermal/memory behavior are proven on a physical Apple TV.
       Simulator focus and remote automation cannot satisfy these cells.
-- [ ] **macOS preview:** overlay/full-screen presentation, Escape/Close, toolbar visibility,
+- [ ] **macOS (pre-release):** overlay/full-screen presentation, Escape/Close, toolbar visibility,
       menu commands, media keys, Now Playing ownership, and restoration to the prior split-view
       state all behave natively.
 
@@ -382,23 +383,10 @@ them.
 | Device disk pressure | Fill the device enough to exhaust space during an active static train, without deleting the app/container. Pass if the row fails with the storage-full affordance, keeps only its durable checkpoint, does not finalize a truncated file, and can continue after space is freed and Retry is tapped. | `downloads.transfer_start_failed`, `downloads.range_start_failed`, and `downloads.range_storage_full` now include exact and bucketed free bytes; preflight/start events also include exact required bytes. A task-completion ENOSPC carries the hash/context and durable checkpoint. A move-stage failure instead records `downloads.move_failed`; final success must still end in `downloads.finalize_finished`. | URLSession may wrap an ENOSPC as a generic move error before the app can classify it; retain device storage screenshots when only `downloads.move_failed` appears. |
 | Play while downloading | While the row is active, confirm the Offline row has no partial-file Play action. From the online detail, Play must start the normal remote stream while the download continues; after validated completion, Play Offline becomes available and uses the local file. | The active download is evidenced by `downloads.range_progress`/`downloads.progress_milestone` on its hash. Local launch after completion records `playback.offline_launch` with that same hash; it must not occur for the partial row. Remote playback emits `playback.start_path`/`playback.session_start`, but those events do not carry the download hash. | There is no shared correlation field between a remote playback session and the simultaneous download. The “remote play continued while this row downloaded” portion still needs screen recording/timestamps; diagnostics can prove only the two independent activities and that partial offline launch did not occur. |
 | Emby Convert finishes while asleep | Start a new Emby Convert job, lock/background the device before server completion, and leave it asleep until the server reports completion. On wake/relaunch, pass if the persisted job is resumed, the newly converted file is selected, the row hands off to the static transfer lane, and it eventually validates without creating a duplicate Convert job. | For the same hash: initial `downloads.convert_start`; after recovery `downloads.convert_resume`; then `downloads.convert_finalizing`, `downloads.convert_completed`, and a new `downloads.transfer_start`/`downloads.range_start`, ending in `downloads.finalize_finished`. `downloads.convert_poll_error` or `downloads.convert_failed` documents a real failure branch. | Convert polling is app-driven and there is no server-completion timestamp or sleep/wake event. Diagnostics establish discovery/handoff after recovery, not that the server finished specifically while the device slept; retain server-side job timestamps for that claim. |
+| Off-head user-visible/durable progress (retest) | Under the current static-range regime (512 MiB segments at depth two), start static downloads, leave the headset off-head/locked for a sustained interval, then wake it. Pass if the visible per-row and aggregate progress never moves backward, held bodies stay counted, a paused row with no opaque resume blob stays paused rather than failing, and the durable checkpoint advances off-head. | For the same hash: `downloads.range_progress`/`downloads.progress_milestone` and `downloads.range_segment_assembled` across the background interval, `app.scene_phase` bracketing it, and `downloads.range_launch_checkpoint` for durable/held bytes after any relaunch. | The 2026-07-11 run proved transport-layer off-head transfer only; presentation and durable-checkpoint behavior after the follow-up fixes still needs another physical off-head interval. |
 
-### Physical evidence recorded 2026-07-11
-
-- [x] **Ordinary off-head static transfer continued at the transport layer.** During two same-process
-      Vision Pro background intervals (about 34 and 45 minutes), URLSession-owned temp bytes grew by
-      1,543,398,509 and 2,351,788,230 bytes respectively. Deferred callbacks arrived at wake, including
-      a completed 512 MiB held segment. No process death, auth failure, or connectivity-wait event was
-      recorded; task metrics reported HTTP/3 over a constrained, non-cellular path.
-- [ ] **Retest user-visible/durable off-head progress under the current static-range regime.** The
-      first run exposed 34 simultaneous tasks across five rows, stale live-overlay expiry, held-stash
-      omission from the aggregate, and zero-checkpoint paused rows reconciling to failed/red. Current
-      code uses 512 MiB segments at depth two, keeps active overlays monotonic, counts held bodies, and
-      preserves static paused intent without an opaque resume blob. Require another off-head interval
-      before checking this presentation/durable-checkpoint cell.
-- The first collector attempt selected a connected iPad because of a loose `vision` substring match;
-  it is invalid evidence. Headset collection now requires exact visionOS/realityDevice identity and is
-  regression-tested with mixed iPad/Vision Pro inventory.
+The 2026-07-11 off-head physical run and its follow-up defects are recorded in the downloads audit's
+[Phase-7 physical evidence](docs/archive/downloads/2026-07-10-downloads-engine-audit-plan.md#phase-7-physical-evidence-off-head-static-trains-2026-07-11).
 
 ## 6. Music
 

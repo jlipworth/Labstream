@@ -90,6 +90,16 @@ If fast-forward fails, return to the lane, rebase onto the now-current local mai
 
 After integration, inspect `git status`, the first-parent log, and the full integrated diff. Run any cheap final gates from main that can detect worktree-specific assumptions. Pushing remains a separate user-authorized action.
 
+**Landed via squash-merged PR.** When the lane instead follows `CLAUDE.md`'s PR route (push, inspect CI to completion, merge only with the user's approval), GitHub squash-merges it, so `$SOURCE_TIP` is never an ancestor of `main` or `origin/main`. Skip the local `--ff-only` step and prove integration instead with:
+
+```sh
+gh pr view "$PR" --json state,mergeCommit   # state must be MERGED
+git fetch origin main
+git -C "$WORKTREE" diff --quiet origin/main HEAD   # lane tree matches origin/main
+```
+
+Then bring local `main` up with `git merge --ff-only origin/main`; if that fails because local main has diverged, stop and report rather than resetting it. The tree check is exact only while `origin/main` has not advanced past the squash commit; otherwise rely on the PR's `MERGED` state and `mergeCommit`.
+
 ## 4. Comment on the GitHub issue and close only when true
 
 Every targeted issue receives a concise factual comment after integration. Include:
@@ -109,6 +119,8 @@ git fetch origin main
 git merge-base --is-ancestor "$SOURCE_TIP" origin/main
 gh issue close "$ISSUE" --reason completed
 ```
+
+For a squash-merged PR, the `MERGED` PR state and its `mergeCommit` (reachable from `origin/main`) are the publication proof instead of the ancestor check above.
 
 Otherwise leave it open and say exactly why. A successful local merge is not by itself a reason to close a public issue. If several issues are referenced, assess and comment on each independently.
 
@@ -134,7 +146,7 @@ Before removal, recheck the lane is clean. The Mac cleanup command is mandatory 
 
 This cleanup must not delete the canonical `/Applications/Labstream.app`, a Mac app staged from another active worktree, sandbox containers, or Keychain credentials. If `~/Library/Containers/org.labstream.Labstream.dev.*` contains an identity associated with the closing lane, classify it against all active worktrees before removal; delete only a confirmed stale development container, and never reset the production container during ordinary closeout.
 
-`closeout` must remove all of that linked worktree's visionOS/iPhone/iPad/tvOS simulators and `.simid*` ownership files without deleting main's golden visionOS simulator. Prefer `git branch -d`; use `-D` only after proving the exact source tip is an ancestor of main and only when Git's worktree/rebase bookkeeping makes `-d` reject an already-integrated branch.
+`closeout` must remove all of that linked worktree's visionOS/iPhone/iPad/tvOS simulators and `.simid*` ownership files without deleting main's golden visionOS simulator. Prefer `git branch -d`; use `-D` only after proving the exact source tip is an ancestor of main and only when Git's worktree/rebase bookkeeping makes `-d` reject an already-integrated branch. For a squash-merged PR, `-d` always refuses; use `git branch -D "$SOURCE_BRANCH"` once the PR's `MERGED` state (or the tree match above) is confirmed.
 
 If the worktree was already removed, run `scripts/worktree-sim.sh prune` and verify no owned simulator remains. Also inspect the removed path's former `build/macos-host` identities and the live process list; if the path is gone, its staged apps are gone, but any matching stale development container still needs the active-worktree classification above.
 
