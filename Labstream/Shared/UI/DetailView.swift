@@ -610,8 +610,9 @@ struct DetailView: View {
         }
         #else
         .fullScreenCover(item: $localPlaybackRequest) { request in
+            // CustomPlayerView owns its safe-area policy (#258): picture full-bleed, iOS chrome
+            // inside the safe area. Do not ignore the safe area around it here.
             localPlayerView(for: request)
-                .ignoresSafeArea()
         }
         .fullScreenCover(isPresented: $presentingPlayer) {
             playerCover
@@ -1160,7 +1161,6 @@ struct DetailView: View {
                     .withCinemaOrigin(onlineCinemaOrigin)
                     #endif
                     .id(remote.id)
-                    .ignoresSafeArea()
             case .emby:
                 CustomPlayerView(item: playing,
                                  controllerFactory: {
@@ -1186,7 +1186,6 @@ struct DetailView: View {
                     .withCinemaOrigin(onlineCinemaOrigin)
                     #endif
                     .id(remote.id)
-                    .ignoresSafeArea()
             case .plex:
                 EmptyView()
             }
@@ -1237,7 +1236,6 @@ struct DetailView: View {
             // item changes (Up Next advance), so the outgoing controller is dismantled
             // (its `stop()` flushes a final timeline) and a fresh one starts the next.
             .id(playing.ratingKey)
-            .ignoresSafeArea()
         } else {
             ContentUnavailableView("Can’t play",
                                    systemImage: "exclamationmark.triangle",

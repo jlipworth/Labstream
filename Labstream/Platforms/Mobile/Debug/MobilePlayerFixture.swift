@@ -28,13 +28,7 @@ struct MobilePlayerFixtureView: View {
                     .ignoresSafeArea()
                     .fullScreenCover(isPresented: $presentingPlayer,
                                      onDismiss: { phase = .closed }) {
-                        if mirrorsStreamingCover {
-                            // DetailView's streaming covers apply `.ignoresSafeArea()` to the
-                            // player; the Downloads cover does not.
-                            fixturePlayer(url: url).ignoresSafeArea()
-                        } else {
-                            fixturePlayer(url: url)
-                        }
+                        fixturePlayer(url: url)
                     }
             case .closed:
                 VStack(spacing: 24) {
@@ -52,13 +46,6 @@ struct MobilePlayerFixtureView: View {
             }
         }
         .task { await prepare() }
-    }
-
-    private var mirrorsStreamingCover: Bool {
-        let arguments = ProcessInfo.processInfo.arguments
-        guard let index = arguments.firstIndex(of: "--ui-testing-player-presentation"),
-              arguments.indices.contains(index + 1) else { return true }
-        return arguments[index + 1] != "offline"
     }
 
     private func fixturePlayer(url: URL) -> some View {

@@ -34,7 +34,6 @@ struct TVPlayerFixtureView: View {
                     .fullScreenCover(isPresented: $presentingPlayer,
                                      onDismiss: { phase = .closed }) {
                         fixturePlayer(url: url)
-                            .ignoresSafeArea()
                     }
             case .closed:
                 VStack(spacing: 24) {

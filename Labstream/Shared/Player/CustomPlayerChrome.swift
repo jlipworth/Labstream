@@ -117,6 +117,9 @@ struct CustomPlayerChrome: View {
                 #if os(tvOS)
                 .onTapGesture { handlePlayerSurfaceTap() }
                 #elseif os(iOS)
+                // The picture is full-bleed while the chrome lives in the safe area; taps on
+                // the picture beside/below the chrome envelope must still reveal it.
+                .ignoresSafeArea()
                 .gesture(TapGesture(count: 2).exclusively(before: TapGesture(count: 1))
                     .onEnded { gesture in
                         switch gesture {
@@ -556,22 +559,24 @@ struct CustomPlayerChrome: View {
                 Spacer()
 
                 #if os(iOS)
+                // System-player parity: Picture in Picture + AirPlay sit as monochrome glass
+                // circles at the top-trailing corner, opposite the close button. Backgrounding
+                // pauses ordinary video, but active AirPlay/PiP routes keep playing. PiP leads
+                // the trailing group because its availability changes per item/route (#258):
+                // appearing at the leading end never moves the always-present buttons.
+                if mobileSystemCoordinator?.isPictureInPicturePossible == true {
+                    pipButton
+                        .playerGeometryProbe("topPiP")
+                        .padding(.top, topUtilityButtonExtraTopPadding)
+                }
+
                 displayModeButton
                     .playerGeometryProbe("topDisplayMode")
                     .padding(.top, topUtilityButtonExtraTopPadding)
 
-                // System-player parity: AirPlay + Picture in Picture sit as monochrome glass
-                // circles at the top-trailing corner, opposite the close button. Backgrounding
-                // pauses ordinary video, but active AirPlay/PiP routes keep playing.
                 if mobileSystemCoordinator != nil {
                     airPlayButton
                         .playerGeometryProbe("topAirPlay")
-                        .padding(.top, topUtilityButtonExtraTopPadding)
-                }
-
-                if mobileSystemCoordinator?.isPictureInPicturePossible == true {
-                    pipButton
-                        .playerGeometryProbe("topPiP")
                         .padding(.top, topUtilityButtonExtraTopPadding)
                 }
                 #endif
@@ -695,6 +700,7 @@ struct CustomPlayerChrome: View {
                 .padding(.vertical, 8)
                 .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 18, style: .continuous))
                 .background(.black.opacity(0.16), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .iosPlayerPlatterOutline(cornerRadius: 18)
                 .foregroundStyle(.white)
                 .colorScheme(.dark)
                 .playerGeometryProbe("bottomPlatter", detail: "branch=phoneLandscape menus=\(availableMenus.count)")
@@ -703,12 +709,14 @@ struct CustomPlayerChrome: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 14)
                 .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .iosPlayerPlatterOutline(cornerRadius: 22)
                 .playerGeometryProbe("bottomPlatter", detail: "branch=compact menus=\(availableMenus.count)")
         } else {
             regularControls
                 .padding(.horizontal, 18)
                 .padding(.vertical, 16)
                 .labstreamOverlayPlatter(in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .iosPlayerPlatterOutline(cornerRadius: 24)
                 .playerGeometryProbe("bottomPlatter", detail: "branch=regular menus=\(availableMenus.count)")
         }
         #else
@@ -1085,7 +1093,8 @@ struct CustomPlayerChrome: View {
         }
         #elseif os(iOS)
         if isPhoneLandscapeChrome {
-            phoneLandscapeMenuStrip
+            phoneLandscapeMenuButtons
+                .frame(maxWidth: .infinity, alignment: .trailing)
         } else {
             // Flat menus, no "…" overflow on portrait phone/iPad: every width keeps
             // the LABELED pills and scrolls them rather than degrading to icons.

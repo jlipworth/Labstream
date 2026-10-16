@@ -203,6 +203,15 @@ struct CustomPlayerView: View {
                     .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
             }
         }
+        #if os(visionOS) || os(tvOS)
+        // Chrome on these platforms is authored against the full presentation bounds.
+        .ignoresSafeArea()
+        #endif
+        // iOS/iPadOS (#258): the black backdrop and AVPlayerLayer above ignore the safe area so the
+        // picture can use the whole display, but the chrome is deliberately laid out inside it.
+        // That gives every presentation (streaming, Downloads, local-from-Detail) one stable,
+        // rounded-corner/Dynamic-Island-safe envelope. Presenters must not wrap this view in
+        // `.ignoresSafeArea()`, which would erase the insets for the chrome too.
         .task(id: clockTaskID) { await runPlayer() }
         #if os(iOS)
         .onAppear {

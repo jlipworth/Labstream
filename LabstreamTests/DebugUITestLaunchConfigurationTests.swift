@@ -31,5 +31,23 @@ struct DebugUITestLaunchConfigurationTests {
         #expect(DebugUITestLaunchConfiguration.fixtureKind(
             in: ["Labstream", "--ui-testing", "--ui-testing-fixture", "unknown"]) == nil)
     }
+
+    @Test func playerFixtureAspectParsesOnlyForThePlayerFixture() {
+        let base = ["Labstream", "--ui-testing", "--ui-testing-fixture", "player"]
+        #expect(DebugUITestLaunchConfiguration.playerFixtureAspect(in: base) == .widescreen)
+        #expect(DebugUITestLaunchConfiguration.playerFixtureAspect(
+            in: base + ["--ui-testing-player-aspect", "239x100"]) == .scope)
+        #expect(DebugUITestLaunchConfiguration.playerFixtureAspect(
+            in: base + ["--ui-testing-player-aspect", "4x3"]) == .academy)
+        #expect(DebugUITestLaunchConfiguration.playerFixtureAspect(
+            in: base + ["--ui-testing-player-aspect", "bogus"]) == .widescreen)
+        #expect(DebugUITestLaunchConfiguration.playerFixtureAspect(
+            in: ["Labstream", "--ui-testing", "--ui-testing-fixture", "browse",
+                 "--ui-testing-player-aspect", "4x3"]) == .widescreen)
+        for aspect in DebugUITestLaunchConfiguration.PlayerFixtureAspect.allCases {
+            let size = aspect.encodedSize
+            #expect(size.width % 2 == 0 && size.height % 2 == 0)
+        }
+    }
 }
 #endif
