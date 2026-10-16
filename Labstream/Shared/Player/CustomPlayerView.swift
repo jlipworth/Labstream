@@ -187,9 +187,13 @@ struct CustomPlayerView: View {
                                        onClose: onClose == nil ? nil : { requestPlayerClose() })
                         // The chrome toggles the status bar with its own visibility. On iPad that
                         // flips the top inset between 0 and the status-bar height, which would
-                        // shift the envelope (and centered overlays) on every reveal/hide. Keep
-                        // the top edge on the fixed full-screen origin; the top chrome's own
-                        // insets already clear the status bar. Leading/trailing/bottom stay safe.
+                        // shift the envelope (and centered overlays) on every reveal/hide, so the
+                        // top edge stays on the fixed full-screen origin. Leading/trailing/bottom
+                        // stay safe. The top chrome's own inset clears the status bar only on
+                        // regular-width iPad (28 + 10 pt); compact iPad widths sit closer to it.
+                        // iPhone playback is landscape-only (MobilePlayerOrientationCoordinator),
+                        // where the top inset is already 0; in portrait this would not clear the
+                        // Dynamic Island.
                         .ignoresSafeArea(.container, edges: .top)
                     #else
                     CustomPlayerChrome(controller: controller,
@@ -212,9 +216,9 @@ struct CustomPlayerView: View {
         // iOS/iPadOS (#258): the black backdrop and AVPlayerLayer above ignore the safe area so the
         // picture can use the whole display, but the chrome is deliberately laid out inside it.
         // That gives every presentation (streaming, Downloads, local-from-Detail) one stable,
-        // rounded-corner/Dynamic-Island-safe envelope. Presenters use
-        // `customPlayerPresentationSafeArea()` instead of `.ignoresSafeArea()`, which would erase
-        // the insets for the chrome too.
+        // rounded-corner-safe envelope. Presenters must not add `.ignoresSafeArea()` on iOS, which
+        // would erase the insets for the chrome too; Detail's covers use
+        // `customPlayerPresentationSafeArea()` to keep their full-bounds behavior elsewhere.
         .task(id: clockTaskID) { await runPlayer() }
         #if os(iOS)
         .onAppear {
