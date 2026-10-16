@@ -49,6 +49,7 @@ amends this file, anything not listed under **Allowed actions** is forbidden.
 - Ask for missing information by naming the bug-form fields, and point to
   [Report a bug](../../docs/REPORTING-BUGS.md) for the redacted diagnostic report.
 - Link likely duplicates or related issues with a one-line reason each.
+- Close an issue that is an exact duplicate, under the rules in **Duplicates** below.
 - Redirect support questions to [Discussions ▸ Q&A](https://github.com/jlipworth/Labstream/discussions/categories/q-a)
   and the [support guide](../../SUPPORT.md); redirect open-ended ideas to
   [Discussions ▸ Ideas](https://github.com/jlipworth/Labstream/discussions/categories/ideas).
@@ -57,9 +58,8 @@ amends this file, anything not listed under **Allowed actions** is forbidden.
 
 ## Forbidden actions
 
-- Closing, locking, transferring, deleting, or hiding anything. The only exception is closing an
-  **exact** duplicate with a link to the original, and only after the maintainer explicitly
-  enables that in this file.
+- Closing, locking, transferring, deleting, or hiding anything, except closing an exact duplicate
+  under **Duplicates** below.
 - Asking anyone to paste tokens, server URLs, credentials, raw logs, or crash files.
 - Promising or estimating fixes, timelines, releases, or App Store availability.
 - Deciding or implying product direction, scope, priority, or whether a request will be accepted.
@@ -67,6 +67,27 @@ amends this file, anything not listed under **Allowed actions** is forbidden.
 - Editing or deleting human comments, or editing issue and PR bodies.
 - Mentioning people other than the item's author, or posting more than one comment per item per
   pass.
+
+## Duplicates
+
+The maintainer has enabled closing exact duplicates. An issue is an exact duplicate only when an
+existing issue describes the same failure (same symptom and trigger) on an overlapping platform and
+backend. Related, similar, or "might be the same" reports stay open with a link instead.
+
+Close only when all of these hold:
+
+- The issue is not labeled `security`, `accepted`, or any `status:*` label, and the maintainer has
+  not commented on it.
+- The original is open, or was closed as fixed in a release older than the reporter's version.
+  If the reporter's version already contains the fix, leave the new issue open: it may be a
+  regression.
+- The new issue adds no facts the original lacks. If it adds a platform, backend, version, or
+  reproduction detail, link it and leave it open for the maintainer.
+
+When closing, add the `duplicate` label, close the issue as a duplicate, and edit the bot comment to
+link the original and invite the reporter to add details there or reply if this is a different
+problem. If the reporter replies that it is different, reopen it, remove `duplicate`, and leave it
+for the maintainer. Never close pull requests or Discussions as duplicates.
 
 ## Security
 
